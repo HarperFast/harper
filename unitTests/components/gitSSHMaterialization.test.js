@@ -28,7 +28,7 @@ testUtils.preTestPrep();
 
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
-const { materializeGitSSH, nonInteractiveSpawn } = require('#src/components/Application');
+const { materializeGitSSH, nonInteractiveSpawn, rewriteSshConfigPaths } = require('#src/components/Application');
 const secretDecryptor = require('#src/resources/secretDecryptor');
 const { encryptEnvelope, decryptEnvelope, fingerprintOf } = require('#src/utility/secretEnvelope');
 // CJS interop hands back the module namespace, which is the very object Application.ts's default
@@ -196,6 +196,56 @@ describe('materializeGitSSH', () => {
 		await materialized.cleanup();
 	});
 
+	it('skips a stray subdirectory in the ssh dir instead of throwing EISDIR', async () => {
+		writeSSHDir({ deploy: KEY_MATERIAL });
+		// A subdirectory that happens to end in `.key` used to reach `readFile` and throw EISDIR,
+		// aborting the whole materialize call (and therefore the whole spawn, including an
+		// unrelated npm install).
+		fs.mkdirSync(path.join(sshDir, 'nested.key'));
+
+		const materialized = await materializeGitSSH();
+		assert.ok(materialized, 'a stray subdirectory must not abort materialization');
+		const tempDir = path.dirname(materialized.command.match(/ssh -F (\S+)/)[1]);
+
+		assert.strictEqual(fs.readFileSync(path.join(tempDir, 'deploy.key'), 'utf8'), KEY_MATERIAL);
+		assert.ok(!fs.existsSync(path.join(tempDir, 'nested.key')), 'the directory entry must not be materialized');
+
+		await materialized.cleanup();
+	});
+
+	it('skips a key that cannot be read (permission drift) without aborting the whole materialize call', async function () {
+		if (typeof process.getuid === 'function' && process.getuid() === 0) {
+			// chmod-based permission denial is a no-op for root; there's no reliable way to force a
+			// read failure in that case, so skip rather than false-pass or false-fail.
+			this.skip();
+			return;
+		}
+
+		writeSSHDir({ readable: KEY_MATERIAL, unreadable: KEY_MATERIAL });
+		const unreadableKeyPath = path.join(sshDir, 'unreadable.key');
+		fs.chmodSync(unreadableKeyPath, 0o000);
+
+		try {
+			const materialized = await materializeGitSSH();
+			assert.ok(materialized, 'an unreadable key must not abort materialization of the others');
+			const tempDir = path.dirname(materialized.command.match(/ssh -F (\S+)/)[1]);
+
+			// the readable key still materializes; only the unreadable one drops out
+			assert.strictEqual(fs.readFileSync(path.join(tempDir, 'readable.key'), 'utf8'), KEY_MATERIAL);
+			assert.ok(!fs.existsSync(path.join(tempDir, 'unreadable.key')));
+			assert.ok(
+				logged.some((line) => line.includes('unreadable.key') && line.includes('Failed to read')),
+				`expected a read failure log for the unreadable key, got: ${JSON.stringify(logged)}`
+			);
+			for (const line of logged)
+				assert.ok(!line.includes('OPENSSH PRIVATE KEY'), 'a log must never carry key material');
+
+			await materialized.cleanup();
+		} finally {
+			fs.chmodSync(unreadableKeyPath, 0o600); // restore so afterEach's rmSync can clean up
+		}
+	});
+
 	it('skips a tampered envelope (GCM auth tag failure)', async () => {
 		secretDecryptor.registerSecretDecryptor(decryptorFor(keypair));
 		const envelope = seal(KEY_MATERIAL);
@@ -211,6 +261,68 @@ describe('materializeGitSSH', () => {
 		assert.ok(logged.some((line) => line.includes('deploy.key')));
 
 		await materialized.cleanup();
+	});
+});
+
+describe('rewriteSshConfigPaths (cross-platform IdentityFile rewrite)', () => {
+	// materializeGitSSH always calls this with process.platform, but the platform param lets us
+	// pin Windows-shaped behavior (mixed slash direction, drive-letter case-insensitivity) from
+	// any CI host — this is exactly the kind of platform-specific logic that's easy to "fix"
+	// without ever actually exercising the Windows branch.
+
+	it('rewrites an exact-match posix path (existing behavior preserved)', () => {
+		const config = 'Host gh\n\tIdentityFile /data/hdb/ssh/deploy.key\n\tIdentitiesOnly yes';
+		const rewritten = rewriteSshConfigPaths(config, '/data/hdb/ssh', '/tmp/harper-ssh-abc', 'darwin');
+		assert.strictEqual(rewritten, 'Host gh\n\tIdentityFile /tmp/harper-ssh-abc/deploy.key\n\tIdentitiesOnly yes');
+	});
+
+	it('rewrites when the config uses forward slashes but sshDir (path.join on win32) uses backslashes', () => {
+		const sshDir = 'C:\\Users\\svc\\hdb\\ssh';
+		const tempDir = 'C:\\Users\\svc\\AppData\\Local\\Temp\\harper-ssh-xyz';
+		const config = 'Host gh\n\tIdentityFile C:/Users/svc/hdb/ssh/deploy.key\n';
+		const rewritten = rewriteSshConfigPaths(config, sshDir, tempDir, 'win32');
+		assert.strictEqual(
+			rewritten,
+			'Host gh\n\tIdentityFile C:/Users/svc/AppData/Local/Temp/harper-ssh-xyz/deploy.key\n'
+		);
+	});
+
+	it('is case-insensitive on win32 for drive-letter casing', () => {
+		const sshDir = 'C:\\Users\\svc\\hdb\\ssh';
+		const tempDir = 'C:\\Users\\svc\\AppData\\Local\\Temp\\harper-ssh-xyz';
+		const config = 'Host gh\n\tIdentityFile c:\\Users\\svc\\hdb\\ssh\\deploy.key\n';
+		const rewritten = rewriteSshConfigPaths(config, sshDir, tempDir, 'win32');
+		assert.ok(
+			rewritten.includes('C:/Users/svc/AppData/Local/Temp/harper-ssh-xyz'),
+			`expected the lowercase drive-letter path to still be rewritten, got: ${rewritten}`
+		);
+		assert.ok(!rewritten.includes('hdb'), 'the durable ssh dir must not remain in the rewritten config');
+	});
+
+	it('does not case-fold on non-Windows platforms', () => {
+		// A differently-cased sshDir must NOT match on posix — case sensitivity there is real.
+		const config = 'IdentityFile /Data/HDB/ssh/deploy.key\n';
+		const rewritten = rewriteSshConfigPaths(config, '/data/hdb/ssh', '/tmp/harper-ssh-abc', 'linux');
+		assert.strictEqual(rewritten, config, 'a differently-cased path must be left untouched on posix');
+	});
+
+	it('does not partial-match a sibling directory whose name starts with sshDir', () => {
+		const config = 'IdentityFile /data/hdb/sshhh/other.key\n';
+		const rewritten = rewriteSshConfigPaths(config, '/data/hdb/ssh', '/tmp/harper-ssh-abc', 'darwin');
+		assert.strictEqual(rewritten, config, 'a sibling directory like .../sshhh must not be touched');
+	});
+
+	it('escapes regex-special characters within a path segment (e.g. parens) without breaking separator matching', () => {
+		const sshDir = '/data/hdb (prod)/ssh';
+		const config = 'IdentityFile /data/hdb (prod)/ssh/deploy.key\n';
+		const rewritten = rewriteSshConfigPaths(config, sshDir, '/tmp/harper-ssh-abc', 'linux');
+		assert.strictEqual(rewritten, 'IdentityFile /tmp/harper-ssh-abc/deploy.key\n');
+	});
+
+	it('rewrites every IdentityFile occurrence (global match)', () => {
+		const config = 'IdentityFile /data/hdb/ssh/a.key\nIdentityFile /data/hdb/ssh/b.key\n';
+		const rewritten = rewriteSshConfigPaths(config, '/data/hdb/ssh', '/tmp/harper-ssh-abc', 'darwin');
+		assert.strictEqual(rewritten, 'IdentityFile /tmp/harper-ssh-abc/a.key\nIdentityFile /tmp/harper-ssh-abc/b.key\n');
 	});
 });
 
