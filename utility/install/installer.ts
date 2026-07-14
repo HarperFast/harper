@@ -95,7 +95,7 @@ install.createSuperUser = createSuperUser;
  * plain relative paths (no `~`, no leading `/`) are returned unchanged, preserving the existing
  * cwd-relative behavior for relative paths.
  */
-function resolveInstallDestination(value) {
+function resolveInstallDestination(value: string): string {
 	return resolveConfiguredPath(value, undefined) ?? value;
 }
 
@@ -119,7 +119,7 @@ async function install() {
 	// A cmd/env/config-file-sourced ROOTPATH skips the install prompt (and its `~/...`-expanding
 	// filter) entirely, so resolve it here - before it's validated (installValidator, below) or
 	// used anywhere else - to keep it consistent with the interactively-entered path (harper#672).
-	if (promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] !== undefined) {
+	if (promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] != null) {
 		promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] = resolveInstallDestination(
 			promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH]
 		);
