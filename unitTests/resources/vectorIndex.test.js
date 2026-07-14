@@ -1621,6 +1621,38 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		);
 	});
 
+	it('id-prefix search with a record-scoped override still filters per record (no entry-verdict gating)', async () => {
+		// A present `id` on search/query is a starts_with/prefix SEED (multi-record scan), not a
+		// single record — so it must defer to per-record enforcement like any collection scan. An
+		// entry verdict here would evaluate the override against a bare resource (fields undefined),
+		// spuriously denying the scan or, for a permissive-default override, leaking every row.
+		const P = table({
+			table: 'PrefixAuth',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'ownerId' }],
+		});
+		class Restricted extends P {
+			allowRead(user) {
+				return this.ownerId === user.id;
+			}
+		}
+		try {
+			await P.put('doc-1', { ownerId: 1 });
+			await P.put('doc-2', { ownerId: 2 });
+			await P.put('doc-3', { ownerId: 1 });
+			const results = await fromAsync(
+				Restricted.search({ id: 'doc-', checkPermission: true, select: ['id', 'ownerId'] }, { user: { id: 1 } })
+			);
+			assert.deepStrictEqual(
+				results.map((r) => r.id).sort(),
+				['doc-1', 'doc-3'],
+				'prefix scan returns only records the user may see'
+			);
+		} finally {
+			P.dropTable();
+		}
+	});
+
 	it('async allowRead override keeps entry-check semantics (awaited, fail-closed), not record scoping', async () => {
 		// Record-scoping is sync-only: a declared-async override is excluded from the per-record
 		// deferral, so the authorize wrapper awaits its verdict at entry and fails closed on
