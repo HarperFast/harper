@@ -96,4 +96,15 @@ describe('POST dispatch — missing trailing slash / bogus segment (harper#678)'
 		assert.equal(description.name, 'PostTrailingSlash');
 		assert.ok(Array.isArray(description.attributes));
 	});
+
+	it('still returns actual collection records (not describe metadata) for GET with a trailing slash', async () => {
+		await PostTrailingSlash.post(new RequestTarget('/'), { value: 'collection-read' }, {});
+		const target = new RequestTarget('/');
+		const resource = await Promise.resolve(PostTrailingSlash.getResource(target, {}));
+		const result = await resource.get(target);
+		assert.ok(
+			result?.name !== 'PostTrailingSlash',
+			'a well-formed collection GET must not be intercepted by the describe-metadata check'
+		);
+	});
 });
