@@ -163,13 +163,13 @@ describe('Test configValidator module', () => {
 			bad_config_obj.logging.rotation.compress = 'nah';
 			bad_config_obj.logging.rotation.maxSize = '100z';
 			bad_config_obj.logging.rotation.path = true;
-			bad_config_obj.logging.root = '/???';
+			bad_config_obj.logging.root = '/log\nroot'; // control char (newline) — rejected by the denylist
 			bad_config_obj.logging.stdStreams = ['not_a_boolean'];
 			bad_config_obj.logging.auditLog = ['not_a_boolean'];
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.enabled' must be a boolean. 'logging.rotation.compress' must be a boolean. 'logging.rotation.interval' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.path' must be a string. 'logging.root' with value '/???' fails to match the directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
+				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.enabled' must be a boolean. 'logging.rotation.compress' must be a boolean. 'logging.rotation.interval' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.path' must be a string. 'logging.root' with value '/log\nroot' fails to match the directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
@@ -187,78 +187,108 @@ describe('Test configValidator module', () => {
 			bad_config_obj.operationsApi.network.timeout = false;
 			bad_config_obj.operationsApi.nodeEnv = true;
 			bad_config_obj.http.threads = true;
-			bad_config_obj.rootPath = '/@@@';
+			bad_config_obj.rootPath = '/root\npath'; // control char (newline) — rejected by the denylist
 			bad_config_obj.storage.writeAsync = undefined;
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.timeout' must be a number. 'rootPath' with value '/@@@' fails to match the directory path pattern. 'storage.writeAsync' is required";
+				"'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.timeout' must be a number. 'rootPath' with value '/root\npath' fails to match the directory path pattern. 'storage.writeAsync' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 	});
 
-	describe('Directory-path pattern is linear-time (ReDoS regression, #1779)', () => {
+	describe('Directory-path pattern is a linear-time denylist (ReDoS regression, #1779)', () => {
 		const directoryPathPattern = config_val.__get__('DIRECTORY_PATH_PATTERN');
-		const directoryPathWithHomePattern = config_val.__get__('DIRECTORY_PATH_WITH_HOME_PATTERN');
 
-		// The previous `([...]+)+$` nested quantifier backtracked exponentially on any
-		// value containing a char outside the class after a run of valid chars. A dotted
-		// 80-char path is the real-world trigger (default installs write
-		// `tls.privateKey: <root>/privateKey.pem`); it took minutes before the fix.
-		it('resolves a dotted 80-char path effectively instantly', () => {
-			const dottedPath = '/Users/someone/harper-instances/engineering-metrics-project/keys/privateKey.pem';
-			expect(dottedPath.length).to.be.greaterThan(60);
+		// Guard against reintroducing catastrophic backtracking: a long valid run
+		// followed by a rejected (control) char is the worst case for a nested
+		// quantifier. Denylist runs in microseconds; a nested-quantifier revert
+		// would spin for minutes. The generous bound distinguishes the two.
+		it('rejects a 50k-char adversarial input effectively instantly', () => {
+			const adversarial = '/' + 'a'.repeat(50000) + '\x01';
 			const start = Date.now();
-			const matched = directoryPathPattern.test(dottedPath);
-			const elapsed = Date.now() - start;
-			expect(matched).to.equal(true);
-			expect(elapsed).to.be.lessThan(100);
-		});
-
-		it('does not hang even when the value fails to match', () => {
-			// A char outside the class (`?`) after a long valid prefix is the worst
-			// case for the old regex; it must now fail fast, not backtrack.
-			const badPath = '/Users/someone/harper-instances/engineering?metrics/keys/key';
-			const start = Date.now();
-			const matched = directoryPathPattern.test(badPath);
+			const matched = directoryPathPattern.test(adversarial);
 			const elapsed = Date.now() - start;
 			expect(matched).to.equal(false);
 			expect(elapsed).to.be.lessThan(100);
 		});
 
-		it('accepts the path shapes the validator must permit', () => {
-			// The space cases (Windows Program Files, macOS user dirs) were accepted by
-			// the old un-anchored pattern and must keep validating (#1779 review).
+		it('accepts every path shape the validator must permit', () => {
+			// Each of these is REJECTED by any anchored ASCII allow-list (spaces,
+			// parens, `~`, apostrophes, Unicode), so this test fails on the earlier
+			// allow-list fix and only passes on the denylist — real regression cover.
 			const good = [
 				'/',
+				'~/hdb', // the documented default rootPath (config-root.schema.json)
+				'~/hdb/components',
 				'/Users/x/harper',
 				'/etc/harper/privateKey.pem',
 				'C:\\Users\\x',
 				'./rel/path',
-				'C:\\Program Files\\Harper',
-				'/Users/some user/harper',
+				'C:\\Program Files (x86)\\Harper', // Windows default install path (parens)
+				'/Users/some user/harper', // space
+				'/Users/café/harper', // non-ASCII home dir
+				"/Users/O'Brien/hdb", // apostrophe
+				'/opt/harper+ext/root',
+				'.', // resolves honestly to cwd
+				'..', // resolves honestly to parent
 			];
 			for (const value of good) {
 				expect(directoryPathPattern.test(value), value).to.equal(true);
 			}
-			expect(directoryPathWithHomePattern.test('~/harper/keys/key.pem'), '~/harper').to.equal(true);
 		});
 
-		it('still rejects paths with disallowed characters', () => {
-			for (const bad of ['/@@@', '/???', '/pipe|d', '/angle<br>', '/newline\n']) {
-				expect(directoryPathPattern.test(bad), bad).to.equal(false);
+		it('rejects control characters (incl. newline / null / DEL) and empty / whitespace-only', () => {
+			const bad = [
+				'', // empty
+				'   ', // whitespace-only (Windows strips to a valid-but-wrong dir)
+				'\t', // tab
+				'/embedded\nnewline', // newline — would forge log lines
+				'/embedded\x00null',
+				'/embedded\x7fdel',
+			];
+			for (const value of bad) {
+				expect(directoryPathPattern.test(value), JSON.stringify(value)).to.equal(false);
 			}
 		});
 
-		it('validates a dotted rootPath through configValidator without erroring', () => {
+		it('validates the documented `~/hdb`-style config through configValidator without erroring', () => {
 			const config_obj = testUtils.deepClone(FAKE_CONFIG);
-			config_obj.rootPath = '/Users/someone/harper-instances/metrics/data.dir';
+			config_obj.rootPath = '~/hdb';
+			config_obj.componentsRoot = '~/hdb/components';
 			const start = Date.now();
+			// rootPath/componentsRoot are pattern-only (no fs check), so no skipFsValidation needed;
+			// passing it would leak the module-level skipFsVal flag into later tests.
 			const schema = configValidator(config_obj);
 			expect(Date.now() - start).to.be.lessThan(1000);
-			const rootPathError = (schema.error?.details ?? []).find((d) => d.path?.[0] === 'rootPath');
-			expect(rootPathError, 'rootPath should validate').to.equal(undefined);
+			const pathErrors = (schema.error?.details ?? []).filter(
+				(d) => d.path?.[0] === 'rootPath' || d.path?.[0] === 'componentsRoot'
+			);
+			expect(pathErrors, `rootPath/componentsRoot should validate: ${JSON.stringify(pathErrors)}`).to.eql([]);
+		});
+
+		// storage.path is the third pattern site — it runs the denylist inside Joi.custom(validatePath)
+		// via Joi.assert. That throw is caught by Joi.custom and folded into schema.error as an
+		// `any.custom` detail, so a bad path surfaces the same way the other two sites do (not a throw).
+		it('runs the denylist on storage.path: accepts `~/`, rejects a control char', () => {
+			const good = testUtils.deepClone(FAKE_CONFIG);
+			good.storage = { ...good.storage, path: '~/hdb/database' };
+			// The denylist accepts `~/...`; any remaining storage.path error must be the fs-existence
+			// message, never a "directory path pattern" failure.
+			const goodSchema = configValidator(good);
+			const goodPatternError = (goodSchema.error?.details ?? []).find(
+				(d) => d.path?.[0] === 'storage' && /directory path pattern/.test(d.message)
+			);
+			expect(goodPatternError, 'storage.path `~/hdb/database` should pass the denylist').to.equal(undefined);
+
+			const bad = testUtils.deepClone(FAKE_CONFIG);
+			bad.storage = { ...bad.storage, path: '/db\nroot' }; // control char (newline)
+			const badSchema = configValidator(bad);
+			const badPatternError = (badSchema.error?.details ?? []).find(
+				(d) => d.path?.[0] === 'storage' && /directory path pattern/.test(d.message)
+			);
+			expect(badPatternError, 'storage.path with a newline should be rejected').to.not.equal(undefined);
 		});
 	});
 
