@@ -115,6 +115,16 @@ async function install() {
 	// Check to see if any cmd/env vars are passed that override install prompts.
 	const promptOverride = checkForPromptOverride();
 	Object.assign(promptOverride, configFromFile);
+
+	// A cmd/env/config-file-sourced ROOTPATH skips the install prompt (and its `~/...`-expanding
+	// filter) entirely, so resolve it here - before it's validated (installValidator, below) or
+	// used anywhere else - to keep it consistent with the interactively-entered path (harper#672).
+	if (promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] !== undefined) {
+		promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] = resolveInstallDestination(
+			promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH]
+		);
+	}
+
 	const hasRequiredPromptOverrides =
 		promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] &&
 		promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME] &&
@@ -317,22 +327,16 @@ async function installPrompts(promptOverride) {
 	];
 
 	const answers = await inquirer.prompt(promptsSchema);
+	// If there are no answers all the prompts have been overridden.
+	if (Object.keys(answers).length === 0) {
+		return promptOverride;
+	}
+
 	// Loop through the answers and if they dont exist in the promptOverride obj add them.
-	// (No-op when all prompts were overridden and answers is empty.)
 	for (const param in answers) {
 		if (promptOverride[param] === undefined) {
 			promptOverride[param] = answers[param];
 		}
-	}
-
-	// The prompt's filter already expands a `~/...` ROOTPATH answer, but ROOTPATH may instead have
-	// arrived via cmd/env/config-file override (skipping the prompt, and its filter, entirely) -
-	// resolve it here too so every downstream consumer (mountHdb, createBootPropertiesFile,
-	// createConfigFile) sees the same expanded absolute path (harper#672).
-	if (promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] !== undefined) {
-		promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] = resolveInstallDestination(
-			promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH]
-		);
 	}
 
 	return promptOverride;
