@@ -330,6 +330,41 @@ export function httpServer(listener, options) {
 
 	return servers;
 }
+
+/**
+ * Pipe a stream response body to a Node http response, tracking bytes-sent analytics and tearing
+ * the source down on client disconnect. `pipe()` doesn't forward the source's 'error' event to the
+ * destination, and Node throws an unhandled 'error' as an uncaughtException — a generator that
+ * throws mid-iteration (e.g. an SSE resource) would otherwise crash the process and leave the
+ * response hanging instead of closing (#1763). Headers/some body are typically already flushed by
+ * the time a stream errors, so just end the response rather than attempt to send an error status.
+ */
+export function pipeBodyToResponse(
+	body: Readable,
+	nodeResponse: any,
+	handlerPath: string,
+	method: string,
+	endTime: number
+) {
+	body.pipe(nodeResponse);
+	if (body.destroy)
+		nodeResponse.on('close', () => {
+			body.destroy();
+		});
+	let bytesSent = 0;
+	body.on('data', (data) => {
+		bytesSent += data.length;
+	});
+	body.on('end', () => {
+		recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
+		recordAction(bytesSent, 'bytes-sent', handlerPath, method);
+	});
+	body.on('error', (error) => {
+		harperLogger.warn(errorForLog(error));
+		nodeResponse.end();
+	});
+}
+
 function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 	const { mtls: isMtls, usageType } = options || {};
 	const isOperationsServer = usageType === 'operations-api';
@@ -518,21 +553,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						body = Readable.from(body);
 
 					// if it is a stream, pipe it
-					if (body?.pipe) {
-						body.pipe(nodeResponse);
-						if (body.destroy)
-							nodeResponse.on('close', () => {
-								body.destroy();
-							});
-						let bytesSent = 0;
-						body.on('data', (data) => {
-							bytesSent += data.length;
-						});
-						body.on('end', () => {
-							recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
-							recordAction(bytesSent, 'bytes-sent', handlerPath, method);
-						});
-					}
+					if (body?.pipe) pipeBodyToResponse(body, nodeResponse, handlerPath, method, endTime);
 					// else just send the buffer/string
 					else if (body?.then)
 						body.then((body) => {
