@@ -687,9 +687,13 @@ function subscribeSecret(componentName: string, name: string): AsyncIterableIter
 
 /** Close every live subscription owned by a component (component reload/unload). */
 export function closeComponentSubscriptions(componentName: string): void {
+	// Collect first, then close: stream.end() → unregisterStream() mutates secretSubscribers, so we must
+	// not close while iterating it.
+	const toClose: SecretChangeStream[] = [];
 	for (const streams of secretSubscribers.values()) {
-		for (const stream of [...streams]) if (stream.componentName === componentName) stream.end();
+		for (const stream of streams) if (stream.componentName === componentName) toClose.push(stream);
 	}
+	for (const stream of toClose) stream.end();
 }
 
 /** The component's current effective value for one name (scoped-granted live, else declared→process.env). */
@@ -870,8 +874,9 @@ export function resetComponentSecrets(): void {
 	unsatisfiedEnv.clear();
 	accessorCache.clear();
 	warnedSubscribeShadow.clear();
-	for (const streams of secretSubscribers.values()) for (const stream of [...streams]) stream.end();
+	const openStreams = [...secretSubscribers.values()].flatMap((streams) => [...streams]);
 	secretSubscribers.clear();
+	for (const stream of openStreams) stream.end();
 	// Tear down the shared table watcher too, so a reset doesn't leak an audit-log listener.
 	secretWatcherSubscription?.emit?.('close');
 	secretWatcherSubscription?.end?.();
