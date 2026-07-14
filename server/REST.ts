@@ -12,6 +12,7 @@ import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.ts';
 import { generateJsonApi } from '../resources/openApi.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { ASIDE_STAGING_DIR } from '../components/Application.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -92,7 +93,16 @@ async function findInactiveComponent(url: string): Promise<string | undefined> {
 	} catch {
 		return undefined;
 	}
-	if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) return undefined;
+	if (
+		!name ||
+		name === '.' ||
+		name === '..' ||
+		name === 'node_modules' ||
+		name === ASIDE_STAGING_DIR ||
+		name.includes('/') ||
+		name.includes('\\')
+	)
+		return undefined;
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 	if (!componentsRoot || typeof componentsRoot !== 'string') return undefined;
 	try {
