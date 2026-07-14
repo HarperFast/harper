@@ -28,7 +28,13 @@ export class ComponentStatusBuilder {
 	 * @returns this for chaining
 	 */
 	healthy(message?: string): this {
-		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.HEALTHY, message, undefined, this.source);
+		componentStatusRegistry.setStatus(
+			this.componentName,
+			COMPONENT_STATUS_LEVELS.HEALTHY,
+			message,
+			undefined,
+			this.source
+		);
 		return this;
 	}
 
@@ -38,7 +44,13 @@ export class ComponentStatusBuilder {
 	 * @returns this for chaining
 	 */
 	warning(message: string): this {
-		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.WARNING, message, undefined, this.source);
+		componentStatusRegistry.setStatus(
+			this.componentName,
+			COMPONENT_STATUS_LEVELS.WARNING,
+			message,
+			undefined,
+			this.source
+		);
 		return this;
 	}
 
@@ -59,7 +71,13 @@ export class ComponentStatusBuilder {
 	 * @returns this for chaining
 	 */
 	loading(message?: string): this {
-		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.LOADING, message || 'Loading...', undefined, this.source);
+		componentStatusRegistry.setStatus(
+			this.componentName,
+			COMPONENT_STATUS_LEVELS.LOADING,
+			message || 'Loading...',
+			undefined,
+			this.source
+		);
 		return this;
 	}
 
@@ -69,7 +87,13 @@ export class ComponentStatusBuilder {
 	 * @returns this for chaining
 	 */
 	unknown(message?: string): this {
-		componentStatusRegistry.setStatus(this.componentName, COMPONENT_STATUS_LEVELS.UNKNOWN, message, undefined, this.source);
+		componentStatusRegistry.setStatus(
+			this.componentName,
+			COMPONENT_STATUS_LEVELS.UNKNOWN,
+			message,
+			undefined,
+			this.source
+		);
 		return this;
 	}
 

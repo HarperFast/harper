@@ -57,10 +57,16 @@ export function handleStatusLog(
 		if (options.resolves) {
 			clearExpiry(options.resolves);
 			componentStatusRegistry.setStatus(
-				options.resolves, COMPONENT_STATUS_LEVELS.HEALTHY, 'Resolved', undefined, 'log'
+				options.resolves,
+				COMPONENT_STATUS_LEVELS.HEALTHY,
+				'Resolved',
+				undefined,
+				'log'
 			);
 		} else if (options.problem) {
-			const statusLevel = options.level ? (LOG_TO_STATUS_LEVEL[options.level] || COMPONENT_STATUS_LEVELS.WARNING) : COMPONENT_STATUS_LEVELS.ERROR;
+			const statusLevel = options.level
+				? LOG_TO_STATUS_LEVEL[options.level] || COMPONENT_STATUS_LEVELS.WARNING
+				: COMPONENT_STATUS_LEVELS.ERROR;
 			componentStatusRegistry.setStatus(options.problem, statusLevel, undefined, undefined, 'log');
 			if (options.expires) {
 				scheduleExpiry(options.problem, options.expires * 1000);
@@ -74,7 +80,11 @@ export function handleStatusLog(
 	if (options.resolves) {
 		clearExpiry(options.resolves);
 		componentStatusRegistry.setStatus(
-			options.resolves, COMPONENT_STATUS_LEVELS.HEALTHY, message || 'Resolved', undefined, 'log'
+			options.resolves,
+			COMPONENT_STATUS_LEVELS.HEALTHY,
+			message || 'Resolved',
+			undefined,
+			'log'
 		);
 		return;
 	}
