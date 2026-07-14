@@ -61,8 +61,12 @@ const STREAMING_DEPLOY_MIN_MINOR = 1;
 // upload/deploy is unaffected — only a fully silent connection trips it. Overridable for
 // operations against known-slow targets.
 const DEFAULT_CLI_OPERATION_TIMEOUT_MS = 60000;
+const RAW_CLI_OPERATION_TIMEOUT = (process.env.HARPER_CLI_TIMEOUT_MS || process.env.CLI_TIMEOUT_MS)?.trim();
+const PARSED_CLI_OPERATION_TIMEOUT = RAW_CLI_OPERATION_TIMEOUT ? Number(RAW_CLI_OPERATION_TIMEOUT) : NaN;
 const CLI_OPERATION_TIMEOUT_MS =
-	Number(process.env.HARPER_CLI_TIMEOUT_MS || process.env.CLI_TIMEOUT_MS) || DEFAULT_CLI_OPERATION_TIMEOUT_MS;
+	Number.isInteger(PARSED_CLI_OPERATION_TIMEOUT) && PARSED_CLI_OPERATION_TIMEOUT >= 0
+		? PARSED_CLI_OPERATION_TIMEOUT
+		: DEFAULT_CLI_OPERATION_TIMEOUT_MS;
 
 /**
  * Parses a Harper version string (e.g. "5.0.31", "5.1.0-beta.2") and reports whether the

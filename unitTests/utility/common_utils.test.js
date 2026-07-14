@@ -617,8 +617,8 @@ describe('Test common_utils module', () => {
 					{}
 				),
 				(err) => {
-					expect(err.code).to.equal('ETIMEDOUT');
-					expect(err.message).to.match(/timed out/i);
+					assert.strictEqual(err.code, 'ETIMEDOUT');
+					assert.match(err.message, /timed out/i);
 					return true;
 				}
 			);
