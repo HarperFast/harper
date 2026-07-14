@@ -19,8 +19,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const file = process.argv[2] ?? 'npm-shrinkwrap.json';
 const lock = JSON.parse(readFileSync(file, 'utf8'));
 
-if (lock.lockfileVersion < 2 || !lock.packages) {
-	throw new Error(`unsupported lockfileVersion ${lock.lockfileVersion}; expected >= 2 with a "packages" map`);
+if (lock.lockfileVersion !== 3 || !lock.packages) {
+	throw new Error(`unsupported lockfileVersion ${lock.lockfileVersion}; expected 3 with a "packages" map`);
 }
 
 let removed = 0;
