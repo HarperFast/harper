@@ -480,7 +480,9 @@ export class RecordEncoder extends StructonEncoder {
 				);
 				return null;
 			}
-			harperLogger.status({ problem: 'database.record-decode' }).error('Error decoding record', error, 'data: ' + hexPreview);
+			harperLogger
+				.status({ problem: 'database.record-decode' })
+				.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;
 		}
 	}
@@ -632,10 +634,12 @@ export function checkReadTxnTimeouts() {
 			if (txn.openTimer) {
 				if (txn.openTimer > 3) {
 					if (txn.openTimer > READ_TXN_TIMEOUT_TICKS) {
-						harperLogger.status({ problem: 'database.read-txn-critical' }).error(
-							`Read transaction detected that has been open too long (over ${Math.round(READ_TXN_TIMEOUT_TICKS * 15)} seconds), ending transaction`,
-							txn
-						);
+						harperLogger
+							.status({ problem: 'database.read-txn-critical' })
+							.error(
+								`Read transaction detected that has been open too long (over ${Math.round(READ_TXN_TIMEOUT_TICKS * 15)} seconds), ending transaction`,
+								txn
+							);
 						trackedTxns.splice(i--, 1);
 						txn.timerTracked = false;
 						txn.openTimer = 0;
@@ -645,10 +649,12 @@ export function checkReadTxnTimeouts() {
 							harperLogger.warn('Unexpected error force-closing stale LMDB read transaction', error);
 						}
 					} else
-						harperLogger.status({ problem: 'database.read-txn-long', expires: 60 }).error(
-							'Read transaction detected that has been open too long (over one minute), make sure read transactions are quickly closed',
-							txn
-						);
+						harperLogger
+							.status({ problem: 'database.read-txn-long', expires: 60 })
+							.error(
+								'Read transaction detected that has been open too long (over one minute), make sure read transactions are quickly closed',
+								txn
+							);
 				}
 				txn.openTimer++;
 			} else txn.openTimer = 1;

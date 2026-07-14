@@ -353,7 +353,7 @@ module.exports = {
 	disableStdio,
 	externalLogger,
 	setStatusHandler,
-	status: (options) => statusLogger(options, mainLogger),
+	status,
 };
 
 /**
@@ -361,6 +361,12 @@ module.exports = {
  */
 export function disableStdio(_unused?: any) {
 	nativeStdWrite = function () {}; // make this a noop
+}
+
+export function status(options: any) {
+	// Route through module.exports (not mainLogger directly) so callers/tests that stub the
+	// exported notify/fatal/error/... functions still see calls made via .status().
+	return statusLogger(options, module.exports);
 }
 
 /**
@@ -540,10 +546,14 @@ export function loggerWithTag(tag: string, conditional?: boolean, logger: any = 
 		info: logWithTag(logger.info, 'info'),
 		debug: logWithTag(logger.debug, 'debug'),
 		trace: logWithTag(logger.trace, 'trace'),
-		status(options) {
+	};
+	// non-enumerable so `for...in` over taggedLogger (used to derive the active log levels) doesn't
+	// pick this up as a level
+	Object.defineProperty(taggedLogger, 'status', {
+		value(options) {
 			return statusLogger(options, logger);
 		},
-	};
+	});
 	return taggedLogger;
 	function logWithTag(loggerMethod, level) {
 		return !conditional || logger.level <= LOG_LEVEL_HIERARCHY[level]
@@ -1134,4 +1144,6 @@ export default {
 	AuthAuditLog,
 	errorToString,
 	errorForLog,
+	setStatusHandler,
+	status,
 };

@@ -38,18 +38,27 @@ function setHealthStatus(name: string, percent: number, thresholds: ThresholdCon
 	const key = `system.${name}`;
 	if (percent >= thresholds.error) {
 		componentStatusRegistry.setStatus(
-			key, COMPONENT_STATUS_LEVELS.ERROR,
-			`${label} at ${percent.toFixed(1)}% utilization`, undefined, 'health-check'
+			key,
+			COMPONENT_STATUS_LEVELS.ERROR,
+			`${label} at ${percent.toFixed(1)}% utilization`,
+			undefined,
+			'health-check'
 		);
 	} else if (percent >= thresholds.warning) {
 		componentStatusRegistry.setStatus(
-			key, COMPONENT_STATUS_LEVELS.WARNING,
-			`${label} at ${percent.toFixed(1)}% utilization`, undefined, 'health-check'
+			key,
+			COMPONENT_STATUS_LEVELS.WARNING,
+			`${label} at ${percent.toFixed(1)}% utilization`,
+			undefined,
+			'health-check'
 		);
 	} else {
 		componentStatusRegistry.setStatus(
-			key, COMPONENT_STATUS_LEVELS.HEALTHY,
-			`${label} at ${percent.toFixed(1)}% utilization`, undefined, 'health-check'
+			key,
+			COMPONENT_STATUS_LEVELS.HEALTHY,
+			`${label} at ${percent.toFixed(1)}% utilization`,
+			undefined,
+			'health-check'
 		);
 	}
 }
@@ -101,11 +110,7 @@ async function checkCPU(thresholds: ThresholdConfig) {
 }
 
 async function runChecks(thresholds: Record<string, ThresholdConfig>) {
-	await Promise.all([
-		checkDisk(thresholds.disk),
-		checkMemory(thresholds.memory),
-		checkCPU(thresholds.cpu),
-	]);
+	await Promise.all([checkDisk(thresholds.disk), checkMemory(thresholds.memory), checkCPU(thresholds.cpu)]);
 }
 
 export function startHealthChecks(config?: HealthCheckConfig) {
