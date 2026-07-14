@@ -38,13 +38,15 @@ const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 // configs. These paths only ever reach `fs`/`path` (never a shell), so the
 // character check is just a friendly "reject obvious garbage" gate — the real
 // validation is the existence check in `validatePath`. So this is a denylist:
-// reject only control characters (incl. newlines, which paths get logged into)
+// reject only control characters — C0 (`\x00-\x1f`), DEL, and C1 (`\x80-\x9f`,
+// which includes NEL U+0085) — plus the Unicode line/paragraph separators
+// U+2028/U+2029, since paths get logged and any of these could forge log lines,
 // via a single anchored quantifier — linear time, no backtracking. The
 // `(?!\s*$)` guard rejects empty/whitespace-only values, which on Windows
 // silently strip to a valid-but-wrong directory and would pass the existence
 // check; `.`/`..` are allowed since they resolve honestly to real directories.
 // eslint-disable-next-line no-control-regex -- deliberate: reject control characters
-const DIRECTORY_PATH_PATTERN = /^(?!\s*$)[^\x00-\x1f\x7f]+$/;
+const DIRECTORY_PATH_PATTERN = /^(?!\s*$)[^\x00-\x1f\x7f\x80-\x9f\u2028\u2029]+$/;
 
 const portConstraints = Joi.alternatives([number.min(0), string])
 	.optional()
