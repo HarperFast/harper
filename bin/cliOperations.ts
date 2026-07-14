@@ -60,13 +60,23 @@ const STREAMING_DEPLOY_MIN_MINOR = 1;
 // means the target is unreachable or wedged. Resets on any activity, so a slow-but-active
 // upload/deploy is unaffected — only a fully silent connection trips it. Overridable for
 // operations against known-slow targets.
+//
+// SSE-based operations (see SSE_OPERATIONS above) get a much longer default: a long-running
+// deploy_component can go quiet between phase events (e.g. a slow replicate/load step) for well
+// over a minute even though the connection is perfectly healthy, so the generic 60s default is
+// too tight for this one. HARPER_CLI_TIMEOUT_MS/CLI_TIMEOUT_MS, when set, overrides BOTH
+// defaults uniformly — it's a single "I know what timeout I want" escape hatch rather than two
+// separate env vars to keep in sync.
 const DEFAULT_CLI_OPERATION_TIMEOUT_MS = 60000;
+const DEFAULT_SSE_OPERATION_TIMEOUT_MS = 600000; // 10 minutes
 const RAW_CLI_OPERATION_TIMEOUT = (process.env.HARPER_CLI_TIMEOUT_MS || process.env.CLI_TIMEOUT_MS)?.trim();
 const PARSED_CLI_OPERATION_TIMEOUT = RAW_CLI_OPERATION_TIMEOUT ? Number(RAW_CLI_OPERATION_TIMEOUT) : NaN;
-const CLI_OPERATION_TIMEOUT_MS =
+const CLI_OPERATION_TIMEOUT_OVERRIDE_MS =
 	Number.isInteger(PARSED_CLI_OPERATION_TIMEOUT) && PARSED_CLI_OPERATION_TIMEOUT >= 0
 		? PARSED_CLI_OPERATION_TIMEOUT
-		: DEFAULT_CLI_OPERATION_TIMEOUT_MS;
+		: undefined;
+const CLI_OPERATION_TIMEOUT_MS = CLI_OPERATION_TIMEOUT_OVERRIDE_MS ?? DEFAULT_CLI_OPERATION_TIMEOUT_MS;
+const SSE_OPERATION_TIMEOUT_MS = CLI_OPERATION_TIMEOUT_OVERRIDE_MS ?? DEFAULT_SSE_OPERATION_TIMEOUT_MS;
 
 /**
  * Parses a Harper version string (e.g. "5.0.31", "5.1.0-beta.2") and reports whether the
@@ -264,7 +274,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		};
 		options.method = 'POST';
 		options.headers = { 'Content-Type': 'application/json' };
-		options.timeout = CLI_OPERATION_TIMEOUT_MS;
+		options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
 		if (target?.username) {
 			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
 		} else if (allCredentials) {

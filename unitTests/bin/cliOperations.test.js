@@ -550,4 +550,108 @@ describe('cliOperations', () => {
 			assert.ok(capturedOptions.timeout > 0);
 		});
 	});
+
+	describe('operation timeout selection', () => {
+		const target = 'https://example.com:9925/';
+
+		// Streams an SSE `done` event so the modern (>= 5.1) deploy path resolves.
+		const sseDoneResponse = (result) =>
+			Object.assign(Readable.from([`event: done\ndata: ${JSON.stringify({ result })}\n\n`]), {
+				statusCode: 200,
+				headers: { 'content-type': 'text/event-stream' },
+			});
+
+		// Forces a fresh module instance so its module-level timeout constants are recomputed
+		// against the current process.env (they're only evaluated once, at first require).
+		function reloadCliOperations() {
+			const resolved = require.resolve('#src/bin/cliOperations');
+			delete require.cache[resolved];
+			return require('#src/bin/cliOperations');
+		}
+
+		beforeEach(() => {
+			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+		});
+
+		it('defaults to 60000ms (60s) for non-SSE operations', async () => {
+			let capturedOptions;
+			commonUtilsModule.httpRequest = async (options) => {
+				capturedOptions = options;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.strictEqual(capturedOptions.timeout, 60000);
+		});
+
+		it('defaults to 600000ms (10 min) for SSE-based operations like deploy_component', async () => {
+			let capturedOptions;
+			commonUtilsModule.httpRequest = async (options, req) => {
+				if (req.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				capturedOptions = options;
+				return sseDoneResponse({ message: 'Successfully deployed', success: true });
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+				true
+			);
+
+			assert.strictEqual(capturedOptions.timeout, 600000);
+		});
+
+		it('HARPER_CLI_TIMEOUT_MS overrides the non-SSE default', async () => {
+			const originalEnv = process.env.HARPER_CLI_TIMEOUT_MS;
+			process.env.HARPER_CLI_TIMEOUT_MS = '5000';
+			try {
+				const freshModule = reloadCliOperations();
+
+				let capturedOptions;
+				commonUtilsModule.httpRequest = async (options) => {
+					capturedOptions = options;
+					return { statusCode: 200, body: JSON.stringify({ success: true }) };
+				};
+
+				await freshModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+				assert.strictEqual(capturedOptions.timeout, 5000);
+			} finally {
+				if (originalEnv === undefined) delete process.env.HARPER_CLI_TIMEOUT_MS;
+				else process.env.HARPER_CLI_TIMEOUT_MS = originalEnv;
+				reloadCliOperations();
+			}
+		});
+
+		it('HARPER_CLI_TIMEOUT_MS overrides the SSE default too (single override for both paths)', async () => {
+			const originalEnv = process.env.HARPER_CLI_TIMEOUT_MS;
+			process.env.HARPER_CLI_TIMEOUT_MS = '5000';
+			try {
+				const freshModule = reloadCliOperations();
+
+				let capturedOptions;
+				commonUtilsModule.httpRequest = async (options, req) => {
+					if (req.operation === 'registration_info') {
+						return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+					}
+					capturedOptions = options;
+					return sseDoneResponse({ message: 'Successfully deployed', success: true });
+				};
+
+				await freshModule.cliOperations(
+					{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+					true
+				);
+
+				assert.strictEqual(capturedOptions.timeout, 5000);
+			} finally {
+				if (originalEnv === undefined) delete process.env.HARPER_CLI_TIMEOUT_MS;
+				else process.env.HARPER_CLI_TIMEOUT_MS = originalEnv;
+				reloadCliOperations();
+			}
+		});
+	});
 });
