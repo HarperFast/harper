@@ -24,7 +24,8 @@ const nativeRequire = createRequire(import.meta.url);
 const { registerShutdownDrain } = nativeRequire(process.env.QA519_SHUTDOWN_DRAIN_ABS_PATH);
 
 const MARKER_FILE = process.env.QA519_MARKER_FILE;
-const TASK_DELAY_MS = Number(process.env.QA519_TASK_DELAY_MS || 2500);
+const parsedTaskDelay = Number(process.env.QA519_TASK_DELAY_MS);
+const TASK_DELAY_MS = Number.isInteger(parsedTaskDelay) && parsedTaskDelay > 0 ? parsedTaskDelay : 2500;
 
 function log(tag) {
 	try {
