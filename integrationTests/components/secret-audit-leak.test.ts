@@ -27,7 +27,6 @@ suite(
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		let client: ReturnType<typeof createApiClient>;
-		const findings: string[] = [];
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
@@ -48,16 +47,12 @@ suite(
 		});
 
 		after(async () => {
-			console.log('\n===== secret-audit-leak findings =====');
-			for (const f of findings) console.log(f);
-			console.log('======================================\n');
 			await teardownHarper(ctx);
 		});
 
 		test('system.hdb_secret exists as a built-in system table', async () => {
 			const r = await client.req().send({ operation: 'describe_table', database: 'system', table: 'hdb_secret' });
 			equal(r.status, 200, `describe_table failed: ${JSON.stringify(r.body)}`);
-			findings.push(`describe_table system.hdb_secret: ${JSON.stringify(r.body)}`);
 		});
 
 		test('set_secret encrypts on ingest; read_audit_log on system.hdb_secret is blocked with 403', async () => {
@@ -65,7 +60,6 @@ suite(
 			equal(setResp.status, 200, `set_secret failed: ${JSON.stringify(setResp.body)}`);
 			ok(!JSON.stringify(setResp.body).includes(MARKER_A), 'set_secret response must not echo the plaintext');
 			equal(setResp.body.created, true);
-			findings.push(`set_secret(create) response: ${JSON.stringify(setResp.body)}`);
 
 			const auditResp = await client.req().send({
 				operation: 'read_audit_log',
@@ -74,9 +68,6 @@ suite(
 				search_type: 'hash_value',
 				search_values: [SECRET_NAME],
 			});
-			findings.push(
-				`read_audit_log system.hdb_secret status=${auditResp.status} body=${JSON.stringify(auditResp.body)}`
-			);
 
 			if (auditResp.status !== 403) {
 				const bodyText = JSON.stringify(auditResp.body);
@@ -93,7 +84,6 @@ suite(
 				!JSON.stringify(setResp.body).includes(MARKER_B),
 				'rotated set_secret response must not echo the new plaintext'
 			);
-			findings.push(`set_secret(rotate) response: ${JSON.stringify(setResp.body)}`);
 
 			const auditResp = await client.req().send({
 				operation: 'read_audit_log',
@@ -102,7 +92,6 @@ suite(
 				search_type: 'hash_value',
 				search_values: [SECRET_NAME],
 			});
-			findings.push(`read_audit_log post-rotation status=${auditResp.status}`);
 
 			if (auditResp.status !== 403) {
 				const bodyText = JSON.stringify(auditResp.body);
@@ -126,7 +115,6 @@ suite(
 			equal(r.status, 200, `search_by_value failed: ${JSON.stringify(r.body)}`);
 			equal(r.body.length, 1, 'expected exactly one row for the test secret');
 			const row = r.body[0];
-			findings.push(`search_by_value row: ${JSON.stringify(row)}`);
 
 			ok(
 				typeof row.envelope === 'string' && row.envelope.startsWith('enc:v1:'),
@@ -143,7 +131,6 @@ suite(
 				.send({ operation: 'sql', sql: `SELECT * FROM system.hdb_secret WHERE name = '${SECRET_NAME}'` });
 			equal(sqlResp.status, 200, `sql failed: ${JSON.stringify(sqlResp.body)}`);
 			const sqlText = JSON.stringify(sqlResp.body);
-			findings.push(`sql SELECT * FROM system.hdb_secret: ${sqlText}`);
 			ok(
 				!sqlText.includes(MARKER_A) && !sqlText.includes(MARKER_B),
 				'SQL generic read must never expose plaintext values'

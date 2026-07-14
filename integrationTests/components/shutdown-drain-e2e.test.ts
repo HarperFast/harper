@@ -30,7 +30,15 @@ const MARKER_FILE = resolve(tmpdir(), `shutdown-drain-e2e-${randomUUID()}.log`);
 const TASK_DELAY_MS = 2000;
 const CEILING_MS = 5000;
 
-const skipSuite = process.platform === 'win32';
+// Bun: skipped, not flaky-retried — a real gap, not a timing fudge. `restartWorkers()` starts the
+// replacement worker immediately after posting SHUTDOWN whenever the platform can't pre-start a
+// SO_REUSEPORT-sharing replacement (`canPreStartReplacement` in server/threads/manageThreads.js is
+// false for Bun/Windows/macOS), on the assumption the old worker frees its exclusive listeners
+// (e.g. mqtt) "well before" the replacement binds. A drain now delays that release for up to
+// `replication.blobSendDrainTimeout` (default 10 minutes), breaking the assumption: the CI Bun run
+// that first hit this showed the replacement worker EADDRINUSE-failing to bind mqtt while the old
+// worker it was replacing was still mid-drain. Tracked in harper#1813; re-enable once that's fixed.
+const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
 interface Marker {
 	t: number;

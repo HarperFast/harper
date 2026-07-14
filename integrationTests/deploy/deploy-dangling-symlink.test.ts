@@ -125,7 +125,11 @@ suite('package_component/deploy_component past a dangling symlink (#1718)', (ctx
 			`expected a UUID deployment_id, got ${JSON.stringify(res.body.deployment_id)}`
 		);
 
-		const deadline = Date.now() + 30_000;
+		// 45s (vs. the 30s used by the sibling deploy-from-source/deploy-from-github tests): this
+		// deploy repackages and restarts a component with more files (including the post-symlink
+		// entries), and CI's Windows runners observed this miss a 30s deadline by ~100ms — a slower
+		// full restart, not a hang.
+		const deadline = Date.now() + 45_000;
 		while (true) {
 			try {
 				const check = await fetch(ctx.harper.httpURL);

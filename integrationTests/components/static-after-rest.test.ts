@@ -9,7 +9,7 @@
  * Run: npm run test:integration -- "integrationTests/components/static-after-rest.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, match } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -20,6 +20,10 @@ import { createApiClient, createHeaders } from '../apiTests/utils/client.mjs';
 const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/static-after-rest');
 const MISCONFIG_FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/static-after-rest-misconfig');
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
+// A fragment unique to server/static.ts's `fallthrough: false` misconfiguration warning — distinctive
+// enough that polling for it (rather than the ambiguous `/after: 'rest'/`, which also matches the
+// config option name itself) can't false-positive on unrelated startup log lines.
+const MISCONFIG_WARNING_FRAGMENT = 'answers every unmatched GET itself';
 
 const ALICE = { username: 'qa516_alice', password: 'Alice-pw-1574!' };
 const BOB = { username: 'qa516_bob', password: 'Bob-pw-1574!' };
@@ -135,7 +139,8 @@ suite('static after: rest ordering (#1574)', { skip: skipSuite }, (ctx: ContextW
 	test('auth ordering: headerless GET is auto-authorized as super_user in the test harness (loopback bypass, not a #1574 defect)', async () => {
 		// AUTHENTICATION_AUTHORIZELOCAL is unconditionally true in the test harness — loopback
 		// requests bypass auth as super_user. This assertion documents that behavior rather than
-		// testing #1574's auth-ordering property; PROBE 3c is the real check.
+		// testing #1574's auth-ordering property; the "auth-ordering check" test below (ungranted
+		// Bob) is the real check.
 		const res = await fetch(new URL('/Secret/s-1', restURL));
 		const text = await res.text();
 		ok(!text.includes('spa-shell-marker'), `must not fall through to the SPA shell: ${res.status} ${text}`);
@@ -181,6 +186,18 @@ suite(
 	(ctx: ContextWithHarper) => {
 		let procOutput = '';
 
+		function readCombinedLog(): string {
+			let fileLog = '';
+			if (ctx.harper.logDir) {
+				try {
+					fileLog = readFileSync(join(ctx.harper.logDir, 'hdb.log'), 'utf8');
+				} catch {
+					/* fall back to procOutput */
+				}
+			}
+			return procOutput + fileLog;
+		}
+
 		before(async () => {
 			await setupHarperWithFixture(ctx, MISCONFIG_FIXTURE_PATH, {
 				config: { logging: { console: true, level: 'warn' } },
@@ -191,7 +208,12 @@ suite(
 			const proc = ctx.harper.process;
 			proc?.stdout?.on('data', (d: Buffer) => (procOutput += d.toString()));
 			proc?.stderr?.on('data', (d: Buffer) => (procOutput += d.toString()));
-			await sleep(2_000);
+
+			const deadline = Date.now() + 30_000;
+			while (Date.now() < deadline) {
+				if (readCombinedLog().includes(MISCONFIG_WARNING_FRAGMENT)) break;
+				await sleep(200);
+			}
 		});
 
 		after(async () => {
@@ -199,18 +221,9 @@ suite(
 		});
 
 		test('the documented warning fires in the instance logs', async () => {
-			let fileLog = '';
-			if (ctx.harper.logDir) {
-				try {
-					fileLog = readFileSync(join(ctx.harper.logDir, 'hdb.log'), 'utf8');
-				} catch {
-					/* fall back to procOutput */
-				}
-			}
-			const combined = procOutput + fileLog;
-			match(
-				combined,
-				/after: 'rest'/,
+			const combined = readCombinedLog();
+			ok(
+				combined.includes(MISCONFIG_WARNING_FRAGMENT),
 				`expected the static-blocking-REST warning to be logged; captured output:\n${combined}`
 			);
 		});
