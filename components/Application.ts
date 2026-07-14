@@ -262,10 +262,28 @@ export async function extractApplication(application: Application) {
 			// `npm pack --json` writes a JSON array describing the packed tarball(s). This is also the
 			// spawn that clones a git-reference package, so it is the only one given the git credential
 			// environment.
+			//
+			// Packing a git reference is not just a download: npm clones the repo and, if its manifest
+			// has a prepare/build/install script, runs `npm install` inside the clone and then that
+			// script — so the repo's own code AND its dependencies' install scripts execute on this node,
+			// inheriting this spawn's environment. With a credential session live, that is exactly the
+			// reach the credential must not have (a transitive dependency's postinstall could ask the
+			// socket for a token granted for the top-level repository), so scripts are off for a
+			// credentialed clone unless the deploy explicitly opted into them.
+			const packArgs = ['pack', '--json', application.packageIdentifier];
+			if (application.gitCredentialEnv && !application.install?.allowInstallScripts) {
+				packArgs.push('--ignore-scripts');
+			} else if (application.gitCredentialEnv) {
+				application.logger.warn(
+					`Deploying ${application.name} from a git reference with install scripts enabled: the repository's ` +
+						`prepare/build scripts and its dependencies' install scripts run on this node during the clone and ` +
+						`can read the git credential. Unset install_allow_scripts to keep the credential out of their reach.`
+				);
+			}
 			const { stdout, code, stderr } = await nonInteractiveSpawn(
 				application.name,
 				'npm',
-				['pack', '--json', application.packageIdentifier],
+				packArgs,
 				parentDirPath,
 				undefined,
 				undefined,
@@ -604,12 +622,14 @@ export class Application {
 		this.onInstallLine = onInstallLine;
 		// Split by kind: registry credentials go into the transient .npmrc, git credentials into the
 		// credential socket. An entry belongs to exactly one of them (the op schema is an xor).
+		// secretOperations owns the same predicate, but it is only ever imported from here lazily (it
+		// pulls in the datastore), so this stays a local check rather than a boot-time import.
 		if (credentials?.length) {
 			const registryCredentials = credentials.filter(
 				(entry): entry is ResolvedRegistryCredential => (entry as any).registry !== undefined
 			);
 			const gitCredentials = credentials.filter(
-				(entry): entry is ResolvedGitCredential => (entry as any).host !== undefined
+				(entry): entry is ResolvedGitCredential => (entry as any).registry === undefined
 			);
 			if (registryCredentials.length) this.registryCredentials = registryCredentials;
 			if (gitCredentials.length) this.gitCredentials = gitCredentials;

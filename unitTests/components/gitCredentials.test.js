@@ -12,6 +12,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const net = require('node:net');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -189,6 +190,27 @@ describe('git credential session', () => {
 		assert.strictEqual(stdout, '');
 		assert.strictEqual(code, 1, 'helper reports failure rather than silently succeeding');
 		await assert.rejects(fs.stat(socketPath), /ENOENT/, 'socket removed');
+	});
+
+	it('drops a connection that streams without end, rather than buffering it into an OOM', async () => {
+		session = await startGitCredentialSession(
+			[{ host: 'github.com', token: 'ghp_secret' }],
+			GIT_CREDENTIAL_HELPER_PATH
+		);
+		const socket = net.connect(session.env[GIT_CREDENTIAL_SOCKET_ENV]);
+		await new Promise((resolve, reject) => {
+			socket.on('connect', resolve);
+			socket.on('error', reject);
+		});
+
+		const closed = new Promise((resolve) => socket.on('close', resolve));
+		// Never half-close: without a cap the server would accumulate this forever.
+		const junk = 'x'.repeat(64 * 1024);
+		const write = () => socket.writable && socket.write(junk) && setImmediate(write);
+		write();
+
+		await closed; // the server destroys the connection instead of growing its buffer
+		assert.ok(socket.destroyed);
 	});
 
 	it('is inert without a session: the helper carries no secret of its own', async () => {

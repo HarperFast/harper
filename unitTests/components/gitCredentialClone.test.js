@@ -89,16 +89,26 @@ function startPrivateGitServer(projectRoot, onAuthorization) {
 	});
 }
 
-// A bare repo with one commit, served as the "private" package.
-async function createRepo(root, name) {
-	const work = path.join(root, 'work');
+// A bare repo with one commit, served as the "private" package. With `scripts`, the manifest also
+// carries a prepare script — which npm runs, inside the clone, during `npm pack`.
+async function createRepo(root, name, scripts) {
+	const work = path.join(root, 'work-' + name);
 	const bare = path.join(root, `${name}.git`);
 	await fs.mkdir(work, { recursive: true });
 	await fs.writeFile(
 		path.join(work, 'package.json'),
-		JSON.stringify({ name, version: '1.0.0', description: 'private test component' }, null, 2)
+		JSON.stringify({ name, version: '1.0.0', description: 'private test component', scripts }, null, 2)
 	);
 	await fs.writeFile(path.join(work, 'index.js'), '// private component source\n');
+	// Stands in for a malicious prepare/postinstall script (the repo's own, or a transitive
+	// dependency's): it records whatever credential wiring it inherited from the clone spawn.
+	await fs.writeFile(
+		path.join(work, 'steal.js'),
+		`require('node:fs').writeFileSync(process.env.HARPER_TEST_STEAL_OUT, JSON.stringify({\n` +
+			`  socket: process.env.HARPER_GIT_CREDENTIAL_SOCKET ?? null,\n` +
+			`  askpass: process.env.GIT_ASKPASS ?? null,\n` +
+			`}));\n`
+	);
 	const git = (...args) => execFileSync('git', args, { cwd: work, stdio: 'pipe' });
 	git('init', '--quiet', '--initial-branch=main');
 	git('config', 'user.email', 'test@harperdb.io');
@@ -118,7 +128,9 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 	let root;
 	let server;
 	let packageIdentifier;
+	let scriptedPackageIdentifier;
 	let seenAuthorization;
+	let stealOut;
 
 	before(async function () {
 		if (process.platform === 'win32' || !existsSync(GIT_HTTP_BACKEND)) return this.skip();
@@ -127,9 +139,12 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 		await fs.mkdir(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), { recursive: true });
 		root = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-git-remote-'));
 		await createRepo(root, 'private-component');
+		await createRepo(root, 'scripted-component', { prepare: 'node ./steal.js' });
+		stealOut = path.join(root, 'stolen.json');
 		const started = await startPrivateGitServer(root, (authorization) => seenAuthorization.push(authorization));
 		server = started.server;
 		packageIdentifier = `git+http://127.0.0.1:${started.port}/private-component.git`;
+		scriptedPackageIdentifier = `git+http://127.0.0.1:${started.port}/scripted-component.git`;
 	});
 
 	after(async () => {
@@ -137,9 +152,15 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 		if (root) await fs.rm(root, { recursive: true, force: true });
 	});
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		seenAuthorization = [];
+		await fs.rm(stealOut, { force: true });
 	});
+
+	// The credential entry's host: the remote's host:port, which is what git asks about.
+	function gitHost() {
+		return new URL(packageIdentifier.slice('git+'.length)).host;
+	}
 
 	it('fails to clone the private repo without a credential', async () => {
 		const application = new Application({ name: 'git-clone-unauthenticated', packageIdentifier });
@@ -160,7 +181,7 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 		const application = new Application({
 			name: 'git-clone-authenticated',
 			packageIdentifier,
-			credentials: [{ host: `127.0.0.1:${new URL(packageIdentifier.slice(4)).port}`, token: TOKEN }],
+			credentials: [{ host: gitHost(), token: TOKEN }],
 		});
 
 		// Exactly the sequence prepareApplication runs: bring the credential socket up, clone, tear it down.
@@ -192,13 +213,62 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 		}
 	});
 
+	// Packing a git reference is not just a download: npm clones the repo and runs its prepare/build
+	// script — and its dependencies' install scripts — on this node, inside the clone spawn. Left
+	// alone, any of that code could ask the socket for the token, which is precisely the reach the
+	// credential must not have. Verified against real npm rather than asserted: this is npm's
+	// behavior, not ours, and it is the whole reason the clone runs with scripts disabled.
+	it('does not run the repository prepare script during a credentialed clone, so nothing can reach the socket', async () => {
+		const application = new Application({
+			name: 'git-clone-scripted',
+			packageIdentifier: scriptedPackageIdentifier,
+			credentials: [{ host: gitHost(), token: TOKEN }],
+		});
+
+		await application.startGitCredentialSession();
+		try {
+			await extractApplication(application);
+		} finally {
+			await application.cleanupGitCredentialSession();
+		}
+
+		assert.ok(!existsSync(stealOut), 'the prepare script must not run while the credential is reachable');
+	});
+
+	it('runs the prepare script — with the credential in reach — only when the deploy opts into scripts', async () => {
+		// install_allow_scripts is the operator explicitly asking for this repository's code to run on
+		// the node. That is the one case where the credential is exposed to it, and it is logged.
+		const application = new Application({
+			name: 'git-clone-scripted-allowed',
+			packageIdentifier: scriptedPackageIdentifier,
+			install: { allowInstallScripts: true },
+			credentials: [{ host: gitHost(), token: TOKEN }],
+		});
+
+		process.env.HARPER_TEST_STEAL_OUT = stealOut;
+		try {
+			await application.startGitCredentialSession();
+			try {
+				await extractApplication(application);
+			} finally {
+				await application.cleanupGitCredentialSession();
+			}
+		} finally {
+			delete process.env.HARPER_TEST_STEAL_OUT;
+		}
+
+		assert.ok(existsSync(stealOut), 'the prepare script runs when scripts are allowed');
+		const seen = JSON.parse(await fs.readFile(stealOut, 'utf8'));
+		assert.ok(seen.socket, 'documents the exposure this opt-in accepts: the script can reach the socket');
+	});
+
 	it('stops authenticating once the session is closed', async () => {
 		// The credential is bound to the clone, not to the deploy: anything that runs after extraction
 		// (install scripts included) finds the socket gone.
 		const application = new Application({
 			name: 'git-clone-after-close',
 			packageIdentifier,
-			credentials: [{ host: `127.0.0.1:${new URL(packageIdentifier.slice(4)).port}`, token: TOKEN }],
+			credentials: [{ host: gitHost(), token: TOKEN }],
 		});
 		await application.startGitCredentialSession();
 		await application.cleanupGitCredentialSession();

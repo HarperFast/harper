@@ -5,17 +5,16 @@
 // userinfo lands in the package spec and the lockfile, a `credential.helper` or an `.npmrc` is a
 // file, and an env var is readable by every descendant process.
 //
-// Instead the token stays in this process's memory and is served over a per-deploy Unix socket
-// (named pipe on Windows) in a 0700 directory. git is pointed at gitCredentialHelper.js — a
-// secret-free script that relays git's request over that socket — and the socket dies with the
-// spawn that needed it. The token never reaches disk, argv, the package spec, the operation body,
-// or the operations log.
+// Instead the token stays in this process's memory and is served over a per-deploy Unix socket in a
+// 0700 directory. git is pointed at gitCredentialHelper.js — a secret-free script that relays git's
+// request over that socket — and the socket dies with the spawn that needed it. The token never
+// reaches disk, argv, the package spec, the operation body, or the operations log.
 
 import { createServer, type Server, type Socket } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
 
 // GitHub's convention for authenticating a PAT over HTTPS: any non-empty username works, and
@@ -27,6 +26,10 @@ export const DEFAULT_GIT_USERNAME = 'x-access-token';
 // and answers nothing, so stripping it from a spawn's environment fully disarms the helper even if
 // GIT_ASKPASS/GIT_CONFIG_* were somehow inherited.
 export const GIT_CREDENTIAL_SOCKET_ENV = 'HARPER_GIT_CREDENTIAL_SOCKET';
+
+// Generous for git's key=value request (a few hundred bytes), small enough that a peer streaming
+// junk cannot exhaust the heap.
+const MAX_REQUEST_BYTES = 64 * 1024;
 
 /** A git-host credential after resolution: a literal token, held in memory for one deploy. */
 export interface ResolvedGitCredential {
@@ -89,15 +92,20 @@ export async function startGitCredentialSession(
 	const byHost = new Map<string, ResolvedGitCredential>();
 	for (const credential of credentials) byHost.set(normalizeGitHost(credential.host), credential);
 
-	let socketDir: string | undefined;
-	let socketPath: string;
+	// The credential's confinement rests on filesystem permissions: a 0700 directory means only this
+	// uid can reach the socket. A Windows named pipe has no equivalent guarantee — it is created with
+	// a default security descriptor that can leave it open to other local users, which would hand the
+	// token to any process on the box. Rather than offer a quietly weaker credential channel, fail
+	// closed and let the operator use a deploy path whose isolation we can actually state.
 	if (process.platform === 'win32') {
-		socketPath = `\\\\.\\pipe\\harper-git-cred-${randomUUID()}`;
-	} else {
-		// mkdtemp creates the directory 0700, so only this uid can reach the socket inside it.
-		socketDir = await mkdtemp(join(tmpdir(), 'harper-git-cred-'));
-		socketPath = join(socketDir, 'credential.sock');
+		throw new ClientError(
+			'git-host deploy credentials are not supported on Windows: the credential is served over a Unix ' +
+				'domain socket, which has no Windows equivalent that can be confined to this process owner.'
+		);
 	}
+	// mkdtemp creates the directory 0700, so only this uid can reach the socket inside it.
+	const socketDir = await mkdtemp(join(tmpdir(), 'harper-git-cred-'));
+	const socketPath = join(socketDir, 'credential.sock');
 
 	const connections = new Set<Socket>();
 	// allowHalfOpen: the helper half-closes after sending its request, and we must still be able to
@@ -109,7 +117,15 @@ export async function startGitCredentialSession(
 		connection.on('error', (error) => logger.warn?.(`git credential connection failed: ${error.message}`));
 		connection.setEncoding('utf8');
 		let request = '';
-		connection.on('data', (chunk) => (request += chunk));
+		connection.on('data', (chunk) => {
+			request += chunk;
+			// A real request is a few hundred bytes. Cap it so a peer that streams without ever closing
+			// cannot grow this buffer until the node runs out of heap.
+			if (request.length > MAX_REQUEST_BYTES) {
+				logger.warn?.('git credential request exceeded the maximum size; dropping the connection');
+				connection.destroy();
+			}
+		});
 		connection.on('end', () => {
 			let answer: object;
 			try {
@@ -122,13 +138,20 @@ export async function startGitCredentialSession(
 	});
 	server.on('error', (error) => logger.warn?.(`git credential server failed: ${error.message}`));
 
-	await new Promise<void>((resolve, reject) => {
-		server.once('error', reject);
-		server.listen(socketPath, () => {
-			server.removeListener('error', reject);
-			resolve();
+	try {
+		await new Promise<void>((resolve, reject) => {
+			server.once('error', reject);
+			server.listen(socketPath, () => {
+				server.removeListener('error', reject);
+				resolve();
+			});
 		});
-	});
+	} catch (error) {
+		// listen() failed, so no session is returned and nothing will call close() — take the temp dir
+		// with us rather than leaving a 0700 directory behind on every failed deploy.
+		await rm(socketDir, { recursive: true, force: true }).catch(() => {});
+		throw error;
+	}
 
 	// Quoted so a Harper installed under a path with spaces still works: git runs both the askpass
 	// command and a `!`-prefixed credential helper through a shell.
@@ -156,13 +179,11 @@ export async function startGitCredentialSession(
 			for (const connection of connections) connection.destroy();
 			connections.clear();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
-			if (socketDir) {
-				try {
-					await rm(socketDir, { recursive: true, force: true });
-				} catch (error) {
-					// Called from a finally; a throw here would mask the deploy's own error.
-					logger.warn?.(`Failed to remove git credential socket dir ${socketDir}: ${(error as Error).message}`);
-				}
+			try {
+				await rm(socketDir, { recursive: true, force: true });
+			} catch (error) {
+				// Called from a finally; a throw here would mask the deploy's own error.
+				logger.warn?.(`Failed to remove git credential socket dir ${socketDir}: ${(error as Error).message}`);
 			}
 		},
 	};
