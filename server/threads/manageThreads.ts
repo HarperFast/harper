@@ -660,7 +660,7 @@ if (isMainThread) {
 	if (process.env.WATCH_DIR) watchDir(process.env.WATCH_DIR);
 } else {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
-		(globalThis as any).restartNumber = message.restartNumber;
+		restartNumber = message.restartNumber;
 		parentPort.unref(); // remove this handle
 		setTimeout(() => {
 			harperLogger.warn('Thread did not voluntarily terminate', threadId);
