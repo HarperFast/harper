@@ -1,6 +1,7 @@
 'use strict';
 
 const { expect } = require('chai');
+const assert = require('node:assert/strict');
 const { describe, it } = require('mocha');
 const sinon = require('sinon');
 const { METRIC } = require('#src/resources/analytics/metadata');
@@ -534,5 +535,76 @@ describe('getOp (log filter)', () => {
 		}
 		expect(threw).to.be.true;
 		expect(searchStub.called).to.be.false;
+	});
+});
+
+describe('getOp (time-window condition order, #1796)', () => {
+	let capturedRequest;
+	let originalDatabases;
+	let originalServer;
+
+	beforeEach(() => {
+		originalDatabases = global.databases;
+		originalServer = global.server;
+		capturedRequest = undefined;
+		const search = (request) => {
+			capturedRequest = request;
+			return mockSearchIterable([]);
+		};
+		global.databases = { system: { hdb_analytics: { search, replicate: true } } };
+		global.server = { hostname: 'local-host', nodes: [] };
+	});
+
+	afterEach(() => {
+		global.databases = originalDatabases;
+		global.server = originalServer;
+	});
+
+	// The planner estimates a primary-key `between` as a flat 10% of the table, so on a large
+	// hdb_analytics table it drives iteration off the `metric` index and scans the metric's whole
+	// history. A two-sided window must lead and pin execution order so the window drives the scan.
+	// This assertion fails on the pre-fix ordering (metric first, no pin).
+	it('leads with the id-range `between` and pins execution order for a bounded window', async () => {
+		await collect(await getOp({ metric: 'utilization', start_time: 1000, end_time: 2000 }));
+
+		assert.deepEqual(capturedRequest.conditions[0], { attribute: 'id', comparator: 'between', value: [1000, 2000] });
+		assert.deepEqual(capturedRequest.conditions[1], {
+			attribute: 'metric',
+			comparator: 'equals',
+			value: 'utilization',
+		});
+		assert.equal(capturedRequest.enforceExecutionOrder, true);
+	});
+
+	// An open-ended range can span the whole table, so we don't force it to drive — leave the planner
+	// free rather than risk a full-table scan for a selective metric.
+	it('does not pin an open-ended range (start_time only) and leaves it to the planner', async () => {
+		await collect(await getOp({ metric: 'utilization', start_time: 1000 }));
+
+		assert.equal(capturedRequest.enforceExecutionOrder, undefined);
+		assert.deepEqual(capturedRequest.conditions[0], {
+			attribute: 'metric',
+			comparator: 'equals',
+			value: 'utilization',
+		});
+		assert.ok(
+			capturedRequest.conditions.some((c) => c.attribute === 'id' && c.comparator === 'greater_than_equal'),
+			'the open-ended id range is still present as a filter'
+		);
+	});
+
+	it('leaves reordering on (metric leads) when no time window is given', async () => {
+		await collect(await getOp({ metric: 'utilization' }));
+
+		assert.deepEqual(capturedRequest.conditions[0], {
+			attribute: 'metric',
+			comparator: 'equals',
+			value: 'utilization',
+		});
+		assert.equal(
+			capturedRequest.conditions.some((c) => c.attribute === 'id'),
+			false
+		);
+		assert.equal(capturedRequest.enforceExecutionOrder, undefined);
 	});
 });
