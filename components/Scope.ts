@@ -13,6 +13,7 @@ import { requestRestart } from './requestRestart.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
 import { getSecretsForComponent } from './componentSecrets.ts';
+import type { SecretsView } from './componentSecrets.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
@@ -149,12 +150,13 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	/**
 	 * The application's secrets view (#1550): hdb_secret rows granted to this application plus its
-	 * declared global-tier env names. Frozen, enumerable, values decrypted at component load.
-	 * Keyed by the ApplicationScope's name (the application directory name — the identity grants
-	 * and env declarations use, and the same binding `import { secrets } from 'harper'` resolves);
-	 * `#appName` can differ on paths like RUN_HDB_APP, where it is the full directory path.
+	 * declared global-tier env names. A live, read-only view (#1776) — scoped values reflect the latest
+	 * store state on each read and it carries the reserved `subscribe(name)` method. Keyed by the
+	 * ApplicationScope's name (the application directory name — the identity grants and env declarations
+	 * use, and the same binding `import { secrets } from 'harper'` resolves); `#appName` can differ on
+	 * paths like RUN_HDB_APP, where it is the full directory path.
 	 */
-	get secrets(): Readonly<Record<string, string>> {
+	get secrets(): SecretsView {
 		return getSecretsForComponent(this.applicationScope?.name ?? this.#appName);
 	}
 
