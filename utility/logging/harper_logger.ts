@@ -478,7 +478,7 @@ module.exports = {
 	conditional: mainLogger.conditional,
 	updateLogger,
 	setStatusHandler,
-	status: (options) => statusLogger(options, mainLogger),
+	status,
 };
 
 // Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
@@ -516,6 +516,12 @@ const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED'
  */
 export function isStdioBrokenError(error: any): boolean {
 	return STDIO_BROKEN_ERROR_CODES.has(error?.code);
+}
+
+export function status(options: any) {
+	// Route through module.exports (not mainLogger directly) so callers/tests that stub the
+	// exported notify/fatal/error/... functions still see calls made via .status().
+	return statusLogger(options, module.exports);
 }
 
 /**
@@ -2460,4 +2466,6 @@ export default {
 	inspectForLog,
 	isErrorLike,
 	updateLogger,
+	setStatusHandler,
+	status,
 };

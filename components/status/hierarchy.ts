@@ -39,9 +39,7 @@ const STATUS_PRIORITY: Record<ComponentStatusLevel, number> = {
  *   'system.disk' -> { system: { children: { disk: { status: 'warning', ... } } } }
  *   'replication' -> { replication: { status: 'error', ... } }
  */
-export function buildHierarchy(
-	statuses: Map<string, AggregatedComponentStatus>
-): Record<string, StatusNode> {
+export function buildHierarchy(statuses: Map<string, AggregatedComponentStatus>): Record<string, StatusNode> {
 	const root: Record<string, StatusNode> = {};
 
 	for (const [name, status] of statuses) {
