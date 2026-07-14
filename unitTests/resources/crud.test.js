@@ -126,7 +126,8 @@ describe('CRUD operations with the Resource API', () => {
 					conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
 				});
 				for await (let { metrics } of analyticsResults) {
-					const found = metrics.find((entry) => entry.metric === metric && entry.path === 'CRUDTable');
+					if (!Array.isArray(metrics)) continue;
+					const found = metrics.find((entry) => entry?.metric === metric && entry?.path === 'CRUDTable');
 					if (found) return found;
 				}
 			},
