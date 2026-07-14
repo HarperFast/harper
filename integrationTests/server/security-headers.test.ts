@@ -15,7 +15,7 @@
  * they would — benign). See DESIGN.md "`universalHeaders` (`http.securityHeaders`)".
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 import { join } from 'node:path';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';

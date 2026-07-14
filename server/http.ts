@@ -153,8 +153,8 @@ function applySecurityHeaders(securityHeaders: HttpOptions['securityHeaders']) {
 		harperLogger.error('Invalid http.securityHeaders value: expected a map of header names to values');
 		return;
 	}
-	for (const name in securityHeaders) {
-		const value = '' + securityHeaders[name];
+	for (const [name, rawValue] of Object.entries(securityHeaders)) {
+		const value = '' + rawValue;
 		try {
 			validateHeaderName(name);
 			validateHeaderValue(name, value);
@@ -1148,8 +1148,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					if (errorHeaders?.[Symbol.iterator]) {
 						for (const [key, value] of errorHeaders) headers.append(key, String(value));
 					} else if (errorHeaders) {
-						for (const key in errorHeaders) {
-							const value = errorHeaders[key];
+						for (const [key, value] of Object.entries(errorHeaders)) {
 							if (Array.isArray(value)) for (const item of value) headers.append(key, String(item));
 							else headers.set(key, String(value));
 						}
