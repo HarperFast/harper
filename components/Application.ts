@@ -10,6 +10,8 @@ import {
 	type GitCredentialSession,
 	type ResolvedGitCredential,
 } from './gitCredentialServer.ts';
+import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
+import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 
 import { basename, dirname, extname, join } from 'node:path';
 import {
@@ -29,7 +31,7 @@ import {
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, readdirSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
@@ -1117,16 +1119,82 @@ export async function installApplications() {
 	await writeFile(harperApplicationLockPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
 }
 
-function getGitSSHCommand() {
+/**
+ * Materialize the SSH deploy keys for the lifetime of a single git-over-SSH spawn.
+ *
+ * Keys are sealed at rest as `enc:v1:` envelopes (Harper Pro's `add_ssh_key`), but ssh needs a key
+ * *file*, so each key is decrypted into a fresh 0700 temp dir as a 0600 file and the ssh config is
+ * copied with its `IdentityFile` paths repointed at the transient copies. The caller removes the
+ * dir as soon as the spawn settles, so the plaintext never outlives the git invocation. Legacy
+ * plaintext keys (written before sealing, or on a node with no custody) are copied through
+ * unchanged, so this is a no-op for them beyond the temp dir.
+ *
+ * A key that cannot be decrypted — no custody registered on this node, an envelope sealed under a
+ * different cluster key, or a tampered envelope — is logged and skipped rather than failing the
+ * spawn: a deploy that doesn't need that key is unaffected, and one that does fails with the usual
+ * SSH auth error (see `isSSHAuthFailure`). No log or error message here carries key material or
+ * the envelope.
+ *
+ * @returns The `GIT_SSH_COMMAND` to use plus its cleanup, or undefined when no keys are configured.
+ */
+export async function materializeGitSSH(): Promise<{ command: string; cleanup: () => Promise<void> } | undefined> {
 	const rootDir = getConfigValue(CONFIG_PARAMS.ROOTPATH);
+	if (!rootDir) return; // config not initialized (e.g. an install-time spawn) — no ssh dir to read
 	const sshDir = join(rootDir, 'ssh');
-	if (existsSync(sshDir)) {
-		for (const file of readdirSync(sshDir)) {
-			if (file.includes('.key')) {
-				return `ssh -F ${join(sshDir, 'config')} -o UserKnownHostsFile=${join(sshDir, 'known_hosts')}`;
-			}
-		}
+	let sshDirEntries: string[];
+	try {
+		sshDirEntries = await readdir(sshDir);
+	} catch {
+		return; // no ssh dir on this node
 	}
+	const keyFiles = sshDirEntries.filter((entry) => entry.endsWith('.key'));
+	if (keyFiles.length === 0) return;
+
+	const tempDir = await mkdtemp(join(tmpdir(), 'harper-ssh-'));
+	const cleanup = async () => {
+		try {
+			await rm(tempDir, { recursive: true, force: true });
+		} catch (error) {
+			// never mask the caller's error (this runs from a finally) — a leaked temp dir is the
+			// lesser failure, and it holds only 0600 files in a 0700 dir
+			logger.warn?.(`Failed to remove transient ssh dir ${tempDir}:`, error);
+		}
+	};
+
+	try {
+		const decryptor = getSecretDecryptor();
+		for (const keyFile of keyFiles) {
+			const storedKey = await readFile(join(sshDir, keyFile), 'utf8');
+			let keyMaterial = storedKey;
+			if (storedKey.startsWith(ENV_ENCRYPTED_PREFIX)) {
+				if (!decryptor) {
+					logger.error?.(
+						`SSH key ${keyFile} is encrypted but no secret custody is registered on this node; skipping it`
+					);
+					continue;
+				}
+				try {
+					keyMaterial = decryptor(storedKey);
+				} catch (error) {
+					logger.error?.(`Failed to decrypt SSH key ${keyFile}: ${(error as Error).message}; skipping it`);
+					continue;
+				}
+			}
+			await writeFile(join(tempDir, keyFile), keyMaterial, { mode: 0o600 });
+		}
+		// The config's `IdentityFile` lines are absolute paths into the durable ssh dir; repoint
+		// them at the transient copies. known_hosts holds no secrets and stays where it is.
+		const sshConfig = await readFile(join(sshDir, 'config'), 'utf8').catch(() => '');
+		await writeFile(join(tempDir, 'config'), sshConfig.split(sshDir).join(tempDir), { mode: 0o600 });
+	} catch (error) {
+		await cleanup();
+		throw error;
+	}
+
+	return {
+		command: `ssh -F ${join(tempDir, 'config')} -o UserKnownHostsFile=${join(sshDir, 'known_hosts')}`,
+		cleanup,
+	};
 }
 
 // Normalize a registry to a full URL with a scheme and trailing slash, e.g.
@@ -1219,7 +1287,12 @@ function createLineSplitter(onLine: (line: string) => void): {
 	};
 }
 
-export function nonInteractiveSpawn(
+/**
+ * Run a command with the deploy's SSH key material materialized only for the duration of the
+ * spawn. The keys are decrypted to a transient 0700 dir (see `materializeGitSSH`) and removed as
+ * soon as the process settles — on success, failure, and timeout alike.
+ */
+export async function nonInteractiveSpawn(
 	applicationName: string,
 	command: string,
 	args: string[],
@@ -1229,6 +1302,35 @@ export function nonInteractiveSpawn(
 	npmUserconfigPath?: string,
 	gitCredentialEnv?: Record<string, string>
 ): Promise<{ stdout: string; stderr: string; code: number }> {
+	const gitSSH = await materializeGitSSH();
+	try {
+		return await spawnWithEnv(
+			applicationName,
+			command,
+			args,
+			cwd,
+			timeoutMs,
+			onLine,
+			npmUserconfigPath,
+			gitSSH?.command,
+			gitCredentialEnv
+		);
+	} finally {
+		await gitSSH?.cleanup();
+	}
+}
+
+function spawnWithEnv(
+	applicationName: string,
+	command: string,
+	args: string[],
+	cwd: string,
+	timeoutMs: number,
+	onLine: ((stream: 'stdout' | 'stderr', line: string) => void) | undefined,
+	npmUserconfigPath: string | undefined,
+	gitSSHCommand: string | undefined,
+	gitCredentialEnv: Record<string, string> | undefined
+): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
 			.loggerWithTag(`${applicationName}:spawn:${command}`)
@@ -1236,7 +1338,6 @@ export function nonInteractiveSpawn(
 
 		const env = { ...process.env };
 
-		const gitSSHCommand = getGitSSHCommand();
 		if (gitSSHCommand) {
 			env.GIT_SSH_COMMAND = gitSSHCommand;
 		}
