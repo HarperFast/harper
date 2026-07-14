@@ -38,7 +38,10 @@ const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === '
 
 const ALICE = { username: 'sub_allowread_alice', password: 'Alice-pw-1419!' };
 const BOB = { username: 'sub_allowread_bob', password: 'Bobby-pw-1419!' };
+const CAROL = { username: 'sub_allowread_carol', password: 'Carol-pw-1419!' }; // revocation subject (#1414 × override)
 const ROLE = 'sub_allowread_role';
+const ROLE_CAROL = 'sub_allowread_role_carol'; // dedicated so alter_role can strip read without touching ALICE/BOB
+const CAROL_ROW = 'row-c1';
 
 const ALICE_ROWS = ['row-a1', 'row-a2', 'row-a3'];
 const BOB_ROWS = ['row-b1', 'row-b2', 'row-b3'];
@@ -161,17 +164,38 @@ suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSui
 			})
 			.expect(200);
 
+		await client
+			.req()
+			.send({
+				operation: 'add_role',
+				role: ROLE_CAROL,
+				permission: {
+					super_user: false,
+					data: {
+						tables: {
+							Vault: { read: true, insert: true, update: true, delete: true, attribute_permissions: [] },
+						},
+					},
+				},
+			})
+			.expect(200);
+
 		for (const u of [ALICE, BOB]) {
 			await client
 				.req()
 				.send({ operation: 'add_user', role: ROLE, username: u.username, password: u.password, active: true })
 				.expect(200);
 		}
+		await client
+			.req()
+			.send({ operation: 'add_user', role: ROLE_CAROL, username: CAROL.username, password: CAROL.password, active: true })
+			.expect(200);
 
 		// Seed rows via the ops API (super, bypasses allowCreate).
 		const records = [
 			...ALICE_ROWS.map((id) => ({ id, owner: ALICE.username, secret: `alice-secret-${id}` })),
 			...BOB_ROWS.map((id) => ({ id, owner: BOB.username, secret: `bob-secret-${id}` })),
+			{ id: CAROL_ROW, owner: CAROL.username, secret: 'carol-secret' },
 			{ id: NEUTRAL_ROW, owner: 'nobody', secret: 'neutral-secret' },
 		];
 		await client.req().send({ operation: 'insert', schema: 'data', table: 'Vault', records }).expect(200);
@@ -254,6 +278,55 @@ suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSui
 		ok(
 			!neutralLeak,
 			"ROW-LEVEL LEAK (#1419): the neutral row's events arrived on Alice's collection subscription stream"
+		);
+	});
+
+	test('REVOCATION (#1414 × override): alter_role removing read terminates a record-scoped subscription', async () => {
+		// Exercises the re-auth default-fallback: the override is collection-permissive (so it opens the
+		// subscription and would ALWAYS pass re-auth at collection scope), so re-auth must instead run
+		// the framework-default table RBAC against the fresh user. alter_role (not drop_user) keeps the
+		// user present — findAndValidateUser still returns a role — so termination can only come from the
+		// default table grant now denying read, which is exactly the fallback branch under test.
+		const carolToken = await client
+			.req()
+			.send({ operation: 'create_authentication_tokens', username: CAROL.username, password: CAROL.password });
+		const carolBearer = `Bearer ${carolToken.body.operation_token}`;
+
+		const stream = await openSse(`${restURL}/Vault/`, { Authorization: carolBearer });
+		openStreams.add(stream);
+		ok(stream.status >= 200 && stream.status < 300, `Carol's collection SSE should open, got ${stream.status}`);
+		await sleep(400);
+
+		// Baseline: Carol receives updates to her own row.
+		await adminPut(CAROL_ROW, { id: CAROL_ROW, owner: CAROL.username, secret: 'carol-secret', v: 1 }).expect(204);
+		ok(await waitFor(() => streamMentions(stream, CAROL_ROW), 8000), 'Carol should receive her own row event');
+
+		// Strip read from Carol's role in place; the user still exists, so only the default table grant
+		// (via the re-auth fallback) can terminate the stream.
+		await client
+			.req()
+			.send({
+				operation: 'alter_role',
+				id: ROLE_CAROL,
+				permission: {
+					super_user: false,
+					data: {
+						tables: {
+							Vault: { read: false, insert: false, update: false, delete: false, attribute_permissions: [] },
+						},
+					},
+				},
+			})
+			.expect(200);
+		await sleep(2000); // let the user-change broadcast / re-auth land under CI load
+
+		const eventsAfterRevoke = stream.events.length;
+		await adminPut(CAROL_ROW, { id: CAROL_ROW, owner: CAROL.username, secret: 'carol-secret', v: 2 }).expect(204);
+		await sleep(1500);
+
+		ok(
+			stream.events.length === eventsAfterRevoke,
+			`role lost read but subscription kept receiving ${stream.events.length - eventsAfterRevoke} event(s) — re-auth default-fallback did not terminate the record-scoped subscription`
 		);
 	});
 });
