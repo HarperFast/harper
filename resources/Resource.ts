@@ -770,11 +770,16 @@ function transactional(
 					// row-level machinery and keep the entry check. Subscriptions are excluded: their
 					// delivery path never reaches search(), so deferring would grant them UNCHECKED —
 					// they keep the entry evaluation (which fails closed for a record-scoped override)
-					// until per-event delivery checks exist (#1419).
+					// until per-event delivery checks exist (#1419). The collection predicate must be at
+					// least as strict as the routing it relies on: instance get() only reaches search()
+					// via isSearchTarget (isCollection), so `get` defers on isCollection alone — a
+					// hypothetical {id: null, isCollection: false} get keeps the entry check instead of
+					// skipping both checks. search/query invoke instance search() directly (which
+					// consumes checkPermission), so id == null suffices there.
 					if (
 						options.type === 'read' &&
 						!isSubscribeAction &&
-						(query.id == null || query.isCollection) &&
+						(query.isCollection || (query.id == null && options.method !== 'get')) &&
 						(resource.constructor as any)?.supportsRowLevelAllowRead &&
 						!(resource.allowRead as any)?.isDefaultAllowRead
 					) {

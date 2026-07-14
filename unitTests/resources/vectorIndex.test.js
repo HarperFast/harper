@@ -1621,6 +1621,54 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		);
 	});
 
+	it('composes attribute_permissions column narrowing with a record-scoped allowRead override', async () => {
+		// Role-level column RBAC (attribute_permissions) is enforced by the DEFAULT table allowRead
+		// narrowing target.select at entry. An overridden (record-scoped) allowRead must not void it:
+		// search() runs the default for its narrowing side effect before deferring row access to the
+		// per-record override.
+		class Restricted extends T {
+			allowRead(user) {
+				return this.ownerId === user.id;
+			}
+		}
+		const user = {
+			id: 1,
+			role: {
+				permission: {
+					test: {
+						tables: {
+							HNSWFilter: {
+								read: true,
+								attribute_permissions: [
+									{ attribute_name: 'id', read: true },
+									{ attribute_name: 'ownerId', read: true },
+									{ attribute_name: 'group', read: false }, // column denied
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		const results = await fromAsync(
+			Restricted.search(
+				{
+					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					select: ['id', 'group', 'ownerId'],
+					limit: 3,
+					checkPermission: true,
+				},
+				{ user }
+			)
+		);
+		assert(results.length > 0, 'row-filtered results expected');
+		for (const r of results) {
+			assert.strictEqual(r.ownerId, 1, 'row-level override still applies');
+			assert.notStrictEqual(r.id, undefined, 'permitted column returned');
+			assert.strictEqual(r.group, undefined, 'column denied by attribute_permissions must be stripped');
+		}
+	});
+
 	it('subscribe with a record-scoped allowRead is denied at entry, never granted unchecked', async () => {
 		// Subscription delivery never reaches search(), so the per-record deferral must NOT apply to
 		// subscribe — otherwise a collection subscription would be granted with no check at all.
