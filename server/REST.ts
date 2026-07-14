@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
@@ -82,7 +82,9 @@ function finalizeResponse(responseData, headers, status, request) {
  * indistinguishable from a URL that never existed. If the URL's first segment names a
  * components-root directory, surface that distinction instead of a generic 404 (harper#674).
  * `name` is decoded and checked for path-traversal characters before being joined into a
- * filesystem path.
+ * filesystem path. Uses `stat`/`isDirectory` (not `access`) so a stray non-directory file
+ * directly under the components root (e.g. `README.md`, `.DS_Store`) can't be mistaken for
+ * a deployed component.
  */
 async function findInactiveComponent(url: string): Promise<string | undefined> {
 	const firstSegment = url.split(/[/?]/, 1)[0];
@@ -106,8 +108,8 @@ async function findInactiveComponent(url: string): Promise<string | undefined> {
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 	if (!componentsRoot || typeof componentsRoot !== 'string') return undefined;
 	try {
-		await access(join(componentsRoot, name));
-		return name;
+		const stats = await stat(join(componentsRoot, name));
+		return stats.isDirectory() ? name : undefined;
 	} catch {
 		return undefined;
 	}
@@ -131,12 +133,20 @@ async function http(request: Request, nextHandler) {
 		if (url !== OPENAPI_DOMAIN) {
 			const entry = resources.getMatch(url, isSse ? 'sse' : 'rest');
 			if (!entry) {
-				const inactiveComponent = await findInactiveComponent(url);
-				if (inactiveComponent) {
-					throw new ClientError(
-						`Component '${inactiveComponent}' is deployed but Harper must be restarted before its routes are active.`,
-						404
-					);
+				// This check runs before any resource is matched, so no auth gate has run yet for
+				// this request. Only reveal the actionable message to an authenticated super_user —
+				// otherwise an unauthenticated caller could use the response difference (actionable
+				// vs. generic 404) as an oracle to probe which component directories exist on disk.
+				// `getComponents` (utility/operation_authorization.ts) already treats "which
+				// components are deployed" as super_user-only information; match that boundary here.
+				if (request?.user?.role?.permission?.super_user) {
+					const inactiveComponent = await findInactiveComponent(url);
+					if (inactiveComponent) {
+						throw new ClientError(
+							`Component '${inactiveComponent}' is deployed but Harper must be restarted before its routes are active.`,
+							404
+						);
+					}
 				}
 				return nextHandler(request); // no resource handler found
 			}
