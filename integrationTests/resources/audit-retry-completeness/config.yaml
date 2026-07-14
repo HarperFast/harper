@@ -1,0 +1,4 @@
+# QA-552 fixture — plain REST table, no custom resources needed.
+graphqlSchema:
+  files: '*.graphql'
+rest: true

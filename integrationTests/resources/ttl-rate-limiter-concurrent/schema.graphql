@@ -1,0 +1,11 @@
+# QA-431 — sub-second-TTL rate-limiter: atomic counter × 0.5s TTL × 4 workers.
+#
+# RateCounter: the window-keyed counter. expiration: 0.5 (500ms).
+# Each request does addTo('hits', 1) on an id = apiKey+windowSlot.
+# The 0.5s TTL is chosen so the eviction sweep cycle is shorter than the
+# burst window → we get window rollover DURING a 50-request burst.
+
+type RateCounter @table(expiration: 0.5) @export {
+    id: ID @primaryKey
+    hits: Int
+}
