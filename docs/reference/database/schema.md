@@ -547,7 +547,7 @@ How the one definition applies at each scope (when permission checking is active
 
 - **Collection queries** (REST collection `GET`, `search()`, including vector sorts) — evaluated per record; rows failing the check are filtered out of results. The default (non-overridden) `allowRead` is a table-level RBAC check and continues to run once at request entry with no per-record cost.
 - **Single-record `get(id)`** — evaluated at request entry with the record loaded (attribute reads like `this.ownerId` resolve against the record); a denied record returns a 403.
-- **Subscriptions** — a record-scoped override currently fails closed at subscribe time (per-event delivery checks are a planned follow-up).
+- **Subscriptions** (SSE, WebSocket, MQTT) — delivery is filtered per event: a subscriber receives only the row-change events for records the check permits. Delete tombstones and published message payloads do not carry the full record, so an override keyed on row fields will deny those event types.
 
 Constraints: the check must be synchronous, side-effect free, and fast — it can run once per candidate record visited during traversal (verdicts are memoized per query). `this` is the frozen record during per-record evaluation. A thrown exception denies that record (fail closed). On caching tables the check is enforced against the record actually returned, after any source revalidation.
 
