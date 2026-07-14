@@ -192,44 +192,52 @@ interface GetAnalyticsOpts {
 
 export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metric[]> {
 	const { getAttributes, startTime, endTime, additionalConditions, log: logName } = opts ?? {};
-	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: metric }];
+
+	// A two-sided time window bounds the primary-key (`id` = [time, nodeId]) range on both ends. When we
+	// have one, lead with it and pin execution order (below) so it drives the scan. `Table.search`
+	// otherwise reorders conditions by estimated cost, but the planner estimates a primary-key `between`
+	// as a flat 10% of the table (search.ts BETWEEN_ESTIMATE) rather than from the actual range width —
+	// so on a large `hdb_analytics` table a narrow window looks costlier than `metric equals`, iteration
+	// is driven off the metric index, and the metric's entire history is decoded instead of the window
+	// (#1796). The proper long-term fix is a range-width-aware cost estimate in search.ts.
+	const boundedWindow = startTime != null && endTime != null;
+	const conditions: Conditions = [];
+	if (boundedWindow) {
+		conditions.push({ attribute: 'id', comparator: 'between', value: [startTime, endTime] });
+	}
+	conditions.push({ attribute: 'metric', comparator: 'equals', value: metric });
 	if (logName !== undefined) {
 		conditions.push({ attribute: 'log', comparator: 'equals', value: logName });
 	}
 	if (additionalConditions) {
 		conditions.push(...additionalConditions.map(conformCondition));
 	}
+	// An open-ended range (only start or only end) can span the whole table, so we append it and leave
+	// ordering to the planner rather than forcing an unbounded range to drive — which could scan the
+	// full table for a selective metric.
+	if (!boundedWindow) {
+		if (startTime != null) {
+			conditions.push({ attribute: 'id', comparator: 'greater_than_equal', value: startTime });
+		}
+		if (endTime != null) {
+			conditions.push({ attribute: 'id', comparator: 'less_than', value: endTime });
+		}
+	}
+
 	const select = getAttributes ?? [];
 
-	// ensure we're always selecting id
+	// ensure we're always selecting id (an empty select array already selects everything, including id)
 	if (!isSelected(select, 'id')) {
 		select.push('id');
 	}
 
-	if (startTime && endTime) {
-		conditions.push({
-			attribute: 'id',
-			comparator: 'between',
-			value: [startTime, endTime],
-		});
-	} else {
-		if (startTime) {
-			conditions.push({
-				attribute: 'id',
-				comparator: 'greater_than_equal',
-				value: startTime,
-			});
-		}
-		if (endTime) {
-			conditions.push({
-				attribute: 'id',
-				comparator: 'less_than',
-				value: endTime,
-			});
-		}
+	// `snapshot: false` lets these (potentially long-running) analytics scans read against the
+	// latest committed data without holding a consistent read snapshot open, so they stay easier
+	// on the rest of the system (a pinned snapshot would block compaction for the scan's duration).
+	const request: any = { conditions, allowConditionsOnDynamicAttributes: true, snapshot: false };
+	if (boundedWindow) {
+		request.enforceExecutionOrder = true;
 	}
-
-	const request: any = { conditions, allowConditionsOnDynamicAttributes: true };
 	if (select.length > 0) {
 		request['select'] = select;
 	}
