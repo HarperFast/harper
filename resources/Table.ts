@@ -2647,7 +2647,18 @@ export function makeTable(options) {
 			const recordScopedAllowRead =
 				target.checkPermission && !(this.allowRead as any)?.isDefaultAllowRead ? this.allowRead : undefined;
 			if (target.checkPermission) {
-				if (!recordScopedAllowRead) {
+				if (recordScopedAllowRead) {
+					// Compose with role-level column RBAC: the DEFAULT table allowRead is also the
+					// enforcement point for attribute_permissions (it narrows target.select). Run it here
+					// for that side effect — before `select` is captured below — with its verdict
+					// superseded by the per-record override. A per-record super.allowRead call could NOT
+					// restore this: the select-driven output transform is built before iteration starts.
+					try {
+						TableResource.prototype.allowRead.call(this, (context as any).user, target, context);
+					} catch {
+						// narrowing is best-effort under an override; access is governed per record
+					}
+				} else {
 					// requesting authorization verification
 					let allowed;
 					try {
