@@ -75,8 +75,11 @@ export function isStructureMismatchError(error: any): boolean {
 function namedStructures(dict: any): any[] {
 	if (!dict) return [];
 	if (Array.isArray(dict)) return dict;
-	if (dict instanceof Map) return dict.get('named') ?? [];
-	return dict.named ?? [];
+	if (dict instanceof Map) {
+		const named = dict.get('named');
+		return Array.isArray(named) ? named : [];
+	}
+	return Array.isArray(dict.named) ? dict.named : [];
 }
 
 // True iff `next` preserves every shape `existing` already published at each shared id — i.e. the
@@ -509,8 +512,10 @@ export class RecordEncoder extends StructonEncoder {
 					const recovered = this.decode(buffer, options);
 					recordAction(true, STRUCTURE_RELOAD_RECOVERED_METRIC, this.name ?? this.rootStore?.name);
 					return recovered;
-				} catch {
-					// Reload did not resolve it — fall through to the generic error path below.
+				} catch (recoveryError) {
+					// Reload did not resolve it (or _mergeStructures/getStructures itself failed) — log so
+					// the real cause is visible instead of being masked by the generic mismatch error below.
+					harperLogger.warn('Structure reload recovery failed', recoveryError);
 				} finally {
 					this._reloadingStructures = false;
 				}
