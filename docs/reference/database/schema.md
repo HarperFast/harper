@@ -528,21 +528,28 @@ let results = Document.search(
 
 `vectorFilter` is available from the JavaScript API only (it cannot be expressed in a REST query string). The function receives the candidate record and must return a boolean — `true` to include the record in results, `false` to exclude it (it still routes traversal either way). It must be synchronous, side-effect free, and fast — it can run once per candidate record visited during traversal (verdicts are memoized per query). Records passed to it are frozen.
 
-### Record-Level Access Control in Vector Search
+### Record-Level Access Control (Record-Scoped `allowRead`)
 
 <VersionBadge version="v5.2.0" />
 
-A resource class can define a static `allowReadRecord(user, record)` check that filters query results per record, returning a boolean — `true` if the user may see the record, `false` to withhold it. For vector queries it participates in the traversal, so a restricted user receives the k nearest records _they are allowed to see_ rather than "nearest k, minus redacted" (which under-fills results and reveals that nearby restricted records exist):
+Overriding `allowRead(user, target, context)` on a table resource makes it a **record-scoped** check: during query execution it is evaluated once per record with `this` bound to the record, so row-level logic reads naturally from `this`. For vector queries the check participates in the graph traversal, so a restricted user receives the k nearest records _they are allowed to see_ rather than "nearest k, minus redacted" (which under-fills results and reveals that nearby restricted records exist):
 
 ```javascript
 export class Reports extends tables.Reports {
-	static allowReadRecord(user, record) {
-		return record.ownerId === user.id || user.role?.permissions?.super_user;
+	allowRead(user, target, context) {
+		// super = the table/RBAC permission check (safe at any scope)
+		return super.allowRead(user, target, context) && (user.role.permission.super_user || this.ownerId === user.id);
 	}
 }
 ```
 
-`allowReadRecord` applies to all query results from `search()` (vector or not; on caching tables it is enforced against the record actually returned, after any source revalidation). It is a query-result filter, not a general read-authorization boundary: direct single-record `get(id)` does not consult it — use [`allowRead`](../resources/resource-api.md) for request-level authorization. The same synchronous/side-effect-free constraints as `vectorFilter` apply.
+How the one definition applies at each scope (when permission checking is active, e.g. any external request):
+
+- **Collection queries** (REST collection `GET`, `search()`, including vector sorts) — evaluated per record; rows failing the check are filtered out of results. The default (non-overridden) `allowRead` is a table-level RBAC check and continues to run once at request entry with no per-record cost.
+- **Single-record `get(id)`** — evaluated at request entry with the record loaded (attribute reads like `this.ownerId` resolve against the record); a denied record returns a 403.
+- **Subscriptions** — a record-scoped override currently fails closed at subscribe time (per-event delivery checks are a planned follow-up).
+
+Constraints: the check must be synchronous, side-effect free, and fast — it can run once per candidate record visited during traversal (verdicts are memoized per query). `this` is the frozen record during per-record evaluation. A thrown exception denies that record (fail closed). On caching tables the check is enforced against the record actually returned, after any source revalidation.
 
 ### Tuning Filtered Traversal
 
