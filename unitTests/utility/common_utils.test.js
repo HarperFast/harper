@@ -585,4 +585,43 @@ describe('Test common_utils module', () => {
 			expect(Number.isNaN(cu.convertToMS('abc'))).to.equal(true);
 		});
 	});
+
+	describe('Test httpRequest timeout', () => {
+		const http = require('node:http');
+		let server, port;
+
+		before((done) => {
+			// Never responds, so the client-side idle timeout is the only thing that can end the request.
+			server = http.createServer(() => {});
+			server.listen(0, '127.0.0.1', () => {
+				port = server.address().port;
+				done();
+			});
+		});
+
+		after((done) => {
+			server.close(done);
+		});
+
+		it('rejects with a clear ETIMEDOUT error when the server never responds', async () => {
+			await assert.rejects(
+				cu.httpRequest(
+					{
+						protocol: 'http:',
+						hostname: '127.0.0.1',
+						port,
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						timeout: 50,
+					},
+					{}
+				),
+				(err) => {
+					expect(err.code).to.equal('ETIMEDOUT');
+					expect(err.message).to.match(/timed out/i);
+					return true;
+				}
+			);
+		});
+	});
 });

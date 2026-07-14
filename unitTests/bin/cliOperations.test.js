@@ -468,4 +468,86 @@ describe('cliOperations', () => {
 			);
 		});
 	});
+
+	describe('exit codes on failure', () => {
+		const target = 'https://example.com:9925/';
+		let originalExit;
+		let originalConsoleError;
+		let exitCalls;
+		let consoleErrorLines;
+
+		beforeEach(() => {
+			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+
+			exitCalls = [];
+			originalExit = process.exit;
+			process.exit = (code) => {
+				exitCalls.push(code);
+			};
+
+			consoleErrorLines = [];
+			originalConsoleError = console.error;
+			console.error = (...args) => {
+				consoleErrorLines.push(args.join(' '));
+			};
+		});
+
+		afterEach(() => {
+			process.exit = originalExit;
+			console.error = originalConsoleError;
+		});
+
+		it('exits non-zero with a clear message when the request times out', async () => {
+			commonUtilsModule.httpRequest = async () => {
+				const err = new Error('Request timed out after 60000ms with no response from the server');
+				err.code = 'ETIMEDOUT';
+				throw err;
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.deepStrictEqual(exitCalls, [1]);
+			assert.ok(
+				consoleErrorLines.some((line) => line.includes('timed out')),
+				`expected a timeout message on stderr, got: ${consoleErrorLines}`
+			);
+		});
+
+		it('exits non-zero on a generic connection error', async () => {
+			commonUtilsModule.httpRequest = async () => {
+				const err = new Error('connect ECONNREFUSED 127.0.0.1:9925');
+				err.code = 'ECONNREFUSED';
+				throw err;
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.deepStrictEqual(exitCalls, [1]);
+		});
+
+		it('exits non-zero when the server returns a non-2xx status', async () => {
+			commonUtilsModule.httpRequest = async () => ({
+				statusCode: 500,
+				body: JSON.stringify({ error: 'boom' }),
+			});
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.deepStrictEqual(exitCalls, [1]);
+		});
+
+		it('applies a default idle-socket timeout to the request options', async () => {
+			let capturedOptions;
+			commonUtilsModule.httpRequest = async (options) => {
+				capturedOptions = options;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.strictEqual(typeof capturedOptions.timeout, 'number');
+			assert.ok(capturedOptions.timeout > 0);
+		});
+	});
 });

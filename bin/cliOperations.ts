@@ -56,6 +56,14 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 const STREAMING_DEPLOY_MIN_MAJOR = 5;
 const STREAMING_DEPLOY_MIN_MINOR = 1;
 
+// Idle-socket timeout for CLI Op-API requests: no traffic (in either direction) for this long
+// means the target is unreachable or wedged. Resets on any activity, so a slow-but-active
+// upload/deploy is unaffected — only a fully silent connection trips it. Overridable for
+// operations against known-slow targets.
+const DEFAULT_CLI_OPERATION_TIMEOUT_MS = 60000;
+const CLI_OPERATION_TIMEOUT_MS =
+	Number(process.env.HARPER_CLI_TIMEOUT_MS || process.env.CLI_TIMEOUT_MS) || DEFAULT_CLI_OPERATION_TIMEOUT_MS;
+
 /**
  * Parses a Harper version string (e.g. "5.0.31", "5.1.0-beta.2") and reports whether the
  * server is new enough to accept the multipart + SSE streaming deploy. Unparseable input
@@ -252,6 +260,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		};
 		options.method = 'POST';
 		options.headers = { 'Content-Type': 'application/json' };
+		options.timeout = CLI_OPERATION_TIMEOUT_MS;
 		if (target?.username) {
 			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
 		} else if (allCredentials) {
