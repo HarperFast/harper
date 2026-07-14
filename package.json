@@ -56,6 +56,7 @@
 		"build:watch": "npm run build -- --watch --incremental",
 		"typecheck": "tsc --project tsconfig.json",
 		"typecheck:fast": "npx -y -p typescript@7.0.2 tsc --noEmit --project tsconfig.json",
+		"test:types": "tsc --project unitTests/types/tsconfig.json",
 		"package": "./build-tools/build.sh",
 		"lint": "oxlint --format stylish --deny-warnings .",
 		"lint:required": "oxlint --format stylish --quiet .",
