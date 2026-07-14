@@ -23,6 +23,7 @@ import * as validator from './operationsValidation.js';
 import { getSecretCustody } from '../resources/secretDecryptor.ts';
 import { encryptEnvelope, parseEnvelopeFields } from '../utility/secretEnvelope.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
+import { normalizeGitHost, type ResolvedGitCredential } from './gitCredentialServer.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const SECRET_TABLE = terms.SYSTEM_TABLE_NAMES.SECRET_TABLE_NAME;
@@ -326,8 +327,8 @@ export function getSecretsPublicKey(req: any) {
 }
 
 // deploy_component `credentials` is a kind-heterogeneous array: an entry's kind is implied by its
-// identifying key (today `registry` = npm registry auth; a git-host kind keyed by `host` is planned
-// in #1792), and every kind carries its credential as either a literal `token` or a `secret`
+// identifying key (`registry` = npm registry auth, `host` = git host auth for a git-reference
+// package, #1792), and every kind carries its credential as either a literal `token` or a `secret`
 // reference. Ingest/resolve below are kind-agnostic about that token/secret half and only branch on
 // the identifying key where a kind-specific detail is needed (the derived secret name).
 
@@ -343,6 +344,21 @@ export interface RegistryCredentialReference {
 	registry: string;
 	secret: string;
 	scope?: string;
+}
+
+/** A git-host credential after ingestion: a reference into hdb_secret, never a token. */
+export interface GitCredentialReference {
+	host: string;
+	secret: string;
+	username?: string;
+}
+
+export type CredentialReference = RegistryCredentialReference | GitCredentialReference;
+export type ResolvedCredential = ResolvedRegistryCredential | ResolvedGitCredential;
+
+/** True when a credential entry (in any form) is npm registry auth rather than git host auth. */
+export function isRegistryCredential(entry: any): boolean {
+	return entry?.registry !== undefined;
 }
 
 /**
@@ -361,6 +377,59 @@ export function deriveRegistrySecretName(component: string, registry: string): s
 		.replace(/[^\w.-]+/g, '_');
 	const componentKey = String(component).replace(/[^\w.-]+/g, '_');
 	return `deploy.${componentKey}.${registryKey}`;
+}
+
+/**
+ * Deterministic name for the secret backing a literal git-host token, following the registry
+ * convention above. Keyed by host rather than by repository: the credential entry identifies itself
+ * by host, so the name has to be derivable from the entry alone for a rotation to overwrite the same
+ * row. A per-repository credential is expressible today by scoping the token itself (a fine-grained
+ * PAT) rather than by splitting the secret name.
+ */
+export function deriveGitSecretName(component: string, host: string): string {
+	const hostKey = normalizeGitHost(host).replace(/[^\w.-]+/g, '_');
+	const componentKey = String(component).replace(/[^\w.-]+/g, '_');
+	return `deploy.${componentKey}.${hostKey}`;
+}
+
+/**
+ * An entry's kind, from its identifying key. Every path that rebuilds an entry goes through this, so
+ * an entry of an unrecognized kind fails loudly rather than being rebuilt into a half-empty one: an
+ * operation-body entry is schema-validated, but a `credentials` entry read back from
+ * applicationConfig or an hdb_deployment row is not.
+ */
+function credentialKind(entry: any): 'registry' | 'git' {
+	if (isRegistryCredential(entry)) return 'registry';
+	if (entry?.host !== undefined) return 'git';
+	throw new ClientError(
+		`Unsupported credential entry: expected a 'registry' (npm registry auth) or 'host' (git host auth) entry`
+	);
+}
+
+/** The hdb_secret name a literal-token entry seals into, by kind. */
+function deriveSecretName(entry: any, component: string): string {
+	return credentialKind(entry) === 'registry'
+		? deriveRegistrySecretName(component, entry.registry)
+		: deriveGitSecretName(component, entry.host);
+}
+
+/** Rebuild an entry in reference form, preserving only the fields its kind defines. */
+function toReference(entry: any, secret: string): CredentialReference {
+	if (credentialKind(entry) === 'registry') {
+		return entry.scope === undefined
+			? { registry: entry.registry, secret }
+			: { registry: entry.registry, secret, scope: entry.scope };
+	}
+	return entry.username === undefined
+		? { host: entry.host, secret }
+		: { host: entry.host, secret, username: entry.username };
+}
+
+/** Rebuild an entry in resolved (literal token) form, preserving only the fields its kind defines. */
+function toResolved(entry: any, token: string): ResolvedCredential {
+	return credentialKind(entry) === 'registry'
+		? { registry: entry.registry, token, scope: entry.scope }
+		: { host: entry.host, token, username: entry.username };
 }
 
 /**
@@ -389,12 +458,9 @@ export async function ingestCredentials(req: any, credentials: any[] | undefined
 			out.push(entry);
 			continue;
 		}
-		// The derived secret name is the one kind-specific detail on this path; a new credential kind
-		// derives its name from its own identifying key.
-		if (entry.registry === undefined) {
-			throw new ClientError(`Unsupported credential entry: expected a 'registry' (npm registry auth) entry`);
-		}
-		const name = deriveRegistrySecretName(component, entry.registry);
+		// The derived secret name is the one kind-specific detail on this path; each kind derives its
+		// name from its own identifying key.
+		const name = deriveSecretName(entry, component);
 		// Reuse set_secret's seal-and-store path (encrypt with custody, grant to the component, audit
 		// the mutation). The deploy request is already super_user, which set_secret requires.
 		await setSecret({
@@ -405,11 +471,7 @@ export async function ingestCredentials(req: any, credentials: any[] | undefined
 			grants: [component],
 			processEnv: false,
 		});
-		out.push(
-			entry.scope === undefined
-				? { registry: entry.registry, secret: name }
-				: { registry: entry.registry, secret: name, scope: entry.scope }
-		);
+		out.push(toReference(entry, name));
 	}
 	return out;
 }
@@ -455,18 +517,22 @@ export async function resolveCredentials(
 	credentials: any[] | undefined,
 	component: string,
 	options: { waitMs?: number } = {}
-): Promise<ResolvedRegistryCredential[] | undefined> {
+): Promise<ResolvedCredential[] | undefined> {
 	if (!Array.isArray(credentials) || credentials.length === 0) return credentials;
+	// Reject an unrecognized kind before anything consumes the array, including on the token-only fast
+	// path below: a caller that silently drops an entry it does not understand would install without
+	// the credential the operator asked for.
+	for (const entry of credentials) if (entry) credentialKind(entry);
 	// Token-only requests must not require custody or a provisioned store — keep the fast path pure.
 	if (!credentials.some((entry) => entry && entry.secret !== undefined)) return credentials;
 
 	const waitMs = options.waitMs ?? 0;
 	const table = secretTable();
-	const resolved: ResolvedRegistryCredential[] = [];
+	const resolved: ResolvedCredential[] = [];
 	for (const entry of credentials) {
 		if (!entry) continue; // parity with the fast-path guard above; validated entries are never null
 		if (entry.secret === undefined) {
-			resolved.push({ registry: entry.registry, token: entry.token, scope: entry.scope });
+			resolved.push(toResolved(entry, entry.token));
 			continue;
 		}
 		const name: string = entry.secret;
@@ -503,7 +569,7 @@ export async function resolveCredentials(
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
-		resolved.push({ registry: entry.registry, token, scope: entry.scope });
+		resolved.push(toResolved(entry, token));
 	}
 	return resolved;
 }

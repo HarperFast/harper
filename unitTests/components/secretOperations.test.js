@@ -620,6 +620,69 @@ describe('secretOperations', () => {
 		});
 	});
 
+	describe('resolveCredentials (git-host entries)', () => {
+		it('decrypts a git-host reference granted to the deploying component', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'GIT_TOKEN', value: 'ghp_git', grants: ['app'] });
+			const out = await secretOps.resolveCredentials([{ host: 'github.com', secret: 'GIT_TOKEN' }], 'app');
+			assert.deepEqual(out, [{ host: 'github.com', token: 'ghp_git', username: undefined }]);
+		});
+
+		it('fails loudly for a git reference not granted to the deploying component (403)', async () => {
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'GIT_OTHER', value: 'x', grants: ['different-app'] });
+			await assert.rejects(
+				async () => secretOps.resolveCredentials([{ host: 'github.com', secret: 'GIT_OTHER' }], 'app'),
+				(err) => err.statusCode === 403 && /not granted to component 'app'/.test(err.message)
+			);
+		});
+
+		it('fails loudly for a git reference when custody is absent on this node (503)', async () => {
+			// The use side is fail-closed: no key here means the deploy stops, not that it silently
+			// clones without the credential and fails somewhere less legible.
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'GIT_NO_KEY', value: 'x', grants: ['app'] });
+			clearSecretCustody();
+			await assert.rejects(
+				async () => secretOps.resolveCredentials([{ host: 'github.com', secret: 'GIT_NO_KEY' }], 'app'),
+				(err) => err.statusCode === 503 && /secrets custody is not initialized/.test(err.message)
+			);
+		});
+
+		it('rejects an entry of an unrecognized kind rather than resolving it into a half-empty one', async () => {
+			// Symmetric with the ingest guard: a `credentials` entry read back from applicationConfig or
+			// an hdb_deployment row was never schema-validated, so an unknown kind must not silently
+			// produce an entry with an undefined identity.
+			installCustody();
+			await secretOps.setSecret({ ...su('set_secret'), name: 'S', value: 'x', grants: ['app'] });
+			await assert.rejects(
+				async () => secretOps.resolveCredentials([{ proxy: 'example.com', secret: 'S' }], 'app'),
+				/Unsupported credential entry/
+			);
+			await assert.rejects(
+				async () => secretOps.resolveCredentials([{ proxy: 'example.com', token: 'literal' }], 'app'),
+				/Unsupported credential entry/
+			);
+		});
+	});
+
+	describe('deriveGitSecretName', () => {
+		it('derives a stable name keyed by component and host, following the registry convention', () => {
+			assert.equal(secretOps.deriveGitSecretName('my-app', 'github.com'), 'deploy.my-app.github.com');
+		});
+
+		it('is identical across the host forms that identify the same host', () => {
+			assert.equal(
+				secretOps.deriveGitSecretName('app', 'https://GitHub.com/'),
+				secretOps.deriveGitSecretName('app', 'github.com')
+			);
+		});
+
+		it('sanitizes a port to the set_secret name grammar', () => {
+			assert.equal(secretOps.deriveGitSecretName('app', 'git.example.com:8443'), 'deploy.app.git.example.com_8443');
+		});
+	});
+
 	describe('deriveRegistrySecretName', () => {
 		it('derives a stable name keyed by component and registry, sanitized to the name grammar', () => {
 			assert.equal(
@@ -682,10 +745,52 @@ describe('secretOperations', () => {
 		it('rejects a literal-token entry of an unrecognized kind (validation should have caught it)', async () => {
 			installCustody();
 			await assert.rejects(
-				async () => secretOps.ingestCredentials(deploy(), [{ host: 'github.com', token: 'ghp_secret' }], 'app'),
+				async () => secretOps.ingestCredentials(deploy(), [{ proxy: 'example.com', token: 'ghp_secret' }], 'app'),
 				/Unsupported credential entry/
 			);
 			assert.equal(installed.mock.putCount, 0, 'nothing sealed for an entry with no derivable secret name');
+		});
+
+		it('seals a git-host token the same way, keyed by host', async () => {
+			installCustody();
+			const refs = await secretOps.ingestCredentials(deploy(), [{ host: 'github.com', token: 'ghp_secret' }], 'app');
+			assert.deepEqual(refs, [{ host: 'github.com', secret: 'deploy.app.github.com' }]);
+			const row = installed.mock.rows.get('deploy.app.github.com');
+			assert.deepEqual(row.grants, ['app'], 'granted to the deploying component, not global');
+			assert.equal(row.processEnv, false);
+			assert.deepEqual(await secretOps.resolveCredentials(refs, 'app'), [
+				{ host: 'github.com', token: 'ghp_secret', username: undefined },
+			]);
+		});
+
+		it('preserves a git entry username through the seal/resolve round trip', async () => {
+			installCustody();
+			const refs = await secretOps.ingestCredentials(
+				deploy(),
+				[{ host: 'gitlab.com', token: 'glpat', username: 'oauth2' }],
+				'app'
+			);
+			assert.deepEqual(refs, [{ host: 'gitlab.com', secret: 'deploy.app.gitlab.com', username: 'oauth2' }]);
+			assert.deepEqual(await secretOps.resolveCredentials(refs, 'app'), [
+				{ host: 'gitlab.com', token: 'glpat', username: 'oauth2' },
+			]);
+		});
+
+		it('ingests npm and git entries side by side in one deploy', async () => {
+			installCustody();
+			const refs = await secretOps.ingestCredentials(
+				deploy(),
+				[
+					{ registry: gh, token: 'npm_tok', scope: '@org' },
+					{ host: 'github.com', token: 'git_tok' },
+				],
+				'app'
+			);
+			assert.deepEqual(refs, [
+				{ registry: gh, secret: 'deploy.app.npm.pkg.github.com', scope: '@org' },
+				{ host: 'github.com', secret: 'deploy.app.github.com' },
+			]);
+			assert.equal(installed.mock.rows.size, 2, 'each kind gets its own derived row');
 		});
 
 		it('is idempotent on token rotation — same derived row, latest value', async () => {

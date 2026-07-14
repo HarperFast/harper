@@ -71,7 +71,7 @@ describe('Application transient .npmrc lifecycle', () => {
 		const app = new Application({
 			name: 'registry-credentials-test',
 			packageIdentifier: 'npm:@myorg/app',
-			registryCredentials: [{ registry: 'https://npm.pkg.github.com', token: 'secret', scope: '@myorg' }],
+			credentials: [{ registry: 'https://npm.pkg.github.com', token: 'secret', scope: '@myorg' }],
 		});
 
 		assert.strictEqual(app.npmUserconfigPath, undefined, 'no path before write');
@@ -116,7 +116,7 @@ describe('Application transient .npmrc lifecycle', () => {
 			const app = new Application({
 				name: 'merge-test',
 				packageIdentifier: 'npm:@myorg/app',
-				registryCredentials: [{ registry: 'https://npm.pkg.github.com', token: 'secret', scope: '@myorg' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com', token: 'secret', scope: '@myorg' }],
 			});
 			await app.writeTransientNpmrc();
 			const contents = await fs.readFile(app.npmUserconfigPath, 'utf8');

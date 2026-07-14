@@ -87,14 +87,29 @@ describe('assertApplicationConfig credentials', () => {
 		);
 	});
 
-	it('rejects a credential entry carrying a literal token (references only on disk)', () => {
-		assert.throws(
-			() => assertApplicationConfig('app', { package: 'p', credentials: [{ registry: 'r', token: 'tok' }] }),
-			/expected \{ registry, secret, scope\? \} reference/
+	it('accepts a git-host reference entry (#1792)', () => {
+		assert.doesNotThrow(() =>
+			assertApplicationConfig('app', {
+				package: 'github:myorg/private-app',
+				credentials: [{ host: 'github.com', secret: 'deploy.app.github.com' }],
+			})
 		);
 	});
 
-	it('rejects a credential entry missing registry/secret', () => {
+	it('rejects a credential entry carrying a literal token (references only on disk)', () => {
+		for (const entry of [
+			{ registry: 'r', token: 'tok' },
+			{ host: 'github.com', token: 'tok' },
+		]) {
+			assert.throws(
+				() => assertApplicationConfig('app', { package: 'p', credentials: [entry] }),
+				/reference$/m,
+				JSON.stringify(entry)
+			);
+		}
+	});
+
+	it('rejects a credential entry with no recognized identity (neither registry nor host)', () => {
 		assert.throws(() => assertApplicationConfig('app', { package: 'p', credentials: [{ secret: 's' }] }), /reference/);
 	});
 });

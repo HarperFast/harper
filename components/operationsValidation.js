@@ -371,8 +371,14 @@ function packageComponentValidator(req) {
 	return validator.validateBySchema(req, packageProjSchema);
 }
 
-// An npm registry-auth credential entry, identified by its `registry` key.
+// An npm registry-auth credential entry, identified by its `registry` key. `host` is forbidden
+// rather than merely unused: operation validation allows unknown keys, so without this an entry
+// carrying both discriminators would validate as npm registry auth and its git half would be
+// silently dropped.
 const REGISTRY_CREDENTIAL_ENTRY = Joi.object({
+	host: Joi.any().forbidden().messages({
+		'any.unknown': `a credential entry is either npm registry auth ('registry') or git host auth ('host'), not both`,
+	}),
 	// registry and token are written verbatim into the transient .npmrc, which is line-based;
 	// forbid CR/LF so a super_user can't inject extra npm config lines. (registry also accepts
 	// bare hosts and //host/ forms, so a strict URI validator would reject supported inputs — the
@@ -388,6 +394,27 @@ const REGISTRY_CREDENTIAL_ENTRY = Joi.object({
 	scope: Joi.string()
 		.pattern(/^@[a-z0-9-_.]+$/)
 		.optional(),
+}).xor('token', 'secret');
+
+// A git-host credential entry, identified by its `host` key (#1792). Used to authenticate the
+// `git clone`/`git ls-remote` npm runs for a git-reference `package` (e.g. `github:org/repo`); the
+// token is served to git from memory, never written to a file or a URL.
+const GIT_CREDENTIAL_ENTRY = Joi.object({
+	// A bare host, optionally with a port — `github.com`, `git.example.com:8443`. A scheme or path is
+	// tolerated and normalized away, but a credential is matched by host, so keep the grammar tight.
+	host: Joi.string()
+		.pattern(/^[^\s/@\\]+$/)
+		.required()
+		.messages({ 'string.pattern.base': `'host' must be a bare git host, e.g. 'github.com'` }),
+	// The username half of git's HTTPS basic auth. Defaults to GitHub's `x-access-token` convention;
+	// GitLab wants `oauth2` and Bitbucket `x-token-auth`.
+	username: Joi.string()
+		.pattern(/^[^\r\n:]+$/)
+		.optional(),
+	token: Joi.string().pattern(/^[^\r\n]+$/),
+	secret: Joi.string()
+		.pattern(ENV_KEY_REGEX)
+		.messages({ 'string.pattern.base': `'secret' must only contain word characters, dots and dashes` }),
 }).xor('token', 'secret');
 
 /**
@@ -418,9 +445,9 @@ function deployComponentValidator(req) {
 			.optional()
 			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
 		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
-		// identifying key rather than a separate discriminator field, so a new kind (e.g. a git-host
-		// credential keyed by `host`, #1792) is added as another item alternative here without
-		// reshaping the field. Today the only kind is npm registry auth (`registry`).
+		// identifying key rather than a separate discriminator field, so a new kind is added as
+		// another item alternative here without reshaping the field. Today: npm registry auth
+		// (`registry`) and git host auth for a git-reference package (`host`, #1792).
 		//
 		// Every kind supplies its credential exactly one of two ways:
 		//   - `token`: a literal token, used only for this node's install and never persisted or
@@ -428,7 +455,18 @@ function deployComponentValidator(req) {
 		//   - `secret`: the name of an hdb_secret row (#1550); the token is resolved by decrypting
 		//     that row on this node at deploy time, so the credential lives in the secrets store
 		//     (reference, not embed) instead of travelling in the operation body.
-		credentials: Joi.array().items(REGISTRY_CREDENTIAL_ENTRY).optional(),
+		// Dispatched on the presence of `registry` rather than tried as alternatives, so a malformed
+		// entry reports what is actually wrong with it (a newline in the token, an invalid scope) rather
+		// than a generic "no alternative matched".
+		credentials: Joi.array()
+			.items(
+				Joi.alternatives().conditional('.registry', {
+					is: Joi.exist(),
+					then: REGISTRY_CREDENTIAL_ENTRY,
+					otherwise: GIT_CREDENTIAL_ENTRY,
+				})
+			)
+			.optional(),
 		// `registryAuth` was this field's name on the 5.2 dev line before it grew to carry other
 		// credential kinds. Rejected rather than ignored: validation allows unknown keys, so a caller
 		// still sending it would otherwise get a deploy that silently installs with no credentials.

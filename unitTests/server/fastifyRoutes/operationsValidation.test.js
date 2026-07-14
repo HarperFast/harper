@@ -324,12 +324,73 @@ describe('Test operationsValidation module', () => {
 			expect(result.message).to.contain('registryAuth');
 		});
 
-		it('rejects an entry of an unrecognized kind (a git-host entry lands with #1792)', () => {
+		it('accepts a git-host entry, with a token or a secret reference (#1792)', () => {
+			for (const entry of [
+				{ host: 'github.com', token: 'ghp_tok' },
+				{ host: 'github.com', secret: 'GH_TOKEN' },
+				{ host: 'gitlab.com', token: 'glpat', username: 'oauth2' },
+				{ host: 'git.example.com:8443', token: 'tok' },
+			]) {
+				const result = validator.deployComponentValidator({
+					project: 'my_app',
+					package: 'github:myorg/private-app',
+					credentials: [entry],
+				});
+				expect(result, JSON.stringify(entry)).to.be.undefined;
+			}
+		});
+
+		it('accepts npm and git entries in the same credentials array', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
-				credentials: [{ host: 'github.com', token: 'tok' }],
+				package: 'github:myorg/private-app',
+				credentials: [
+					{ registry: 'https://npm.pkg.github.com', token: 'npm_tok', scope: '@myorg' },
+					{ host: 'github.com', token: 'git_tok' },
+				],
 			});
-			expect(result.message).to.contain('registry');
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects a git entry supplying both a token and a secret', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ host: 'github.com', token: 'tok', secret: 'GH_TOKEN' }],
+			});
+			expect(result).to.be.ok;
+		});
+
+		it('rejects a git entry supplying neither a token nor a secret', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ host: 'github.com' }],
+			});
+			expect(result).to.be.ok;
+		});
+
+		it('rejects a host carrying a scheme, path, or userinfo (a credential is matched by host)', () => {
+			for (const host of ['https://github.com', 'github.com/myorg/repo', 'user@github.com', 'git hub.com']) {
+				const result = validator.deployComponentValidator({
+					project: 'my_app',
+					credentials: [{ host, token: 'tok' }],
+				});
+				expect(result, host).to.be.ok;
+			}
+		});
+
+		it('rejects an entry that is neither kind, or that is ambiguously both', () => {
+			const neither = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ proxy: 'example.com', token: 'tok' }],
+			});
+			expect(neither).to.be.ok;
+			// `registry` and `host` are the kind discriminators; an entry carrying both has no single
+			// kind, so it must not be silently treated as one of them.
+			const both = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ registry: 'https://npm.pkg.github.com', host: 'github.com', token: 'tok' }],
+			});
+			expect(both).to.be.ok;
 		});
 	});
 

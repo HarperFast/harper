@@ -498,8 +498,10 @@ async function deployComponent(req) {
 				installCapture.push(manager, stream, line);
 				if (emitter) emit('install', { manager, stream, line });
 			},
-			// Private-registry credentials (already resolved above), used here for this node's npm pack/install.
-			registryCredentials: resolvedCredentials,
+			// Deploy credentials (already resolved above), used here for this node's npm pack/install:
+			// registry entries via a transient .npmrc, git-host entries via the in-memory credential
+			// socket the clone spawn talks to.
+			credentials: resolvedCredentials,
 		});
 		// Reduce req.credentials to references only (never a token) before it can reach an error/log
 		// path or replication: references are what peers resolve from their own replicated hdb_secret
