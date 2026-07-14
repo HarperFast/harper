@@ -200,7 +200,7 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 	// so on a large `hdb_analytics` table a narrow window looks costlier than `metric equals`, iteration
 	// is driven off the metric index, and the metric's entire history is decoded instead of the window
 	// (#1796). The proper long-term fix is a range-width-aware cost estimate in search.ts.
-	const boundedWindow = Boolean(startTime && endTime);
+	const boundedWindow = startTime != null && endTime != null;
 	const conditions: Conditions = [];
 	if (boundedWindow) {
 		conditions.push({ attribute: 'id', comparator: 'between', value: [startTime, endTime] });
@@ -216,10 +216,10 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 	// ordering to the planner rather than forcing an unbounded range to drive — which could scan the
 	// full table for a selective metric.
 	if (!boundedWindow) {
-		if (startTime) {
+		if (startTime != null) {
 			conditions.push({ attribute: 'id', comparator: 'greater_than_equal', value: startTime });
 		}
-		if (endTime) {
+		if (endTime != null) {
 			conditions.push({ attribute: 'id', comparator: 'less_than', value: endTime });
 		}
 	}
