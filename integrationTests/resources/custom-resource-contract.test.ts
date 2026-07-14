@@ -124,7 +124,11 @@ suite('custom-resource HTTP contract', { skip: skipSuite }, (ctx: ContextWithHar
 				`${c.m.padEnd(7)} -> status=${r.status} invoked=${String(invoked).padEnd(7)} argc=${parsed?.argc} hasReq=${parsed?.hasReq} dataArg=${prefix(dataSeen, 40)}`
 			);
 			const expected = c.m.toLowerCase();
-			if (r.status === 200 && invoked !== expected) misroutes.push(`${c.m} invoked ${invoked}`);
+			// Detect a misroute regardless of status: a non-200 is itself a routing failure
+			// (this resource has a handler for every verb, so anything but 200 is wrong), and a
+			// 200 with the wrong `invoked` method is a silent misroute to a different handler.
+			if (r.status !== 200) misroutes.push(`${c.m}: unexpected status ${r.status} (want 200, invoked=${expected})`);
+			else if (invoked !== expected) misroutes.push(`${c.m} invoked ${invoked}`);
 			// data-bearing verbs must see the body they were sent
 			if (c.body && r.status === 200 && (!parsed?.dataArg || parsed.dataArg.hello !== (c.body as any).hello)) {
 				misroutes.push(`${c.m} did not receive body (saw ${dataSeen})`);
@@ -137,15 +141,16 @@ suite('custom-resource HTTP contract', { skip: skipSuite }, (ctx: ContextWithHar
 	// 2. CUSTOM STATUS + HEADERS
 	// -------------------------------------------------------------------------
 	test('custom status + headers are honored on the wire', async () => {
-		const probes: { path: string; code: number; label: string }[] = [
-			{ path: '/StatusCtx/?code=201', code: 201, label: 'ctx 201' },
-			{ path: '/StatusCtx/?code=202', code: 202, label: 'ctx 202' },
-			{ path: '/StatusCtx/?code=418', code: 418, label: 'ctx 418' },
-			{ path: '/StatusResponse/?code=201', code: 201, label: 'Response 201' },
-			{ path: '/StatusResponse/?code=418', code: 418, label: 'Response 418' },
-			{ path: '/StatusResponseData/?code=202', code: 202, label: 'Response.data 202' },
-			{ path: '/StatusResponseData/?code=418', code: 418, label: 'Response.data 418' },
+		const probes: { path: string; code: number; label: string; hdrPrefix: string }[] = [
+			{ path: '/StatusCtx/?code=201', code: 201, label: 'ctx 201', hdrPrefix: 'ctx-' },
+			{ path: '/StatusCtx/?code=202', code: 202, label: 'ctx 202', hdrPrefix: 'ctx-' },
+			{ path: '/StatusCtx/?code=418', code: 418, label: 'ctx 418', hdrPrefix: 'ctx-' },
+			{ path: '/StatusResponse/?code=201', code: 201, label: 'Response 201', hdrPrefix: 'resp-' },
+			{ path: '/StatusResponse/?code=418', code: 418, label: 'Response 418', hdrPrefix: 'resp-' },
+			{ path: '/StatusResponseData/?code=202', code: 202, label: 'Response.data 202', hdrPrefix: 'respdata-' },
+			{ path: '/StatusResponseData/?code=418', code: 418, label: 'Response.data 418', hdrPrefix: 'respdata-' },
 		];
+		const mismatches: string[] = [];
 		for (const p of probes) {
 			const r = await raw('GET', p.path);
 			const statusOK = r.status === p.code ? 'OK' : `IGNORED(want ${p.code})`;
@@ -154,23 +159,32 @@ suite('custom-resource HTTP contract', { skip: skipSuite }, (ctx: ContextWithHar
 			statusMatrix.push(
 				`${p.label.padEnd(20)} -> ${r.status} ${statusOK}  ${hdrOK}${fooHdr}  body=${prefix(r.text, 50)}`
 			);
+			if (r.status !== p.code) mismatches.push(`${p.label}: status ${r.status} !== ${p.code}`);
+			const wantHdr = `${p.hdrPrefix}${p.code}`;
+			if (r.xqa !== wantHdr) mismatches.push(`${p.label}: X-QA146 "${r.xqa}" !== "${wantHdr}"`);
 		}
-		ok(statusMatrix.length === probes.length, 'all status probes recorded');
+		strictEqual(mismatches.length, 0, `custom status/header contract violations: ${mismatches.join('; ')}`);
 	});
 
 	// -------------------------------------------------------------------------
 	// 3. ERROR MAPPING
 	// -------------------------------------------------------------------------
 	test('error mapping: thrown vs statusCode vs ClientError vs returned-error', async () => {
-		const probes: { path: string; label: string; expect: string }[] = [
-			{ path: '/ErrPlain/', label: 'throw plain Error', expect: '500 (no statusCode)' },
-			{ path: '/ErrStatusCode/?code=400', label: 'throw Error{.statusCode=400}', expect: '400' },
-			{ path: '/ErrStatusCode/?code=409', label: 'throw Error{.statusCode=409}', expect: '409' },
-			{ path: '/ErrClient/', label: 'throw ClientError (default)', expect: '400' },
-			{ path: '/ErrClient/?code=422', label: 'throw ClientError(422)', expect: '422' },
-			{ path: '/ErrReturned/', label: 'RETURN error-shaped {statusCode:400}', expect: '200 (not thrown)' },
-			{ path: '/ErrString/', label: 'throw bare string', expect: '500?' },
+		const probes: { path: string; label: string; expect: string; expectStatus: number }[] = [
+			{ path: '/ErrPlain/', label: 'throw plain Error', expect: '500 (no statusCode)', expectStatus: 500 },
+			{ path: '/ErrStatusCode/?code=400', label: 'throw Error{.statusCode=400}', expect: '400', expectStatus: 400 },
+			{ path: '/ErrStatusCode/?code=409', label: 'throw Error{.statusCode=409}', expect: '409', expectStatus: 409 },
+			{ path: '/ErrClient/', label: 'throw ClientError (default)', expect: '400', expectStatus: 400 },
+			{ path: '/ErrClient/?code=422', label: 'throw ClientError(422)', expect: '422', expectStatus: 422 },
+			{
+				path: '/ErrReturned/',
+				label: 'RETURN error-shaped {statusCode:400}',
+				expect: '200 (not thrown)',
+				expectStatus: 200,
+			},
+			{ path: '/ErrString/', label: 'throw bare string', expect: '500?', expectStatus: 500 },
 		];
+		const mismatches: string[] = [];
 		for (const p of probes) {
 			const r = await raw('GET', p.path);
 			let type = '';
@@ -185,20 +199,22 @@ suite('custom-resource HTTP contract', { skip: skipSuite }, (ctx: ContextWithHar
 			errorMatrix.push(
 				`${p.label.padEnd(34)} [want ${p.expect}] -> ${r.status}  type=${type}  title=${prefix(title, 50)}`
 			);
+			if (r.status !== p.expectStatus) mismatches.push(`${p.label}: status ${r.status} !== ${p.expectStatus}`);
 		}
-		ok(errorMatrix.length === probes.length, 'all error probes recorded');
+		strictEqual(mismatches.length, 0, `error-mapping contract violations: ${mismatches.join('; ')}`);
 	});
 
 	// -------------------------------------------------------------------------
 	// 4. CONTENT NEGOTIATION on a custom return value
 	// -------------------------------------------------------------------------
 	test('content negotiation applies to custom-resource responses', async () => {
-		const accepts: { label: string; header: string }[] = [
-			{ label: 'json', header: 'application/json' },
-			{ label: 'cbor', header: 'application/cbor' },
-			{ label: 'msgpack', header: 'application/x-msgpack' },
-			{ label: '*/*', header: '*/*' },
+		const accepts: { label: string; header: string; wantCt: string; wantJson: boolean }[] = [
+			{ label: 'json', header: 'application/json', wantCt: 'application/json', wantJson: true },
+			{ label: 'cbor', header: 'application/cbor', wantCt: 'application/cbor', wantJson: false },
+			{ label: 'msgpack', header: 'application/x-msgpack', wantCt: 'application/x-msgpack', wantJson: false },
+			{ label: '*/*', header: '*/*', wantCt: 'application/json', wantJson: true },
 		];
+		const mismatches: string[] = [];
 		for (const a of accepts) {
 			const r = await raw('GET', '/Negotiate/', { accept: a.header });
 			// Detect whether body is actually binary (cbor/msgpack) vs JSON text.
@@ -207,24 +223,30 @@ suite('custom-resource HTTP contract', { skip: skipSuite }, (ctx: ContextWithHar
 				? `json:${prefix(r.text, 40)}`
 				: `binary:${r.bytes.length}B hex=${r.bytes.subarray(0, 8).toString('hex')}`;
 			negotiateMatrix.push(`Accept ${a.label.padEnd(8)} -> ${r.status} ct=${r.ct.padEnd(26)} ${bodyDesc}`);
+			if (r.status !== 200) mismatches.push(`Accept ${a.label}: status ${r.status} !== 200`);
+			if (!r.ct.startsWith(a.wantCt)) mismatches.push(`Accept ${a.label}: content-type "${r.ct}" !~ "${a.wantCt}"`);
+			if (looksJson !== a.wantJson) mismatches.push(`Accept ${a.label}: body-is-json=${looksJson}, want ${a.wantJson}`);
 		}
-		ok(negotiateMatrix.length === accepts.length, 'all negotiation probes recorded');
+		strictEqual(mismatches.length, 0, `content-negotiation contract violations: ${mismatches.join('; ')}`);
 	});
 
 	// -------------------------------------------------------------------------
 	// 5. ODD RETURN TYPES
 	// -------------------------------------------------------------------------
 	test('odd return types serialize sanely (no blanket 500)', async () => {
-		const probes: { path: string; label: string }[] = [
-			{ path: '/RetString/', label: 'string' },
-			{ path: '/RetNumber/', label: 'number' },
-			{ path: '/RetBool/', label: 'boolean' },
-			{ path: '/RetNull/', label: 'null' },
-			{ path: '/RetUndefined/', label: 'undefined' },
-			{ path: '/RetArrayHuge/', label: 'huge array (50k)' },
-			{ path: '/RetAsyncIter/', label: 'async iterator' },
+		// null/undefined mean "no resource" -> 404 per Harper GET-not-found semantics;
+		// every other primitive/collection/iterator must serialize successfully as JSON.
+		const probes: { path: string; label: string; expectStatus: number }[] = [
+			{ path: '/RetString/', label: 'string', expectStatus: 200 },
+			{ path: '/RetNumber/', label: 'number', expectStatus: 200 },
+			{ path: '/RetBool/', label: 'boolean', expectStatus: 200 },
+			{ path: '/RetNull/', label: 'null', expectStatus: 404 },
+			{ path: '/RetUndefined/', label: 'undefined', expectStatus: 404 },
+			{ path: '/RetArrayHuge/', label: 'huge array (50k)', expectStatus: 200 },
+			{ path: '/RetAsyncIter/', label: 'async iterator', expectStatus: 200 },
 		];
 		const crashes: string[] = [];
+		const mismatches: string[] = [];
 		for (const p of probes) {
 			const r = await raw('GET', p.path);
 			const len = r.bytes.length;
@@ -232,10 +254,22 @@ suite('custom-resource HTTP contract', { skip: skipSuite }, (ctx: ContextWithHar
 				`${p.label.padEnd(18)} -> ${r.status} ct=${r.ct.padEnd(26)} len=${len} body=${prefix(r.text, 50)}`
 			);
 			if (r.status === 500) crashes.push(`${p.label}=500`);
+			if (r.status !== p.expectStatus) mismatches.push(`${p.label}: status ${r.status} !== ${p.expectStatus}`);
 		}
-		// Record but don't hard-fail on individual odd types; the contract finding is in the matrix.
 		console.log(`\n[custom-resource-contract] odd-return 500s: ${crashes.length ? crashes.join(', ') : 'none'}`);
-		ok(oddMatrix.length === probes.length, 'all odd-return probes recorded');
+		strictEqual(mismatches.length, 0, `odd-return-type contract violations: ${mismatches.join('; ')}`);
+
+		// Spot-check the successful cases actually round-trip the value, not just a 200.
+		const asJson = (path: string) => raw('GET', path).then((r) => JSON.parse(r.text));
+		strictEqual(await asJson('/RetString/'), 'just a bare string');
+		strictEqual(await asJson('/RetNumber/'), 1234.5);
+		strictEqual(await asJson('/RetBool/'), true);
+		const huge = await asJson('/RetArrayHuge/');
+		strictEqual(huge.length, 50000);
+		strictEqual(huge[0].v, 'row-0');
+		const streamed = await asJson('/RetAsyncIter/');
+		strictEqual(streamed.length, 5);
+		strictEqual(streamed[0].v, 'stream-0');
 	});
 
 	// -------------------------------------------------------------------------

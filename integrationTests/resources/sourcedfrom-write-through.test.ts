@@ -20,16 +20,16 @@
  * populated); cold = key was NEVER read from origin before the write.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'sourcedfrom-write-through');
-const ORIGIN_PORT = 39147;
 const skipSuite = process.platform === 'win32';
 
 interface WriteLogEntry {
@@ -55,6 +55,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 	let restURL: string;
 	let headers: Record<string, string>;
 	let server: http.Server;
+	let originPort: number;
 
 	// ---- ORIGIN = system of record: a store + a write log, all in the test process ----
 	const store = new Map<string, { id: string; value: unknown }>();
@@ -64,7 +65,12 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 	const results: ResultRow[] = [];
 
 	function startServer(): Promise<void> {
-		return new Promise((r) => server.listen(ORIGIN_PORT, '127.0.0.1', r));
+		return new Promise((r) =>
+			server.listen(0, '127.0.0.1', () => {
+				originPort = (server.address() as AddressInfo).port;
+				r();
+			})
+		);
 	}
 	function stopServer(): Promise<void> {
 		return new Promise((r) => server.close(() => r()));
@@ -152,7 +158,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {},
-			env: { QA147_ORIGIN_PORT: String(ORIGIN_PORT) },
+			env: { QA147_ORIGIN_PORT: String(originPort) },
 		});
 		client = createApiClient(ctx.harper);
 		restURL = client.restURL.replace(/\/$/, '');
@@ -214,7 +220,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 		await sleep(150);
 		const cache = await rest('GET', `/CacheWT/${id}`);
 		const w = writesFor(id);
-		results.push({
+		const row: ResultRow = {
 			scenario: 'WT-1 create cold',
 			table: 'CacheWT',
 			op: 'PUT',
@@ -228,8 +234,11 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 				r.status,
 				true
 			),
-		});
-		ok(true);
+		};
+		results.push(row);
+		// CacheWT source defines put(): a cold create must reach the origin.
+		strictEqual(row.verdict, 'WRITE-THROUGH', `expected write-through, got ${row.verdict}`);
+		strictEqual(originSnapshot(id), 'value="created-cold"');
 	});
 
 	test('WT-2 CREATE then READ-AFTER-WRITE consistency', async () => {
@@ -243,7 +252,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 		} catch {
 			/* ignore */
 		}
-		results.push({
+		const row: ResultRow = {
 			scenario: 'WT-2 read-after-write',
 			table: 'CacheWT',
 			op: 'PUT',
@@ -256,8 +265,10 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 			cacheAfter: `${cache.status}:${cache.body.slice(0, 30)}`,
 			originAfter: originSnapshot(id),
 			verdict: consistent ? 'RAW-CONSISTENT' : 'RAW-STALE/INCONSISTENT',
-		});
-		ok(true);
+		};
+		results.push(row);
+		// A read immediately after the write must see the just-written value, not a stale/absent one.
+		strictEqual(row.verdict, 'RAW-CONSISTENT', `expected read-after-write consistency, got ${row.verdict}`);
 	});
 
 	test('WT-3 UPDATE resident key: PUT over a populated key -> reaches origin?', async () => {
@@ -268,7 +279,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 		await sleep(150);
 		const cache = await rest('GET', `/CacheWT/${id}`);
 		const w = writesFor(id);
-		results.push({
+		const row: ResultRow = {
 			scenario: 'WT-3 update resident',
 			table: 'CacheWT',
 			op: 'PUT',
@@ -282,8 +293,10 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 				r.status,
 				true
 			),
-		});
-		ok(true);
+		};
+		results.push(row);
+		strictEqual(row.verdict, 'WRITE-THROUGH', `expected write-through, got ${row.verdict}`);
+		strictEqual(originSnapshot(id), 'value="updated-resident"');
 	});
 
 	test('WT-4 DELETE resident key -> deletes at origin?', async () => {
@@ -293,7 +306,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 		const r = await rest('DELETE', `/CacheWT/${id}`);
 		await sleep(150);
 		const w = writesFor(id);
-		results.push({
+		const row: ResultRow = {
 			scenario: 'WT-4 delete resident',
 			table: 'CacheWT',
 			op: 'DELETE',
@@ -307,8 +320,10 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 				r.status,
 				true
 			),
-		});
-		ok(true);
+		};
+		results.push(row);
+		strictEqual(row.verdict, 'WRITE-THROUGH', `expected write-through delete, got ${row.verdict}`);
+		strictEqual(originSnapshot(id), 'ABSENT');
 	});
 
 	test('WT-5 DELETE cold key (never read) -> deletes at origin?', async () => {
@@ -318,7 +333,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 		const r = await rest('DELETE', `/CacheWT/${id}`);
 		await sleep(150);
 		const w = writesFor(id);
-		results.push({
+		const row: ResultRow = {
 			scenario: 'WT-5 delete cold',
 			table: 'CacheWT',
 			op: 'DELETE',
@@ -332,8 +347,11 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 				r.status,
 				true
 			),
-		});
-		ok(true);
+		};
+		results.push(row);
+		// Even without a residency read, a delete against CacheWT must still forward to the origin.
+		strictEqual(row.verdict, 'WRITE-THROUGH', `expected write-through delete, got ${row.verdict}`);
+		strictEqual(originSnapshot(id), 'ABSENT');
 	});
 
 	// ============================================================ CacheRO (read-only source: no put/delete)
@@ -344,7 +362,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 		await sleep(150);
 		const cache = await rest('GET', `/CacheRO/${id}`);
 		const w = writesFor(id);
-		results.push({
+		const row: ResultRow = {
 			scenario: 'RO-1 create cold (no source.put)',
 			table: 'CacheRO',
 			op: 'PUT',
@@ -354,8 +372,11 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 			cacheAfter: `${cache.status}:${cache.body.slice(0, 30)}`,
 			originAfter: originSnapshot(id),
 			verdict: verdictFor(w.length > 0, r.status, true),
-		});
-		ok(true);
+		};
+		results.push(row);
+		// No source.put(): the write must never silently reach the origin, and Harper rejects it.
+		ok(w.length === 0, 'origin must not receive a write for a source with no put()');
+		strictEqual(row.verdict, 'REJECTED', `expected rejection with no origin write, got ${row.verdict}`);
 	});
 
 	test('RO-2 UPDATE resident key on read-only source -> silent divergence?', async () => {
@@ -374,7 +395,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 		const w = writesFor(id);
 		const cacheShowsNew = cacheVal === 'ro-updated';
 		const originStillOld = store.get(id)?.value === 'ro-origin-seed';
-		results.push({
+		const row: ResultRow = {
 			scenario: 'RO-2 update resident (no source.put)',
 			table: 'CacheRO',
 			op: 'PUT',
@@ -387,8 +408,13 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 				w.length === 0 && cacheShowsNew && originStillOld
 					? 'SILENT-DIVERGENCE'
 					: verdictFor(w.length > 0, r.status, true),
-		});
-		ok(true);
+		};
+		results.push(row);
+		// No source.put(): update on a resident key must not reach the origin, and Harper rejects it
+		// rather than silently diverging the cache from the system of record.
+		ok(w.length === 0, 'origin must not receive a write for a source with no put()');
+		strictEqual(row.verdict, 'REJECTED', `expected rejection, got ${row.verdict}`);
+		strictEqual(originStillOld, true, 'origin value must remain unchanged');
 	});
 
 	test('RO-3 DELETE resident key on read-only source -> origin still has it?', async () => {
@@ -399,7 +425,7 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 		await sleep(150);
 		const cache = await rest('GET', `/CacheRO/${id}`); // may re-populate from origin
 		const w = writesFor(id);
-		results.push({
+		const row: ResultRow = {
 			scenario: 'RO-3 delete resident (no source.delete)',
 			table: 'CacheRO',
 			op: 'DELETE',
@@ -416,8 +442,17 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 							r.status,
 							true
 						),
-		});
-		ok(true);
+		};
+		results.push(row);
+		// No source.delete(): the origin must never lose the record, and a re-read must still find it.
+		ok(w.length === 0, 'origin must not receive a delete for a source with no delete()');
+		strictEqual(
+			row.verdict,
+			'CACHE-ONLY-DELETE(origin-retains)',
+			`expected origin to retain the record, got ${row.verdict}`
+		);
+		strictEqual(store.has(id), true, 'origin must still hold the record');
+		strictEqual(cache.status, 200, 're-read after rejected delete must still find the record');
 	});
 
 	test('RO-4 PATCH resident key on read-only source -> divergence?', async () => {
@@ -434,7 +469,8 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 			/* ignore */
 		}
 		const w = writesFor(id);
-		results.push({
+		const originStillSeed = store.get(id)?.value === 'ro-patch-seed';
+		const row: ResultRow = {
 			scenario: 'RO-4 patch resident (no source.patch)',
 			table: 'CacheRO',
 			op: 'PATCH',
@@ -444,10 +480,14 @@ suite('sourcedFrom cache WRITE semantics', { skip: skipSuite }, (ctx: ContextWit
 			cacheAfter: `${cache.status}:val=${JSON.stringify(cacheVal)}`,
 			originAfter: originSnapshot(id),
 			verdict:
-				w.length === 0 && cacheVal === 'ro-patched' && store.get(id)?.value === 'ro-patch-seed'
+				w.length === 0 && cacheVal === 'ro-patched' && originStillSeed
 					? 'SILENT-DIVERGENCE'
 					: verdictFor(w.length > 0, r.status, true),
-		});
-		ok(true);
+		};
+		results.push(row);
+		// No source.patch(): the origin must never diverge from the cache; PATCH is rejected outright.
+		ok(w.length === 0, 'origin must not receive a write for a source with no patch()');
+		strictEqual(row.verdict, 'REJECTED', `expected rejection, got ${row.verdict}`);
+		strictEqual(originStillSeed, true, 'origin value must remain unchanged');
 	});
 });

@@ -223,9 +223,9 @@ function buildSuite(label: string, config: Record<string, unknown>) {
 		});
 
 		// ── Q1: WILDCARD FAN-OUT — exact #/+ matching, NO cross-topic bleed ────────
-		test('Q1: wildcard fan-out correctness — no cross-topic bleed', async () => {
+		test('Q1: wildcard fan-out correctness — no cross-topic bleed', async (t) => {
 			if (!mqttUsable) {
-				console.log(`[mqtt-at-scale][${label}][Q1] SKIPPED (harness): ${mqttSkipReason}`);
+				t.skip(`MQTT broker unavailable (harness): ${mqttSkipReason}`);
 				return;
 			}
 			const N = 60; // 60 device topics Device/0..Device/59
@@ -330,9 +330,9 @@ function buildSuite(label: string, config: Record<string, unknown>) {
 		});
 
 		// ── Q2: QoS-1 DURABLE BACKLOG drained on reconnect ─────────────────────────
-		test('Q2: QoS-1 durable backlog drained on reconnect across all topics', async () => {
+		test('Q2: QoS-1 durable backlog drained on reconnect across all topics', async (t) => {
 			if (!mqttUsable) {
-				console.log(`[mqtt-at-scale][${label}][Q2] SKIPPED (harness): ${mqttSkipReason}`);
+				t.skip(`MQTT broker unavailable (harness): ${mqttSkipReason}`);
 				return;
 			}
 			const N = 40;
@@ -409,9 +409,9 @@ function buildSuite(label: string, config: Record<string, unknown>) {
 		});
 
 		// ── Q3: ISOLATION (no HOL blocking) + broker memory under fan-out ──────────
-		test('Q3: stalled subscriber does not starve healthy subs; memory bounded', async () => {
+		test('Q3: stalled subscriber does not starve healthy subs; memory bounded', async (t) => {
 			if (!mqttUsable) {
-				console.log(`[mqtt-at-scale][${label}][Q3] SKIPPED (harness): ${mqttSkipReason}`);
+				t.skip(`MQTT broker unavailable (harness): ${mqttSkipReason}`);
 				return;
 			}
 			const N = 50;
