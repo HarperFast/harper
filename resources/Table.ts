@@ -2081,8 +2081,10 @@ export function makeTable(options) {
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
 					if (options?.residencyId != undefined) residencyId = options.residencyId;
-					const expiresAt: number =
-						options?.expiresAt ?? context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
+					// options/context expiresAt are the most specific overrides; a record @expiresAt field
+					// (resolved below, once recordToStore is merged) overrides the table default in both
+					// directions; the table default is the final fallback. -1 means no expiration.
+					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
 					// and no out-of-order resequencing/dedup (the source of the O(n) keyed-lookup spin in
@@ -2498,6 +2500,25 @@ export function makeTable(options) {
 							}
 						}
 						residencyId = getResidencyId(residency);
+					}
+					if (expiresAt == undefined) {
+						// A schema @expiresAt attribute makes the record field authoritative over the table
+						// default, in both directions: stamp it into the stored expiry metadata that governs
+						// read-hiding and the cleanup sweep, not just the separate index-pruning sweep (which
+						// only removes already-past records and so can never extend past the table default).
+						// Read from recordToStore so the metadata matches exactly what the pruning sweep later
+						// reads back. Falls back to the table default when the field is unset or non-numeric.
+						const fieldExpiresAt = expiresAtProperty ? recordToStore?.[expiresAtProperty.name] : undefined;
+						const fieldExpiresAtMs = fieldExpiresAt == undefined ? NaN : Number(fieldExpiresAt);
+						// Only a finite, non-negative epoch counts: negatives collide with the -1 "no expiration"
+						// sentinel (the encoder omits HAS_EXPIRATION for <0, but the field sweep would still evict a
+						// negative field value), so treat a negative/NaN field as unset and use the table default.
+						expiresAt =
+							Number.isFinite(fieldExpiresAtMs) && fieldExpiresAtMs >= 0
+								? fieldExpiresAtMs
+								: expirationMs
+									? expirationMs + Date.now()
+									: -1;
 					}
 					if (!fullUpdate) {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
