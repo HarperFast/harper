@@ -166,30 +166,74 @@ export function materializeGlobalSecrets(): Promise<void> {
 }
 let materializeInFlight: Promise<void> | undefined;
 
+// Bump on every applied live change, so a full rescan can detect that its stable-snapshot view raced
+// a newer watcher update and retry rather than clobber it (see scanIntoSecretRows).
+let secretEventSeq = 0;
+const SCAN_RETRY_LIMIT = 5;
+
+/**
+ * Rebuild `secretRows` (the live snapshot behind the scoped accessor and subscriptions) from a full
+ * table scan, then re-deliver current values to every open stream. `table.search` uses a stable
+ * snapshot, so a scan that started before a revoke could otherwise complete afterward and re-authorize
+ * the just-revoked secret; to prevent that we retry the scan when a live change was applied while it
+ * ran, and the final assignment is synchronous (no await) so no event can interleave between the guard
+ * check and the assignment. Does NOT touch process.env — callers that must (re)materialize the global
+ * tier do that separately (it stays reload-only).
+ */
+async function scanIntoSecretRows(table: any): Promise<Map<string, SecretRowState>> {
+	let rows: Map<string, SecretRowState>;
+	let before: number;
+	let attempts = 0;
+	do {
+		before = secretEventSeq;
+		rows = new Map();
+		for await (const record of table.search([])) {
+			const name = record.name;
+			if (typeof name !== 'string' || !name) continue;
+			rows.set(name, rowStateFromRecord(record));
+		}
+	} while (before !== secretEventSeq && ++attempts < SCAN_RETRY_LIMIT);
+	if (before !== secretEventSeq) {
+		logger.warn(
+			'Secrets store changed repeatedly during a rescan; applying the latest scan (heals on the next change)'
+		);
+	}
+	secretRows = rows;
+	storeAvailable = true;
+	redispatchAllStreams();
+	return rows;
+}
+
 async function doMaterializeGlobalSecrets(): Promise<void> {
 	const table = (databases as { system?: Record<string, any> }).system?.[SECRET_TABLE];
 	if (!table) {
 		storeAvailable = false;
 		secretRows = new Map();
 		accessorCache.clear();
+		redispatchAllStreams(); // reflect the store going away to any open streams
 		logger.debug?.(
 			`Secrets store not initialized (system.${SECRET_TABLE} missing); component env declarations can only be satisfied from process.env`
 		);
 		return;
 	}
-	const rows = new Map<string, SecretRowState>();
+	// Start the watcher BEFORE the scan so a change committed during the scan bumps secretEventSeq and
+	// forces a retry (closing the scan→attach gap where a deletion would otherwise be lost). Non-fatal:
+	// a subscribe failure leaves the node bootable with reload-only secrets.
 	try {
-		for await (const row of table.search([])) {
-			const name = row.name;
-			if (typeof name !== 'string' || !name) continue;
-			rows.set(name, rowStateFromRecord(row));
-		}
+		await ensureSecretWatcher(table);
+	} catch (error) {
+		logger.warn(
+			`Could not start the live secrets change watcher (secrets will be reload-only): ${(error as Error).message}`
+		);
+	}
+	let rows: Map<string, SecretRowState>;
+	try {
+		rows = await scanIntoSecretRows(table);
 	} catch (error) {
 		// Leave the previous snapshot (and process.env) untouched rather than acting on a partial read.
 		logger.error(`Failed to read the secrets store (system.${SECRET_TABLE}): ${(error as Error).message}`);
 		return;
 	}
-	storeAvailable = true;
 
 	for (const [name, state] of rows) {
 		if (!state.processEnv) {
@@ -221,19 +265,6 @@ async function doMaterializeGlobalSecrets(): Promise<void> {
 			delete process.env[name];
 			ownedEnvKeys.delete(name);
 		}
-	}
-	secretRows = rows;
-	accessorCache.clear();
-	// Start (once) the live change watcher so the scoped-tier accessor and any subscriptions reflect
-	// later set_secret/grant/revoke/delete without a reload. Runs on whichever thread materializes
-	// secrets — the same thread that serves the accessor. Never fatal: a subscribe failure leaves the
-	// node bootable with reload-only secrets.
-	try {
-		await ensureSecretWatcher(table);
-	} catch (error) {
-		logger.warn(
-			`Could not start the live secrets change watcher (secrets will be reload-only): ${(error as Error).message}`
-		);
 	}
 }
 
@@ -510,6 +541,10 @@ function resolveSubscribedSecret(
 	name: string,
 	row: SecretRowState | undefined
 ): { available: boolean; value?: string } {
+	// `subscribe` is the reserved accessor method, never a readable secret (it is shadowed on the view),
+	// so it must be uniformly invisible as a value here too — otherwise subscribe('subscribe') would leak
+	// the plaintext of a secret literally named `subscribe` that the accessor hides.
+	if (name === 'subscribe') return { available: false };
 	// Exactly the read accessor's authority (getSecretsForComponent), so a subscription can never
 	// widen access beyond a fresh `secrets[name]` read:
 	//  1. a scoped row granted to this component and decryptable → its live decrypted value;
@@ -532,14 +567,23 @@ function resolveSubscribedSecret(
 let secretWatcher: Promise<void> | undefined;
 let secretWatcherSubscription: { emit?: (event: string) => void; end?: () => void } | undefined;
 
+function restartSecretWatcher(): void {
+	// Drop the memo (and any live subscription) so the next ensureSecretWatcher() re-attaches.
+	const sub = secretWatcherSubscription;
+	secretWatcher = undefined;
+	secretWatcherSubscription = undefined;
+	sub?.emit?.('close');
+	sub?.end?.();
+}
+
 function ensureSecretWatcher(table: any): Promise<void> {
 	// Reset the memo on failure so a transient table.subscribe() error doesn't permanently disable live
 	// secrets — the next caller retries instead of reusing a rejected promise.
 	return (secretWatcher ??= (async () => {
-		// No omitCurrent: on attach the watcher replays the current rows, re-syncing `secretRows` and
-		// closing any gap between the load-time scan and the subscription attach point. Subsequent
-		// commits (local or replicated) keep the snapshot live.
-		secretWatcherSubscription = await table.subscribe({ listener: onSecretEvent });
+		// omitCurrent: the load-cycle scan (scanIntoSecretRows) seeds and re-syncs the snapshot, and the
+		// watcher is attached BEFORE that scan, so it need not (and should not) replay current rows here —
+		// it only needs subsequent commits, local or replicated.
+		secretWatcherSubscription = await table.subscribe({ omitCurrent: true, listener: onSecretEvent });
 	})().catch((error) => {
 		secretWatcher = undefined;
 		throw error;
@@ -551,15 +595,29 @@ function ensureSecretWatcher(table: any): Promise<void> {
 // change out to any subscribers, WITHOUT touching process.env — the global tier stays reload-only.
 function onSecretEvent(event: any): void {
 	try {
+		// Table.subscribe surfaces an async retained-state/replay failure by delivering the Error THROUGH
+		// the listener (not by rejecting subscribe()), so detect it here and restart the watcher —
+		// otherwise the memo stays fulfilled and every future ensureSecretWatcher reuses a dead subscription.
+		if (event instanceof Error) {
+			logger.warn(`secrets change watcher errored; restarting it: ${event.message}`);
+			restartSecretWatcher();
+			return;
+		}
 		// Base-copy replication of a system table delivers a single `{type:'reload', id:null}` marker
-		// instead of per-row events (harper-pro#495): the whole table was reseeded, so re-scan to resync
-		// adds AND removals rather than silently keeping stale rows/grants.
+		// instead of per-row events (harper-pro#495): the whole table was reseeded, so re-scan the LIVE
+		// snapshot to resync adds AND removals (and re-deliver to streams). It does NOT re-materialize
+		// process.env — the global tier stays reload-only even under replicated reloads.
 		if (event?.type === 'reload') {
-			void materializeGlobalSecrets();
+			const table = (databases as { system?: Record<string, any> }).system?.[SECRET_TABLE];
+			if (table)
+				scanIntoSecretRows(table).catch((error) =>
+					logger.warn(`secrets store rescan after a reload marker failed: ${(error as Error).message}`)
+				);
 			return;
 		}
 		const name = (event?.value?.name ?? event?.id) as unknown;
 		if (typeof name !== 'string' || !name) return;
+		secretEventSeq++; // let a concurrent rescan know its snapshot is now stale
 		const record = event?.type === 'delete' ? null : (event?.value ?? null);
 		const row = record ? rowStateFromRecord(record) : undefined;
 		if (row) secretRows.set(name, row);
@@ -582,6 +640,19 @@ function dispatchSecretChange(name: string, row: SecretRowState | undefined): vo
 		// value again and resumes on the same stream. deliver() dedups unchanged values.
 		const { available, value } = resolveSubscribedSecret(stream.componentName, name, row);
 		stream.deliver(available ? value : undefined);
+	}
+}
+
+// Re-deliver the current effective value to every open stream from the present `secretRows` — used
+// after a full rescan (reload marker or load cycle), where individual per-row events were not seen so
+// a removed row's subscribers would otherwise keep their stale value.
+function redispatchAllStreams(): void {
+	for (const [name, streams] of secretSubscribers) {
+		const row = secretRows.get(name);
+		for (const stream of [...streams]) {
+			const { available, value } = resolveSubscribedSecret(stream.componentName, name, row);
+			stream.deliver(available ? value : undefined);
+		}
 	}
 }
 
@@ -627,6 +698,16 @@ function currentSecretValue(componentName: string, name: string): string | undef
 	return available ? value : undefined;
 }
 
+/**
+ * Whether a secret named exactly `name` WOULD be readable to the component if it weren't reserved —
+ * used only to detect (and warn about) a secret named `subscribe` shadowed by the reserved method.
+ */
+function hasRawSecretNamed(componentName: string, name: string): boolean {
+	const row = secretRows.get(name);
+	if (row && !row.processEnv && row.value !== undefined && row.grants.includes(componentName)) return true;
+	return (declaredEnvNames.get(componentName)?.has(name) ?? false) && process.env[name] !== undefined;
+}
+
 /** The names currently visible to a component (granted scoped rows + declared names present in env). */
 function currentSecretNames(componentName: string): string[] {
 	const names = new Set<string>();
@@ -635,6 +716,7 @@ function currentSecretNames(componentName: string): string[] {
 	for (const [name, row] of secretRows) {
 		if (row.value !== undefined && !row.processEnv && row.grants.includes(componentName)) names.add(name);
 	}
+	names.delete('subscribe'); // reserved for the method — never surfaced as a value key
 	return [...names];
 }
 
@@ -664,7 +746,7 @@ export function getSecretsForComponent(componentName: string): SecretsView {
 				// reserved method (it is then unreadable via dot/bracket access — an accepted #1776 tradeoff).
 				if (!warnedSubscribeShadow.has(componentName)) {
 					warnedSubscribeShadow.add(componentName);
-					if (currentSecretValue(componentName, 'subscribe') !== undefined) {
+					if (hasRawSecretNamed(componentName, 'subscribe')) {
 						logger.warn(
 							`Component '${componentName}' has a secret named 'subscribe'; it is shadowed by the reserved secrets.subscribe() method and is not readable through the secrets accessor`
 						);
@@ -681,8 +763,9 @@ export function getSecretsForComponent(componentName: string): SecretsView {
 			return currentSecretValue(componentName, property) !== undefined;
 		},
 		ownKeys() {
-			// `subscribe` is intentionally omitted (non-enumerable), so spread/Object.keys never surface it.
-			return currentSecretNames(componentName);
+			// Include `subscribe` so own-property reflection is consistent (getOwnPropertyDescriptor
+			// reports it); it is non-enumerable, so spread/Object.keys still skip it.
+			return [...currentSecretNames(componentName), 'subscribe'];
 		},
 		getOwnPropertyDescriptor(_target, property) {
 			if (property === 'subscribe') {
