@@ -1147,7 +1147,9 @@ export function rewriteSshConfigPaths(
 	const sshDirPattern = sshDir.split(/[\\/]/).map(escapeRegExp).join(sepClass) + `(?=${sepClass}|$)`;
 	const sshDirRegex = new RegExp(sshDirPattern, platform === 'win32' ? 'gi' : 'g');
 	const normalizedTempDir = platform === 'win32' ? tempDir.replace(/\\/g, '/') : tempDir;
-	return sshConfig.replace(sshDirRegex, normalizedTempDir);
+	// Function replacer: a string replacer would treat `$` sequences in normalizedTempDir
+	// (e.g. `$&`, `$1`) as replacement patterns instead of literal characters.
+	return sshConfig.replace(sshDirRegex, () => normalizedTempDir);
 }
 
 /**
