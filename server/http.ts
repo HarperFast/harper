@@ -21,7 +21,7 @@ import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.
 import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
-import { Readable, Writable } from 'node:stream';
+import { Readable, Writable, pipeline } from 'node:stream';
 import { mkdirSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
@@ -333,11 +333,13 @@ export function httpServer(listener, options) {
 
 /**
  * Pipe a stream response body to a Node http response, tracking bytes-sent analytics and tearing
- * the source down on client disconnect. `pipe()` doesn't forward the source's 'error' event to the
- * destination, and Node throws an unhandled 'error' as an uncaughtException — a generator that
- * throws mid-iteration (e.g. an SSE resource) would otherwise crash the process and leave the
- * response hanging instead of closing (#1763). Headers/some body are typically already flushed by
- * the time a stream errors, so just end the response rather than attempt to send an error status.
+ * the whole chain down on client disconnect or a source error. A bare `pipe()` doesn't forward the
+ * source's 'error' event to the destination, and Node throws an unhandled 'error' as an
+ * uncaughtException — a generator that throws mid-iteration (e.g. an SSE resource) would otherwise
+ * crash the process and leave the response hanging instead of closing (#1763). `pipeline()` wires
+ * up destroy-propagation in both directions (client disconnect destroys the source, a source error
+ * destroys the response) and, unlike a clean `.end()`, closes the response abruptly on error — which
+ * correctly signals a failed/truncated transfer to the client instead of implying it completed.
  */
 export function pipeBodyToResponse(
 	body: Readable,
@@ -346,22 +348,23 @@ export function pipeBodyToResponse(
 	method: string,
 	endTime: number
 ) {
-	body.pipe(nodeResponse);
-	if (body.destroy)
-		nodeResponse.on('close', () => {
-			body.destroy();
-		});
+	if (nodeResponse.destroyed || nodeResponse.writableEnded) {
+		body.destroy();
+		return;
+	}
 	let bytesSent = 0;
 	body.on('data', (data) => {
-		bytesSent += data.length;
+		bytesSent += typeof data === 'string' ? Buffer.byteLength(data) : data.length;
 	});
-	body.on('end', () => {
-		recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
-		recordAction(bytesSent, 'bytes-sent', handlerPath, method);
-	});
-	body.on('error', (error) => {
-		harperLogger.warn(errorForLog(error));
-		nodeResponse.end();
+	pipeline(body, nodeResponse, (error) => {
+		if (error) {
+			// a client closing the connection mid-stream surfaces as a premature-close error here;
+			// that's a routine disconnect, not a failure worth a warning
+			if ((error as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') harperLogger.warn(errorForLog(error));
+		} else {
+			recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
+			recordAction(bytesSent, 'bytes-sent', handlerPath, method);
+		}
 	});
 }
 

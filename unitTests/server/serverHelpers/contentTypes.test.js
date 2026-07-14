@@ -180,7 +180,11 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 	// 'error' listener — an unhandled 'error' event is a Node uncaughtException, and pipe() never
 	// forwards it to the destination, so the response was left open. Exercise the real
 	// `pipeBodyToResponse` helper (extracted from http.ts) over a real HTTP connection to guard the
-	// fix: the response must end cleanly, with no uncaughtException, and no client-side abort.
+	// fix. `pipeBodyToResponse` now tears the chain down with `stream.pipeline()`, which closes the
+	// response abruptly (rather than a clean `.end()`) on a source error — that's deliberate, since a
+	// clean end would misleadingly tell the client the transfer completed. So the client side here may
+	// observe 'end', 'error', or 'close' instead of always a clean 'end'; what must hold regardless is
+	// no hang and no uncaughtException.
 	it('ends the response without hanging or raising an uncaughtException when the generator throws mid-stream', async function () {
 		async function* source() {
 			yield { seq: 'a' };
@@ -204,15 +208,17 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 			const { port } = server.address();
 
-			const output = await new Promise((resolve, reject) => {
+			const output = await new Promise((resolve) => {
 				const chunks = [];
 				const request = http.get(`http://127.0.0.1:${port}/`, (res) => {
 					res.on('data', (chunk) => chunks.push(chunk));
-					// resolving on 'end' (not a client abort) proves the response closed on its own
+					// the pre-error chunks ('seq: a'/'seq: b') are already flushed by the time the
+					// generator throws, so any of these terminal events still lets us verify them
 					res.on('end', () => resolve(Buffer.concat(chunks).toString()));
-					res.on('error', reject);
+					res.on('error', () => resolve(Buffer.concat(chunks).toString()));
+					res.on('close', () => resolve(Buffer.concat(chunks).toString()));
 				});
-				request.on('error', reject);
+				request.on('error', () => resolve(Buffer.concat(chunks).toString()));
 			});
 
 			const events = output
