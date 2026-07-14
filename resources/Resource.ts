@@ -770,19 +770,21 @@ function transactional(
 					// row-level machinery and keep the entry check. Subscriptions are excluded: their
 					// delivery path never reaches search(), so deferring would grant them UNCHECKED —
 					// they keep the entry evaluation (which fails closed for a record-scoped override)
-					// until per-event delivery checks exist (#1419). The collection predicate must be at
-					// least as strict as the routing it relies on: instance get() only reaches search()
-					// via isSearchTarget (isCollection), so `get` defers on isCollection alone — a
-					// hypothetical {id: null, isCollection: false} get keeps the entry check instead of
-					// skipping both checks. search/query invoke instance search() directly (which
-					// consumes checkPermission), so id == null suffices there.
+					// until per-event delivery checks exist (#1419). Method semantics decide the deferral:
+					// `get` with a non-null id is a true single-record read (entry check runs with the
+					// record loaded, so record-scoped field reads resolve) and only defers when
+					// isCollection — mirroring the isSearchTarget routing it relies on. ALL search/query
+					// calls defer: a present id there is a starts_with/prefix SEED (a multi-record scan,
+					// see Table.search), so an entry verdict would gate — or worse, grant — the whole
+					// scan; both methods invoke instance search() directly, which consumes
+					// checkPermission and arms the per-record guard.
 					// Record-scoping is SYNC-only: an async allowRead override keeps this entry check,
 					// which awaits its verdict and fails closed on rejection (#1422 gap 1) — the sync
 					// per-record traversal path cannot await it.
 					if (
 						options.type === 'read' &&
 						!isSubscribeAction &&
-						(query.isCollection || (query.id == null && options.method !== 'get')) &&
+						(options.method !== 'get' || query.isCollection) &&
 						(resource.constructor as any)?.supportsRowLevelAllowRead &&
 						!(resource.allowRead as any)?.isDefaultAllowRead &&
 						(resource.allowRead as any)?.constructor?.name !== 'AsyncFunction'
