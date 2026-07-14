@@ -224,9 +224,6 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 		}
 	}
 
-<<<<<<< HEAD
-	const request: any = { conditions, allowConditionsOnDynamicAttributes: true };
-=======
 	const select = getAttributes ?? [];
 
 	// ensure we're always selecting id (an empty select array already selects everything, including id)
@@ -241,7 +238,6 @@ export async function get(metric: string, opts?: GetAnalyticsOpts): Promise<Metr
 	if (boundedWindow) {
 		request.enforceExecutionOrder = true;
 	}
->>>>>>> 99780a726 (fix(analytics): drive get_analytics off the bounded time window, not the metric index (#1796))
 	if (select.length > 0) {
 		request['select'] = select;
 	}
