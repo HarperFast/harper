@@ -96,6 +96,39 @@ export async function describeAll(opObj: any = {}) {
 	}
 }
 
+// `schema_defined: true` tables don't auto-register attributes discovered from writes (unlike
+// dynamic tables -- see `upsertRecords` in `harperBridge/ResourceBridge.ts`), so a record can carry
+// fields the declared schema never learns about. Sampling a small, fixed number of records is
+// enough to catch that in practice (an attribute worth flagging shows up in more than a handful of
+// records) while keeping the cost independent of table size, unlike a full scan.
+const UNDECLARED_ATTRIBUTE_SAMPLE_SIZE = 100;
+
+/**
+ * Samples up to `UNDECLARED_ATTRIBUTE_SAMPLE_SIZE` records from the table's primary store and
+ * returns attribute names present in that data but absent from the declared schema.
+ */
+function findUndeclaredAttributes(tableObj: any): string[] {
+	const declared = new Set((tableObj.attributes ?? []).map((attribute) => attribute.name));
+	const undeclared = new Set<string>();
+	let sampled = 0;
+	// `limit` is honored by lmdb-js (a free read-side optimization) but ignored by rocksdb-js, so
+	// the explicit break below still bounds the scan on both backends.
+	for (const { value: record } of tableObj.primaryStore.getRange({
+		start: true,
+		limit: UNDECLARED_ATTRIBUTE_SAMPLE_SIZE,
+		lazy: true,
+		snapshot: false,
+	})) {
+		if (record != null) {
+			for (const key of Object.keys(record)) {
+				if (!declared.has(key)) undeclared.add(key);
+			}
+		}
+		if (++sampled >= UNDECLARED_ATTRIBUTE_SAMPLE_SIZE) break;
+	}
+	return Array.from(undeclared);
+}
+
 /**
  * This method will return the metadata for a table - if `attrPerms` are passed as an argument (or included in the `describeTableObject` arg),
  * the final results w/ be filtered based on those permissions
@@ -219,6 +252,25 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			const recordCount = await tableObj.getRecordCount({ exactCount: !!describeTableObject.exact_count });
 			tableResult.record_count = recordCount.recordCount;
 			tableResult.estimated_record_range = recordCount.estimatedRange;
+			// Attribute-permission-restricted callers only get metadata for attributes they're
+			// permitted to describe; undeclared attributes have no permission entry at all, so
+			// skip surfacing them rather than leaking their names to a restricted role.
+			if (tableObj.schemaDefined && !tableAttrPerms) {
+				const undeclaredAttributes = findUndeclaredAttributes(tableObj);
+				if (undeclaredAttributes.length > 0) {
+					tableResult.undeclared_attributes = undeclaredAttributes;
+					// `trace`, not `warn`: `undeclared_attributes` on the response is the actual signal
+					// callers act on. `describe_table`/`describe_all` can be polled frequently (e.g. by
+					// the Studio or monitoring), and this condition persists until someone declares the
+					// attribute -- a `warn` would repeat on every poll instead of surfacing once.
+					logger.trace(
+						`describe_table: ${schema}.${table} is schema_defined but sampled records contain ` +
+							`attribute(s) not declared in the schema: ${undeclaredAttributes.join(', ')}. ` +
+							`schema_defined tables do not auto-register attributes written to records; add them ` +
+							`explicitly (e.g. create_attribute) if they should be part of the schema.`
+					);
+				}
+			}
 		}
 		tableResult.table_size = tableObj.getSize();
 		tableResult.db_audit_size = tableObj.getAuditSize();
