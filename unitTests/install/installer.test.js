@@ -572,3 +572,30 @@ describe('applyInstallModeDefaults', () => {
 		assert.equal(args.node_hostname, 'real-node.example.com');
 	});
 });
+
+// harper#672: the install destination prompt must expand `~/...` to an absolute path immediately
+// so every downstream consumer (mountHdb, createBootPropertiesFile, createConfigFile) agrees on the
+// same location, rather than each one independently (and inconsistently) trying to expand it.
+// `resolveInstallDestination` is the single funnel both the prompt's `filter` and the cmd/env/config
+// override path route through - tested directly against the real exported helper (no rewire).
+describe('resolveInstallDestination', () => {
+	const { resolveInstallDestination } = require('#js/utility/install/installer');
+
+	it('expands a ~/... destination to an absolute path under the home directory', () => {
+		assert.equal(resolveInstallDestination('~/dev/hdb'), path.join(os.homedir(), 'dev', 'hdb'));
+	});
+
+	it('leaves an absolute /... destination unchanged', () => {
+		assert.equal(resolveInstallDestination('/opt/harperdb'), '/opt/harperdb');
+	});
+
+	it('leaves a bare relative destination unchanged (preserves cwd-relative semantics)', () => {
+		assert.equal(resolveInstallDestination('hdb'), 'hdb');
+		assert.equal(resolveInstallDestination('nested/hdb'), 'nested/hdb');
+	});
+
+	it('leaves the default install destination (already absolute) unchanged', () => {
+		const defaultRoot = path.join(os.homedir(), 'hdb');
+		assert.equal(resolveInstallDestination(defaultRoot), defaultRoot);
+	});
+});
