@@ -2647,17 +2647,25 @@ export function makeTable(options) {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			// An application-overridden allowRead is a RECORD-scoped check (#1422 gap 2 / #1241): it is
+			// evaluated once per record during query execution with `this` = the record, instead of once
+			// at entry where `this` is a collection resource with nothing loaded. The framework defaults
+			// (marked isDefaultAllowRead) are this-free table/RBAC checks and keep the entry evaluation.
+			const recordScopedAllowRead =
+				target.checkPermission && !(this.allowRead as any)?.isDefaultAllowRead ? this.allowRead : undefined;
 			if (target.checkPermission) {
-				// requesting authorization verification
-				let allowed;
-				try {
-					allowed = this.allowRead((context as any).user, target, context);
-				} catch {
-					// allow* threw — fail closed rather than letting the request proceed
-					throw new AccessViolation((context as any).user);
-				}
-				if (!allowed) {
-					throw new AccessViolation((context as any).user);
+				if (!recordScopedAllowRead) {
+					// requesting authorization verification
+					let allowed;
+					try {
+						allowed = this.allowRead((context as any).user, target, context);
+					} catch {
+						// allow* threw — fail closed rather than letting the request proceed
+						throw new AccessViolation((context as any).user);
+					}
+					if (!allowed) {
+						throw new AccessViolation((context as any).user);
+					}
 				}
 			}
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
@@ -2861,16 +2869,30 @@ export function makeTable(options) {
 			// scans), the read transaction reads against the latest committed data without pinning a
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
-			// Record-level read guard (#1241): a resource may define a static allowReadRecord(user, record)
-			// that participates in query execution (pushed into HNSW traversal for vector sorts, applied as a
-			// post-filter otherwise). Resolve off the actual (possibly subclassed) constructor so overrides win.
-			// SCOPE: this is a QUERY-result filter, not a general read-authorization boundary — direct
-			// single-record get(id) does not consult it (use allowRead/instance hooks for that). It must be
-			// synchronous, side-effect free, and fast; it can run once per candidate record during traversal.
-			const allowReadRecord = (this.constructor as any).allowReadRecord;
+			// Record-level allowRead guard (#1241/#1422): an application-overridden allowRead runs once
+			// per record with `this` = the (frozen) record, participating in query execution — pushed
+			// into HNSW traversal for vector sorts, applied as a post-filter otherwise. It must be
+			// synchronous, side-effect free, and fast; a throw denies that record (fail closed, #1422
+			// gap 1 parity). Dispatched via the method resolved from the resource — never via a
+			// `record.allowRead` property lookup, so a record attribute named allowRead can't shadow it.
+			let recordGuard: ((record: any) => boolean) | undefined;
+			if (recordScopedAllowRead) {
+				const user = (context as any)?.user;
+				recordGuard = (record: any) => {
+					let allowed;
+					try {
+						allowed = recordScopedAllowRead.call(record, user, target, context);
+					} catch {
+						return false; // fail closed on a throwing check
+					}
+					if (allowed?.then)
+						throw new ClientError('allowRead must be synchronous when evaluated per record in a query');
+					return Boolean(allowed);
+				};
+			}
 			const recordAccess =
-				typeof allowReadRecord === 'function' || typeof target.vectorFilter === 'function'
-					? { allowReadRecord, user: (context as any)?.user, vectorFilter: target.vectorFilter }
+				recordGuard || typeof target.vectorFilter === 'function'
+					? { recordGuard, vectorFilter: target.vectorFilter }
 					: undefined;
 			const entries = executeConditions(
 				conditions,
@@ -2884,16 +2906,13 @@ export function makeTable(options) {
 				recordAccess
 			);
 			const ensure_loaded = (target as any).ensureLoaded !== false;
-			// Authoritative RBAC enforcement (#1241): the guards inside executeConditions evaluate the LOCAL
-			// record, but on a caching table transformEntryForSelect may then revalidate an expired/invalidated
-			// row from source and return a DIFFERENT record. An authorization check must hold on the record
-			// actually returned, so allowReadRecord is re-checked there, after materialization (the earlier
-			// evaluation stays as a prune that also bounds HNSW traversal). vectorFilter and condition filters
-			// intentionally keep the local-record semantics all query filters have on caching tables.
-			const recordGuard =
-				typeof allowReadRecord === 'function'
-					? (record: any) => allowReadRecord((context as any)?.user, record)
-					: undefined;
+			// Authoritative enforcement point (#1241): the guards inside executeConditions evaluate the
+			// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
+			// expired/invalidated row from source and return a DIFFERENT record. An authorization check
+			// must hold on the record actually returned, so the record-scoped allowRead is re-checked
+			// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
+			// traversal). vectorFilter and condition filters intentionally keep the local-record
+			// semantics all query filters have on caching tables.
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
 				context,
@@ -4514,6 +4533,26 @@ export function makeTable(options) {
 		}
 	);
 
+	// Mark the table-level allowRead as a framework default (it is a this-free table/RBAC check):
+	// only an APPLICATION override is record-scoped and evaluated per record during query execution
+	// (#1422 gap 2 / #1241). supportsRowLevelAllowRead tells the authorization wrapper in
+	// Resource.ts that this class has the per-record machinery to defer collection reads to.
+	(TableResource.prototype.allowRead as any).isDefaultAllowRead = true;
+	(TableResource as any).supportsRowLevelAllowRead = true;
+	// Records can be asked directly (`record.allowRead(user, target, context)`), delegating to the
+	// table's allowRead with `this` = the record. Non-enumerable so it never serializes; defined on
+	// the per-table record prototype alongside computed properties. Engine-level enforcement does
+	// NOT route through this (it resolves the active resource class's allowRead, which honors
+	// endpoint subclass overrides and can't be shadowed by a record attribute of the same name).
+	if (primaryStore?.encoder?.structPrototype) {
+		Object.defineProperty(primaryStore.encoder.structPrototype, 'allowRead', {
+			value: function (user: User, target: RequestTarget, context: Context) {
+				return TableResource.prototype.allowRead.call(this, user, target, context);
+			},
+			configurable: true,
+			writable: true,
+		});
+	}
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
 	if (expiresAtProperty) runRecordExpirationEviction();

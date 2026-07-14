@@ -56,7 +56,7 @@ export function executeConditions(
 	recordAccess?
 ) {
 	const firstSearch = conditions[0];
-	// Record-level guards (a caller-supplied vectorFilter + RBAC allowReadRecord) apply to every record
+	// Record-level guards (a caller-supplied vectorFilter + a record-scoped allowRead) apply to every record
 	// the query returns, independent of which condition leads (#1241). `recordAccess` is supplied only on
 	// the top-level executeConditions call (Table.search) and deliberately NOT threaded into the recursive
 	// calls below, so the guards run exactly once — on the final result set — rather than redundantly at
@@ -161,9 +161,10 @@ export function executeConditions(
 }
 
 /**
- * Build the record-level guards that apply to a query independent of its conditions (#1241):
+ * Build the record-level guards that apply to a query independent of its conditions (#1241/#1422):
  *   - `vectorFilter`: a caller-supplied `(record) => boolean` predicate (JS-API only).
- *   - `allowReadRecord`: a resource's static record-level RBAC check `(user, record) => boolean`.
+ *   - `recordGuard`: the record-scoped allowRead check, pre-bound (fail-closed) by Table.search —
+ *     invokes the resource class's overridden allowRead with `this` = each record.
  * Both arrive already resolved on `recordAccess` (assembled once in Table.search). Returns an array of
  * `(record) => boolean` predicates, or undefined when neither is defined (the common case — zero
  * overhead). Predicates must be synchronous and side-effect free; records passed in are frozen.
@@ -173,11 +174,7 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 	const guards: ((record: any) => boolean)[] = [];
 	const vectorFilter = recordAccess.vectorFilter;
 	if (typeof vectorFilter === 'function') guards.push((record) => vectorFilter(record));
-	const allowReadRecord = recordAccess.allowReadRecord;
-	if (typeof allowReadRecord === 'function') {
-		const user = recordAccess.user;
-		guards.push((record) => allowReadRecord(user, record));
-	}
+	if (recordAccess.recordGuard) guards.push(recordAccess.recordGuard);
 	return guards.length > 0 ? guards : undefined;
 }
 

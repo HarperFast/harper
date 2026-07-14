@@ -1481,34 +1481,77 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		);
 	});
 
-	it('allowReadRecord restricts a vector search to records the user may see', async () => {
-		T.allowReadRecord = (user, record) => record.ownerId === user.id;
-		try {
-			const results = await fromAsync(
-				T.search(
-					{
-						sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
-						select: ['id', 'ownerId'],
-						limit: 5,
-					},
-					{ user: { id: 1 } }
-				)
-			);
-			assert(
-				results.every((r) => r.ownerId === 1),
-				'a restricted user only sees their own records'
-			);
-			// ownerId === 1 for ids 1,4,7,10,13,… — the k nearest VISIBLE, not k-minus-redacted.
-			assert.deepStrictEqual(
-				results.map((r) => r.id),
-				[1, 4, 7, 10, 13]
-			);
-		} finally {
-			delete T.allowReadRecord;
+	it('record-scoped allowRead override restricts a vector search to records the user may see', async () => {
+		// Unified model (#1422/#1241): overriding allowRead makes it a record-scoped check — evaluated
+		// once per record with `this` = the record during query execution, including HNSW traversal.
+		class Restricted extends T {
+			allowRead(user) {
+				return this.ownerId === user.id;
+			}
 		}
+		const results = await fromAsync(
+			Restricted.search(
+				{
+					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					select: ['id', 'ownerId'],
+					limit: 5,
+					checkPermission: true,
+				},
+				{ user: { id: 1 } }
+			)
+		);
+		assert(
+			results.every((r) => r.ownerId === 1),
+			'a restricted user only sees their own records'
+		);
+		// ownerId === 1 for ids 1,4,7,10,13,… — the k nearest VISIBLE, not k-minus-redacted.
+		assert.deepStrictEqual(
+			results.map((r) => r.id),
+			[1, 4, 7, 10, 13]
+		);
 	});
 
-	it('re-checks allowReadRecord on the source-revalidated record, not the stale cached copy', async () => {
+	it('non-overridden allowRead keeps the entry check (no per-record deferral)', async () => {
+		// The framework default is a this-free table/RBAC check marked isDefaultAllowRead; with
+		// checkPermission and a non-super user it must still deny at entry, not defer to per-record.
+		await assert.rejects(
+			async () =>
+				fromAsync(
+					T.search(
+						{
+							sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+							limit: 5,
+							checkPermission: true,
+						},
+						{ user: { id: 1, role: { permission: {} } } }
+					)
+				),
+			(err) => /unauthorized/i.test(err.message) || err.statusCode === 403
+		);
+	});
+
+	it('a throwing record-scoped allowRead fails closed (denies that record)', async () => {
+		class Throwy extends T {
+			allowRead(user) {
+				if (this.ownerId === 0) throw new Error('boom'); // ownerId 0 rows must be DENIED, not leaked
+				return this.ownerId === user.id;
+			}
+		}
+		const results = await fromAsync(
+			Throwy.search(
+				{
+					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					select: ['id', 'ownerId'],
+					limit: 5,
+					checkPermission: true,
+				},
+				{ user: { id: 0 } }
+			)
+		);
+		assert.strictEqual(results.length, 0, 'every candidate either threw (denied) or belonged to another user');
+	});
+
+	it('re-checks a record-scoped allowRead on the source-revalidated record, not the stale cached copy', async () => {
 		// A caching table: the query filters evaluate the LOCAL (possibly stale) copy, but the
 		// returned record may be revalidated from source. The authorization verdict must hold on
 		// the record actually returned (transformEntryForSelect recordGuard), or ownership changes
@@ -1524,7 +1567,11 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 				return sourceRecords.get(id);
 			},
 		});
-		C.allowReadRecord = (user, record) => record.ownerId === user.id;
+		class RestrictedC extends C {
+			allowRead(user) {
+				return this.ownerId === user.id;
+			}
+		}
 		try {
 			sourceRecords.set(1, { kind: 'doc', ownerId: 1 });
 			C.setTTLExpiration(0.01); // 10ms — expiry retains the stale value (unlike invalidate), which is the vulnerable path
@@ -1535,40 +1582,55 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 			sourceRecords.set(1, { kind: 'doc', ownerId: 2 });
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			const results = await fromAsync(
-				C.search({ conditions: [{ attribute: 'kind', value: 'doc' }] }, { user: { id: 1 } })
+				RestrictedC.search(
+					{ conditions: [{ attribute: 'kind', value: 'doc' }], checkPermission: true },
+					{ user: { id: 1 } }
+				)
 			);
 			assert.strictEqual(results.length, 0, 'a record now owned by another user must not be returned');
 		} finally {
-			delete C.allowReadRecord;
 			C.dropTable();
 		}
 	});
 
-	it('enforces allowReadRecord on OR queries (no RBAC bypass)', async () => {
-		T.allowReadRecord = (user, record) => record.ownerId === user.id;
-		try {
-			// active=true OR active=false spans every record; the record guard must still filter the union.
-			const results = await fromAsync(
-				T.search(
-					{
-						conditions: [
-							{ attribute: 'active', comparator: 'equals', value: true },
-							{ attribute: 'active', comparator: 'equals', value: false },
-						],
-						operator: 'or',
-						select: ['id', 'ownerId'],
-					},
-					{ user: { id: 2 } }
-				)
-			);
-			assert(results.length > 0, 'expected some visible records');
-			assert(
-				results.every((r) => r.ownerId === 2),
-				'an OR union must still be filtered by allowReadRecord'
-			);
-		} finally {
-			delete T.allowReadRecord;
+	it('enforces a record-scoped allowRead on OR queries (no RBAC bypass)', async () => {
+		class Restricted extends T {
+			allowRead(user) {
+				return this.ownerId === user.id;
+			}
 		}
+		// active=true OR active=false spans every record; the record guard must still filter the union.
+		const results = await fromAsync(
+			Restricted.search(
+				{
+					conditions: [
+						{ attribute: 'active', comparator: 'equals', value: true },
+						{ attribute: 'active', comparator: 'equals', value: false },
+					],
+					operator: 'or',
+					select: ['id', 'ownerId'],
+					checkPermission: true,
+				},
+				{ user: { id: 2 } }
+			)
+		);
+		assert(results.length > 0, 'expected some visible records');
+		assert(
+			results.every((r) => r.ownerId === 2),
+			'an OR union must still be filtered by the record-scoped allowRead'
+		);
+	});
+
+	it('records expose allowRead directly (RecordObject delegate, non-enumerable)', async () => {
+		const results = await fromAsync(
+			T.search({ conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }], limit: 1 }, {})
+		);
+		const record = results[0];
+		assert.strictEqual(typeof record.allowRead, 'function', 'records carry an allowRead delegate');
+		// Delegates to the table default (this-free RBAC check): super user allowed, plain user not.
+		assert(record.allowRead({ role: { permission: { super_user: true } } }));
+		assert(!record.allowRead({ role: { permission: {} } }));
+		assert(!JSON.stringify(record).includes('allowRead'), 'delegate must not serialize');
 	});
 
 	it('honors a companion AND condition during the vector query', async () => {

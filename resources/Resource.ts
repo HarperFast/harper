@@ -512,6 +512,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 _assignPackageExport('Resource', Resource);
 
+// Mark the built-in allowRead so the authorization flow can tell a framework default from an
+// application override. An overridden allowRead on a table is evaluated per RECORD during query
+// execution (#1422 gap 2 / #1241) — with `this` being each record — instead of once at collection
+// entry where `this` has no record to inspect. Table.ts marks its table-level default the same way.
+(Resource.prototype.allowRead as any).isDefaultAllowRead = true;
+
 export function snakeCase(camelCase: string) {
 	return (
 		camelCase[0].toLowerCase() +
@@ -754,6 +760,23 @@ function transactional(
 			}
 			if (checkPermission) {
 				if (loadAsInstance !== false) {
+					// Record-scoped allowRead on a table collection read (#1422 gap 2): an overridden
+					// allowRead is evaluated per record during query execution (`this` = each record), not
+					// once here where `this` is a collection resource with no record loaded — an entry
+					// verdict would be meaningless (spurious 403s or, worse, granting the whole scan).
+					// Leave query.checkPermission set; Table.search() converts it into per-record
+					// enforcement. Only tables opt in (supportsRowLevelAllowRead) — plain Resource
+					// subclasses have no row-level machinery and keep the entry check.
+					if (
+						options.type === 'read' &&
+						(query.id == null || query.isCollection) &&
+						(resource.constructor as any)?.supportsRowLevelAllowRead &&
+						!(resource.allowRead as any)?.isDefaultAllowRead
+					) {
+						return when(data, (data) => {
+							return runAction(data);
+						});
+					}
 					// do permission checks, with allow methods
 					let allowed;
 					try {
