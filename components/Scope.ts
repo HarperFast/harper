@@ -12,7 +12,11 @@ import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
-import { getSecretsForComponent, closeComponentSubscriptions } from './componentSecrets.ts';
+import {
+	getSecretsForComponent,
+	retainComponentSubscriptions,
+	releaseComponentSubscriptions,
+} from './componentSecrets.ts';
 import type { SecretsView } from './componentSecrets.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 
@@ -55,6 +59,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#entryHandler?: EntryHandler;
 	#entryHandlers: EntryHandler[];
 	#logger: Logger;
+	#secretsReleased = false;
 	#pendingInitialLoads: Set<Promise<void>>;
 	#deployStartHandler: (name: string) => void;
 	#deployEndHandler: (name: string) => void;
@@ -91,6 +96,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
+		// Hold this identity's live secret subscriptions (#1776) for as long as this Scope is open, so a
+		// throwaway deploy-validation Scope closing can't tear down a sibling/running Scope's streams.
+		retainComponentSubscriptions(applicationScope?.name ?? appName);
 		this.resources = applicationScope?.resources ?? resources;
 		this.models = modelsSingleton;
 
@@ -225,11 +233,14 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 		this.removeAllListeners();
 
-		// End any live secret subscriptions (#1776) this scope's code opened, AFTER the close listeners
-		// (so a subscription a close listener created is torn down too). Keyed by the same identity
-		// `scope.secrets` uses; scopes sharing an application identity share their subscriptions, so this
-		// runs at application-teardown granularity — that identity's streams are ended together.
-		closeComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
+		// Release this identity's subscription hold (#1776), AFTER the close listeners (so a subscription a
+		// close listener created is still accounted for). Streams end only when the LAST holder of the
+		// identity releases — so a discarded validation-load Scope can't kill a still-running app's streams.
+		// Guarded so a double close() can't underflow the refcount.
+		if (!this.#secretsReleased) {
+			this.#secretsReleased = true;
+			releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
+		}
 
 		return this;
 	}
