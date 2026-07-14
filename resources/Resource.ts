@@ -667,6 +667,13 @@ function transactional(
 			query.id = id;
 		}
 		isCollection = query.isCollection;
+		if (options.method === 'post' && query.id === null && !isCollection) {
+			// the matched path had nothing left to resolve into a collection or a specific record —
+			// i.e. it exactly matched a resource's base path without the required trailing slash
+			// (harper#678). Reject cleanly here, before any (possibly custom) post()/allowCreate()
+			// implementation runs against this half-resolved target.
+			throw new ClientError(`A trailing slash is required to POST to the ${this.name} collection`, 404);
+		}
 		let resourceOptions;
 		if (!context) {
 			// try to get the context from the async context if possible
