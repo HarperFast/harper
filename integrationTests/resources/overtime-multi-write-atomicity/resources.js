@@ -36,7 +36,7 @@ export class Baseline extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
 		const b = body || query || {};
-		const n = Number(b.count) || 5;
+		const n = b.count != null ? Number(b.count) : 5;
 		const tag = b.tag || 'baseline';
 		const t0 = Date.now();
 		for (let i = 0; i < n; i++) {
@@ -55,7 +55,7 @@ export class Overtime extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
 		const b = body || query || {};
-		const n = Number(b.count) || 5;
+		const n = b.count != null ? Number(b.count) : 5;
 		const tag = b.tag || 'overtime';
 		const holdMs = b.holdMs != null ? Number(b.holdMs) : 4000;
 		const t0 = Date.now();
