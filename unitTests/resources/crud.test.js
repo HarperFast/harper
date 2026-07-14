@@ -6,6 +6,7 @@ const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const analytics = require('#src/resources/analytics/write');
+const { waitFor } = require('../waitFor.js');
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('CRUD operations with the Resource API', () => {
@@ -117,6 +118,21 @@ describe('CRUD operations with the Resource API', () => {
 		});
 		registerTests();
 	});
+	async function waitForAnalyticsMetric(metric, start) {
+		return waitFor(
+			async () => {
+				if (!databases.system?.hdb_raw_analytics) return undefined;
+				const analyticsResults = await databases.system.hdb_raw_analytics.search({
+					conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+				});
+				for await (let { metrics } of analyticsResults) {
+					const found = metrics.find((entry) => entry.metric === metric && entry.path === 'CRUDTable');
+					if (found) return found;
+				}
+			},
+			{ message: `${metric} was recorded in analytics` }
+		);
+	}
 	function registerTests() {
 		it('puts', async function () {
 			const start = Date.now();
@@ -137,31 +153,13 @@ describe('CRUD operations with the Resource API', () => {
 				nestedData: { id: 'some-id', name: 'nested name ' },
 			});
 			assert.equal((await CRUDTable.get('two')).name, 'Two');
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			const analyticsResults = await databases.system.hdb_raw_analytics.search({
-				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
-			});
-			let analyticRecorded;
-			for await (let { metrics } of analyticsResults) {
-				analyticRecorded = metrics.find(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable');
-				if (analyticRecorded) break;
-			}
-			assert(analyticRecorded, 'db-write was recorded in analytics');
+			const analyticRecorded = await waitForAnalyticsMetric('db-write', start);
 			assert(analyticRecorded.mean > 2, 'db-write bytes count were recorded in analytics');
 		});
 		it('get is recorded in analytics', async function () {
 			const start = Date.now();
 			assert.equal((await CRUDTable.get('two')).name, 'Two');
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			const analyticsResults = await databases.system.hdb_raw_analytics.search({
-				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
-			});
-			let analyticRecorded;
-			for await (let { metrics } of analyticsResults) {
-				analyticRecorded = metrics.find(({ metric, path }) => metric === 'db-read' && path === 'CRUDTable');
-				if (analyticRecorded) break;
-			}
-			assert(analyticRecorded, 'db-read was recorded in analytics');
+			const analyticRecorded = await waitForAnalyticsMetric('db-read', start);
 			assert(analyticRecorded.mean > 20, 'db-read bytes count were recorded in analytics');
 		});
 		it('gets', async function () {
