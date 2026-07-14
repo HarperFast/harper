@@ -198,6 +198,70 @@ describe('Test configValidator module', () => {
 		});
 	});
 
+	describe('Directory-path pattern is linear-time (ReDoS regression, #1779)', () => {
+		const directoryPathPattern = config_val.__get__('DIRECTORY_PATH_PATTERN');
+		const directoryPathWithHomePattern = config_val.__get__('DIRECTORY_PATH_WITH_HOME_PATTERN');
+
+		// The previous `([...]+)+$` nested quantifier backtracked exponentially on any
+		// value containing a char outside the class after a run of valid chars. A dotted
+		// 80-char path is the real-world trigger (default installs write
+		// `tls.privateKey: <root>/privateKey.pem`); it took minutes before the fix.
+		it('resolves a dotted 80-char path effectively instantly', () => {
+			const dottedPath = '/Users/someone/harper-instances/engineering-metrics-project/keys/privateKey.pem';
+			expect(dottedPath.length).to.be.greaterThan(60);
+			const start = Date.now();
+			const matched = directoryPathPattern.test(dottedPath);
+			const elapsed = Date.now() - start;
+			expect(matched).to.equal(true);
+			expect(elapsed).to.be.lessThan(100);
+		});
+
+		it('does not hang even when the value fails to match', () => {
+			// A char outside the class (`?`) after a long valid prefix is the worst
+			// case for the old regex; it must now fail fast, not backtrack.
+			const badPath = '/Users/someone/harper-instances/engineering?metrics/keys/key';
+			const start = Date.now();
+			const matched = directoryPathPattern.test(badPath);
+			const elapsed = Date.now() - start;
+			expect(matched).to.equal(false);
+			expect(elapsed).to.be.lessThan(100);
+		});
+
+		it('accepts the path shapes the validator must permit', () => {
+			// The space cases (Windows Program Files, macOS user dirs) were accepted by
+			// the old un-anchored pattern and must keep validating (#1779 review).
+			const good = [
+				'/',
+				'/Users/x/harper',
+				'/etc/harper/privateKey.pem',
+				'C:\\Users\\x',
+				'./rel/path',
+				'C:\\Program Files\\Harper',
+				'/Users/some user/harper',
+			];
+			for (const value of good) {
+				expect(directoryPathPattern.test(value), value).to.equal(true);
+			}
+			expect(directoryPathWithHomePattern.test('~/harper/keys/key.pem'), '~/harper').to.equal(true);
+		});
+
+		it('still rejects paths with disallowed characters', () => {
+			for (const bad of ['/@@@', '/???', '/pipe|d', '/angle<br>', '/newline\n']) {
+				expect(directoryPathPattern.test(bad), bad).to.equal(false);
+			}
+		});
+
+		it('validates a dotted rootPath through configValidator without erroring', () => {
+			const config_obj = testUtils.deepClone(FAKE_CONFIG);
+			config_obj.rootPath = '/Users/someone/harper-instances/metrics/data.dir';
+			const start = Date.now();
+			const schema = configValidator(config_obj);
+			expect(Date.now() - start).to.be.lessThan(1000);
+			const rootPathError = (schema.error?.details ?? []).find((d) => d.path?.[0] === 'rootPath');
+			expect(rootPathError, 'rootPath should validate').to.equal(undefined);
+		});
+	});
+
 	describe('Test doesPathExist function', () => {
 		let exists_sync_stub;
 		let does_path_exist_rw = config_val.__get__('doesPathExist');
