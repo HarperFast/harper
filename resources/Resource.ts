@@ -755,12 +755,16 @@ function transactional(
 					// hypothetical {id: null, isCollection: false} get keeps the entry check instead of
 					// skipping both checks. search/query invoke instance search() directly (which
 					// consumes checkPermission), so id == null suffices there.
+					// Record-scoping is SYNC-only: an async allowRead override keeps this entry check,
+					// which awaits its verdict and fails closed on rejection (#1422 gap 1) — the sync
+					// per-record traversal path cannot await it.
 					if (
 						options.type === 'read' &&
 						!isSubscribeAction &&
 						(query.isCollection || (query.id == null && options.method !== 'get')) &&
 						(resource.constructor as any)?.supportsRowLevelAllowRead &&
-						!(resource.allowRead as any)?.isDefaultAllowRead
+						!(resource.allowRead as any)?.isDefaultAllowRead &&
+						(resource.allowRead as any)?.constructor?.name !== 'AsyncFunction'
 					) {
 						return when(data, (data) => {
 							return runAction(data);
