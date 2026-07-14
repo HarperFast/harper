@@ -147,14 +147,18 @@ export function assertApplicationConfig(
 		for (const entry of entries) {
 			// Config carries references only — a literal `token` here would mean a plaintext credential
 			// was persisted to disk, which the deploy path is designed to prevent. An entry is npm
-			// registry auth (`registry`) or git host auth (`host`); anything else is not a credential we
-			// know how to resolve, so reject it rather than install without it.
-			const identity = (entry as any)?.registry ?? (entry as any)?.host;
+			// registry auth (`registry`) XOR git host auth (`host`); anything else is not a credential we
+			// know how to resolve, so reject it rather than install without it. An entry carrying both
+			// discriminators, or a stray `token`, is rejected rather than coerced into a single kind.
+			const record = entry as any;
+			const hasRegistry = typeof record?.registry === 'string';
+			const hasHost = typeof record?.host === 'string';
 			if (
 				typeof entry !== 'object' ||
 				entry === null ||
-				typeof identity !== 'string' ||
-				typeof (entry as any).secret !== 'string'
+				hasRegistry === hasHost || // neither, or both
+				typeof record.secret !== 'string' ||
+				record.token !== undefined
 			) {
 				throw new InvalidCredentialEntryError(applicationName);
 			}

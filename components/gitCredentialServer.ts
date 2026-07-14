@@ -11,6 +11,7 @@
 // reaches disk, argv, the package spec, the operation body, or the operations log.
 
 import { createServer, type Server, type Socket } from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,17 +56,65 @@ export function normalizeGitHost(host: string): string {
 		.toLowerCase();
 }
 
+// A loopback remote never puts the credential on a network, so plaintext http to one is not a
+// disclosure. Anything else must be encrypted.
+function isLoopbackHost(host: string): boolean {
+	const hostname = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+	return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
 function answerFor(credentials: Map<string, ResolvedGitCredential>, request: any) {
 	const host = typeof request?.host === 'string' ? normalizeGitHost(request.host) : '';
 	const credential = credentials.get(host);
 	// An unknown host is not an error: git also asks about public hosts, and answering nothing lets
 	// it proceed unauthenticated rather than failing the deploy.
 	if (!credential) return {};
+	// Never hand a token to a cleartext transport. git asks for `http://` credentials exactly as it
+	// asks for `https://` ones, so without this a `git+http://` package (or a remote downgraded by a
+	// redirect) would put the token on the wire in the clear.
+	const protocol = typeof request.protocol === 'string' ? request.protocol.toLowerCase() : '';
+	if (protocol && protocol !== 'https' && !isLoopbackHost(host)) {
+		logger.warn?.(`refusing to serve a git credential for '${host}' over ${protocol}: only https is allowed`);
+		return {};
+	}
+	// git's credential protocol is line-based (and askpass reads only the first line), so a token
+	// carrying a newline would be truncated or would inject protocol attributes. A literal token is
+	// already rejected by the op schema; one resolved from an hdb_secret row is not, so guard the
+	// write boundary — the same place the .npmrc writer guards (#1717).
+	if (/[\r\n\0]/.test(credential.token)) {
+		logger.warn?.(`git credential for '${host}' contains an illegal control character; refusing to serve it`);
+		return {};
+	}
 	// git only re-asks with a username once it has one; if it names a different user than the one
 	// this credential is for, the credential does not apply.
 	const username = credential.username ?? DEFAULT_GIT_USERNAME;
 	if (typeof request.username === 'string' && request.username && request.username !== username) return {};
 	return { username, password: credential.token };
+}
+
+// The `credential.helper` reset below only takes effect on git >= 2.31, where GIT_CONFIG_* is
+// honored; older git ignores those variables entirely and would fall through to GIT_ASKPASS with an
+// inherited helper chain still live — so a machine configured with `credential.helper=store` would
+// write this token to ~/.git-credentials. There is no way to disable an inherited helper on those
+// versions, so refuse to serve a credential at all rather than persist one behind the operator's back.
+const MINIMUM_GIT_VERSION = [2, 31];
+function assertGitSupportsConfigEnv(): void {
+	let version: string;
+	try {
+		version = execFileSync('git', ['--version'], { encoding: 'utf8' });
+	} catch (error) {
+		throw new ClientError(`git is required to deploy from a git reference, but could not be run: ${error}`);
+	}
+	const parsed = /(\d+)\.(\d+)/.exec(version);
+	if (!parsed) throw new ClientError(`Could not determine the git version from '${version.trim()}'`);
+	const [major, minor] = [Number(parsed[1]), Number(parsed[2])];
+	if (major < MINIMUM_GIT_VERSION[0] || (major === MINIMUM_GIT_VERSION[0] && minor < MINIMUM_GIT_VERSION[1])) {
+		throw new ClientError(
+			`git ${MINIMUM_GIT_VERSION.join('.')} or newer is required to deploy with a git-host credential ` +
+				`(found ${version.trim()}): older versions ignore GIT_CONFIG_*, so an inherited credential helper ` +
+				`could persist the token to disk.`
+		);
+	}
 }
 
 /**
@@ -103,6 +152,8 @@ export async function startGitCredentialSession(
 				'domain socket, which has no Windows equivalent that can be confined to this process owner.'
 		);
 	}
+	// Fail before minting a socket if git is too old for the credential-helper reset to hold.
+	assertGitSupportsConfigEnv();
 	// mkdtemp creates the directory 0700, so only this uid can reach the socket inside it.
 	const socketDir = await mkdtemp(join(tmpdir(), 'harper-git-cred-'));
 	const socketPath = join(socketDir, 'credential.sock');

@@ -131,6 +131,45 @@ describe('git credential session', () => {
 		assert.strictEqual(stdout, '');
 	});
 
+	it('refuses to serve a credential over cleartext http (only https, plus loopback)', async () => {
+		session = await startGitCredentialSession(
+			[
+				{ host: 'github.com', token: 'ghp_secret' },
+				{ host: '127.0.0.1:8080', token: 'local_tok' },
+			],
+			GIT_CREDENTIAL_HELPER_PATH
+		);
+		// A public host over http would put the token on the wire in the clear — refuse.
+		const cleartext = await runHelper({
+			args: ['get'],
+			stdin: 'protocol=http\nhost=github.com\n\n',
+			env: session.env,
+		});
+		assert.strictEqual(cleartext.stdout, '', 'no credential over http to a public host');
+		// A loopback remote never touches a network, so http to it is fine (integration tests use it).
+		const loopback = await runHelper({
+			args: ['get'],
+			stdin: 'protocol=http\nhost=127.0.0.1:8080\n\n',
+			env: session.env,
+		});
+		assert.strictEqual(loopback.stdout, 'username=x-access-token\npassword=local_tok\n');
+	});
+
+	it('refuses to serve a token carrying a newline (would truncate or inject protocol attributes)', async () => {
+		// A literal token is rejected by the op schema, but one resolved from an hdb_secret row is not,
+		// so the write boundary must guard it — parity with the .npmrc writer.
+		session = await startGitCredentialSession(
+			[{ host: 'github.com', token: 'ghp\nquit=1' }],
+			GIT_CREDENTIAL_HELPER_PATH
+		);
+		const { stdout } = await runHelper({
+			args: ['get'],
+			stdin: 'protocol=https\nhost=github.com\n\n',
+			env: session.env,
+		});
+		assert.strictEqual(stdout, '');
+	});
+
 	it('never yields the token to a store/erase request (the credential is not persistable)', async () => {
 		session = await startGitCredentialSession(
 			[{ host: 'github.com', token: 'ghp_secret' }],
@@ -190,6 +229,25 @@ describe('git credential session', () => {
 		assert.strictEqual(stdout, '');
 		assert.strictEqual(code, 1, 'helper reports failure rather than silently succeeding');
 		await assert.rejects(fs.stat(socketPath), /ENOENT/, 'socket removed');
+	});
+
+	it('refuses to start on a git too old for the credential-helper reset', async () => {
+		// git < 2.31 ignores GIT_CONFIG_*, so the reset that stops an inherited `store` helper from
+		// persisting the token would be silently dead — fail the deploy rather than leak.
+		const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-fake-git-'));
+		const fakeGit = path.join(fakeBin, 'git');
+		await fs.writeFile(fakeGit, '#!/bin/sh\necho "git version 2.30.2"\n', { mode: 0o755 });
+		const priorPath = process.env.PATH;
+		process.env.PATH = `${fakeBin}:${priorPath}`;
+		try {
+			await assert.rejects(
+				() => startGitCredentialSession([{ host: 'github.com', token: 't' }], GIT_CREDENTIAL_HELPER_PATH),
+				/2\.31 or newer is required/
+			);
+		} finally {
+			process.env.PATH = priorPath;
+			await fs.rm(fakeBin, { recursive: true, force: true });
+		}
 	});
 
 	it('drops a connection that streams without end, rather than buffering it into an OOM', async () => {

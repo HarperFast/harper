@@ -394,7 +394,12 @@ const REGISTRY_CREDENTIAL_ENTRY = Joi.object({
 	scope: Joi.string()
 		.pattern(/^@[a-z0-9-_.]+$/)
 		.optional(),
-}).xor('token', 'secret');
+})
+	.xor('token', 'secret')
+	// The whole operation validates with allowUnknown, but a credential entry must not: an unknown
+	// key here (a typo'd or future secret-bearing field like `password`) would pass through ingest
+	// unchanged and be persisted to config/hdb_deployment and replicated, defeating reference-only.
+	.unknown(false);
 
 // A git-host credential entry, identified by its `host` key (#1792). Used to authenticate the
 // `git clone`/`git ls-remote` npm runs for a git-reference `package` (e.g. `github:org/repo`); the
@@ -415,7 +420,14 @@ const GIT_CREDENTIAL_ENTRY = Joi.object({
 	secret: Joi.string()
 		.pattern(ENV_KEY_REGEX)
 		.messages({ 'string.pattern.base': `'secret' must only contain word characters, dots and dashes` }),
-}).xor('token', 'secret');
+	// `registry` forbidden for symmetry with the npm entry: an entry carrying both discriminators has
+	// no single kind and must be rejected, not silently treated as git auth.
+	registry: Joi.any().forbidden().messages({
+		'any.unknown': `a credential entry is either npm registry auth ('registry') or git host auth ('host'), not both`,
+	}),
+})
+	.xor('token', 'secret')
+	.unknown(false);
 
 /**
  * Validate deployComponent requests.

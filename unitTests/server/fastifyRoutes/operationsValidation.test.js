@@ -378,6 +378,22 @@ describe('Test operationsValidation module', () => {
 			}
 		});
 
+		it('rejects an unknown key on an entry (a stray secret-bearing field must not persist)', () => {
+			// allowUnknown is on for the operation, but a credential entry with an extra key would carry
+			// that key through ingest into config/hdb_deployment and replication — reject it here.
+			for (const entry of [
+				{ registry: 'https://npm.pkg.github.com', token: 'tok', password: 'literal' },
+				{ host: 'github.com', secret: 'GH_TOKEN', password: 'literal' },
+			]) {
+				const result = validator.deployComponentValidator({
+					project: 'my_app',
+					package: 'github:myorg/private-app',
+					credentials: [entry],
+				});
+				expect(result, JSON.stringify(entry)).to.be.ok;
+			}
+		});
+
 		it('rejects an entry that is neither kind, or that is ambiguously both', () => {
 			const neither = validator.deployComponentValidator({
 				project: 'my_app',

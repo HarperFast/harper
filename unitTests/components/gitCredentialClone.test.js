@@ -213,6 +213,59 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 		}
 	});
 
+	it('does not persist the token to git-credentials even when a store helper is configured', async function () {
+		// The sharpest leak path: git reports a *successful* authentication back to its credential
+		// helper chain, so a machine with `credential.helper=store` (globally or URL-scoped) would write
+		// the token to ~/.git-credentials — silently. The GIT_CONFIG_* helper reset must survive a real
+		// clone, not just a synthetic `git credential approve`.
+		const home = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-git-home-'));
+		const gitConfig = path.join(home, '.gitconfig');
+		const credentialsFile = path.join(home, '.git-credentials');
+		const scopedCredentialsFile = path.join(home, '.git-credentials-scoped');
+		const host = gitHost();
+		await fs.writeFile(
+			gitConfig,
+			`[credential]\n\thelper = store --file ${credentialsFile}\n` +
+				`[credential "http://${host}"]\n\thelper = store --file ${scopedCredentialsFile}\n`
+		);
+
+		const application = new Application({
+			name: 'git-clone-store-helper',
+			packageIdentifier,
+			credentials: [{ host, token: TOKEN }],
+		});
+
+		const priorHome = process.env.HOME;
+		const priorConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+		process.env.HOME = home;
+		process.env.GIT_CONFIG_GLOBAL = gitConfig;
+		try {
+			await application.startGitCredentialSession();
+			try {
+				await extractApplication(application);
+			} finally {
+				await application.cleanupGitCredentialSession();
+			}
+		} finally {
+			if (priorHome === undefined) delete process.env.HOME;
+			else process.env.HOME = priorHome;
+			if (priorConfigGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+			else process.env.GIT_CONFIG_GLOBAL = priorConfigGlobal;
+		}
+
+		// The clone still authenticated (proving the helper chain was active)...
+		assert.ok(
+			seenAuthorization.some((header) => header === validAuthorization()),
+			'the clone authenticated, so git did run its credential machinery'
+		);
+		// ...yet neither store file received the token.
+		for (const file of [credentialsFile, scopedCredentialsFile]) {
+			const persisted = await fs.readFile(file, 'utf8').catch(() => '');
+			assert.ok(!persisted.includes(TOKEN), `token persisted to ${path.basename(file)}: ${persisted}`);
+		}
+		await fs.rm(home, { recursive: true, force: true });
+	});
+
 	// Packing a git reference is not just a download: npm clones the repo and runs its prepare/build
 	// script — and its dependencies' install scripts — on this node, inside the clone spawn. Left
 	// alone, any of that code could ask the socket for the token, which is precisely the reach the
