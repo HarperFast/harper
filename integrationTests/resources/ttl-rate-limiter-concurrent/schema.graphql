@@ -6,6 +6,6 @@
 # burst window → we get window rollover DURING a 50-request burst.
 
 type RateCounter @table(expiration: 0.5) @export {
-    id: ID @primaryKey
-    hits: Int
+	id: ID @primaryKey
+	hits: Int
 }
