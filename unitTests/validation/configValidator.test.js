@@ -239,17 +239,24 @@ describe('Test configValidator module', () => {
 			}
 		});
 
-		it('rejects control characters (incl. newline / null / DEL) and empty / whitespace-only', () => {
+		it('rejects control characters (C0/DEL/C1 + Unicode line separators) and empty / whitespace-only', () => {
+			const cp = String.fromCodePoint; // avoid literal separators in this source file
 			const bad = [
 				'', // empty
 				'   ', // whitespace-only (Windows strips to a valid-but-wrong dir)
 				'\t', // tab
-				'/embedded\nnewline', // newline — would forge log lines
+				'/embedded\nnewline', // ASCII newline — would forge log lines
 				'/embedded\x00null',
 				'/embedded\x7fdel',
+				'/nel' + cp(0x85) + 'here', // U+0085 NEL (C1) — a Unicode line break
+				'/c1' + cp(0x9f) + 'here', // U+009F (C1 control)
+				'/ls' + cp(0x2028) + 'here', // U+2028 line separator
+				'/ps' + cp(0x2029) + 'here', // U+2029 paragraph separator
 			];
 			for (const value of bad) {
-				expect(directoryPathPattern.test(value), JSON.stringify(value)).to.equal(false);
+				expect(directoryPathPattern.test(value), JSON.stringify([...value].map((c) => c.codePointAt(0)))).to.equal(
+					false
+				);
 			}
 		});
 
@@ -281,6 +288,9 @@ describe('Test configValidator module', () => {
 				(d) => d.path?.[0] === 'storage' && /directory path pattern/.test(d.message)
 			);
 			expect(goodPatternError, 'storage.path `~/hdb/database` should pass the denylist').to.equal(undefined);
+			// validatePath returns undefined on success; Joi.custom retains the original value (does not
+			// coerce it to undefined), so the path must survive into the validated config.
+			expect(goodSchema.value.storage.path, 'storage.path must survive validation').to.equal('~/hdb/database');
 
 			const bad = testUtils.deepClone(FAKE_CONFIG);
 			bad.storage = { ...bad.storage, path: '/db\nroot' }; // control char (newline)
