@@ -3418,14 +3418,15 @@ export function makeTable(options) {
 			let reloadResnapshotPending = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			// Record-scoped allowRead on subscription delivery (#1419, reviving #1524 on the unified
-			// model): a sync application-overridden allowRead is re-evaluated per record-bearing event
-			// with `this` = the event's record, the delivery-path analog of the per-record query guard.
-			// Gated to (1) an overridden, sync allowRead — the default is record-independent and already
-			// enforced at connect, so the common case stays zero-overhead — and (2) checkPermission on
-			// the request: the authorize wrapper defers a checked subscribe here (leaving the flag set)
-			// precisely so delivery enforces it, while internal subscribers (replication, system
-			// watchers) never request permission checks and keep full delivery. The user may still be
-			// null on a checked request; the override decides (fail-closed for field comparisons).
+			// model): the subscribe entry check already granted the connection (topic ACL / collection
+			// scope); here we ADDITIONALLY re-evaluate a sync application-overridden allowRead per
+			// record-bearing event with `this` = the event's record, the delivery-path analog of the
+			// per-record query guard. Gated to (1) an overridden, sync allowRead — the default is
+			// record-independent and already enforced at connect, so the common case stays zero-overhead
+			// — and (2) a user principal on the context: the connect-time authorization consumed the
+			// request's checkPermission flag before we get here, so context.user is the persistent
+			// signal that this is an authorization-checked (external) subscription; internal subscribers
+			// (replication, system watchers) have no user and keep full delivery.
 			// Fails closed: a throwing or thenable-returning override drops the event rather than leaks it.
 			//
 			// Known limitation (as in #1524): only put/invalidate events carry the authoritative full
@@ -3436,7 +3437,7 @@ export function makeTable(options) {
 			const subUser = subContext?.user;
 			const subAllowRead = this.allowRead;
 			const filterRowReads =
-				(request as any)?.checkPermission &&
+				subUser != null &&
 				!(subAllowRead as any)?.isDefaultAllowRead &&
 				(subAllowRead as any)?.constructor?.name !== 'AsyncFunction';
 			let warnedAsyncEvent = false;

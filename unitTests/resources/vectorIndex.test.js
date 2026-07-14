@@ -1743,12 +1743,14 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 	});
 
 	it('subscription delivery filters events through a record-scoped allowRead (#1419)', async () => {
-		// A sync record-scoped override defers grant-time evaluation and instead filters each
-		// delivered event with `this` = the event's record — the subscriber receives only the row
-		// changes they may read, instead of being denied outright (or, pre-#1419, receiving all).
+		// The subscribe entry check grants the connection (collection scope → permissive here, the
+		// documented contract that lets a whole-table subscription open); delivery then filters each
+		// event per record, so the subscriber receives only the row changes they may read (instead of
+		// every row, pre-#1419).
 		class Restricted extends T {
 			allowRead(user) {
-				return user != null && this?.ownerId === user.id;
+				if (this?.ownerId == null) return true; // collection scope: open the subscription
+				return this.ownerId === user?.id; // per-record on delivery
 			}
 		}
 		// subscribe's arg normalization only recognizes a context carrying transaction/getContext
@@ -1784,15 +1786,17 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		}
 	});
 
-	it('subscribe with an ASYNC record-scoped allowRead stays denied at entry (cannot filter per event)', async () => {
-		class AsyncRestricted extends T {
-			async allowRead(user) {
-				return user != null && this?.ownerId === user.id;
+	it('subscribe entry check still guards the connection grant (protects connection-level allowRead)', async () => {
+		// subscribe is NOT deferred: the entry check runs the override as the connection grant, so a
+		// connection-level override (e.g. an MQTT topic ACL) that denies is honored at subscribe time.
+		class DeniesConnection extends T {
+			allowRead() {
+				return false; // deny at the connection/collection grant
 			}
 		}
 		await assert.rejects(
 			async () =>
-				AsyncRestricted.subscribe(
+				DeniesConnection.subscribe(
 					{ checkPermission: true, omitCurrent: true },
 					{
 						user: { id: 1, username: 'u1', role: { permission: {} } },
