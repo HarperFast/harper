@@ -1,10 +1,12 @@
 'use strict';
 
 const assert = require('node:assert');
+const http = require('node:http');
 const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
 const { contentTypes, findBestSerializer } = require('#src/server/serverHelpers/contentTypes');
+const { pipeBodyToResponse } = require('#src/server/http');
 
 function streamToString(readable) {
 	return new Promise((resolve, reject) => {
@@ -169,5 +171,65 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 			.filter(Boolean)
 			.map((frame) => JSON.parse(frame.replace(/^data: /, '')));
 		assert.deepStrictEqual(events, [{ n: 1 }, { n: 2 }]);
+	});
+
+	// #1763 (follow-up to #1628/#1632): a generator that throws mid-iteration is the error-path
+	// sibling of the terminal-`done` case #1632 fixed. serializeStream()'s Readable.from() already
+	// surfaces the rejection as an 'error' event correctly, but server/http.ts's production
+	// requestHandler used to pipe that Readable into the Node response with `.pipe()` and no
+	// 'error' listener — an unhandled 'error' event is a Node uncaughtException, and pipe() never
+	// forwards it to the destination, so the response was left open. Exercise the real
+	// `pipeBodyToResponse` helper (extracted from http.ts) over a real HTTP connection to guard the
+	// fix. `pipeBodyToResponse` now tears the chain down with `stream.pipeline()`, which closes the
+	// response abruptly (rather than a clean `.end()`) on a source error — that's deliberate, since a
+	// clean end would misleadingly tell the client the transfer completed. So the client side here may
+	// observe 'end', 'error', or 'close' instead of always a clean 'end'; what must hold regardless is
+	// no hang and no uncaughtException.
+	it('ends the response without hanging or raising an uncaughtException when the generator throws mid-stream', async function () {
+		async function* source() {
+			yield { seq: 'a' };
+			yield { seq: 'b' };
+			throw new Error('boom');
+		}
+
+		let uncaughtError;
+		const onUncaughtException = (error) => {
+			uncaughtError = error;
+		};
+		process.on('uncaughtException', onUncaughtException);
+
+		const server = http.createServer((req, res) => {
+			res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+			const body = handler.serializeStream(source());
+			pipeBodyToResponse(body, res, '/throw-test', 'CONNECT', performance.now());
+		});
+
+		try {
+			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+			const { port } = server.address();
+
+			const output = await new Promise((resolve) => {
+				const chunks = [];
+				const request = http.get(`http://127.0.0.1:${port}/`, (res) => {
+					res.on('data', (chunk) => chunks.push(chunk));
+					// the pre-error chunks ('seq: a'/'seq: b') are already flushed by the time the
+					// generator throws, so any of these terminal events still lets us verify them
+					res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+					res.on('error', () => resolve(Buffer.concat(chunks).toString()));
+					res.on('close', () => resolve(Buffer.concat(chunks).toString()));
+				});
+				request.on('error', () => resolve(Buffer.concat(chunks).toString()));
+			});
+
+			const events = output
+				.split('\n\n')
+				.filter(Boolean)
+				.map((frame) => JSON.parse(frame.replace(/^data: /, '')));
+			assert.deepStrictEqual(events, [{ seq: 'a' }, { seq: 'b' }]);
+			assert.strictEqual(uncaughtError, undefined, 'generator rejection must not escape as an uncaughtException');
+		} finally {
+			process.removeListener('uncaughtException', onUncaughtException);
+			await new Promise((resolve) => server.close(resolve));
+		}
 	});
 });
