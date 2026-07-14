@@ -1742,21 +1742,64 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		}
 	});
 
-	it('subscribe with a record-scoped allowRead is denied at entry, never granted unchecked', async () => {
-		// Subscription delivery never reaches search(), so the per-record deferral must NOT apply to
-		// subscribe — otherwise a collection subscription would be granted with no check at all.
-		// Until per-event delivery checks exist (#1419), the entry evaluation runs the override with
-		// `this` = collection resource (fields undefined) and fails closed.
+	it('subscription delivery filters events through a record-scoped allowRead (#1419)', async () => {
+		// A sync record-scoped override defers grant-time evaluation and instead filters each
+		// delivered event with `this` = the event's record — the subscriber receives only the row
+		// changes they may read, instead of being denied outright (or, pre-#1419, receiving all).
 		class Restricted extends T {
 			allowRead(user) {
-				return this.ownerId === user.id;
+				return user != null && this?.ownerId === user.id;
+			}
+		}
+		// subscribe's arg normalization only recognizes a context carrying transaction/getContext
+		const subscription = await Restricted.subscribe(
+			{ checkPermission: true, omitCurrent: true },
+			{
+				user: { id: 1, username: 'u1', role: { permission: {} } },
+				getContext() {
+					return this;
+				},
+			}
+		);
+		const received = [];
+		const collector = (async () => {
+			for await (const event of subscription) {
+				if (event.type === 'end_txn') continue;
+				received.push(event);
+			}
+		})();
+		try {
+			// ownerId = i % 3 → id 100 (100%3=1) visible to user 1; id 101 (101%3=2) is not.
+			await T.put(100, { group: 'blue', ownerId: 1, active: true, vector: [100, 0] });
+			await T.put(101, { group: 'red', ownerId: 2, active: true, vector: [101, 0] });
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert(
+				received.some((e) => e.id === 100),
+				'subscriber receives events for records they may read'
+			);
+			assert(!received.some((e) => e.id === 101), 'events for records the user may NOT read are filtered out');
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
+	});
+
+	it('subscribe with an ASYNC record-scoped allowRead stays denied at entry (cannot filter per event)', async () => {
+		class AsyncRestricted extends T {
+			async allowRead(user) {
+				return user != null && this?.ownerId === user.id;
 			}
 		}
 		await assert.rejects(
 			async () =>
-				Restricted.subscribe(
+				AsyncRestricted.subscribe(
 					{ checkPermission: true, omitCurrent: true },
-					{ user: { id: 1, username: 'u1', role: { permission: {} } } }
+					{
+						user: { id: 1, username: 'u1', role: { permission: {} } },
+						getContext() {
+							return this;
+						},
+					}
 				),
 			(err) => err.name === 'AccessViolation' || /unauthorized/i.test(err.message) || err.statusCode === 403
 		);

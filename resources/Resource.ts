@@ -749,21 +749,22 @@ function transactional(
 					// row-level machinery and keep the entry check. Subscriptions are excluded: their
 					// delivery path never reaches search(), so deferring would grant them UNCHECKED —
 					// they keep the entry evaluation (which fails closed for a record-scoped override)
-					// until per-event delivery checks exist (#1419). Method semantics decide the deferral:
-					// `get` with a non-null id is a true single-record read (entry check runs with the
-					// record loaded, so record-scoped field reads resolve) and only defers when
-					// isCollection — mirroring the isSearchTarget routing it relies on. ALL search/query
-					// calls defer: a present id there is a starts_with/prefix SEED (a multi-record scan,
-					// see Table.search), so an entry verdict would gate — or worse, grant — the whole
-					// scan; both methods invoke instance search() directly, which consumes
-					// checkPermission and arms the per-record guard.
+					// Method semantics decide the deferral: `get` with a non-null id is a true
+					// single-record read (entry check runs with the record loaded, so record-scoped field
+					// reads resolve) and only defers when isCollection — mirroring the isSearchTarget
+					// routing it relies on. ALL search/query calls defer: a present id there is a
+					// starts_with/prefix SEED (a multi-record scan, see Table.search), so an entry verdict
+					// would gate — or worse, grant — the whole scan; both methods invoke instance search()
+					// directly, which consumes checkPermission and arms the per-record guard.
+					// subscribe/connect defer too: Table.subscribe filters each delivered event through
+					// the record-scoped check (#1419), so grant-time evaluation of a record-scoped
+					// override (against a bare collection resource) would only produce spurious verdicts.
 					// Record-scoping is SYNC-only: an async allowRead override keeps this entry check,
 					// which awaits its verdict and fails closed on rejection (#1422 gap 1) — the sync
-					// per-record traversal path cannot await it.
+					// per-record/per-event paths cannot await it.
 					if (
 						options.type === 'read' &&
-						!isSubscribeAction &&
-						(options.method !== 'get' || query.isCollection) &&
+						(isSubscribeAction || options.method !== 'get' || query.isCollection) &&
 						(resource.constructor as any)?.supportsRowLevelAllowRead &&
 						!(resource.allowRead as any)?.isDefaultAllowRead &&
 						(resource.allowRead as any)?.constructor?.name !== 'AsyncFunction'
@@ -841,14 +842,29 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, qu
 			// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 			// not the stale user captured at subscribe time.
 			if (context) (context as any).user = fresh;
-			// Re-run the same table/RBAC-level allowRead the subscription was granted with, against the
-			// fresh user. No per-record evaluation — this matches how access was originally granted.
+			// Re-run the table/RBAC-level allowRead against the fresh user. For a record-scoped
+			// override (#1419), the override itself is enforced per delivered event — evaluating it
+			// here against a bare collection resource would spuriously kill the subscription — so
+			// re-auth verifies the FRAMEWORK default (the table-level grant the subscription rests
+			// on) by walking the prototype chain to the method marked isDefaultAllowRead.
 			const reTarget: any = new RequestTarget();
 			reTarget.id = capturedId;
 			reTarget.isCollection = capturedIsCollection;
 			reTarget.select = capturedSelect;
 			reTarget.checkPermission = fresh.role?.permission;
-			return !!(await resource.allowRead(fresh, reTarget, context));
+			let allowReadFn: any = resource.allowRead;
+			if (!allowReadFn?.isDefaultAllowRead && (resource.constructor as any)?.supportsRowLevelAllowRead) {
+				let proto = Object.getPrototypeOf(resource);
+				while (proto) {
+					const fn = Object.getOwnPropertyDescriptor(proto, 'allowRead')?.value;
+					if (fn?.isDefaultAllowRead) {
+						allowReadFn = fn;
+						break;
+					}
+					proto = Object.getPrototypeOf(proto);
+				}
+			}
+			return !!(await allowReadFn.call(resource, fresh, reTarget, context));
 		},
 	});
 }
