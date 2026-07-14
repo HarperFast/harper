@@ -1,6 +1,6 @@
 'use strict';
 
-// Covers the transient private-registry auth used by deploy_component: buildNpmrcContent
+// Covers the transient private-registry credentials used by deploy_component: buildNpmrcContent
 // normalizes each entry into npm's `.npmrc` auth-key form, and an Application materializes that
 // content into a per-deploy 0600 `.npmrc` (npmUserconfigPath) that is removed on cleanup. The
 // token must never persist beyond the deploy; these tests pin both the format and the lifecycle.
@@ -69,9 +69,9 @@ describe('buildNpmrcContent', () => {
 describe('Application transient .npmrc lifecycle', () => {
 	it('writes a 0600 .npmrc and exposes its path, then removes it on cleanup', async () => {
 		const app = new Application({
-			name: 'registry-auth-test',
+			name: 'registry-credentials-test',
 			packageIdentifier: 'npm:@myorg/app',
-			registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'secret', scope: '@myorg' }],
+			registryCredentials: [{ registry: 'https://npm.pkg.github.com', token: 'secret', scope: '@myorg' }],
 		});
 
 		assert.strictEqual(app.npmUserconfigPath, undefined, 'no path before write');
@@ -95,7 +95,7 @@ describe('Application transient .npmrc lifecycle', () => {
 		await assert.rejects(fs.stat(npmrcPath), /ENOENT/, 'file removed after cleanup');
 	});
 
-	it('writeTransientNpmrc is a no-op without registryAuth', async () => {
+	it('writeTransientNpmrc is a no-op without registry credentials', async () => {
 		const app = new Application({ name: 'no-auth-test', packageIdentifier: 'npm:@myorg/app' });
 		await app.writeTransientNpmrc();
 		assert.strictEqual(app.npmUserconfigPath, undefined);
@@ -116,7 +116,7 @@ describe('Application transient .npmrc lifecycle', () => {
 			const app = new Application({
 				name: 'merge-test',
 				packageIdentifier: 'npm:@myorg/app',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'secret', scope: '@myorg' }],
+				registryCredentials: [{ registry: 'https://npm.pkg.github.com', token: 'secret', scope: '@myorg' }],
 			});
 			await app.writeTransientNpmrc();
 			const contents = await fs.readFile(app.npmUserconfigPath, 'utf8');

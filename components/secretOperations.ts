@@ -325,15 +325,21 @@ export function getSecretsPublicKey(req: any) {
 	return { public_key: publicKey, fingerprint };
 }
 
-/** A resolved registry-auth entry as consumed by the transient .npmrc writer. */
-export interface ResolvedRegistryAuthEntry {
+// deploy_component `credentials` is a kind-heterogeneous array: an entry's kind is implied by its
+// identifying key (today `registry` = npm registry auth; a git-host kind keyed by `host` is planned
+// in #1792), and every kind carries its credential as either a literal `token` or a `secret`
+// reference. Ingest/resolve below are kind-agnostic about that token/secret half and only branch on
+// the identifying key where a kind-specific detail is needed (the derived secret name).
+
+/** A resolved registry credential as consumed by the transient .npmrc writer. */
+export interface ResolvedRegistryCredential {
 	registry: string;
 	token: string;
 	scope?: string;
 }
 
-/** A registry-auth entry after ingestion: a reference into hdb_secret, never a token. */
-export interface RegistryAuthReference {
+/** A registry credential after ingestion: a reference into hdb_secret, never a token. */
+export interface RegistryCredentialReference {
 	registry: string;
 	secret: string;
 	scope?: string;
@@ -358,9 +364,9 @@ export function deriveRegistrySecretName(component: string, registry: string): s
 }
 
 /**
- * Ingest deploy_component `registryAuth` into the secrets store so a provided registry token lives
- * as ciphertext in the replicated, audited `hdb_secret` store (reference, not embed) rather than
- * travelling in the operation body. Returns the entries in reference form (`{ registry, secret }`).
+ * Ingest deploy_component `credentials` into the secrets store so a provided token lives as
+ * ciphertext in the replicated, audited `hdb_secret` store (reference, not embed) rather than
+ * travelling in the operation body. Returns the entries in reference form (`{ …, secret }`).
  *
  * - A literal `{ registry, token }` entry is encrypted (via `set_secret`, custody required) under a
  *   derived name granted to `component`, and returned as a reference. Overwrites an existing
@@ -373,15 +379,20 @@ export function deriveRegistrySecretName(component: string, registry: string): s
  *
  * Runs on the deploying main thread where custody is registered.
  */
-export async function ingestRegistryAuth(req: any, registryAuth: any[] | undefined, component: string): Promise<any[]> {
-	if (!Array.isArray(registryAuth) || registryAuth.length === 0) return registryAuth ?? [];
+export async function ingestCredentials(req: any, credentials: any[] | undefined, component: string): Promise<any[]> {
+	if (!Array.isArray(credentials) || credentials.length === 0) return credentials ?? [];
 	const custody = getSecretCustody();
 	const out: any[] = [];
-	for (const entry of registryAuth) {
+	for (const entry of credentials) {
 		// Already a reference (or nothing to seal without custody): leave as-is.
 		if (entry.secret !== undefined || !custody) {
 			out.push(entry);
 			continue;
+		}
+		// The derived secret name is the one kind-specific detail on this path; a new credential kind
+		// derives its name from its own identifying key.
+		if (entry.registry === undefined) {
+			throw new ClientError(`Unsupported credential entry: expected a 'registry' (npm registry auth) entry`);
 		}
 		const name = deriveRegistrySecretName(component, entry.registry);
 		// Reuse set_secret's seal-and-store path (encrypt with custody, grant to the component, audit
@@ -416,7 +427,7 @@ async function waitForSecretRow(table: any, name: string, waitMs: number): Promi
 }
 
 /**
- * Resolve deploy_component `registryAuth` entries that reference a stored secret
+ * Resolve deploy_component `credentials` entries that reference a stored secret
  * (`{ registry, secret }`) into concrete token entries (`{ registry, token }`) by decrypting the
  * named hdb_secret row on this thread. Entries that already carry a literal `token` pass through
  * unchanged, so this is a no-op for the token-only fallback form.
@@ -440,19 +451,19 @@ async function waitForSecretRow(table: any, name: string, waitMs: number): Promi
  * (OSS core, or a custody key not held here) a referenced secret cannot be resolved and the deploy
  * fails loudly rather than silently installing without auth.
  */
-export async function resolveRegistryAuth(
-	registryAuth: any[] | undefined,
+export async function resolveCredentials(
+	credentials: any[] | undefined,
 	component: string,
 	options: { waitMs?: number } = {}
-): Promise<ResolvedRegistryAuthEntry[] | undefined> {
-	if (!Array.isArray(registryAuth) || registryAuth.length === 0) return registryAuth;
+): Promise<ResolvedRegistryCredential[] | undefined> {
+	if (!Array.isArray(credentials) || credentials.length === 0) return credentials;
 	// Token-only requests must not require custody or a provisioned store — keep the fast path pure.
-	if (!registryAuth.some((entry) => entry && entry.secret !== undefined)) return registryAuth;
+	if (!credentials.some((entry) => entry && entry.secret !== undefined)) return credentials;
 
 	const waitMs = options.waitMs ?? 0;
 	const table = secretTable();
-	const resolved: ResolvedRegistryAuthEntry[] = [];
-	for (const entry of registryAuth) {
+	const resolved: ResolvedRegistryCredential[] = [];
+	for (const entry of credentials) {
 		if (!entry) continue; // parity with the fast-path guard above; validated entries are never null
 		if (entry.secret === undefined) {
 			resolved.push({ registry: entry.registry, token: entry.token, scope: entry.scope });
@@ -462,14 +473,14 @@ export async function resolveRegistryAuth(
 		const row = waitMs > 0 ? await waitForSecretRow(table, name, waitMs) : await table.get(name);
 		if (!row) {
 			throw new ClientError(
-				`registryAuth references secret '${name}', which does not exist`,
+				`credential entry references secret '${name}', which does not exist`,
 				HTTP_STATUS_CODES.NOT_FOUND
 			);
 		}
 		const grants = Array.isArray(row.grants) ? row.grants : [];
 		if (!row.processEnv && !grants.includes(component)) {
 			throw new ClientError(
-				`registryAuth secret '${name}' is not granted to component '${component}' ` +
+				`credential secret '${name}' is not granted to component '${component}' ` +
 					`(grant it with grant_secret, or set it processEnv:true)`,
 				HTTP_STATUS_CODES.FORBIDDEN
 			);
@@ -479,7 +490,7 @@ export async function resolveRegistryAuth(
 			// Server-state condition, not a client-fixable request: the same body would resolve once
 			// custody comes up, so report it retryable (503) rather than the ClientError default 400.
 			throw new ClientError(
-				`secrets custody is not initialized on this node; cannot resolve registryAuth secret '${name}'`,
+				`secrets custody is not initialized on this node; cannot resolve credential secret '${name}'`,
 				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
 			);
 		}
@@ -488,7 +499,7 @@ export async function resolveRegistryAuth(
 			token = custody.decrypt(row.envelope);
 		} catch (error) {
 			throw new ClientError(
-				`Failed to decrypt registryAuth secret '${name}': ${(error as Error).message}`,
+				`Failed to decrypt credential secret '${name}': ${(error as Error).message}`,
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}

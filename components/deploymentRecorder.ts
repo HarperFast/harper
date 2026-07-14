@@ -15,7 +15,7 @@ import { Readable, Transform, pipeline } from 'node:stream';
 import { databases } from '../resources/databases.ts';
 import { createBlob, isSaving, deleteBlob } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import type { RegistryAuthReference } from './secretOperations.ts';
+import type { RegistryCredentialReference } from './secretOperations.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { hostname } from 'node:os';
@@ -62,10 +62,10 @@ interface CreateOptions {
 	user?: string;
 	restart_mode?: 'immediate' | 'rolling' | null;
 	rollback_of?: string | null;
-	// Registry-auth in reference form (`{ registry, secret, scope? }`) — never a literal token. Kept
-	// so a rollback can re-resolve the private-registry credential from hdb_secret without the
-	// operator re-supplying it. Null when the deploy used no auth or a no-custody transient token.
-	registry_auth?: RegistryAuthReference[] | null;
+	// Deploy credentials in reference form (`{ registry, secret, scope? }`) — never a literal token.
+	// Kept so a rollback can re-resolve the credential from hdb_secret without the operator
+	// re-supplying it. Null when the deploy used no credentials or a no-custody transient token.
+	credentials?: RegistryCredentialReference[] | null;
 	emitter?: ProgressEmitter;
 }
 
@@ -103,7 +103,7 @@ export class DeploymentRecorder {
 			completed_at: null,
 			user: options.user ?? null,
 			rollback_of: options.rollback_of ?? null,
-			registry_auth: options.registry_auth ?? null,
+			credentials: options.credentials ?? null,
 			error: null,
 		};
 		const recorder = new DeploymentRecorder(deploymentId, record);

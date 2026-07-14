@@ -66,35 +66,35 @@ npm error 404 '@scope/nonexistent-pkg@latest' is not in this registry.
 	});
 });
 
-describe('assertApplicationConfig registryAuth', () => {
-	it('accepts a config with no registryAuth', () => {
+describe('assertApplicationConfig credentials', () => {
+	it('accepts a config with no credentials', () => {
 		assert.doesNotThrow(() => assertApplicationConfig('app', { package: 'npm:@org/app@1.0.0' }));
 	});
 
-	it('accepts registryAuth reference entries', () => {
+	it('accepts credential reference entries', () => {
 		assert.doesNotThrow(() =>
 			assertApplicationConfig('app', {
 				package: 'npm:@org/app@1.0.0',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com', secret: 'deploy.app.gh', scope: '@org' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com', secret: 'deploy.app.gh', scope: '@org' }],
 			})
 		);
 	});
 
-	it('rejects registryAuth that is not an array', () => {
+	it('rejects credentials that is not an array', () => {
 		assert.throws(
-			() => assertApplicationConfig('app', { package: 'p', registryAuth: { registry: 'r', secret: 's' } }),
+			() => assertApplicationConfig('app', { package: 'p', credentials: { registry: 'r', secret: 's' } }),
 			/expected array/
 		);
 	});
 
-	it('rejects a registryAuth entry carrying a literal token (references only on disk)', () => {
+	it('rejects a credential entry carrying a literal token (references only on disk)', () => {
 		assert.throws(
-			() => assertApplicationConfig('app', { package: 'p', registryAuth: [{ registry: 'r', token: 'tok' }] }),
+			() => assertApplicationConfig('app', { package: 'p', credentials: [{ registry: 'r', token: 'tok' }] }),
 			/expected \{ registry, secret, scope\? \} reference/
 		);
 	});
 
-	it('rejects a registryAuth entry missing registry/secret', () => {
-		assert.throws(() => assertApplicationConfig('app', { package: 'p', registryAuth: [{ secret: 's' }] }), /reference/);
+	it('rejects a credential entry missing registry/secret', () => {
+		assert.throws(() => assertApplicationConfig('app', { package: 'p', credentials: [{ secret: 's' }] }), /reference/);
 	});
 });

@@ -371,6 +371,25 @@ function packageComponentValidator(req) {
 	return validator.validateBySchema(req, packageProjSchema);
 }
 
+// An npm registry-auth credential entry, identified by its `registry` key.
+const REGISTRY_CREDENTIAL_ENTRY = Joi.object({
+	// registry and token are written verbatim into the transient .npmrc, which is line-based;
+	// forbid CR/LF so a super_user can't inject extra npm config lines. (registry also accepts
+	// bare hosts and //host/ forms, so a strict URI validator would reject supported inputs — the
+	// newline guard is the right scope here.)
+	registry: Joi.string()
+		.pattern(/^[^\r\n]+$/)
+		.required(),
+	token: Joi.string().pattern(/^[^\r\n]+$/),
+	// A reference into the hdb_secret store; same name grammar as set_secret's `name`.
+	secret: Joi.string()
+		.pattern(ENV_KEY_REGEX)
+		.messages({ 'string.pattern.base': `'secret' must only contain word characters, dots and dashes` }),
+	scope: Joi.string()
+		.pattern(/^@[a-z0-9-_.]+$/)
+		.optional(),
+}).xor('token', 'secret');
+
 /**
  * Validate deployComponent requests.
  * @param req
@@ -398,33 +417,24 @@ function deployComponentValidator(req) {
 			})
 			.optional()
 			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
-		// Private-registry auth. Each entry supplies its credential exactly one of two ways:
-		//   - `token`: a literal token, used only for this node's npm pack/install and never
-		//     persisted or replicated (stripped from req before replicateOperation).
+		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
+		// identifying key rather than a separate discriminator field, so a new kind (e.g. a git-host
+		// credential keyed by `host`, #1792) is added as another item alternative here without
+		// reshaping the field. Today the only kind is npm registry auth (`registry`).
+		//
+		// Every kind supplies its credential exactly one of two ways:
+		//   - `token`: a literal token, used only for this node's install and never persisted or
+		//     replicated (stripped from req before replicateOperation).
 		//   - `secret`: the name of an hdb_secret row (#1550); the token is resolved by decrypting
 		//     that row on this node at deploy time, so the credential lives in the secrets store
 		//     (reference, not embed) instead of travelling in the operation body.
-		registryAuth: Joi.array()
-			.items(
-				Joi.object({
-					// registry and token are written verbatim into the transient .npmrc, which is
-					// line-based; forbid CR/LF so a super_user can't inject extra npm config lines.
-					// (registry also accepts bare hosts and //host/ forms, so a strict URI validator
-					// would reject supported inputs — the newline guard is the right scope here.)
-					registry: Joi.string()
-						.pattern(/^[^\r\n]+$/)
-						.required(),
-					token: Joi.string().pattern(/^[^\r\n]+$/),
-					// A reference into the hdb_secret store; same name grammar as set_secret's `name`.
-					secret: Joi.string()
-						.pattern(ENV_KEY_REGEX)
-						.messages({ 'string.pattern.base': `'secret' must only contain word characters, dots and dashes` }),
-					scope: Joi.string()
-						.pattern(/^@[a-z0-9-_.]+$/)
-						.optional(),
-				}).xor('token', 'secret')
-			)
-			.optional(),
+		credentials: Joi.array().items(REGISTRY_CREDENTIAL_ENTRY).optional(),
+		// `registryAuth` was this field's name on the 5.2 dev line before it grew to carry other
+		// credential kinds. Rejected rather than ignored: validation allows unknown keys, so a caller
+		// still sending it would otherwise get a deploy that silently installs with no credentials.
+		registryAuth: Joi.any().forbidden().messages({
+			'any.unknown': `'registryAuth' has been renamed to 'credentials'`,
+		}),
 	}).with('urlPath', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);

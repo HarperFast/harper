@@ -223,20 +223,20 @@ describe('Test operationsValidation module', () => {
 		});
 	});
 
-	describe('Test deployComponentValidator registryAuth', () => {
-		it('accepts a valid registryAuth array', () => {
+	describe('Test deployComponentValidator credentials', () => {
+		it('accepts a valid credentials array', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
 				package: 'npm:@myorg/app@1.0.0',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok', scope: '@myorg' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok', scope: '@myorg' }],
 			});
 			expect(result).to.equal(undefined);
 		});
 
-		it('rejects a registryAuth entry missing a token', () => {
+		it('rejects a credential entry missing a token', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com' }],
 			});
 			expect(result.message).to.contain('token');
 		});
@@ -244,23 +244,23 @@ describe('Test operationsValidation module', () => {
 		it('rejects an invalid scope', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok', scope: 'noatsign' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok', scope: 'noatsign' }],
 			});
 			expect(result.message).to.contain('scope');
 		});
 
-		it('rejects registryAuth that is not an array', () => {
+		it('rejects credentials that is not an array', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
-				registryAuth: { registry: 'https://npm.pkg.github.com', token: 'tok' },
+				credentials: { registry: 'https://npm.pkg.github.com', token: 'tok' },
 			});
-			expect(result.message).to.contain('registryAuth');
+			expect(result.message).to.contain('credentials');
 		});
 
 		it('rejects a token containing a newline (.npmrc line injection)', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok\nregistry=https://evil.example.com/' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok\nregistry=https://evil.example.com/' }],
 			});
 			expect(result.message).to.contain('token');
 		});
@@ -268,7 +268,7 @@ describe('Test operationsValidation module', () => {
 		it('rejects a registry containing a newline (.npmrc line injection)', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com\n//evil.example.com/:_authToken=x', token: 'tok' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com\n//evil.example.com/:_authToken=x', token: 'tok' }],
 			});
 			expect(result.message).to.contain('registry');
 		});
@@ -277,7 +277,7 @@ describe('Test operationsValidation module', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
 				package: 'npm:@myorg/app@1.0.0',
-				registryAuth: [{ registry: 'npm.pkg.github.com', token: 'tok' }],
+				credentials: [{ registry: 'npm.pkg.github.com', token: 'tok' }],
 			});
 			expect(result).to.equal(undefined);
 		});
@@ -286,7 +286,7 @@ describe('Test operationsValidation module', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
 				package: 'npm:@myorg/app@1.0.0',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com', secret: 'GH_TOKEN', scope: '@myorg' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com', secret: 'GH_TOKEN', scope: '@myorg' }],
 			});
 			expect(result).to.equal(undefined);
 		});
@@ -294,7 +294,7 @@ describe('Test operationsValidation module', () => {
 		it('rejects an entry that supplies both token and secret (exactly one required)', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok', secret: 'GH_TOKEN' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok', secret: 'GH_TOKEN' }],
 			});
 			expect(result.message).to.contain('secret');
 		});
@@ -302,7 +302,7 @@ describe('Test operationsValidation module', () => {
 		it('rejects an entry supplying neither token nor secret', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com' }],
 			});
 			expect(result.message).to.contain('secret');
 		});
@@ -310,9 +310,26 @@ describe('Test operationsValidation module', () => {
 		it('rejects an invalid secret name', () => {
 			const result = validator.deployComponentValidator({
 				project: 'my_app',
-				registryAuth: [{ registry: 'https://npm.pkg.github.com', secret: 'bad name/with slash' }],
+				credentials: [{ registry: 'https://npm.pkg.github.com', secret: 'bad name/with slash' }],
 			});
 			expect(result.message).to.contain('secret');
+		});
+
+		it('rejects the pre-rename registryAuth field (clean break, #1717 never shipped GA)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				package: 'npm:@myorg/app@1.0.0',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok' }],
+			});
+			expect(result.message).to.contain('registryAuth');
+		});
+
+		it('rejects an entry of an unrecognized kind (a git-host entry lands with #1792)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ host: 'github.com', token: 'tok' }],
+			});
+			expect(result.message).to.contain('registry');
 		});
 	});
 

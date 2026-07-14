@@ -3,6 +3,7 @@ import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUti
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
+import type { RegistryCredentialReference, ResolvedRegistryCredential } from './secretOperations.ts';
 
 import { basename, dirname, extname, join } from 'node:path';
 import {
@@ -38,10 +39,10 @@ interface ApplicationConfig {
 		timeout?: number;
 		allowInstallScripts?: boolean;
 	};
-	// Private-registry auth in reference form only — each entry names an hdb_secret row, never a
-	// token. Recorded by deploy_component so every (cold) install — reboot, new peer, rollback —
-	// re-resolves the credential from the store rather than needing it re-supplied.
-	registryAuth?: { registry: string; secret: string; scope?: string }[];
+	// Deploy credentials in reference form only — each entry names an hdb_secret row, never a token.
+	// Recorded by deploy_component so every (cold) install — reboot, new peer, rollback — re-resolves
+	// the credential from the store rather than needing it re-supplied.
+	credentials?: RegistryCredentialReference[];
 	// an application config can have other arbitrary properties
 	[key: string]: unknown;
 }
@@ -78,18 +79,18 @@ export class InvalidInstallTimeoutError extends TypeError {
 	}
 }
 
-export class InvalidRegistryAuthPropertyError extends TypeError {
-	constructor(applicationName: string, registryAuth: unknown) {
+export class InvalidCredentialsPropertyError extends TypeError {
+	constructor(applicationName: string, credentials: unknown) {
 		super(
-			`Invalid 'registryAuth' property for application ${applicationName}: expected array, got ${typeof registryAuth}`
+			`Invalid 'credentials' property for application ${applicationName}: expected array, got ${typeof credentials}`
 		);
 	}
 }
 
-export class InvalidRegistryAuthEntryError extends TypeError {
+export class InvalidCredentialEntryError extends TypeError {
 	constructor(applicationName: string) {
 		super(
-			`Invalid 'registryAuth' entry for application ${applicationName}: expected { registry, secret, scope? } reference`
+			`Invalid 'credentials' entry for application ${applicationName}: expected { registry, secret, scope? } reference`
 		);
 	}
 }
@@ -131,10 +132,10 @@ export function assertApplicationConfig(
 			);
 		}
 	}
-	if ('registryAuth' in applicationConfig && applicationConfig.registryAuth !== undefined) {
-		const entries = applicationConfig.registryAuth;
+	if ('credentials' in applicationConfig && applicationConfig.credentials !== undefined) {
+		const entries = applicationConfig.credentials;
 		if (!Array.isArray(entries)) {
-			throw new InvalidRegistryAuthPropertyError(applicationName, entries);
+			throw new InvalidCredentialsPropertyError(applicationName, entries);
 		}
 		for (const entry of entries) {
 			// Config carries references only — a literal `token` here would mean a plaintext credential
@@ -145,7 +146,7 @@ export function assertApplicationConfig(
 				typeof (entry as any).registry !== 'string' ||
 				typeof (entry as any).secret !== 'string'
 			) {
-				throw new InvalidRegistryAuthEntryError(applicationName);
+				throw new InvalidCredentialEntryError(applicationName);
 			}
 		}
 	}
@@ -551,7 +552,7 @@ interface ApplicationOptions {
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 	onInstallLine?: OnInstallLine;
-	registryAuth?: RegistryAuthEntry[];
+	registryCredentials?: ResolvedRegistryCredential[];
 }
 
 export class Application {
@@ -563,21 +564,22 @@ export class Application {
 	dirPath: string;
 	logger: Logger;
 	packageManagerPrefix: string; // can be used to configure a package manager prefix, specifically "sfw".
-	// Transient registry auth provided by a deploy. The token is held only in memory and a
-	// per-deploy `.npmrc`; it is never persisted to config, hdb_deployment, or replicated.
-	registryAuth?: RegistryAuthEntry[];
+	// Transient registry credentials provided by a deploy, already resolved to literal tokens. The
+	// token is held only in memory and a per-deploy `.npmrc`; it is never persisted to config,
+	// hdb_deployment, or replicated.
+	registryCredentials?: ResolvedRegistryCredential[];
 	// Path to the per-deploy `.npmrc`, set by writeTransientNpmrc() during prepareApplication and
-	// passed to the spawn calls; undefined when no registry auth was provided.
+	// passed to the spawn calls; undefined when no registry credentials were provided.
 	npmUserconfigPath?: string;
 	#npmrcTempDir?: string;
 
-	constructor({ name, payload, packageIdentifier, install, onInstallLine, registryAuth }: ApplicationOptions) {
+	constructor({ name, payload, packageIdentifier, install, onInstallLine, registryCredentials }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
 		this.onInstallLine = onInstallLine;
-		this.registryAuth = registryAuth;
+		this.registryCredentials = registryCredentials;
 		const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		if (!componentsRoot) throw new Error('componentsRoot is not configured');
 		this.dirPath = join(componentsRoot, name);
@@ -586,7 +588,8 @@ export class Application {
 	}
 
 	// Write the transient `.npmrc` into a fresh 0700 temp dir (file mode 0600) and record its path
-	// so the deploy's npm spawns authenticate against the private registry. No-op without registry auth.
+	// so the deploy's npm spawns authenticate against the private registry. No-op without registry
+	// credentials.
 	//
 	// Because `nonInteractiveSpawn` points npm at this single file (replacing any inherited
 	// npm_config_userconfig), prepend the contents of an already-configured userconfig — e.g. a
@@ -594,7 +597,7 @@ export class Application {
 	// survive. The transient auth is appended last so it wins on conflict (npm honors the last
 	// value for a given key).
 	async writeTransientNpmrc(): Promise<void> {
-		if (!this.registryAuth?.length) return;
+		if (!this.registryCredentials?.length) return;
 		// Defensive: if called more than once, remove the prior temp dir first so it isn't leaked.
 		if (this.#npmrcTempDir) await this.cleanupTransientNpmrc();
 		this.#npmrcTempDir = await mkdtemp(join(tmpdir(), 'harper-npmrc-'));
@@ -610,7 +613,7 @@ export class Application {
 				if (error?.code !== 'ENOENT') throw error;
 			}
 		}
-		content += buildNpmrcContent(this.registryAuth);
+		content += buildNpmrcContent(this.registryCredentials);
 		await writeFile(npmrcPath, content, { mode: 0o600 });
 		this.npmUserconfigPath = npmrcPath;
 	}
@@ -629,7 +632,7 @@ export class Application {
 			this.npmUserconfigPath = undefined;
 			// Drop the in-memory token array too, so it can't surface in a later heap dump or error
 			// serialization of this Application instance.
-			this.registryAuth = undefined;
+			this.registryCredentials = undefined;
 		}
 	}
 }
@@ -737,20 +740,19 @@ export async function installApplications() {
 			// This will throw if the config is invalid
 			assertApplicationConfig(name, applicationConfig);
 
-			// Resolve any private-registry auth references from the store so a cold install (fresh
-			// node, wiped components dir, new peer that never installed) can authenticate without the
-			// token being re-supplied. Best-effort: if custody isn't available yet or a referenced
-			// secret is missing, log and install without it (a truly private package then fails in
-			// npm with its own error) rather than blocking boot.
-			let resolvedRegistryAuth: RegistryAuthEntry[] | undefined;
-			if (applicationConfig.registryAuth?.length) {
+			// Resolve any credential references from the store so a cold install (fresh node, wiped
+			// components dir, new peer that never installed) can authenticate without the token being
+			// re-supplied. Best-effort: if custody isn't available yet or a referenced secret is
+			// missing, log and install without it (a truly private package then fails in npm with its
+			// own error) rather than blocking boot.
+			let registryCredentials: ResolvedRegistryCredential[] | undefined;
+			if (applicationConfig.credentials?.length) {
 				try {
-					const { resolveRegistryAuth } = await import('./secretOperations.ts');
-					resolvedRegistryAuth = (await resolveRegistryAuth(applicationConfig.registryAuth, name)) as
-						RegistryAuthEntry[] | undefined;
+					const { resolveCredentials } = await import('./secretOperations.ts');
+					registryCredentials = await resolveCredentials(applicationConfig.credentials, name);
 				} catch (error) {
 					logger.warn?.(
-						`Could not resolve registryAuth for application ${name} at install time: ${(error as Error).message}`
+						`Could not resolve credentials for application ${name} at install time: ${(error as Error).message}`
 					);
 				}
 			}
@@ -759,7 +761,7 @@ export async function installApplications() {
 				name,
 				packageIdentifier: applicationConfig.package,
 				install: applicationConfig.install,
-				registryAuth: resolvedRegistryAuth,
+				registryCredentials,
 			});
 
 			// Lock check: only install if not already installed with matching configuration
@@ -800,12 +802,6 @@ function getGitSSHCommand() {
 	}
 }
 
-export interface RegistryAuthEntry {
-	registry: string;
-	token: string;
-	scope?: string;
-}
-
 // Normalize a registry to a full URL with a scheme and trailing slash, e.g.
 // `npm.pkg.github.com` or `//npm.pkg.github.com` → `https://npm.pkg.github.com/`.
 function normalizeRegistryUrl(registry: string): string {
@@ -817,16 +813,16 @@ function normalizeRegistryUrl(registry: string): string {
 	return url;
 }
 
-// Build the contents of a transient `.npmrc` from registry auth entries: an auth-token line keyed
+// Build the contents of a transient `.npmrc` from resolved registry credentials: an auth-token line keyed
 // by npm's registry auth key (scheme stripped, leading `//`, trailing `/`) plus a registry-routing
 // line. A scope routes only that `@scope` to the registry (`@scope:registry=…`); without a scope
 // the entry sets npm's default `registry=…` so an unscoped package spec (e.g. `npm:my-private-app`)
 // or its transitive deps actually resolve against this registry rather than the public default.
 // A scope-less entry therefore requires its registry to serve/proxy whatever npm needs to install;
 // with multiple scope-less entries npm's last-value-wins applies to the default `registry`.
-export function buildNpmrcContent(registryAuth: RegistryAuthEntry[]): string {
+export function buildNpmrcContent(registryCredentials: ResolvedRegistryCredential[]): string {
 	const lines: string[] = [];
-	for (const { registry, token, scope } of registryAuth) {
+	for (const { registry, token, scope } of registryCredentials) {
 		// Enforce the no-newline invariant at the injection point so it holds for every source. The
 		// ops validator already rejects CR/LF in a literal `token`, but a token resolved from an
 		// hdb_secret row bypasses that guard; without this a `\n` in a secret value would inject
