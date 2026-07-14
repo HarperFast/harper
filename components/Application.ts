@@ -579,7 +579,10 @@ export class Application {
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
 		this.onInstallLine = onInstallLine;
-		this.registryCredentials = registryCredentials;
+		// `credentials` is kind-heterogeneous (registry today, a planned git-host kind later — see
+		// secretOperations.ts); filter to registry-shaped entries so buildNpmrcContent (which assumes
+		// `.registry` on every entry) never sees a non-registry kind once one exists.
+		this.registryCredentials = registryCredentials?.filter((entry) => entry && 'registry' in entry);
 		const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		if (!componentsRoot) throw new Error('componentsRoot is not configured');
 		this.dirPath = join(componentsRoot, name);
