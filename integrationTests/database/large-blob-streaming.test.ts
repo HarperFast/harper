@@ -31,9 +31,9 @@
  *     stayed well under a guard threshold at 256MB (true streaming confirmed).
  */
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -231,7 +231,11 @@ suite(`large-blob streaming (engine=${ENGINE})`, { skip: skipSuite }, (ctx: Cont
 	});
 
 	after(async () => {
-		await teardownHarper(ctx);
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			await rm(blobPath, { recursive: true, force: true });
+		}
 		console.log(`\n[large-blob-streaming] SUMMARY (engine=${ENGINE})`);
 		for (const f of findings) console.log('  ' + f);
 	});
@@ -295,7 +299,7 @@ suite(`large-blob streaming (engine=${ENGINE})`, { skip: skipSuite }, (ctx: Cont
 			findings.push(
 				`Q1 ${mb}MB → ${klass}; readSha==expected=${dl.result.body.readSha === expectedSha} ` +
 					`readSize=${dl.result.body.readSize}/${size} ` +
-					`UP[heap+${(upHeapMB - idleRssMB > 0 ? upHeapMB : upHeapMB).toFixed(0)} rss=${upRssMB.toFixed(0)}MB Δ${(upRssMB - idleRssMB).toFixed(0)}] ` +
+					`UP[heap+${upHeapMB.toFixed(0)} rss=${upRssMB.toFixed(0)}MB Δ${(upRssMB - idleRssMB).toFixed(0)}] ` +
 					`DL[heap=${dlHeapMB.toFixed(0)} rss=${dlRssMB.toFixed(0)}MB Δ${(dlRssMB - idleRssMB).toFixed(0)}] ` +
 					`up=${up.result.body.uploadMs}ms dl=${dl.result.body.verifyMs}ms`
 			);
@@ -363,37 +367,51 @@ suite(`large-blob streaming (engine=${ENGINE})`, { skip: skipSuite }, (ctx: Cont
 		ok(sSt.status === 200, `small store failed: ${sSt.status} ${JSON.stringify(sSt.body).slice(0, 150)}`);
 		const smallExpected = sSt.body.expectedSha;
 
-		// Probe candidate routes for reading a blob attribute over REST.
+		// Probe candidate routes for reading a blob attribute over REST. Only the dot-suffix
+		// and ?select() forms address the sub-attribute directly; the bare record route returns
+		// the whole JSON record (not the raw blob), and the slash-suffix form isn't a route at all.
 		const routes = (k: string) => [`/Big/${k}/payload`, `/Big/${k}.payload`, `/Big/${k}?select(payload)`, `/Big/${k}`];
+		const exactByPath: Record<string, boolean> = {};
 		for (const path of routes(smallKey)) {
 			const r = await streamHashGet(httpURL, path, authHeader);
 			const exact = r.status === 200 && r.bytes === small && r.sha === smallExpected;
+			exactByPath[path] = exact;
 			findings.push(
 				`Q2 route GET ${path} → status=${r.status} bytes=${r.bytes}/${small} blobShaMatch=${r.sha === smallExpected} ` +
 					`ct-len=${r.contentLength ?? '-'} te=${r.transferEncoding ?? '-'}${exact ? ' [BLOB BYTE-EXACT]' : ''}`
 			);
 		}
+		// Contract: the sub-attribute routes must return the raw blob byte-exact...
+		ok(exactByPath[`/Big/${smallKey}.payload`], 'dot-suffix sub-attribute route must return the raw blob byte-exact');
+		ok(
+			exactByPath[`/Big/${smallKey}?select(payload)`],
+			'?select(payload) sub-attribute route must return the raw blob byte-exact'
+		);
+		// ...while the bare record route must NOT (it serializes the whole JSON record instead).
+		ok(!exactByPath[`/Big/${smallKey}`], 'bare record route must not return the raw blob bytes');
 
-		// Now the large sub-attribute GET (256MB), streaming wire hash.
+		// Now the large sub-attribute GET (256MB), streaming wire hash via the confirmed-working route.
 		const mb = 256;
 		const size = mb * MB;
 		const key = 'wire-256';
 		const st = await op({ action: 'store', key, seed: key, size });
-		if (st.status !== 200) {
-			findings.push(`Q2 setup store ${mb}MB failed status=${st.status}; skipping large wire GET`);
-		} else {
-			const expectedSha = st.body.expectedSha;
-			const { result: r } = await withMemWatch(client, () => streamHashGet(httpURL, `/Big/${key}/payload`, authHeader));
-			const exact = r.status === 200 && r.bytes === size && r.sha === expectedSha;
-			findings.push(
-				`Q2 LARGE GET /Big/${key}/payload → status=${r.status} bytes=${r.bytes}/${size} ` +
-					`sha==expected=${r.sha === expectedSha} te=${r.transferEncoding ?? '-'} ct-len=${r.contentLength ?? '-'} ` +
-					`ttfb=${r.ttfbMs}ms total=${r.totalMs}ms → ${exact ? 'WIRE BYTE-EXACT (streaming)' : 'NOT-EXACT/ERR'}`
-			);
-			await op({ action: 'delete', key });
-		}
+		ok(st.status === 200, `large store failed: ${st.status} ${JSON.stringify(st.body).slice(0, 150)}`);
+		const expectedSha = st.body.expectedSha;
+		const { result: r, peakRssMB } = await withMemWatch(client, () =>
+			streamHashGet(httpURL, `/Big/${key}.payload`, authHeader)
+		);
+		const exact = r.status === 200 && r.bytes === size && r.sha === expectedSha;
+		findings.push(
+			`Q2 LARGE GET /Big/${key}.payload → status=${r.status} bytes=${r.bytes}/${size} ` +
+				`sha==expected=${r.sha === expectedSha} te=${r.transferEncoding ?? '-'} ct-len=${r.contentLength ?? '-'} ` +
+				`ttfb=${r.ttfbMs}ms total=${r.totalMs}ms Δrss=${(peakRssMB - idleRssMB).toFixed(0)}MB → ` +
+				(exact ? 'WIRE BYTE-EXACT (streaming)' : 'NOT-EXACT/ERR')
+		);
+		strictEqual(r.status, 200, `large sub-attribute GET should succeed, got ${r.status}`);
+		strictEqual(r.bytes, size, `large sub-attribute GET should return all ${size} bytes, got ${r.bytes}`);
+		strictEqual(r.sha, expectedSha, 'large sub-attribute GET must be byte-exact');
+		await op({ action: 'delete', key });
 		await op({ action: 'delete', key: smallKey });
-		ok(true); // diagnostic test: record route behaviors, don't hard-fail on route shape
 	});
 
 	// Overwrite + delete reclaim: write a large blob, overwrite it, delete it,
