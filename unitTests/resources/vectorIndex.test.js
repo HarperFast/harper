@@ -1785,6 +1785,49 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		}
 	});
 
+	it('subscription delivery re-evaluates against the LIVE user (reflects #1414 in-place re-auth)', async () => {
+		// The override keys on a MUTABLE claim (tier), not a stable record field, so a re-auth that
+		// swaps context.user mid-stream must change the verdict. A snapshot regression would keep
+		// delivering with the pre-downgrade user and this test would catch it.
+		const context = {
+			user: { id: 1, username: 'u1', tier: 'gold', role: { permission: {} } },
+			getContext() {
+				return this;
+			},
+		};
+		class TierGated extends T {
+			allowRead(user) {
+				if (this?.ownerId == null) return true; // collection scope: open
+				return user?.tier === 'gold'; // gate on a mutable claim
+			}
+		}
+		const subscription = await TierGated.subscribe({ checkPermission: true, omitCurrent: true }, context);
+		const received = [];
+		const collector = (async () => {
+			for await (const event of subscription) {
+				if (event.type !== 'end_txn') received.push(event);
+			}
+		})();
+		try {
+			await T.put(140, { group: 'blue', ownerId: 1, active: true, vector: [140, 0] });
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert(
+				received.some((e) => e.id === 140),
+				'gold-tier user receives the event'
+			);
+			// #1414 re-auth replaces context.user in place with the refreshed principal — here downgraded.
+			context.user = { id: 1, username: 'u1', tier: 'silver', role: { permission: {} } };
+			const before = received.length;
+			await T.put(141, { group: 'blue', ownerId: 1, active: true, vector: [141, 0] });
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert.strictEqual(received.length, before, 'after the live downgrade, further events are dropped');
+			assert(!received.some((e) => e.id === 141), 'the post-downgrade event is not delivered');
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
+	});
+
 	it('subscribe entry check still guards the connection grant (protects connection-level allowRead)', async () => {
 		// subscribe is NOT deferred: the entry check runs the override as the connection grant, so a
 		// connection-level override (e.g. an MQTT topic ACL) that denies is honored at subscribe time.
