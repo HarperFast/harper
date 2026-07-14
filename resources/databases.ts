@@ -1786,7 +1786,14 @@ async function runIndexing(Table, attributes, indicesToRemove, retryAttempt = 0)
 			// (e.g. ERR_BUSY from RocksDB under load) leaving gaps while appearing successful.
 			for (const attribute of attributes) {
 				attribute.indexingFailed = true;
-				// Preserve lastIndexedKey so the retry resumes from the last checkpoint.
+				// Reset the resume point to this pass's start, exactly like the transient-retry
+				// path above: the intra-pass checkpoint advances on row count alone and can be
+				// past the failed row (it fires every 100 rows regardless of put failures), so
+				// resuming from it would leave the failed row permanently unindexed once the
+				// restart pass completes and clears indexingFailed — the same silent-gap
+				// fingerprint this block exists to prevent. Re-running the pass from its start
+				// is safe; re-indexing is idempotent.
+				attribute.lastIndexedKey = passStartKey;
 				lastResolution = Table.dbisDB.put(attribute.key, attribute);
 				// Keep isIndexing = true on both the attribute.dbi and the currently-active dbi
 				// in Table.indices (which may differ if resetDatabases() ran during this pass).
@@ -1797,7 +1804,7 @@ async function runIndexing(Table, attributes, indicesToRemove, retryAttempt = 0)
 			await lastResolution;
 			logger.warn(
 				`Indexing of ${Table.tableName} encountered errors on some records - index will remain incomplete. ` +
-					`On next restart the migration will be retried from the last checkpoint (indexingFailed=true). ` +
+					`On next restart the migration will be retried from this pass's start (indexingFailed=true). ` +
 					`Affected attributes: ${attributes.map((a) => a.name).join(', ')}`
 			);
 		} else {
