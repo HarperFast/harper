@@ -8,11 +8,11 @@ npm install --ignore-scripts
 echo -e "\n📦 Building project"
 npm run build || true
 
-echo -e "\n📦 Pruning devDependencies"
-npm prune --omit=dev
-
 echo -e "\n📦 Creating shrinkwrap"
 npm shrinkwrap
+
+echo -e "\n📦 Pruning devDependencies from shrinkwrap"
+node build-tools/prune-shrinkwrap-dev.mjs npm-shrinkwrap.json
 
 ./build-tools/build-studio.sh
 
