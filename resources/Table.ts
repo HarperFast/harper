@@ -3414,12 +3414,12 @@ export function makeTable(options) {
 			// model): the subscribe entry check already granted the connection (topic ACL / collection
 			// scope); here we ADDITIONALLY re-evaluate a sync application-overridden allowRead per
 			// record-bearing event with `this` = the event's record, the delivery-path analog of the
-			// per-record query guard. Gated to (1) an overridden, sync allowRead — the default is
-			// record-independent and already enforced at connect, so the common case stays zero-overhead
-			// — and (2) a user principal on the context: the connect-time authorization consumed the
-			// request's checkPermission flag before we get here, so context.user is the persistent
-			// signal that this is an authorization-checked (external) subscription; internal subscribers
-			// (replication, system watchers) have no user and keep full delivery.
+			// per-record query guard. Gated to (1) an overridden allowRead (the default is
+			// record-independent and already enforced at connect, so the common case stays zero-overhead)
+			// and (2) an authorization-checked subscription — the entry check clears checkPermission
+			// before we get here and an anonymous-but-checked subscription has no user to key on, so the
+			// wrapper stamps a durable `rowLevelAuthChecked` flag; internal subscribers (replication,
+			// system watchers) never set it and keep full delivery.
 			// Fails closed: a throwing or thenable-returning override drops the event rather than leaks it.
 			//
 			// Known limitation (as in #1524): only put/invalidate events carry the authoritative full
@@ -3427,19 +3427,21 @@ export function makeTable(options) {
 			// mis-decide an override keyed on row fields; closing the primary leak (record updates) is
 			// the goal here — authorizing non-record-bearing event types against the full row is deferred.
 			const subContext = this.getContext() as any;
-			const subUser = subContext?.user;
 			const subAllowRead = this.allowRead;
-			const filterRowReads =
-				subUser != null &&
-				!(subAllowRead as any)?.isDefaultAllowRead &&
-				(subAllowRead as any)?.constructor?.name !== 'AsyncFunction';
+			const filterRowReads = (request as any)?.rowLevelAuthChecked && !(subAllowRead as any)?.isDefaultAllowRead;
 			let warnedAsyncEvent = false;
 			const allowsEvent = filterRowReads
 				? (event: any): boolean => {
 						if (event.type === 'end_txn' || event.type === 'reload') return true; // control markers, no record
+						// Freeze the record before the override sees it, mirroring the query path — event.value
+						// is the shared primaryStore object, so an override that writes to `this` would otherwise
+						// mutate the cache for every reader on the node.
+						if (event.value) freezeRecord(event.value);
 						let decision;
 						try {
-							decision = subAllowRead.call(event.value ?? null, subUser, request, subContext);
+							// Evaluate against the LIVE context user, not a subscribe-time snapshot: #1414 re-auth
+							// updates subContext.user in place, so a role/claims change must be reflected per event.
+							decision = subAllowRead.call(event.value ?? null, subContext.user, request, subContext);
 						} catch {
 							return false; // fail closed: a throwing override drops the event
 						}
