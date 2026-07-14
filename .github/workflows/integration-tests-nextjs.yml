@@ -9,20 +9,13 @@ name: Next.js Integration Tests (downstream)
 # as `harper_ref`; the reusable workflow checks out + builds harper at that ref and
 # resolves it as the `harper` the test harness and fixtures run against.
 #
-# Scoped to PRs that touch the HTTP / cache / resource / server code paths the
-# adapter exercises (tune the paths filter as coverage evolves).
-#
-# ── BEFORE MERGE ───────────────────────────────────────────────────────────────
-#   1. Depends on HarperFast/nextjs#49 — the `workflow_call` + `harper_ref` input
-#      must be on nextjs `main` first, or this caller has nothing to call.
-#   2. Replace the mutable `@main` ref below with the 40-char merge-commit SHA of
-#      nextjs#49 (cross-repo reusable `uses:` should pin to a SHA, matching the
-#      convention in validate-caller-workflows.yml).
+# Scoped to PRs that touch the HTTP / resource / server code paths the adapter
+# exercises (tune the paths filter as coverage evolves; caching lives under
+# resources/**, there's no separate top-level cache/ dir).
 
 on:
   pull_request:
     paths:
-      - 'cache/**'
       - 'resources/**'
       - 'server/**'
       - 'dataLayer/**'
@@ -31,9 +24,12 @@ on:
       - 'package.json'
       - 'package-lock.json'
 
+permissions:
+  contents: read
+
 jobs:
   nextjs-integration:
     name: Next.js adapter integration (against this PR's harper)
-    uses: HarperFast/nextjs/.github/workflows/integration-tests.yml@main # TODO: pin to nextjs#49 merge SHA before merging
+    uses: HarperFast/nextjs/.github/workflows/integration-tests.yml@d4b5ac951dafaaf8c8a622434d1a09d997a32bf5 # main 2026-07 (nextjs#49 merge SHA)
     with:
       harper_ref: ${{ github.event.pull_request.head.sha }}
