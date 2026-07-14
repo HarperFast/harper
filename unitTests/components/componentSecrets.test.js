@@ -25,6 +25,7 @@ const {
 	runWithComponentBinding,
 	secrets,
 	resetComponentSecrets,
+	closeComponentSubscriptions,
 } = require('#src/components/componentSecrets');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
@@ -52,15 +53,35 @@ function seal(plaintext) {
 	return PREFIX + encryptEnvelope(plaintext, publicKey, fp);
 }
 
-// Minimal mock table: rows keyed by name with the search() subset materialization uses.
+// Minimal mock table: rows keyed by name with the search() subset materialization uses, plus the
+// get()/subscribe() surface the live change watcher (#1776) needs. `emit()` drives the captured
+// subscription listener the way a committed put/delete would.
 function installMockSecretTable() {
 	const rows = new Map();
+	let listener;
 	const mock = {
 		rows,
 		search() {
 			return (async function* () {
 				yield* rows.values();
 			})();
+		},
+		async get(name) {
+			return rows.get(name) ?? null;
+		},
+		async subscribe(request) {
+			listener = request?.listener;
+			return { emit() {}, end() {} };
+		},
+		// Simulate a committed change to `name`: `record === null` is a delete.
+		emit(name, record) {
+			if (record) rows.set(name, record);
+			else rows.delete(name);
+			listener?.({ id: name, type: record ? 'put' : 'delete', value: record ?? null });
+		},
+		// Simulate a base-copy reload marker (the whole table was reseeded; no per-row events).
+		emitReload() {
+			listener?.({ id: null, type: 'reload', value: null });
 		},
 	};
 	if (!databases.system) databases.system = {};
@@ -389,7 +410,13 @@ describe('componentSecrets', () => {
 			const view = getSecretsForComponent('app-a');
 			assert.deepEqual(Object.keys(view), ['CS_SCOPED']);
 			assert.deepEqual({ ...view }, { CS_SCOPED: 's-value' });
-			assert.equal(Object.isFrozen(view), true);
+			// The live view is read-only (a Proxy, not a frozen object — frozen would preclude live values).
+			assert.throws(() => {
+				view.CS_SCOPED = 'nope';
+			}, TypeError);
+			assert.throws(() => {
+				delete view.CS_SCOPED;
+			}, TypeError);
 		});
 
 		it('a granted scoped row wins over an env var of the same name', async () => {
@@ -535,6 +562,234 @@ export const afterTopLevelAwait = secrets.CS_SCOPED;
 			await runWithComponentBinding('app-a', async () => {
 				assert.deepEqual(Object.keys(secrets), ['CS_SCOPED']); // still enumerable afterward
 			});
+		});
+	});
+
+	describe('live change subscription (secrets.subscribe, #1776)', () => {
+		// The initial value is served synchronously from the live snapshot, so tests seed it via
+		// materializeGlobalSecrets() (which also starts the watcher on the mock).
+		it('yields the current value then each subsequent change for a granted scoped secret', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1'); // current value first
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app']));
+			assert.equal((await iter.next()).value, 'v2');
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v3', ['app']));
+			assert.equal((await iter.next()).value, 'v3');
+			await iter.return();
+		});
+
+		it('yields undefined (not a close) when the grant is revoked, and resumes on re-grant', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1');
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v1', [])); // grant removed → access lost
+			const revoked = await iter.next();
+			assert.equal(revoked.done, false); // stream stays open
+			assert.equal(revoked.value, undefined); // value is now absent
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app'])); // re-granted with a new value
+			assert.equal((await iter.next()).value, 'v2'); // same iterator, no re-subscribe
+			await iter.return();
+		});
+
+		it('yields undefined on delete and resumes with the new value on re-add (no restart)', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1');
+			table.mock.emit('CS_SCOPED', null); // deleted
+			assert.equal((await iter.next()).value, undefined);
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app'])); // re-added
+			assert.equal((await iter.next()).value, 'v2');
+			await iter.return();
+		});
+
+		it('yields undefined up front for a secret the component cannot currently read', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['other-app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			const first = await iter.next();
+			assert.equal(first.done, false);
+			assert.equal(first.value, undefined);
+			await iter.return();
+		});
+
+		it('does not re-emit an unchanged value', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1');
+			const pending = iter.next();
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v1', ['app'])); // same value → suppressed
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app'])); // real change
+			assert.equal((await pending).value, 'v2'); // never saw a duplicate v1
+			await iter.return();
+		});
+
+		it('never widens access: silent (undefined) until this component is granted, then resumes', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['other-app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, undefined); // not granted to app → no value
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['other-app'])); // change for another app only
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['other-app', 'app'])); // now granted to app
+			assert.equal((await iter.next()).value, 'v2'); // the change for another app was never delivered
+			await iter.return();
+		});
+
+		it('does not leak a globally-materialized value to an undeclared, ungranted component', async () => {
+			// CS_GLOBAL is materialized into process.env, but app-b neither declares nor is granted it.
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'g1'));
+			await materializeGlobalSecrets();
+			assert.equal(process.env.CS_GLOBAL, 'g1'); // present in process.env
+			const iter = getSecretsForComponent('app-b').subscribe('CS_GLOBAL');
+			assert.equal((await iter.next()).value, undefined); // not visible to app-b (no ungated env fallback)
+			await iter.return();
+		});
+
+		it('drops a queued value on revoke (no stale plaintext delivered after access loss)', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1');
+			// No consumer parked: v2 is queued, then a revoke coalesces over it before it is read.
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app'])); // queued
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', [])); // revoked before consume
+			assert.equal((await iter.next()).value, undefined); // stale v2 dropped; only the revoke is seen
+			await iter.return();
+		});
+
+		it('does not expose a queued value after the stream is closed', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1');
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app'])); // queued, no waiter
+			await iter.return(); // close: drops the queued plaintext
+			assert.equal((await iter.next()).done, true); // not v2
+		});
+
+		it('settles concurrent next() calls independently', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1');
+			const a = iter.next();
+			const b = iter.next(); // second concurrent waiter must not orphan the first
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app']));
+			assert.equal((await a).value, 'v2'); // first waiter settles (would hang if overwritten)
+			await iter.return(); // closes; remaining waiter settles as done
+			assert.equal((await b).done, true);
+		});
+
+		it('delivers a declared global secret from process.env (reload-only tier)', async () => {
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'g1'));
+			await materializeGlobalSecrets();
+			processComponentEnv('app', { CS_GLOBAL: { required: true } });
+			const iter = getSecretsForComponent('app').subscribe('CS_GLOBAL');
+			assert.equal((await iter.next()).value, 'g1'); // current process.env value
+			table.mock.emit('CS_GLOBAL', envRow('CS_GLOBAL', 'g2'));
+			assert.equal(process.env.CS_GLOBAL, 'g1'); // global tier is not re-mutated live
+			await iter.return();
+		});
+
+		it('exposes subscribe as a reserved, non-enumerable method on the view and the proxy', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const view = getSecretsForComponent('app');
+			assert.equal(typeof view.subscribe, 'function');
+			assert.ok(!Object.keys(view).includes('subscribe')); // skipped by Object.keys/spread
+			assert.equal(Object.getOwnPropertyDescriptor(view, 'subscribe').enumerable, false);
+			await runWithComponentBinding('app', () => {
+				assert.equal(typeof secrets.subscribe, 'function');
+				assert.deepEqual(Object.keys(secrets), ['CS_SCOPED']); // subscribe not enumerated
+			});
+		});
+
+		it('with no store, still delivers a declared process.env value (accessor-equivalent)', async () => {
+			table.restore();
+			delete databases.system[SECRET_TABLE];
+			process.env.CS_DECLARED = 'from-env';
+			processComponentEnv('app', { CS_DECLARED: { required: false } });
+			const iter = getSecretsForComponent('app').subscribe('CS_DECLARED');
+			assert.equal((await iter.next()).value, 'from-env'); // readable even with no store
+			await iter.return();
+		});
+
+		it('closeComponentSubscriptions ends the streams a component opened', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1');
+			closeComponentSubscriptions('other-app'); // unrelated component: no effect
+			const stillPending = iter.next();
+			closeComponentSubscriptions('app');
+			assert.equal((await stillPending).done, true);
+		});
+	});
+
+	describe('live accessor (scoped tier reflects changes without reload, #1776)', () => {
+		it('a scoped secret value change is reflected by a fresh secrets read', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets(); // seeds the snapshot and starts the watcher
+			assert.equal(getSecretsForComponent('app').CS_SCOPED, 'v1');
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app']));
+			assert.equal(getSecretsForComponent('app').CS_SCOPED, 'v2'); // live, no reload
+		});
+
+		it('is live through the context-bound process-wide secrets proxy too', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			await runWithComponentBinding('app', async () => {
+				assert.equal(secrets.CS_SCOPED, 'v1');
+				table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app']));
+				assert.equal(secrets.CS_SCOPED, 'v2');
+			});
+		});
+
+		it('a revoked grant removes the value from the accessor; a re-grant restores it', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			assert.equal(getSecretsForComponent('app').CS_SCOPED, 'v1');
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v1', [])); // revoked
+			assert.equal(getSecretsForComponent('app').CS_SCOPED, undefined);
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v1', ['app'])); // re-granted
+			assert.equal(getSecretsForComponent('app').CS_SCOPED, 'v1');
+		});
+
+		it('a global (processEnv) secret change stays reload-only in the accessor and process.env', async () => {
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'g1'));
+			await materializeGlobalSecrets();
+			processComponentEnv('app', { CS_GLOBAL: { required: true } });
+			assert.equal(getSecretsForComponent('app').CS_GLOBAL, 'g1');
+			table.mock.emit('CS_GLOBAL', envRow('CS_GLOBAL', 'g2'));
+			assert.equal(getSecretsForComponent('app').CS_GLOBAL, 'g1'); // unchanged until reload
+			assert.equal(process.env.CS_GLOBAL, 'g1');
+		});
+
+		it('a retained view reference reflects live changes (Proxy, not a captured snapshot)', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const view = getSecretsForComponent('app'); // capture once (mirrors vm/compartment injection)
+			assert.equal(view.CS_SCOPED, 'v1');
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app']));
+			assert.equal(view.CS_SCOPED, 'v2'); // same object, live
+		});
+
+		it('re-scans on a base-copy reload marker (imports new rows, drops removed ones)', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			table.mock.rows.set('CS_GLOBAL', row('CS_GLOBAL', 'gone', ['app']));
+			await materializeGlobalSecrets();
+			assert.equal(getSecretsForComponent('app').CS_SCOPED, 'v1');
+			// Base copy reseeds the table wholesale and emits only a reload marker (no per-row events).
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v2', ['app']));
+			table.mock.rows.delete('CS_GLOBAL');
+			table.mock.emitReload();
+			await new Promise((resolve) => setImmediate(resolve)); // the re-scan is async
+			assert.equal(getSecretsForComponent('app').CS_SCOPED, 'v2'); // updated
+			assert.equal(getSecretsForComponent('app').CS_GLOBAL, undefined); // removed
 		});
 	});
 });
