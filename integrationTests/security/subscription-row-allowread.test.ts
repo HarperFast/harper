@@ -188,7 +188,13 @@ suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSui
 		}
 		await client
 			.req()
-			.send({ operation: 'add_user', role: ROLE_CAROL, username: CAROL.username, password: CAROL.password, active: true })
+			.send({
+				operation: 'add_user',
+				role: ROLE_CAROL,
+				username: CAROL.username,
+				password: CAROL.password,
+				active: true,
+			})
 			.expect(200);
 
 		// Seed rows via the ops API (super, bypasses allowCreate).
@@ -282,11 +288,11 @@ suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSui
 	});
 
 	test('REVOCATION (#1414 × override): alter_role removing read terminates a record-scoped subscription', async () => {
-		// Exercises the re-auth default-fallback: the override is collection-permissive (so it opens the
-		// subscription and would ALWAYS pass re-auth at collection scope), so re-auth must instead run
-		// the framework-default table RBAC against the fresh user. alter_role (not drop_user) keeps the
-		// user present — findAndValidateUser still returns a role — so termination can only come from the
-		// default table grant now denying read, which is exactly the fallback branch under test.
+		// The #1414 re-auth recheck re-runs the SAME override that granted the connection, against the
+		// fresh user. Because this override composes the base RBAC grant via `super.allowRead`, revoking
+		// the role's table-read makes the override deny at collection scope → the subscription is torn
+		// down. alter_role (not drop_user) keeps the user present — findAndValidateUser still returns a
+		// role — so termination can only come from the override re-evaluating the (now-denied) RBAC grant.
 		const carolToken = await client
 			.req()
 			.send({ operation: 'create_authentication_tokens', username: CAROL.username, password: CAROL.password });
