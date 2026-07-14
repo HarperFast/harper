@@ -1,3 +1,5 @@
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
@@ -8,6 +10,8 @@ import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
 import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.ts';
 import { generateJsonApi } from '../resources/openApi.ts';
+import { getConfigPath } from '../config/configUtils.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -71,6 +75,34 @@ function finalizeResponse(responseData, headers, status, request) {
 	return responseData;
 }
 
+/**
+ * A component deployed to disk (via `deploy_component`) but not yet loaded into this
+ * server's live router — because Harper hasn't restarted since — produces a route miss
+ * indistinguishable from a URL that never existed. If the URL's first segment names a
+ * components-root directory, surface that distinction instead of a generic 404 (harper#674).
+ * `name` is decoded and checked for path-traversal characters before being joined into a
+ * filesystem path.
+ */
+async function findInactiveComponent(url: string): Promise<string | undefined> {
+	const firstSegment = url.split(/[/?]/, 1)[0];
+	if (!firstSegment) return undefined;
+	let name: string;
+	try {
+		name = decodeURIComponent(firstSegment);
+	} catch {
+		return undefined;
+	}
+	if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) return undefined;
+	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	if (!componentsRoot || typeof componentsRoot !== 'string') return undefined;
+	try {
+		await access(join(componentsRoot, name));
+		return name;
+	} catch {
+		return undefined;
+	}
+}
+
 async function http(request: Request, nextHandler) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
@@ -88,7 +120,16 @@ async function http(request: Request, nextHandler) {
 		let resource: typeof Resource;
 		if (url !== OPENAPI_DOMAIN) {
 			const entry = resources.getMatch(url, isSse ? 'sse' : 'rest');
-			if (!entry) return nextHandler(request); // no resource handler found
+			if (!entry) {
+				const inactiveComponent = await findInactiveComponent(url);
+				if (inactiveComponent) {
+					throw new ClientError(
+						`Component '${inactiveComponent}' is deployed but Harper must be restarted before its routes are active.`,
+						404
+					);
+				}
+				return nextHandler(request); // no resource handler found
+			}
 			request.handlerPath = entry.path;
 			target = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
 			if (entry.params) Object.assign(target, entry.params); // bind parameterised path segments (e.g. :id, *rest)
