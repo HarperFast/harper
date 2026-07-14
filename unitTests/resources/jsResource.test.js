@@ -129,7 +129,7 @@ describe('jsResource', () => {
 		);
 	});
 
-	it('exposes an exported defineTable handle as an endpoint (RFC 0001)', async () => {
+	it('exposes an exported defineTable handle as an endpoint', async () => {
 		// `defineTable` registers eagerly at import time; the handle is a real table class, so the
 		// existing export walk exposes it — the code-first analog of GraphQL's @export, and the same
 		// semantics `export class X extends tables.X {}` has today. No loader special-casing.

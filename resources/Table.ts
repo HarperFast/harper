@@ -3829,7 +3829,7 @@ export function makeTable(options) {
 		}
 		// #section: validation
 		validate(record: any, patch?: boolean) {
-			// Accumulate structured per-field issues (RFC 0001 §8) so the 400 carries `{ path, code,
+			// Accumulate structured per-field issues so the 400 carries `{ path, code,
 			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
 			// message is still built for the HTTP title, preserving back-compat for callers that read it.
 			let validationErrors: ValidationIssue[] | undefined;

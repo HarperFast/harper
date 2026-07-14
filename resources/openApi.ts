@@ -336,7 +336,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		const withDoc = (sentence: string) => (tableDoc ? `${tableDoc} ${sentence}` : sentence);
 		const genericResponseSchema = { type: 'object' };
 		// custom (non-table) resources have no generated schema component, so request bodies default to
-		// loosely typed — UNLESS a request contract (RFC 0001, Pillar 2) declares the query/body/response,
+		// loosely typed — UNLESS a request contract declares the query/body/response,
 		// in which case each verb is driven off the shared JsonSchemaFragment below.
 		const genericRequestBody = { content: { 'application/json': { schema: { type: 'object' } } } };
 		const inputSchemas = entry.Resource.inputSchemas ?? {};

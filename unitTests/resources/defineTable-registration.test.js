@@ -1,5 +1,4 @@
-// RFC 0001 — code-first schema: the canonical `defineTable` + `types` model
-// (docs/rfcs/spikes/0001/canonical-track.spike.ts is the type-level proof; this is the runtime).
+// Code-first schema: the canonical `defineTable` + `types` model (runtime behavior).
 //
 // `defineTable` eagerly registers through the same `table()` factory GraphQL drives
 // (resources/databases.ts) and returns the live table class — the import IS the handle.
@@ -18,7 +17,7 @@ const { defineTable, types } = require('#src/resources/defineTable');
 const { id, string, int, date } = types;
 const DB = 'codefirst_test';
 
-describe('RFC 0001: canonical defineTable — eager registration', () => {
+describe('canonical defineTable — eager registration', () => {
 	let Track;
 
 	before(function () {
@@ -98,7 +97,7 @@ describe('RFC 0001: canonical defineTable — eager registration', () => {
 	});
 });
 
-describe('RFC 0001: canonical relationships — lazy thunks, forward reference', () => {
+describe('canonical relationships — lazy thunks, forward reference', () => {
 	let Book, Author;
 
 	before(function () {
@@ -183,10 +182,10 @@ describe('RFC 0001: canonical relationships — lazy thunks, forward reference',
 	});
 });
 
-describe('RFC 0001: relationOf/hasManyOf — mutual-pair escape hatch', () => {
-	// `relationOf`/`hasManyOf` exist to break a TYPE-level cycle (see
-	// docs/rfcs/spikes/0001/defineTable-real.check.ts); at RUNTIME they compile through the exact
-	// same code path as `relation`/`hasMany` (the type param is erased — only the value shape,
+describe('relationOf/hasManyOf — mutual-pair escape hatch', () => {
+	// `relationOf`/`hasManyOf` exist to break a TYPE-level const-initializer cycle; at RUNTIME they
+	// compile through the exact same code path as `relation`/`hasMany` (the type param is erased —
+	// only the value shape,
 	// `{ kind: 'relation', meta: { target, from|to } }`, drives compileTypeDef). This proves that
 	// equivalence: a Publisher<->Edition pair built with the *Of variants resolves identically to
 	// the plain-variant Book<->Author pair above.
@@ -243,7 +242,7 @@ describe('RFC 0001: relationOf/hasManyOf — mutual-pair escape hatch', () => {
 	});
 });
 
-describe('RFC 0001: code-first ⇔ GraphQL front-end parity', () => {
+describe('code-first ⇔ GraphQL front-end parity', () => {
 	// The two authoring front-ends must project an identical canonical `properties` Record for an
 	// equivalent schema — the guardrail against the front-ends silently diverging (RFC §4.2).
 	// Nullability mapping: code-first plain field ≡ GraphQL `!`; `.nullable` ≡ GraphQL plain.

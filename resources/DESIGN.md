@@ -26,7 +26,7 @@ See also: `../DESIGN.md` for cross-cutting non-obvious internals (RecordObject p
 | `nodeIdMapping.ts`      | Maps node IDs ↔ timestamps for replication ordering                                                                                  |
 | `openApi.ts`            | Generates OpenAPI/JSON Schema from `@export` schemas                                                                                 |
 | `defineTable.ts`        | Code-first table authoring (`defineTable` + `types`) — a TS front-end to the canonical `table()` model                               |
-| `withSchema.ts`         | Per-method request contract (`defineResource` / `Resource.withSchema`, `t`, `schemaOf`) — typed handlers + edge validation           |
+| `defineResource.ts`     | Per-method request contract (`defineResource` / `Resource.withSchema`, `t`, `schemaOf`) — typed handlers + edge validation           |
 | `jsonSchemaTypes.ts`    | Shared `JsonSchemaFragment` IR + `attributeToFragment` projector (one vocabulary for validation/OpenAPI/MCP)                         |
 | `analytics/`            | Telemetry recording (separate from monitoring)                                                                                       |
 
@@ -132,13 +132,13 @@ Tests: `../unitTests/resources/paramRoutes.test.js` (unit) and `../integrationTe
 
 ## Typed, discoverable resources (code-first schema + request contract)
 
-Design record: **RFC 0001** and its type-level spikes live in the design PR (**HarperFast/harper#1503**); this section is the retained summary. The type contract is re-verified against the built package types in `../docs/rfcs/spikes/0001/*-real.check.ts` (checked with that directory's `tsconfig.json`).
+Design record: the full RFC and its type-level design proofs live in the design PR (**HarperFast/harper#1503**); this section is the retained summary.
 
 **The principle.** Harper strips TypeScript at runtime (`--conditions=typestrip`), which erases types and rules out metadata-emitting decorators. So **runtime metadata must be values, and TypeScript types are _derived_ from those values — never the reverse.** Everything here is erasable syntax; the values survive stripping, the types are inferred, nothing can drift. One shared IR — `JsonSchemaFragment` (`jsonSchemaTypes.ts`), produced by `attributeToFragment` — feeds validation, OpenAPI, and MCP, so those surfaces cannot silently disagree.
 
 **Code-first tables (`defineTable.ts`).** `defineTable(name, shape, opts)` authors a table in TypeScript and eagerly registers it through the same `table()` factory GraphQL drives — the returned value _is_ the live table class (`Track.get/put/...` work, `new Track()`/`instanceof` hold). Fields come from the `types` vocabulary (getter flags: `string.indexed`, `id.primaryKey`, `date.createdTime`); per-verb shapes are inferred projections discoverable as members (`(typeof Track)['$insert' | '$upsert' | '$patch' | '$query' | '$record']`). Relationships use lazy thunks (`types.relation(() => Album, { from })`) so forward references/cycles resolve at query time; `relationOf`/`hasManyOf` are the escape hatch for a mutual pair whose eager const-inference would otherwise collapse to `any`.
 
-**Per-method request contract (`withSchema.ts`).** Two front-ends, same runtime metadata:
+**Per-method request contract (`defineResource.ts`).** Two front-ends, same runtime metadata:
 
 - `defineResource(contract, impl)` — function form (an object of verb handlers).
 - `Resource.withSchema(contract)` — class form; `extends` it and implement the declared verbs. It pins `static loadAsInstance = false` so instance verbs receive the converged `(target, data)` arg order the types assume (the default dispatch order is `(data, target)` — see `Resource.post/put/patch`).
@@ -149,7 +149,7 @@ A contract is `{ path, record?, get/post/put/patch/delete: { query?, body?, resp
 
 **Downstream surfaces.** `openApi.ts` emits a contract's query params, request body, and response for parameterised routes; `components/mcp/tools/application.ts` drives the tool input/output schema off the contract and binds arbitrary path params + query (`applyContractInputs`), which lifts the generated-verb binding restriction for contract resources. `ValidationError` (`../utility/errors/hdbError.ts`) extends `ClientError` (400) so existing HTTP handling is unchanged; the structured issues ride on `.detail`/`.errors`.
 
-Tests: `../unitTests/resources/withSchema.test.js`, `../unitTests/resources/defineTable-registration.test.js`, `../unitTests/resources/openApi-contract.test.js`, `../unitTests/components/mcp/tools/application-contract.test.js`.
+Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/defineTable-registration.test.js`, `../unitTests/resources/openApi-contract.test.js`, `../unitTests/components/mcp/tools/application-contract.test.js`.
 
 ---
 

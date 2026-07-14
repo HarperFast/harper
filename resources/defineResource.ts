@@ -1,11 +1,12 @@
 /**
- * RFC 0001 — Pillar 2: the per-method request contract (`withSchema` / `defineResource`).
+ * The per-method request contract: `defineResource(contract, impl)` (primary, function form) and
+ * `Resource.withSchema(contract)` (class form).
  *
  * A resource declares a contract as runtime VALUES — `{ path, record?, get?/post?/put?/patch?/delete?:
  * { query?, body?, response? } }` — and TypeScript DERIVES the handler types from it (the same
  * value-first bargain `--conditions=typestrip` forces, and that `defineTable` already lives).
  *
- * This is a SUBSET, not a fork (proven by `docs/rfcs/spikes/0001/enforce-schema.spike.ts`). A handler
+ * This is a SUBSET, not a fork. A handler
  * receives the SAME `RequestTarget` it receives today, structurally NARROWED: `target.id` is a string
  * when the path declares `:id`, `target.get('expand')` is typed by the declared query schema, and the
  * built-in filter/sort/limit grammar stays reachable. The enforced resource is assignable wherever the
@@ -600,7 +601,7 @@ export function makeSchemaClass<Base extends new (...args: any[]) => any, C exte
 	contract: C
 ): SchemaClass<Base, C> {
 	const Enforced = class extends BaseClass {};
-	// The narrowed handler types (and the spike/function form) use the converged `(target, data)` arg
+	// The narrowed handler types (and the function form) use the converged `(target, data)` arg
 	// order. Harper's dispatch only calls instance verbs that way when `loadAsInstance === false`
 	// (the default, undefined, gives the legacy `(data, target)`), so pin it — withSchema is for custom
 	// resources, which handle their own loading. Without this the class-form types would lie about the

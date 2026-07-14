@@ -1,13 +1,12 @@
 /**
- * RFC 0001 — code-first schema authoring (`defineTable` + `types`), the canonical model.
+ * Code-first schema authoring (`defineTable` + `types`), the canonical model.
  *
  * The dev names exactly ONE thing — `Track` (singular). `defineTable` eagerly registers the
  * table through the same `table()` factory GraphQL drives (`resources/databases.ts`) and returns
  * the live, registered class: `Track.get/put/post/patch/update/query/search` work immediately,
  * `new Track()` / `instanceof Track` hold, and every per-verb shape is a *projection* inferred
  * from the one definition, discoverable as members (`Track.$record`, `Track.$insert`, …) — never
- * a parallel name. Design proven by `docs/rfcs/spikes/0001/canonical-track.spike.ts` (which
- * supersedes the earlier t-builder spike).
+ * a parallel name.
  *
  * The anchoring constraint (`--conditions=typestrip`): runtime metadata is carried as values;
  * TypeScript types are *derived* from those values. Everything here is erasable syntax — the
@@ -229,7 +228,7 @@ type IdOf<S> = [PkKey<S>] extends [never] ? string | number : TsOf<S[PkKey<S>]>;
 type MaybePromise<T> = T | Promise<T>;
 
 // The verbs retyped by the projections. Full query-grammar typing (conditions/sort/select keyed
-// to the record) is Pillar 3 — here only inputs/outputs are narrowed.
+// to the record) is future typed-query-behavior work — here only inputs/outputs are narrowed.
 interface TypedVerbs<S extends Shape> {
 	get(id: IdOf<S>, context?: any): MaybePromise<ReadVariant<S> | undefined>;
 	put(record: UpsertOf<S>, context?: any): MaybePromise<unknown>;

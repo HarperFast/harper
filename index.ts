@@ -10,14 +10,14 @@ if (!workerThreads.isMainThread) {
 export { RequestTarget } from './resources/RequestTarget.ts';
 export { flushDatabases } from './resources/databases.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
-// Code-first schema authoring (RFC 0001): declare a table as a TypeScript value; the returned
+// Code-first schema authoring: declare a table as a TypeScript value; the returned
 // handle is the live, registered table class with per-verb shapes inferred from the definition.
 export { defineTable, types } from './resources/defineTable.ts';
 
-// RFC 0001 Pillar 2 — the per-method request contract. `defineResource`/`Resource.withSchema` type
+// The per-method request contract. `defineResource`/`Resource.withSchema` type
 // handlers from a runtime contract and feed validation + OpenAPI + MCP from one declaration; `t` and
 // `schemaOf` are the built-in query/body vocabulary (both reduce to a JsonSchemaFragment).
-export { defineResource, t, schemaOf, projectTableFragment } from './resources/withSchema.ts';
+export { defineResource, t, schemaOf, projectTableFragment } from './resources/defineResource.ts';
 
 // Type only exports.
 // Anything exported here will only be available as TypeScript types, not as values.
@@ -47,7 +47,7 @@ export type {
 	Flags,
 	DefineTableOptions,
 } from './resources/defineTable.ts';
-// RFC 0001 Pillar 2 request-contract types.
+// Request-contract types.
 export type {
 	Contract,
 	VerbSchemas,
@@ -60,7 +60,7 @@ export type {
 	TypedSearchParams,
 	ImplFor,
 	SchemaClass,
-} from './resources/withSchema.ts';
+} from './resources/defineResource.ts';
 export type { Scope } from './components/Scope.ts';
 export type {
 	ModelBackend,

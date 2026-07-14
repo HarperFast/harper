@@ -1,4 +1,4 @@
-// RFC 0001 — Pillar 2: a custom resource carrying a request contract (via `Resource.withSchema`)
+// a custom resource carrying a request contract (via `Resource.withSchema`)
 // drives its MCP tool INPUT schema off the contract — path params + declared query/body — instead of
 // the empty/generic derivation a parameterised custom resource got before. Complements
 // application-paramroutes.test.js (which proved such resources produce tools at all).
@@ -56,7 +56,7 @@ function toolsByName() {
 	return new Map(tools.map((t) => [t.name, t]));
 }
 
-describe('mcp/tools/application — request-contract input schemas (RFC 0001)', () => {
+describe('mcp/tools/application — request-contract input schemas', () => {
 	beforeEach(() => {
 		_resetRegistryForTest();
 		_resetPromptRegistryForTest();
@@ -104,7 +104,7 @@ describe('mcp/tools/application — request-contract input schemas (RFC 0001)', 
 // Blocker regression: MCP flattens path params + body fields into one args object. The create/update
 // handlers must strip path params (bound onto the target) out of the body, or the contract's
 // additionalProperties:false body schema would reject the bound `id` as an unknown property.
-describe('mcp/tools/application — contract body strips bound path params (RFC 0001)', () => {
+describe('mcp/tools/application — contract body strips bound path params', () => {
 	let captured;
 	function makeCapturingResource() {
 		class Widget {}

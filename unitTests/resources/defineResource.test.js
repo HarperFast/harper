@@ -1,14 +1,13 @@
-// RFC 0001 — Pillar 2: the per-method request contract (`defineResource` / `Resource.withSchema`).
-// docs/rfcs/spikes/0001/enforce-schema.spike.ts + enforceSchema-real.check.ts are the type-level
-// proof; this is the runtime: query coercion onto the narrowed target, structured 400s on bad
-// query/body, the drop-in/subset registration shape, the metadata slots OpenAPI/MCP read, and a
-// `defineTable` projection flowing into a contract body end-to-end.
+// The per-method request contract (`defineResource` / `Resource.withSchema`): query coercion onto the
+// narrowed target, structured 400s on bad query/body, the drop-in/subset registration shape, the
+// metadata slots OpenAPI/MCP read, and a `defineTable` projection flowing into a contract body
+// end-to-end.
 
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { defineResource, t, schemaOf, projectTableFragment } = require('#src/resources/withSchema');
+const { defineResource, t, schemaOf, projectTableFragment } = require('#src/resources/defineResource');
 const { defineTable, types } = require('#src/resources/defineTable');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { Resource } = require('#src/resources/Resource');
@@ -19,7 +18,7 @@ function targetWith(query, id) {
 	return target;
 }
 
-describe('RFC 0001: withSchema / defineResource — runtime request contract', () => {
+describe('defineResource / Resource.withSchema — runtime request contract', () => {
 	describe('narrowed target — path param + query coercion', () => {
 		let captured;
 		const Widget = defineResource(

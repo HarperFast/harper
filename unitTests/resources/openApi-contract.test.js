@@ -1,4 +1,4 @@
-// RFC 0001 — Pillar 2: a parameterised custom resource carrying a request contract emits its declared
+// a parameterised custom resource carrying a request contract emits its declared
 // query params, request body, and response in the OpenAPI document — instead of the path-params-only +
 // generic `{ type: 'object' }` body/response a custom param route got before.
 
@@ -47,7 +47,7 @@ function makeResources() {
 	return resources;
 }
 
-describe('openApi — request-contract emission (RFC 0001)', () => {
+describe('openApi — request-contract emission', () => {
 	let api;
 	beforeEach(() => {
 		api = generateJsonApi(makeResources(), serverURL);
