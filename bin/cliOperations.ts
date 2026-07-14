@@ -19,6 +19,12 @@ import { initConfig, getConfigPath } from '../config/configUtils.ts';
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
+// Shown for any local-instance connection failure (missing pid, missing/stale domain
+// socket, or a refused/ENOENT connect against it) — they're all the same user-facing
+// scenario: Harper isn't running. Remote-target failures keep the detailed error instead,
+// since there's no single "just start it" fix for those.
+const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or `harperdb start`) to start it.';
+
 // Operations whose responses should be consumed as text/event-stream so live phase events
 // (prepare, load, replicate, restart) render as they happen instead of after the whole
 // deploy completes. Add an operation here only after wiring its server-side
@@ -213,12 +219,12 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		console.error('Connecting to local Harper instance');
 		initConfig();
 		if (!getHdbPid()) {
-			console.error('Harper must be running to perform this operation');
+			console.error(LOCAL_NOT_RUNNING_MESSAGE);
 			process.exit(1);
 		}
 
 		if (!fs.existsSync(getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
-			console.error('No domain socket found, unable to perform this operation');
+			console.error(LOCAL_NOT_RUNNING_MESSAGE);
 			process.exit(1);
 		}
 	}
@@ -432,7 +438,10 @@ async function cliOperations(req: any, skipResponseLog = false) {
 
 		return responseData;
 	} catch (err) {
-		if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
+		const isConnectionFailure = err.code === 'ENOENT' || err.code === 'ECONNREFUSED';
+		if (isConnectionFailure && !target) {
+			console.error(LOCAL_NOT_RUNNING_MESSAGE);
+		} else if (isConnectionFailure) {
 			console.error(`error: Failed to connect to Harper (${err.code}): ${err.message}`);
 		} else if (err.code === 'EACCES') {
 			console.error(`error: Permission denied accessing the domain socket: ${err.message}`);

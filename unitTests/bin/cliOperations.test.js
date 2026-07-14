@@ -11,6 +11,18 @@ const cliOperationsModule = require('#src/bin/cliOperations');
 const commonUtilsModule = require('#src/utility/common_utils');
 const tokenAuthModule = require('#src/security/tokenAuthentication');
 const packageComponentModule = require('#src/components/packageComponent');
+const processManagementModule = require('#src/utility/processManagement/processManagement');
+const configUtilsModule = require('#src/config/configUtils');
+
+// Thrown by the mocked process.exit below so a call to it unwinds the async
+// cliOperations() call (rather than actually terminating the test runner) and
+// is observable via assert.rejects.
+class ProcessExitSignal extends Error {
+	constructor(code) {
+		super(`process.exit(${code})`);
+		this.code = code;
+	}
+}
 
 describe('cliOperations', () => {
 	const testDir = path.join(os.tmpdir(), `harper-test-cli-ops-${Date.now()}`);
@@ -228,6 +240,115 @@ describe('cliOperations', () => {
 			const deploy = calls[1];
 			assert.strictEqual(deploy.options.headers.Accept, 'text/event-stream');
 			assert.strictEqual(result.success, true);
+		});
+	});
+
+	describe('"Harper is not running" messaging (harper#658)', () => {
+		const NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or `harperdb start`) to start it.';
+
+		let originalGetHdbPid;
+		let originalInitConfig;
+		let originalGetConfigPath;
+		let originalExit;
+		let originalConsoleError;
+		let consoleErrors;
+		let exitCode;
+
+		beforeEach(() => {
+			originalGetHdbPid = processManagementModule.getHdbPid;
+			originalInitConfig = configUtilsModule.initConfig;
+			originalGetConfigPath = configUtilsModule.getConfigPath;
+			originalExit = process.exit;
+			originalConsoleError = console.error;
+
+			// Pretend the local instance is running with a domain socket present on disk, so
+			// the early pid/socket pre-checks pass and the failure surfaces from the actual
+			// connection attempt (the httpRequest mock below), exercising the catch block
+			// rather than short-circuiting on the pre-checks.
+			const socketPath = path.join(testDir, 'operations-server.sock');
+			fs.ensureFileSync(socketPath);
+			configUtilsModule.initConfig = () => {};
+			processManagementModule.getHdbPid = () => 12345;
+			configUtilsModule.getConfigPath = () => socketPath;
+
+			consoleErrors = [];
+			console.error = (...args) => consoleErrors.push(args.join(' '));
+			exitCode = undefined;
+			process.exit = (code) => {
+				exitCode = code;
+				throw new ProcessExitSignal(code);
+			};
+		});
+
+		afterEach(() => {
+			processManagementModule.getHdbPid = originalGetHdbPid;
+			configUtilsModule.initConfig = originalInitConfig;
+			configUtilsModule.getConfigPath = originalGetConfigPath;
+			process.exit = originalExit;
+			console.error = originalConsoleError;
+		});
+
+		it('shows the friendly message (and non-zero exit) when no local pid is found', async () => {
+			processManagementModule.getHdbPid = () => undefined;
+
+			await assert.rejects(() => cliOperationsModule.cliOperations({ operation: 'status' }, true), ProcessExitSignal);
+
+			assert.strictEqual(exitCode, 1);
+			assert.ok(consoleErrors.includes(NOT_RUNNING_MESSAGE));
+		});
+
+		it('shows the friendly message (and non-zero exit) when the domain socket file is missing', async () => {
+			configUtilsModule.getConfigPath = () => path.join(testDir, 'no-such-operations-server.sock');
+
+			await assert.rejects(() => cliOperationsModule.cliOperations({ operation: 'status' }, true), ProcessExitSignal);
+
+			assert.strictEqual(exitCode, 1);
+			assert.ok(consoleErrors.includes(NOT_RUNNING_MESSAGE));
+		});
+
+		it('shows the friendly message (and non-zero exit) for a local ECONNREFUSED', async () => {
+			commonUtilsModule.httpRequest = async () => {
+				const err = new Error('connect ECONNREFUSED /fake/operations-server.sock');
+				err.code = 'ECONNREFUSED';
+				throw err;
+			};
+
+			await assert.rejects(() => cliOperationsModule.cliOperations({ operation: 'status' }, true), ProcessExitSignal);
+
+			assert.strictEqual(exitCode, 1);
+			assert.ok(consoleErrors.includes(NOT_RUNNING_MESSAGE));
+			assert.ok(!consoleErrors.some((line) => line.includes('ECONNREFUSED')));
+		});
+
+		it('shows the friendly message (and non-zero exit) for a local ENOENT (stale/missing socket)', async () => {
+			commonUtilsModule.httpRequest = async () => {
+				const err = new Error('ENOENT: no such file or directory, connect /fake/operations-server.sock');
+				err.code = 'ENOENT';
+				throw err;
+			};
+
+			await assert.rejects(() => cliOperationsModule.cliOperations({ operation: 'status' }, true), ProcessExitSignal);
+
+			assert.strictEqual(exitCode, 1);
+			assert.ok(consoleErrors.includes(NOT_RUNNING_MESSAGE));
+			assert.ok(!consoleErrors.some((line) => line.includes('ENOENT')));
+		});
+
+		it('keeps the detailed error (not the friendly message) for a remote-target connection failure', async () => {
+			commonUtilsModule.httpRequest = async () => {
+				const err = new Error('connect ECONNREFUSED 1.2.3.4:9925');
+				err.code = 'ECONNREFUSED';
+				throw err;
+			};
+
+			await assert.rejects(
+				() => cliOperationsModule.cliOperations({ operation: 'status', target: 'example.com' }, true),
+				ProcessExitSignal
+			);
+
+			assert.strictEqual(exitCode, 1);
+			assert.ok(!consoleErrors.includes(NOT_RUNNING_MESSAGE));
+			assert.ok(consoleErrors.some((line) => line.includes('error: Failed to connect to Harper (ECONNREFUSED)')));
 		});
 	});
 });
