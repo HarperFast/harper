@@ -324,6 +324,15 @@ describe('rewriteSshConfigPaths (cross-platform IdentityFile rewrite)', () => {
 		const rewritten = rewriteSshConfigPaths(config, '/data/hdb/ssh', '/tmp/harper-ssh-abc', 'darwin');
 		assert.strictEqual(rewritten, 'IdentityFile /tmp/harper-ssh-abc/a.key\nIdentityFile /tmp/harper-ssh-abc/b.key\n');
 	});
+
+	it('treats a literal `$` in tempDir as a literal character, not a replacement pattern', () => {
+		// A string replacer would interpret `$&` here as "the whole match" and corrupt the path;
+		// a function replacer sidesteps special-token interpretation entirely.
+		const config = 'IdentityFile /data/hdb/ssh/deploy.key\n';
+		const tempDir = '/tmp/harper-ssh-$&-abc';
+		const rewritten = rewriteSshConfigPaths(config, '/data/hdb/ssh', tempDir, 'darwin');
+		assert.strictEqual(rewritten, 'IdentityFile /tmp/harper-ssh-$&-abc/deploy.key\n');
+	});
 });
 
 describe('nonInteractiveSpawn transient ssh lifetime', () => {
