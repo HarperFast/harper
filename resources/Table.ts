@@ -28,7 +28,14 @@ import { when, promiseNormalize } from '../utility/when.ts';
 import { DatabaseTransaction, ImmediateTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
-import { handleHDBError, ClientError, ServerError, AccessViolation } from '../utility/errors/hdbError.ts';
+import {
+	handleHDBError,
+	ClientError,
+	ServerError,
+	AccessViolation,
+	ValidationError,
+	type ValidationIssue,
+} from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
 import { databases, table } from './databases.ts';
@@ -3852,13 +3859,21 @@ export function makeTable(options) {
 		}
 		// #section: validation
 		validate(record: any, patch?: boolean) {
-			let validationErrors;
+			// Accumulate structured per-field issues so the 400 carries `{ path, code,
+			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
+			// message is still built for the HTTP title, preserving back-compat for callers that read it.
+			let validationErrors: ValidationIssue[] | undefined;
+			const addError = (path: string, code: string, message: string) => {
+				(validationErrors || (validationErrors = [])).push({ path, code, message });
+			};
 			const validateValue = (value, attribute: Attribute, name) => {
 				if (attribute.type && value != null) {
 					if (patch && value.__op__) value = value.value;
 					if (attribute.properties) {
 						if (typeof value !== 'object') {
-							(validationErrors || (validationErrors = [])).push(
+							addError(
+								name,
+								'type',
 								`Value ${stringify(value)} in property ${name} must be an object${
 									attribute.type ? ' (' + attribute.type + ')' : ''
 								}`
@@ -3869,7 +3884,9 @@ export function makeTable(options) {
 							const attribute = properties[i];
 							if (attribute.relationship || attribute.computed) {
 								if (record.hasOwnProperty(attribute.name)) {
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										`${name}.${attribute.name}`,
+										'computed',
 										`Computed property ${name}.${attribute.name} may not be directly assigned a value`
 									);
 								}
@@ -3881,7 +3898,9 @@ export function makeTable(options) {
 						if (attribute.sealed && value != null && typeof value === 'object') {
 							for (const key in value) {
 								if (!properties.find((property) => property.name === key)) {
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										`${name}.${key}`,
+										'unknown_property',
 										`Property ${key} is not allowed within object in property ${name}`
 									);
 								}
@@ -3891,13 +3910,17 @@ export function makeTable(options) {
 						switch (attribute.type) {
 							case 'Int':
 								if (typeof value !== 'number' || value >> 0 !== value)
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										name,
+										'type',
 										`Value ${stringify(value)} in property ${name} must be an integer (from -2147483648 to 2147483647)`
 									);
 								break;
 							case 'Long':
 								if (typeof value !== 'number' || !(Math.floor(value) === value && Math.abs(value) <= 9007199254740992))
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										name,
+										'type',
 										`Value ${stringify(
 											value
 										)} in property ${name} must be an integer (from -9007199254740992 to 9007199254740992)`
@@ -3905,53 +3928,46 @@ export function makeTable(options) {
 								break;
 							case 'Float':
 								if (typeof value !== 'number')
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a number`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a number`);
 								break;
 							case 'ID':
 								if (!(
 									typeof value === 'string' ||
 									(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
 								))
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										name,
+										'type',
 										`Value ${stringify(value)} in property ${name} must be a string, or an array of strings`
 									);
 								break;
 							case 'String':
 								if (typeof value !== 'string')
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a string`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a string`);
 								break;
 							case 'Boolean':
 								if (typeof value !== 'boolean')
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a boolean`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a boolean`);
 								break;
 							case 'Date':
 								if (!(value instanceof Date)) {
 									if (typeof value === 'string' || typeof value === 'number') return new Date(value);
-									else
-										(validationErrors || (validationErrors = [])).push(
-											`Value ${stringify(value)} in property ${name} must be a Date`
-										);
+									else addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a Date`);
 								}
 								break;
 							case 'BigInt':
 								if (typeof value !== 'bigint') {
 									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
 									if (typeof value === 'string' || typeof value === 'number') return BigInt(value);
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a bigint`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
 								}
 								break;
 							case 'Bytes':
 								if (!(value instanceof Uint8Array)) {
 									if (typeof value === 'string') return Buffer.from(value);
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										name,
+										'type',
 										`Value ${stringify(value)} in property ${name} must be a Buffer or Uint8Array`
 									);
 								}
@@ -3962,9 +3978,7 @@ export function makeTable(options) {
 									if (value instanceof Buffer) {
 										return createBlob(value, { type: 'text/plain' });
 									}
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a Blob`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a Blob`);
 								}
 								break;
 							case 'array':
@@ -3976,26 +3990,23 @@ export function makeTable(options) {
 											if (updated) value[i] = updated;
 										}
 									}
-								} else
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be an Array`
-									);
+								} else addError(name, 'type', `Value ${stringify(value)} in property ${name} must be an Array`);
 
 								break;
 						}
 					}
 				}
 				if (attribute.nullable === false && value == null) {
-					(validationErrors || (validationErrors = [])).push(
-						`Property ${name} is required (and not does not allow null values)`
-					);
+					addError(name, 'required', `Property ${name} is required (and not does not allow null values)`);
 				}
 			};
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
 				if (attribute.relationship || attribute.computed) {
 					if (Object.hasOwn(record, attribute.name)) {
-						(validationErrors || (validationErrors = [])).push(
+						addError(
+							attribute.name,
+							'computed',
 							`Computed property ${attribute.name} may not be directly assigned a value`
 						);
 					}
@@ -4009,13 +4020,13 @@ export function makeTable(options) {
 			if (sealed) {
 				for (const key in record) {
 					if (!attributes.find((attribute) => attribute.name === key)) {
-						(validationErrors || (validationErrors = [])).push(`Property ${key} is not allowed`);
+						addError(key, 'unknown_property', `Property ${key} is not allowed`);
 					}
 				}
 			}
 
 			if (validationErrors) {
-				throw new ClientError(validationErrors.join('. '));
+				throw new ValidationError(validationErrors, validationErrors.map((issue) => issue.message).join('. '));
 			}
 		}
 		// #section: stats-admin

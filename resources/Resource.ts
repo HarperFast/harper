@@ -20,6 +20,7 @@ import { RequestTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
+import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -59,6 +60,26 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static outputSchemas?: { [verb: string]: JsonSchemaFragment };
 	static mcp?: { annotations?: { [verb: string]: { [key: string]: unknown } } };
 	static hidden?: boolean;
+	/** The per-method request contract, when this resource was built via `withSchema`. */
+	static requestContract?: Contract;
+	/** Per-verb `{ query?, body? }` input schemas derived from the request contract, read by OpenAPI/MCP. */
+	static inputSchemas?: { [verb: string]: { query?: JsonSchemaFragment; body?: JsonSchemaFragment } };
+
+	/**
+	 * Declare a per-method request contract and get back a Resource subclass typed by it. Extend the
+	 * returned class and implement the declared verbs; handlers receive the SAME
+	 * `RequestTarget`, structurally narrowed (path params typed, `target.get(param)` typed by the query
+	 * schema). Each declared verb validates/coerces `query`/`body` before dispatch and returns a
+	 * structured 400 on failure, which is what justifies the narrowed types. The contract also feeds
+	 * OpenAPI and MCP from the one declaration.
+	 */
+	static withSchema<Base extends new (...args: any[]) => any, const C extends Contract>(
+		this: Base,
+		contract: C
+	): SchemaClass<Base, C> {
+		return makeSchemaClass(this, contract);
+	}
+
 	constructor(identifier: Id, source: any) {
 		this.#id = identifier;
 		const context = source?.getContext ? (source.getContext() ?? null) : undefined;

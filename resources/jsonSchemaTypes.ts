@@ -57,6 +57,8 @@ export interface AttributeLike {
 	assignUpdatedTime?: boolean;
 	nullable?: boolean;
 	elements?: AttributeLike;
+	/** Sub-attributes of a nested object field (the same array form `Table.validate` iterates). */
+	properties?: AttributeLike[];
 }
 
 /**
@@ -68,10 +70,16 @@ export interface AttributeLike {
  */
 export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 	const fragment: JsonSchemaFragment = {};
-	// GraphQL parser emits list types as `prop.type === 'array'` with `.elements`
-	// describing the inner type. Map that to JSON Schema's items shape; otherwise
-	// fall through to the primitive mapping.
-	if (attr.type === 'array' && attr.elements) {
+	// A nested object field carries its sub-attributes on `.properties` (the array form the parser
+	// emits and `Table.validate` iterates) — recurse into them rather than emitting the bare GraphQL
+	// type name as a JSON-Schema `type`. GraphQL parser emits list types as `prop.type === 'array'`
+	// with `.elements`; map that to JSON Schema's items shape; otherwise fall through to the primitive
+	// mapping.
+	if (attr.properties) {
+		fragment.type = 'object';
+		fragment.properties = {};
+		for (const sub of attr.properties) fragment.properties[sub.name] = attributeToFragment(sub);
+	} else if (attr.type === 'array' && attr.elements) {
 		fragment.type = 'array';
 		fragment.items = attributeToFragment(attr.elements);
 	} else {
