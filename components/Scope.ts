@@ -12,7 +12,7 @@ import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
-import { getSecretsForComponent } from './componentSecrets.ts';
+import { getSecretsForComponent, closeComponentSubscriptions } from './componentSecrets.ts';
 import type { SecretsView } from './componentSecrets.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 
@@ -224,6 +224,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		);
 
 		this.removeAllListeners();
+
+		// End any live secret subscriptions (#1776) this scope's code opened, AFTER the close listeners
+		// (so a subscription a close listener created is torn down too). Keyed by the same identity
+		// `scope.secrets` uses; scopes sharing an application identity share their subscriptions, so this
+		// runs at application-teardown granularity — that identity's streams are ended together.
+		closeComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
 
 		return this;
 	}

@@ -61,17 +61,34 @@ function installMockSecretTable() {
 	let listener;
 	const mock = {
 		rows,
+		subscribeCount: 0,
+		// Optional async hook invoked between rows during a scan, so a test can inject a concurrent change
+		// mid-scan (exercises the stale-rescan retry guard).
+		scanHook: null,
 		search() {
+			// Stable snapshot at scan start, like a real table.search — a mid-scan mutation to `rows` is
+			// NOT reflected in this scan's yields.
+			const snapshot = [...rows.values()];
+			const hook = mock.scanHook;
 			return (async function* () {
-				yield* rows.values();
+				for (const record of snapshot) {
+					yield record;
+					if (hook) await hook();
+				}
 			})();
 		},
 		async get(name) {
 			return rows.get(name) ?? null;
 		},
 		async subscribe(request) {
+			mock.subscribeCount++;
 			listener = request?.listener;
-			return { emit() {}, end() {} };
+			return {
+				emit() {},
+				end() {
+					if (listener === request?.listener) listener = undefined;
+				},
+			};
 		},
 		// Simulate a committed change to `name`: `record === null` is a delete.
 		emit(name, record) {
@@ -82,6 +99,10 @@ function installMockSecretTable() {
 		// Simulate a base-copy reload marker (the whole table was reseeded; no per-row events).
 		emitReload() {
 			listener?.({ id: null, type: 'reload', value: null });
+		},
+		// Simulate Table.subscribe surfacing an async replay failure through the listener.
+		emitError(error) {
+			listener?.(error);
 		},
 	};
 	if (!databases.system) databases.system = {};
@@ -790,6 +811,77 @@ export const afterTopLevelAwait = secrets.CS_SCOPED;
 			await new Promise((resolve) => setImmediate(resolve)); // the re-scan is async
 			assert.equal(getSecretsForComponent('app').CS_SCOPED, 'v2'); // updated
 			assert.equal(getSecretsForComponent('app').CS_GLOBAL, undefined); // removed
+		});
+	});
+
+	describe('hardening (review findings, #1776)', () => {
+		it('a stale rescan cannot re-authorize a secret revoked while it ran', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			assert.equal(getSecretsForComponent('app').CS_SCOPED, 'v1');
+			// Revoke the grant mid-scan: the scan's stable snapshot still shows it granted, but the retry
+			// guard must re-scan and end up with the revoked state rather than clobbering the live update.
+			table.mock.scanHook = async () => {
+				table.mock.scanHook = null; // fire once
+				table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v1', [])); // revoke lands during the scan
+			};
+			await materializeGlobalSecrets();
+			assert.equal(getSecretsForComponent('app').CS_SCOPED, undefined); // NOT re-authorized
+		});
+
+		it('a secret named "subscribe" is not readable via the accessor or subscribe (reserved)', async () => {
+			table.mock.rows.set('subscribe', row('subscribe', 'plaintext', ['app']));
+			await materializeGlobalSecrets();
+			const view = getSecretsForComponent('app');
+			assert.equal(typeof view.subscribe, 'function'); // the reserved method, not the value
+			assert.ok(!Object.keys(view).includes('subscribe'));
+			const iter = view.subscribe('subscribe');
+			assert.equal((await iter.next()).value, undefined); // never leaks the plaintext
+			await iter.return();
+		});
+
+		it('subscribe is an own, non-enumerable key (consistent reflection)', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const view = getSecretsForComponent('app');
+			assert.ok(Reflect.ownKeys(view).includes('subscribe')); // present for reflection
+			assert.ok(Object.hasOwn(view, 'subscribe'));
+			assert.ok(!Object.keys(view).includes('subscribe')); // but non-enumerable
+		});
+
+		it('a reload marker re-delivers undefined to a subscriber whose secret was removed', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1');
+			table.mock.rows.delete('CS_SCOPED'); // base copy removed it
+			table.mock.emitReload();
+			assert.equal((await iter.next()).value, undefined); // stream re-dispatched, not left stale
+			await iter.return();
+		});
+
+		it('a reload marker does not re-materialize the global tier into process.env', async () => {
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'g1'));
+			await materializeGlobalSecrets();
+			assert.equal(process.env.CS_GLOBAL, 'g1');
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'g2')); // changed at the source
+			table.mock.emitReload();
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(process.env.CS_GLOBAL, 'g1'); // reload-only: not re-mutated under running code
+		});
+
+		it('restarts the watcher when the subscription surfaces an error through the listener', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			const before = table.mock.subscribeCount;
+			table.mock.emitError(new Error('replay failed')); // resets the watcher memo
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1'); // initial from the snapshot
+			await new Promise((resolve) => setImmediate(resolve)); // let ensureSecretWatcher re-attach
+			assert.ok(table.mock.subscribeCount > before, 're-subscribed after the error');
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app'])); // live changes flow again
+			assert.equal((await iter.next()).value, 'v2');
+			await iter.return();
 		});
 	});
 });
