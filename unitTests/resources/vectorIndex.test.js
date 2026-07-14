@@ -1653,19 +1653,18 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		}
 	});
 
-	it('async allowRead override keeps entry-check semantics (awaited, fail-closed), not record scoping', async () => {
-		// Record-scoping is sync-only: a declared-async override is excluded from the per-record
-		// deferral, so the authorize wrapper awaits its verdict at entry and fails closed on
-		// rejection (#1422 gap 1 contract, locked by integrationTests allowread-fail-closed).
-		class AsyncRejects extends T {
+	it('async allowRead override is evaluated at entry only (no per-record filtering), fail-closed on deny', async () => {
+		// Async overrides can't participate in sync per-record filtering — they run ONLY the awaited
+		// entry check (a table/connection-level decision, preserving the #1422 async fail-closed
+		// contract). A denying async override therefore denies the whole read.
+		class AsyncDenies extends T {
 			async allowRead() {
-				throw new Error('async allowRead intentionally rejects');
+				return false; // collection-scope deny
 			}
 		}
 		await assert.rejects(
 			async () => {
-				// the authorize wrapper awaits the async verdict, so search() returns a promise here
-				const iterable = await AsyncRejects.search(
+				const iterable = await AsyncDenies.search(
 					{ conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }], checkPermission: true },
 					{ user: { id: 1, role: { permission: {} } } }
 				);
@@ -1807,6 +1806,63 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 				),
 			(err) => err.name === 'AccessViolation' || /unauthorized/i.test(err.message) || err.statusCode === 403
 		);
+	});
+
+	it('QUERY verb enforces record-scoped allowRead (checkPermission reaches the search target)', async () => {
+		// The QUERY verb calls resource.search(data, query) — search's target is `data` (the body),
+		// while checkPermission was set on the URL `query`. The query action threads it across so
+		// Table.search arms the per-record guard; without it a QUERY returned the full unfiltered set.
+		class Restricted extends T {
+			allowRead(user) {
+				if (this?.ownerId == null) return true; // collection scope: defer to per-record
+				return this.ownerId === user?.id;
+			}
+		}
+		const results = await fromAsync(
+			await Restricted.query(
+				{ checkPermission: true, isCollection: true },
+				{ conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }], select: ['id', 'ownerId'] },
+				{ user: { id: 1 } }
+			)
+		);
+		assert(results.length > 0, 'expected some visible rows');
+		assert(
+			results.every((r) => r.ownerId === 1),
+			'QUERY results must be row-filtered by the record-scoped allowRead'
+		);
+	});
+
+	it('subscription delivery freezes the record before the override sees it', async () => {
+		let sawFrozen;
+		class FreezeProbe extends T {
+			allowRead(user) {
+				if (this?.ownerId == null) return true;
+				sawFrozen = Object.isFrozen(this); // capture whether delivery froze the record
+				return this.ownerId === user?.id;
+			}
+		}
+		const subscription = await FreezeProbe.subscribe(
+			{ checkPermission: true, omitCurrent: true },
+			{
+				user: { id: 1, username: 'u1', role: { permission: {} } },
+				getContext() {
+					return this;
+				},
+			}
+		);
+		const collector = (async () => {
+			for await (const _ of subscription) {
+				/* drain */
+			}
+		})();
+		try {
+			await T.put(130, { group: 'blue', ownerId: 1, active: true, vector: [130, 0] });
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert.strictEqual(sawFrozen, true, 'the record handed to allowRead during delivery must be frozen');
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
 	});
 
 	it('records expose allowRead directly (RecordObject delegate, non-enumerable)', async () => {

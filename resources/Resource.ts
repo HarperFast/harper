@@ -18,6 +18,7 @@ import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
+import { logger } from '../utility/logging/logger.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
@@ -304,6 +305,20 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 	static query = transactional(
 		function (resource: any, query: RequestTarget, _request: Context, data: any) {
+			// On the table path, search(target) uses `data` (the request body carrying the conditions) as
+			// its sole target, while checkPermission was set on the URL `query`. Thread it across so
+			// Table.search sees the flag and enforces row-level allowRead — otherwise a QUERY on a table
+			// with an overridden allowRead returns the full unfiltered set (the deferral skips the entry
+			// check on the promise that search consumes checkPermission, which it never sees).
+			if (
+				resource.constructor.loadAsInstance !== false &&
+				data &&
+				typeof data === 'object' &&
+				(query as any)?.checkPermission != null &&
+				(data as any).checkPermission == null
+			) {
+				(data as any).checkPermission = (query as any).checkPermission;
+			}
 			return resource.search
 				? resource.constructor.loadAsInstance === false
 					? resource.search(query, data)
@@ -511,6 +526,20 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 }
 
 _assignPackageExport('Resource', Resource);
+
+// Warn once per table when an ASYNC allowRead override is used on a row-level-capable table: it is
+// evaluated only at the collection-scope entry check and gets NO per-record/per-event filtering, so
+// the collection-permissive "open, filter per record" pattern would fail open. Row-level filtering
+// requires a synchronous override.
+const asyncAllowReadWarned = new Set<string>();
+function warnAsyncAllowReadOnce(tableName: string | undefined): void {
+	const key = tableName ?? '<anonymous>';
+	if (asyncAllowReadWarned.has(key)) return;
+	asyncAllowReadWarned.add(key);
+	logger.warn?.(
+		`allowRead override on table "${key}" is async: it is evaluated only at request entry (collection scope) with NO per-record or per-event filtering. Row-level (record-scoped) authorization requires a synchronous allowRead — an async collection-permissive override would return unfiltered results.`
+	);
+}
 
 // Mark the built-in allowRead so the authorization flow can tell a framework default from an
 // application override. An overridden allowRead on a table is evaluated per RECORD during query
@@ -760,40 +789,39 @@ function transactional(
 			}
 			if (checkPermission) {
 				if (loadAsInstance !== false) {
-					// Record-scoped allowRead on a table collection read (#1422 gap 2): an overridden
-					// allowRead is evaluated per record during query execution (`this` = each record), not
-					// once here where `this` is a collection resource with no record loaded — an entry
-					// verdict would be meaningless (spurious 403s or, worse, granting the whole scan).
-					// Leave query.checkPermission set; Table.search() converts it into per-record
-					// enforcement (get/query on a collection route into search, which consumes it). Only
-					// tables opt in (supportsRowLevelAllowRead) — plain Resource subclasses have no
-					// row-level machinery and keep the entry check. Subscriptions are excluded: their
-					// delivery path never reaches search(), so deferring would grant them UNCHECKED —
-					// they keep the entry evaluation (which fails closed for a record-scoped override)
-					// Method semantics decide the deferral: `get` with a non-null id is a true
-					// single-record read (entry check runs with the record loaded, so record-scoped field
-					// reads resolve) and only defers when isCollection — mirroring the isSearchTarget
-					// routing it relies on. ALL search/query calls defer: a present id there is a
-					// starts_with/prefix SEED (a multi-record scan, see Table.search), so an entry verdict
-					// would gate — or worse, grant — the whole scan; both methods invoke instance search()
-					// directly, which consumes checkPermission and arms the per-record guard.
-					// subscribe/connect are NOT deferred: the entry check is the connection grant, and an
-					// allowRead override there may be connection-level, not record-level — e.g. an MQTT
-					// topic ACL (@harperdb/acl-connect) decides on context.topic, not record fields, and
-					// must run at subscribe time to reject the topic. A record-level override instead
-					// returns permissive at collection scope (no record loaded) to open the subscription,
-					// and Table.subscribe then filters each delivered event per record (#1419).
-					// Record-scoping is SYNC-only: an async allowRead override keeps this entry check,
-					// which awaits its verdict and fails closed on rejection (#1422 gap 1) — the sync
-					// per-record traversal path cannot await it.
-					if (
+					// Does this table carry an APPLICATION-overridden allowRead (record-scoped, #1422 gap 2)?
+					// The framework defaults are marked isDefaultAllowRead; anything else is an app override.
+					// Row-level authorization (per-record query traversal, per-event delivery) is SYNC-only.
+					// A SYNC application override participates in it; an ASYNC override cannot (traversal
+					// and delivery can't await), so it is evaluated ONLY at the collection-scope entry
+					// check — a table/connection-level decision, the same as before this feature. It must
+					// therefore make a complete decision at collection scope; the collection-permissive
+					// "open, filter per record" pattern requires a synchronous override (warned below).
+					const overridden =
 						options.type === 'read' &&
-						!isSubscribeAction &&
-						(options.method !== 'get' || query.isCollection) &&
 						(resource.constructor as any)?.supportsRowLevelAllowRead &&
-						!(resource.allowRead as any)?.isDefaultAllowRead &&
-						(resource.allowRead as any)?.constructor?.name !== 'AsyncFunction'
-					) {
+						!(resource.allowRead as any)?.isDefaultAllowRead;
+					const rowLevelOverride = overridden && (resource.allowRead as any)?.constructor?.name !== 'AsyncFunction';
+					if (rowLevelOverride) {
+						// Durable signal that this read was authorization-checked, for the subscription
+						// delivery filter (the entry check below clears query.checkPermission before
+						// Table.subscribe runs, and an anonymous-but-checked subscription has no user to key on).
+						(query as any).rowLevelAuthChecked = true;
+					} else if (overridden) {
+						warnAsyncAllowReadOnce((resource.constructor as any)?.name);
+					}
+					// Deferral (per-record enforcement instead of a meaningless collection-scope entry
+					// verdict): `get` with a non-null id is a true single-record read (entry check runs with
+					// the record loaded) and only defers when isCollection — mirroring the isSearchTarget
+					// routing. ALL search/query calls defer: a present id there is a starts_with/prefix SEED
+					// (multi-record scan), so an entry verdict would gate — or grant — the whole scan; both
+					// invoke instance search() directly, which consumes checkPermission and arms the guard.
+					// subscribe/connect are NOT deferred: the entry check is the connection grant, and an
+					// override there may be connection-level (e.g. an MQTT topic ACL that decides on
+					// context.topic, not record fields, and must run at subscribe time); a record-level
+					// override returns permissive at collection scope to open, and Table.subscribe then
+					// filters each delivered event per record (#1419).
+					if (rowLevelOverride && !isSubscribeAction && (options.method !== 'get' || query.isCollection)) {
 						return when(data, (data) => {
 							return runAction(data);
 						});
