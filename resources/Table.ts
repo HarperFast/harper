@@ -2507,9 +2507,19 @@ export function makeTable(options) {
 						// read-hiding and the cleanup sweep, not just the separate index-pruning sweep (which
 						// only removes already-past records and so can never extend past the table default).
 						// Read from recordToStore so the metadata matches exactly what the pruning sweep later
-						// reads back. Falls back to the table default when the field is unset or non-numeric.
+						// reads back. Falls back to the table default when the field is unset or not a timestamp.
 						const fieldExpiresAt = expiresAtProperty ? recordToStore?.[expiresAtProperty.name] : undefined;
-						const fieldExpiresAtMs = fieldExpiresAt == undefined ? NaN : Number(fieldExpiresAt);
+						// Coerce only genuine timestamp shapes: a number/bigint epoch, a Date, or a numeric/ISO
+						// string. Booleans, empty/whitespace strings, and null/undefined fall through to NaN so a
+						// nonsensical field value uses the table default rather than expiring the record at epoch 0.
+						let fieldExpiresAtMs = NaN;
+						if (typeof fieldExpiresAt === 'number' || typeof fieldExpiresAt === 'bigint')
+							fieldExpiresAtMs = Number(fieldExpiresAt);
+						else if (fieldExpiresAt instanceof Date) fieldExpiresAtMs = fieldExpiresAt.getTime();
+						else if (typeof fieldExpiresAt === 'string' && fieldExpiresAt.trim() !== '') {
+							const numeric = Number(fieldExpiresAt);
+							fieldExpiresAtMs = Number.isFinite(numeric) ? numeric : Date.parse(fieldExpiresAt);
+						}
 						// Only a finite, non-negative epoch counts: negatives collide with the -1 "no expiration"
 						// sentinel (the encoder omits HAS_EXPIRATION for <0, but the field sweep would still evict a
 						// negative field value), so treat a negative/NaN field as unset and use the table default.

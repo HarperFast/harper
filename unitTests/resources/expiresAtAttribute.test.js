@@ -79,6 +79,32 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert(stored >= before + 100_000 && stored <= Date.now() + 100_000, `unexpected stored expiresAt ${stored}`);
 	});
 
+	it('accepts a Date field value', async function () {
+		const Table = makeTable('ExpiresAtDate', 3);
+		const fieldExpiresAt = Date.now() + 3_600_000;
+		await Table.put(1, { id: 1, expiresAt: new Date(fieldExpiresAt) });
+		assert.strictEqual(await storedExpiresAt(Table, 1), fieldExpiresAt);
+	});
+
+	it('accepts an ISO-string field value', async function () {
+		const Table = makeTable('ExpiresAtIso', 3);
+		const fieldExpiresAt = Date.now() + 3_600_000;
+		await Table.put(1, { id: 1, expiresAt: new Date(fieldExpiresAt).toISOString() });
+		assert.strictEqual(await storedExpiresAt(Table, 1), fieldExpiresAt);
+	});
+
+	it('ignores non-timestamp field values (boolean / empty string) and uses the table default', async function () {
+		const Bool = makeTable('ExpiresAtBool', 100);
+		const Empty = makeTable('ExpiresAtEmpty', 100);
+		const before = Date.now();
+		await Bool.put(1, { id: 1, expiresAt: true });
+		await Empty.put(1, { id: 1, expiresAt: '' });
+		for (const T of [Bool, Empty]) {
+			const stored = await storedExpiresAt(T, 1);
+			assert(stored >= before + 100_000 && stored <= Date.now() + 100_000, `unexpected stored expiresAt ${stored}`);
+		}
+	});
+
 	// End-to-end: stamping the field into the expiry metadata makes read-hiding enforce it on a
 	// field-only table with no table default — the record is no longer served past its field time.
 	// This also covers the RocksDB correctness half of #1481 (the field sweep is LMDB-only, so
