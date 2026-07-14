@@ -867,29 +867,19 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, qu
 			// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 			// not the stale user captured at subscribe time.
 			if (context) (context as any).user = fresh;
-			// Re-run the table/RBAC-level allowRead against the fresh user. For a record-scoped
-			// override (#1419), the override itself is enforced per delivered event — evaluating it
-			// here against a bare collection resource would spuriously kill the subscription — so
-			// re-auth verifies the FRAMEWORK default (the table-level grant the subscription rests
-			// on) by walking the prototype chain to the method marked isDefaultAllowRead.
+			// Re-run the SAME allowRead the subscribe entry check ran, against the fresh user — this
+			// mirrors the connection grant exactly. For a record-scoped override (#1419), that override
+			// gated the connection at collection scope (typically composing the table/RBAC grant via
+			// `super.allowRead`), and its per-record decisions are enforced separately during delivery;
+			// re-running it here re-verifies whatever it gated the connection on — a connection-level
+			// override (e.g. an MQTT topic ACL) re-checks its topic grant, and a record-scoped override
+			// that composes `super` re-checks the RBAC baseline. No per-record evaluation here.
 			const reTarget: any = new RequestTarget();
 			reTarget.id = capturedId;
 			reTarget.isCollection = capturedIsCollection;
 			reTarget.select = capturedSelect;
 			reTarget.checkPermission = fresh.role?.permission;
-			let allowReadFn: any = resource.allowRead;
-			if (!allowReadFn?.isDefaultAllowRead && (resource.constructor as any)?.supportsRowLevelAllowRead) {
-				let proto = Object.getPrototypeOf(resource);
-				while (proto) {
-					const fn = Object.getOwnPropertyDescriptor(proto, 'allowRead')?.value;
-					if (fn?.isDefaultAllowRead) {
-						allowReadFn = fn;
-						break;
-					}
-					proto = Object.getPrototypeOf(proto);
-				}
-			}
-			return !!(await allowReadFn.call(resource, fresh, reTarget, context));
+			return !!(await resource.allowRead(fresh, reTarget, context));
 		},
 	});
 }
