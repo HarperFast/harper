@@ -1621,6 +1621,47 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		);
 	});
 
+	it('async allowRead override keeps entry-check semantics (awaited, fail-closed), not record scoping', async () => {
+		// Record-scoping is sync-only: a declared-async override is excluded from the per-record
+		// deferral, so the authorize wrapper awaits its verdict at entry and fails closed on
+		// rejection (#1422 gap 1 contract, locked by integrationTests allowread-fail-closed).
+		class AsyncRejects extends T {
+			async allowRead() {
+				throw new Error('async allowRead intentionally rejects');
+			}
+		}
+		await assert.rejects(
+			async () => {
+				// the authorize wrapper awaits the async verdict, so search() returns a promise here
+				const iterable = await AsyncRejects.search(
+					{ conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }], checkPermission: true },
+					{ user: { id: 1, role: { permission: {} } } }
+				);
+				return fromAsync(iterable);
+			},
+			(err) => err.name === 'AccessViolation' || err.statusCode === 403
+		);
+	});
+
+	it('sync allowRead override returning a promise denies records (fail closed), not fail-open truthiness', async () => {
+		class SneakyAsync extends T {
+			allowRead(user) {
+				return Promise.resolve(this.ownerId === user.id); // sync-declared, returns a thenable
+			}
+		}
+		const results = await fromAsync(
+			SneakyAsync.search(
+				{
+					conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }],
+					select: ['id'],
+					checkPermission: true,
+				},
+				{ user: { id: 1 } }
+			)
+		);
+		assert.strictEqual(results.length, 0, 'a thenable verdict must deny (fail closed), never grant on truthiness');
+	});
+
 	it('composes attribute_permissions column narrowing with a record-scoped allowRead override', async () => {
 		// Role-level column RBAC (attribute_permissions) is enforced by the DEFAULT table allowRead
 		// narrowing target.select at entry. An overridden (record-scoped) allowRead must not void it:

@@ -2651,8 +2651,14 @@ export function makeTable(options) {
 			// evaluated once per record during query execution with `this` = the record, instead of once
 			// at entry where `this` is a collection resource with nothing loaded. The framework defaults
 			// (marked isDefaultAllowRead) are this-free table/RBAC checks and keep the entry evaluation.
+			// Record-scoping is SYNC-only: async-declared overrides keep entry-check semantics (the
+			// authorize wrapper awaits them and fails closed) rather than entering the sync traversal.
 			const recordScopedAllowRead =
-				target.checkPermission && !(this.allowRead as any)?.isDefaultAllowRead ? this.allowRead : undefined;
+				target.checkPermission &&
+				!(this.allowRead as any)?.isDefaultAllowRead &&
+				(this.allowRead as any)?.constructor?.name !== 'AsyncFunction'
+					? this.allowRead
+					: undefined;
 			if (target.checkPermission) {
 				if (recordScopedAllowRead) {
 					// Compose with role-level column RBAC: the DEFAULT table allowRead is also the
@@ -2889,6 +2895,7 @@ export function makeTable(options) {
 			let recordGuard: ((record: any) => boolean) | undefined;
 			if (recordScopedAllowRead) {
 				const user = (context as any)?.user;
+				let warnedAsync = false;
 				recordGuard = (record: any) => {
 					let allowed;
 					try {
@@ -2896,8 +2903,19 @@ export function makeTable(options) {
 					} catch {
 						return false; // fail closed on a throwing check
 					}
-					if (allowed?.then)
-						throw new ClientError('allowRead must be synchronous when evaluated per record in a query');
+					if (typeof allowed?.then === 'function') {
+						// A sync-declared override that returns a thenable can't be awaited mid-traversal:
+						// deny the record (fail closed, #1422 gap 1 semantics) rather than fail open on
+						// promise truthiness or abort the whole query. Declared-async overrides never get
+						// here — they keep the awaited entry check.
+						if (!warnedAsync) {
+							warnedAsync = true;
+							logger.warn?.(
+								`allowRead on ${tableName} returned a promise during per-record evaluation; records are denied (record-scoped allowRead must be synchronous)`
+							);
+						}
+						return false;
+					}
 					return Boolean(allowed);
 				};
 			}
