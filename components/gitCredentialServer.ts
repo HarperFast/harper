@@ -139,7 +139,13 @@ export async function startGitCredentialSession(
 	helperPath: string
 ): Promise<GitCredentialSession> {
 	const byHost = new Map<string, ResolvedGitCredential>();
-	for (const credential of credentials) byHost.set(normalizeGitHost(credential.host), credential);
+	for (const credential of credentials) {
+		const host = normalizeGitHost(credential.host);
+		// Two entries for the same host in one deploy is operator error — the second silently wins here
+		// (and its sealed secret already overwrote the first's, sharing a derived name). Surface it.
+		if (byHost.has(host)) logger.warn?.(`multiple git credentials supplied for host '${host}'; using the last`);
+		byHost.set(host, credential);
+	}
 
 	// The credential's confinement rests on filesystem permissions: a 0700 directory means only this
 	// uid can reach the socket. A Windows named pipe has no equivalent guarantee — it is created with

@@ -103,6 +103,22 @@ describe('git credential session', () => {
 		assert.strictEqual(translated.stdout, 'ghp_secret\n', 'a localized prompt still yields the password');
 	});
 
+	it('last-write-wins on a duplicate host, and the session still serves the surviving token', async () => {
+		session = await startGitCredentialSession(
+			[
+				{ host: 'github.com', token: 'first' },
+				{ host: 'github.com', token: 'second' },
+			],
+			GIT_CREDENTIAL_HELPER_PATH
+		);
+		const { stdout } = await runHelper({
+			args: ['get'],
+			stdin: 'protocol=https\nhost=github.com\n\n',
+			env: session.env,
+		});
+		assert.strictEqual(stdout, `username=${DEFAULT_GIT_USERNAME}\npassword=second\n`);
+	});
+
 	it('honors a per-entry username (GitLab/Bitbucket use their own convention)', async () => {
 		session = await startGitCredentialSession(
 			[{ host: 'gitlab.com', token: 'glpat', username: 'oauth2' }],

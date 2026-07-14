@@ -793,6 +793,17 @@ describe('secretOperations', () => {
 			assert.equal(installed.mock.rows.size, 2, 'each kind gets its own derived row');
 		});
 
+		it('without custody, leaves a literal git token untouched (transient fallback) and stores nothing', async () => {
+			const input = [{ host: 'github.com', token: 'ghp_secret' }];
+			const out = await secretOps.ingestCredentials(deploy(), input, 'app');
+			assert.deepEqual(out, [{ host: 'github.com', token: 'ghp_secret' }]);
+			assert.equal(installed.mock.putCount, 0, 'no secret written without custody');
+			// The deploy handler persists/replicates only entries with a `.secret` reference; a no-custody
+			// literal token is therefore not in that set and gets stripped from the op body entirely.
+			const references = out.filter((entry) => entry && entry.secret !== undefined);
+			assert.equal(references.length, 0, 'a no-custody literal token yields no persistable reference');
+		});
+
 		it('is idempotent on token rotation — same derived row, latest value', async () => {
 			installCustody();
 			await secretOps.ingestCredentials(deploy(), [{ registry: gh, token: 'v1' }], 'app');
