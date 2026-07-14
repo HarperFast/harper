@@ -26,6 +26,8 @@ const {
 	secrets,
 	resetComponentSecrets,
 	closeComponentSubscriptions,
+	retainComponentSubscriptions,
+	releaseComponentSubscriptions,
 } = require('#src/components/componentSecrets');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
@@ -868,6 +870,21 @@ export const afterTopLevelAwait = secrets.CS_SCOPED;
 			table.mock.emitReload();
 			await new Promise((resolve) => setImmediate(resolve));
 			assert.equal(process.env.CS_GLOBAL, 'g1'); // reload-only: not re-mutated under running code
+		});
+
+		it('reference-counts teardown by identity: a sibling scope closing does not kill live streams', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
+			await materializeGlobalSecrets();
+			retainComponentSubscriptions('app'); // the running app scope
+			retainComponentSubscriptions('app'); // a throwaway deploy-validation scope, same identity
+			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, 'v1');
+			releaseComponentSubscriptions('app'); // validation scope closes → must NOT tear down
+			const stillOpen = iter.next(); // parks; the stream is still live
+			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app']));
+			assert.equal((await stillOpen).value, 'v2'); // still delivering
+			releaseComponentSubscriptions('app'); // last holder (the app) closes → now tear down
+			assert.equal((await iter.next()).done, true);
 		});
 
 		it('restarts the watcher when the subscription surfaces an error through the listener', async () => {

@@ -696,6 +696,30 @@ export function closeComponentSubscriptions(componentName: string): void {
 	for (const stream of toClose) stream.end();
 }
 
+// Subscriptions are keyed by component IDENTITY (applicationScope.name), which several concurrently-open
+// Scopes legitimately share — most notably a throwaway deploy-validation Scope loads the SAME directory
+// as the running app and closes in a `finally` before the real restart. Tearing down on any one Scope's
+// close would kill the running app's live streams. So teardown is reference-counted per identity: a Scope
+// retains on construction and releases on close, and streams are ended only when the LAST holder of that
+// identity releases (i.e. the app is truly unloading, not merely a validation load being discarded).
+const subscriptionHolders = new Map<string, number>();
+
+/** A Scope of this identity is now open — hold its live secret subscriptions until it releases. */
+export function retainComponentSubscriptions(componentName: string): void {
+	subscriptionHolders.set(componentName, (subscriptionHolders.get(componentName) ?? 0) + 1);
+}
+
+/** A Scope of this identity closed — end the identity's subscriptions once the last holder is gone. */
+export function releaseComponentSubscriptions(componentName: string): void {
+	const remaining = (subscriptionHolders.get(componentName) ?? 0) - 1;
+	if (remaining > 0) {
+		subscriptionHolders.set(componentName, remaining);
+	} else {
+		subscriptionHolders.delete(componentName);
+		closeComponentSubscriptions(componentName);
+	}
+}
+
 /** The component's current effective value for one name (scoped-granted live, else declared→process.env). */
 function currentSecretValue(componentName: string, name: string): string | undefined {
 	const { available, value } = resolveSubscribedSecret(componentName, name, secretRows.get(name));
@@ -876,6 +900,7 @@ export function resetComponentSecrets(): void {
 	warnedSubscribeShadow.clear();
 	const openStreams = [...secretSubscribers.values()].flatMap((streams) => [...streams]);
 	secretSubscribers.clear();
+	subscriptionHolders.clear();
 	for (const stream of openStreams) stream.end();
 	// Tear down the shared table watcher too, so a reset doesn't leak an audit-log listener.
 	secretWatcherSubscription?.emit?.('close');
