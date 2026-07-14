@@ -263,7 +263,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 					// callers act on. `describe_table`/`describe_all` can be polled frequently (e.g. by
 					// the Studio or monitoring), and this condition persists until someone declares the
 					// attribute -- a `warn` would repeat on every poll instead of surfacing once.
-					logger.trace(
+					logger.trace?.(
 						`describe_table: ${schema}.${table} is schema_defined but sampled records contain ` +
 							`attribute(s) not declared in the schema: ${undeclaredAttributes.join(', ')}. ` +
 							`schema_defined tables do not auto-register attributes written to records; add them ` +
