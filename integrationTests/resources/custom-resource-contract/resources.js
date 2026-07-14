@@ -1,3 +1,4 @@
+/* oxlint-disable no-undef -- intentionally references the (possibly absent) ClientError sandbox global */
 // QA-146 — Custom-Resource HTTP contract probe.
 //
 // Probes the contract app developers build on:

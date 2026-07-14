@@ -98,17 +98,20 @@ async function withMemWatch<T>(
 			await sleep(50);
 		}
 	})();
-	const result = await fn();
 	try {
-		const m = await sampleWorkerMem(client);
-		peakHeap = Math.max(peakHeap, m.maxHeapMB);
-		peakRss = Math.max(peakRss, m.maxRssMB);
-	} catch {
-		/* ignore */
+		const result = await fn();
+		try {
+			const m = await sampleWorkerMem(client);
+			peakHeap = Math.max(peakHeap, m.maxHeapMB);
+			peakRss = Math.max(peakRss, m.maxRssMB);
+		} catch {
+			/* ignore */
+		}
+		return { result, peakHeapMB: peakHeap, peakRssMB: peakRss };
+	} finally {
+		watching = false;
+		await watcher;
 	}
-	watching = false;
-	await watcher;
-	return { result, peakHeapMB: peakHeap, peakRssMB: peakRss };
 }
 
 /** Streaming sub-attribute GET: GET /Big/<key>/payload, hash chunks without buffering. */
@@ -140,6 +143,7 @@ function streamHashGet(
 			(res) => {
 				let bytes = 0;
 				let ttfb = -1;
+				res.on('error', reject);
 				res.on('data', (d: Buffer) => {
 					if (ttfb < 0) ttfb = Date.now() - start;
 					bytes += d.length;
