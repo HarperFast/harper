@@ -537,8 +537,15 @@ Overriding `allowRead(user, target, context)` on a table resource makes it a **r
 ```javascript
 export class Reports extends tables.Reports {
 	allowRead(user, target, context) {
-		// super = the table/RBAC permission check (safe at any scope)
-		return super.allowRead(user, target, context) && (user.role.permission.super_user || this.ownerId === user.id);
+		// Compose the table/RBAC grant first, so losing the role's read denies (at request entry and
+		// when a live subscription is re-authorized). super.allowRead is safe to call at any scope.
+		if (!super.allowRead(user, target, context)) return false;
+		if (user.role.permission.super_user) return true;
+		// Collection scope — a whole-table subscribe or the subscription re-auth check — has no record
+		// loaded (`this.ownerId` is undefined). Return true to open the connection; rows are filtered
+		// per record during delivery / query execution.
+		if (this.ownerId == null) return true;
+		return this.ownerId === user.id; // per record
 	}
 }
 ```
@@ -547,7 +554,7 @@ How the one definition applies at each scope (when permission checking is active
 
 - **Collection queries** (REST collection `GET`, `search()`, including vector sorts) — evaluated per record; rows failing the check are filtered out of results. The default (non-overridden) `allowRead` is a table-level RBAC check and continues to run once at request entry with no per-record cost.
 - **Single-record `get(id)`** — evaluated at request entry with the record loaded (attribute reads like `this.ownerId` resolve against the record); a denied record returns a 403.
-- **Subscriptions** (SSE, WebSocket, MQTT) — delivery is filtered per event: a subscriber receives only the row-change events for records the check permits. Delete tombstones and published message payloads do not carry the full record, so an override keyed on row fields will deny those event types.
+- **Subscriptions** (SSE, WebSocket, MQTT) — the entry check grants the connection at subscribe time (evaluated at collection scope — return the base grant to open), then delivery is filtered per event so a subscriber receives only the row-change events for records the check permits. A live subscription is periodically re-authorized by re-running this same `allowRead` against the current user, so revoking the role's read (or, for a connection-level override, its grant) tears the subscription down. Delete tombstones and published message payloads do not carry the full record, so an override keyed on row fields will deny those event types.
 
 Constraints: the check must be synchronous, side-effect free, and fast — it can run once per candidate record visited during traversal (verdicts are memoized per query). `this` is the frozen record during per-record evaluation. A thrown exception denies that record (fail closed). On caching tables the check is enforced against the record actually returned, after any source revalidation.
 
