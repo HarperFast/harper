@@ -3417,6 +3417,50 @@ export function makeTable(options) {
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
+			// Record-scoped allowRead on subscription delivery (#1419, reviving #1524 on the unified
+			// model): a sync application-overridden allowRead is re-evaluated per record-bearing event
+			// with `this` = the event's record, the delivery-path analog of the per-record query guard.
+			// Gated to (1) an overridden, sync allowRead — the default is record-independent and already
+			// enforced at connect, so the common case stays zero-overhead — and (2) checkPermission on
+			// the request: the authorize wrapper defers a checked subscribe here (leaving the flag set)
+			// precisely so delivery enforces it, while internal subscribers (replication, system
+			// watchers) never request permission checks and keep full delivery. The user may still be
+			// null on a checked request; the override decides (fail-closed for field comparisons).
+			// Fails closed: a throwing or thenable-returning override drops the event rather than leaks it.
+			//
+			// Known limitation (as in #1524): only put/invalidate events carry the authoritative full
+			// record. delete (tombstone, null value), message payloads, and rawEvents partial values may
+			// mis-decide an override keyed on row fields; closing the primary leak (record updates) is
+			// the goal here — authorizing non-record-bearing event types against the full row is deferred.
+			const subContext = this.getContext() as any;
+			const subUser = subContext?.user;
+			const subAllowRead = this.allowRead;
+			const filterRowReads =
+				(request as any)?.checkPermission &&
+				!(subAllowRead as any)?.isDefaultAllowRead &&
+				(subAllowRead as any)?.constructor?.name !== 'AsyncFunction';
+			let warnedAsyncEvent = false;
+			const allowsEvent = filterRowReads
+				? (event: any): boolean => {
+						if (event.type === 'end_txn' || event.type === 'reload') return true; // control markers, no record
+						let decision;
+						try {
+							decision = subAllowRead.call(event.value ?? null, subUser, request, subContext);
+						} catch {
+							return false; // fail closed: a throwing override drops the event
+						}
+						if (decision != null && typeof decision.then === 'function') {
+							if (!warnedAsyncEvent) {
+								warnedAsyncEvent = true;
+								logger.warn?.(
+									`allowRead on ${tableName} returned a promise during subscription event evaluation; events are dropped (record-scoped allowRead must be synchronous)`
+								);
+							}
+							return false;
+						}
+						return Boolean(decision);
+					}
+				: null;
 			const subscription = addSubscription(
 				TableResource,
 				thisId,
@@ -3458,8 +3502,11 @@ export function makeTable(options) {
 							type,
 							beginTxn,
 						};
+						// Queued events are filtered when the queue drains through send() below; events sent
+						// directly (queue already drained) are filtered here. Each event is filtered once.
 						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
 						else {
+							if (allowsEvent && !allowsEvent(event)) return;
 							if (databaseName !== 'system') {
 								recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
 							}
@@ -3545,13 +3592,17 @@ export function makeTable(options) {
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
-									history.push({
+									const historyEntry = {
 										id,
 										localTime: auditRecord.localTime,
 										value,
 										version: auditRecord.version,
 										type: auditRecord.type,
-									});
+									};
+									// Filter denied rows BEFORE they consume a previousCount slot, so an authorized
+									// subscriber still receives up to `count` readable events (#1419).
+									if (allowsEvent && !allowsEvent(historyEntry)) continue;
+									history.push(historyEntry);
 									if (--count <= 0) break;
 								}
 							} catch (error) {
@@ -3693,6 +3744,8 @@ export function makeTable(options) {
 				subscription.send(error);
 			});
 			function send(event: any) {
+				// Covers the pendingRealTimeQueue drain and the reload re-snapshot (#495) delivery.
+				if (allowsEvent && !allowsEvent(event)) return;
 				if (databaseName !== 'system') {
 					recordAction(event.size ?? 1, 'db-message', tableName, null);
 				}
