@@ -744,10 +744,15 @@ function transactional(
 					// once here where `this` is a collection resource with no record loaded — an entry
 					// verdict would be meaningless (spurious 403s or, worse, granting the whole scan).
 					// Leave query.checkPermission set; Table.search() converts it into per-record
-					// enforcement. Only tables opt in (supportsRowLevelAllowRead) — plain Resource
-					// subclasses have no row-level machinery and keep the entry check.
+					// enforcement (get/query on a collection route into search, which consumes it). Only
+					// tables opt in (supportsRowLevelAllowRead) — plain Resource subclasses have no
+					// row-level machinery and keep the entry check. Subscriptions are excluded: their
+					// delivery path never reaches search(), so deferring would grant them UNCHECKED —
+					// they keep the entry evaluation (which fails closed for a record-scoped override)
+					// until per-event delivery checks exist (#1419).
 					if (
 						options.type === 'read' &&
+						!isSubscribeAction &&
 						(query.id == null || query.isCollection) &&
 						(resource.constructor as any)?.supportsRowLevelAllowRead &&
 						!(resource.allowRead as any)?.isDefaultAllowRead

@@ -1621,6 +1621,26 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		);
 	});
 
+	it('subscribe with a record-scoped allowRead is denied at entry, never granted unchecked', async () => {
+		// Subscription delivery never reaches search(), so the per-record deferral must NOT apply to
+		// subscribe — otherwise a collection subscription would be granted with no check at all.
+		// Until per-event delivery checks exist (#1419), the entry evaluation runs the override with
+		// `this` = collection resource (fields undefined) and fails closed.
+		class Restricted extends T {
+			allowRead(user) {
+				return this.ownerId === user.id;
+			}
+		}
+		await assert.rejects(
+			async () =>
+				Restricted.subscribe(
+					{ checkPermission: true, omitCurrent: true },
+					{ user: { id: 1, username: 'u1', role: { permission: {} } } }
+				),
+			(err) => err.name === 'AccessViolation' || /unauthorized/i.test(err.message) || err.statusCode === 403
+		);
+	});
+
 	it('records expose allowRead directly (RecordObject delegate, non-enumerable)', async () => {
 		const results = await fromAsync(
 			T.search({ conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }], limit: 1 }, {})
