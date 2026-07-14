@@ -1,4 +1,0 @@
-graphqlSchema:
-  files: '*.graphql'
-rest: true
-mqtt: true
