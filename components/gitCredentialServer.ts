@@ -64,7 +64,8 @@ function isLoopbackHost(host: string): boolean {
 }
 
 function answerFor(credentials: Map<string, ResolvedGitCredential>, request: any) {
-	const host = typeof request?.host === 'string' ? normalizeGitHost(request.host) : '';
+	if (!request || typeof request !== 'object') return {};
+	const host = typeof request.host === 'string' ? normalizeGitHost(request.host) : '';
 	const credential = credentials.get(host);
 	// An unknown host is not an error: git also asks about public hosts, and answering nothing lets
 	// it proceed unauthenticated rather than failing the deploy.
@@ -233,7 +234,10 @@ export async function startGitCredentialSession(
 		env,
 		async close() {
 			byHost.clear();
-			for (const connection of connections) connection.destroy();
+			// destroy() synchronously fires each connection's 'close' listener, which deletes it from this
+			// same Set — iterate a snapshot so that mid-iteration mutation cannot skip a connection.
+			const connectionsSnapshot = Array.from(connections);
+			for (const connection of connectionsSnapshot) connection.destroy();
 			connections.clear();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			try {

@@ -27,7 +27,15 @@ const { Application, extractApplication } = require('#src/components/Application
 const { getConfigPath } = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
-const GIT_HTTP_BACKEND = path.join(execFileSync('git', ['--exec-path']).toString().trim(), 'git-http-backend');
+// git may not be installed/in PATH in every test environment; resolving this at module load time
+// (before mocha's before() hook gets a chance to skip gracefully) would crash the whole suite's
+// loading rather than just this file's tests, so fall back to undefined and let before() skip.
+let GIT_HTTP_BACKEND;
+try {
+	GIT_HTTP_BACKEND = path.join(execFileSync('git', ['--exec-path']).toString().trim(), 'git-http-backend');
+} catch {
+	// git not installed/in PATH; before() skips when GIT_HTTP_BACKEND is unset.
+}
 const TOKEN = 'ghp_test_token_value';
 const USERNAME = 'x-access-token';
 
@@ -133,7 +141,7 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 	let stealOut;
 
 	before(async function () {
-		if (process.platform === 'win32' || !existsSync(GIT_HTTP_BACKEND)) return this.skip();
+		if (process.platform === 'win32' || !GIT_HTTP_BACKEND || !existsSync(GIT_HTTP_BACKEND)) return this.skip();
 		// extractApplication packs into the components root, which the unit-test config points at but
 		// does not create.
 		await fs.mkdir(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), { recursive: true });

@@ -280,7 +280,14 @@ describe('git credential session', () => {
 		const closed = new Promise((resolve) => socket.on('close', resolve));
 		// Never half-close: without a cap the server would accumulate this forever.
 		const junk = 'x'.repeat(64 * 1024);
-		const write = () => socket.writable && socket.write(junk) && setImmediate(write);
+		// write() can return false under backpressure (the socket's internal buffer is full) well
+		// before the server-side cap is exceeded; resume on 'drain' instead of giving up, or this
+		// test hangs waiting for a 'close' the server never has a reason to send.
+		const write = () => {
+			if (!socket.writable) return;
+			if (socket.write(junk)) setImmediate(write);
+			else socket.once('drain', write);
+		};
 		write();
 
 		await closed; // the server destroys the connection instead of growing its buffer

@@ -68,18 +68,20 @@ function parseCredentialRequest(input) {
 function parseAskpassPrompt(prompt) {
 	const quoted = /'([^']+)'/.exec(prompt);
 	if (!quoted) return null;
-	let url;
+	// url.username can carry a malformed percent-encoding sequence (e.g. from a redirect or a
+	// misconfigured remote), which makes decodeURIComponent throw a URIError — keep that inside the
+	// same try as the URL parse so it can't crash this process instead of just declining to answer.
 	try {
-		url = new URL(quoted[1]);
+		const url = new URL(quoted[1]);
+		return {
+			field: url.username ? 'password' : 'username',
+			protocol: url.protocol.replace(/:$/, ''),
+			host: url.host,
+			username: url.username ? decodeURIComponent(url.username) : undefined,
+		};
 	} catch {
 		return null;
 	}
-	return {
-		field: url.username ? 'password' : 'username',
-		protocol: url.protocol.replace(/:$/, ''),
-		host: url.host,
-		username: url.username ? decodeURIComponent(url.username) : undefined,
-	};
 }
 
 async function main() {

@@ -416,7 +416,12 @@ const GIT_CREDENTIAL_ENTRY = Joi.object({
 	username: Joi.string()
 		.pattern(/^[^\r\n:]+$/)
 		.optional(),
-	token: Joi.string().pattern(/^[^\r\n]+$/),
+	// Capped like other secret-bearing fields (SECRET_MAX_LENGTH, above): an unbounded literal token
+	// here feeds straight into synchronous envelope-sealing crypto, so without a cap it's a
+	// resource-exhaustion vector, not just a storage one.
+	token: Joi.string()
+		.pattern(/^[^\r\n]+$/)
+		.max(SECRET_MAX_LENGTH),
 	secret: Joi.string()
 		.pattern(ENV_KEY_REGEX)
 		.messages({ 'string.pattern.base': `'secret' must only contain word characters, dots and dashes` }),
