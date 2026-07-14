@@ -39,7 +39,7 @@ const G = (globalThis.__QA159__ ??= {
 // to the REAL Table.subscribe so the returned iterable is the genuine core Subscription, then
 // instrument its lifecycle. Filtering/delivery semantics are unchanged from a plain table sub.
 export class Live extends tables.Burst {
-	connect(target, incomingMessages, request) {
+	connect(target, _incomingMessages, _request) {
 		// Mirror the default Resource.connect query selection (resources/Resource.ts:405): for a
 		// loadAsInstance resource the subscribe query is `incomingMessages` unless that's not a
 		// subscription target; for our record/collection WS path `target` carries the id. Pass
