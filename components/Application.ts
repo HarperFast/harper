@@ -1120,6 +1120,37 @@ export async function installApplications() {
 }
 
 /**
+ * Rewrite every occurrence of `sshDir` in an ssh `config` file's contents to `tempDir`, matching
+ * either slash direction per path segment (and case-insensitively on `win32`) rather than relying
+ * on the two strings being byte-identical.
+ *
+ * A plain string substitution (`sshConfig.split(sshDir).join(tempDir)`) doesn't hold
+ * cross-platform: ssh config files are frequently forward-slash even on Windows, while `sshDir`
+ * (built via `path.join`) is backslash there, so the split would silently never match; Windows
+ * paths are also case-insensitive. `sshDir` is split into segments on either separator *before*
+ * escaping, so escaping a regex-special character within a segment (e.g. a literal paren in a
+ * directory name) can't interact with the separator substitution. A trailing lookahead keeps
+ * `sshDir` from partial-matching a sibling directory whose name happens to start with it (e.g.
+ * `.../ssh` vs `.../sshhh`).
+ *
+ * Exported only so unit tests can pin the Windows-path behavior (mixed slash direction, case
+ * insensitivity) directly via the `platform` override, without needing to run on Windows.
+ */
+export function rewriteSshConfigPaths(
+	sshConfig: string,
+	sshDir: string,
+	tempDir: string,
+	platform: string = process.platform
+): string {
+	const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const sepClass = '[\\\\/]';
+	const sshDirPattern = sshDir.split(/[\\/]/).map(escapeRegExp).join(sepClass) + `(?=${sepClass}|$)`;
+	const sshDirRegex = new RegExp(sshDirPattern, platform === 'win32' ? 'gi' : 'g');
+	const normalizedTempDir = platform === 'win32' ? tempDir.replace(/\\/g, '/') : tempDir;
+	return sshConfig.replace(sshDirRegex, normalizedTempDir);
+}
+
+/**
  * Materialize the SSH deploy keys for the lifetime of a single git-over-SSH spawn.
  *
  * Keys are sealed at rest as `enc:v1:` envelopes (Harper Pro's `add_ssh_key`), but ssh needs a key
@@ -1141,13 +1172,14 @@ export async function materializeGitSSH(): Promise<{ command: string; cleanup: (
 	const rootDir = getConfigValue(CONFIG_PARAMS.ROOTPATH);
 	if (!rootDir) return; // config not initialized (e.g. an install-time spawn) — no ssh dir to read
 	const sshDir = join(rootDir, 'ssh');
-	let sshDirEntries: string[];
-	try {
-		sshDirEntries = await readdir(sshDir);
-	} catch {
-		return; // no ssh dir on this node
-	}
-	const keyFiles = sshDirEntries.filter((entry) => entry.endsWith('.key'));
+	// `withFileTypes` so a stray subdirectory in the ssh dir (e.g. one named `foo.key`) is filtered
+	// out here rather than reaching `readFile` below and throwing EISDIR, which would abort the
+	// whole spawn instead of just skipping that one entry.
+	const sshDirEntries = await readdir(sshDir, { withFileTypes: true }).catch(() => undefined);
+	if (!sshDirEntries) return; // no ssh dir on this node
+	const keyFiles = sshDirEntries
+		.filter((entry) => entry.isFile() && entry.name.endsWith('.key'))
+		.map((entry) => entry.name);
 	if (keyFiles.length === 0) return;
 
 	const tempDir = await mkdtemp(join(tmpdir(), 'harper-ssh-'));
@@ -1164,7 +1196,16 @@ export async function materializeGitSSH(): Promise<{ command: string; cleanup: (
 	try {
 		const decryptor = getSecretDecryptor();
 		for (const keyFile of keyFiles) {
-			const storedKey = await readFile(join(sshDir, keyFile), 'utf8');
+			let storedKey: string;
+			try {
+				storedKey = await readFile(join(sshDir, keyFile), 'utf8');
+			} catch (error) {
+				// Same fail-open policy as a decrypt failure below: a key that can't even be read
+				// (permission drift, deleted mid-scan by a concurrent add_ssh_key/rotation, a
+				// transient EIO) should drop that one key, not abort a spawn that may not need it.
+				logger.error?.(`Failed to read SSH key ${keyFile}: ${(error as Error).message}; skipping it`);
+				continue;
+			}
 			let keyMaterial = storedKey;
 			if (storedKey.startsWith(ENV_ENCRYPTED_PREFIX)) {
 				if (!decryptor) {
@@ -1185,7 +1226,8 @@ export async function materializeGitSSH(): Promise<{ command: string; cleanup: (
 		// The config's `IdentityFile` lines are absolute paths into the durable ssh dir; repoint
 		// them at the transient copies. known_hosts holds no secrets and stays where it is.
 		const sshConfig = await readFile(join(sshDir, 'config'), 'utf8').catch(() => '');
-		await writeFile(join(tempDir, 'config'), sshConfig.split(sshDir).join(tempDir), { mode: 0o600 });
+		const rewrittenConfig = rewriteSshConfigPaths(sshConfig, sshDir, tempDir);
+		await writeFile(join(tempDir, 'config'), rewrittenConfig, { mode: 0o600 });
 	} catch (error) {
 		await cleanup();
 		throw error;
