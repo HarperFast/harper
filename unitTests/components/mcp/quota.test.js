@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { checkDurableQuota, setMcpQuotaHandler } = require('#src/components/mcp/quota');
+const { checkDurableQuota, setMcpQuotaHandler, getMcpQuotaHandler } = require('#src/components/mcp/quota');
 
 const INFO = {
 	identity: '203.0.113.7',
@@ -65,5 +65,19 @@ describe('mcp/quota (#1610, #1809 registration handler)', () => {
 		assert.deepEqual(await checkDurableQuota(INFO), { allowed: true });
 		setMcpQuotaHandler(() => ({ allowed: false, message: 'reloaded policy' }));
 		assert.deepEqual(await checkDurableQuota(INFO), { allowed: false, message: 'reloaded policy' });
+	});
+
+	// Supports the deploy pre-flight snapshot/restore that keeps a throwaway candidate load from
+	// leaving its handler active on the live worker.
+	it('getMcpQuotaHandler round-trips the registered handler for snapshot/restore', async () => {
+		assert.equal(getMcpQuotaHandler(), undefined);
+		const live = () => true;
+		setMcpQuotaHandler(live);
+		const snapshot = getMcpQuotaHandler();
+		assert.equal(snapshot, live);
+		// a candidate load overwrites it, then we restore the snapshot
+		setMcpQuotaHandler(() => ({ allowed: false, message: 'candidate' }));
+		setMcpQuotaHandler(snapshot);
+		assert.deepEqual(await checkDurableQuota(INFO), { allowed: true });
 	});
 });

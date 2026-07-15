@@ -33,8 +33,8 @@ export interface Server {
 	authenticateUser(username: string, password: string, request: Request): any;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
 	registerOperation(operationDefinition: OperationDefinition): void;
-	/** Register the durable MCP quota policy (opt-in). The latest registration wins. */
-	setMcpQuotaHandler(handler: McpQuotaHandler): void;
+	/** Register the durable MCP quota policy (opt-in). The latest registration wins; pass `undefined` to clear. */
+	setMcpQuotaHandler(handler: McpQuotaHandler | undefined): void;
 	recordAnalytics(value: Value, metric: string, path?: string, method?: string, type?: string): void;
 	nodes: Node[];
 	shards: Map<number, string[]>;

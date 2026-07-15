@@ -77,6 +77,15 @@ export function setMcpQuotaHandler(handler: McpQuotaHandler | undefined): void {
 }
 
 /**
+ * The currently-registered handler. Used by deploy pre-flight validation to snapshot
+ * and restore around a throwaway candidate load, so a candidate's `setMcpQuotaHandler`
+ * (or a failed deploy) can't leave its policy — or `undefined` — active on the live worker.
+ */
+export function getMcpQuotaHandler(): McpQuotaHandler | undefined {
+	return quotaHandler;
+}
+
+/**
  * Run the registered durable quota handler, if any. Returns `{allowed: true}`
  * when no handler is registered (the feature is opt-in). A handler that throws
  * DENIES (fail-closed) with a sanitized message.
