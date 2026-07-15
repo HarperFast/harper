@@ -32,6 +32,10 @@ interface AttributeInfo {
 	name: string;
 	indexed: boolean;
 	isPrimaryKey: boolean;
+	/** Whether the attribute's index can serve `value === null` conditions —
+	 * search.ts rejects null-valued searches on an index without indexNulls,
+	 * and the primary key never indexes nulls. */
+	indexNulls: boolean;
 }
 
 export interface BoundTable {
@@ -176,15 +180,20 @@ function bindTableRef(ref: TableRefNode, databases: Record<string, Record<string
 	}
 	const r = resource as {
 		primaryKey?: string;
-		attributes?: { name: string; indexed?: boolean }[];
-		indices?: Record<string, unknown>;
+		attributes?: { name: string; indexed?: boolean; indexNulls?: boolean }[];
+		indices?: Record<string, { indexNulls?: boolean } | unknown>;
 	};
 	const primaryKey = r.primaryKey;
 	const indices = r.indices ?? {};
+	// indexNulls lives on both the attribute descriptor and the index dbi
+	// (databases.ts sets each) — honor either.
 	const attributes: AttributeInfo[] = (r.attributes ?? []).map((a) => ({
 		name: a.name,
 		indexed: !!a.indexed || !!indices[a.name] || a.name === primaryKey,
 		isPrimaryKey: a.name === primaryKey,
+		indexNulls:
+			a.name !== primaryKey &&
+			(!!a.indexNulls || !!(indices[a.name] as { indexNulls?: boolean } | undefined)?.indexNulls),
 	}));
 
 	return {

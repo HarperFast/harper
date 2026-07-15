@@ -47,7 +47,7 @@ const BINARY_TO_COMPARATOR: Record<string, string> = {
 	'>=': 'ge',
 };
 
-export type IndexedAttribute = { name: string; indexed: boolean; isPrimaryKey?: boolean };
+export type IndexedAttribute = { name: string; indexed: boolean; isPrimaryKey?: boolean; indexNulls?: boolean };
 
 // Single-sided range comparators, split by which bound they set, and the fused
 // comparator name that combines a lower + upper bound (matching the set
@@ -72,14 +72,78 @@ export function whereToConditions(predicate: ExprNode | undefined, attributes?: 
 		// drives the index (validateScannable enforces that a driver exists). When
 		// `attributes` is unknown, keep the legacy behavior of pushing any
 		// representable condition.
-		if (cond && (attributes === undefined || conditionIsPushable(cond, attributes))) conditions.push(cond);
-		else residuals.push(e);
+		if (cond && (attributes === undefined || conditionIsPushable(cond, attributes))) {
+			conditions.push(cond);
+			continue;
+		}
+		// A `!=`/NOT IN conjunct whose only unpushable leg is its not-null guard
+		// (search rejects null-valued conditions on an index without indexNulls,
+		// F-145): keep the value legs pushed — they carry the quoted-boolean/
+		// numeric coercion branches the expression evaluator doesn't replicate —
+		// and re-express just the guard as a residual IS NOT NULL filter.
+		const split = cond && splitUnpushableNullGuards(cond, attributes);
+		if (split) {
+			if (split.pushable) conditions.push(split.pushable);
+			residuals.push(...split.guards);
+			continue;
+		}
+		residuals.push(e);
 	}
 	const result: ConvertResult = { conditions: fuseRangeBounds(conditions, attributes), operator: 'and' };
 	if (residuals.length > 0) {
 		result.residual = residuals.length === 1 ? residuals[0] : { kind: 'logical', op: 'and', args: residuals };
 	}
 	return result;
+}
+
+/**
+ * If a condition is unpushable ONLY because it contains null-valued legs on
+ * attributes whose index can't serve nulls (the `!=`/NOT IN not-null guard, or
+ * an IS [NOT] NULL leg), split it: return the remaining pushable legs plus the
+ * null legs re-expressed as residual isNull ExprNodes (evaluated post-scan with
+ * correct three-valued logic). Returns undefined when the condition is
+ * unpushable for any other reason (caller residualizes the whole conjunct) or
+ * when nothing needed splitting.
+ */
+function splitUnpushableNullGuards(
+	cond: ConditionNode,
+	attributes: IndexedAttribute[] | undefined
+): { pushable?: ConditionNode; guards: ExprNode[] } | undefined {
+	if ('attribute' in cond && cond.attribute) {
+		if (cond.value !== null) return undefined; // unpushable for a non-null-guard reason
+		const a = attributes?.find((x) => x.name === cond.attribute);
+		if (a?.indexed !== true || a.indexNulls) return undefined; // not the indexNulls case
+		if (cond.comparator !== 'ne' && cond.comparator !== 'equals') return undefined;
+		const guard: ExprNode = {
+			kind: 'isNull',
+			negated: cond.comparator === 'ne',
+			expr: { kind: 'column', name: cond.attribute },
+		};
+		return { guards: [guard] };
+	}
+	if ('conditions' in cond && cond.operator === 'and') {
+		// Salvage AND legs only: an OR containing an unservable null leg can't be
+		// split into pushed-conditions + residual (the residual would over-filter).
+		const pushable: ConditionNode[] = [];
+		const guards: ExprNode[] = [];
+		for (const c of cond.conditions) {
+			if (conditionIsPushable(c, attributes)) {
+				pushable.push(c);
+				continue;
+			}
+			const sub = splitUnpushableNullGuards(c, attributes);
+			if (!sub) return undefined;
+			if (sub.pushable) pushable.push(sub.pushable);
+			guards.push(...sub.guards);
+		}
+		if (guards.length === 0) return undefined;
+		if (pushable.length === 0) return { guards };
+		return {
+			pushable: pushable.length === 1 ? pushable[0] : { conditions: pushable, operator: 'and' },
+			guards,
+		};
+	}
+	return undefined;
 }
 
 /**
@@ -96,11 +160,19 @@ const FULL_SCAN_COMPARATORS = new Set(['ends_with', 'contains']);
  * references must be indexed, because search runs searchByIndex per condition and
  * throws on an unindexed attribute. Comparator-agnostic — a full-scan comparator
  * on an indexed attribute is still pushable (it becomes a filter once another
- * condition drives the index). Unpushable conditions become a residual Filter.
+ * condition drives the index). Null-valued conditions (IS [NOT] NULL and the
+ * `!=`/NOT IN not-null guards) are pushable only when the index actually indexes
+ * nulls — search throws "not indexed for nulls" otherwise (F-145), even when a
+ * different condition drives the scan. Unpushable conditions become a residual
+ * Filter (the expression evaluator's three-valued logic keeps NULL exclusion
+ * correct on the residual path).
  */
 export function conditionIsPushable(cond: ConditionNode, attributes: IndexedAttribute[] | undefined): boolean {
 	if ('attribute' in cond && cond.attribute) {
-		return attributes?.find((x) => x.name === cond.attribute)?.indexed === true;
+		const a = attributes?.find((x) => x.name === cond.attribute);
+		if (a?.indexed !== true) return false;
+		if (cond.value === null && !a.indexNulls) return false;
+		return true;
 	}
 	if ('conditions' in cond) {
 		// Every leaf attribute must be indexed; a single unindexed leaf (in either
@@ -122,6 +194,8 @@ export function conditionUsesIndex(cond: ConditionNode, attributes: IndexedAttri
 		if (!a?.indexed) return false;
 		if (FULL_SCAN_COMPARATORS.has(cond.comparator ?? '')) return false;
 		if (cond.comparator === 'ne' && cond.value !== null) return false;
+		// A null-valued condition can only seek an index that indexes nulls.
+		if (cond.value === null && !a.indexNulls) return false;
 		return true;
 	}
 	if ('conditions' in cond) {

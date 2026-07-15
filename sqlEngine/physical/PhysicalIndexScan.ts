@@ -10,6 +10,8 @@ import type { Row, SqlEngineContext } from '../types.ts';
 import type { ColumnSchema } from '../types.ts';
 import type { PhysicalOp } from './op.ts';
 import type { ConditionNode } from '../optimizer/whereToConditions.ts';
+import { EngineUnsupportedError } from '../errors.ts';
+import { ClientError, IndexRebuildingError } from '../../utility/errors/hdbError.ts';
 
 interface SearchableTable {
 	search(target: unknown, context?: unknown): AsyncIterable<Row>;
@@ -63,7 +65,25 @@ async function* executeScan(
 		if (scan.pushedLimit.offset != null) target.offset = scan.pushedLimit.offset;
 	}
 
-	for await (const row of resource.search(target)) {
-		yield row;
+	// Safety net for the fallback contract: validateScannable predicts what
+	// Table.search will accept, but if the prediction is ever wrong (F-145: a
+	// pushed `ne null` guard on an index without indexNulls), search throws a
+	// capability-shaped ClientError (400/403/404) or IndexRebuildingError at
+	// runtime, past the router's EngineUnsupportedError catch — leaking an error
+	// where 'auto' should fall back. Convert those here; results are materialized
+	// before delivery, so no partial rows have been sent when this fires.
+	try {
+		for await (const row of resource.search(target)) {
+			yield row;
+		}
+	} catch (err) {
+		if (err instanceof EngineUnsupportedError) throw err;
+		if (err instanceof IndexRebuildingError) {
+			throw new EngineUnsupportedError(`index rebuilding: ${err.message}`);
+		}
+		if (err instanceof ClientError) {
+			throw new EngineUnsupportedError(`search rejected scan: ${err.message}`);
+		}
+		throw err;
 	}
 }

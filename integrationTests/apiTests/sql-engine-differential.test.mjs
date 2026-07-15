@@ -171,6 +171,15 @@ suite('SQL engine differential — new vs legacy', () => {
 		// new engine must reject and fall back (blocker-2 path), matching legacy.
 		await diff('like-suffix-standalone', "SELECT name FROM dev.widget WHERE name LIKE '%a'");
 		await diff('like-contains-standalone', "SELECT name FROM dev.widget WHERE name LIKE '%am%'");
+		// F-145 regression anchors: `!=`/NOT IN on the PRIMARY KEY. The `!=`
+		// expansion AND-s a not-null guard, and the primary store never has
+		// indexNulls — pre-fix the pushed guard made Table.search throw a raw 400
+		// ("not indexed for nulls") past the router's fallback catch, leaking an
+		// error where legacy returns rows. The guard must ride as a residual
+		// filter (or the scan must reject at plan time and fall back).
+		await diff('ne-pk (F-145)', 'SELECT id, name FROM dev.widget WHERE id != 2');
+		await diff('ne-pk-ordered (F-145)', 'SELECT id FROM dev.widget WHERE id != 2 ORDER BY id DESC');
+		await diff('not-in-pk (F-145)', 'SELECT id FROM dev.widget WHERE id NOT IN (2, 4)');
 	});
 
 	test('SELECT — loose IN coercion (string literals vs numeric column)', async () => {

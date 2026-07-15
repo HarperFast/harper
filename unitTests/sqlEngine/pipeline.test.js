@@ -22,8 +22,10 @@ function makeMockTable({ primaryKey = 'id', attributes = [], rows = [] } = {}) {
 	indexed.add(primaryKey);
 	const table = {
 		primaryKey,
-		attributes: attributes.map((a) => ({ name: a.name, indexed: !!a.indexed })),
-		indices: Object.fromEntries(attributes.filter((a) => a.indexed).map((a) => [a.name, true])),
+		attributes: attributes.map((a) => ({ name: a.name, indexed: !!a.indexed, indexNulls: !!a.indexNulls })),
+		indices: Object.fromEntries(
+			attributes.filter((a) => a.indexed).map((a) => [a.name, { indexNulls: !!a.indexNulls }])
+		),
 		_lastTarget: null,
 		async *search(target) {
 			table._lastTarget = target;
@@ -261,7 +263,37 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		// row (id 4) must be excluded, like legacy — only the `true` rows remain.
 		const data = await runSql("SELECT id FROM dev.user WHERE id > 0 AND active != 'false'");
 		assert.deepStrictEqual(data.map((r) => r.id).sort(), [1, 3]);
-		// The active condition is an AND of: ne 'false', ne false, and a not-null guard.
+		// The coercion legs (ne 'false', ne false) stay pushed; the not-null guard
+		// is NOT pushed — this index lacks indexNulls, so search would throw
+		// "not indexed for nulls" (F-145). It rides as a residual filter instead
+		// (which is what excluded id 4 above).
+		const activeCond = boolTable._lastTarget.conditions.find((c) => c.conditions);
+		assert.deepStrictEqual(activeCond, {
+			conditions: [
+				{ attribute: 'active', comparator: 'ne', value: 'false' },
+				{ attribute: 'active', comparator: 'ne', value: false },
+			],
+			operator: 'and',
+		});
+	});
+
+	it('!= pushes its not-null guard when the index CAN serve nulls (indexNulls)', async () => {
+		const boolTable = makeMockTable({
+			primaryKey: 'id',
+			attributes: [
+				{ name: 'id', indexed: true },
+				{ name: 'active', indexed: true, indexNulls: true },
+			],
+			rows: [
+				{ id: 1, active: true },
+				{ id: 2, active: false },
+				{ id: 3, active: true },
+				{ id: 4, active: null },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ dev: { user: boolTable } }));
+		const data = await runSql("SELECT id FROM dev.user WHERE id > 0 AND active != 'false'");
+		assert.deepStrictEqual(data.map((r) => r.id).sort(), [1, 3]);
 		const activeCond = boolTable._lastTarget.conditions.find((c) => c.conditions);
 		assert.deepStrictEqual(activeCond, {
 			conditions: [
