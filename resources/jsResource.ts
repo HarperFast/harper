@@ -78,15 +78,43 @@ export class ResourceLoadError extends Error {
  * So we track which files this scope has already loaded: a re-`add` of a known file is a redeploy of
  * loaded code we cannot hot-swap, and is handled like a `change` — request a restart. A first-time
  * `add` (initial load, or a genuinely new file added at runtime) still loads without a restart.
+ *
+ * A redeploy that *deletes* a loaded file is a different shape of the same problem: the fresh
+ * chokidar scan only reports what's currently on disk, so a file that's gone produces no event at
+ * all — no re-`add`, no `unlink` — and the modified-file handling above never sees it. Left
+ * unhandled, the deleted resource stays registered and active in memory (harper#1817 follow-up). So
+ * we also track which files the post-redeploy scan pass reports, and once that scan's `ready` fires,
+ * diff it against everything this scope has ever loaded: anything missing was deleted, and is
+ * handled the same way as a modified file — request a restart.
+ *
+ * That diff must only run for an actual redeploy rescan, not every time `EntryHandler` emits
+ * `ready` — it also refires after each ordinary runtime add/change once that file's read settles
+ * (its initial-scan-complete latch never resets outside a full rescan), and diffing against that
+ * would falsely treat every other already-loaded file as deleted. So the diff window is gated by
+ * the scope's own `deploy:start`/`deploy:end` bracket (see `Scope`): `deploy:start` pauses the
+ * watcher and opens the window (and is where we reset the scan-file tracking, since no file events
+ * can land while paused), and the first `ready` afterward — the resumed watcher's fresh scan
+ * completing — closes it and runs the diff.
  */
 export async function handleApplication(scope: Scope) {
 	const loadedResourceFiles = new Set<string>();
-	scope.handleEntry(async function handleResourceEntry(entryEvent) {
+	// Files reported as `add` since the most recent `deploy:start`, populated only while
+	// `awaitingPostRedeployScan` is true — see the gating note above.
+	let currentScanFiles = new Set<string>();
+	let awaitingPostRedeployScan = false;
+
+	const entryHandler = scope.handleEntry(async function handleResourceEntry(entryEvent) {
 		if (entryEvent.entryType !== 'file') {
 			scope.logger.warn(
 				`jsResource plugin cannot handle entry type ${entryEvent.entryType}. Modify the 'files' option in ${scope.configFilePath} to only include files.`
 			);
 			return;
+		}
+
+		if (awaitingPostRedeployScan && entryEvent.eventType === 'add') {
+			// Recorded unconditionally — before the loaded/re-add branch below — so the post-scan
+			// deletion diff sees every file this scan reported, whether newly loaded or already known.
+			currentScanFiles.add(entryEvent.absolutePath);
 		}
 
 		if (entryEvent.eventType !== 'add' || loadedResourceFiles.has(entryEvent.absolutePath)) {
@@ -116,6 +144,26 @@ export async function handleApplication(scope: Scope) {
 		} catch (error) {
 			// Rethrow with more context
 			throw new ResourceLoadError(entryEvent.absolutePath, error);
+		}
+	});
+
+	// Optional chaining: a mock/test scope may not implement EventEmitter, and Scope#handleEntry
+	// itself can return undefined (e.g. MissingDefaultFilesOptionError). In real use `scope` is
+	// always an EventEmitter and `entryHandler` is always the EntryHandler backing this watcher.
+	scope.on?.('deploy:start', () => {
+		awaitingPostRedeployScan = true;
+		currentScanFiles = new Set();
+	});
+
+	entryHandler?.on?.('ready', () => {
+		if (!awaitingPostRedeployScan) return;
+		awaitingPostRedeployScan = false;
+		for (const loadedFile of loadedResourceFiles) {
+			if (!currentScanFiles.has(loadedFile)) {
+				// Known file that the just-completed scan never reported — deleted during the redeploy.
+				loadedResourceFiles.delete(loadedFile);
+				scope.requestRestart();
+			}
 		}
 	});
 }

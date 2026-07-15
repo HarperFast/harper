@@ -5,6 +5,7 @@ const { writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, rmSync } = require('node:fs');
+const { EventEmitter } = require('node:events');
 const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { defineTable, types } = require('#src/resources/defineTable');
@@ -206,6 +207,126 @@ describe('jsResource', () => {
 
 		assert.equal(mockScope.requestRestart.callCount, 0, 'distinct new files should not request a restart');
 		assert.equal(importSpy.callCount, 2, 'each distinct new file should be imported');
+	});
+
+	it('requests a restart when a loaded file is missing from a redeploy re-scan (deletion)', async () => {
+		// A redeploy's fresh chokidar scan only reports files that still exist on disk — a file
+		// deleted during the redeploy produces no event at all (no re-`add`, no `unlink`), so the
+		// re-`add` handling above never sees it. jsResource must diff the loaded-files set against
+		// what the scan actually reported once its `ready` fires, and flag a restart for anything
+		// missing (harper#1817 follow-up: deletion gap).
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const resourceFile = join(testDir, 'resources.js');
+		writeFileSync(resourceFile, 'export default { get() {} };');
+
+		let capturedHandler;
+		// A real EventEmitter stands in for the EntryHandler scope.handleEntry() returns in
+		// production — jsResource listens for its 'ready' event to know when a scan pass completed.
+		const entryHandlerStub = new EventEmitter();
+		const importSpy = spy(async () => ({ default: { get() {} } }));
+		// The scope itself is an EventEmitter in production (deploy:start/deploy:end); mirror that
+		// so jsResource can arm the post-redeploy diff window the same way it does against a real Scope.
+		const mockScope = Object.assign(new EventEmitter(), {
+			handleEntry: spy((handler) => {
+				capturedHandler = handler;
+				return entryHandlerStub;
+			}),
+			resources: new Map(),
+			logger: { warn: spy(), debug: spy(), error: spy() },
+			requestRestart: spy(),
+			import: importSpy,
+		});
+
+		await handleApplication(mockScope);
+
+		// Initial scan: the file loads, then the entry handler's scan completes.
+		await capturedHandler({
+			entryType: 'file',
+			eventType: 'add',
+			absolutePath: resourceFile,
+			urlPath: '/resources.js',
+		});
+		entryHandlerStub.emit('ready');
+		assert.equal(mockScope.requestRestart.callCount, 0, 'initial scan should not request a restart');
+
+		// Redeploy: Scope pauses the watcher (deploy:start) then resumes it; resourceFile was deleted,
+		// so the fresh scan's re-`add` pass reports nothing for it at all — no event fires. Only the
+		// scan-complete diff, armed by deploy:start, can catch this.
+		mockScope.emit('deploy:start', 'test-app');
+		entryHandlerStub.emit('ready');
+		assert.equal(
+			mockScope.requestRestart.callCount,
+			1,
+			'a file missing from the redeploy re-scan should request a restart'
+		);
+	});
+
+	it('does not treat other loaded files as deleted when `ready` refires after an ordinary runtime add', async () => {
+		// EntryHandler's `ready` isn't scoped to full rescans: it also refires after every ordinary
+		// add/change once that file's read settles, because its initial-scan-complete latch never
+		// resets outside a full rescan (see EntryHandler#checkIfAllComplete). A naive deletion diff
+		// keyed off every `ready` would see only the just-added file in view and treat every other
+		// already-loaded file as deleted, breaking hot-load-without-restart for multi-file components.
+		// The diff must only run inside a genuine redeploy window (deploy:start -> next ready).
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const fileA = join(testDir, 'a.js');
+		const fileB = join(testDir, 'b.js');
+		writeFileSync(fileA, 'export default { get() {} };');
+		writeFileSync(fileB, 'export default { get() {} };');
+
+		let capturedHandler;
+		const entryHandlerStub = new EventEmitter();
+		const importSpy = spy(async () => ({ default: { get() {} } }));
+		const mockScope = Object.assign(new EventEmitter(), {
+			handleEntry: spy((handler) => {
+				capturedHandler = handler;
+				return entryHandlerStub;
+			}),
+			resources: new Map(),
+			logger: { warn: spy(), debug: spy(), error: spy() },
+			requestRestart: spy(),
+			import: importSpy,
+		});
+
+		await handleApplication(mockScope);
+
+		// Initial scan loads fileA only, then settles.
+		await capturedHandler({ entryType: 'file', eventType: 'add', absolutePath: fileA, urlPath: '/a.js' });
+		entryHandlerStub.emit('ready');
+		assert.equal(mockScope.requestRestart.callCount, 0, 'initial scan should not request a restart');
+
+		// Genuinely new file dropped in at runtime (no redeploy in progress): loads without a restart,
+		// then EntryHandler's `ready` refires (its steady-state behavior, not a rescan boundary).
+		await capturedHandler({ entryType: 'file', eventType: 'add', absolutePath: fileB, urlPath: '/b.js' });
+		entryHandlerStub.emit('ready');
+
+		assert.equal(
+			mockScope.requestRestart.callCount,
+			0,
+			'a ready refire outside a redeploy window must not treat fileA as deleted'
+		);
+
+		// Confirm neither file's loaded-tracking was corrupted by the earlier spurious `ready`: a
+		// later genuine redeploy re-scan (both files still present, as a real fresh scan would report)
+		// still recognizes them as known — restart requested, neither re-imported — rather than
+		// mistakenly re-importing a file the bug had wrongly forgotten.
+		const restartCountBeforeRedeploy = mockScope.requestRestart.callCount;
+		mockScope.emit('deploy:start', 'test-app');
+		await capturedHandler({ entryType: 'file', eventType: 'add', absolutePath: fileA, urlPath: '/a.js' });
+		await capturedHandler({ entryType: 'file', eventType: 'add', absolutePath: fileB, urlPath: '/b.js' });
+		entryHandlerStub.emit('ready');
+
+		assert.ok(
+			mockScope.requestRestart.callCount > restartCountBeforeRedeploy,
+			'a real redeploy re-scan of known files should still request a restart'
+		);
+		assert.equal(
+			importSpy.callCount,
+			2,
+			'neither fileA nor fileB should be re-imported (both still tracked as loaded)'
+		);
 	});
 
 	it('exposes an exported defineTable handle as an endpoint', async () => {
