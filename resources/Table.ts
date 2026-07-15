@@ -159,6 +159,43 @@ export function freezeRecord(value: any): void {
 	if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer))
 		Object.freeze(value);
 }
+// Returns a read-only VIEW of `record` for evaluation (e.g. a record-scoped allowRead guard)
+// without mutating the original. Locally-loaded records are already frozen by loadLocalRecord, so
+// this is a no-op there; the source-revalidation path hands back the SAME object its deferred
+// commit still writes to (createdAt/updatedAt) and persists, so that object can't be frozen
+// directly. A write-blocking Proxy is used instead of a shallow copy: a copy would eagerly invoke
+// every getter (breaking a caching table's lazy structPrototype decode) and silently drop
+// non-enumerable properties like Array.length. Only ordinary objects/arrays are wrapped — Date,
+// Map, Set, RegExp, etc. carry internal slots that throw "incompatible receiver" when their
+// methods run against anything but the exact original instance (a Proxy included), so those are
+// returned unwrapped rather than risk breaking an override that calls a method on one; a cached
+// record CAN legitimately be one of these (getFromSource only requires `typeof === 'object'`).
+export function frozenRecordView(record: any): any {
+	if (record === null || typeof record !== 'object' || ArrayBuffer.isView(record) || record instanceof ArrayBuffer)
+		return record;
+	if (Object.isFrozen(record)) return record;
+	const tag = Object.prototype.toString.call(record);
+	if (tag !== '[object Object]' && tag !== '[object Array]') return record;
+	return new Proxy(record, {
+		get(target, prop) {
+			// receiver = target (not this proxy) so a lazy-decode getter runs with `this` bound to
+			// the real record, matching its behavior when read directly.
+			return Reflect.get(target, prop, target);
+		},
+		set() {
+			return false;
+		},
+		defineProperty() {
+			return false;
+		},
+		deleteProperty() {
+			return false;
+		},
+		setPrototypeOf() {
+			return false;
+		},
+	});
+}
 export const INVALIDATED = 1;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
@@ -170,6 +207,12 @@ const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records du
 // buffer the entire backward chain per record, synchronously, on every worker — pinning the JS heap
 // until the worker OOMs (issue #1114). Beyond this depth we fall back to a bounded reconciliation.
 const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
+// Cap on audit records inspected while backfilling a subscription's `previousCount` history,
+// independent of `count` (the number of AUTHORIZED events collected). `count` only decrements on
+// records that pass the row-level allowRead filter, so an all-deny override would otherwise force
+// a full walk of the retained audit log (#1786) — this bounds that walk regardless of how many
+// records the filter accepts.
+const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -2907,7 +2950,11 @@ export function makeTable(options) {
 						// A sync-declared override that returns a thenable can't be awaited mid-traversal:
 						// deny the record (fail closed, #1422 gap 1 semantics) rather than fail open on
 						// promise truthiness or abort the whole query. Declared-async overrides never get
-						// here — they keep the awaited entry check.
+						// here — they keep the awaited entry check. We're not observing this rejection, so
+						// attach a no-op handler — otherwise a rejected thenable reaches the global
+						// unhandledRejection logger once per denied candidate. Use `.then(undefined, ...)`,
+						// not `.catch` — a thenable is only guaranteed to have `.then`.
+						allowed.then(undefined, () => {});
 						if (!warnedAsync) {
 							warnedAsync = true;
 							logger.warn?.(
@@ -3247,8 +3294,10 @@ export function makeTable(options) {
 				if (record == null) return canSkip ? SKIP : record;
 				// Record-level RBAC (#1241): enforced here because `record` is now the final, materialized
 				// record — a caching table's source revalidation (above) may have replaced the local copy the
-				// query filters evaluated. Fail closed on the record actually being returned.
-				if (recordGuard && !recordGuard(record)) return canSkip ? SKIP : undefined;
+				// query filters evaluated. Fail closed on the record actually being returned. The guard sees a
+				// frozen view (frozenRecordView) so an allowRead override that writes through `this` can't
+				// mutate a record the source-revalidation path's deferred commit still needs to write and encode.
+				if (recordGuard && !recordGuard(frozenRecordView(record))) return canSkip ? SKIP : undefined;
 				if (select && !(select[0] === '*' && select.length === 1)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
@@ -3453,6 +3502,10 @@ export function makeTable(options) {
 							return false; // fail closed: a throwing override drops the event
 						}
 						if (decision != null && typeof decision.then === 'function') {
+							// Not observing this rejection — attach a no-op handler so it doesn't reach the
+							// global unhandledRejection logger once per dropped event. Use `.then(undefined,
+							// ...)`, not `.catch` — a thenable is only guaranteed to have `.then`.
+							decision.then(undefined, () => {});
 							if (!warnedAsyncEvent) {
 								warnedAsyncEvent = true;
 								logger.warn?.(
@@ -3584,16 +3637,32 @@ export function makeTable(options) {
 						}
 					} else if (count) {
 						const history = [];
+						let inspected = 0;
 						// we are collecting the history in reverse order to get the right count, then reversing to send
 						for (const auditRecord of auditStore.getRange({ start: 'z', end: false, reverse: true })) {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
 								await rest();
+								// Subscription.end() nulls `subscriptions` on close; stop backfilling a dead
+								// subscriber rather than continuing to walk the retained audit log.
+								if (!subscription.subscriptions) break;
 							}
 							try {
 								if (auditRecord.tableId !== tableId) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
+									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
+									// AUTHORIZED) — an all-deny allowRead override must not force a full walk of
+									// the retained audit log (#1786), even though it returns fewer than `count`
+									// authorized events. Counted only once a record is known to be in scope (right
+									// table, right id) so unrelated cross-table/cross-scope audit traffic in a busy
+									// shared log can't spuriously cut a backfill short.
+									if (++inspected > MAX_PREVIOUS_COUNT_SCAN) {
+										logger.warn?.(
+											`previousCount backfill on ${tableName} stopped after inspecting ${MAX_PREVIOUS_COUNT_SCAN} in-scope audit records without collecting ${request.previousCount} authorized event(s); returning ${history.length} instead`
+										);
+										break;
+									}
 									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
 									const historyEntry = {
 										id,

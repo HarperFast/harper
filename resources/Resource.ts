@@ -310,14 +310,13 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			// Table.search sees the flag and enforces row-level allowRead — otherwise a QUERY on a table
 			// with an overridden allowRead returns the full unfiltered set (the deferral skips the entry
 			// check on the promise that search consumes checkPermission, which it never sees).
-			if (
-				resource.constructor.loadAsInstance !== false &&
-				data &&
-				typeof data === 'object' &&
-				(query as any)?.checkPermission != null &&
-				(data as any).checkPermission == null
-			) {
-				(data as any).checkPermission = (query as any).checkPermission;
+			// checkPermission is framework-owned: `data` is the client-controlled QUERY body, so it must
+			// always be overwritten here (not just filled when nullish) — otherwise a client could send
+			// `checkPermission: false` in the body to disable Table.search's row-level allowRead guard.
+			if (resource.constructor.loadAsInstance !== false && data && typeof data === 'object') {
+				const checkPermission = (query as any)?.checkPermission;
+				if (checkPermission == null) delete (data as any).checkPermission;
+				else (data as any).checkPermission = checkPermission;
 			}
 			return resource.search
 				? resource.constructor.loadAsInstance === false
