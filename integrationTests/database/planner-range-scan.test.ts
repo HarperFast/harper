@@ -218,30 +218,38 @@ suite(`QA-558 planner over-scan generalization [engine=${ENGINE}]`, { skip: skip
 					`  ops:  combined=${growth(combinedOps).toFixed(2)}x  combined-rev=${growth(combinedOpsReversed).toFixed(2)}x  PK-only=${growth(pkOnlyOps).toFixed(2)}x  kind-only=${growth(kindOnlyOps).toFixed(2)}x`
 			);
 
-			// Hard trend assertion runs on the `ops` (search_by_conditions) path only. Empirically
-			// (verified across repeated local runs, median-of-7 samples per point) the `ops` PK-only
-			// control is genuinely flat across tiers, so combined-vs-kind-only growth is a clean
-			// discriminator there. The SQL path carries a reproducible baseline cost that scales
-			// with total table size REGARDLESS of selectivity — even the SQL PK-only control (a
-			// fixed 100-row window) grows ~3x when the table grows 3x — so an SQL-side growth-ratio
-			// comparison cannot reliably distinguish "planner used the narrow PK range" from
-			// "planner scanned everything" (both are swamped by that shared baseline); SQL timings
-			// stay logged above for visibility but are not asserted on to avoid a chronically-noisy,
-			// non-discriminating gate. A regressed planner that scans the whole kind='common' set
-			// instead of the PK window would still return the correct ~90 rows — only the ops
-			// scaling trend below actually catches that.
-			const GROWTH_TOLERANCE = 0.8;
-			const trendMsg = (label: string, arr: typeof combined, control: typeof combined) =>
-				`${label} growth=${growth(arr).toFixed(2)}x should track the flat ops PK-only control (${growth(pkOnlyOps).toFixed(2)}x), ` +
-				`not the linear ops kind-only control (${growth(control).toFixed(2)}x) — a regressed planner scanning the whole ` +
-				`kind='common' set instead of the PK window would still return correct rows but fail this trend check`;
+			// Hard trend assertion runs on the `ops` (search_by_conditions) path only. The SQL
+			// path carries a reproducible baseline cost that scales with total table size
+			// REGARDLESS of selectivity — even the SQL PK-only control (a fixed 100-row window)
+			// grows ~3x when the table grows 3x — so it can't reliably distinguish "planner used
+			// the narrow PK range" from "planner scanned everything"; SQL timings stay logged
+			// above for visibility but are not asserted on.
+			//
+			// This compares combined-vs-kind-only cost AT THE SAME TIER (not a first-tier/last-tier
+			// growth ratio): CI observed the cross-tier ratio fail on an otherwise-healthy run because
+			// it divides by a single first-tier sample that can itself be noisy — the anchor point
+			// dominates the whole ratio when the underlying value is only a few ms. The same-tier
+			// fraction avoids that, since kind-only ops is never that small. A regressed planner that
+			// scans the whole kind='common' set instead of the PK window would still return the
+			// correct ~90 rows, but combined ops would approach kind-only ops cost (fraction → ~100%)
+			// at every tier — this still catches that, while tolerating the isolated single-tier
+			// noise spikes (observed up to ~14%) seen in CI.
+			const FRACTION_TOLERANCE = 0.4;
+			const fractionsOf = (arr: typeof combined, control: typeof combined) =>
+				arr.map((e, i) => e.ms / Math.max(1, control[i].ms));
+			const fractionMsg = (label: string, fractions: number[]) =>
+				`${label} per-tier combined/kind-only ops ratio=[${fractions.map((f) => `${(f * 100).toFixed(1)}%`).join(', ')}] ` +
+				`should stay below ${(FRACTION_TOLERANCE * 100).toFixed(0)}% at every tier — a regressed planner scanning the ` +
+				`whole kind='common' set instead of the PK window would still return correct rows but push this toward ~100%`;
+			const authorFractions = fractionsOf(combinedOps, kindOnlyOps);
+			const reversedFractions = fractionsOf(combinedOpsReversed, kindOnlyOps);
 			ok(
-				growth(combinedOps) < growth(kindOnlyOps) * GROWTH_TOLERANCE,
-				trendMsg('combined (author order) ops', combinedOps, kindOnlyOps)
+				Math.max(...authorFractions) < FRACTION_TOLERANCE,
+				fractionMsg('combined (author order) ops', authorFractions)
 			);
 			ok(
-				growth(combinedOpsReversed) < growth(kindOnlyOps) * GROWTH_TOLERANCE,
-				trendMsg('combined (reversed order) ops', combinedOpsReversed, kindOnlyOps)
+				Math.max(...reversedFractions) < FRACTION_TOLERANCE,
+				fractionMsg('combined (reversed order) ops', reversedFractions)
 			);
 		}
 	});
