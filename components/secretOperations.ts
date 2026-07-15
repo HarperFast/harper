@@ -389,7 +389,7 @@ export function deriveRegistrySecretName(component: string, registry: string): s
 export function deriveGitSecretName(component: string, host: string): string {
 	const hostKey = normalizeGitHost(host).replace(/[^\w.-]+/g, '_');
 	const componentKey = String(component).replace(/[^\w.-]+/g, '_');
-	return `deploy.${componentKey}.${hostKey}`;
+	return `deploy.${componentKey}.git.${hostKey}`;
 }
 
 /**
