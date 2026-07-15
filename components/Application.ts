@@ -580,6 +580,9 @@ export async function extractApplication(application: Application) {
 			throw err;
 		}
 	}
+	// A directory existed for this component name prior to this deploy, so this is a redeploy of
+	// an already-active component rather than a first-time deploy. See `isNewComponent` above.
+	if (didRenameAside) application.isNewComponent = false;
 	// Finally, create the application directory fresh
 	await mkdir(application.dirPath, { recursive: true });
 
@@ -846,6 +849,14 @@ export class Application {
 	npmUserconfigPath?: string;
 	#npmrcTempDir?: string;
 	#gitCredentialSession?: GitCredentialSession;
+	// Whether this component's directory did not already exist when extractApplication ran —
+	// i.e. this deploy is the component's first, as opposed to a redeploy of something already
+	// active. Defaults true and is flipped to false by extractApplication when it finds (and
+	// renames aside) a pre-existing directory for this component name. Used by deployComponent to
+	// scope its unconditional requestRestart() call to genuinely new components (harper#1806):
+	// an existing, already-loaded component already has a live file watcher (Scope/EntryHandler)
+	// that independently requests a restart if the redeploy actually needs one.
+	isNewComponent: boolean = true;
 
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;

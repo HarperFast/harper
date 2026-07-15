@@ -70,6 +70,38 @@ suite('Inactive component 404', (ctx: ContextWithHarper) => {
 		);
 	});
 
+	test('redeploying an already-active component with restart:false does not itself request a restart', async () => {
+		// Narrows deployComponent's restart-request to genuinely new components (harper#1806):
+		// an existing, already-loaded component's own file watcher independently requests a
+		// restart if a redeploy actually needs one, so deployComponent itself should stay quiet.
+		//
+		// fixture-active-app is a real, already-loaded component (from `before()`, loaded like any
+		// normal boot -- not a deployed-but-never-restarted one), so it represents the "existing"
+		// case. Its config.yaml sets only `rest: true`; server/REST.ts's handleApplication never
+		// calls scope.handleEntry(), so this component has no file-watcher of its own. That means
+		// nothing besides deployComponent's own requestRestart() call could flip restartRequired
+		// here, so this is a clean, non-racy test of the narrowed gate in isolation.
+		strictEqual(await restartRequired(), false);
+
+		const payload = await targz(join(import.meta.dirname, 'fixture-active-app'));
+		const deployResponse = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				operation: 'deploy_component',
+				project: 'fixture-active-app',
+				payload,
+				restart: false,
+			}),
+		});
+		strictEqual(deployResponse.status, 200);
+		strictEqual(
+			await restartRequired(),
+			false,
+			'redeploying an already-active component should not itself mark a restart as required'
+		);
+	});
+
 	test('a fresh deploy_component with restart:false sets get_status restartRequired to true', async () => {
 		const payload = await targz(join(import.meta.dirname, 'fixture-inactive-component'));
 		const deployResponse = await fetch(ctx.harper.operationsAPIURL, {
