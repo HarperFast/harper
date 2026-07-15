@@ -63,7 +63,14 @@ async function buildPayload(version: number): Promise<string> {
 }
 
 async function readVersion(ctx: ContextWithHarper): Promise<number | undefined> {
-	const response = await fetch(`${ctx.harper.httpURL}/Version`, { headers: { Authorization: authHeader(ctx) } });
+	let response: Response;
+	try {
+		response = await fetch(`${ctx.harper.httpURL}/Version`, { headers: { Authorization: authHeader(ctx) } });
+	} catch {
+		// restart:true returns before the new process is listening, so the poller can hit a bare
+		// connection failure (ECONNREFUSED) rather than an HTTP response; treat it like a non-200.
+		return undefined;
+	}
 	if (response.status !== 200) {
 		await response.body?.cancel();
 		return undefined;
