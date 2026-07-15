@@ -465,17 +465,9 @@ export class DatabaseTransaction implements Transaction {
 								// at MAX_RETRIES; sourceApply transactions keep retrying with periodic warn.
 								if (this.retries > MAX_RETRIES) {
 									if (!this.sourceApply) {
-										// giving up: release the transaction so the throw does not leak its native handle
-										// (mirrors the rejection-path give-up below; without it the handle — and any
-										// unpublished transaction-log position — lingers until GC)
-										try {
-											transaction.abort();
-										} catch (abortError) {
-											harperLogger.debug?.(
-												'aborting conflicted transaction after exhausting coordinated retries',
-												abortError
-											);
-										}
+										// giving up: poison and abort the whole linked chain so no link leaks its native
+										// handle / read snapshot — or any unpublished transaction-log position — until GC.
+										this.abortChainAfterRetries(transaction);
 										throw new ServerError(
 											`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 										);
@@ -580,12 +572,9 @@ export class DatabaseTransaction implements Transaction {
 									const neverDropOnConflict = this.sourceApply;
 									if (this.retries > MAX_RETRIES) {
 										if (!neverDropOnConflict) {
-											// giving up: release the transaction so the throw does not leak its native handle
-											try {
-												transaction.abort();
-											} catch (abortError) {
-												harperLogger.debug?.('aborting conflicted transaction after exhausting retries', abortError);
-											}
+											// giving up: poison and abort the whole linked chain so no link leaks its native
+											// handle / read snapshot until GC.
+											this.abortChainAfterRetries(transaction);
 											throw new ServerError(
 												`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 											);
@@ -646,6 +635,35 @@ export class DatabaseTransaction implements Transaction {
 		// reset the transaction
 		this.writes = [];
 		if (this.#context?.resourceCache) this.#context.resourceCache = null;
+	}
+	/**
+	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
+	 * first, then abort each link's native transaction and release its DatabaseTransaction-level
+	 * resources. Two passes (mirroring abortDueToTimeout) so a throw while aborting one link can't leave
+	 * later links (this.next) holding native handles / read snapshots until GC. `headTransaction` is the
+	 * head link's native transaction, which commit() detached to a local before this point
+	 * (this.transaction is already null), so it is aborted directly; every other link still owns its
+	 * native transaction on `txn.transaction`.
+	 */
+	abortChainAfterRetries(headTransaction: RocksTransaction): void {
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			txn.open = TRANSACTION_STATE.CLOSED;
+		}
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			const nativeTxn = txn === this ? headTransaction : txn.transaction;
+			// Clear the native handle and read-snapshot bookkeeping so the abort() below only performs
+			// non-native cleanup (blobs, writes) and can't double-abort (RocksTransaction.abort() throws
+			// on an already-aborted handle) or spin abort()'s doneReadTxn loop on a nulled handle.
+			txn.transaction = null;
+			txn.readTxnsUsed = 0;
+			trackedTxns.delete(txn);
+			try {
+				nativeTxn?.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('aborting conflicted transaction in chain after exhausting retries', abortError);
+			}
+			txn.abort();
+		}
 	}
 	/**
 	 * True if this transaction — or any database in its multi-store `next` chain — has writes accumulated
