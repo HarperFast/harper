@@ -9,6 +9,7 @@ import { httpRequest } from '../utility/common_utils.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
+import { Readable } from 'node:stream';
 import { streamPackagedDirectory, packageDirectory, scanPackageDirectory } from '../components/packageComponent.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
@@ -87,6 +88,21 @@ async function targetSupportsStreamingDeploy(options: any): Promise<boolean> {
 		return versionSupportsStreamingDeploy(version);
 	} catch {
 		return true;
+	}
+}
+
+// Wraps the local packaging stream so an fs error while tar'ing up the payload (e.g. a file
+// vanishing after the pre-deploy scan, or a permissions failure reading the project tree)
+// surfaces as a descriptive packaging error instead of a raw fs error code. Without this, an
+// ENOENT from *packaging* is indistinguishable from an ENOENT/ECONNREFUSED connecting to the
+// local domain socket, and the catch block below (which classifies purely on err.code) would
+// misreport it as "Harper is not running" even though Harper is running fine. Mirrors the
+// legacy deploy path's wrapping of packageDirectory() below.
+async function* wrapPackagingStream(stream: Readable, projectPath: string): AsyncGenerator<Buffer> {
+	try {
+		for await (const chunk of stream) yield chunk as Buffer;
+	} catch (err: any) {
+		throw new Error(`Failed to package component directory '${projectPath}': ${err.message}`, { cause: err });
 	}
 }
 
@@ -331,7 +347,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				name: 'payload',
 				filename: 'package.tar.gz',
 				contentType: 'application/gzip',
-				stream: packageStream,
+				stream: Readable.from(wrapPackagingStream(packageStream, req._projectPath)),
 			});
 			options.headers['Content-Type'] = multipart.contentType;
 			// Use chunked transfer-encoding: we don't know the total size up front because the

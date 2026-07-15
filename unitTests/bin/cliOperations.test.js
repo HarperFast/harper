@@ -369,4 +369,103 @@ describe('cliOperations', () => {
 			assert.ok(consoleErrors.some((line) => line.startsWith('error:')));
 		});
 	});
+
+	describe('local packaging errors are not misclassified as "Harper is not running" (PR #1808)', () => {
+		const NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or `harperdb start`) to start it.';
+
+		let originalGetHdbPid;
+		let originalInitConfig;
+		let originalGetConfigPath;
+		let originalScan;
+		let originalStreamPackagedDirectory;
+		let originalExit;
+		let originalConsoleError;
+		let consoleErrors;
+		let exitCode;
+
+		beforeEach(() => {
+			originalGetHdbPid = processManagementModule.getHdbPid;
+			originalInitConfig = configUtilsModule.initConfig;
+			originalGetConfigPath = configUtilsModule.getConfigPath;
+			originalScan = packageComponentModule.scanPackageDirectory;
+			originalStreamPackagedDirectory = packageComponentModule.streamPackagedDirectory;
+			originalExit = process.exit;
+			originalConsoleError = console.error;
+
+			// Same "Harper is running" pre-check setup as above, so the failure below comes
+			// from packaging the local deploy payload, not from the pid/socket pre-checks.
+			const socketPath = path.join(testDir, 'operations-server.sock');
+			fs.ensureFileSync(socketPath);
+			configUtilsModule.initConfig = () => {};
+			processManagementModule.getHdbPid = () => 12345;
+			configUtilsModule.getConfigPath = () => socketPath;
+
+			packageComponentModule.scanPackageDirectory = async () => ({ totalSize: 0, danglingSymlinks: [] });
+
+			consoleErrors = [];
+			console.error = (...args) => consoleErrors.push(args.join(' '));
+			exitCode = undefined;
+			process.exit = (code) => {
+				exitCode = code;
+				throw new ProcessExitSignal(code);
+			};
+		});
+
+		afterEach(() => {
+			processManagementModule.getHdbPid = originalGetHdbPid;
+			configUtilsModule.initConfig = originalInitConfig;
+			configUtilsModule.getConfigPath = originalGetConfigPath;
+			packageComponentModule.scanPackageDirectory = originalScan;
+			packageComponentModule.streamPackagedDirectory = originalStreamPackagedDirectory;
+			process.exit = originalExit;
+			console.error = originalConsoleError;
+		});
+
+		it('shows a descriptive packaging error (not the friendly "not running" message) for a local deploy ENOENT from a missing file in the payload', async () => {
+			// Simulates a file vanishing (or being unreadable) while tar'ing up the component
+			// directory for a local `deploy_component` — an fs-level ENOENT that has nothing to
+			// do with the connection to the local Harper instance.
+			packageComponentModule.streamPackagedDirectory = () => {
+				const err = new Error("ENOENT: no such file or directory, open '/project/missing-file.txt'");
+				err.code = 'ENOENT';
+				// Destroying from within _read (rather than an unconditional process.nextTick)
+				// guarantees the stream already has a consumer attached — the same ordering a
+				// real tar-fs/fs error arrives under, once something has started reading.
+				return new Readable({
+					read() {
+						this.destroy(err);
+					},
+				});
+			};
+
+			// Mirrors the real httpRequest's contract for a streamed (multipart) body: the body
+			// stream's 'error' event rejects the call — exactly the channel that must not leak a
+			// raw ENOENT the catch block would otherwise mistake for a connection failure.
+			commonUtilsModule.httpRequest = async (_options, data) => {
+				if (data && typeof data.pipe === 'function') {
+					return new Promise((resolve, reject) => {
+						data.on('error', reject);
+						data.on('data', () => {});
+						data.on('end', () => resolve({ statusCode: 200, body: '{}' }));
+					});
+				}
+				return { statusCode: 200, body: '{}' };
+			};
+
+			await assert.rejects(
+				() => cliOperationsModule.cliOperations({ operation: 'deploy_component', project: 'widget' }, true),
+				ProcessExitSignal
+			);
+
+			assert.strictEqual(exitCode, 1);
+			assert.ok(
+				!consoleErrors.includes(NOT_RUNNING_MESSAGE),
+				`expected the packaging error not to be shown as "Harper is not running", got: ${JSON.stringify(consoleErrors)}`
+			);
+			assert.ok(
+				consoleErrors.some((line) => line.includes('Failed to package component directory')),
+				`expected a descriptive packaging error, got: ${JSON.stringify(consoleErrors)}`
+			);
+		});
+	});
 });
