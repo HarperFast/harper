@@ -140,6 +140,29 @@ async function searchByConditions(client: Client, conditions: any[]): Promise<{ 
 const pkCond = { search_attribute: 'id', search_type: 'between', search_value: [WIN_LO, WIN_HI] };
 const kindCond = { search_attribute: 'kind', search_type: 'equals', search_value: 'common' };
 
+const TIMING_REPS = 7;
+
+/**
+ * Single-shot query timing is dominated by scheduler/compaction jitter at these row counts
+ * (observed swings >2x between otherwise-identical runs). Repeat and take the median to get a
+ * timing signal stable enough for the growth-trend assertions in after(); correctness is still
+ * checked against the first call's rows.
+ */
+async function timedMedian<T extends { rows: any[]; ms: number }>(
+	fn: () => Promise<T>,
+	reps = TIMING_REPS
+): Promise<T> {
+	const timings: number[] = [];
+	let first: T | undefined;
+	for (let i = 0; i < reps; i++) {
+		const r = await fn();
+		if (i === 0) first = r;
+		timings.push(r.ms);
+	}
+	timings.sort((a, b) => a - b);
+	return { ...(first as T), ms: timings[Math.floor(timings.length / 2)] };
+}
+
 suite(`QA-558 planner over-scan generalization [engine=${ENGINE}]`, { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let client: Client;
 	const timingLog: Array<{ tier: number; label: string; ms: number }> = [];
@@ -168,17 +191,57 @@ suite(`QA-558 planner over-scan generalization [engine=${ENGINE}]`, { skip: skip
 
 		// ── Verdict ──────────────────────────────────────────────────────────────
 		const combined = timingLog.filter((e) => e.label === 'combined (author order) SQL');
+		const combinedReversed = timingLog.filter((e) => e.label === 'combined (reversed order) SQL');
 		const pkOnly = timingLog.filter((e) => e.label === 'PK-only control SQL');
 		const kindOnly = timingLog.filter((e) => e.label === 'kind-only control SQL');
 		const pkOnlyOps = timingLog.filter((e) => e.label === 'PK-only control ops');
 		const kindOnlyOps = timingLog.filter((e) => e.label === 'kind-only control ops');
 		const combinedOps = timingLog.filter((e) => e.label === 'combined (author order) ops');
+		const combinedOpsReversed = timingLog.filter((e) => e.label === 'combined (reversed order) ops');
 		const growth = (arr: typeof combined) => arr[arr.length - 1].ms / Math.max(1, arr[0].ms);
-		if (combined.length === TIERS.length && pkOnly.length === TIERS.length && kindOnly.length === TIERS.length) {
+
+		const complete = [
+			combined,
+			combinedReversed,
+			combinedOps,
+			combinedOpsReversed,
+			pkOnly,
+			kindOnly,
+			pkOnlyOps,
+			kindOnlyOps,
+		].every((arr) => arr.length === TIERS.length);
+		ok(complete, 'timingLog missing entries for one or more tiers/labels; cannot verify scaling trend');
+		if (complete) {
 			console.log(
 				`\n[QA-558 VERDICT INPUTS] table growth=${(TIERS[TIERS.length - 1] / TIERS[0]).toFixed(2)}x\n` +
-					`  SQL:  combined=${growth(combined).toFixed(2)}x  PK-only=${growth(pkOnly).toFixed(2)}x  kind-only=${growth(kindOnly).toFixed(2)}x\n` +
-					`  ops:  combined=${growth(combinedOps).toFixed(2)}x  PK-only=${growth(pkOnlyOps).toFixed(2)}x  kind-only=${growth(kindOnlyOps).toFixed(2)}x`
+					`  SQL:  combined=${growth(combined).toFixed(2)}x  combined-rev=${growth(combinedReversed).toFixed(2)}x  PK-only=${growth(pkOnly).toFixed(2)}x  kind-only=${growth(kindOnly).toFixed(2)}x\n` +
+					`  ops:  combined=${growth(combinedOps).toFixed(2)}x  combined-rev=${growth(combinedOpsReversed).toFixed(2)}x  PK-only=${growth(pkOnlyOps).toFixed(2)}x  kind-only=${growth(kindOnlyOps).toFixed(2)}x`
+			);
+
+			// Hard trend assertion runs on the `ops` (search_by_conditions) path only. Empirically
+			// (verified across repeated local runs, median-of-7 samples per point) the `ops` PK-only
+			// control is genuinely flat across tiers, so combined-vs-kind-only growth is a clean
+			// discriminator there. The SQL path carries a reproducible baseline cost that scales
+			// with total table size REGARDLESS of selectivity — even the SQL PK-only control (a
+			// fixed 100-row window) grows ~3x when the table grows 3x — so an SQL-side growth-ratio
+			// comparison cannot reliably distinguish "planner used the narrow PK range" from
+			// "planner scanned everything" (both are swamped by that shared baseline); SQL timings
+			// stay logged above for visibility but are not asserted on to avoid a chronically-noisy,
+			// non-discriminating gate. A regressed planner that scans the whole kind='common' set
+			// instead of the PK window would still return the correct ~90 rows — only the ops
+			// scaling trend below actually catches that.
+			const GROWTH_TOLERANCE = 0.8;
+			const trendMsg = (label: string, arr: typeof combined, control: typeof combined) =>
+				`${label} growth=${growth(arr).toFixed(2)}x should track the flat ops PK-only control (${growth(pkOnlyOps).toFixed(2)}x), ` +
+				`not the linear ops kind-only control (${growth(control).toFixed(2)}x) — a regressed planner scanning the whole ` +
+				`kind='common' set instead of the PK window would still return correct rows but fail this trend check`;
+			ok(
+				growth(combinedOps) < growth(kindOnlyOps) * GROWTH_TOLERANCE,
+				trendMsg('combined (author order) ops', combinedOps, kindOnlyOps)
+			);
+			ok(
+				growth(combinedOpsReversed) < growth(kindOnlyOps) * GROWTH_TOLERANCE,
+				trendMsg('combined (reversed order) ops', combinedOpsReversed, kindOnlyOps)
 			);
 		}
 	});
@@ -198,14 +261,20 @@ suite(`QA-558 planner over-scan generalization [engine=${ENGINE}]`, { skip: skip
 				.timeout(60_000);
 			const count = Number((r.body as any)?.[0]?.c) || 0;
 			strictEqual(count, N, `expected ${N} total rows after seeding, got ${count}`);
+
+			// Warm-up (untimed): the bulk insert above can leave transient write-contention /
+			// compaction cost that would otherwise bleed into the FIRST timed query below and
+			// bias the growth trend measured in after(). Pay that cost here instead.
+			await sql(client, `id BETWEEN ${WIN_LO} AND ${WIN_HI}`);
+			await sql(client, `kind = 'common'`, 'id');
 		});
 
 		test(`N=${N}: PK-only control (id BETWEEN ${WIN_LO} AND ${WIN_HI}) — SQL + ops`, async () => {
-			const { rows, ms } = await sql(client, `id BETWEEN ${WIN_LO} AND ${WIN_HI}`);
+			const { rows, ms } = await timedMedian(() => sql(client, `id BETWEEN ${WIN_LO} AND ${WIN_HI}`));
 			timingLog.push({ tier: N, label: 'PK-only control SQL', ms });
 			strictEqual(rows.length, WIN_HI - WIN_LO + 1, `PK-only window must return exactly ${WIN_HI - WIN_LO + 1} rows`);
 
-			const opsR = await searchByConditions(client, [pkCond]);
+			const opsR = await timedMedian(() => searchByConditions(client, [pkCond]));
 			timingLog.push({ tier: N, label: 'PK-only control ops', ms: opsR.ms });
 			strictEqual(
 				opsR.rows.length,
@@ -219,12 +288,12 @@ suite(`QA-558 planner over-scan generalization [engine=${ENGINE}]`, { skip: skip
 		});
 
 		test(`N=${N}: kind-only control (kind = 'common') — SQL + ops`, async () => {
-			const { rows, ms } = await sql(client, `kind = 'common'`, 'id');
+			const { rows, ms } = await timedMedian(() => sql(client, `kind = 'common'`, 'id'));
 			timingLog.push({ tier: N, label: 'kind-only control SQL', ms });
 			const expectedCount = Array.from({ length: N }, (_, i) => i).filter((i) => kindFor(i) === 'common').length;
 			strictEqual(rows.length, expectedCount, `kind='common' must return ${expectedCount} rows at N=${N}`);
 
-			const opsR = await searchByConditions(client, [kindCond]);
+			const opsR = await timedMedian(() => searchByConditions(client, [kindCond]));
 			timingLog.push({ tier: N, label: 'kind-only control ops', ms: opsR.ms });
 			strictEqual(opsR.rows.length, expectedCount, `ops kind='common' must return ${expectedCount} rows at N=${N}`);
 
@@ -235,7 +304,7 @@ suite(`QA-558 planner over-scan generalization [engine=${ENGINE}]`, { skip: skip
 
 		test(`N=${N}: combined query, author order (PK between AND kind equals) — SQL + ops, both orders`, async () => {
 			// SQL, author order
-			const authorSql = await sql(client, `id BETWEEN ${WIN_LO} AND ${WIN_HI} AND kind = 'common'`);
+			const authorSql = await timedMedian(() => sql(client, `id BETWEEN ${WIN_LO} AND ${WIN_HI} AND kind = 'common'`));
 			timingLog.push({ tier: N, label: 'combined (author order) SQL', ms: authorSql.ms });
 			strictEqual(
 				new Set(authorSql.rows.map((r: any) => r.id)).size,
@@ -245,7 +314,9 @@ suite(`QA-558 planner over-scan generalization [engine=${ENGINE}]`, { skip: skip
 
 			// SQL, reversed order (per #1796 signature: condition REORDERING, so author order
 			// in the query text may not matter — the planner reorders internally regardless).
-			const reversedSql = await sql(client, `kind = 'common' AND id BETWEEN ${WIN_LO} AND ${WIN_HI}`);
+			const reversedSql = await timedMedian(() =>
+				sql(client, `kind = 'common' AND id BETWEEN ${WIN_LO} AND ${WIN_HI}`)
+			);
 			timingLog.push({ tier: N, label: 'combined (reversed order) SQL', ms: reversedSql.ms });
 			strictEqual(
 				new Set(reversedSql.rows.map((r: any) => r.id)).size,
@@ -254,7 +325,7 @@ suite(`QA-558 planner over-scan generalization [engine=${ENGINE}]`, { skip: skip
 			);
 
 			// ops search_by_conditions, author order [pk, kind]
-			const authorOps = await searchByConditions(client, [pkCond, kindCond]);
+			const authorOps = await timedMedian(() => searchByConditions(client, [pkCond, kindCond]));
 			timingLog.push({ tier: N, label: 'combined (author order) ops', ms: authorOps.ms });
 			strictEqual(
 				new Set(authorOps.rows.map((r: any) => r.id)).size,
@@ -263,7 +334,7 @@ suite(`QA-558 planner over-scan generalization [engine=${ENGINE}]`, { skip: skip
 			);
 
 			// ops search_by_conditions, reversed order [kind, pk]
-			const reversedOps = await searchByConditions(client, [kindCond, pkCond]);
+			const reversedOps = await timedMedian(() => searchByConditions(client, [kindCond, pkCond]));
 			timingLog.push({ tier: N, label: 'combined (reversed order) ops', ms: reversedOps.ms });
 			strictEqual(
 				new Set(reversedOps.rows.map((r: any) => r.id)).size,
