@@ -79,6 +79,14 @@ function evalCondition(row, c) {
 			return v >= c.value;
 		case 'between':
 			return v >= c.value[0] && v <= c.value[1];
+		case 'gele':
+			return v >= c.value[0] && v <= c.value[1];
+		case 'gelt':
+			return v >= c.value[0] && v < c.value[1];
+		case 'gtlt':
+			return v > c.value[0] && v < c.value[1];
+		case 'gtle':
+			return v > c.value[0] && v <= c.value[1];
 		case 'starts_with':
 			return typeof v === 'string' && v.startsWith(c.value);
 		case 'ends_with':
@@ -150,12 +158,37 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		assert.deepStrictEqual(mockTable._lastTarget.select.sort(), ['id', 'name']);
 	});
 
-	it('AND in WHERE pushes conjuncts as separate conditions', async () => {
+	it('fuses a two-sided PK range (>= AND <=) into a single gele range-seek (#1822)', async () => {
+		const data = await runSql('SELECT name FROM dev.user WHERE id >= 1 AND id <= 3');
+		const names = data.map((r) => r.name).sort();
+		assert.deepStrictEqual(names, ['alice', 'bob', 'carol']);
+		// `>= AND <=` on the PK fuses to a single gele range-seek rather than a
+		// leading `ge` full-scan filtered by `le` in memory.
+		assert.deepStrictEqual(mockTable._lastTarget.conditions, [{ attribute: 'id', comparator: 'gele', value: [1, 3] }]);
+	});
+
+	it('fuses an exclusive two-sided PK range (>= AND <) into a gelt range-seek (#1822)', async () => {
+		const data = await runSql('SELECT name FROM dev.user WHERE id >= 2 AND id < 4');
+		const names = data.map((r) => r.name).sort();
+		assert.deepStrictEqual(names, ['bob', 'carol']);
+		assert.deepStrictEqual(mockTable._lastTarget.conditions, [{ attribute: 'id', comparator: 'gelt', value: [2, 4] }]);
+	});
+
+	// Fusion is PK-only: a non-PK attribute may be untyped (no coercion), where a
+	// fused single seek could mis-order a type-mismatched literal and drop rows.
+	// The two-condition path tolerates that via its in-memory filter (#1822).
+	it('leaves a two-sided range on a NON-PK attribute unfused', async () => {
 		const data = await runSql('SELECT name FROM dev.user WHERE age >= 30 AND age <= 35');
 		const names = data.map((r) => r.name).sort();
 		assert.deepStrictEqual(names, ['alice', 'dave']);
 		const conds = mockTable._lastTarget.conditions.map((c) => c.comparator).sort();
 		assert.deepStrictEqual(conds, ['ge', 'le']);
+	});
+
+	it('leaves conjuncts on different attributes unfused', async () => {
+		await runSql('SELECT name FROM dev.user WHERE id >= 0 AND age < 40');
+		const conds = mockTable._lastTarget.conditions.map((c) => c.comparator).sort();
+		assert.deepStrictEqual(conds, ['ge', 'lt']);
 	});
 
 	it('IN list becomes an OR group of equals conditions', async () => {

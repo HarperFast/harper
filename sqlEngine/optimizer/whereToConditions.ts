@@ -47,7 +47,13 @@ const BINARY_TO_COMPARATOR: Record<string, string> = {
 	'>=': 'ge',
 };
 
-export type IndexedAttribute = { name: string; indexed: boolean };
+export type IndexedAttribute = { name: string; indexed: boolean; isPrimaryKey?: boolean };
+
+// Single-sided range comparators, split by which bound they set, and the fused
+// comparator name that combines a lower + upper bound (matching the set
+// core/resources/search.ts issues a single bounded getRange for).
+const LOWER_COMPARATORS: Record<string, 'ge' | 'gt'> = { ge: 'ge', gt: 'gt' };
+const UPPER_COMPARATORS: Record<string, 'le' | 'lt'> = { le: 'le', lt: 'lt' };
 
 export function whereToConditions(predicate: ExprNode | undefined, attributes?: IndexedAttribute[]): ConvertResult {
 	if (!predicate) {
@@ -69,7 +75,7 @@ export function whereToConditions(predicate: ExprNode | undefined, attributes?: 
 		if (cond && (attributes === undefined || conditionIsPushable(cond, attributes))) conditions.push(cond);
 		else residuals.push(e);
 	}
-	const result: ConvertResult = { conditions, operator: 'and' };
+	const result: ConvertResult = { conditions: fuseRangeBounds(conditions, attributes), operator: 'and' };
 	if (residuals.length > 0) {
 		result.residual = residuals.length === 1 ? residuals[0] : { kind: 'logical', op: 'and', args: residuals };
 	}
@@ -134,6 +140,71 @@ function flattenAnd(expr: ExprNode): ExprNode[] {
 		return out;
 	}
 	return [expr];
+}
+
+/** True for a single-sided range leaf (`col >= a`, `col < b`, …) on the given attribute. */
+function isRangeLeafOn(cond: ConditionNode, attribute: string): cond is DirectCondition & { comparator: string } {
+	if ('conditions' in cond) return false;
+	const comparator = cond.comparator;
+	return (
+		cond.attribute === attribute &&
+		comparator != null &&
+		(LOWER_COMPARATORS[comparator] != null || UPPER_COMPARATORS[comparator] != null)
+	);
+}
+
+/**
+ * Fuse a two-sided PRIMARY-KEY range written as separate conjuncts
+ * (`id >= a AND id < b`) into a single bounded comparator (gele/gelt/gtlt/gtle)
+ * so the storage layer issues one range-seek instead of an unbounded scan from
+ * one bound filtered by the other (#1822). Without this, a leading `ge` streams
+ * from `a` to the end of the table and filters `< b` in memory — O(table), not
+ * O(window). (A SQL `BETWEEN` already maps directly to a single `between`
+ * condition upstream, so it never needed fusing.)
+ *
+ * Deliberately limited to the primary key. The PK is always typed, so
+ * Table.search's prepareConditions coerces the fused bounds to the key type and
+ * the single seek's start/end always match stored-key ordering. A non-PK indexed
+ * attribute may be UNTYPED (e.g. system `hdb_job.start_datetime`): coercion is
+ * skipped, so a string literal against numeric storage would make the fused seek
+ * return nothing. The two-condition path tolerates that mismatch via its
+ * in-memory filter (JS type-juggling), so we leave non-PK ranges unfused.
+ *
+ * Only the unambiguous case is fused: exactly one lower bound (ge/gt) and one
+ * upper bound (le/lt) on the PK within this AND group. Extra bounds (rare, e.g.
+ * `id > 1 AND id > 5`) are left untouched — still correct, just not fused.
+ */
+function fuseRangeBounds(conditions: ConditionNode[], attributes?: IndexedAttribute[]): ConditionNode[] {
+	const pk = attributes?.find((a) => a.isPrimaryKey)?.name;
+	if (pk == null) return conditions;
+
+	let lower: (DirectCondition & { comparator: string }) | undefined;
+	let upper: (DirectCondition & { comparator: string }) | undefined;
+	let lowerCount = 0;
+	let upperCount = 0;
+	for (const cond of conditions) {
+		if (!isRangeLeafOn(cond, pk)) continue;
+		if (LOWER_COMPARATORS[cond.comparator]) {
+			lower = cond;
+			lowerCount++;
+		} else {
+			upper = cond;
+			upperCount++;
+		}
+	}
+	if (lowerCount !== 1 || upperCount !== 1) return conditions;
+
+	const fusedComparator = LOWER_COMPARATORS[lower!.comparator] + UPPER_COMPARATORS[upper!.comparator];
+	const fused: ConditionNode[] = [];
+	for (const cond of conditions) {
+		if (cond === upper) continue; // merged into the lower bound's slot
+		if (cond === lower) {
+			fused.push({ attribute: pk, comparator: fusedComparator, value: [lower.value, upper!.value] });
+			continue;
+		}
+		fused.push(cond);
+	}
+	return fused;
 }
 
 function leafToCondition(expr: ExprNode): ConditionNode | undefined {
