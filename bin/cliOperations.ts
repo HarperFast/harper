@@ -438,7 +438,10 @@ async function cliOperations(req: any, skipResponseLog = false) {
 
 		return responseData;
 	} catch (err) {
-		const isConnectionFailure = err.code === 'ENOENT' || err.code === 'ECONNREFUSED';
+		let isConnectionFailure = false;
+		try {
+			isConnectionFailure = err != null && (err.code === 'ENOENT' || err.code === 'ECONNREFUSED');
+		} catch {}
 		if (isConnectionFailure && !target) {
 			console.error(LOCAL_NOT_RUNNING_MESSAGE);
 		} else if (isConnectionFailure) {
