@@ -12,6 +12,7 @@
 
 const assert = require('node:assert');
 const fs = require('node:fs/promises');
+const { existsSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
@@ -216,5 +217,68 @@ describe('semver-range committish resolution on a credentialed git-reference dep
 		} finally {
 			await application.cleanupGitCredentialSession();
 		}
+	});
+});
+
+describe('semver-committish resolution excludes tags unsafe to pass to a shell (#1797 review)', function () {
+	this.timeout(60_000);
+
+	let root;
+	let marker;
+	let packageIdentifier;
+
+	before(async function () {
+		if (process.platform === 'win32' || !GIT_AVAILABLE) return this.skip();
+		await fs.mkdir(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), { recursive: true });
+		root = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-git-semver-injection-'));
+		marker = path.join(root, 'pwned-marker');
+
+		const work = path.join(root, 'work');
+		const bare = path.join(root, 'semver-injection.git');
+		await fs.mkdir(work, { recursive: true });
+		const git = (...args) => execFileSync('git', args, { cwd: work, stdio: 'pipe' });
+		git('init', '--quiet', '--initial-branch=main');
+		git('config', 'user.email', 'test@harperdb.io');
+		git('config', 'user.name', 'Harper Test');
+		git('config', 'commit.gpgsign', 'false');
+		await fs.writeFile(
+			path.join(work, 'package.json'),
+			JSON.stringify({ name: 'semver-injection', version: '1.0.0' }, null, 2)
+		);
+		git('add', '.');
+		git('commit', '--quiet', '-m', 'v1.0.0');
+		git('tag', '-a', 'v1.0.0', '-m', 'v1.0.0');
+		// A legal git tag name (git rejects a literal space in a ref name, so `${IFS}` stands in for
+		// one — the classic space-free shell payload; confirmed this still expands to a real space
+		// when a shell evaluates it) whose trailing suffix is a version-shaped string satisfying
+		// `^9.0.0` — the only tag that would. `nonInteractiveSpawn` checks out its resolved committish
+		// through a shell with no argument escaping, so if this tag name reached that spawn unfiltered,
+		// `$(...)` would run as a command substitution before git ever saw the checkout target.
+		git('tag', '-a', `$(touch\${IFS}${marker})v9.9.9`, '-m', 'malicious');
+
+		execFileSync('git', ['clone', '--quiet', '--bare', work, bare], { stdio: 'pipe' });
+		packageIdentifier = `git+file://${bare}`;
+	});
+
+	after(async () => {
+		if (root) await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('does not execute a shell metacharacter embedded in a resolved tag name, and fails resolution instead', async () => {
+		const application = new Application({
+			name: 'git-semver-injection',
+			packageIdentifier: `${packageIdentifier}#semver:^9.0.0`,
+			credentials: [{ host: 'example.com', token: 'unused-for-file-clone' }],
+		});
+		await application.startGitCredentialSession();
+		try {
+			// Only the malicious tag's embedded 9.9.9 satisfies ^9.0.0; excluding it from resolution
+			// means nothing satisfies the range, so this must fail closed rather than check it out.
+			await assert.rejects(() => extractApplication(application), /no tag satisfies range '\^9\.0\.0'/);
+		} finally {
+			await application.cleanupGitCredentialSession();
+		}
+
+		assert.ok(!existsSync(marker), 'the shell command substitution in the tag name must not have run');
 	});
 });

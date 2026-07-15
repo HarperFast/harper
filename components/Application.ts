@@ -245,6 +245,16 @@ const SEMVER_COMMITTISH_PREFIX = /^semver:/i;
 // `release-v1.2.3` resolves the same way npm's own git-dependency installer treats it.
 const TAG_VERSION_SUFFIX = /v?(\d+\.\d+\.\d+(?:[-+].+)?)$/;
 
+// A conservative safe-charset check on the FULL tag name — not just the version-shaped suffix
+// TAG_VERSION_SUFFIX matches. git's own ref-name rules (`check-ref-format`) permit shell
+// metacharacters like `$`, backticks, `;`, `&`, `|`, `(`, `)` in a tag name; a prefix ahead of the
+// matched suffix (e.g. the `release-` in `release-v1.2.3`) is otherwise unconstrained. The resolved
+// name is later checked out via `nonInteractiveSpawn`, which runs through a shell with no argument
+// escaping, so a tag such as `$(id)v1.2.3` in the cloned repo would otherwise execute on checkout.
+// A tag failing this check is excluded from resolution entirely rather than sanitized or escaped —
+// this only has to reject shell metacharacters, not accept every ref git itself would allow.
+const SAFE_TAG_NAME = /^[\w][\w.-]*$/;
+
 /**
  * Resolves a `semver:<range>` committish (e.g. `semver:v1.2.3`, `semver:^1.2.3`) against the tags of
  * the given clone to a concrete, unambiguous tag ref. Returns the committish unchanged if it isn't a
@@ -278,6 +288,7 @@ async function resolveCommittish(application: Application, committish: string, c
 	// what gets checked out.
 	const versionToTag = new Map<string, string>();
 	for (const tag of tags) {
+		if (!SAFE_TAG_NAME.test(tag)) continue;
 		const match = tag.match(TAG_VERSION_SUFFIX);
 		const version = match && semver.valid(match[1], { loose: true });
 		if (version) versionToTag.set(semver.clean(match[1], { loose: true }) as string, tag);
