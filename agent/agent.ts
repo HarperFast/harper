@@ -283,7 +283,7 @@ function composeSystemPrompt(staticPrompt: string, append?: string): string {
  *     throw. Silently escalating a misconfigured/transient restricted account to
  *     super_user is the vulnerability we refuse to introduce.
  */
-async function resolveAgentIdentity(server: StartOpts['server'], username: string): Promise<AuthedUser> {
+export async function resolveAgentIdentity(server: StartOpts['server'], username: string): Promise<AuthedUser> {
 	let resolved: AuthedUser | undefined;
 	if (typeof server.getUser === 'function') {
 		try {
