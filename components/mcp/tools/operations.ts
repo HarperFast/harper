@@ -276,7 +276,7 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
  * matches the MCP spec's `tools/call` convention so the LLM sees and can
  * adapt to the failure.
  */
-function makeOperationToolHandler(operationName: string) {
+export function makeOperationToolHandler(operationName: string) {
 	return async function operationToolHandler(args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
 		const body: Record<string, unknown> = {
 			...(args && typeof args === 'object' ? (args as Record<string, unknown>) : {}),
