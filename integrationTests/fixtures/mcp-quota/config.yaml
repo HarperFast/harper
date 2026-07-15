@@ -1,6 +1,7 @@
 # Fixture for MCP per-client-identity rate limiting + the durable quota hook
-# (#1610). The McpQuota class carries a cost-bearing custom tool and the
-# config-named quota policy backed by the QuotaCounter table.
+# (#1610/#1809). Answerer exposes a cost-bearing custom tool; the quota policy is
+# registered as a function via server.setMcpQuotaHandler and backed by the
+# internal (non-exported) QuotaCounter table.
 graphqlSchema:
   files: '*.graphql'
 jsResource:

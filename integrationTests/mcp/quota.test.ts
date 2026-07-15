@@ -1,9 +1,10 @@
 /**
- * #1610 — per-client-identity rate limiting + the durable quota hook.
+ * #1610/#1809 — per-client-identity rate limiting + the durable quota handler.
  *
  * The instance configures identityHeader: x-test-client (so the test controls
- * identity per call), a per-client bucket of burst 6 with negligible refill,
- * and quota.resource: McpQuota (persisted per-identity counter, limit 3).
+ * identity per call) and a per-client bucket of burst 6 with negligible refill.
+ * The fixture registers the durable quota policy via server.setMcpQuotaHandler
+ * (limit 3), backed by an internal per-identity counter table.
  * Every tools/call opens a FRESH session — the session-cycling abuse loop the
  * issue describes — so anything that throttles here is client-scoped, not
  * session-scoped. Expected ladder for one identity:
@@ -13,7 +14,7 @@
  *   npm run test:integration -- "integrationTests/mcp/quota.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { ok, strictEqual, notStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -90,7 +91,6 @@ suite('MCP per-client rate limit + durable quota (#1610)', (ctx: ContextWithHarp
 							perClientPerSecond: 0.001,
 							perClientBurst: 6,
 						},
-						quota: { resource: 'McpQuota' },
 					},
 				},
 			},
@@ -133,15 +133,16 @@ suite('MCP per-client rate limit + durable quota (#1610)', (ctx: ContextWithHarp
 		strictEqual(payload.retryAfterSeconds, 3600);
 	});
 
-	test('a different client identity is unaffected and the counter persists per identity', async () => {
+	test('a different client identity is unaffected; the internal counter is not client-reachable', async () => {
+		// A fresh identity starts with a clean quota (per-identity isolation; persistence
+		// per identity is covered by the ok,ok,ok→quota_exceeded sequence above).
 		const body = await callAnswerFreshSession('client-c');
 		strictEqual(body.result?.isError ?? false, false, `fresh identity admitted: ${JSON.stringify(body)}`);
-		// The durable counter is a real table row, visible over REST.
+		// The counter table is internal (not @export), so — unlike the old exported-Resource
+		// approach — no client can read or reset it over REST. The route should not resolve.
 		const res = await fetch(new URL('/QuotaCounter/client-c', ctx.harper.httpURL), {
 			headers: { authorization: auth },
 		});
-		strictEqual(res.status, 200);
-		const record = await res.json();
-		strictEqual(record.used, 1);
+		notStrictEqual(res.status, 200, `internal counter must not be REST-exposed (got ${res.status})`);
 	});
 });

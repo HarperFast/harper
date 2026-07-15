@@ -7,6 +7,7 @@ import readAuditLog from '../../dataLayer/readAuditLog.ts';
 import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
 import customFunctionOperations from '../../components/operations.js';
+import { setMcpQuotaHandler, type McpQuotaHandler } from '../../components/mcp/quota.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
@@ -175,6 +176,12 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
 	// so the main thread can forward calls to this worker (#1736).
 	if (!isMainThread) announceRegisteredOperation(name);
+};
+
+// Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
+// like the tool dispatch that consults it, so no cross-thread announcement is needed.
+server.setMcpQuotaHandler = (handler: McpQuotaHandler) => {
+	setMcpQuotaHandler(handler);
 };
 
 export function chooseOperation(json: OperationRequestBody) {

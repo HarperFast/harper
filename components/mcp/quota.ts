@@ -3,43 +3,40 @@
  *
  * The in-memory buckets in `rateLimit.ts` bound instantaneous rates but are
  * per-worker and reset on restart — insufficient as a COST control for a
- * public unauthenticated tool (an LLM-backed `answer`, say). This hook lets
- * the operator implement a durable policy (e.g. a persisted per-IP daily
- * counter table) behind config:
+ * public unauthenticated tool (an LLM-backed `answer`, say). A component
+ * registers a durable policy (e.g. a persisted per-IP daily counter) as a
+ * function, so the policy is never itself an exposed Resource:
  *
- *   mcp:
- *     application:
- *       quota:
- *         resource: McpQuota        # exported Resource path
- *         method: allowMcpCall      # static method on it (this is the default)
+ *   // in a component's resources.js, at module top level
+ *   server.setMcpQuotaHandler(async ({ identity, tool, user, profile, sessionId }) => {
+ *     if (profile !== 'application') return true;   // gate per-profile in code
+ *     const used = await bumpCounter(identity);
+ *     return used > DAILY_LIMIT ? { allowed: false, message: 'daily quota reached' } : true;
+ *   });
  *
- * Before each admitted tools/call, Harper calls
- * `QuotaClass.allowMcpCall({ identity, tool, user, profile, sessionId })`.
- * Return `true` (or any truthy non-object) to allow; return
+ * Before each admitted tools/call Harper calls the registered handler. Return
+ * `true` (or any truthy non-object) to allow; return
  * `{ allowed: false, message?, retryAfterSeconds? }` to deny — the denial
  * surfaces to the client as `isError` with `kind: 'quota_exceeded'`.
- * Counting is the hook's business: increment on check, or on success via
+ * Counting is the handler's business: increment on check, or on success via
  * your own bookkeeping — Harper calls once per attempted tool call.
  *
- * FAIL-CLOSED: a hook that throws (or a configured resource/method that
- * doesn't resolve) DENIES the call. Cost protection that silently disables
- * itself on a bug is worse than a hard failure (#1422 set this precedent
- * for allow* hooks). The raw error goes to the server log only.
+ * FAIL-CLOSED: a handler that throws DENIES the call. Cost protection that
+ * silently disables itself on a bug is worse than a hard failure (#1422 set
+ * this precedent for allow* hooks). The raw error goes to the server log only.
  *
- * RACE-SAFETY: the hook can run concurrently for the SAME identity — within
- * a worker (interleaving across the hook's own await boundaries) and across
- * workers (separate processes sharing the database). A naive read-then-write
- * counter (`get` → `put used+1`) can undercount under that concurrency and
- * admit calls past the configured limit. Production implementations should
- * make the read-modify-write atomic: run it in a transaction that serializes
- * conflicting writers, use a compare-and-set retry loop, or maintain the
- * counter in a store with native atomic increments.
+ * RACE-SAFETY: the handler can run concurrently for the SAME identity — within
+ * a worker (interleaving across its own await boundaries) and across workers
+ * (separate processes sharing the database). A naive read-then-write counter
+ * (`get` → `put used+1`) can undercount under that concurrency and admit calls
+ * past the limit. Production handlers should make the read-modify-write atomic:
+ * run it in a transaction that serializes conflicting writers, use a
+ * compare-and-set retry loop, or maintain the counter in a store with native
+ * atomic increments.
  *
- * Dispatch uses the LIVE registry class, same as custom tools — an exported
- * subclass replacing the entry on reload wins.
+ * The latest registration wins, so a reloaded component replaces the previous
+ * handler.
  */
-import * as env from '../../utility/environment/environmentManager.ts';
-import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import type { McpProfile } from './transport.ts';
 import type { AuthedUser } from './toolRegistry.ts';
@@ -62,67 +59,34 @@ export interface QuotaDenial {
 
 export type QuotaDecision = { allowed: true } | QuotaDenial;
 
-const CONFIG_KEYS: Record<McpProfile, { resource: string; method: string }> = {
-	operations: {
-		resource: CONFIG_PARAMS.MCP_OPERATIONS_QUOTA_RESOURCE,
-		method: CONFIG_PARAMS.MCP_OPERATIONS_QUOTA_METHOD,
-	},
-	application: {
-		resource: CONFIG_PARAMS.MCP_APPLICATION_QUOTA_RESOURCE,
-		method: CONFIG_PARAMS.MCP_APPLICATION_QUOTA_METHOD,
-	},
-};
+/**
+ * The durable quota policy: return `true` (or any truthy non-object) to allow,
+ * or `{ allowed: false, message?, retryAfterSeconds? }` to deny. Receives the
+ * per-call {@link QuotaCheckInfo}, including `profile`, so a single handler can
+ * gate the operations and application profiles differently.
+ */
+export type McpQuotaHandler = (info: QuotaCheckInfo) => QuotaDecision | boolean | Promise<QuotaDecision | boolean>;
 
-const DEFAULT_METHOD = 'allowMcpCall';
+// Single, process-wide handler. Registered by a component via
+// `server.setMcpQuotaHandler(fn)`; the latest registration wins (so a reloaded
+// component replaces the previous one), and `undefined` clears it.
+let quotaHandler: McpQuotaHandler | undefined;
 
-type ResourcesLike = Map<string, { Resource: unknown }> | undefined;
-
-// Test seam — mirrors resources.ts: the real registry initializes the whole
-// Harper graph at import, which unit tests can't do.
-let _resourcesOverride: ResourcesLike;
-export function _setQuotaResourcesForTest(r: ResourcesLike): void {
-	_resourcesOverride = r;
-}
-
-function getResources(): ResourcesLike {
-	if (_resourcesOverride) return _resourcesOverride;
-	const { resources } = require('../../resources/Resources');
-	return resources as ResourcesLike;
-}
-
-/** Warn-once-per-profile state for a misconfigured hook (missing resource/method). */
-const warnedMisconfigured = new Set<McpProfile>();
-export function _resetQuotaWarningsForTest(): void {
-	warnedMisconfigured.clear();
+export function setMcpQuotaHandler(handler: McpQuotaHandler | undefined): void {
+	quotaHandler = handler;
 }
 
 /**
- * Run the configured durable quota hook, if any. Returns `{allowed: true}`
- * when no hook is configured (the feature is opt-in). Misconfiguration and
- * hook errors DENY (fail-closed) with a sanitized message.
+ * Run the registered durable quota handler, if any. Returns `{allowed: true}`
+ * when no handler is registered (the feature is opt-in). A handler that throws
+ * DENIES (fail-closed) with a sanitized message.
  */
 export async function checkDurableQuota(info: QuotaCheckInfo): Promise<QuotaDecision> {
-	const keys = CONFIG_KEYS[info.profile];
-	const resourcePath = env.get(keys.resource);
-	if (typeof resourcePath !== 'string' || !resourcePath) {
+	if (!quotaHandler) {
 		return { allowed: true };
 	}
-	const methodName =
-		typeof env.get(keys.method) === 'string' && env.get(keys.method) ? env.get(keys.method) : DEFAULT_METHOD;
-	const entry = getResources()?.get(resourcePath);
-	const QuotaClass = entry?.Resource as Record<string, unknown> | undefined;
-	const method = QuotaClass?.[methodName as string];
-	if (typeof method !== 'function') {
-		if (!warnedMisconfigured.has(info.profile)) {
-			warnedMisconfigured.add(info.profile);
-			harperLogger.warn(
-				`MCP ${info.profile} quota hook misconfigured: no exported resource '${resourcePath}' with static method '${methodName}'; DENYING tool calls (fail-closed)`
-			);
-		}
-		return { allowed: false, message: 'quota policy unavailable' };
-	}
 	try {
-		const result = await (method as (i: QuotaCheckInfo) => unknown).call(QuotaClass, info);
+		const result = await quotaHandler(info);
 		if (result && typeof result === 'object') {
 			const decision = result as { allowed?: unknown; message?: unknown; retryAfterSeconds?: unknown };
 			if (decision.allowed === false) {
@@ -136,10 +100,7 @@ export async function checkDurableQuota(info: QuotaCheckInfo): Promise<QuotaDeci
 		}
 		return result ? { allowed: true } : { allowed: false };
 	} catch (error) {
-		harperLogger.error(
-			`MCP ${info.profile} quota hook '${resourcePath}.${methodName}' threw; denying (fail-closed)`,
-			error
-		);
+		harperLogger.error(`MCP ${info.profile} quota handler threw; denying (fail-closed)`, error);
 		return { allowed: false, message: 'quota check failed' };
 	}
 }

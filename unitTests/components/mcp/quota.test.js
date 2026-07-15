@@ -1,10 +1,5 @@
 const assert = require('node:assert');
-const {
-	checkDurableQuota,
-	_setQuotaResourcesForTest,
-	_resetQuotaWarningsForTest,
-} = require('#src/components/mcp/quota');
-const env = require('#src/utility/environment/environmentManager');
+const { checkDurableQuota, setMcpQuotaHandler } = require('#src/components/mcp/quota');
 
 const INFO = {
 	identity: '203.0.113.7',
@@ -14,106 +9,61 @@ const INFO = {
 	sessionId: 's1',
 };
 
-describe('mcp/quota (#1610)', () => {
-	let envOverrides;
-	const originalEnvGet = env.get;
-
-	beforeEach(() => {
-		envOverrides = {};
-		_resetQuotaWarningsForTest();
-		env.get = (key) => (key in envOverrides ? envOverrides[key] : originalEnvGet.call(env, key));
-	});
-
+describe('mcp/quota (#1610, #1809 registration handler)', () => {
 	afterEach(() => {
-		_setQuotaResourcesForTest(undefined);
-		env.get = originalEnvGet;
+		setMcpQuotaHandler(undefined);
 	});
 
-	it('allows when no quota resource is configured (opt-in feature)', async () => {
+	it('allows when no handler is registered (opt-in feature)', async () => {
 		assert.deepEqual(await checkDurableQuota(INFO), { allowed: true });
 	});
 
-	it('fails closed when the configured resource or method does not resolve', async () => {
-		envOverrides.mcp_application_quota_resource = 'McpQuota';
-		_setQuotaResourcesForTest(new Map());
-		const decision = await checkDurableQuota(INFO);
-		assert.equal(decision.allowed, false);
-		assert.equal(decision.message, 'quota policy unavailable');
-	});
-
-	it('calls the default-named static with the check info and honors boolean results', async () => {
-		envOverrides.mcp_application_quota_resource = 'McpQuota';
+	it('calls the registered handler with the check info and honors boolean results', async () => {
 		const calls = [];
-		class McpQuota {
-			static allowMcpCall(info) {
-				calls.push(info);
-				return info.identity !== 'blocked';
-			}
-		}
-		_setQuotaResourcesForTest(new Map([['McpQuota', { Resource: McpQuota }]]));
+		setMcpQuotaHandler((info) => {
+			calls.push(info);
+			return info.identity !== 'blocked';
+		});
 		assert.deepEqual(await checkDurableQuota(INFO), { allowed: true });
 		assert.equal(calls.length, 1);
 		assert.equal(calls[0].tool, 'answer');
 		assert.equal(calls[0].identity, '203.0.113.7');
+		assert.equal(calls[0].profile, 'application');
 		const denied = await checkDurableQuota({ ...INFO, identity: 'blocked' });
 		assert.equal(denied.allowed, false);
 	});
 
-	it('honors a configured method name and structured denials', async () => {
-		envOverrides.mcp_application_quota_resource = 'McpQuota';
-		envOverrides.mcp_application_quota_method = 'checkDaily';
-		class McpQuota {
-			static checkDaily() {
-				return { allowed: false, message: 'daily quota reached', retryAfterSeconds: 3600 };
-			}
-		}
-		_setQuotaResourcesForTest(new Map([['McpQuota', { Resource: McpQuota }]]));
+	it('honors structured denials', async () => {
+		setMcpQuotaHandler(() => ({ allowed: false, message: 'daily quota reached', retryAfterSeconds: 3600 }));
 		const decision = await checkDurableQuota(INFO);
 		assert.deepEqual(decision, { allowed: false, message: 'daily quota reached', retryAfterSeconds: 3600 });
 	});
 
-	it('treats a non-denial object result as allowed and awaits async hooks', async () => {
-		envOverrides.mcp_application_quota_resource = 'McpQuota';
-		class McpQuota {
-			static async allowMcpCall() {
-				return { remaining: 12 };
-			}
-		}
-		_setQuotaResourcesForTest(new Map([['McpQuota', { Resource: McpQuota }]]));
+	it('treats a non-denial object result as allowed and awaits async handlers', async () => {
+		setMcpQuotaHandler(async () => ({ remaining: 12 }));
 		assert.deepEqual(await checkDurableQuota(INFO), { allowed: true });
 	});
 
-	it('fails closed with a sanitized message when the hook throws', async () => {
-		envOverrides.mcp_application_quota_resource = 'McpQuota';
-		class McpQuota {
-			static allowMcpCall() {
-				throw new Error('table exploded: secret connection string');
-			}
-		}
-		_setQuotaResourcesForTest(new Map([['McpQuota', { Resource: McpQuota }]]));
+	it('fails closed with a sanitized message when the handler throws', async () => {
+		setMcpQuotaHandler(() => {
+			throw new Error('table exploded: secret connection string');
+		});
 		const decision = await checkDurableQuota(INFO);
 		assert.equal(decision.allowed, false);
 		assert.equal(decision.message, 'quota check failed');
 		assert.ok(!JSON.stringify(decision).includes('secret'), 'raw error does not leak');
 	});
 
-	it('dispatches on the live registry class (exported subclass wins)', async () => {
-		envOverrides.mcp_application_quota_resource = 'McpQuota';
-		class Base {
-			static allowMcpCall() {
-				return true;
-			}
-		}
-		const registry = new Map([['McpQuota', { Resource: Base }]]);
-		_setQuotaResourcesForTest(registry);
+	it('lets the handler gate per profile via info.profile', async () => {
+		setMcpQuotaHandler((info) => (info.profile === 'application' ? { allowed: false, message: 'app only' } : true));
+		assert.equal((await checkDurableQuota(INFO)).allowed, false);
+		assert.deepEqual(await checkDurableQuota({ ...INFO, profile: 'operations' }), { allowed: true });
+	});
+
+	it('latest registration wins (a reloaded component replaces the handler)', async () => {
+		setMcpQuotaHandler(() => true);
 		assert.deepEqual(await checkDurableQuota(INFO), { allowed: true });
-		class Sub {
-			static allowMcpCall() {
-				return { allowed: false, message: 'reloaded policy' };
-			}
-		}
-		registry.get('McpQuota').Resource = Sub;
-		const decision = await checkDurableQuota(INFO);
-		assert.deepEqual(decision, { allowed: false, message: 'reloaded policy' });
+		setMcpQuotaHandler(() => ({ allowed: false, message: 'reloaded policy' }));
+		assert.deepEqual(await checkDurableQuota(INFO), { allowed: false, message: 'reloaded policy' });
 	});
 });
