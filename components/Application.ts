@@ -188,23 +188,47 @@ export function isSSHAuthFailure(stderr: string): boolean {
 const GIT_URL_PREFIX = /^git\+(ssh|https?|file):\/\//i;
 const GIT_PROTOCOL_PREFIX = /^git:\/\//i;
 
+// Hosted-git shorthand prefixes: the same table derivePackageIdentifier implicitly relies on when it
+// defaults a bare `owner/repo` to `github:owner/repo`, plus the other hosts npm's own shorthand spec
+// recognizes. A bare `owner/repo` never reaches parseGitReference directly — the Application
+// constructor always runs packageIdentifier through derivePackageIdentifier first, which turns it
+// into `github:owner/repo` — so only the prefixed forms need handling here.
+const HOSTED_GIT_HOSTS: Record<string, string> = {
+	github: 'github.com',
+	gitlab: 'gitlab.com',
+	bitbucket: 'bitbucket.org',
+	gist: 'gist.github.com',
+};
+const HOSTED_GIT_PREFIX = /^(github|gitlab|bitbucket|gist):(.+)$/i;
+
 interface GitReference {
 	cloneUrl: string;
 	committish?: string;
 }
 
 /**
- * Parses a `git+ssh://…`/`git+https://…`/`git+http://…`/`git+file://…`/`git://…` package identifier
- * into a plain clone URL and optional committish, without depending on npm's own git-spec parser
- * (npm-package-arg/hosted-git-info aren't dependencies of this repo). Returns null for any other
- * form.
+ * Parses a `git+ssh://…`/`git+https://…`/`git+http://…`/`git+file://…`/`git://…`, or hosted-git
+ * shorthand (`github:owner/repo`, `gitlab:owner/repo`, `bitbucket:owner/repo`, `gist:id`) package
+ * identifier into a plain clone URL and optional committish, without depending on npm's own git-spec
+ * parser (npm-package-arg/hosted-git-info aren't dependencies of this repo). Returns null for any
+ * other form.
  */
-function parseGitReference(packageIdentifier: string): GitReference | null {
+export function parseGitReference(packageIdentifier: string): GitReference | null {
 	const hashIndex = packageIdentifier.indexOf('#');
 	const committish = hashIndex === -1 ? undefined : packageIdentifier.slice(hashIndex + 1);
 	const spec = hashIndex === -1 ? packageIdentifier : packageIdentifier.slice(0, hashIndex);
 	if (GIT_URL_PREFIX.test(spec)) return { cloneUrl: spec.slice('git+'.length), committish };
 	if (GIT_PROTOCOL_PREFIX.test(spec)) return { cloneUrl: spec, committish };
+	const hostedMatch = HOSTED_GIT_PREFIX.exec(spec);
+	if (hostedMatch) {
+		const [, prefix, path] = hostedMatch;
+		const host = HOSTED_GIT_HOSTS[prefix.toLowerCase()];
+		// A gist clone URL is keyed by id alone; an optional `owner/` in the shorthand (npm accepts
+		// `gist:[owner/]id`) has no place in the URL and is dropped.
+		const urlPath =
+			prefix.toLowerCase() === 'gist' && path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
+		return { cloneUrl: `https://${host}/${urlPath}.git`, committish };
+	}
 	return null;
 }
 
