@@ -36,6 +36,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
+import semver from 'semver';
 
 interface ApplicationConfig {
 	// define known config properties
@@ -234,6 +235,66 @@ export function parseGitReference(packageIdentifier: string): GitReference | nul
 
 const NEUTRALIZED_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepack', 'prepare'];
 
+// npm's hosted-git-info convention (documented in #1799's own worked example, `github:my-org/my-app#semver:v1.2.3`)
+// for a committish that names a semver range instead of a literal ref. `git checkout` has no notion
+// of this syntax, so it must be resolved to a concrete tag before checkout.
+const SEMVER_COMMITTISH_PREFIX = /^semver:/i;
+
+// Matches npm's own git-tag-to-version extraction (@npmcli/git's lines-to-revs.js): a trailing
+// `1.2.3`-shaped suffix, optionally `v`-prefixed, with anything ahead of it ignored — so a tag like
+// `release-v1.2.3` resolves the same way npm's own git-dependency installer treats it.
+const TAG_VERSION_SUFFIX = /v?(\d+\.\d+\.\d+(?:[-+].+)?)$/;
+
+/**
+ * Resolves a `semver:<range>` committish (e.g. `semver:v1.2.3`, `semver:^1.2.3`) against the tags of
+ * the given clone to a concrete, unambiguous tag ref. Returns the committish unchanged if it isn't a
+ * semver-range committish.
+ */
+async function resolveCommittish(application: Application, committish: string, cloneDir: string): Promise<string> {
+	if (!SEMVER_COMMITTISH_PREFIX.test(committish)) return committish;
+	// npm's own package-arg parser URL-decodes the value after `semver:` (a range containing `^`/`~`
+	// can arrive percent-encoded, e.g. `#semver:%5E1.0.0`); do the same rather than evaluating it raw.
+	const rawRange = committish.slice('semver:'.length);
+	let range: string;
+	try {
+		range = decodeURIComponent(rawRange);
+	} catch {
+		range = rawRange;
+	}
+
+	// `git tag --list` rather than `for-each-ref --format=...`: nonInteractiveSpawn runs through a
+	// shell, and a `%(...)` format string is unsafe to pass through one.
+	const { code, stdout, stderr } = await nonInteractiveSpawn(application.name, 'git', ['tag', '--list'], cloneDir);
+	if (code !== 0) {
+		throw new Error(`Failed to list tags to resolve '${committish}' for ${application.packageIdentifier}: ${stderr}`);
+	}
+	const tags = stdout
+		.split('\n')
+		.map((tag) => tag.trim())
+		.filter(Boolean);
+
+	// A tag can be a bare version (`v1.2.3`) or carry a prefix ahead of one (`release-v1.2.3`); only
+	// the trailing version-shaped suffix is evaluated against the range, but the ORIGINAL tag name is
+	// what gets checked out.
+	const versionToTag = new Map<string, string>();
+	for (const tag of tags) {
+		const match = tag.match(TAG_VERSION_SUFFIX);
+		const version = match && semver.valid(match[1], { loose: true });
+		if (version) versionToTag.set(semver.clean(match[1], { loose: true }) as string, tag);
+	}
+
+	const resolvedVersion = semver.maxSatisfying([...versionToTag.keys()], range, { loose: true });
+	if (!resolvedVersion) {
+		throw new Error(
+			`Failed to resolve '${committish}' for ${application.packageIdentifier}: no tag satisfies range '${range}'. ` +
+				(tags.length ? `Tags found: ${tags.join(', ')}` : 'No tags were found in the repository.')
+		);
+	}
+	// refs/tags/<name> rather than the bare name: an unqualified `git checkout <name>` resolves to a
+	// same-named branch first if one exists, which would silently package the wrong commit.
+	return `refs/tags/${versionToTag.get(resolvedVersion)}`;
+}
+
 /**
  * Clones a git reference ourselves — with the credential session's env, so the clone itself can
  * still authenticate — and packs the checkout with its lifecycle scripts stripped, instead of
@@ -275,16 +336,15 @@ async function packGitReferenceWithoutScripts(
 		}
 
 		if (gitRef.committish) {
+			const committish = await resolveCommittish(application, gitRef.committish, cloneDir);
 			const { code: checkoutCode, stderr: checkoutStderr } = await nonInteractiveSpawn(
 				application.name,
 				'git',
-				['checkout', '--quiet', gitRef.committish],
+				['checkout', '--quiet', committish],
 				cloneDir
 			);
 			if (checkoutCode !== 0) {
-				throw new Error(
-					`Failed to check out '${gitRef.committish}' for ${application.packageIdentifier}: ${checkoutStderr}`
-				);
+				throw new Error(`Failed to check out '${committish}' for ${application.packageIdentifier}: ${checkoutStderr}`);
 			}
 		}
 
