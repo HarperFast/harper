@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784101944019,
+  "lastUpdate": 1784101947084,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -5412,6 +5412,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 48.22,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "182971ad16a3ba6986ffae194067965505d5bfa8",
+          "message": "Typed, discoverable resources — code-first defineTable + per-method request contract (RFC 0001) (#1767)\n\n* feat(resources): typed, discoverable resources — code-first defineTable + per-method request contract\n\nImplements RFC 0001 (design PR #1503): the mergeable implementation of both\nauthoring front-ends, integrated onto current main.\n\nPillar 1/2b — code-first schema (resources/defineTable.ts):\n  `defineTable(name, shape, opts)` + `types` author a table in TypeScript and\n  eagerly register through the same `table()` factory GraphQL drives — the return\n  IS the live class, with per-verb shapes inferred as `$record/$insert/$upsert/\n  $patch/$query` projections. Relations via lazy thunks (+ relationOf/hasManyOf\n  escape hatch for mutual pairs).\n\nPillar 2 — per-method request contract (resources/withSchema.ts):\n  `defineResource(contract, impl)` (function form) + `Resource.withSchema(contract)`\n  (class form). Handler types are derived from a runtime contract; a handler gets\n  the SAME RequestTarget, structurally narrowed (subset, not fork). Each declared\n  verb validates/coerces query/body before dispatch and throws a structured 400\n  (ValidationError, per-field {path,code,message}[]). Built-in `t`/`schemaOf`\n  reduce to JsonSchemaFragment — one vocabulary across table fields, query, and\n  bodies; a defineTable projection slots into a contract body via\n  schemaOf({ table, projection }). Nullability: non-nullable by default, `.nullable`\n  opts into null (table-derived bodies mirror Table.validate).\n\nCross-cutting:\n  - ValidationError (extends ClientError, 400); Table.validate refactored to the\n    same structured shape (HTTP-title message preserved).\n  - OpenAPI emits declared query/body/response for parameterised routes.\n  - MCP drives tool input/output off the contract and binds arbitrary path params\n    + query (applyContractInputs), lifting the generated-verb binding restriction\n    for contract resources.\n  - Shared attributeToFragment hardened with a nested-object branch; derive.ts\n    Object/Array projection bugfix.\n\nIntegration with main (the RFC branch was ~1007 lines behind on these files):\n  merged with main's newer MCP paramroutes work (paramBinding gating, isSimpleIdRoute,\n  mcpResources) and the liveResource authz fix — a request contract now exempts a\n  resource from the generated-handler binding restriction.\n\nDesign summary in resources/DESIGN.md; full RFC + type spikes remain in #1503.\nType contract verified against built exports in docs/rfcs/spikes/0001/*-real.check.ts.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(withSchema): address PR review — validation hardening + lint-safe test import\n\n- scope the Date type-check exception to string/date-time fields (a Date must not\n  pass validation for number/boolean/array/object schemas)\n- override target.getAll alongside get so multi-value query params read coerced\n- reject empty/whitespace numeric query params instead of Number('')→0\n- harden MCP wrapError: read the untrusted err's props inside a try/catch (revoked\n  Proxy / throwing getters must not crash the error path)\n- application-contract.test.js: require('assert') + strict methods (node:assert/strict\n  is oxlint-banned via no-restricted-imports)\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* refactor: rename withSchema.ts → defineResource.ts; drop spike/RFC artifacts\n\n- rename resources/withSchema.ts → resources/defineResource.ts (defineResource is\n  the primary API; Resource.withSchema stays the class-form name) + the test file\n- remove docs/rfcs/ (the *-real.check.ts type-contract proofs + tsconfig) — a real\n  PR shouldn't carry spike/RFC scaffolding; those live in the design PR (#1503)\n- strip references to the spikes and the RFC doc (which are not in this PR) from\n  code/test comments and resources/DESIGN.md; keep the #1503 pointer for the record\n\nNo behavior change. 100 unit tests green.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* test(types): re-add public type-contract tests + wire into CI\n\nStandalone type-tests under unitTests/types/ (no spike/RFC framing): assert the\nSHIPPED public types (imported from the built dist) against the contract —\ndefineTable projections + relations, and the defineResource/withSchema handler\ninference, narrowed target, subset property, and negative (@ts-expect-error) cases.\n\n- unitTests/types/{defineResource,defineTable}.type-test.ts + tsconfig.json (strict,\n  noEmit, skipLibCheck; isolated from the main build/typecheck, which don't include\n  unitTests/, and from mocha, which only loads js/mjs)\n- `npm run test:types` (tsc --project unitTests/types/tsconfig.json)\n- CI: a \"Type contract tests\" step in unit-test.yml (after Build, gated to one Node\n  version) so a regression in the public type surface fails CI\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-07-14T19:37:17Z",
+          "url": "https://github.com/HarperFast/harper/commit/182971ad16a3ba6986ffae194067965505d5bfa8"
+        },
+        "date": 1784101946221,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.8,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.34,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 20.6,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.1,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 23.52,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.35,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 34.58,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.67,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 18.96,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 45.57,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 173.17,
             "unit": "ms"
           }
         ]
