@@ -10,7 +10,7 @@
 // uncredentialed git-reference deploy, against a real local git repo and real npm pack rather than
 // asserting on the constructed spawn args.
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const fs = require('node:fs/promises');
 const { existsSync } = require('node:fs');
 const os = require('node:os');
@@ -119,19 +119,19 @@ describe('bare https/http git-host URL recognition (#1819)', function () {
 	it('parses a bare https:// URL to a known git host into a clone URL', function () {
 		const ref = parseGitReference('https://github.com/owner/repo.git');
 		assert.ok(ref);
-		assert.equal(ref.cloneUrl, 'https://github.com/owner/repo.git');
-		assert.equal(ref.committish, undefined);
+		assert.strictEqual(ref.cloneUrl, 'https://github.com/owner/repo.git');
+		assert.strictEqual(ref.committish, undefined);
 	});
 
 	it('parses a bare http:// URL with a committish', function () {
 		const ref = parseGitReference('http://gitlab.com/owner/repo#deadbeef');
 		assert.ok(ref);
-		assert.equal(ref.cloneUrl, 'http://gitlab.com/owner/repo');
-		assert.equal(ref.committish, 'deadbeef');
+		assert.strictEqual(ref.cloneUrl, 'http://gitlab.com/owner/repo');
+		assert.strictEqual(ref.committish, 'deadbeef');
 	});
 
 	it('does not treat a bare URL to an unrecognized host as a git reference', function () {
-		assert.equal(parseGitReference('https://example.com/owner/repo.git'), null);
+		assert.strictEqual(parseGitReference('https://example.com/owner/repo.git'), null);
 	});
 
 	// `#semver:` was originally unimplemented here too (as this test's history shows — see blame),
