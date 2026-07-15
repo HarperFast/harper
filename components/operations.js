@@ -530,11 +530,12 @@ async function deployComponent(req) {
 			// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
 			// (#1462).
 			const validationScopes = new Set();
-			// The MCP quota handler is a process-wide singleton, not owned by a Scope, so a candidate's
-			// top-level `server.setMcpQuotaHandler(...)` would otherwise outlive this throwaway load and
-			// alter live quota enforcement on a failed/rolled-back deploy. Preserve it across the load.
-			const { withMcpQuotaHandlerPreserved } = require('./mcp/quota.ts');
-			const validation = withMcpQuotaHandlerPreserved(async () => {
+			// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
+			// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
+			// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
+			// registration methods no-op for the duration of the load.
+			const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
+			const validation = runWithDeployValidationGuard(async () => {
 				try {
 					await componentLoader.loadComponent(application.dirPath, pseudoResources, undefined, {
 						collectScopes: validationScopes,

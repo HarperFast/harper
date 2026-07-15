@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { checkDurableQuota, setMcpQuotaHandler, withMcpQuotaHandlerPreserved } = require('#src/components/mcp/quota');
+const { checkDurableQuota, setMcpQuotaHandler } = require('#src/components/mcp/quota');
 
 const INFO = {
 	identity: '203.0.113.7',
@@ -65,46 +65,5 @@ describe('mcp/quota (#1610, #1809 registration handler)', () => {
 		assert.deepEqual(await checkDurableQuota(INFO), { allowed: true });
 		setMcpQuotaHandler(() => ({ allowed: false, message: 'reloaded policy' }));
 		assert.deepEqual(await checkDurableQuota(INFO), { allowed: false, message: 'reloaded policy' });
-	});
-
-	// withMcpQuotaHandlerPreserved wraps deploy pre-flight validation so a throwaway candidate load
-	// can't leave its policy — or a cleared/failed one — active on the live worker.
-	describe('withMcpQuotaHandlerPreserved (deploy-validation isolation)', () => {
-		it('restores the live handler after a candidate registers a different one', async () => {
-			const live = () => true;
-			setMcpQuotaHandler(live);
-			await withMcpQuotaHandlerPreserved(async () => {
-				setMcpQuotaHandler(() => ({ allowed: false, message: 'candidate policy' }));
-			});
-			// the candidate's deny handler must not survive the validation load
-			assert.deepEqual(await checkDurableQuota(INFO), { allowed: true });
-		});
-
-		it('restores the live handler after a candidate clears it', async () => {
-			setMcpQuotaHandler(() => ({ allowed: false, message: 'live policy' }));
-			await withMcpQuotaHandlerPreserved(async () => {
-				setMcpQuotaHandler(undefined); // a candidate that disables its policy
-			});
-			// clearing must not leave the live worker with quota off
-			assert.deepEqual(await checkDurableQuota(INFO), { allowed: false, message: 'live policy' });
-		});
-
-		it('restores the live handler even when the load throws', async () => {
-			const live = () => true;
-			setMcpQuotaHandler(live);
-			await assert.rejects(
-				withMcpQuotaHandlerPreserved(async () => {
-					setMcpQuotaHandler(() => ({ allowed: false, message: 'candidate' }));
-					throw new Error('validation failed');
-				}),
-				/validation failed/
-			);
-			assert.deepEqual(await checkDurableQuota(INFO), { allowed: true });
-		});
-
-		it('returns the wrapped function result', async () => {
-			const result = await withMcpQuotaHandlerPreserved(async () => 'loaded');
-			assert.equal(result, 'loaded');
-		});
 	});
 });
