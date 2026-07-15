@@ -110,6 +110,12 @@ function bindInsert(stmt: InsertNode): BoundInsert {
 
 function bindUpdate(stmt: UpdateNode): BoundUpdate {
 	const boundTable = bindTableRef(stmt.table, loadDatabases());
+	// SET on the primary key can't be honored by Table.patch (identity is the call
+	// argument, not the payload) — reporting the row as updated would be a false
+	// success. Reject so `auto` falls back to legacy, which declines the re-key.
+	if (boundTable.primaryKey && stmt.assignments.some((a) => a.column === boundTable.primaryKey)) {
+		throw new EngineUnsupportedError(`UPDATE cannot change the primary key column "${boundTable.primaryKey}"`);
+	}
 	return { ...stmt, table: { ...stmt.table, database: boundTable.database }, boundTable };
 }
 

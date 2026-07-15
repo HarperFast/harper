@@ -252,7 +252,12 @@ suite('SQL engine differential — new vs legacy', () => {
 	test('UPDATE — response + state parity', async () => {
 		await diff('update set', "UPDATE dev.widget SET name = 'renamed' WHERE id = 1");
 		await diff('update relative', 'UPDATE dev.widget SET qty = qty + 5 WHERE id = 3');
-		await diffState('after updates', 'widget', [1, 3]);
+		// SET on the primary key: the new engine rejects (EngineUnsupportedError) so
+		// auto falls back to legacy, which declines the re-key ("updated 0 of 1").
+		// Regression anchor for the false-success bug (executor reported the row
+		// updated while the stored pk stayed unchanged).
+		await diff('update pk declined', 'UPDATE dev.widget SET id = 30 WHERE id = 3');
+		await diffState('after updates', 'widget', [1, 3, 30]);
 	});
 
 	test('DELETE — response + state parity', async () => {

@@ -216,6 +216,16 @@ describe('sqlEngine phase 4: mutations', () => {
 		);
 	});
 
+	it('UPDATE rejects a SET on the primary key (EngineUnsupportedError, so auto falls back)', async () => {
+		// Table.patch can't re-key a record (identity is the call argument, not the
+		// payload) — without this rejection the executor reported a false success
+		// while the stored primary key stayed unchanged.
+		await assert.rejects(() => runSql('UPDATE dev.widget SET id = 30 WHERE id = 2'), /cannot change the primary key/);
+		// Nothing was written.
+		assert.deepStrictEqual(widgets._store.get(2), { id: 2, name: 'beta', qty: 20 });
+		assert.strictEqual(widgets._store.get(30), undefined);
+	});
+
 	it('INSERT auto-creates new valid attributes on a dynamic-schema table', async () => {
 		const dyn = makeDynamicTable();
 		binder._setDatabasesLoader(() => ({ dev: { invalid_attribute: dyn } }));
