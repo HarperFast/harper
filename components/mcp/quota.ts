@@ -81,6 +81,10 @@ export function setMcpQuotaHandler(handler: McpQuotaHandler | undefined): void {
  * Deploy pre-flight validation loads throwaway candidate component code that may call
  * `setMcpQuotaHandler` (or clear it); wrapping that load in this keeps a candidate's policy — or a
  * failed/rolled-back deploy — from altering live quota enforcement on this worker.
+ *
+ * Note: this restores the snapshot unconditionally, so a *legitimate* registration made during `fn`
+ * by an interleaving load would be reverted. That window is narrow (a validation load overlapping a
+ * real one) and the alternative — leaking a candidate's policy onto the live worker — is worse.
  */
 export async function withMcpQuotaHandlerPreserved<T>(fn: () => Promise<T>): Promise<T> {
 	const saved = quotaHandler;
