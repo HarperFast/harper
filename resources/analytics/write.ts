@@ -9,7 +9,7 @@ import { dirname, join } from 'path';
 import { open } from 'fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
 import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.ts';
-import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
@@ -1153,7 +1153,7 @@ function startScheduledTasks() {
 				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
 				if (aggregateRetentionMs) await cleanup(getAnalyticsTable(), aggregateRetentionMs);
 			},
-			Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)
+			Math.min(AGGREGATE_PERIOD / 2, MAX_SET_TIMEOUT_MS)
 		).unref();
 	}
 }
