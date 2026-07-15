@@ -520,13 +520,21 @@ export function setStatusHandler(handler: any) {
 	statusHandler = handler;
 }
 function statusLogger(options: any, logger: any) {
-	// If called with just options (no chained log method), register status immediately
+	// A chained log method (.error(), .warn(), etc.) fires synchronously if the caller chains
+	// one, before this microtask runs. Deferring the options-only dispatch lets us skip it when
+	// a chained call already reported the same logical event, avoiding a double dispatch.
+	let chained = false;
 	if (statusHandler) {
-		statusHandler(options, null, logger.tag || currentTag, []);
+		queueMicrotask(() => {
+			if (!chained && statusHandler) {
+				statusHandler(options, null, logger.tag || currentTag, []);
+			}
+		});
 	}
 	const wrapper: any = {};
 	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
 		wrapper[level] = function (...args: any[]) {
+			chained = true;
 			logger[level](...args);
 			if (statusHandler) {
 				statusHandler(options, level, logger.tag || currentTag, args);
