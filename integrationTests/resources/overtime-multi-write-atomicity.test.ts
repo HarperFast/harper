@@ -131,6 +131,34 @@ suite(`QA-314 over-time atomicity tie-breaker [${ENGINE}]`, { skip: skipSuite },
 		return (await r.json()) as Array<{ id: string; tag: string; seq: number }>;
 	}
 
+	function idsKey(rows: Array<{ id: string }>): string {
+		return rows
+			.map((r) => r.id)
+			.sort()
+			.join(',');
+	}
+
+	/**
+	 * Poll DumpAtomic for `tag`'s rows until two consecutive reads agree (bounded tries), instead
+	 * of a fixed settle sleep — under CI load, the async side effects of a force-commit/abort
+	 * (index updates included) can still be landing when a fixed wait ends, so a single read
+	 * right after it can observe a mid-flight state.
+	 */
+	async function waitForStableRows(
+		tag: string,
+		maxTries = 20,
+		intervalMs = 100
+	): Promise<Array<{ id: string; tag: string; seq: number }>> {
+		let rows = (await dumpAll()).filter((r) => r.tag === tag);
+		for (let i = 0; i < maxTries; i++) {
+			await sleep(intervalMs);
+			const next = (await dumpAll()).filter((r) => r.tag === tag);
+			if (idsKey(next) === idsKey(rows)) return next;
+			rows = next;
+		}
+		return rows;
+	}
+
 	/** search_by_value(tag) → Set<id> via secondary index. */
 	async function searchByTag(tag: string): Promise<Set<string>> {
 		const r = await client
@@ -179,11 +207,8 @@ suite(`QA-314 over-time atomicity tie-breaker [${ENGINE}]`, { skip: skipSuite },
 			const res = await postJSON('/Overtime/', { tag, count: PRE_ROWS, holdMs: HOLD_MS });
 			const elapsed = Date.now() - t0;
 
-			// Give any async side effects (force-commit, abort, index updates) time to settle.
-			await sleep(600);
-
-			const all = await dumpAll();
-			const rows = all.filter((r) => r.tag === tag);
+			// Wait for the row set to settle instead of a fixed sleep.
+			const rows = await waitForStableRows(tag);
 			const markerRow = rows.find((r) => r.id === `${tag}-marker`);
 			const preRows = rows.filter((r) => r.id !== `${tag}-marker`);
 			const fired = sawOverTime();
@@ -268,10 +293,8 @@ suite(`QA-314 over-time atomicity tie-breaker [${ENGINE}]`, { skip: skipSuite },
 		const t0 = Date.now();
 		const res = await postJSON('/Overtime/', { tag, count: PRE_ROWS, holdMs: HOLD_MS });
 		const elapsed = Date.now() - t0;
-		await sleep(600);
 
-		const all = await dumpAll();
-		const rows = all.filter((r) => r.tag === tag);
+		const rows = await waitForStableRows(tag);
 		const fired = sawOverTime();
 		const totalExpected = PRE_ROWS + 1;
 
