@@ -6,7 +6,7 @@
 // `/` collection target, where they're `null`/`true`). Downstream dispatch/permission code that
 // assumed one of the two was always set could crash on that undefined state.
 require('../testUtils');
-const assert = require('node:assert');
+const assert = require('node:assert/strict');
 const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
