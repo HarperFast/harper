@@ -134,6 +134,27 @@ suite(
 			}
 		}
 
+		/**
+		 * Poll `get(id)` until two consecutive reads agree (bounded tries), instead of a fixed
+		 * settle sleep — under CI load the CRDT-merge writes from a concurrent burst can still be
+		 * landing when a fixed wait ends, so a single read right after it can observe a mid-flight
+		 * value.
+		 */
+		async function waitForStableGet(
+			id: string,
+			maxTries = 8,
+			intervalMs = 25
+		): Promise<{ status: number | 'error'; body: any }> {
+			let prev = await get(id);
+			for (let i = 0; i < maxTries; i++) {
+				await sleep(intervalMs);
+				const next = await get(id);
+				if (next.status === prev.status && JSON.stringify(next.body) === JSON.stringify(prev.body)) return next;
+				prev = next;
+			}
+			return prev;
+		}
+
 		/** DELETE a record (best-effort cleanup). */
 		async function del(id: string): Promise<void> {
 			try {
@@ -227,6 +248,14 @@ suite(
 
 			ok(lostCountRounds === 0, `QA-431(2): lost-count in ${lostCountRounds} round(s) — CRDT×TTL defect`);
 			ok(staleRounds === 0, `QA-431(2): over-count in ${staleRounds} round(s) — double-apply or resurrection`);
+			// Every round that lands in "expired-during-burst" is measured by nothing above — if
+			// eviction regressed to fire too aggressively, every round could take that branch and
+			// the two asserts above would vacuously pass on 0/0. Guard that a meaningful fraction
+			// of rounds were actually measurable.
+			ok(
+				cleanRounds + lostCountRounds + staleRounds >= ROUNDS / 2,
+				`QA-431(2): only ${cleanRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds were measurable (rest expired-during-burst) — cannot confirm this probe exercised the guarded regression`
+			);
 		});
 
 		// ── (3) from-nothing concurrent burst ─────────────────────────────────────
@@ -278,9 +307,8 @@ suite(
 				const errs = results.filter((x) => x.status === 'error').length;
 				const rejected = results.filter((x) => typeof x.status === 'number' && x.status !== 200).length;
 
-				// Short settle then read.
-				await sleep(100);
-				const g = await get(id);
+				// Poll for a settled value instead of a fixed sleep.
+				const g = await waitForStableGet(id);
 				let desc: string;
 				if (g.status === 404) {
 					// All increments fired but no record persisted — all lost.
@@ -319,6 +347,14 @@ suite(
 			ok(
 				staleRounds === 0,
 				`QA-431(3): ${staleRounds} round(s) with stale resurrection (stored>acked, seed was 99) — F-002 family`
+			);
+			// The primary probe only runs a round when the pre-burst check reads back 404. If TTL
+			// eviction itself regressed so records never expire, every round takes the skip branch
+			// above, lostCountRounds/staleRounds stay 0, and the two asserts above vacuously pass —
+			// silently failing to catch the eviction class this anchor guards.
+			ok(
+				cleanRounds + lostCountRounds + staleRounds >= ROUNDS / 2,
+				`QA-431(3): only ${cleanRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds actually fired the burst (rest skipped as not-yet-expired) — TTL eviction may not be firing, and this probe cannot exercise the guarded regression`
 			);
 		});
 
@@ -396,6 +432,22 @@ suite(
 				`QA-431(4): ${lostCountRounds} round(s) with lost increments straddling 500ms boundary`
 			);
 			ok(staleRounds === 0, `QA-431(4): ${staleRounds} round(s) with stale resurrection (F-002 family)`);
+			// NOT a lower-bound assertion, deliberately: every successful write resets a record's
+			// expiresAt to now+TTL (confirmed against Table.ts's write-commit path), so as long as
+			// the burst's writes keep landing back-to-back, the key never gets an actual gap ≥TTL to
+			// expire through — cleanExpiry stays 0/${ROUNDS} even on fully-correct eviction code. That
+			// makes this specific leg unable to discriminate "eviction works" from "eviction disabled"
+			// (both look identical: 100% clean-alive) — logged for visibility, not asserted on, since
+			// asserting cleanExpiry>0 here would fail permanently regardless of product code. Legs
+			// (2)/(3)/(5) above and ttlResetOnWrite.test.ts (QA-269) are what actually exercise the
+			// eviction-disabled regression class; see dispatch Findings for a follow-up to redesign
+			// this leg's timing (e.g. a genuine no-write gap) if a real boundary-straddle probe is
+			// wanted here.
+			if (cleanExpiry === 0) {
+				log(
+					`  [QA-431(4) note] 0/${ROUNDS} rounds observed clean-expiry(404) — expected given TTL-reset-on-write semantics, not asserted on`
+				);
+			}
 		});
 
 		// ── (5) multi-worker stress: 10 parallel windows × 50 bursts ─────────────
@@ -464,6 +516,13 @@ suite(
 			);
 
 			ok(lostWindowCount === 0, `QA-431(5): ${lostWindowCount} window(s) with lost counts under multi-worker stress`);
+			// Windows that read back 404 (burst outran the 500ms window) aren't counted in either
+			// clean or lost — if TTL eviction regressed to evict too aggressively, every window
+			// could take that branch and the assert above would vacuously pass on 0/0.
+			ok(
+				cleanWindows + lostWindowCount >= WINDOWS / 2,
+				`QA-431(5): only ${cleanWindows + lostWindowCount}/${WINDOWS} windows were measurable (rest expired before read) — cannot confirm this probe exercised the guarded regression`
+			);
 		});
 	}
 );
