@@ -23,27 +23,9 @@ import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { startHarper, teardownHarper, targz, type ContextWithHarper } from '@harperfast/integration-testing';
+import { operation, getRestartRequired, readVersion } from './redeploy-restart-flag-helpers.ts';
 
 const PROJECT = 'redeploy-restart-flag-deletion-app';
-
-function authHeader(ctx: ContextWithHarper): string {
-	return `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
-}
-
-async function operation(ctx: ContextWithHarper, body: Record<string, unknown>): Promise<any> {
-	const response = await fetch(ctx.harper.operationsAPIURL, {
-		method: 'POST',
-		headers: { 'Authorization': authHeader(ctx), 'Content-Type': 'application/json' },
-		body: JSON.stringify(body),
-	});
-	strictEqual(response.status, 200, `operation ${body.operation} failed with ${response.status}`);
-	return response.json();
-}
-
-async function getRestartRequired(ctx: ContextWithHarper): Promise<boolean> {
-	const status = await operation(ctx, { operation: 'get_status' });
-	return status ? status.restartRequired === true : false;
-}
 
 /**
  * Build a tar.gz payload for the fixture app. `includeResourceFile: false` omits resources.js
@@ -69,21 +51,6 @@ async function buildPayload(includeResourceFile: boolean): Promise<string> {
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
-}
-
-async function readVersion(ctx: ContextWithHarper): Promise<number | undefined> {
-	let response: Response;
-	try {
-		response = await fetch(`${ctx.harper.httpURL}/Version`, { headers: { Authorization: authHeader(ctx) } });
-	} catch {
-		return undefined;
-	}
-	if (response.status !== 200) {
-		await response.body?.cancel();
-		return undefined;
-	}
-	const body = (await response.json()) as { version?: number } | null;
-	return body ? body.version : undefined;
 }
 
 suite('Redeploy deleting a resource file flags restartRequired (harper#1817 follow-up)', (ctx: ContextWithHarper) => {
