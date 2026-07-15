@@ -350,5 +350,23 @@ describe('cliOperations', () => {
 			assert.ok(!consoleErrors.includes(NOT_RUNNING_MESSAGE));
 			assert.ok(consoleErrors.some((line) => line.includes('error: Failed to connect to Harper (ECONNREFUSED)')));
 		});
+
+		it('does not crash on a throwing err.code getter, even past the connection-failure check', async () => {
+			commonUtilsModule.httpRequest = async () => {
+				const err = {};
+				Object.defineProperty(err, 'code', {
+					get() {
+						throw new Error('proxy trap: code is not readable');
+					},
+				});
+				err.message = 'should not be reachable either, since code threw first';
+				throw err;
+			};
+
+			await assert.rejects(() => cliOperationsModule.cliOperations({ operation: 'status' }, true), ProcessExitSignal);
+
+			assert.strictEqual(exitCode, 1);
+			assert.ok(consoleErrors.some((line) => line.startsWith('error:')));
+		});
 	});
 });

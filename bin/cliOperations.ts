@@ -438,20 +438,23 @@ async function cliOperations(req: any, skipResponseLog = false) {
 
 		return responseData;
 	} catch (err) {
-		let isConnectionFailure = false;
+		let code, message, hostname;
 		try {
-			isConnectionFailure = err != null && (err.code === 'ENOENT' || err.code === 'ECONNREFUSED');
+			code = err?.code;
+			message = err?.message;
+			hostname = err?.hostname;
 		} catch {}
+		const isConnectionFailure = code === 'ENOENT' || code === 'ECONNREFUSED';
 		if (isConnectionFailure && !target) {
 			console.error(LOCAL_NOT_RUNNING_MESSAGE);
 		} else if (isConnectionFailure) {
-			console.error(`error: Failed to connect to Harper (${err.code}): ${err.message}`);
-		} else if (err.code === 'EACCES') {
-			console.error(`error: Permission denied accessing the domain socket: ${err.message}`);
-		} else if (err.code === 'ENOTFOUND') {
-			console.error(`error: Host not found: "${err.hostname}" ${err.message}`);
+			console.error(`error: Failed to connect to Harper (${code}): ${message}`);
+		} else if (code === 'EACCES') {
+			console.error(`error: Permission denied accessing the domain socket: ${message}`);
+		} else if (code === 'ENOTFOUND') {
+			console.error(`error: Host not found: "${hostname}" ${message}`);
 		} else {
-			console.error(`error: ${err.message ?? err}`);
+			console.error(`error: ${message ?? err}`);
 		}
 		process.exit(1);
 	}
