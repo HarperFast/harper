@@ -255,7 +255,12 @@ export function parseGitReference(packageIdentifier: string): GitReference | nul
 	const spec = hashIndex === -1 ? packageIdentifier : packageIdentifier.slice(0, hashIndex);
 	if (GIT_URL_PREFIX.test(spec)) return { cloneUrl: spec.slice('git+'.length), committish };
 	if (GIT_PROTOCOL_PREFIX.test(spec)) return { cloneUrl: spec, committish };
-	if (BARE_GIT_HOST_URL_PREFIX.test(spec)) return { cloneUrl: spec, committish };
+	// Both of these forms are ones npm resolves via hosted-git-info, which — unlike the explicit
+	// `git+`/`git:` URL forms above — URL-decodes the whole committish while parsing it (e.g. a
+	// branch name containing `/` arriving as `%2F`-escaped resolves correctly either way, but a
+	// committish using other reserved characters needs this to match a real ref name).
+	const decodedCommittish = committish === undefined ? undefined : decodeURIComponentOrRaw(committish);
+	if (BARE_GIT_HOST_URL_PREFIX.test(spec)) return { cloneUrl: spec, committish: decodedCommittish };
 	const hostedMatch = HOSTED_GIT_PREFIX.exec(spec);
 	if (hostedMatch) {
 		const [, prefix, path] = hostedMatch;
@@ -265,12 +270,21 @@ export function parseGitReference(packageIdentifier: string): GitReference | nul
 			// accepts `gist:[owner/]id`) has no place in the URL and is dropped.
 			const id = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
 			if (!/^[^/#:]+$/.test(id)) return null;
-			return { cloneUrl: `https://${host}/${id}.git`, committish };
+			return { cloneUrl: `https://${host}/${id}.git`, committish: decodedCommittish };
 		}
 		if (!/^[^/#:]+\/[^/#:]+$/.test(path)) return null;
-		return { cloneUrl: `https://${host}/${path}.git`, committish };
+		return { cloneUrl: `https://${host}/${path}.git`, committish: decodedCommittish };
 	}
 	return null;
+}
+
+/** decodeURIComponent, falling back to the raw input on a malformed escape rather than throwing. */
+function decodeURIComponentOrRaw(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
 }
 
 const NEUTRALIZED_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepack', 'prepare'];
@@ -304,13 +318,8 @@ async function resolveCommittish(application: Application, committish: string, c
 	if (!SEMVER_COMMITTISH_PREFIX.test(committish)) return committish;
 	// npm's own package-arg parser URL-decodes the value after `semver:` (a range containing `^`/`~`
 	// can arrive percent-encoded, e.g. `#semver:%5E1.0.0`); do the same rather than evaluating it raw.
-	const rawRange = committish.slice('semver:'.length);
-	let range: string;
-	try {
-		range = decodeURIComponent(rawRange);
-	} catch {
-		range = rawRange;
-	}
+	// (A harmless no-op if parseGitReference already decoded the whole committish upstream.)
+	const range = decodeURIComponentOrRaw(committish.slice('semver:'.length));
 
 	// `git tag --list` rather than `for-each-ref --format=...`: nonInteractiveSpawn runs through a
 	// shell, and a `%(...)` format string is unsafe to pass through one.
