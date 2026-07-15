@@ -38,7 +38,7 @@ async function operation(ctx: ContextWithHarper, body: Record<string, unknown>):
 
 async function getRestartRequired(ctx: ContextWithHarper): Promise<boolean> {
 	const status = await operation(ctx, { operation: 'get_status' });
-	return status.restartRequired === true;
+	return status ? status.restartRequired === true : false;
 }
 
 /** Build a tar.gz of the fixture with `resources.js` rewritten to report `version`. */
@@ -68,8 +68,8 @@ async function readVersion(ctx: ContextWithHarper): Promise<number | undefined> 
 		await response.body?.cancel();
 		return undefined;
 	}
-	const body = (await response.json()) as { version?: number };
-	return body.version;
+	const body = (await response.json()) as { version?: number } | null;
+	return body ? body.version : undefined;
 }
 
 suite('Redeploy with restart:false flags restartRequired (harper#1817)', (ctx: ContextWithHarper) => {
