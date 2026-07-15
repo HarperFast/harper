@@ -14,7 +14,7 @@
  *   npm run test:integration -- "integrationTests/mcp/quota.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, notStrictEqual } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -143,6 +143,37 @@ suite('MCP per-client rate limit + durable quota (#1610)', (ctx: ContextWithHarp
 		const res = await fetch(new URL('/QuotaCounter/client-c', ctx.harper.httpURL), {
 			headers: { authorization: auth },
 		});
-		notStrictEqual(res.status, 200, `internal counter must not be REST-exposed (got ${res.status})`);
+		strictEqual(res.status, 404, `internal counter must not be REST-exposed (got ${res.status})`);
+	});
+
+	test('the internal counter exposes no MCP CRUD tools (no way to reset a quota)', async () => {
+		const baseHeaders = {
+			'content-type': 'application/json',
+			'accept': 'application/json, text/event-stream',
+			'authorization': auth,
+		};
+		const initRes = await fetch(new URL('/mcp', ctx.harper.httpURL), {
+			method: 'POST',
+			headers: baseHeaders,
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: ++rpcId,
+				method: 'initialize',
+				params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'quota-it', version: '0' } },
+			}),
+		});
+		const sessionId = initRes.headers.get('mcp-session-id');
+		const listRes = await fetch(new URL('/mcp', ctx.harper.httpURL), {
+			method: 'POST',
+			headers: { ...baseHeaders, 'mcp-session-id': sessionId as string, 'mcp-protocol-version': '2025-06-18' },
+			body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'tools/list', params: {} }),
+		});
+		const body = JSON.parse(await listRes.text());
+		const names: string[] = (body.result?.tools ?? []).map((t: { name: string }) => t.name);
+		ok(names.includes('answer'), `the cost-bearing tool is exposed: ${names.join(', ')}`);
+		// Under the old exported-Resource design the counter surfaced update_/delete_ tools a client
+		// could call to reset its quota; the internal table must expose none.
+		const counterCrud = names.filter((n) => /quotacounter/i.test(n));
+		strictEqual(counterCrud.length, 0, `no QuotaCounter CRUD tools should exist, found: ${counterCrud.join(', ')}`);
 	});
 });
