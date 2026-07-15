@@ -302,6 +302,14 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
 	if (!configFilePath || !fs.existsSync(configFilePath)) return [];
 
 	const configDoc = parseYamlDoc(configFilePath);
+	if (configDoc.errors?.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Error parsing ${configFilePath} ${configDoc.errors}`,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+		);
+	}
+
 	const added: string[] = [];
 	for (const key of keys) {
 		if (!key || configDoc.hasIn([key])) continue;
@@ -310,22 +318,18 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
 	}
 	if (added.length === 0) return [];
 
-	if (configDoc.errors?.length > 0) {
-		throw handleHDBError(
-			new Error(),
-			`Error parsing ${configFilePath} ${configDoc.errors}`,
-			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-		);
-	}
 	atomicWriteFile(configFilePath, String(configDoc));
 
 	// Mirror the additions into the already-memoized config so a built-in gated on the new key
 	// activates on the CURRENT boot: componentLoader reads the root config from getConfigObj(),
 	// which is cached early in boot — before an upgrade backfill runs — so a file-only write would
-	// otherwise not take effect until the next restart.
+	// otherwise not take effect until the next restart. flatConfigObj is backfilled alongside it so
+	// getFlatConfigObj()/getConfigValue() also see the new key on this boot rather than undefined.
 	if (configObj) {
 		for (const key of added) {
 			if (configObj[key] === undefined) configObj[key] = {};
+			const flatKey = key.toLowerCase();
+			if (flatConfigObj && flatConfigObj[flatKey] === undefined) flatConfigObj[flatKey] = configObj[key];
 		}
 	}
 	return added;

@@ -3,6 +3,7 @@
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
+const assert = require('node:assert/strict');
 const rewire = require('rewire');
 const path = require('path');
 const fs = require('fs-extra');
@@ -246,10 +247,10 @@ describe('Test configUtils module', () => {
 		it('adds an empty block for a missing key and reports it', () => {
 			writeConfig('replication: {}\nanalytics:\n  enabled: true\n');
 			const added = ensureConfigKeysPresent(['secretCustody']);
-			expect(added).to.deep.equal(['secretCustody']);
+			assert.deepStrictEqual(added, ['secretCustody']);
 			const doc = YAML.parse(fs.readFileSync(ENSURE_CONFIG_PATH, 'utf8'));
-			expect(doc).to.have.property('secretCustody');
-			expect(doc.secretCustody).to.deep.equal({});
+			assert.ok('secretCustody' in doc);
+			assert.deepStrictEqual(doc.secretCustody, {});
 		});
 
 		it('never touches an existing key or its value', () => {
@@ -257,37 +258,37 @@ describe('Test configUtils module', () => {
 			ensureConfigKeysPresent(['analytics']);
 			const doc = YAML.parse(fs.readFileSync(ENSURE_CONFIG_PATH, 'utf8'));
 			// existing value preserved, not overwritten with {}
-			expect(doc.analytics).to.deep.equal({ enabled: true });
+			assert.deepStrictEqual(doc.analytics, { enabled: true });
 		});
 
 		it('only adds the keys that are missing', () => {
 			writeConfig('replication: {}\n');
 			const added = ensureConfigKeysPresent(['replication', 'secretCustody', 'analytics']);
-			expect(added.sort()).to.deep.equal(['analytics', 'secretCustody']);
+			assert.deepStrictEqual(added.sort(), ['analytics', 'secretCustody']);
 		});
 
 		it('is idempotent — a second run adds nothing', () => {
 			writeConfig('replication: {}\n');
-			expect(ensureConfigKeysPresent(['secretCustody'])).to.deep.equal(['secretCustody']);
-			expect(ensureConfigKeysPresent(['secretCustody'])).to.deep.equal([]);
+			assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), ['secretCustody']);
+			assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), []);
 		});
 
 		it('does not rewrite the file when no keys are missing', () => {
 			writeConfig('secretCustody: {}\n');
 			const before = fs.statSync(ENSURE_CONFIG_PATH).mtimeMs;
 			const added = ensureConfigKeysPresent(['secretCustody']);
-			expect(added).to.deep.equal([]);
-			expect(fs.statSync(ENSURE_CONFIG_PATH).mtimeMs).to.equal(before);
+			assert.deepStrictEqual(added, []);
+			assert.strictEqual(fs.statSync(ENSURE_CONFIG_PATH).mtimeMs, before);
 		});
 
 		it('ignores empty/falsy key names', () => {
 			writeConfig('replication: {}\n');
-			expect(ensureConfigKeysPresent(['', undefined])).to.deep.equal([]);
+			assert.deepStrictEqual(ensureConfigKeysPresent(['', undefined]), []);
 		});
 
 		it('returns [] when the config file does not exist', () => {
 			// no writeConfig — dir exists but file does not
-			expect(ensureConfigKeysPresent(['secretCustody'])).to.deep.equal([]);
+			assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), []);
 		});
 
 		it('mirrors added keys into the memoized configObj so they take effect on the current boot', () => {
@@ -296,10 +297,24 @@ describe('Test configUtils module', () => {
 			const restore = config_utils_rw.__set__('configObj', { replication: {} });
 			try {
 				ensureConfigKeysPresent(['secretCustody']);
-				expect(config_utils_rw.__get__('configObj')).to.have.property('secretCustody');
-				expect(config_utils_rw.__get__('configObj').secretCustody).to.deep.equal({});
+				assert.ok('secretCustody' in config_utils_rw.__get__('configObj'));
+				assert.deepStrictEqual(config_utils_rw.__get__('configObj').secretCustody, {});
 			} finally {
 				restore();
+			}
+		});
+
+		it('mirrors added keys into the memoized flatConfigObj so getConfigValue sees them on the current boot', () => {
+			writeConfig('replication: {}\n');
+			const restoreConfigObj = config_utils_rw.__set__('configObj', { replication: {} });
+			const restoreFlatConfigObj = config_utils_rw.__set__('flatConfigObj', { replication: {} });
+			try {
+				ensureConfigKeysPresent(['secretCustody']);
+				assert.ok('secretcustody' in config_utils_rw.__get__('flatConfigObj'));
+				assert.deepStrictEqual(config_utils_rw.__get__('flatConfigObj').secretcustody, {});
+			} finally {
+				restoreFlatConfigObj();
+				restoreConfigObj();
 			}
 		});
 	});
@@ -331,9 +346,9 @@ describe('Test configUtils module', () => {
 			process.env.HARPER_BUILTIN_COMPONENTS =
 				'replication=@/dist/replication/replicator.js,secretCustody=@/dist/security/keyCustody.js';
 			writeConfig('replication: {}\n');
-			expect(ensureBuiltInComponentConfigKeys()).to.deep.equal(['secretCustody']);
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), ['secretCustody']);
 			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
-			expect(doc.secretCustody).to.deep.equal({});
+			assert.deepStrictEqual(doc.secretCustody, {});
 		});
 
 		it('never re-adds a long-standing built-in absent from the config (e.g. admin-removed replication)', () => {
@@ -343,27 +358,27 @@ describe('Test configUtils module', () => {
 				'replication=@/dist/replication/replicator.js,secretCustody=@/dist/security/keyCustody.js';
 			writeConfig('analytics: {}\n');
 			const added = ensureBuiltInComponentConfigKeys();
-			expect(added).to.deep.equal(['secretCustody']);
+			assert.deepStrictEqual(added, ['secretCustody']);
 			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
-			expect(doc).to.not.have.property('replication');
+			assert.ok(!('replication' in doc));
 		});
 
 		it('adds nothing on OSS core, which registers no built-ins', () => {
 			delete process.env.HARPER_BUILTIN_COMPONENTS;
 			writeConfig('replication: {}\n');
-			expect(ensureBuiltInComponentConfigKeys()).to.deep.equal([]);
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
 		});
 
 		it('adds nothing when secretCustody is not registered in this runtime', () => {
 			process.env.HARPER_BUILTIN_COMPONENTS = 'replication=@/dist/replication/replicator.js';
 			writeConfig('replication: {}\n');
-			expect(ensureBuiltInComponentConfigKeys()).to.deep.equal([]);
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
 		});
 
 		it('is a no-op when secretCustody is already present', () => {
 			process.env.HARPER_BUILTIN_COMPONENTS = 'secretCustody=@/dist/security/keyCustody.js';
 			writeConfig('secretCustody: {}\n');
-			expect(ensureBuiltInComponentConfigKeys()).to.deep.equal([]);
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
 		});
 	});
 
