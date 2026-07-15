@@ -321,6 +321,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 	// the same `JsonSchemaFragment` IR that drives runtime validation/coercion, so the spec matches what
 	// the server actually enforces (rather than the table-CRUD generation above).
 	const emitContractRoutes = (url: string, entry: { Resource: any }, pathParams: any[]) => {
+		if (!entry?.Resource) return;
 		const { prototype } = entry.Resource;
 		if (!prototype) return;
 
@@ -405,8 +406,11 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 	// Request-contract resources declared at a static (non-parameterised) path (e.g. `defineResource({path:
 	// '/OrderIntake', ...})`) — skipped by the table-CRUD loop above, emitted here off the declared contract.
 	for (const [, entry] of resources) {
-		if (!entry.Resource?.requestContract || entry.Resource.isError || entry.Resource.hidden === true) continue;
-		emitContractRoutes(`/${entry.path}`, entry, []);
+		if (!entry) continue;
+		if (!entry.path || !entry.Resource?.requestContract || entry.Resource.isError || entry.Resource.hidden === true)
+			continue;
+		const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
+		emitContractRoutes(path, entry, []);
 	}
 
 	// Parameterised routes (e.g. `/widget/:id/action/:action`) live outside the resource Map; emit them as templated
