@@ -67,7 +67,13 @@ function makeWritableTable({ primaryKey = 'id', attributes = [], rows = [] } = {
 		patch(id, update) {
 			table._ops.push(['patch', id]);
 			const existing = store.get(id) || { [primaryKey]: id };
-			store.set(id, { ...existing, ...update });
+			const merged = { ...existing };
+			for (const [k, v] of Object.entries(update)) {
+				// Mirror the real write path's CRDT merge: an Addition value applies
+				// as an atomic delta against the stored value (resources/tracked.ts).
+				merged[k] = v && typeof v === 'object' && v.__op__ === 'add' ? (+existing[k] || 0) + v.value : v;
+			}
+			store.set(id, merged);
 		},
 		delete(id) {
 			table._ops.push(['delete', id]);
@@ -257,6 +263,28 @@ describe('sqlEngine phase 4: mutations', () => {
 		assert.strictEqual(widgets._store.get(2).qty, 25);
 		assert.strictEqual(widgets._store.get(3).qty, 35);
 		assert.strictEqual(widgets._store.get(1).qty, 10); // not matched
+	});
+
+	it('UPDATE col = col ± N is written as an atomic Addition delta (F-146)', async () => {
+		// A self-referential increment must NOT be a read-compute-write of an
+		// absolute value (which loses updates under concurrency) — it must patch an
+		// Addition CRDT delta so the storage layer applies it atomically.
+		const captured = [];
+		const origPatch = widgets.patch.bind(widgets);
+		widgets.patch = (id, update) => {
+			captured.push([id, update.qty]);
+			return origPatch(id, update);
+		};
+		await runSql('UPDATE dev.widget SET qty = qty + 5 WHERE id = 2');
+		await runSql('UPDATE dev.widget SET qty = qty - 3 WHERE id = 3');
+		assert.strictEqual(captured[0][1].__op__, 'add');
+		assert.strictEqual(captured[0][1].value, 5);
+		assert.strictEqual(captured[1][1].__op__, 'add');
+		assert.strictEqual(captured[1][1].value, -3);
+		// A non-self-referential assignment stays absolute (no Addition).
+		captured.length = 0;
+		await runSql('UPDATE dev.widget SET qty = 99 WHERE id = 2');
+		assert.strictEqual(captured[0][1], 99);
 	});
 
 	it('DELETE removes matched rows and reports deleted_hashes', async () => {

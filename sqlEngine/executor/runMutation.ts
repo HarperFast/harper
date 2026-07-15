@@ -31,6 +31,35 @@ import type { PhysicalOp } from '../physical/op.ts';
 import { runSelect } from './runSelect.ts';
 import { compileExpr } from '../expressions/compile.ts';
 import { EngineRuntimeError } from '../errors.ts';
+import { Addition } from '../../resources/tracked.ts';
+
+/**
+ * If a SET assignment is a self-referential increment/decrement by a numeric
+ * literal — `col = col + N`, `col = N + col`, or `col = col - N` — return the
+ * signed delta. Such an assignment MUST be applied as an atomic CRDT `Addition`
+ * (the same primitive REST/ops `addTo` uses), not as a read-compute-write of an
+ * absolute value: two concurrent `SET qty = qty + 1` statements that both read
+ * the same pre-value would otherwise clobber each other and silently lose an
+ * increment (F-146). Returns undefined for any other shape (including
+ * `col = col + col` or `col = otherCol + N`), which stays on the absolute path.
+ */
+function selfIncrementDelta(column: string, expr: ExprNode): number | bigint | undefined {
+	if (expr.kind !== 'binop' || (expr.op !== '+' && expr.op !== '-')) return undefined;
+	const isThisColumn = (n: ExprNode): boolean => n.kind === 'column' && n.name === column && n.table == null;
+	const numericLiteral = (n: ExprNode): number | bigint | undefined =>
+		n.kind === 'literal' && (typeof n.value === 'number' || typeof n.value === 'bigint') ? n.value : undefined;
+	if (expr.op === '+') {
+		// col + N  or  N + col (addition commutes)
+		if (isThisColumn(expr.left)) return numericLiteral(expr.right);
+		if (isThisColumn(expr.right)) return numericLiteral(expr.left);
+		return undefined;
+	}
+	// col - N only (N - col is not an accumulator)
+	if (!isThisColumn(expr.left)) return undefined;
+	const n = numericLiteral(expr.right);
+	if (n === undefined) return undefined;
+	return -n;
+}
 
 /** A Table-class shape: the static Resource methods the write path needs. */
 interface WritableTable {
@@ -190,7 +219,15 @@ export async function runInsert(bound: BoundInsert, ctx: SqlEngineContext): Prom
 export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Promise<unknown> {
 	const table = tableOf(bound);
 	const pk = primaryKeyOf(bound.boundTable);
-	const assignments = bound.assignments.map((a) => ({ column: a.column, eval: compileExpr(a.expr, false).eval }));
+	// A `col = col ± N` assignment is applied as an atomic Addition delta (see
+	// selfIncrementDelta); every other assignment is evaluated against the matched
+	// row and written as an absolute value.
+	const assignments = bound.assignments.map((a) => {
+		const delta = selfIncrementDelta(a.column, a.expr);
+		return delta === undefined
+			? { column: a.column, eval: compileExpr(a.expr, false).eval }
+			: { column: a.column, delta };
+	});
 
 	// Plan the selector before opening the transaction (clean fallback on reject).
 	// Fetch the full matched rows so relative assignments (e.g. age = age + 1) can
@@ -217,7 +254,9 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 				continue;
 			}
 			const patch: Row = {};
-			for (const a of assignments) patch[a.column] = a.eval(row);
+			for (const a of assignments) {
+				patch[a.column] = 'delta' in a ? new Addition(a.delta) : a.eval(row);
+			}
 			await table.patch(id, patch, context);
 			update_hashes.push(id);
 		}

@@ -105,4 +105,25 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 		const read = await byHash('widget', [5]).expect(200);
 		assert.equal(read.body.length, 0);
 	});
+
+	// F-146 regression: a self-referential `SET col = col + N` must apply as an
+	// atomic increment. Read-compute-write of an absolute value loses updates when
+	// statements race — this fires many concurrent `qty = qty + 1` and asserts
+	// every increment landed. Pre-fix this lost ~half the increments.
+	test('concurrent SET qty = qty + 1 loses no increments (atomic Addition)', async () => {
+		await client
+			.req()
+			.send({ operation: 'insert', schema: 'dev', table: 'widget', records: [{ id: 42, qty: 0 }] })
+			.expect(200);
+
+		const N = 60;
+		await Promise.all(
+			Array.from({ length: N }, () =>
+				client.req().send({ operation: 'sql', sql: 'UPDATE dev.widget SET qty = qty + 1 WHERE id = 42' })
+			)
+		);
+
+		const read = await byHash('widget', [42]).expect(200);
+		assert.equal(read.body[0].qty, N, `expected all ${N} increments to apply, got ${read.body[0].qty}`);
+	});
 });
