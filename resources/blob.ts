@@ -38,7 +38,7 @@ import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';
 import { logger } from '../utility/logging/logger.ts';
 import type { RootDatabase } from 'lmdb';
@@ -974,9 +974,8 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 // only if the destination is still draining (writeStream.bytesWritten advancing) so a slow writeStream
 // never trips a false destroy — but a pause with zero downstream progress for the whole interval is a
 // genuine stall the 'data' re-arm can never clear, so it is destroyed.
-// Largest delay setTimeout accepts; a larger value (or Infinity/NaN) is silently coerced to 1ms, which
+// A larger value (or Infinity/NaN) than MAX_SET_TIMEOUT_MS is silently coerced to 1ms, which
 // would fire the watchdog almost immediately and destroy a healthy stream — so clamp/reject instead.
-const MAX_SET_TIMEOUT_MS = 2147483647; // 2^31 - 1
 function getBlobStreamIdleTimeoutMs(stream: Readable): number {
 	const configured = process.env.HARPER_BLOB_STREAM_IDLE_TIMEOUT_MS;
 	// env override (process-wide kill switch) when set, else the per-stream value the owning caller armed.
