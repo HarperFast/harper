@@ -11,12 +11,13 @@ const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VA
 
 // A source-apply commit that fails its optimistic-conflict check must converge on retry. ERR_BUSY
 // always could: recommitting re-writes each key, re-tracking it at the current sequence, so
-// validation passes once the contention clears. ERR_TRY_AGAIN never could: the memtable history
+// validation passes once the contention clears. ERR_TRY_AGAIN could not: the memtable history
 // validation needs is gone (flushed during a bulk-ingest burst), and recommitting the same
-// transaction re-checks the same stranded snapshot, so it fails forever even on an idle database.
-// The uncapped source-apply retry then spins for good and wedges the replication apply loop at its
-// commit await, freezing every replication leg of that database on the node. ERR_TRY_AGAIN retries
-// must replay the writes onto a fresh transaction so validation runs against current state.
+// transaction re-checked the same stranded snapshot, so it failed forever even on an idle database.
+// The uncapped source-apply retry then spun for good and wedged the replication apply loop at its
+// commit await, freezing every replication leg of that database on the node. rocksdb-js now resets
+// the transaction onto a fresh snapshot on a failed TryAgain commit (as it always did for IsBusy),
+// so the retry recommits the SAME transaction and its re-run validates against current state.
 describe('source-apply conflict retry converges instead of spinning', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let SpinTable;
@@ -32,8 +33,8 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 		});
 	});
 
-	// Spy on commits so the test can see which attempt failed validation and whether the retry ran
-	// on a fresh transaction (a new transaction id) or recommitted the failed one.
+	// Spy on commits so the test can see which attempt failed validation and confirm the retry
+	// recommitted the same transaction (same id) after the native in-place snapshot reset.
 	function spyOnCommits() {
 		const { Transaction } = require('@harperfast/rocksdb-js');
 		const originalCommit = Transaction.prototype.commit;
@@ -144,10 +145,10 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 			assert.ok(failed, 'the flush should strand the snapshot outside the memtable window');
 			const retried = attempts.find((attempt, index) => attempt.ok && index > attempts.indexOf(failed));
 			assert.ok(retried, 'a later commit attempt must succeed');
-			assert.notEqual(retried.id, failed.id, 'the retry must run on a fresh transaction');
-			assert.ok(
-				!attempts.some((attempt, index) => index > attempts.indexOf(failed) && attempt.id === failed.id),
-				'the stranded transaction must never be recommitted'
+			assert.equal(
+				retried.id,
+				failed.id,
+				'the retry must recommit the same transaction, reset in place onto a fresh snapshot'
 			);
 		} finally {
 			restore();
