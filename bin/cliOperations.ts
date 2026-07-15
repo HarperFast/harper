@@ -102,7 +102,11 @@ function versionSupportsStreamingDeploy(version: unknown): boolean {
  */
 async function targetSupportsStreamingDeploy(options: any): Promise<boolean> {
 	try {
-		const probeOptions = { ...options, headers: { ...options.headers, Accept: 'application/json' } };
+		const probeOptions = {
+			...options,
+			headers: { ...options.headers, Accept: 'application/json' },
+			timeout: CLI_OPERATION_TIMEOUT_MS,
+		};
 		delete probeOptions.streamResponse;
 		const response = await httpRequest(probeOptions, { operation: 'registration_info' });
 		if (response.statusCode !== 200 || !response.body) return true;
@@ -289,7 +293,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				if (tokens.refresh_token && isJWTExpired(tokens.operation_token)) {
 					console.error('Operation token expired, attempting to refresh...');
 					try {
-						const refreshOptions = { ...options };
+						const refreshOptions = { ...options, timeout: CLI_OPERATION_TIMEOUT_MS };
 						refreshOptions.headers = { ...options.headers, Authorization: `Bearer ${tokens.refresh_token}` };
 						const refreshResponse = await httpRequest(refreshOptions, {
 							operation: 'refresh_operation_token',

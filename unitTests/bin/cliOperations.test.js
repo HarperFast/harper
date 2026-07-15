@@ -604,6 +604,48 @@ describe('cliOperations', () => {
 			assert.strictEqual(capturedOptions.timeout, 600000);
 		});
 
+		it('uses the non-SSE timeout for the streaming-deploy version probe, not the 10-minute SSE timeout', async () => {
+			let probeOptions;
+			commonUtilsModule.httpRequest = async (options, req) => {
+				if (req.operation === 'registration_info') {
+					probeOptions = options;
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				return sseDoneResponse({ message: 'Successfully deployed', success: true });
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+				true
+			);
+
+			assert.strictEqual(probeOptions.timeout, 60000);
+		});
+
+		it('uses the non-SSE timeout for an operation-token refresh, not the 10-minute SSE timeout', async () => {
+			tokenAuthModule.isJWTExpired = (token) => token === 'expired-token';
+			saveCredentials(target, { operation_token: 'expired-token', refresh_token: 'refresh-token' });
+
+			let refreshOptions;
+			commonUtilsModule.httpRequest = async (options, req) => {
+				if (req.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				if (req.operation === 'refresh_operation_token') {
+					refreshOptions = options;
+					return { statusCode: 200, body: JSON.stringify({ operation_token: 'new-token' }) };
+				}
+				return sseDoneResponse({ message: 'Successfully deployed', success: true });
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+				true
+			);
+
+			assert.strictEqual(refreshOptions.timeout, 60000);
+		});
+
 		it('HARPER_CLI_TIMEOUT_MS overrides the non-SSE default', async () => {
 			const originalEnv = process.env.HARPER_CLI_TIMEOUT_MS;
 			process.env.HARPER_CLI_TIMEOUT_MS = '5000';
