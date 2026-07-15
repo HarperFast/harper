@@ -465,6 +465,17 @@ export class DatabaseTransaction implements Transaction {
 								// at MAX_RETRIES; sourceApply transactions keep retrying with periodic warn.
 								if (this.retries > MAX_RETRIES) {
 									if (!this.sourceApply) {
+										// giving up: release the transaction so the throw does not leak its native handle
+										// (mirrors the rejection-path give-up below; without it the handle — and any
+										// unpublished transaction-log position — lingers until GC)
+										try {
+											transaction.abort();
+										} catch (abortError) {
+											harperLogger.debug?.(
+												'aborting conflicted transaction after exhausting coordinated retries',
+												abortError
+											);
+										}
 										throw new ServerError(
 											`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 										);
