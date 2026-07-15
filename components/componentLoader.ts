@@ -25,6 +25,7 @@ import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
+import * as scheduler from '../resources/scheduler/scheduler.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
@@ -121,6 +122,7 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	logging: harperLogger,
 	dataLoader,
 	mcp: mcpComponent,
+	scheduler,
 	/*
 	static: ...
 	login: ...
