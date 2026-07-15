@@ -667,8 +667,8 @@ describe('secretOperations', () => {
 	});
 
 	describe('deriveGitSecretName', () => {
-		it('derives a stable name keyed by component and host, following the registry convention', () => {
-			assert.equal(secretOps.deriveGitSecretName('my-app', 'github.com'), 'deploy.my-app.github.com');
+		it('derives a stable name keyed by component and host, with a git segment disambiguating it from a registry secret', () => {
+			assert.equal(secretOps.deriveGitSecretName('my-app', 'github.com'), 'deploy.my-app.git.github.com');
 		});
 
 		it('is identical across the host forms that identify the same host', () => {
@@ -679,7 +679,7 @@ describe('secretOperations', () => {
 		});
 
 		it('sanitizes a port to the set_secret name grammar', () => {
-			assert.equal(secretOps.deriveGitSecretName('app', 'git.example.com:8443'), 'deploy.app.git.example.com_8443');
+			assert.equal(secretOps.deriveGitSecretName('app', 'git.example.com:8443'), 'deploy.app.git.git.example.com_8443');
 		});
 	});
 
@@ -754,8 +754,8 @@ describe('secretOperations', () => {
 		it('seals a git-host token the same way, keyed by host', async () => {
 			installCustody();
 			const refs = await secretOps.ingestCredentials(deploy(), [{ host: 'github.com', token: 'ghp_secret' }], 'app');
-			assert.deepEqual(refs, [{ host: 'github.com', secret: 'deploy.app.github.com' }]);
-			const row = installed.mock.rows.get('deploy.app.github.com');
+			assert.deepEqual(refs, [{ host: 'github.com', secret: 'deploy.app.git.github.com' }]);
+			const row = installed.mock.rows.get('deploy.app.git.github.com');
 			assert.deepEqual(row.grants, ['app'], 'granted to the deploying component, not global');
 			assert.equal(row.processEnv, false);
 			assert.deepEqual(await secretOps.resolveCredentials(refs, 'app'), [
@@ -770,7 +770,7 @@ describe('secretOperations', () => {
 				[{ host: 'gitlab.com', token: 'glpat', username: 'oauth2' }],
 				'app'
 			);
-			assert.deepEqual(refs, [{ host: 'gitlab.com', secret: 'deploy.app.gitlab.com', username: 'oauth2' }]);
+			assert.deepEqual(refs, [{ host: 'gitlab.com', secret: 'deploy.app.git.gitlab.com', username: 'oauth2' }]);
 			assert.deepEqual(await secretOps.resolveCredentials(refs, 'app'), [
 				{ host: 'gitlab.com', token: 'glpat', username: 'oauth2' },
 			]);
@@ -788,7 +788,7 @@ describe('secretOperations', () => {
 			);
 			assert.deepEqual(refs, [
 				{ registry: gh, secret: 'deploy.app.npm.pkg.github.com', scope: '@org' },
-				{ host: 'github.com', secret: 'deploy.app.github.com' },
+				{ host: 'github.com', secret: 'deploy.app.git.github.com' },
 			]);
 			assert.equal(installed.mock.rows.size, 2, 'each kind gets its own derived row');
 		});

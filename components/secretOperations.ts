@@ -381,10 +381,13 @@ export function deriveRegistrySecretName(component: string, registry: string): s
 
 /**
  * Deterministic name for the secret backing a literal git-host token, following the registry
- * convention above. Keyed by host rather than by repository: the credential entry identifies itself
- * by host, so the name has to be derivable from the entry alone for a rotation to overwrite the same
- * row. A per-repository credential is expressible today by scoping the token itself (a fine-grained
- * PAT) rather than by splitting the secret name.
+ * convention above but with a `git` kind segment: a registry entry accepts a bare host too, so
+ * without a distinguishing segment a git and a registry credential for the same host would derive
+ * the same name and silently overwrite each other's secret. Keyed by host rather than by
+ * repository: the credential entry identifies itself by host, so the name has to be derivable from
+ * the entry alone for a rotation to overwrite the same row. A per-repository credential is
+ * expressible today by scoping the token itself (a fine-grained PAT) rather than by splitting the
+ * secret name.
  */
 export function deriveGitSecretName(component: string, host: string): string {
 	const hostKey = normalizeGitHost(host).replace(/[^\w.-]+/g, '_');

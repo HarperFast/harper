@@ -181,6 +181,128 @@ export function isSSHAuthFailure(stderr: string): boolean {
 	);
 }
 
+// Git-reference package identifier forms recognized below for the credentialed-clone path: the
+// npm git-url spec forms this repo's own derivePackageIdentifier can produce for a git host
+// credential. An identifier that doesn't match falls back to `npm pack --ignore-scripts` (best
+// effort, same as before this fix — not a regression for a form this can't safely reclone).
+const GIT_URL_PREFIX = /^git\+(ssh|https?|file):\/\//i;
+const GIT_PROTOCOL_PREFIX = /^git:\/\//i;
+
+interface GitReference {
+	cloneUrl: string;
+	committish?: string;
+}
+
+/**
+ * Parses a `git+ssh://…`/`git+https://…`/`git+http://…`/`git+file://…`/`git://…` package identifier
+ * into a plain clone URL and optional committish, without depending on npm's own git-spec parser
+ * (npm-package-arg/hosted-git-info aren't dependencies of this repo). Returns null for any other
+ * form.
+ */
+function parseGitReference(packageIdentifier: string): GitReference | null {
+	const hashIndex = packageIdentifier.indexOf('#');
+	const committish = hashIndex === -1 ? undefined : packageIdentifier.slice(hashIndex + 1);
+	const spec = hashIndex === -1 ? packageIdentifier : packageIdentifier.slice(0, hashIndex);
+	if (GIT_URL_PREFIX.test(spec)) return { cloneUrl: spec.slice('git+'.length), committish };
+	if (GIT_PROTOCOL_PREFIX.test(spec)) return { cloneUrl: spec, committish };
+	return null;
+}
+
+const NEUTRALIZED_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepack', 'prepare'];
+
+/**
+ * Clones a git reference ourselves — with the credential session's env, so the clone itself can
+ * still authenticate — and packs the checkout with its lifecycle scripts stripped, instead of
+ * letting `npm pack <git-url>` clone and pack it directly.
+ *
+ * `--ignore-scripts` is not a reliable suppression for a git source's own `prepare` script: pacote's
+ * DirFetcher runs it unconditionally on npm versions before 11.0.0 (the
+ * `if (this.opts.ignoreScripts) return` guard was only added upstream in npm 11) — which is exactly
+ * what Node 22's bundled npm (10.9.x) ships. A credentialed clone can't depend on which npm version
+ * happens to be on PATH, since a script running while the credential socket is reachable is exactly
+ * what this feature exists to prevent — so the script is removed from the checkout before packing,
+ * which works regardless of npm version.
+ */
+async function packGitReferenceWithoutScripts(
+	application: Application,
+	gitRef: GitReference,
+	parentDirPath: string
+): Promise<string> {
+	const cloneDir = await mkdtemp(join(tmpdir(), 'harper-git-clone-'));
+	try {
+		const { code: cloneCode, stderr: cloneStderr } = await nonInteractiveSpawn(
+			application.name,
+			'git',
+			['clone', '--quiet', gitRef.cloneUrl, cloneDir],
+			parentDirPath,
+			undefined,
+			undefined,
+			undefined,
+			application.gitCredentialEnv
+		);
+		if (cloneCode !== 0) {
+			if (isSSHAuthFailure(cloneStderr)) {
+				throw new Error(
+					`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
+					{ cause: new Error(cloneStderr) }
+				);
+			}
+			throw new Error(`Failed to clone package ${application.packageIdentifier}: ${cloneStderr}`);
+		}
+
+		if (gitRef.committish) {
+			const { code: checkoutCode, stderr: checkoutStderr } = await nonInteractiveSpawn(
+				application.name,
+				'git',
+				['checkout', '--quiet', gitRef.committish],
+				cloneDir
+			);
+			if (checkoutCode !== 0) {
+				throw new Error(
+					`Failed to check out '${gitRef.committish}' for ${application.packageIdentifier}: ${checkoutStderr}`
+				);
+			}
+		}
+
+		// Strip the checkout's own lifecycle scripts before packing — the mechanism above only
+		// suppresses npm's git-clone behavior; a plain `npm pack <local-dir>` still runs `prepare`
+		// unless it's gone from the manifest.
+		const manifestPath = join(cloneDir, 'package.json');
+		const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+		if (manifest.scripts) {
+			for (const scriptName of NEUTRALIZED_LIFECYCLE_SCRIPTS) delete manifest.scripts[scriptName];
+			await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+		}
+
+		const { stdout, code, stderr } = await nonInteractiveSpawn(
+			application.name,
+			'npm',
+			['pack', '--json', '--ignore-scripts', cloneDir],
+			parentDirPath,
+			undefined,
+			undefined,
+			application.npmUserconfigPath
+		);
+		if (code !== 0) {
+			throw new Error(`Failed to pack package ${application.packageIdentifier}: ${stderr}`);
+		}
+		let packResult: Array<{ filename: string }>;
+		try {
+			packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
+		} catch (err) {
+			throw new Error(
+				`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+			);
+		}
+		if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
+			throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+		}
+		return join(parentDirPath, packResult[0].filename);
+	} finally {
+		await rm(cloneDir, { recursive: true, force: true });
+	}
+}
+
 // Hidden directory under the components root holding component versions renamed aside
 // during a deploy swap (see extractApplication). The leading dot keeps
 // loadComponentDirectories from loading its contents as components.
@@ -274,49 +396,61 @@ export async function extractApplication(application: Application) {
 			// reach the credential must not have (a transitive dependency's postinstall could ask the
 			// socket for a token granted for the top-level repository), so scripts are off for a
 			// credentialed clone unless the deploy explicitly opted into them.
-			const packArgs = ['pack', '--json', application.packageIdentifier];
-			if (application.gitCredentialEnv && !application.install?.allowInstallScripts) {
-				packArgs.push('--ignore-scripts');
-			} else if (application.gitCredentialEnv) {
-				application.logger.warn(
-					`Deploying ${application.name} from a git reference with install scripts enabled: the repository's ` +
-						`prepare/build scripts and its dependencies' install scripts run on this node during the clone and ` +
-						`can read the git credential. Unset install_allow_scripts to keep the credential out of their reach.`
-				);
-			}
-			const { stdout, code, stderr } = await nonInteractiveSpawn(
-				application.name,
-				'npm',
-				packArgs,
-				parentDirPath,
-				undefined,
-				undefined,
-				application.npmUserconfigPath,
-				application.gitCredentialEnv
-			);
-			if (code !== 0) {
-				if (isSSHAuthFailure(stderr)) {
-					throw new Error(
-						`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
-						{ cause: new Error(stderr) }
+			const scriptsDisallowed = application.gitCredentialEnv && !application.install?.allowInstallScripts;
+			// `--ignore-scripts` alone isn't a reliable way to enforce that: pacote's DirFetcher runs a
+			// git source's `prepare` unconditionally on npm versions before 11.0.0 (see
+			// packGitReferenceWithoutScripts), which is exactly what Node 22's bundled npm ships. For a
+			// recognized git-reference identifier, clone and pack it ourselves with scripts stripped
+			// instead, sidestepping that npm code path entirely.
+			const gitRef = scriptsDisallowed ? parseGitReference(application.packageIdentifier) : null;
+
+			if (gitRef) {
+				tarballPath = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath);
+			} else {
+				const packArgs = ['pack', '--json', application.packageIdentifier];
+				if (scriptsDisallowed) {
+					packArgs.push('--ignore-scripts');
+				} else if (application.gitCredentialEnv) {
+					application.logger.warn(
+						`Deploying ${application.name} from a git reference with install scripts enabled: the repository's ` +
+							`prepare/build scripts and its dependencies' install scripts run on this node during the clone and ` +
+							`can read the git credential. Unset install_allow_scripts to keep the credential out of their reach.`
 					);
 				}
-				throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
-			}
-
-			let packResult: Array<{ filename: string }>;
-			try {
-				packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
-			} catch (err) {
-				throw new Error(
-					`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+				const { stdout, code, stderr } = await nonInteractiveSpawn(
+					application.name,
+					'npm',
+					packArgs,
+					parentDirPath,
+					undefined,
+					undefined,
+					application.npmUserconfigPath,
+					application.gitCredentialEnv
 				);
-			}
-			if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
-				throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
-			}
+				if (code !== 0) {
+					if (isSSHAuthFailure(stderr)) {
+						throw new Error(
+							`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
+							{ cause: new Error(stderr) }
+						);
+					}
+					throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
+				}
 
-			tarballPath = join(parentDirPath, packResult[0].filename);
+				let packResult: Array<{ filename: string }>;
+				try {
+					packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
+				} catch (err) {
+					throw new Error(
+						`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+					);
+				}
+				if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
+					throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+				}
+
+				tarballPath = join(parentDirPath, packResult[0].filename);
+			}
 			shouldDeleteTarball = true;
 			tarball = createReadStream(tarballPath);
 		}
