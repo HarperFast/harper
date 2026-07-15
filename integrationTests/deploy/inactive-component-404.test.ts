@@ -6,21 +6,19 @@
  *
  * The actionable message is gated on two conditions:
  *   1. A restart is genuinely pending (`restartNeeded()` / get_status `restartRequired`). A
- *      directory under componentsRoot only means "deployed but not yet active" when a restart
- *      is actually queued; otherwise the message would be a false claim (harper#674 review).
+ *      `deploy_component` with `restart: false` now sets this flag itself (a deployed component
+ *      is not live until a restart), so a fresh deploy-without-restart both reports
+ *      restartRequired:true and surfaces the actionable 404. A directory under componentsRoot
+ *      with no restart pending (e.g. an already-active component whose sub-path just doesn't
+ *      match) falls back to the generic 404.
  *   2. The caller is an authenticated super_user (matching the existing `getComponents`
  *      boundary in utility/operation_authorization.ts) — otherwise the response difference
  *      (actionable vs. generic 404) is an oracle for which component directories exist on disk.
- *
- * Note: deploying a brand-new component with `restart: false` does NOT by itself set the
- * restart-needed flag (a never-loaded component has no file watcher, so nothing calls
- * requestRestart). The flag is set when an already-loaded component's watched files change.
- * These tests exercise both sides of the gate by toggling that real signal.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
 import { join } from 'node:path';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 
 import { setupHarperWithFixture, teardownHarper, targz, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -32,8 +30,8 @@ suite('Inactive component 404', (ctx: ContextWithHarper) => {
 	before(async () => {
 		// Pre-install a minimal already-active REST app so this represents a running Harper
 		// instance (the scenario in harper#674), rather than a fresh boot with no REST handler
-		// registered at all. It carries a jsResource file so it has a live file watcher, which
-		// the tests use to toggle the real restart-needed signal.
+		// registered at all. Its directory (components/fixture-active-app) exists under
+		// componentsRoot but it registers no routes, so any sub-path under it is a route miss.
 		await setupHarperWithFixture(ctx, join(import.meta.dirname, 'fixture-active-app'));
 	});
 
@@ -55,39 +53,13 @@ suite('Inactive component 404', (ctx: ContextWithHarper) => {
 		return body.restartRequired === true;
 	}
 
-	// Flip the real restart-needed signal by mutating a watched file in the already-loaded
-	// active app. A never-loaded component has no watcher, so this is the realistic path by
-	// which restartNeeded() becomes true. Polls get_status until the flag is observed (the
-	// chokidar event -> requestRestart() hop is async) so the assertion below is deterministic.
-	async function ensureRestartPending(): Promise<void> {
-		const watched = join(ctx.harper.dataRootDir, 'components', 'fixture-active-app', 'resources.js');
-		const contents = await readFile(watched, 'utf8');
-		await writeFile(watched, `${contents}\n// touched at ${Date.now()}\n`);
-		const deadline = Date.now() + 15000;
-		while (Date.now() < deadline) {
-			if (await restartRequired()) return;
-			await new Promise((resolve) => setTimeout(resolve, 250));
-		}
-		throw new Error('timed out waiting for restartRequired to become true');
-	}
-
-	test('deploy the component (without restarting) so its directory exists but routes are inactive', async () => {
-		const payload = await targz(join(import.meta.dirname, 'fixture-inactive-component'));
-		const deployResponse = await fetch(ctx.harper.operationsAPIURL, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ operation: 'deploy_component', project: DEPLOYED, payload, restart: false }),
-		});
-		strictEqual(deployResponse.status, 200);
-	});
-
-	test('a deployed component with NO restart pending gets a generic 404, not the actionable message', async () => {
-		// No watched file has changed yet, so restartNeeded() is false. The deploy above left
-		// prometheus_exporter's directory under componentsRoot, but without a pending restart we
-		// must not claim a restart would activate it.
+	test('a component directory with NO restart pending gets a generic 404, not the actionable message', async () => {
+		// At boot nothing has requested a restart, so restartNeeded() is false. fixture-active-app's
+		// directory exists under componentsRoot but a route miss under it must not claim a restart
+		// would activate anything.
 		strictEqual(await restartRequired(), false);
 
-		const response = await fetch(`${ctx.harper.httpURL}/${DEPLOYED}/metrics`, {
+		const response = await fetch(`${ctx.harper.httpURL}/fixture-active-app/not-a-route`, {
 			headers: { Authorization: basicAuth() },
 		});
 		strictEqual(response.status, 404);
@@ -98,9 +70,22 @@ suite('Inactive component 404', (ctx: ContextWithHarper) => {
 		);
 	});
 
-	test('once a restart is pending, the same deployed-but-inactive component returns an actionable 404', async () => {
-		await ensureRestartPending();
+	test('a fresh deploy_component with restart:false sets get_status restartRequired to true', async () => {
+		const payload = await targz(join(import.meta.dirname, 'fixture-inactive-component'));
+		const deployResponse = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ operation: 'deploy_component', project: DEPLOYED, payload, restart: false }),
+		});
+		strictEqual(deployResponse.status, 200);
+		strictEqual(
+			await restartRequired(),
+			true,
+			'deploying a component without restarting should mark a restart as required'
+		);
+	});
 
+	test('the deployed-but-inactive component returns an actionable 404 for a super_user', async () => {
 		const response = await fetch(`${ctx.harper.httpURL}/${DEPLOYED}/metrics`, {
 			headers: { Authorization: basicAuth() },
 		});
@@ -136,13 +121,13 @@ suite('Inactive component 404', (ctx: ContextWithHarper) => {
 	});
 
 	test('a non-super_user caller gets a generic 404 even with a restart pending', async () => {
-		// Restart is still pending from the earlier test, and prometheus_exporter's directory
-		// still exists, so the only thing withholding the actionable message here is the
-		// super_user gate. Note: an *unauthenticated* loopback request can't exercise this path
-		// in this harness -- Harper's AUTHORIZE_LOCAL bypass treats 127.0.0.x/::1 requests as an
-		// implicit super_user (security/auth.ts's `bypassUser ?? getSuperUser()` branch), so
-		// "no auth header" and "super_user" are indistinguishable from a loopback integration
-		// test. Authenticating as a real non-super_user role is what exercises the gate.
+		// Restart is still pending from the deploy, and prometheus_exporter's directory still
+		// exists, so the only thing withholding the actionable message here is the super_user gate.
+		// Note: an *unauthenticated* loopback request can't exercise this path in this harness --
+		// Harper's AUTHORIZE_LOCAL bypass treats 127.0.0.x/::1 requests as an implicit super_user
+		// (security/auth.ts's `bypassUser ?? getSuperUser()` branch), so "no auth header" and
+		// "super_user" are indistinguishable from a loopback integration test. Authenticating as a
+		// real non-super_user role is what exercises the gate.
 		strictEqual(await restartRequired(), true);
 		const nonSuAuth = `Basic ${Buffer.from(`${NON_SU_USERNAME}:${ctx.harper.admin.password}`).toString('base64')}`;
 		const response = await fetch(`${ctx.harper.httpURL}/${DEPLOYED}/metrics`, {
