@@ -549,6 +549,50 @@ describe('cliOperations', () => {
 			assert.strictEqual(typeof capturedOptions.timeout, 'number');
 			assert.ok(capturedOptions.timeout > 0);
 		});
+
+		it('exits non-zero with a clear message (not a bare "aborted") when an SSE deploy_component times out mid-stream', async () => {
+			commonUtilsModule.httpRequest = async (options, req) => {
+				if (req.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				// Simulate the real streamed response: headers arrive and one phase event
+				// flows, then the connection goes idle. httpRequest's own timeout handling
+				// (common_utils.ts) destroys this response with its descriptive ETIMEDOUT
+				// error — mirror that here rather than letting Node manufacture a generic
+				// "aborted" error, since that manufacturing only happens on a real socket.
+				let pushed = false;
+				const response = new Readable({
+					read() {
+						if (!pushed) {
+							pushed = true;
+							this.push('event: phase\ndata: {"phase":"prepare"}\n\n');
+							return;
+						}
+						const err = new Error('Request timed out after 600000ms with no response from the server');
+						err.code = 'ETIMEDOUT';
+						this.destroy(err);
+					},
+				});
+				response.statusCode = 200;
+				response.headers = { 'content-type': 'text/event-stream' };
+				return response;
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+				true
+			);
+
+			assert.deepStrictEqual(exitCalls, [1]);
+			assert.ok(
+				consoleErrorLines.some((line) => line.includes('timed out')),
+				`expected a timeout message on stderr, got: ${consoleErrorLines}`
+			);
+			assert.ok(
+				!consoleErrorLines.some((line) => /^error:\s*aborted\s*$/i.test(line.trim())),
+				`should not surface a bare "aborted" message, got: ${consoleErrorLines}`
+			);
+		});
 	});
 
 	describe('operation timeout selection', () => {

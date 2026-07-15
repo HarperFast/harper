@@ -766,11 +766,16 @@ export function httpRequest(options: any, data: any): Promise<http.IncomingMessa
 		options = { ...options };
 		delete options.streamResponse;
 	}
+	// Tracks the resolved response for a streamed request so a subsequent idle timeout can
+	// destroy it directly with our descriptive error (see the `timeout` handler below).
+	let streamedResponse: (http.IncomingMessage & { body?: string }) | undefined;
+
 	return new Promise((resolve, reject) => {
 		const req = client.request(options, (response: http.IncomingMessage & { body?: string }) => {
 			if (streamResponse) {
 				// Hand the raw stream to the caller; do not setEncoding so binary-safe consumers
 				// (or SSE parsers that prefer Buffers) still work.
+				streamedResponse = response;
 				resolve(response);
 				return;
 			}
@@ -798,6 +803,14 @@ export function httpRequest(options: any, data: any): Promise<http.IncomingMessa
 			req.on('timeout', () => {
 				const err: any = new Error(`Request timed out after ${options.timeout}ms with no response from the server`);
 				err.code = 'ETIMEDOUT';
+				// For a streamed response (e.g. SSE) whose headers already arrived, the promise
+				// above has already resolved — destroying only `req` lets Node's own socket-close
+				// handling (_http_client.js socketCloseListener) manufacture its own generic
+				// "aborted"/ECONNRESET error on the response instead, discarding this descriptive
+				// one. Destroy the response first, with our error, so whoever is reading it
+				// directly (e.g. the SSE parser's `for await`) sees the same clear "timed out"
+				// message a non-streamed timeout produces.
+				if (streamedResponse && !streamedResponse.destroyed) streamedResponse.destroy(err);
 				req.destroy(err);
 			});
 		}
