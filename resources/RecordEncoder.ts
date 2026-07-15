@@ -319,11 +319,15 @@ export class RecordEncoder extends StructonEncoder {
 				const committed = this.rootStore.transactionSync(
 					(txn) => {
 						const sharedStructuresKey = [Symbol.for('structures'), this.name];
-						// Read the LATEST committed structures (fresh), not the txn's start-snapshot. A
-						// concurrent worker may have committed since this txn began; the compatibility check
-						// below must see that, or it compares against a stale dictionary and admits a divergent
-						// write. Mirrors rocksdb-js's own saveStructures, which deliberately avoids the txn read.
-						const existingStructuresBuffer = this.rootStore.getBinarySync(sharedStructuresKey);
+						// Read through the transaction (not this.rootStore) so this read participates in the
+						// txn's optimistic-conflict tracking: a concurrent committer of the same key then makes
+						// THIS txn's commit fail (retryOnBusy re-runs the callback with a fresh txn/read), so the
+						// compatibility check always converges on the latest durable state without ever letting
+						// two concurrent writers both believe they're appending compatibly. Reading via
+						// this.rootStore (untracked by the txn) previously let RocksDB commit both writers'
+						// CAS transactions with neither detecting the other, silently dropping one side's
+						// structure — see HarperFast/harper#1506 (lost disjoint-field PATCH updates).
+						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
 						const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
 						if (typeof isCompatible == 'function') {
 							if (!isCompatible(existingStructures)) {
