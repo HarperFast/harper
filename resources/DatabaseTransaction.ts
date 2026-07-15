@@ -354,7 +354,7 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		if (this.timedOut) throw transactionOpenTooLongError();
-		let transaction = options.transaction ?? this.transaction; // we need to preserve this transaction as we might to resurrect it if we have to retry
+		const transaction = options.transaction ?? this.transaction; // reused across retries; the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain
 		for (let i = 0; i < this.writes.length; i++) {
 			let operation = this.writes[i];
 			if (!operation || (this.retries === 0 && operation.saved)) continue;
@@ -546,35 +546,18 @@ export class DatabaseTransaction implements Transaction {
 								// for future transactions
 								this.retries++;
 								harperLogger.debug?.('retrying', transaction.id, this.retries);
-								if (error.code === 'ERR_TRY_AGAIN') {
-									// ERR_BUSY recovers on recommit: the save loop re-writes each key, re-tracking it at
-									// the current sequence, so validation passes once the contention clears. ERR_TRY_AGAIN
-									// never does: the memtable history validation needs is gone (flushed during a
-									// bulk-ingest burst), and recommitting re-checks the same stranded snapshot, so it
-									// fails forever even on an idle database. A source-apply transaction's uncapped retry
-									// then spins for good and wedges the replication apply loop at its commit await,
-									// freezing every leg of that database on the node. Replay onto a fresh transaction
-									// instead: the save loop reloads each entry through it and re-resolves against
-									// current state. Carry over the commit hook the transaction-log store attached
-									// (aftercommit emit / structure watermarks; it reads its state off the original
-									// transaction object, which abort() leaves intact); the retry-site isRetry stamp
-									// below keeps the log entries themselves from being re-added.
-									const retryTransaction: RocksTransactionWithRetry = new RocksTransaction(
-										(this.writes.find((write) => write)?.store.store ?? this.db.store) as RocksStore
-									);
-									if (this.timestamp) retryTransaction.setTimestamp(this.timestamp);
-									(retryTransaction as any).onCommit = (transaction as any).onCommit;
-									try {
-										transaction.abort();
-									} catch (abortError) {
-										// usually already released by the failed commit; log for the unexpected case
-										harperLogger.debug?.('aborting stranded transaction after failed commit', abortError);
-									}
-									transaction = retryTransaction;
-								}
+								// ERR_BUSY and ERR_TRY_AGAIN are both retried by recommitting the SAME native
+								// transaction. ERR_BUSY recovers because the save loop re-writes each key, re-tracking
+								// it at the current sequence. ERR_TRY_AGAIN — a snapshot stranded outside the memtable
+								// conflict-check window after a bulk-ingest flush — used to fail forever on recommit
+								// because the native layer left the stranded snapshot in place; rocksdb-js now resets
+								// the transaction onto a fresh snapshot on the failed TryAgain commit, exactly as it
+								// always did for IsBusy, so the re-run's save loop re-resolves against current state and
+								// converges. Keeping the same transaction means its committedPosition survives the reset
+								// (WAL write-once, rocksdb-js#668) and its onCommit hook stays attached, so the
+								// already-staged change-feed entry publishes only when the retry really commits — no
+								// premature publish, and no fresh-transaction replay that would drop the entry.
 								// Mark the native transaction as a retry so RocksTransactionLogStore skips re-staging entries.
-								// Stamp AFTER the possible ERR_TRY_AGAIN swap above so the fresh replay transaction is
-								// marked too; otherwise it would re-stage audit/change-feed log entries on recommit.
 								(transaction as RocksTransactionWithRetry).isRetry = true;
 								if (this.retries > 2) {
 									// Transactions applying data from a canonical source of truth (replication peer or
@@ -586,8 +569,7 @@ export class DatabaseTransaction implements Transaction {
 									const neverDropOnConflict = this.sourceApply;
 									if (this.retries > MAX_RETRIES) {
 										if (!neverDropOnConflict) {
-											// giving up: release the current transaction (original or the fresh replay above)
-											// so the throw does not leak its native handle
+											// giving up: release the transaction so the throw does not leak its native handle
 											try {
 												transaction.abort();
 											} catch (abortError) {
