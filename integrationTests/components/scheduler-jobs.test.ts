@@ -33,8 +33,8 @@ suite('scheduler component plugin (#951)', (ctx: ContextWithHarper) => {
 	async function fetchTicks(): Promise<any[]> {
 		const res = await fetch(new URL('/SchedulerTick/', ctx.harper.httpURL), {
 			headers: {
-				'accept': 'application/json',
-				'authorization': basicAuth(ctx.harper.admin.username, ctx.harper.admin.password),
+				accept: 'application/json',
+				authorization: basicAuth(ctx.harper.admin.username, ctx.harper.admin.password),
 			},
 		});
 		strictEqual(res.status, 200, `expected SchedulerTick to be queryable, got ${res.status}`);

@@ -49,6 +49,9 @@ let role: EngineRole = 'inactive';
 let heartbeatTimer: NodeJS.Timeout | undefined;
 let failoverWatcherTimer: NodeJS.Timeout | undefined;
 let catchUpRunning = false;
+// First time this follower observed the cluster leaderless (no row or stale
+// heartbeat); drives the promotion escalation ladder in failoverCheck
+let leaderlessSince: number | undefined;
 const jobsByComponent = new Map<string, Map<string, RegisteredJob>>();
 
 let _stateTable: any;
@@ -111,6 +114,28 @@ export function isHeartbeatStale(lastHeartbeat: string | undefined, now: number 
 	return Number.isNaN(heartbeatTime) || now - heartbeatTime > STALE_THRESHOLD_MS;
 }
 
+// Escalation ladder for leaderless promotion: each successive fallback node
+// waits this much longer before claiming leadership, giving preferred nodes
+// (which check every FAILOVER_WATCHER_INTERVAL_MS) time to claim it first.
+export const PROMOTION_ESCALATION_MS = 2 * FAILOVER_WATCHER_INTERVAL_MS;
+
+/**
+ * How long this node should observe a leaderless cluster before promoting
+ * itself. The preferred (alphabetically-first eligible) node promotes
+ * immediately; each subsequent node adds one escalation interval, so a dead or
+ * never-started preferred node cannot deadlock the cluster — the next node in
+ * line claims leadership one rung later, and sticky leadership plus the
+ * heartbeat takeover check heal any race between rungs.
+ */
+export function promotionWaitMs(roster: string[], self: string, staleLeader: string | null): number {
+	const eligible = staleLeader ? roster.filter((name) => name !== staleLeader) : roster;
+	const queue = eligible.length > 0 ? eligible : roster;
+	const queueIndex = queue.indexOf(self);
+	// A node not in the queue (it IS the stale leader) goes to the back
+	const rung = queueIndex < 0 ? queue.length : queueIndex;
+	return rung * PROMOTION_ESCALATION_MS;
+}
+
 /**
  * The cron occurrence that should have fired but didn't, or null if the job is
  * up to date. `baseline` is the job's last run (or when it was first seen, so
@@ -152,6 +177,12 @@ export function registerComponentJobs(componentName: string, jobs: ScheduledJob[
 /**
  * Cancel timers and forget the jobs of a component (its scope is closing —
  * worker shutdown, redeploy, or a discarded deploy-validation load).
+ *
+ * Leadership is deliberately retained even if this empties the job set: the
+ * common cause is a reload that re-registers moments later, and stepping down
+ * here would leave the engine unable to re-elect (startSchedulerEngine is
+ * one-shot per worker). An idle leader heartbeating a zero-job cluster is
+ * harmless and resolves on the next worker restart.
  */
 export function unregisterComponentJobs(componentName: string): void {
 	const jobMap = jobsByComponent.get(componentName);
@@ -188,6 +219,7 @@ export function stopSchedulerEngine(): void {
 	role = 'inactive';
 	engineStarted = false;
 	catchUpRunning = false;
+	leaderlessSince = undefined;
 	_stateTable = undefined;
 }
 
@@ -243,6 +275,7 @@ async function becomeLeader(): Promise<void> {
 
 function becomeFollower(): void {
 	role = 'follower';
+	leaderlessSince = undefined;
 	if (heartbeatTimer) {
 		clearInterval(heartbeatTimer);
 		heartbeatTimer = undefined;
@@ -288,18 +321,27 @@ async function failoverCheck(): Promise<void> {
 	if (role !== 'follower') return;
 	const self = currentNodeName();
 	const leaderRow = await getStateTable().get(LEADER_ROW_ID);
-	if (leaderRow && !isHeartbeatStale(leaderRow.lastHeartbeat)) return;
+	if (leaderRow && !isHeartbeatStale(leaderRow.lastHeartbeat)) {
+		leaderlessSince = undefined;
+		return;
+	}
+	const now = Date.now();
+	leaderlessSince ??= now;
+	const roster = nodeRoster();
 	const staleLeader = leaderRow?.leaderNode ?? null;
-	const nextLeader = pickNextLeader(nodeRoster(), staleLeader);
-	if (nextLeader === self) {
+	const waitMs = promotionWaitMs(roster, self, staleLeader);
+	if (now - leaderlessSince >= waitMs) {
 		schedulerLogger.info?.(
 			staleLeader
 				? `Scheduler leader ${staleLeader} heartbeat is stale; ${self} promoting itself`
 				: `No active scheduler leader; ${self} promoting itself`
 		);
+		leaderlessSince = undefined;
 		await becomeLeader();
 	} else {
-		schedulerLogger.trace?.(`Scheduler leader is stale but next in line is ${nextLeader}; ${self} keeps watching`);
+		schedulerLogger.trace?.(
+			`Scheduler leader is stale or absent; ${self} promotes in ${Math.round((waitMs - (now - leaderlessSince)) / 1000)}s unless a preferred node claims leadership`
+		);
 	}
 }
 
@@ -371,6 +413,14 @@ function armTimer(job: RegisteredJob, fireAt: Date): void {
 	job.timer.unref();
 }
 
+// The persisted error replicates cluster-wide; strip filesystem paths (which
+// leak node-local layout) and bound the length
+function sanitizeStoredError(message: string): string {
+	return message
+		.replace(/\/(?:Users|home|var|tmp|opt|etc|root)\/[^\s:)]+/g, '[path]')
+		.slice(0, MAX_STORED_ERROR_LENGTH);
+}
+
 async function getJobStateRow(job: ScheduledJob): Promise<any> {
 	try {
 		return await getStateTable().get(jobRowId(job));
@@ -411,7 +461,7 @@ async function executeJob(job: RegisteredJob, scheduledAt: Date, catchUp: boolea
 			firstSeenAt: existingRow?.firstSeenAt ?? startedAt.toISOString(),
 			lastRunAt: startedAt.toISOString(),
 			lastStatus: 'error',
-			lastError: String(error.message ?? error).slice(0, MAX_STORED_ERROR_LENGTH),
+			lastError: sanitizeStoredError(String(error.message ?? error)),
 			lastDurationMs: durationMs,
 		});
 	} finally {
@@ -427,6 +477,9 @@ async function executeJob(job: RegisteredJob, scheduledAt: Date, catchUp: boolea
  */
 async function runCatchUp(): Promise<void> {
 	if (catchUpRunning || role !== 'leader') return;
+	// TODO(#951): reap orphaned job:<component>:<name> rows whose job no longer
+	// exists in any registered component, so renamed/removed jobs don't
+	// accumulate state rows forever
 	catchUpRunning = true;
 	try {
 		const now = new Date();

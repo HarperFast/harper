@@ -52,6 +52,10 @@ interface SchedulerJobConfig {
  * The handler reference is `<module path>#<named export>` relative to the
  * component directory (omit `#...` to use the module's default export). The
  * handler is invoked with a {@link JobRunContext} and may return a promise.
+ *
+ * Handlers should be idempotent: leadership failover (the lease has no
+ * compare-and-set) and DST fall-back can occasionally deliver the same logical
+ * occurrence twice.
  */
 export async function handleApplication(scope): Promise<void> {
 	// One worker owns scheduling for the whole node; leadership across nodes is
@@ -133,7 +137,14 @@ async function buildJob(scope, jobConfig: SchedulerJobConfig): Promise<Scheduled
 				`Scheduler job "${name}" in component ${componentName}: "timezone" only applies to cron schedules`
 			);
 		}
-		const intervalMs = convertToMS(interval);
+		// convertToMS silently treats any unrecognized unit as seconds (e.g.
+		// '500ms' would become 500 seconds); restrict to the documented forms
+		if (typeof interval === 'string' && !/^\d+(\.\d+)?[smhd]?$/.test(interval.trim())) {
+			throw new SchedulerConfigError(
+				`Scheduler job "${name}" in component ${componentName}: interval "${interval}" is not a supported duration — use a number of seconds or a value like 90s, 5m, 1h, 1d`
+			);
+		}
+		const intervalMs = convertToMS(typeof interval === 'string' ? interval.trim() : interval);
 		if (!(intervalMs >= MIN_INTERVAL_MS)) {
 			throw new SchedulerConfigError(
 				`Scheduler job "${name}" in component ${componentName}: interval "${interval}" must be at least 1 second (e.g. 90s, 5m, 1h)`

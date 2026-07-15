@@ -134,7 +134,7 @@
 		},
 		"scheduler": {
 			"type": "object",
-			"description": "Recurring job scheduling. Jobs run exactly once per cluster (leader-elected) and invoke a designated export from this component.",
+			"description": "Recurring job scheduling. Jobs run once per cluster (leader-elected) and invoke a designated export from this component. Handlers should be idempotent: leadership failover and DST fall-back can occasionally deliver the same occurrence twice.",
 			"additionalProperties": false,
 			"properties": {
 				"jobs": {

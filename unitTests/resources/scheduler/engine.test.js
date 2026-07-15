@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const {
 	pickNextLeader,
+	promotionWaitMs,
 	isHeartbeatStale,
 	findMissedCronOccurrence,
 	registerComponentJobs,
@@ -10,6 +11,7 @@ const {
 	stopSchedulerEngine,
 	getEngineRole,
 	STALE_THRESHOLD_MS,
+	PROMOTION_ESCALATION_MS,
 } = require('#src/resources/scheduler/engine');
 const { CronExpression } = require('#src/resources/scheduler/CronExpression');
 
@@ -33,6 +35,34 @@ describe('scheduler engine', () => {
 
 		it('returns null for an empty roster', () => {
 			assert.strictEqual(pickNextLeader([], null), null);
+		});
+	});
+
+	describe('promotionWaitMs', () => {
+		const roster = ['node-a', 'node-b', 'node-c'];
+
+		it('lets the preferred node promote immediately', () => {
+			assert.strictEqual(promotionWaitMs(roster, 'node-a', null), 0);
+		});
+
+		it('escalates by roster position so a dead preferred node cannot deadlock the cluster', () => {
+			assert.strictEqual(promotionWaitMs(roster, 'node-b', null), PROMOTION_ESCALATION_MS);
+			assert.strictEqual(promotionWaitMs(roster, 'node-c', null), 2 * PROMOTION_ESCALATION_MS);
+		});
+
+		it('excludes a stale leader from the queue', () => {
+			assert.strictEqual(promotionWaitMs(roster, 'node-b', 'node-a'), 0);
+			assert.strictEqual(promotionWaitMs(roster, 'node-c', 'node-a'), PROMOTION_ESCALATION_MS);
+		});
+
+		it('sends the stale leader itself to the back of the queue', () => {
+			assert.strictEqual(promotionWaitMs(roster, 'node-a', 'node-a'), 2 * PROMOTION_ESCALATION_MS);
+		});
+
+		it('lets a lone node (that was the stale leader) promote immediately', () => {
+			// Single-node roster where that node is the stale leader: the eligible
+			// queue is empty, so the full roster is the queue and it is first
+			assert.strictEqual(promotionWaitMs(['node-a'], 'node-a', 'node-a'), 0);
 		});
 	});
 
