@@ -13,6 +13,7 @@ import { generateJsonApi } from '../resources/openApi.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { ASIDE_STAGING_DIR } from '../components/Application.ts';
+import { restartNeeded } from '../components/requestRestart.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -133,13 +134,20 @@ async function http(request: Request, nextHandler) {
 		if (url !== OPENAPI_DOMAIN) {
 			const entry = resources.getMatch(url, isSse ? 'sse' : 'rest');
 			if (!entry) {
-				// This check runs before any resource is matched, so no auth gate has run yet for
-				// this request. Only reveal the actionable message to an authenticated super_user —
-				// otherwise an unauthenticated caller could use the response difference (actionable
-				// vs. generic 404) as an oracle to probe which component directories exist on disk.
-				// `getComponents` (utility/operation_authorization.ts) already treats "which
-				// components are deployed" as super_user-only information; match that boundary here.
-				if (request?.user?.role?.permission?.super_user) {
+				// Only surface the actionable "needs a restart" 404 when a restart is genuinely
+				// pending — i.e. a component was deployed (restart:false) since this server last
+				// loaded its routes, so restartNeeded() is set. Without a pending restart, a
+				// directory under componentsRoot is either an already-active component (which would
+				// have matched a route above) or not a live component at all, so fall back to the
+				// generic 404 rather than claiming a restart would activate it. (harper#674)
+				//
+				// Also gated on an authenticated super_user: this check runs before any resource is
+				// matched, so no auth gate has run yet for this request. Only reveal the actionable
+				// message to a super_user — otherwise a caller could use the response difference
+				// (actionable vs. generic 404) as an oracle to probe which component directories
+				// exist on disk. `getComponents` (utility/operation_authorization.ts) already treats
+				// "which components are deployed" as super_user-only information; match that here.
+				if (restartNeeded() && request?.user?.role?.permission?.super_user) {
 					const inactiveComponent = await findInactiveComponent(url);
 					if (inactiveComponent) {
 						throw new ClientError(
