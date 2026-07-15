@@ -739,5 +739,30 @@ describe('cliOperations', () => {
 				reloadCliOperations();
 			}
 		});
+
+		it('HARPER_CLI_TIMEOUT_MS above the 32-bit setTimeout ceiling falls back to the default instead of the raw value', async () => {
+			const originalEnv = process.env.HARPER_CLI_TIMEOUT_MS;
+			// Exceeds 2147483647 (2^31 - 1): Node's setTimeout silently coerces values above this
+			// and fires almost immediately, so out-of-range input must fall back like any other
+			// invalid input rather than being passed through as the raw oversized value.
+			process.env.HARPER_CLI_TIMEOUT_MS = '9999999999';
+			try {
+				const freshModule = reloadCliOperations();
+
+				let capturedOptions;
+				commonUtilsModule.httpRequest = async (options) => {
+					capturedOptions = options;
+					return { statusCode: 200, body: JSON.stringify({ success: true }) };
+				};
+
+				await freshModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+				assert.strictEqual(capturedOptions.timeout, 60000);
+			} finally {
+				if (originalEnv === undefined) delete process.env.HARPER_CLI_TIMEOUT_MS;
+				else process.env.HARPER_CLI_TIMEOUT_MS = originalEnv;
+				reloadCliOperations();
+			}
+		});
 	});
 });

@@ -69,10 +69,16 @@ const STREAMING_DEPLOY_MIN_MINOR = 1;
 // separate env vars to keep in sync.
 const DEFAULT_CLI_OPERATION_TIMEOUT_MS = 60000;
 const DEFAULT_SSE_OPERATION_TIMEOUT_MS = 600000; // 10 minutes
+// Largest delay Node's setTimeout accepts; a larger value is silently coerced and fires in
+// ~1ms instead of the intended delay, so out-of-range input is treated the same as any other
+// invalid input below (falls back to DEFAULT_CLI_OPERATION_TIMEOUT_MS) rather than passed through.
+const MAX_CLI_OPERATION_TIMEOUT_MS = 2147483647; // 2^31 - 1
 const RAW_CLI_OPERATION_TIMEOUT = (process.env.HARPER_CLI_TIMEOUT_MS || process.env.CLI_TIMEOUT_MS)?.trim();
 const PARSED_CLI_OPERATION_TIMEOUT = RAW_CLI_OPERATION_TIMEOUT ? Number(RAW_CLI_OPERATION_TIMEOUT) : NaN;
 const CLI_OPERATION_TIMEOUT_OVERRIDE_MS =
-	Number.isInteger(PARSED_CLI_OPERATION_TIMEOUT) && PARSED_CLI_OPERATION_TIMEOUT >= 0
+	Number.isInteger(PARSED_CLI_OPERATION_TIMEOUT) &&
+	PARSED_CLI_OPERATION_TIMEOUT >= 0 &&
+	PARSED_CLI_OPERATION_TIMEOUT <= MAX_CLI_OPERATION_TIMEOUT_MS
 		? PARSED_CLI_OPERATION_TIMEOUT
 		: undefined;
 const CLI_OPERATION_TIMEOUT_MS = CLI_OPERATION_TIMEOUT_OVERRIDE_MS ?? DEFAULT_CLI_OPERATION_TIMEOUT_MS;
