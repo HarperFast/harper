@@ -71,8 +71,16 @@ export class ResourceLoadError extends Error {
  *
  * Thus, this plugin only handle files as they are added (`add` event). All other events result in a restart request.
  *
+ * A redeploy tears down and reinstalls the component's files while this scope's watcher is paused
+ * (see `Scope`/`EntryHandler` deploy lifecycle); on resume the fresh chokidar scan re-emits every
+ * existing file as `'add'` — including ones whose contents just changed. Treating those as plain
+ * adds would silently re-run against the stale module cache and never flag a restart (harper#1817).
+ * So we track which files this scope has already loaded: a re-`add` of a known file is a redeploy of
+ * loaded code we cannot hot-swap, and is handled like a `change` — request a restart. A first-time
+ * `add` (initial load, or a genuinely new file added at runtime) still loads without a restart.
  */
 export async function handleApplication(scope: Scope) {
+	const loadedResourceFiles = new Set<string>();
 	scope.handleEntry(async function handleResourceEntry(entryEvent) {
 		if (entryEvent.entryType !== 'file') {
 			scope.logger.warn(
@@ -81,7 +89,7 @@ export async function handleApplication(scope: Scope) {
 			return;
 		}
 
-		if (entryEvent.eventType !== 'add') {
+		if (entryEvent.eventType !== 'add' || loadedResourceFiles.has(entryEvent.absolutePath)) {
 			scope.requestRestart();
 			return;
 		}
@@ -97,6 +105,9 @@ export async function handleApplication(scope: Scope) {
 				scope.logger.debug?.(`Registered root resource: ${path}`);
 			}
 			recurseForResources(scope, resourceModule, root);
+			// Record the load so a later re-`add` of this same file (a redeploy re-scan) is treated
+			// as a change and requests a restart rather than silently re-serving stale cached code.
+			loadedResourceFiles.add(entryEvent.absolutePath);
 			// A JS resource that extends an exported @table is the one carrying author opt-ins
 			// (`static mcpTools`/`mcpPrompts`), and it registers here — after the schema-derived
 			// table class and after the MCP component's boot scan. Signal so listing surfaces

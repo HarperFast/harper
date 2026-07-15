@@ -129,6 +129,85 @@ describe('jsResource', () => {
 		);
 	});
 
+	it('requests a restart when an already-loaded file is re-added (redeploy re-scan)', async () => {
+		// A redeploy pauses/resumes the watcher; the fresh chokidar scan re-emits every existing
+		// file as `add`, including one whose contents just changed. The first add loads the module;
+		// the second add for the same path must be treated like a change — flag a restart and NOT
+		// re-import stale cached code (harper#1817).
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const resourceFile = join(testDir, 'resources.js');
+		writeFileSync(resourceFile, 'export default { get() {} };');
+
+		let capturedHandler;
+		const importSpy = spy(async () => ({ default: { get() {} } }));
+		const mockScope = {
+			handleEntry: spy((handler) => {
+				capturedHandler = handler;
+			}),
+			resources: new Map(),
+			logger: { warn: spy(), debug: spy(), error: spy() },
+			requestRestart: spy(),
+			import: importSpy,
+		};
+
+		await handleApplication(mockScope);
+
+		const addEvent = {
+			entryType: 'file',
+			eventType: 'add',
+			absolutePath: resourceFile,
+			urlPath: '/resources.js',
+		};
+
+		// Initial load: registers, no restart.
+		await capturedHandler(addEvent);
+		assert.equal(mockScope.requestRestart.callCount, 0, 'initial add should not request a restart');
+		assert.equal(importSpy.callCount, 1, 'initial add should import the module once');
+
+		// Redeploy re-scan: same file re-emitted as `add` → treat like a change.
+		await capturedHandler(addEvent);
+		assert.equal(mockScope.requestRestart.callCount, 1, 're-add of a loaded file should request a restart');
+		assert.equal(importSpy.callCount, 1, 're-add should NOT re-import (avoids serving stale cached code)');
+	});
+
+	it('loads a genuinely new file added at runtime without requesting a restart', async () => {
+		// A first-time `add` for a path never seen before (e.g. a new resource file dropped in at
+		// runtime) must still hot-load without forcing a restart — only re-adds of known files do.
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let capturedHandler;
+		const importSpy = spy(async () => ({ default: { get() {} } }));
+		const mockScope = {
+			handleEntry: spy((handler) => {
+				capturedHandler = handler;
+			}),
+			resources: new Map(),
+			logger: { warn: spy(), debug: spy(), error: spy() },
+			requestRestart: spy(),
+			import: importSpy,
+		};
+
+		await handleApplication(mockScope);
+
+		await capturedHandler({
+			entryType: 'file',
+			eventType: 'add',
+			absolutePath: join(testDir, 'first.js'),
+			urlPath: '/first.js',
+		});
+		await capturedHandler({
+			entryType: 'file',
+			eventType: 'add',
+			absolutePath: join(testDir, 'second.js'),
+			urlPath: '/second.js',
+		});
+
+		assert.equal(mockScope.requestRestart.callCount, 0, 'distinct new files should not request a restart');
+		assert.equal(importSpy.callCount, 2, 'each distinct new file should be imported');
+	});
+
 	it('exposes an exported defineTable handle as an endpoint', async () => {
 		// `defineTable` registers eagerly at import time; the handle is a real table class, so the
 		// existing export walk exposes it — the code-first analog of GraphQL's @export, and the same
