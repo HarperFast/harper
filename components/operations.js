@@ -532,22 +532,20 @@ async function deployComponent(req) {
 			const validationScopes = new Set();
 			// The MCP quota handler is a process-wide singleton, not owned by a Scope, so a candidate's
 			// top-level `server.setMcpQuotaHandler(...)` would otherwise outlive this throwaway load and
-			// alter live quota enforcement on a failed/rolled-back deploy. Snapshot and restore it.
-			const { getMcpQuotaHandler, setMcpQuotaHandler } = require('./mcp/quota.ts');
-			const savedQuotaHandler = getMcpQuotaHandler();
-			const validation = (async () => {
+			// alter live quota enforcement on a failed/rolled-back deploy. Preserve it across the load.
+			const { withMcpQuotaHandlerPreserved } = require('./mcp/quota.ts');
+			const validation = withMcpQuotaHandlerPreserved(async () => {
 				try {
 					await componentLoader.loadComponent(application.dirPath, pseudoResources, undefined, {
 						collectScopes: validationScopes,
 					});
 				} finally {
-					setMcpQuotaHandler(savedQuotaHandler);
 					const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
 					for (const result of closeResults) {
 						if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
 					}
 				}
-			})();
+			});
 			// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
 			// disposing — a plugin may start a native runtime in handleApplication — before realExit.
 			trackScopeClose(validation);

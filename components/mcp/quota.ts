@@ -77,12 +77,18 @@ export function setMcpQuotaHandler(handler: McpQuotaHandler | undefined): void {
 }
 
 /**
- * The currently-registered handler. Used by deploy pre-flight validation to snapshot
- * and restore around a throwaway candidate load, so a candidate's `setMcpQuotaHandler`
- * (or a failed deploy) can't leave its policy — or `undefined` — active on the live worker.
+ * Run `fn` with the registered handler snapshotted and restored afterward (even if `fn` throws).
+ * Deploy pre-flight validation loads throwaway candidate component code that may call
+ * `setMcpQuotaHandler` (or clear it); wrapping that load in this keeps a candidate's policy — or a
+ * failed/rolled-back deploy — from altering live quota enforcement on this worker.
  */
-export function getMcpQuotaHandler(): McpQuotaHandler | undefined {
-	return quotaHandler;
+export async function withMcpQuotaHandlerPreserved<T>(fn: () => Promise<T>): Promise<T> {
+	const saved = quotaHandler;
+	try {
+		return await fn();
+	} finally {
+		quotaHandler = saved;
+	}
 }
 
 /**
