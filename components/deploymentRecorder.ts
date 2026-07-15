@@ -15,7 +15,7 @@ import { Readable, Transform, pipeline } from 'node:stream';
 import { databases } from '../resources/databases.ts';
 import { createBlob, isSaving, deleteBlob } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import type { RegistryCredentialReference } from './secretOperations.ts';
+import type { CredentialReference } from './secretOperations.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { hostname } from 'node:os';
@@ -62,10 +62,11 @@ interface CreateOptions {
 	user?: string;
 	restart_mode?: 'immediate' | 'rolling' | null;
 	rollback_of?: string | null;
-	// Deploy credentials in reference form (`{ registry, secret, scope? }`) — never a literal token.
-	// Kept so a rollback can re-resolve the credential from hdb_secret without the operator
-	// re-supplying it. Null when the deploy used no credentials or a no-custody transient token.
-	credentials?: RegistryCredentialReference[] | null;
+	// Deploy credentials in reference form (`{ registry, secret, scope? }` / `{ host, secret,
+	// username? }`) — never a literal token. Kept so a rollback can re-resolve the credential from
+	// hdb_secret without the operator re-supplying it. Null when the deploy used no credentials or a
+	// no-custody transient token.
+	credentials?: CredentialReference[] | null;
 	emitter?: ProgressEmitter;
 }
 
