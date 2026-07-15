@@ -611,7 +611,18 @@ async function deployComponent(req) {
 
 			response.restartJobId = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-		} else response.message = `Successfully deployed: ${application.name}`;
+		} else {
+			// Deployed without restarting: the new/updated component's routes are not live until
+			// Harper restarts, so mark a restart as needed — mirroring how a watched-file change
+			// flips this same flag. This is the setter only; it does not itself restart. It makes
+			// get_status report restartRequired:true and lets the REST route-miss path surface the
+			// actionable "needs a restart" 404 for a freshly deployed, never-loaded component
+			// (harper#674). Runs per-node: a peer applying the replicated deploy sets its own flag
+			// the same way, since the component is unloaded there too (no new cross-node signal).
+			const { requestRestart } = require('./requestRestart.ts');
+			requestRestart();
+			response.message = `Successfully deployed: ${application.name}`;
+		}
 
 		// Replication failures don't reject replicateOperation — they surface as 'failed'
 		// entries in peer_results. By default, treat any failed peer as an overall deploy
