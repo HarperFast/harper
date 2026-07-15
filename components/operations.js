@@ -612,15 +612,24 @@ async function deployComponent(req) {
 			response.restartJobId = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else {
-			// Deployed without restarting: the new/updated component's routes are not live until
-			// Harper restarts, so mark a restart as needed — mirroring how a watched-file change
-			// flips this same flag. This is the setter only; it does not itself restart. It makes
-			// get_status report restartRequired:true and lets the REST route-miss path surface the
-			// actionable "needs a restart" 404 for a freshly deployed, never-loaded component
-			// (harper#674). Runs per-node: a peer applying the replicated deploy sets its own flag
-			// the same way, since the component is unloaded there too (no new cross-node signal).
-			const { requestRestart } = require('./requestRestart.ts');
-			requestRestart();
+			// Deployed without restarting: for a component that had no directory before this
+			// deploy — genuinely new, never loaded — its routes cannot be live until Harper
+			// restarts, so mark a restart as needed. This is the setter only; it does not itself
+			// restart. It makes get_status report restartRequired:true and lets the REST
+			// route-miss path surface the actionable "needs a restart" 404 for a freshly deployed,
+			// never-loaded component (harper#674). Runs per-node: a peer applying the replicated
+			// deploy checks its own local isNewComponent, since directory state (and therefore
+			// whether the component was already active) can differ per node.
+			//
+			// An existing, already-active component being redeployed does NOT force a restart
+			// here: some updates (e.g. static files only) may not need one at all, and when one
+			// genuinely is needed, that component's already-running file watcher (Scope/
+			// EntryHandler, see deployLifecycle.ts) independently detects the post-deploy file
+			// changes and requests the restart itself.
+			if (application.isNewComponent) {
+				const { requestRestart } = require('./requestRestart.ts');
+				requestRestart();
+			}
 			response.message = `Successfully deployed: ${application.name}`;
 		}
 
