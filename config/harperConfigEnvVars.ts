@@ -317,7 +317,7 @@ function warnEmptyObjectDropped(path: string): void {
 	);
 }
 
-function flattenObject(obj: ConfigObject, prefix = ''): Record<string, any> {
+function flattenObject(obj: ConfigObject, prefix = '', warnOnEmptyDrop = true): Record<string, any> {
 	const result: Record<string, any> = {};
 
 	for (const key in obj) {
@@ -332,9 +332,11 @@ function flattenObject(obj: ConfigObject, prefix = ''): Record<string, any> {
 			// overrides under http", restoring originals) — but it also means a bare
 			// `componentName: {}` carries no signal at all, which has silently confused
 			// users (#1618). Warn once per path so the drop is visible; use an explicit
-			// value (e.g. `enabled: true`) to convey presence.
-			if (Object.keys(value).length === 0) warnEmptyObjectDropped(newKey);
-			Object.assign(result, flattenObject(value, newKey));
+			// value (e.g. `enabled: true`) to convey presence. The base config file is
+			// exempt (warnOnEmptyDrop=false): its empty objects are user content and are
+			// restored after composition rather than dropped (#1726 review).
+			if (Object.keys(value).length === 0 && warnOnEmptyDrop) warnEmptyObjectDropped(newKey);
+			Object.assign(result, flattenObject(value, newKey, warnOnEmptyDrop));
 		} else {
 			// Store primitive, array, or directive ({ $union: [...] }) as a leaf
 			result[newKey] = value;
@@ -342,6 +344,34 @@ function flattenObject(obj: ConfigObject, prefix = ''): Record<string, any> {
 	}
 
 	return result;
+}
+
+/**
+ * Re-add empty-object paths from the base config file that `flattenObject` dropped
+ * during composition. The base file is user content, not an override layer: a bare
+ * `componentName: {}` there is a real (empty) scope declaration, unlike an env-layer
+ * `{}` which means "no overrides here". Only paths the composition did not otherwise
+ * populate are restored — an env layer that set or replaced the path wins.
+ */
+function restoreBaseEmptyObjects(source: ConfigObject, target: ConfigObject): void {
+	for (const key in source) {
+		if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+		const value = source[key];
+		if (!isPlainObject(value) || isDirectiveObject(value)) continue;
+		if (Object.keys(value).length === 0) {
+			if (!(key in target)) target[key] = {};
+		} else if (key in target) {
+			// Recurse only while the composed side is still an object; a non-object env
+			// replacement wins over the base subtree.
+			if (isPlainObject(target[key])) restoreBaseEmptyObjects(value, target[key] as ConfigObject);
+		} else {
+			// The subtree produced no leaves at all (its only content was empty objects,
+			// possibly nested) — rebuild just the empty-object skeleton.
+			const skeleton: ConfigObject = {};
+			restoreBaseEmptyObjects(value, skeleton);
+			if (Object.keys(skeleton).length > 0) target[key] = skeleton;
+		}
+	}
 }
 
 /**
@@ -756,20 +786,25 @@ function cleanupRemovedEnvVar(
  */
 export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 	const result: ConfigObject = {};
+	const baseLayer = cloneDeep(base);
 	const layers: (ConfigObject | null)[] = [
 		parseConfigEnvVar(process.env.HARPER_DEFAULT_CONFIG, 'HARPER_DEFAULT_CONFIG'),
-		cloneDeep(base),
+		baseLayer,
 		parseConfigEnvVar(process.env.HARPER_CONFIG, 'HARPER_CONFIG'),
 		parseConfigEnvVar(process.env.HARPER_SET_CONFIG, 'HARPER_SET_CONFIG'),
 	];
 
 	for (const layer of layers) {
 		if (!layer) continue;
-		for (const [p, value] of Object.entries(flattenObject(layer))) {
+		for (const [p, value] of Object.entries(flattenObject(layer, '', layer !== baseLayer))) {
 			// directive leaves compose against the value accumulated by prior layers
 			setNestedValue(result, p, resolveLeafValue(getNestedValue(result, p), value, p));
 		}
 	}
+
+	// The base file's empty objects are user content (e.g. a bare `componentName: {}`
+	// scope) — restore the ones composition didn't otherwise populate (#1726 review).
+	restoreBaseEmptyObjects(baseLayer, result);
 
 	return result;
 }
