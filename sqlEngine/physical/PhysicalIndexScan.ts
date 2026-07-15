@@ -20,6 +20,14 @@ interface SearchableTable {
 export interface PhysicalIndexScanOptions {
 	conditions: ConditionNode[];
 	operator: 'and' | 'or';
+	/**
+	 * Set for a sort-driven scan (no index-driving predicate; the pushed sort
+	 * provides index order — D-219). Table.search flags a sort-aligned scan as
+	 * needFullScan and would reject it under allowFullScan:false, so it must be
+	 * allowed here. Validated as scannable by validateScannable, so this is not a
+	 * blanket full-scan escape hatch.
+	 */
+	allowFullScan?: boolean;
 }
 
 export function physicalIndexScan(scan: LogicalScan, opts: PhysicalIndexScanOptions): PhysicalOp {
@@ -45,7 +53,7 @@ async function* executeScan(
 	const resource = scan.boundTable?.resource as SearchableTable | undefined;
 	if (!resource) throw new Error('PhysicalIndexScan: scan has no boundTable.resource');
 
-	const target: Record<string, unknown> = { allowFullScan: false };
+	const target: Record<string, unknown> = { allowFullScan: opts.allowFullScan === true };
 	// Only attach conditions/operator when there is at least one — Table.search
 	// rejects an empty `and`/`or` group ("requires at least one condition"). A
 	// scan with no conditions is driven by its pushed sort/limit alone.

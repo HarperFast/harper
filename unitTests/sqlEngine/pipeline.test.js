@@ -392,11 +392,20 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		assert.strictEqual(mockTable._lastTarget.limit, undefined);
 	});
 
-	it('rejects a no-WHERE ORDER BY (full ordered scan) without allowFullScan', async () => {
-		// A pushed sort with no index-driving condition is a full table scan; the
-		// engine must reject (→ legacy fallback), not emit an empty `and` group that
-		// Table.search throws on.
-		await assert.rejects(() => runSql('SELECT name FROM dev.user ORDER BY name'), EngineUnsupportedError);
+	it('serves a no-WHERE ORDER BY on an INDEXED attribute via index order (D-219)', async () => {
+		// A sort on an indexed attribute drives the scan through the index's natural
+		// order — Table.search flags it needFullScan, so the scan must run with
+		// allowFullScan:true and push the sort (no separate in-memory sort).
+		await runSql('SELECT name FROM dev.user ORDER BY name LIMIT 2');
+		assert.strictEqual(mockTable._lastTarget.allowFullScan, true);
+		assert.deepStrictEqual(mockTable._lastTarget.sort, { attribute: 'name', descending: false });
+		assert.strictEqual(mockTable._lastTarget.limit, 2);
+		assert.strictEqual(mockTable._lastTarget.conditions, undefined);
+	});
+
+	it('rejects a no-WHERE ORDER BY on an UNINDEXED attribute (no index to order by)', async () => {
+		// `city` is not indexed, so there is no index order to stream — must fall back.
+		await assert.rejects(() => runSql('SELECT name FROM dev.user ORDER BY city'), EngineUnsupportedError);
 	});
 
 	it('rejects unindexed-only WHERE without allowFullScan', async () => {

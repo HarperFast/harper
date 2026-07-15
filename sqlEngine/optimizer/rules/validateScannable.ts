@@ -14,7 +14,7 @@
 
 import type { LogicalPlan, LogicalScan } from '../../logical/op.ts';
 import { EngineUnsupportedError } from '../../errors.ts';
-import { whereToConditions, conditionUsesIndex } from '../whereToConditions.ts';
+import { whereToConditions, conditionUsesIndex, sortDrivesIndex } from '../whereToConditions.ts';
 import { getSqlEngineConfig } from '../../config.ts';
 
 export function validateScannable(plan: LogicalPlan): LogicalPlan | null {
@@ -46,6 +46,10 @@ function validateScan(scan: LogicalScan, allowFullScan: boolean): void {
 	// allowFullScan:false, so reject here too and let 'auto' fall back to legacy.
 	const { conditions } = whereToConditions(scan.pushedFilter, scan.boundTable?.attributes);
 	if (conditions.some((c) => conditionUsesIndex(c, scan.boundTable?.attributes))) return;
+	// A sort pushed onto an indexed attribute drives the scan via the index's
+	// natural order (D-219): rows stream ordered from the index and a pushed LIMIT
+	// early-terminates, so it's a valid scan even with no index-driving predicate.
+	if (sortDrivesIndex(scan.pushedSort, scan.boundTable?.attributes)) return;
 	throw new EngineUnsupportedError(
 		`scan on "${scan.table.database}.${scan.table.table}" has no usable index condition`,
 		scan.pushedFilter

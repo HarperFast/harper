@@ -207,6 +207,26 @@ export function conditionUsesIndex(cond: ConditionNode, attributes: IndexedAttri
 	return false;
 }
 
+/**
+ * Whether a pushed sort can itself drive an index-ordered scan: its primary key
+ * is a single column on an indexed attribute. Table.search aligns such a sort to
+ * the index's natural order (resources/Table.ts — it adds a `comparator: 'sort'`
+ * condition), so the rows stream from the index already ordered and a pushed
+ * LIMIT early-terminates (O(window)) — no separate in-memory sort. Shared by the
+ * R8 validateScannable rule and the physical scan builder so scannability and
+ * the `allowFullScan` flag can't drift. NOTE: because Table.search flags the
+ * sort scan as `needFullScan`, the physical scan must pass `allowFullScan: true`
+ * for it — see physicalIndexScan.
+ */
+export function sortDrivesIndex(
+	pushedSort: { expr: ExprNode }[] | undefined,
+	attributes: IndexedAttribute[] | undefined
+): boolean {
+	const key = pushedSort?.[0];
+	if (!key || key.expr.kind !== 'column') return false;
+	return attributes?.find((x) => x.name === (key.expr as { name: string }).name)?.indexed === true;
+}
+
 function flattenAnd(expr: ExprNode): ExprNode[] {
 	if (expr.kind === 'logical' && expr.op === 'and') {
 		const out: ExprNode[] = [];
