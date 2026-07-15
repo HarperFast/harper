@@ -9,27 +9,95 @@ name: Next.js Integration Tests (downstream)
 # as `harper_ref`; the reusable workflow checks out + builds harper at that ref and
 # resolves it as the `harper` the test harness and fixtures run against.
 #
-# Scoped to PRs that touch the HTTP / resource / server code paths the adapter
-# exercises (tune the paths filter as coverage evolves; caching lives under
-# resources/**, there's no separate top-level cache/ dir).
+# Required-check design: this workflow triggers on EVERY pull_request (no `paths:`
+# filter on the trigger). A trigger-level paths filter cannot back a required status
+# check -- GitHub has no "required only if it runs" semantic, so a PR that skips the
+# workflow would wait forever for a check that never reports. Instead the workflow
+# always runs and gates INTERNALLY: the `changes` job decides whether adapter-relevant
+# paths changed, the heavy `nextjs-integration` job runs only when they did, and the
+# always-running `required` gate job reports the single stable status. Mark
+# `required` (job name: "Next.js adapter integration required") as the required check
+# in branch protection -- it reports success both when the suite passes and when it is
+# skipped as irrelevant, and fails only when the suite actually fails.
 
 on:
   pull_request:
-    paths:
-      - 'resources/**'
-      - 'server/**'
-      - 'dataLayer/**'
-      - 'components/**'
-      - 'config/**'
-      - 'package.json'
-      - 'package-lock.json'
 
 permissions:
   contents: read
 
 jobs:
+  # Decide whether this PR touches paths the Next.js adapter exercises. Keep this list
+  # in sync with the code paths the adapter depends on (caching lives under resources/**,
+  # there's no separate top-level cache/ dir). Uses a plain `git diff` against the PR
+  # base so no third-party action is pulled in for the decision.
+  changes:
+    name: Detect adapter-relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check changed paths
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          echo "Changed files:"
+          echo "$changed"
+          # Effective path list mirrors the paths the trigger used to filter on:
+          #   resources/** server/** dataLayer/** components/** config/**
+          #   package.json package-lock.json
+          if echo "$changed" | grep -Eq '^(resources|server|dataLayer|components|config)/|^package(-lock)?\.json$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "Adapter-relevant paths changed -> integration suite will run."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "No adapter-relevant paths changed -> integration suite will be skipped."
+          fi
+
+  # Heavy path: only when relevant files changed. When skipped, this caller job
+  # contributes no check runs of its own -- which is exactly why the `required` gate
+  # job below exists to provide the stable, always-reporting status.
   nextjs-integration:
     name: Next.js adapter integration (against this PR's harper)
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     uses: HarperFast/nextjs/.github/workflows/integration-tests.yml@d4b5ac951dafaaf8c8a622434d1a09d997a32bf5 # main 2026-07 (nextjs#49 merge SHA)
     with:
       harper_ref: ${{ github.event.pull_request.head.sha }}
+
+  # Always runs, so it always reports -- this is the check to mark REQUIRED in branch
+  # protection. Passes when the suite passed OR was skipped as irrelevant; fails only
+  # when the suite actually failed/was cancelled, or when the filter job errored.
+  required:
+    name: Next.js adapter integration required
+    needs: [changes, nextjs-integration]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate integration result
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          INTEGRATION_RESULT: ${{ needs.nextjs-integration.result }}
+        run: |
+          echo "changes=$CHANGES_RESULT integration=$INTEGRATION_RESULT"
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "::error::path-filter job did not succeed ($CHANGES_RESULT)"
+            exit 1
+          fi
+          case "$INTEGRATION_RESULT" in
+            success)
+              echo "Next.js integration suite passed."
+              ;;
+            skipped)
+              echo "Next.js integration suite skipped (no adapter-relevant paths changed) -- required check satisfied."
+              ;;
+            *)
+              echo "::error::Next.js integration suite result: $INTEGRATION_RESULT"
+              exit 1
+              ;;
+          esac
