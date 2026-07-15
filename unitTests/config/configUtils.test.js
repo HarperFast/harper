@@ -222,6 +222,151 @@ describe('Test configUtils module', () => {
 		});
 	});
 
+	describe('Test ensureConfigKeysPresent function', () => {
+		const { ensureConfigKeysPresent } = config_utils_rw;
+		const ENSURE_DIR = path.join(DIRNAME, 'yaml', 'ensure-keys');
+		const ENSURE_CONFIG_PATH = path.join(ENSURE_DIR, hdbTerms.HARPER_CONFIG_FILE);
+
+		beforeEach(() => {
+			fs.ensureDirSync(ENSURE_DIR);
+			// getConfigFilePath() resolves the config file from the CLI/env root; point it at our
+			// temp dir. resolvePath() passes an absolute path through unchanged.
+			sandbox.stub(common_utils, 'getEnvCliRootPath').returns(ENSURE_DIR);
+		});
+
+		afterEach(() => {
+			sandbox.restore();
+			fs.removeSync(ENSURE_DIR);
+		});
+
+		function writeConfig(yaml) {
+			fs.writeFileSync(ENSURE_CONFIG_PATH, yaml);
+		}
+
+		it('adds an empty block for a missing key and reports it', () => {
+			writeConfig('replication: {}\nanalytics:\n  enabled: true\n');
+			const added = ensureConfigKeysPresent(['secretCustody']);
+			expect(added).to.deep.equal(['secretCustody']);
+			const doc = YAML.parse(fs.readFileSync(ENSURE_CONFIG_PATH, 'utf8'));
+			expect(doc).to.have.property('secretCustody');
+			expect(doc.secretCustody).to.deep.equal({});
+		});
+
+		it('never touches an existing key or its value', () => {
+			writeConfig('analytics:\n  enabled: true\n');
+			ensureConfigKeysPresent(['analytics']);
+			const doc = YAML.parse(fs.readFileSync(ENSURE_CONFIG_PATH, 'utf8'));
+			// existing value preserved, not overwritten with {}
+			expect(doc.analytics).to.deep.equal({ enabled: true });
+		});
+
+		it('only adds the keys that are missing', () => {
+			writeConfig('replication: {}\n');
+			const added = ensureConfigKeysPresent(['replication', 'secretCustody', 'analytics']);
+			expect(added.sort()).to.deep.equal(['analytics', 'secretCustody']);
+		});
+
+		it('is idempotent — a second run adds nothing', () => {
+			writeConfig('replication: {}\n');
+			expect(ensureConfigKeysPresent(['secretCustody'])).to.deep.equal(['secretCustody']);
+			expect(ensureConfigKeysPresent(['secretCustody'])).to.deep.equal([]);
+		});
+
+		it('does not rewrite the file when no keys are missing', () => {
+			writeConfig('secretCustody: {}\n');
+			const before = fs.statSync(ENSURE_CONFIG_PATH).mtimeMs;
+			const added = ensureConfigKeysPresent(['secretCustody']);
+			expect(added).to.deep.equal([]);
+			expect(fs.statSync(ENSURE_CONFIG_PATH).mtimeMs).to.equal(before);
+		});
+
+		it('ignores empty/falsy key names', () => {
+			writeConfig('replication: {}\n');
+			expect(ensureConfigKeysPresent(['', undefined])).to.deep.equal([]);
+		});
+
+		it('returns [] when the config file does not exist', () => {
+			// no writeConfig — dir exists but file does not
+			expect(ensureConfigKeysPresent(['secretCustody'])).to.deep.equal([]);
+		});
+
+		it('mirrors added keys into the memoized configObj so they take effect on the current boot', () => {
+			writeConfig('replication: {}\n');
+			// Simulate config already memoized earlier in boot (before this backfill runs).
+			const restore = config_utils_rw.__set__('configObj', { replication: {} });
+			try {
+				ensureConfigKeysPresent(['secretCustody']);
+				expect(config_utils_rw.__get__('configObj')).to.have.property('secretCustody');
+				expect(config_utils_rw.__get__('configObj').secretCustody).to.deep.equal({});
+			} finally {
+				restore();
+			}
+		});
+	});
+
+	describe('Test ensureBuiltInComponentConfigKeys function', () => {
+		const { ensureBuiltInComponentConfigKeys } = config_utils_rw;
+		const BI_DIR = path.join(DIRNAME, 'yaml', 'ensure-builtins');
+		const BI_CONFIG_PATH = path.join(BI_DIR, hdbTerms.HARPER_CONFIG_FILE);
+		let savedBuiltIns;
+
+		beforeEach(() => {
+			fs.ensureDirSync(BI_DIR);
+			sandbox.stub(common_utils, 'getEnvCliRootPath').returns(BI_DIR);
+			savedBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
+		});
+
+		afterEach(() => {
+			sandbox.restore();
+			fs.removeSync(BI_DIR);
+			if (savedBuiltIns === undefined) delete process.env.HARPER_BUILTIN_COMPONENTS;
+			else process.env.HARPER_BUILTIN_COMPONENTS = savedBuiltIns;
+		});
+
+		function writeConfig(yaml) {
+			fs.writeFileSync(BI_CONFIG_PATH, yaml);
+		}
+
+		it('backfills secretCustody when it is a registered built-in and the key is missing', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS =
+				'replication=@/dist/replication/replicator.js,secretCustody=@/dist/security/keyCustody.js';
+			writeConfig('replication: {}\n');
+			expect(ensureBuiltInComponentConfigKeys()).to.deep.equal(['secretCustody']);
+			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
+			expect(doc.secretCustody).to.deep.equal({});
+		});
+
+		it('never re-adds a long-standing built-in absent from the config (e.g. admin-removed replication)', () => {
+			// replication is registered but NOT in the new-built-in backfill list, so a config that
+			// omits it (operator disabled it by removing the block) must stay without it.
+			process.env.HARPER_BUILTIN_COMPONENTS =
+				'replication=@/dist/replication/replicator.js,secretCustody=@/dist/security/keyCustody.js';
+			writeConfig('analytics: {}\n');
+			const added = ensureBuiltInComponentConfigKeys();
+			expect(added).to.deep.equal(['secretCustody']);
+			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
+			expect(doc).to.not.have.property('replication');
+		});
+
+		it('adds nothing on OSS core, which registers no built-ins', () => {
+			delete process.env.HARPER_BUILTIN_COMPONENTS;
+			writeConfig('replication: {}\n');
+			expect(ensureBuiltInComponentConfigKeys()).to.deep.equal([]);
+		});
+
+		it('adds nothing when secretCustody is not registered in this runtime', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'replication=@/dist/replication/replicator.js';
+			writeConfig('replication: {}\n');
+			expect(ensureBuiltInComponentConfigKeys()).to.deep.equal([]);
+		});
+
+		it('is a no-op when secretCustody is already present', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'secretCustody=@/dist/security/keyCustody.js';
+			writeConfig('secretCustody: {}\n');
+			expect(ensureBuiltInComponentConfigKeys()).to.deep.equal([]);
+		});
+	});
+
 	describe('Test getDefaultConfig function', () => {
 		const expected_flat_default_config_obj = {
 			analytics_aggregateperiod: 60,
