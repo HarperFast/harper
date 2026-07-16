@@ -13,10 +13,9 @@ import { httpRequest } from '../utility/common_utils.ts';
 import { initConfig } from '../config/configUtils.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import {
-	backupDirForDatabase,
 	createBackupOffline,
 	deleteBackupOffline,
-	listBackupsInDir,
+	listBackupsOffline,
 	purgeBackupsOffline,
 	restoreBackupOffline,
 	verifyBackupOffline,
@@ -65,7 +64,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 			result = await createBackupOffline(databaseName);
 			break;
 		case OPERATIONS_ENUM.LIST_BACKUPS:
-			result = await listBackupsInDir(backupDirForDatabase(databaseName));
+			result = await listBackupsOffline(databaseName);
 			break;
 		case OPERATIONS_ENUM.VERIFY_BACKUP:
 			result = await verifyBackupOffline(databaseName, request.backup_id, request.verify_checksum);

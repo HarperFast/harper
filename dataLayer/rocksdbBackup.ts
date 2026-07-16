@@ -157,13 +157,26 @@ async function findBackup(backupDir: string, backupId: number, databaseName: str
 	return info;
 }
 
+/**
+ * Shape a rocksdb-js BackupInfo into the snake_case response the Operations API exposes — the
+ * binding's fields are camelCase, and `appMetadata` is internal, so it is not passed through.
+ */
+function toBackupResponse(info: BackupInfo): {
+	backup_id: number;
+	timestamp: number;
+	size: number;
+	file_count: number;
+} {
+	return { backup_id: info.backupId, timestamp: info.timestamp, size: info.size, file_count: info.numberFiles };
+}
+
 // --- synchronous operations ---
 
 export async function listBackups(request: any) {
 	const databaseName = getDatabaseName(request);
 	logger.info(`Listing backups for database '${databaseName}'`);
 	requireRocksRootStore(databaseName, OPERATIONS_ENUM.LIST_BACKUPS);
-	return listBackupsInDir(backupDirForDatabase(databaseName));
+	return (await listBackupsInDir(backupDirForDatabase(databaseName))).map(toBackupResponse);
 }
 
 export async function deleteBackup(request: any) {
@@ -221,7 +234,7 @@ export async function createBackup(request: any) {
 	} catch (error) {
 		throw mapLockedError(error, databaseName);
 	}
-	return { database: databaseName, backupId, ...(await describeBackup(backupDir, backupId)) };
+	return { database: databaseName, backup_id: backupId, ...(await describeBackup(backupDir, backupId)) };
 }
 
 /**
@@ -253,7 +266,7 @@ export async function verifyBackup(request: any) {
 	const backupDir = backupDirForDatabase(databaseName);
 	await findBackup(backupDir, backupId, databaseName);
 	await backups.verify(backupDir, backupId, { verifyWithChecksum });
-	return { database: databaseName, backupId, ok: true };
+	return { database: databaseName, backup_id: backupId, ok: true };
 }
 
 export async function validateRestoreBackup(request: any) {
@@ -356,7 +369,7 @@ export async function restoreBackup(request: any) {
 	completeRestore(databaseDir, lockToken);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
 	await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName));
-	return { database: databaseName, backupId };
+	return { database: databaseName, backup_id: backupId };
 }
 
 // After the close broadcast is acknowledged, every worker thread has released its Harper-managed
@@ -460,7 +473,7 @@ export async function createBackupOffline(databaseName: string) {
 		} catch (error) {
 			throw mapLockedError(error, databaseName);
 		}
-		return { database: databaseName, backupId, ...(await describeBackup(backupDir, backupId)) };
+		return { database: databaseName, backup_id: backupId, ...(await describeBackup(backupDir, backupId)) };
 	} finally {
 		database.close();
 	}
@@ -522,7 +535,7 @@ export async function restoreBackupOffline(databaseName: string, backupId?: numb
 		);
 	}
 	completeRestore(databaseDir, lockToken);
-	return { database: databaseName, backupId, restoredTo: databaseDir };
+	return { database: databaseName, backup_id: backupId, restored_to: databaseDir };
 }
 
 function isMissingOrEmptyDir(path: string): boolean {
@@ -536,13 +549,19 @@ function isMissingOrEmptyDir(path: string): boolean {
 
 // --- offline management wrappers (no engine validation: they operate on the directory only) ---
 
+export async function listBackupsOffline(databaseName: string) {
+	validateDatabaseName(databaseName);
+	// map to the same snake_case response shape as the online list_backups operation
+	return (await listBackupsInDir(backupDirForDatabase(databaseName))).map(toBackupResponse);
+}
+
 export async function verifyBackupOffline(databaseName: string, backupId: number, verifyChecksum?: boolean) {
 	validateDatabaseName(databaseName);
 	const verifyWithChecksum = requireBooleanOption(verifyChecksum, 'verify_checksum');
 	const backupDir = backupDirForDatabase(databaseName);
 	await findBackup(backupDir, backupId, databaseName);
 	await backups.verify(backupDir, backupId, { verifyWithChecksum });
-	return { database: databaseName, backupId, ok: true };
+	return { database: databaseName, backup_id: backupId, ok: true };
 }
 
 export async function deleteBackupOffline(databaseName: string, backupId: number) {

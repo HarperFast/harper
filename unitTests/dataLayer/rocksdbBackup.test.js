@@ -11,6 +11,7 @@ const {
 	deleteBackupOffline,
 	getBackupsRoot,
 	listBackupsInDir,
+	listBackupsOffline,
 	purgeBackupsOffline,
 	restoreBackup,
 	restoreBackupOffline,
@@ -97,13 +98,13 @@ describe('rocksdbBackup', function () {
 
 			const first = await createBackupOffline(DB_NAME);
 			assert.strictEqual(first.database, DB_NAME);
-			assert.strictEqual(first.backupId, 1);
+			assert.strictEqual(first.backup_id, 1);
 			assert.ok(first.size > 0, 'size should come from the backups.list match');
 			assert.ok(first.timestamp !== undefined);
 
 			writeRecords([['gamma', { n: 3 }]]);
 			const second = await createBackupOffline(DB_NAME);
-			assert.strictEqual(second.backupId, 2);
+			assert.strictEqual(second.backup_id, 2);
 
 			const backupDir = backupDirForDatabase(DB_NAME);
 			const listed = await listBackupsInDir(backupDir);
@@ -112,14 +113,20 @@ describe('rocksdbBackup', function () {
 				[1, 2]
 			);
 
+			// the exposed list is snake_case (backup_id/file_count), not the binding's camelCase
+			const exposed = await listBackupsOffline(DB_NAME);
+			assert.deepStrictEqual(Object.keys(exposed[0]).sort(), ['backup_id', 'file_count', 'size', 'timestamp']);
+			assert.strictEqual(exposed[0].backup_id, 1);
+			assert.ok(exposed[0].file_count >= 1, 'file_count should be mapped from numberFiles');
+
 			const verified = await verifyBackupOffline(DB_NAME, 1, true);
-			assert.deepStrictEqual(verified, { database: DB_NAME, backupId: 1, ok: true });
+			assert.deepStrictEqual(verified, { database: DB_NAME, backup_id: 1, ok: true });
 
 			// restore the first backup into a separate target database directory
 			const restored = await restoreBackupOffline(DB_NAME, 1, `${DB_NAME}-restored`);
-			assert.strictEqual(restored.backupId, 1);
+			assert.strictEqual(restored.backup_id, 1);
 			const restoredDir = join(storageDir, `${DB_NAME}-restored`);
-			assert.strictEqual(restored.restoredTo, restoredDir);
+			assert.strictEqual(restored.restored_to, restoredDir);
 			assert.strictEqual(checkRestoreState(restoredDir), 'clear');
 			const restoredDb = RocksDatabase.open(restoredDir);
 			try {
@@ -131,7 +138,7 @@ describe('rocksdbBackup', function () {
 
 			// restore latest (no backup_id) in place over the source database
 			const latestRestore = await restoreBackupOffline(DB_NAME);
-			assert.strictEqual(latestRestore.backupId, 2);
+			assert.strictEqual(latestRestore.backup_id, 2);
 			assert.strictEqual(checkRestoreState(databaseDir), 'clear');
 			const inPlaceDb = RocksDatabase.open(databaseDir);
 			try {
