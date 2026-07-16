@@ -8,7 +8,6 @@ import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { when } from '../utility/when.ts';
-import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
@@ -53,6 +52,209 @@ export function transactionOpenTooLongError(): ServerError {
 }
 
 type MaybePromise<T> = T | Promise<T>;
+
+// ── Commit-settlement watchdog (issue #1785) ─────────────────────────────────────────────────────
+// Under heavy CPU throttling (cgroup CFS quotas — CPU-limited containers, macOS App Nap), two
+// distinct async-delivery links in the commit path were observed to be silently severed: the
+// native commit's completion callback (commit succeeded and durable, but the JS promise never
+// settled), and the retry-backoff timer (delay scheduled, never fired). Either loss orphans the
+// caller's commit promise forever: no error, no timeout, an ingest pipeline wedged indefinitely.
+// The upstream primitive has not been isolated (bare timers/threadpool under identical throttle
+// never lose wakeups), so the invariant is enforced externally: every native commit/abort
+// resolution and every retry backoff settles within bounded time, whichever internal link dies.
+// A single lazy, unref'd interval sweeps both registries; interval loss self-heals on later ticks.
+
+// Deadline for a native commit/abort resolution to settle. Derived from the queue-admission
+// threshold: anything past 2× that is far outside a plausible in-flight commit and indicates a
+// lost completion rather than a slow one.
+let commitSettleTimeout = 2 * MAX_OUTSTANDING_TXN_DURATION;
+const WATCHDOG_SWEEP_INTERVAL = 5000;
+// A backoff timer this far past due is treated as lost and fired by the sweeper instead.
+const BACKOFF_RECOVERY_GRACE = 2000;
+const SOURCE_APPLY_OVERDUE_LOG_INTERVAL = 60_000;
+
+type CommitWatch = {
+	kind: 'commit' | 'abort';
+	start: number;
+	nativeTxn: RocksTransaction | null;
+	dbTxn: DatabaseTransaction | null;
+	resolve: (value?: number | void) => void;
+	reject: (error: Error) => void;
+	lastOverdueLog: number;
+};
+
+// When the sweeper recovers an entry whose native promise never settles, that promise's reaction
+// closures still capture the entry forever; null the heavy refs so a lost completion does not
+// permanently retain the transaction's write batch and native handle.
+function releaseWatch(watch: CommitWatch) {
+	watch.nativeTxn = null;
+	watch.dbTxn = null;
+}
+type BackoffWatch = {
+	due: number;
+	fire: (recovered: boolean) => void;
+};
+const commitWatches = new Set<CommitWatch>();
+const backoffWatches = new Set<BackoffWatch>();
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+function ensureWatchdogTimer() {
+	if (!watchdogTimer) watchdogTimer = setInterval(sweepCommitWatchdog, WATCHDOG_SWEEP_INTERVAL).unref();
+}
+function maybeStopWatchdogTimer() {
+	if (watchdogTimer && commitWatches.size === 0 && backoffWatches.size === 0) {
+		clearInterval(watchdogTimer);
+		watchdogTimer = null;
+	}
+}
+
+/**
+ * Wraps a native commit/abort resolution so it is guaranteed to settle. The wrapper passes the
+ * native outcome through untouched (including the RETRY_NOW_VALUE sentinel); if the native
+ * completion is never delivered, the sweeper settles the wrapper at the deadline instead.
+ * Exported for unit tests.
+ */
+export function watchCommitSettlement<T>(
+	resolution: Promise<T> | void,
+	nativeTxn: RocksTransaction,
+	dbTxn: DatabaseTransaction,
+	kind: 'commit' | 'abort'
+): Promise<T> | void {
+	if (!(resolution as any)?.then) return resolution as void;
+	return new Promise<T>((resolve, reject) => {
+		const watch: CommitWatch = {
+			kind,
+			start: performance.now(),
+			nativeTxn,
+			dbTxn,
+			resolve: resolve as CommitWatch['resolve'],
+			reject,
+			lastOverdueLog: -Infinity,
+		};
+		commitWatches.add(watch);
+		ensureWatchdogTimer();
+		// Set.delete as the once-guard: whichever of the real settle or the sweeper recovery runs
+		// first removes the entry; the loser sees delete() return false and does nothing.
+		(resolution as Promise<T>).then(
+			(value) => {
+				if (commitWatches.delete(watch)) {
+					maybeStopWatchdogTimer();
+					resolve(value);
+				}
+			},
+			(error) => {
+				if (commitWatches.delete(watch)) {
+					maybeStopWatchdogTimer();
+					reject(error);
+				}
+			}
+		);
+	});
+}
+
+/**
+ * A retry backoff whose continuation survives a lost timer: the sweeper fires any entry overdue
+ * past the grace window, with a once-guard so the late real timer no-ops. Exported for unit tests.
+ */
+export function robustBackoff<T>(ms: number, resume: () => MaybePromise<T>): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const watch: BackoffWatch = {
+			due: performance.now() + ms,
+			fire(recovered: boolean) {
+				if (!backoffWatches.delete(watch)) return;
+				clearTimeout(timer);
+				maybeStopWatchdogTimer();
+				if (recovered) {
+					harperLogger.error(
+						`Commit retry backoff timer (${ms}ms) was lost and recovered by the settlement watchdog (issue #1785)`
+					);
+				}
+				try {
+					resolve(resume());
+				} catch (error) {
+					reject(error);
+				}
+			},
+		};
+		const timer = setTimeout(() => watch.fire(false), ms);
+		backoffWatches.add(watch);
+		ensureWatchdogTimer();
+	});
+}
+
+/**
+ * Sweeps both watchdog registries. `now` is injectable for tests; exported for tests.
+ */
+export function sweepCommitWatchdog(now = performance.now()) {
+	for (const watch of backoffWatches) {
+		if (now > watch.due + BACKOFF_RECOVERY_GRACE) watch.fire(true);
+	}
+	for (const watch of commitWatches) {
+		const age = now - watch.start;
+		// Insertion-ordered Set + monotonic start times: entries after the first still-young one are
+		// younger still. Retained sourceApply lingerers are older than the deadline, so they never
+		// trigger this break — they fall through to their keep-waiting branch below.
+		if (age < commitSettleTimeout) break;
+		// Feature-detected terminal outcome from rocksdb-js (future getter; absent in 2.4.x). When
+		// present, the lost completion is replayed exactly; when absent, only a lost abort is safe
+		// to adjudicate (an abort's loss cannot affect durability).
+		const outcome = (watch.nativeTxn as any)?.outcome;
+		if (watch.kind === 'abort' || outcome === 'committed') {
+			commitWatches.delete(watch);
+			harperLogger.error(
+				`Native ${watch.kind} completion was never delivered (${Math.round(age)}ms); recovered as ${
+					watch.kind === 'abort' ? 'aborted' : 'committed'
+				} by the settlement watchdog (issue #1785)`
+			);
+			watch.resolve(undefined);
+			releaseWatch(watch);
+		} else if (outcome === 'retry-now') {
+			commitWatches.delete(watch);
+			harperLogger.error(
+				`Native commit RETRY_NOW completion was never delivered (${Math.round(age)}ms); recovered by the settlement watchdog (issue #1785)`
+			);
+			watch.resolve(RETRY_NOW_VALUE);
+			releaseWatch(watch);
+		} else if (watch.dbTxn?.sourceApply) {
+			// A source-applied write must never be dropped (no resubscribe/resume path — rejecting an
+			// indeterminate outcome could permanently diverge the node), so keep waiting and surface
+			// rate-limited visibility instead.
+			if (now - watch.lastOverdueLog > SOURCE_APPLY_OVERDUE_LOG_INTERVAL) {
+				watch.lastOverdueLog = now;
+				harperLogger.error(
+					`Source-apply commit settlement is ${Math.round(age)}ms overdue and its outcome is unknown; retaining (never-drop invariant, issue #1785)`
+				);
+			}
+			continue;
+		} else {
+			commitWatches.delete(watch);
+			harperLogger.error(
+				`Commit settlement timed out after ${Math.round(age)}ms with unknown outcome; rejecting (issue #1785)`
+			);
+			watch.reject(
+				new ServerError(
+					`Commit did not settle within ${commitSettleTimeout}ms and its outcome is unknown: the write may or may not be durable. Verify before retrying non-idempotent operations`,
+					503
+				)
+			);
+			releaseWatch(watch);
+		}
+	}
+	maybeStopWatchdogTimer();
+}
+
+/** Test hook, following the setTxnExpiration precedent. Returns the previous value. */
+export function setCommitSettleTimeout(ms: number): number {
+	const previous = commitSettleTimeout;
+	commitSettleTimeout = ms;
+	return previous;
+}
+
+/** Test hook: registry sizes, for asserting cleanup. */
+export function getCommitWatchdogCounts() {
+	return { commits: commitWatches.size, backoffs: backoffWatches.size };
+}
+// ── end commit-settlement watchdog ───────────────────────────────────────────────────────────────
 
 export type CommitOptions = {
 	doneWriting?: boolean;
@@ -327,11 +529,17 @@ export class DatabaseTransaction implements Transaction {
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE.
 							// That sentinel is handled in the resolve callback below and the
 							// cast to Promise<void> is safe — the sentinel never propagates
-							// past that branch.
-							commitResolution = transaction.commit() as Promise<void>;
+							// past that branch. The settlement watch guarantees the resolution
+							// settles even if the native completion is lost (issue #1785).
+							commitResolution = watchCommitSettlement(
+								transaction.commit() as Promise<void>,
+								transaction,
+								this,
+								'commit'
+							);
 						} else {
 							try {
-								commitResolution = transaction.abort();
+								commitResolution = watchCommitSettlement(transaction.abort(), transaction, this, 'abort');
 							} catch {
 								// The transaction has uncommitted writes that were already cleared from
 								// this.writes by a concurrent immediate-commit path (e.g. writes made with
@@ -368,6 +576,13 @@ export class DatabaseTransaction implements Transaction {
 								// at MAX_RETRIES; sourceApply transactions keep retrying with periodic warn.
 								if (this.retries > MAX_RETRIES) {
 									if (!this.sourceApply) {
+										// release the native transaction before giving up so the throw does
+										// not leak its handle (mirrors the ERR_BUSY cap path)
+										try {
+											transaction.abort();
+										} catch (abortError) {
+											harperLogger.debug?.('aborting conflicted transaction after exhausting retries', abortError);
+										}
 										throw new ServerError(
 											`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 										);
@@ -508,8 +723,9 @@ export class DatabaseTransaction implements Transaction {
 											);
 										}
 									}
-									// start delaying, back off to try to space out transactions and avoid excessive conflicts
-									return delay(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS)).then(() =>
+									// start delaying, back off to try to space out transactions and avoid excessive conflicts.
+									// robustBackoff rather than a bare delay: a lost timer here orphans the commit forever (issue #1785)
+									return robustBackoff(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS), () =>
 										this.commit({ ...options, transaction })
 									);
 								}
