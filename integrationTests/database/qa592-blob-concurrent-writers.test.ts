@@ -385,11 +385,21 @@ suite(
 				finalIsWrittenVersion,
 				`LWW DEFECT: final blob sha256 does not match ANY of the ${writtenShas.size} versions this test wrote — spliced/foreign content: ${JSON.stringify(final.body)}`
 			);
-			// The pre-cleanup counts (filesAfterSettle, filesAfterDelete) are recorded as findings only
-			// — the inline path is known-racy under concurrency (that's the point of this test). The
-			// decisive assertion is whether the on-demand sweep reclaims them: if it doesn't, the files
-			// are permanently unreferenced, which IS a genuine leak regardless of the inline path's
-			// (by-design, on-demand-only per D-139) behavior.
+			// Inline reclamation must reach the true floor WITHOUT cleanup_orphan_blobs (#1832): blob
+			// unlink intents are durable (queued in the internal dbi, drained at-least-once), so worker
+			// recycling mid-storm — this suite restarts http_workers right before the storm — no longer
+			// strands superseded files. The manual sweep below stays as a backstop/dryRun check only.
+			ok(
+				filesAfterSettle === 2,
+				`INLINE RECLAMATION DEFECT (#1832): expected the concurrent REPLACE storm to converge to 2 blob files ` +
+					`(control + current hot) without cleanup_orphan_blobs, found ${filesAfterSettle} ` +
+					`(trajectory: ${settleTrajectory.join(' -> ')})`
+			);
+			ok(
+				filesAfterDelete === 1,
+				`INLINE RECLAMATION DEFECT (#1832): expected 1 blob file (control only) after deleting 'hot', ` +
+					`without cleanup_orphan_blobs, found ${filesAfterDelete} (trajectory: ${deleteTrajectory.join(' -> ')})`
+			);
 			ok(
 				filesAfterCleanup === 1,
 				`ORPHANED-FILE DEFECT (GENUINE LEAK): expected exactly 1 blob file (control only) after deleting 'hot' AND running cleanup_orphan_blobs, ` +
