@@ -82,4 +82,6 @@ export interface AgentConfig {
 	allowDestructive: boolean;
 	user: string;
 	componentsScope?: string;
+	/** Operator text appended to the agent's system prompt (after the built-in grounding + best practices). */
+	systemPromptAppend?: string;
 }
