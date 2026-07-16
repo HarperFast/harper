@@ -190,7 +190,7 @@ describe('Tests for delete.js', () => {
 			delete_obj.hash_values = [8, null, 9];
 			let test_err_result = await testUtils.testError(
 				_delete.deleteRecord(delete_obj),
-				"'hash_values' must not contain null"
+				"'hash_values[1]' must not contain null"
 			);
 
 			expect(test_err_result).to.be.true;
