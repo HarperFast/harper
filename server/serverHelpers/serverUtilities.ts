@@ -10,6 +10,7 @@ import customFunctionOperations from '../../components/operations.js';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
+import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
 import * as opAuth from '../../utility/operation_authorization.ts';
 import * as jobs from '../jobs/jobs.ts';
 import * as terms from '../../utility/hdbTerms.ts';
@@ -363,6 +364,9 @@ export async function executeJob(json: OperationRequestBody): Promise<JobResult>
 			};
 		}
 	} catch (err) {
+		// errors that already carry a statusCode (e.g. ClientError from job validation) are
+		// client-facing as-is; wrapping them here would turn a 400/404/409 into a 500
+		if (err instanceof Error && typeof (err as any).statusCode === 'number') throw err;
 		const error = err instanceof Error ? err : null;
 		const message = `There was an error executing job: ${error && 'http_resp_msg' in error ? error.http_resp_msg : err}`;
 		operationLog.error(message);
@@ -548,6 +552,21 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES, new OperationFunctionObject(npmUtilities.installModules));
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_BACKUP, new OperationFunctionObject(schema.getBackup));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.CREATE_BACKUP,
+		new OperationFunctionObject(executeJob, rocksdbBackup.createBackup)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_BACKUPS, new OperationFunctionObject(rocksdbBackup.listBackups));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.VERIFY_BACKUP,
+		new OperationFunctionObject(executeJob, rocksdbBackup.verifyBackup)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.DELETE_BACKUP, new OperationFunctionObject(rocksdbBackup.deleteBackup));
+	opFuncMap.set(terms.OPERATIONS_ENUM.PURGE_BACKUPS, new OperationFunctionObject(rocksdbBackup.purgeBackups));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.RESTORE_BACKUP,
+		new OperationFunctionObject(executeJob, rocksdbBackup.restoreBackup)
+	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS, new OperationFunctionObject(schema.cleanupOrphanBlobs));
 
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.getOp));

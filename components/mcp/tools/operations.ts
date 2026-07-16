@@ -175,6 +175,9 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 	'restart_service',
 	'set_configuration',
 	'remove_node',
+	'restore_backup',
+	'delete_backup',
+	'purge_backups',
 ]);
 
 /**

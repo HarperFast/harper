@@ -133,7 +133,7 @@ export const DATABASES_DIR_NAME = 'database';
 export const LEGACY_DATABASES_DIR_NAME = 'schema';
 /** Transaction directory */
 export const TRANSACTIONS_DIR_NAME = 'transactions';
-/** Backup directory */
+/** Backup directory (config-file backups and managed RocksDB database backups) */
 export const BACKUP_DIR_NAME = 'backup';
 
 /** Key for specifying process specific environment variables */
@@ -297,6 +297,12 @@ export const OPERATIONS_ENUM = {
 	AUDIT_NODE_MODULES: 'audit_node_modules',
 	PURGE_STREAM: 'purge_stream',
 	GET_BACKUP: 'get_backup',
+	CREATE_BACKUP: 'create_backup',
+	LIST_BACKUPS: 'list_backups',
+	VERIFY_BACKUP: 'verify_backup',
+	DELETE_BACKUP: 'delete_backup',
+	PURGE_BACKUPS: 'purge_backups',
+	RESTORE_BACKUP: 'restore_backup',
 	CLEANUP_ORPHAN_BLOBS: 'cleanup_orphan_blobs',
 	GET_ANALYTICS: 'get_analytics',
 	LIST_METRICS: 'list_metrics',
@@ -639,6 +645,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_MAX_READ_TRANSACTION_OPEN_TIME: 'storage_maxReadTransactionOpenTime',
 	STORAGE_DEBUGLONGTRANSACTIONS: 'storage_debugLongTransactions',
 	STORAGE_PATH: 'storage_path',
+	STORAGE_BACKUPPATH: 'storage_backupPath',
 	STORAGE_BLOBPATHS: 'storage_blobPaths',
 	STORAGE_BLOBCLEANUPSPEED: 'storage_blobCleanupSpeed',
 	STORAGE_BLOBREADTIMEOUT: 'storage_blobReadTimeout',
@@ -783,6 +790,9 @@ export const JOB_TYPE_ENUM = {
 	export_to_s3: 'export_to_s3',
 	import_from_s3: 'import_from_s3',
 	restart_service: 'restart_service',
+	create_backup: OPERATIONS_ENUM.CREATE_BACKUP,
+	verify_backup: OPERATIONS_ENUM.VERIFY_BACKUP,
+	restore_backup: OPERATIONS_ENUM.RESTORE_BACKUP,
 } as const;
 
 /** Specifies values for licenses */

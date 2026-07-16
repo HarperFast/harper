@@ -8,7 +8,7 @@ import * as cliOperations from './cliOperations.ts';
 import { packageJson } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-const { SERVICE_ACTIONS_ENUM } = hdbTerms as any;
+const { SERVICE_ACTIONS_ENUM, OPERATIONS_ENUM } = hdbTerms as any;
 if (typeof process.setSourceMapsEnabled === 'function') {
 	process.setSourceMapsEnabled(true); // this is necessary for source maps to work, at least on the main thread.
 }
@@ -25,6 +25,7 @@ By default, the CLI also supports certain Operation APIs. Specify the operation 
 Commands:
 copy-db <source> <target>       - Copies a database from source path to target path
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
+get_backup database=<name> [gzip=false] [out=<file>] - Download a full backup from a running server (RocksDB: gzipped tar stream, gzip=false for plain tar)
 install                         - Install harperdb
 <api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
 login [target] [username]       - Login to a remote or local Harper instance
@@ -112,6 +113,14 @@ async function harper() {
 			let targetDbPath = process.argv[4];
 			return require('./copyDb').copyDb(sourceDb, targetDbPath);
 		}
+		case OPERATIONS_ENUM.CREATE_BACKUP:
+		case OPERATIONS_ENUM.LIST_BACKUPS:
+		case OPERATIONS_ENUM.VERIFY_BACKUP:
+		case OPERATIONS_ENUM.DELETE_BACKUP:
+		case OPERATIONS_ENUM.PURGE_BACKUPS:
+		case OPERATIONS_ENUM.GET_BACKUP:
+		case OPERATIONS_ENUM.RESTORE_BACKUP:
+			return require('./backup').runBackupCommand(service);
 		case SERVICE_ACTIONS_ENUM.DEV:
 			process.env.DEV_MODE = 'true';
 		// fall through

@@ -27,6 +27,7 @@ import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { BridgeMethods } from './BridgeMethods.ts';
 import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
+import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
 import { DeleteTransactionLogsBeforeResults } from './DeleteTransactionLogsBeforeResults.ts';
 import type { Readable } from 'node:stream';
 
@@ -556,7 +557,39 @@ export class ResourceBridge extends BridgeMethods {
 		schema?: string;
 		table?: string;
 		tables?: string[];
+		include_audit?: boolean;
+		gzip?: boolean;
 	}): Promise<Readable> {
+		const databaseName = getBackupObj.database || getBackupObj.schema || 'data';
+		const database = getDatabases()[databaseName];
+		if (!database) {
+			throw new ClientError(`Database '${databaseName}' does not exist`, 404);
+		}
+		const firstTable = database[Object.keys(database)[0]];
+		if (!firstTable) {
+			throw new ClientError(`Database '${databaseName}' has no tables to back up`);
+		}
+		if (firstTable.primaryStore.rootStore instanceof RocksDatabase) {
+			// RocksDB: stream a fresh full-snapshot tar of the database's current state — no
+			// scratch disk, nothing to clean up. Per-engine params are validated descriptively.
+			if (getBackupObj.tables || getBackupObj.table) {
+				throw new ClientError(`'tables'/'table' are LMDB-only options; RocksDB backups are always whole-database`);
+			}
+			if (getBackupObj.include_audit !== undefined) {
+				throw new ClientError(
+					`'include_audit' is an LMDB-only option; RocksDB backups always include the transaction log`
+				);
+			}
+			if (getBackupObj.gzip !== undefined && typeof getBackupObj.gzip !== 'boolean') {
+				throw new ClientError(`'gzip' must be a boolean`);
+			}
+			const rootStore = resolveSingleRootStore(databaseName);
+			// gzip defaults on (it compresses the snapshot substantially); gzip=false opts out.
+			return createBackupStream(rootStore, databaseName, getBackupObj.gzip !== false);
+		}
+		if (getBackupObj.gzip !== undefined) {
+			throw new ClientError(`'gzip' is a RocksDB-only option; LMDB backups are gzipped per the accept-encoding header`);
+		}
 		return lmdbGetBackup(getBackupObj);
 	}
 }

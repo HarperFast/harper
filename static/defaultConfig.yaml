@@ -74,6 +74,7 @@ storage:
   compression: true
   noReadAhead: false
   path: null
+  backupPath: null
   prefetchWrites: true
 tls:
   privateKey: null

@@ -101,6 +101,15 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 		properties: {},
 		description: 'Lists deployed component versions in this Harper instance.',
 	},
+	list_backups: {
+		type: 'object',
+		properties: {
+			database: {
+				type: 'string',
+				description: 'Database name whose managed RocksDB backups to list. Defaults to `data`.',
+			},
+		},
+	},
 
 	// ─── search_* ─────────────────────────────────────────────────────────
 	search_by_hash: {

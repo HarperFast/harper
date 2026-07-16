@@ -18,6 +18,7 @@ import * as schemaDescribe from '../dataLayer/schemaDescribe.ts';
 import * as delete_ from '../dataLayer/delete.ts';
 import readAuditLog from '../dataLayer/readAuditLog.ts';
 import getBackup from '../dataLayer/getBackup.ts';
+import * as rocksdbBackup from '../dataLayer/rocksdbBackup.ts';
 import * as user from '../security/user.ts';
 import * as role from '../security/role.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -205,6 +206,30 @@ requiredPermissions.set(restart.restart.name, new (permission as any)(true, [], 
 requiredPermissions.set(restart.restartService.name, new (permission as any)(true, []));
 requiredPermissions.set(readAuditLog.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.READ_AUDIT_LOG));
 requiredPermissions.set(getBackup.name, new (permission as any)(true, [READ_PERM]));
+requiredPermissions.set(
+	rocksdbBackup.createBackup.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.CREATE_BACKUP)
+);
+requiredPermissions.set(
+	rocksdbBackup.listBackups.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.LIST_BACKUPS)
+);
+requiredPermissions.set(
+	rocksdbBackup.verifyBackup.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.VERIFY_BACKUP)
+);
+requiredPermissions.set(
+	rocksdbBackup.deleteBackup.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.DELETE_BACKUP)
+);
+requiredPermissions.set(
+	rocksdbBackup.purgeBackups.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.PURGE_BACKUPS)
+);
+requiredPermissions.set(
+	rocksdbBackup.restoreBackup.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
+);
 requiredPermissions.set(schema.cleanupOrphanBlobs.name, new (permission as any)(true, []));
 requiredPermissions.set(
 	systemInformation.name,

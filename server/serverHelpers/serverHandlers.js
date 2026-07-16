@@ -174,8 +174,10 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 				res.header(name, value);
 			}
 			// fastify-compress has one job. I don't know why it can't do it. So we compress here to
-			// handle the case of returning a stream
-			if (req.headers['accept-encoding']?.includes('gzip')) {
+			// handle the case of returning a stream. Streams marked `noCompression` opt out (e.g.
+			// RocksDB get_backup tars: the binding gzips when requested; compressing here would
+			// mislabel a gzip:false tar or double-compress a gzip:true one).
+			if (req.headers['accept-encoding']?.includes('gzip') && !result.noCompression) {
 				res.header('content-encoding', 'gzip');
 				result = result.pipe(createGzip({ level: constants.Z_BEST_SPEED })); // go fast
 			}

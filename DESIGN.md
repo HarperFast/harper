@@ -305,3 +305,60 @@ guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existin
 this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
 declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
 other future cause would still report success silently; that's a deferred, separate fix.
+
+## RocksDB backup/restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`)
+
+The `restore_backup` operation restores a user database on a live server by closing it across all
+worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), and reloading it.
+Three non-obvious mechanics keep that safe:
+
+- **Two files next to (never inside) the database directory**: `<db>.restore.lock`, an OS-level
+  exclusive flock (rocksdb-js `tryFileLock`, auto-released on process death), serializes restores;
+  `<db>.restoring`, a marker written+fsynced (file _and_ parent directory) after the lock and
+  before any destructive step, means "a restore started and has not finished". Startup/rescan
+  detection (`databasesBlockedByRestore` in `resources/databases.ts`) checks the **marker first**
+  and only probes the lock when the marker exists — probes take the flock and are mutually
+  exclusive across threads, so probing the (persistent) lock file of every long-ago-restored
+  database on every rescan would make concurrent rescans misclassify healthy databases as
+  in-progress. Marker-present + lock-held = restore in progress (don't load); marker-present +
+  lock-free = crashed mid-restore (don't load; rerun the restore to recover).
+- **The ITC close broadcast is best-effort, so closure is verified before the purge.** The SCHEMA
+  broadcast (`signalSchemaChange`) resolves after remote handlers complete but times out at 30s
+  "best-effort", swallows errors, and never reaches job-worker threads at all (their ports are
+  excluded from broadcasts to avoid re-entrant deadlocks). A destructive purge cannot trust it:
+  `restoreBackup` polls rocksdb-js `registryStatus()` (process-global across worker threads) until
+  the database path has no open instance, and aborts with a 409 — _cleaning up the marker, since
+  nothing was destroyed_ — if handles remain.
+- **Online restore is impossible for a database a component holds open — and that failure is
+  correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
+  attribution to a thread or component; Harper keeps no component→database ownership map. So when a
+  loaded component (or the `system` database, which Harper itself never stops while running) holds
+  its own handle on the target database, `registryStatus()` stays non-zero, Harper can neither
+  identify nor force-close that handle, and an in-place purge would corrupt a live instance.
+  `verifyDatabaseClosed` therefore waits only a short grace period (`DATABASE_CLOSE_WAIT_MS`, for a
+  just-finished job worker's own close to drain) and then fails fast with a 409 that points at
+  running the operation offline (`harper restore_backup` with the server stopped, where no
+  components are loaded and nothing holds the database open). Offline restore is the supported path
+  for component-held and `system` databases; online restore serves databases not actively held by a
+  component. The CLI exposes each backup operation under its operation name only (`create_backup`,
+  `restore_backup`, …) — no hyphenated alias — and `bin/backup.ts` routes it to a reachable server
+  or, when the local server is stopped, to the equivalent offline function.
+- **Job workers must release their RocksDB handles on exit, or the closure check can never pass.**
+  rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
+  closing leaks its handles (the refCount never drops); the only alternative, `shutdown()`, tears
+  down rocksdb for the _entire_ process. A job worker (`server/jobs/jobProcess.ts`) opens the whole
+  database graph via `getDatabases()` and exits when the job finishes — and `create_backup` is
+  itself a job, so before any `restore_backup` there is always at least one exited job worker that
+  touched the database. Without cleanup those leaked handles keep `registryStatus()` non-zero and
+  would fail the closure check even when no component holds the database. `jobProcess` therefore
+  calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
+  user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
+  exited job worker leaves no residual handle to be mistaken for a live holder.
+- **Every path that can (re)open or delete a RocksDB database checks the restore state**, not just
+  the `getDatabases()` scan: `database()`'s on-demand open (`create_table`/`create_schema` would
+  otherwise resurrect a half-purged directory as a fresh empty DB, defeating the recovery
+  protocol) and `dropDatabase` (whose `destroy()` racing a restore's copy would gut a completed
+  restore with the marker already gone) both throw 409 via `throwIfBlockedByRestore`.
+
+Known limitation: the flock is process-owned; if the restore job's worker _thread_ dies without
+the process exiting, the lock stays held (restores 409) until Harper restarts.

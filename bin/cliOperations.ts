@@ -180,9 +180,16 @@ function resolveTarget(req, allCredentials) {
  * @param skipResponseLog By default, the response is logged to the console. Set this to true to skip logging it, which can be useful for sensitive responses like login calls!
  * @returns {Promise<void>}
  */
-async function cliOperations(req: any, skipResponseLog = false) {
-	require('dotenv').config();
-
+/**
+ * Resolve the transport options for a CLI operation request: a remote target URL (with auth) when
+ * one is configured (`target=`, env, or a saved `last_target`), otherwise the local domain socket.
+ * Returns the `options` object ready for `httpRequest` (method + Content-Type, and an Authorization
+ * header for remote targets, refreshing an expired operation token when possible) plus the resolved
+ * `target` (undefined for a local connection). Exits the process if a local connection is required
+ * but Harper is not running or has no domain socket. Shared by `cliOperations` and the CLI's
+ * streaming `get_backup` download so both reach local and remote servers the same way.
+ */
+export async function resolveRequestOptions(req: any): Promise<{ options: any; target: any }> {
 	const allCredentials = loadCredentials();
 	req.target = normalizeTarget(resolveTarget(req, allCredentials));
 	let target;
@@ -222,58 +229,65 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			process.exit(1);
 		}
 	}
+	let options = target ?? {
+		protocol: 'http:',
+		socketPath: getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+	};
+	options.method = 'POST';
+	options.headers = { 'Content-Type': 'application/json' };
+	if (target?.username) {
+		options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
+	} else if (allCredentials) {
+		let tokens = null;
+		let lookupKey = null;
+		if (target && allCredentials.targets) {
+			lookupKey = target.resolvedTarget;
+			tokens = allCredentials.targets[lookupKey] ?? null;
+		}
+
+		if (tokens?.operation_token) {
+			if (tokens.refresh_token && isJWTExpired(tokens.operation_token)) {
+				console.error('Operation token expired, attempting to refresh...');
+				try {
+					const refreshOptions = { ...options };
+					refreshOptions.headers = { ...options.headers, Authorization: `Bearer ${tokens.refresh_token}` };
+					const refreshResponse = await httpRequest(refreshOptions, {
+						operation: 'refresh_operation_token',
+					});
+					if (refreshResponse.statusCode === 200) {
+						const refreshData = JSON.parse(refreshResponse.body);
+						if (refreshData.operation_token) {
+							tokens.operation_token = refreshData.operation_token;
+							saveCredentials(lookupKey || target?.resolvedTarget, {
+								operation_token: tokens.operation_token,
+								refresh_token: tokens.refresh_token,
+							});
+							console.error('Operation token refreshed successfully.');
+							// Update the original request's authorization header with the new token
+							options.headers.Authorization = `Bearer ${tokens.operation_token}`;
+						}
+					} else if (refreshResponse.statusCode === 401) {
+						console.error('Refresh token expired or invalid. Please run harper login again.');
+						process.exit(1);
+					} else {
+						console.error(`Failed to refresh operation token: ${refreshResponse.statusCode}`);
+					}
+				} catch (refreshErr) {
+					console.error(`Error refreshing operation token: ${refreshErr.message}`);
+				}
+			}
+			options.headers.Authorization = `Bearer ${tokens.operation_token}`;
+		}
+	}
+	return { options, target };
+}
+
+async function cliOperations(req: any, skipResponseLog = false) {
+	require('dotenv').config();
+
+	const { options, target } = await resolveRequestOptions(req);
 	await PREPARE_OPERATION[req.operation]?.(req);
 	try {
-		let options = target ?? {
-			protocol: 'http:',
-			socketPath: getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
-		};
-		options.method = 'POST';
-		options.headers = { 'Content-Type': 'application/json' };
-		if (target?.username) {
-			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
-		} else if (allCredentials) {
-			let tokens = null;
-			let lookupKey = null;
-			if (target && allCredentials.targets) {
-				lookupKey = target.resolvedTarget;
-				tokens = allCredentials.targets[lookupKey] ?? null;
-			}
-
-			if (tokens?.operation_token) {
-				if (tokens.refresh_token && isJWTExpired(tokens.operation_token)) {
-					console.error('Operation token expired, attempting to refresh...');
-					try {
-						const refreshOptions = { ...options };
-						refreshOptions.headers = { ...options.headers, Authorization: `Bearer ${tokens.refresh_token}` };
-						const refreshResponse = await httpRequest(refreshOptions, {
-							operation: 'refresh_operation_token',
-						});
-						if (refreshResponse.statusCode === 200) {
-							const refreshData = JSON.parse(refreshResponse.body);
-							if (refreshData.operation_token) {
-								tokens.operation_token = refreshData.operation_token;
-								saveCredentials(lookupKey || target?.resolvedTarget, {
-									operation_token: tokens.operation_token,
-									refresh_token: tokens.refresh_token,
-								});
-								console.error('Operation token refreshed successfully.');
-								// Update the original request's authorization header with the new token
-								options.headers.Authorization = `Bearer ${tokens.operation_token}`;
-							}
-						} else if (refreshResponse.statusCode === 401) {
-							console.error('Refresh token expired or invalid. Please run harper login again.');
-							process.exit(1);
-						} else {
-							console.error(`Failed to refresh operation token: ${refreshResponse.statusCode}`);
-						}
-					} catch (refreshErr) {
-						console.error(`Error refreshing operation token: ${refreshErr.message}`);
-					}
-				}
-				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
-			}
-		}
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the
 		// legacy JSON deploy if it predates 5.1. Local (domain-socket) deploys always

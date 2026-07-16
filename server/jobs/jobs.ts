@@ -20,6 +20,7 @@ import * as hdbUtil from '../../utility/common_utils.ts';
 import { promisify } from 'util';
 import moment from 'moment';
 import * as fileLoadValidator from '../../validation/fileLoadValidator.ts';
+import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
 import bulkDeleteValidator from '../../validation/bulkDeleteValidator.ts';
 import { deleteTransactionLogsBeforeValidator } from '../../validation/transactionLogValidator.ts';
 import { handleHDBError, ClientError } from '../../utility/errors/hdbError.ts';
@@ -121,6 +122,16 @@ export async function addJob(jsonBody: any) {
 			if (hdbTerms.HDB_PROCESS_SERVICES[jsonBody.service] === undefined) {
 				throw handleHDBError(new Error(), 'Invalid service', HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 			}
+			break;
+		// backup job validators throw ClientError (with statusCode) directly on failure
+		case hdbTerms.OPERATIONS_ENUM.CREATE_BACKUP:
+			await rocksdbBackup.validateCreateBackup(jsonBody);
+			break;
+		case hdbTerms.OPERATIONS_ENUM.VERIFY_BACKUP:
+			await rocksdbBackup.validateVerifyBackup(jsonBody);
+			break;
+		case hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP:
+			await rocksdbBackup.validateRestoreBackup(jsonBody);
 			break;
 		default:
 			break;
