@@ -151,7 +151,7 @@ Every managed backup and every RocksDB `get_backup` includes the audit/transacti
 | `list_backups`   | Lists the managed backups for a database                            | super_user    |
 | `verify_backup`  | Verifies a managed backup's integrity (job)                         | super_user    |
 | `delete_backup`  | Deletes a single managed backup                                     | super_user    |
-| `purge_backups`  | Deletes all but the newest N managed backups                        | super_user    |
+| `purge_backups`  | Deletes all but the newest `keep_count` managed backups             | super_user    |
 | `restore_backup` | Restores a database from a managed backup (job)                     | super_user    |
 | `get_backup`     | Streams a full snapshot of a database in the response for download  | super_user    |
 

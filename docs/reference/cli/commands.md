@@ -359,6 +359,8 @@ Restore a database from a managed backup. Pass `backup_id=<id>` to choose a back
 
 ```bash
 harper restore_backup database=data backup_id=1
+# restore into a new database instead of overwriting the source (server stopped)
+harper restore_backup database=data backup_id=1 target_database=data_restored
 ```
 
 ## Remote Operations
