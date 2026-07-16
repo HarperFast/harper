@@ -30,6 +30,7 @@ const {
 	DeploymentRecorder,
 	awaitDeploymentRow,
 	readPayloadBlobWithRetry,
+	coerceTimeoutMs,
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
 } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
@@ -470,9 +471,7 @@ async function deployComponent(req) {
 			// The wait budget defaults to 120s but is overridable per-deploy via
 			// `deployment_timeout` (ms) for clusters where the system-table channel is
 			// heavily backlogged (harper-pro#402).
-			const requestedTimeout = Number(req.deployment_timeout);
-			const payloadTimeoutMs =
-				Number.isFinite(requestedTimeout) && requestedTimeout >= 0 ? requestedTimeout : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+			const payloadTimeoutMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
 			// One deadline covers both phases (row wait + blob content) so a slow row doesn't
 			// double the peer's total worst-case wait — whatever's left of payloadTimeoutMs after
 			// the row arrives is what the blob retry gets.
