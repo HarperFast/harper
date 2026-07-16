@@ -180,6 +180,12 @@ function applyUniversalHeaders(headers: { has(name: string): boolean; set(name: 
 // handleApplication, and without this guard that call would wipe root-configured headers.
 let securityHeadersOwned = false;
 
+/** Test seam: reset the module-level guard so tests can re-invoke handleApplication. */
+export function _resetSecurityHeadersOwnedForTest(): void {
+	applySecurityHeaders(undefined);
+	securityHeadersOwned = false;
+}
+
 export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll() as HttpOptions;
 	const ownsSecurityHeaders = !securityHeadersOwned;

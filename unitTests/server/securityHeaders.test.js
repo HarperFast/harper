@@ -7,7 +7,7 @@ const assert = require('assert');
 const sinon = require('sinon');
 
 const harperLogger = require('#src/utility/logging/harper_logger');
-const { handleApplication, universalHeaders } = require('#src/server/http');
+const { _resetSecurityHeadersOwnedForTest, handleApplication, universalHeaders } = require('#src/server/http');
 
 /** Mock a component Scope with a live-reloadable `options.getAll()`/`options.on('change', cb)`. */
 function mockScope(initialOptions) {
@@ -32,12 +32,10 @@ function mockScope(initialOptions) {
 
 describe('http.securityHeaders', () => {
 	let sandbox;
-	// The FIRST handleApplication call in the process claims securityHeaders ownership (the
-	// root-config scope in production). All tests drive config through this scope's change
-	// events; this file must be the first in the mocha run to call http's handleApplication.
 	let rootScope;
 
 	before(() => {
+		_resetSecurityHeadersOwnedForTest();
 		rootScope = mockScope({});
 		handleApplication(rootScope);
 	});
