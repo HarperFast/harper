@@ -16,6 +16,7 @@ const alasql = require('alasql');
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
 const { EngineUnsupportedError } = require('#src/sqlEngine/errors');
+const { ClientError, IndexRebuildingError } = require('#src/utility/errors/hdbError');
 
 function makeMockTable({ primaryKey = 'id', attributes = [], rows = [] } = {}) {
 	const indexed = new Set(attributes.filter((a) => a.indexed).map((a) => a.name));
@@ -392,15 +393,24 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		assert.strictEqual(mockTable._lastTarget.limit, undefined);
 	});
 
-	it('serves a no-WHERE ORDER BY on an INDEXED attribute via index order (D-219)', async () => {
-		// A sort on an indexed attribute drives the scan through the index's natural
-		// order — Table.search flags it needFullScan, so the scan must run with
-		// allowFullScan:true and push the sort (no separate in-memory sort).
-		await runSql('SELECT name FROM dev.user ORDER BY name LIMIT 2');
+	it('serves a no-WHERE ORDER BY on the PRIMARY KEY via index order (D-219)', async () => {
+		// A sort on the primary key drives the scan through the index's natural order —
+		// Table.search flags it needFullScan, so the scan must run with allowFullScan:true
+		// and push the sort (no separate in-memory sort).
+		await runSql('SELECT name FROM dev.user ORDER BY id LIMIT 2');
 		assert.strictEqual(mockTable._lastTarget.allowFullScan, true);
-		assert.deepStrictEqual(mockTable._lastTarget.sort, { attribute: 'name', descending: false });
+		assert.deepStrictEqual(mockTable._lastTarget.sort, { attribute: 'id', descending: false });
 		assert.strictEqual(mockTable._lastTarget.limit, 2);
 		assert.strictEqual(mockTable._lastTarget.conditions, undefined);
+	});
+
+	it('rejects a no-WHERE ORDER BY on a NON-PK indexed attribute (index order != legacy sort)', async () => {
+		// `name` is indexed but not the PK: a secondary index diverges from legacy's
+		// stable full-scan sort — a DESC sort reverses within-value ties (primary-key
+		// DESC vs legacy's primary-key ASC) and the index omits null-valued rows. Only
+		// the PK's ordered scan matches legacy, so a non-PK sort must fall back (D-219).
+		await assert.rejects(() => runSql('SELECT name FROM dev.user ORDER BY name'), EngineUnsupportedError);
+		await assert.rejects(() => runSql('SELECT name FROM dev.user ORDER BY name DESC LIMIT 2'), EngineUnsupportedError);
 	});
 
 	it('rejects a no-WHERE ORDER BY on an UNINDEXED attribute (no index to order by)', async () => {
@@ -443,5 +453,54 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		// without the guard the new engine would return id 3 (silent divergence).
 		const data = await runSql('SELECT id FROM dev.user WHERE id > 0 AND age NOT IN (25)');
 		assert.deepStrictEqual(data.map((r) => r.id).sort(), [1]);
+	});
+
+	// PhysicalIndexScan's safety net: validateScannable predicts what Table.search
+	// accepts, but if the prediction is ever wrong, search throws a capability-shaped
+	// ClientError/IndexRebuildingError at runtime — past the router's fallback catch.
+	// The scan converts those to EngineUnsupportedError so 'auto' still falls back to
+	// legacy instead of leaking the raw error. (Results are materialized before
+	// delivery, so no partial rows have been sent when the conversion fires.)
+	function makeThrowingTable(error) {
+		const table = makeMockTable({ primaryKey: 'id', attributes: [{ name: 'id', indexed: true }], rows: [] });
+		table.search = async function* () {
+			throw error;
+		};
+		binder._setDatabasesLoader(() => ({ dev: { user: table } }));
+	}
+
+	it('converts a search() ClientError to EngineUnsupportedError (→ fallback)', async () => {
+		makeThrowingTable(new ClientError('search rejected', 403));
+		await assert.rejects(() => runSql('SELECT id FROM dev.user WHERE id = 1'), EngineUnsupportedError);
+	});
+
+	it('converts a search() IndexRebuildingError to EngineUnsupportedError (→ fallback)', async () => {
+		makeThrowingTable(new IndexRebuildingError('index rebuilding'));
+		await assert.rejects(() => runSql('SELECT id FROM dev.user WHERE id = 1'), EngineUnsupportedError);
+	});
+
+	it('does NOT convert an unexpected (non-capability) search() error — it propagates', async () => {
+		// Only the capability-shaped errors are converted; a generic failure must
+		// surface as itself so a real bug is not silently masked as a fallback.
+		makeThrowingTable(new TypeError('unexpected boom'));
+		await assert.rejects(() => runSql('SELECT id FROM dev.user WHERE id = 1'), TypeError);
+	});
+
+	it("'auto' falls back to legacy when search() throws a ClientError", async () => {
+		makeThrowingTable(new ClientError('search rejected', 403));
+		process.env.HARPER_SQL_ENGINE = 'auto';
+		const parsed = alasql.parse('SELECT id FROM dev.user WHERE id = 1');
+		const data = await new Promise((resolve, reject) => {
+			router.route(
+				{
+					variant: 'select',
+					jsonMessage: { hdb_user: { username: 'test' }, bypass_auth: true },
+					statement: parsed.statements[0],
+					legacy: (_stmt, cb) => cb(null, [{ id: 'from-legacy' }]),
+				},
+				(err, result) => (err ? reject(err) : resolve(result))
+			);
+		});
+		assert.deepStrictEqual(data, [{ id: 'from-legacy' }]);
 	});
 });

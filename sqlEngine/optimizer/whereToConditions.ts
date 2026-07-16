@@ -209,14 +209,25 @@ export function conditionUsesIndex(cond: ConditionNode, attributes: IndexedAttri
 
 /**
  * Whether a pushed sort can itself drive an index-ordered scan: its primary key
- * is a single column on an indexed attribute. Table.search aligns such a sort to
- * the index's natural order (resources/Table.ts — it adds a `comparator: 'sort'`
- * condition), so the rows stream from the index already ordered and a pushed
- * LIMIT early-terminates (O(window)) — no separate in-memory sort. Shared by the
- * R8 validateScannable rule and the physical scan builder so scannability and
- * the `allowFullScan` flag can't drift. NOTE: because Table.search flags the
+ * is a single column on the table's PRIMARY KEY. Table.search aligns such a sort
+ * to the index's natural order (resources/Table.ts — it adds a `comparator:
+ * 'sort'` condition), so the rows stream from the index already ordered and a
+ * pushed LIMIT early-terminates (O(window)) — no separate in-memory sort. Shared
+ * by the R8 validateScannable rule and the physical scan builder so scannability
+ * and the `allowFullScan` flag can't drift. NOTE: because Table.search flags the
  * sort scan as `needFullScan`, the physical scan must pass `allowFullScan: true`
  * for it — see physicalIndexScan.
+ *
+ * Restricted to the PRIMARY KEY, because only there does index order provably
+ * equal legacy's full-scan-then-stable-sort order. A non-PK secondary index
+ * diverges from legacy in two ways (D-219): (1) a DESC sort reverses the whole
+ * composite `[value, primaryKey]` entry, so rows tying on `value` come back in
+ * primary-key-DESC order, whereas legacy's stable sort preserves primary-key-ASC
+ * order for ties; and (2) the secondary index omits rows whose sort attribute is
+ * null (they were never indexed), whereas a legacy full scan includes them. The
+ * PK is unique (no ties) and always present (no null keys), so its ordered scan
+ * matches legacy in both directions. Secondary-index sort streaming can be a
+ * follow-up once those two divergences are handled.
  */
 export function sortDrivesIndex(
 	pushedSort: { expr: ExprNode }[] | undefined,
@@ -224,7 +235,8 @@ export function sortDrivesIndex(
 ): boolean {
 	const key = pushedSort?.[0];
 	if (!key || key.expr.kind !== 'column') return false;
-	return attributes?.find((x) => x.name === (key.expr as { name: string }).name)?.indexed === true;
+	const attr = attributes?.find((x) => x.name === (key.expr as { name: string }).name);
+	return attr?.indexed === true && attr.isPrimaryKey === true;
 }
 
 function flattenAnd(expr: ExprNode): ExprNode[] {
