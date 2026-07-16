@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784188503532,
+  "lastUpdate": 1784188506032,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -5546,6 +5546,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 173.17,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3dbcf7b9e1eb107f1f242d9a01d74c5d67f06b02",
+          "message": "Reshape deploy_component registryAuth into a general-purpose credentials array (#1797)\n\n* Reshape deploy_component registryAuth into a general-purpose credentials array\n\n`registryAuth` was an npm-only array of `{ registry, token|secret, scope }`\nentries. Rename it to `credentials` and treat the array as kind-heterogeneous:\nan entry's kind is implied by its identifying key (`registry` = npm registry\nauth) rather than a discriminator field, so a git-host kind keyed by `host`\n(#1792) becomes another item alternative rather than another schema rewrite.\n\nThe ingest/resolve pipeline, secrets-store integration, reference-only\nreplication, and every security invariant from #1717 are unchanged — this is a\nrename plus the seams for a second kind. Identifiers follow: ingestRegistryAuth\n→ ingestCredentials, resolveRegistryAuth → resolveCredentials, and the persisted\nforms (applicationConfig.credentials, hdb_deployment.credentials) match the\noperation field.\n\nSince #1717 has not shipped in a GA release, this is a clean break rather than an\nalias. Because operation validation allows unknown keys, a stale `registryAuth`\nis explicitly rejected — otherwise the deploy would silently install with no\ncredentials. It also stays in the operations-log strip list, since that redaction\nruns ahead of validation and a stale caller's token must not reach the log.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Filter Application.registryCredentials to registry-shaped entries\n\nThe credentials array is kind-heterogeneous by design (registry today,\na planned git-host kind later), but Application's constructor assigned\nit straight to registryCredentials, which buildNpmrcContent assumes is\nregistry-shaped. Filter defensively so a future non-registry entry\ncan't reach it.\n\nAddresses gemini-code-assist review comment on PR #1797.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Authenticate private git-reference deploys from an in-memory credential (#1799)\n\n* Authenticate private git-reference deploys from an in-memory credential\n\nA `github:org/repo` package against a private repo needs a credential for the\n`git ls-remote`/`git clone` npm shells out to. Every obvious way to supply one\npersists it: userinfo in the URL lands in the package spec and the lockfile, a\ncredential helper or `.npmrc` is a file, and an env var is readable by every\ndescendant process.\n\nInstead the token stays in the deploying process's memory and is served over a\nper-deploy Unix socket in a 0700 directory. git is pointed at\ngitCredentialHelper.js — a secret-free script that relays git's request over\nthat socket — and the socket dies with the spawn that needed it. The token\nreaches disk, argv, the package spec, the operation body and the operations log\nnowhere along the way.\n\nThe credential rides as a second kind in the `credentials` array from #1797:\n`{ host, token|secret, username? }`, discriminated by `host` the way npm entries\nare by `registry`. Ingest, seal-into-hdb_secret, grant-check, resolve-at-use and\nreplicate-as-reference are the existing #1717 paths, unchanged — only the\nderived secret name (`deploy.<component>.<host>`) and the injection mechanism are\nnew. resolveCredentials now rejects an unrecognized kind rather than resolving it\ninto a half-empty entry, symmetric with the guard ingestCredentials already had.\n\nWiring, in order of preference: `credential.helper` via GIT_CONFIG_* (structured\nkey=value protocol, no prompt parsing) with GIT_ASKPASS as the fallback for git\n< 2.31, which ignores GIT_CONFIG_*. Inherited credential helpers are reset to\nempty first, so a machine configured with `credential.helper=store` cannot write\nthis token to ~/.git-credentials when git reports the successful authentication\nback to its helper chain. The askpass path decides username-vs-password prompt\nstructurally (userinfo present in the echoed URL) rather than by matching\nEnglish, since git localizes those prompts.\n\nOnly the spawn that clones (`npm pack`) is given this environment. The\n`npm install` that follows — where a dependency's install script can run — never\nsees it, and the socket is already closed by then.\n\nRefs #1792. Stacked on #1797.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Keep the git credential out of reach of clone-time install scripts\n\nPacking a git reference is not just a download. npm clones the repo and, when\nits manifest has a prepare/build/install script, runs `npm install` inside the\nclone and then that script — so the repository's own code and its dependencies'\ninstall scripts execute on this node, inside the clone spawn, inheriting its\nenvironment. Verified against real npm: a transitive dependency's `preinstall`\nsees HARPER_GIT_CREDENTIAL_SOCKET and can ask the socket for the token. That is\nexactly the reach #1792 says the credential must not have, and closing the\nsocket before `npm install` did not close it, because this all happens earlier,\nduring `npm pack`.\n\nSo a credentialed clone runs with `--ignore-scripts` unless the deploy set\ninstall_allow_scripts, which is the operator explicitly asking for that code to\nrun here; that case is allowed and logged, naming the exposure it accepts. Note\nthis also means a git-reference deploy runs scripts at pack time regardless of\ninstall_allow_scripts today — the flag only ever reached the install spawn. That\ninconsistency is left alone here (fixing it changes behavior for existing public\ngit deploys) but is worth its own issue.\n\nWindows now fails closed instead of serving the credential over a named pipe: a\npipe is created with a default security descriptor that can leave it readable by\nother local users, and the whole confinement argument rests on the 0700\ndirectory a Unix socket sits in. Better to refuse than to offer a quietly weaker\nchannel.\n\nAlso from review: cap the request a peer can stream at the socket (an unbounded\n`request +=` was an OOM), and remove the socket's temp directory when listen()\nfails, since no session is returned and nothing would otherwise clean it up.\n\nRefs #1792.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Harden the git credential channel against persistence and downgrade\n\nA second cross-model review pass (Codex) surfaced several ways the credential\ncould still escape memory:\n\n- **Cleartext transport.** git asks for `http://` credentials exactly as it\n  asks for `https://`, so a `git+http://` package (or a remote downgraded by a\n  redirect) would put the token on the wire in the clear. answerFor now serves\n  only over https, with an exemption for loopback (where no network is involved\n  and the integration tests run).\n\n- **git < 2.31.** Those versions ignore GIT_CONFIG_* entirely, so the\n  credential.helper reset that stops an inherited `store` helper from writing the\n  token to ~/.git-credentials is silently dead — and the GIT_ASKPASS fallback\n  would still feed that helper a successful credential to persist. There is no way\n  to disable an inherited helper on those versions, so the session now refuses to\n  start on one rather than leak. (The reset itself is verified end-to-end against\n  a real clone with both a global and a URL-scoped `store` helper configured; the\n  earlier concern that a URL-scoped helper bypasses the reset did not reproduce —\n  git's credential machinery honors the reset, `--get-urlmatch` merely shows raw\n  config.)\n\n- **Newline in a resolved token.** A literal token is schema-rejected for CR/LF,\n  but one resolved from an hdb_secret row was not — and git's protocol is\n  line-based (askpass reads only the first line), so such a token would truncate\n  or inject protocol attributes. Guarded at the serve boundary, matching the\n  .npmrc writer.\n\n- **Unknown keys persisting.** Operation validation runs allowUnknown, so a\n  credential entry like `{host, secret, password: \"literal\"}` would carry that\n  stray field through ingest into config, hdb_deployment, and replication. Both\n  entry schemas are now `.unknown(false)`, and each forbids the other's\n  discriminator. assertApplicationConfig likewise rejects an entry that is both\n  kinds or carries a literal token, rather than coercing it to one kind.\n\nRefs #1792.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Warn on duplicate git-credential hosts; lock in the no-custody strip\n\nReview follow-ups. Two entries for the same host in one deploy silently\nlast-write-wins (they also seal to the same derived secret name), so warn rather\nthan drop quietly. And a regression test pins the security property that a\nliteral git token on a node without custody yields no persistable reference and\nis therefore stripped from the replicated op body.\n\nRefs #1792.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Address 5 review comments; fix a backpressure bug hanging the OOM-cap test\n\n- close(): snapshot the connections Set before destroying, so destroy()'s\n  synchronous 'close' listener (which deletes from the same Set) can't skip\n  a connection mid-iteration.\n- answerFor(): guard against a non-object request before touching .host.\n- parseAskpassPrompt(): move the URL parse+decode inside the existing\n  try/catch so a malformed percent-encoded username can't throw past it.\n- gitCredentialClone.test.js: resolve GIT_HTTP_BACKEND in a try/catch so a\n  missing git binary can't crash the whole suite loader before before()\n  gets a chance to skip; before() now also checks for that case.\n- operationsValidation.js: cap the git credential entry's token at\n  SECRET_MAX_LENGTH, matching the same limit already applied elsewhere.\n\nAlso fixes an unrelated pre-existing bug found while verifying: the OOM-cap\ntest's write loop gave up permanently the first time socket.write() returned\nfalse for backpressure (the `&&` chain short-circuits), which happens well\nbefore the server-side 64KB cap is reached — so the test hung forever\nwaiting for a 'close' the server had no reason to send. Confirmed via a\nclean-checkout diff that this predates this task's changes. The production\ncap-enforcement logic itself was already correct; only the test's flow\ncontrol was wrong. Now resumes writing on 'drain' instead of giving up.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Update components/secretOperations.ts\n\nCo-authored-by: Chris Barber <chris@harperdb.io>\n\n* Fix CI: git-secret naming test drift, and prepare-script leak on npm<11\n\nsecretOperations.test.js still asserted the pre-review-fix secret name\n(deploy.<app>.<host>); a prior commit on this branch added the `.git`\nkind segment to deriveGitSecretName to close a same-host collision\nbetween git and registry secrets (per review), but didn't update the\ntests that pin the literal name. Update the 5 affected assertions to\nthe new, collision-safe name and note why in deriveGitSecretName's doc\ncomment.\n\nAlso fix a real Node-22-only failure: a credentialed git clone relied\non `npm pack --ignore-scripts <git-url>` to keep a repository's\nprepare script from running while the credential socket is reachable.\npacote's DirFetcher runs `prepare` unconditionally on npm <11.0.0 (the\nignoreScripts guard was only added upstream in npm 11) — exactly what\nNode 22's bundled npm ships, confirmed by reproducing against the real\nnpm 10.9.8 binary. For a recognized git-reference identifier with\nscripts disallowed, clone it ourselves (still authenticated via the\ncredential session's env) and strip its lifecycle scripts before\npacking, sidestepping the buggy npm code path entirely — the same\nmechanism harper#1819 lands for the uncredentialed case.\n\nVerified against npm 10.9.8: the prepare-script test fails identically\nto CI on the pre-fix code and passes reliably with the fix.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Resolve hosted-git shorthand (github:/gitlab:/bitbucket:/gist:) in parseGitReference\n\nderivePackageIdentifier defaults a bare owner/repo package identifier to\ngithub:owner/repo, but parseGitReference only recognized explicit\ngit+.../git:// URL forms, so that shorthand — the PR's own worked example —\nfell through to the npm pack --ignore-scripts fallback documented as\nunreliable on npm <11. Extend parseGitReference to resolve github:, gitlab:,\nbitbucket:, and gist: shorthand to a concrete https clone URL so it routes\nthrough the clone-and-strip-scripts path instead.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus <noreply@anthropic.com>\nCo-authored-by: Chris Barber <chris@harperdb.io>\n\n* Resolve npm-style semver: committishes before git checkout\n\n#1799's own worked example (`github:my-org/my-app#semver:v1.2.3`) documented a\ncommittish naming a semver range, but packGitReferenceWithoutScripts passed it\nstraight to `git checkout`, which has no notion of npm's `semver:` syntax and\nsimply failed.\n\nAdds resolveCommittish(), which lists the clone's tags and resolves the range\nagainst them with the `semver` package (already a direct dependency), matching\nnpm's own git-dependency resolution: tags may carry a prefix ahead of the\nversion (`release-v1.2.3`), a percent-encoded range is decoded, and the\nresolved ref is checked out as `refs/tags/<name>` to avoid an ambiguous\nsame-named branch. A non-semver committish is unaffected.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Reject unsafe tag names before checkout in semver-committish resolution\n\nThe automated PR review on the previous commit found that resolveCommittish\nonly validated the semver-shaped suffix it matched in a tag name (e.g. the\n`v1.2.3` in `release-v1.2.3`), not the full tag string. Since git ref names\npermit shell metacharacters (`$`, backticks, `;`, `&`, `|`, parens — only\nwhitespace and a few other forms are disallowed), and nonInteractiveSpawn\nruns through a shell with no argument escaping, a tag name from the cloned\nrepository such as `$(touch${IFS}/tmp/x)v9.9.9` would execute as a command\nsubstitution on checkout — reachable specifically because semver resolution\npicks a tag out of the (untrusted, upstream) repo's own tag list, unlike a\nliteral committish which the deploying operator supplies directly.\n\nAdds a conservative safe-charset check on the full tag name; a tag failing\nit is excluded from resolution rather than sanitized, so it can never reach\nthe checkout spawn. Confirmed exploitable pre-fix (marker file executes) and\nblocked post-fix via a new regression test.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus <noreply@anthropic.com>\nCo-authored-by: Chris Barber <chris@harperdb.io>",
+          "timestamp": "2026-07-15T23:03:58Z",
+          "url": "https://github.com/HarperFast/harper/commit/3dbcf7b9e1eb107f1f242d9a01d74c5d67f06b02"
+        },
+        "date": 1784188505597,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.64,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 13.74,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 19.56,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 16.69,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 24.43,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 15.73,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 31.8,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 14.05,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 19,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 53.76,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 145.7,
             "unit": "ms"
           }
         ]
