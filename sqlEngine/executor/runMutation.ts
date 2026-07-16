@@ -61,6 +61,58 @@ function selfIncrementDelta(column: string, expr: ExprNode): number | bigint | u
 	return -n;
 }
 
+/**
+ * Collects every column an assignment expression reads, so the UPDATE selector
+ * can project exactly what's needed instead of the whole row (see call site in
+ * runUpdate for why over-fetching matters here). Assignments are compiled via
+ * compileExpr before this runs, which already rejects `cast`/`aggCall`/`subquery`
+ * nodes, so those are unreachable here and need no case.
+ */
+function collectReferencedColumns(expr: ExprNode, out: Set<string>): void {
+	switch (expr.kind) {
+		case 'column':
+			out.add(expr.name);
+			return;
+		case 'literal':
+		case 'star':
+			return;
+		case 'binop':
+			collectReferencedColumns(expr.left, out);
+			collectReferencedColumns(expr.right, out);
+			return;
+		case 'logical':
+			for (const a of expr.args) collectReferencedColumns(a, out);
+			return;
+		case 'in':
+			collectReferencedColumns(expr.expr, out);
+			for (const e of expr.list as ExprNode[]) collectReferencedColumns(e, out);
+			return;
+		case 'between':
+			collectReferencedColumns(expr.expr, out);
+			collectReferencedColumns(expr.low, out);
+			collectReferencedColumns(expr.high, out);
+			return;
+		case 'like':
+			collectReferencedColumns(expr.expr, out);
+			collectReferencedColumns(expr.pattern, out);
+			if (expr.escape) collectReferencedColumns(expr.escape, out);
+			return;
+		case 'isNull':
+			collectReferencedColumns(expr.expr, out);
+			return;
+		case 'case':
+			for (const c of expr.cases) {
+				collectReferencedColumns(c.when, out);
+				collectReferencedColumns(c.then, out);
+			}
+			if (expr.else) collectReferencedColumns(expr.else, out);
+			return;
+		case 'funcCall':
+			for (const a of expr.args) collectReferencedColumns(a, out);
+			return;
+	}
+}
+
 /** A Table-class shape: the static Resource methods the write path needs. */
 interface WritableTable {
 	primaryKey?: string;
@@ -230,12 +282,32 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 	});
 
 	// Plan the selector before opening the transaction (clean fallback on reject).
-	// Fetch the full matched rows so relative assignments (e.g. age = age + 1) can
-	// read existing values.
-	const selector = buildSelectorPlan(bound.boundTable, bound.where, [{ expr: { kind: 'star' } }]);
+	// Project only the primary key plus whatever columns a row-dependent assignment
+	// actually reads (e.g. `total = price * qty`) — not the whole row. A `col = col
+	// ± N` delta reads nothing (it's applied as an Addition, never evaluated against
+	// the row), and most SET clauses are plain literals, so the common case needs
+	// only the primary key — the same minimal read legacy's SQL UPDATE and this
+	// module's own runDelete already use.
+	const neededColumns = new Set<string>([pk]);
+	bound.assignments.forEach((a, i) => {
+		if (!('delta' in assignments[i])) collectReferencedColumns(a.expr, neededColumns);
+	});
+	const projection: SelectNode['projections'] = [...neededColumns].map((name) => ({
+		expr: { kind: 'column', name },
+	}));
+	const selector = buildSelectorPlan(bound.boundTable, bound.where, projection);
 
 	const transaction = getTransactionRunner();
 	const context: WriteContext = { user: ctx.user };
+	// The row-finder above is a SELECT, and a plain SELECT is right to hide a row
+	// whose TTL has passed but hasn't been swept yet. An UPDATE isn't a SELECT
+	// though: it's about to overwrite that row's TTL, and every other write surface
+	// (REST PUT/PATCH, ops update) still finds and resets a not-yet-swept-but-expired
+	// row because they load it by id directly, bypassing the freshness check a read
+	// applies. Without includeExpiredRows, the row-finder would drop such a row from
+	// its result, so the UPDATE silently touches nothing and the TTL never resets
+	// (QA-269).
+	const selectCtx: SqlEngineContext = { ...ctx, includeExpiredRows: true };
 
 	return transaction(context, async () => {
 		// Auto-create + validate any new columns the SET clause introduces
@@ -244,7 +316,7 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 			table,
 			assignments.map((a) => a.column)
 		);
-		const rows = await runSelect(selector, ctx);
+		const rows = await runSelect(selector, selectCtx);
 		const update_hashes: unknown[] = [];
 		const skipped_hashes: unknown[] = [];
 		for (const row of rows) {
@@ -279,9 +351,13 @@ export async function runDelete(bound: BoundDelete, ctx: SqlEngineContext): Prom
 
 	const transaction = getTransactionRunner();
 	const context: WriteContext = { user: ctx.user };
+	// Same reasoning as runUpdate: REST DELETE removes a not-yet-swept-but-expired
+	// row immediately because it targets by id directly; the row-finder here should
+	// match that rather than silently skipping a row the sweep hasn't caught up to yet.
+	const selectCtx: SqlEngineContext = { ...ctx, includeExpiredRows: true };
 
 	return transaction(context, async () => {
-		const rows = await runSelect(selector, ctx);
+		const rows = await runSelect(selector, selectCtx);
 		const deleted_hashes: unknown[] = [];
 		const skipped_hashes: unknown[] = [];
 		for (const row of rows) {

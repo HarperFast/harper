@@ -48,12 +48,13 @@ export function physicalIndexScan(scan: LogicalScan, opts: PhysicalIndexScanOpti
 async function* executeScan(
 	scan: LogicalScan,
 	opts: PhysicalIndexScanOptions,
-	_ctx: SqlEngineContext
+	ctx: SqlEngineContext
 ): AsyncIterable<Row> {
 	const resource = scan.boundTable?.resource as SearchableTable | undefined;
 	if (!resource) throw new Error('PhysicalIndexScan: scan has no boundTable.resource');
 
 	const target: Record<string, unknown> = { allowFullScan: opts.allowFullScan === true };
+	if (ctx.includeExpiredRows) target.includeExpired = true;
 	// Only attach conditions/operator when there is at least one — Table.search
 	// rejects an empty `and`/`or` group ("requires at least one condition"). A
 	// scan with no conditions is driven by its pushed sort/limit alone.

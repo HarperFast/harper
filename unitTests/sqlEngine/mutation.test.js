@@ -265,6 +265,16 @@ describe('sqlEngine phase 4: mutations', () => {
 		assert.strictEqual(widgets._store.get(1).qty, 10); // not matched
 	});
 
+	it('UPDATE assignment reading a DIFFERENT column selects that column, not just the primary key', async () => {
+		// name = name || qty is neither a delta (not self-referential) nor pk-only —
+		// the selector must project `name` and `qty`, not just `id`, for .eval(row) to
+		// see both values.
+		const res = await runSql(`UPDATE dev.widget SET name = name || '-' || qty WHERE id = 2`);
+		assert.deepStrictEqual(res.update_hashes, [2]);
+		assert.strictEqual(widgets._store.get(2).name, 'beta-20');
+		assert.strictEqual(widgets._store.get(2).qty, 20); // unchanged field preserved
+	});
+
 	it('UPDATE col = col ± N is written as an atomic Addition delta (F-146)', async () => {
 		// A self-referential increment must NOT be a read-compute-write of an
 		// absolute value (which loses updates under concurrency) — it must patch an

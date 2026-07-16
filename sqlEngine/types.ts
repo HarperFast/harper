@@ -36,4 +36,15 @@ export interface SqlEngineContext {
 	user?: unknown;
 	signal?: AbortSignal;
 	rowBudget?: number;
+	/**
+	 * Set when a scan is locating rows for a subsequent UPDATE/DELETE, not serving
+	 * a user-facing SELECT. A row whose TTL has passed but hasn't been swept by the
+	 * background eviction scan yet is still physically present, and every other
+	 * write surface (REST PUT/PATCH, ops update) still finds and overwrites it —
+	 * they load by id without the freshness check a normal read applies. Without
+	 * this, the scan that locates a mutation's target rows would silently drop one
+	 * that's crossed its TTL between being written and being matched, so the
+	 * mutation touches nothing and the TTL never resets (QA-269).
+	 */
+	includeExpiredRows?: boolean;
 }

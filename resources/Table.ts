@@ -2989,6 +2989,14 @@ export function makeTable(options) {
 			// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
 			// traversal). vectorFilter and condition filters intentionally keep the local-record
 			// semantics all query filters have on caching tables.
+			//
+			// A row that is past its TTL but not yet swept by the background eviction
+			// scan is still physically present. A write that is about to overwrite it
+			// anyway (e.g. the SQL engine locating UPDATE/DELETE targets) needs to see
+			// it as a match — the same leniency a direct by-id put/patch already gets,
+			// since those never run the ensureLoaded-gated freshness check this transform
+			// otherwise applies unconditionally to every read.
+			const includeExpired = (target as any).includeExpired === true;
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
 				context,
@@ -2996,7 +3004,8 @@ export function makeTable(options) {
 				filtered,
 				ensure_loaded,
 				true,
-				recordGuard
+				recordGuard,
+				includeExpired
 			);
 			let results = TableResource.transformToOrderedSelect(
 				entries,
@@ -3210,9 +3219,20 @@ export function makeTable(options) {
 		 * @param recordGuard record-level read check (#1241) applied to the record actually being
 		 * returned — i.e. AFTER any caching-source revalidation replaces a stale local copy — so an
 		 * authorization verdict can't be made on bytes that differ from what the caller receives.
+		 * @param includeExpired when true, a row past its TTL but not yet swept is treated as a live
+		 * match rather than gone (used by the SQL engine's UPDATE/DELETE row-finder).
 		 * @returns
 		 */
-		static transformEntryForSelect(select, context, readTxn, filtered, ensure_loaded?, canSkip?, recordGuard?) {
+		static transformEntryForSelect(
+			select,
+			context,
+			readTxn,
+			filtered,
+			ensure_loaded?,
+			canSkip?,
+			recordGuard?,
+			includeExpired?
+		) {
 			let checkLoaded;
 			if (
 				ensure_loaded &&
@@ -3260,7 +3280,7 @@ export function makeTable(options) {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
+						(!includeExpired && entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
 					) {
 						// should expiration really apply?
 						if (context.onlyIfCached) {
