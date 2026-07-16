@@ -41,13 +41,13 @@ interface SchedulerJobConfig {
  * ```yaml
  * scheduler:
  *   jobs:
- *     - name: nightly-cleanup
+ *     - name: daily-metrics-snapshot
  *       cron: '0 2 * * *'
  *       timezone: America/New_York   # optional; defaults to the server timezone
- *       handler: ./jobs.ts#cleanupOldRecords
- *     - name: refresh-summaries
- *       interval: 90s                # simple cadence instead of cron
- *       handler: ./jobs.ts#refreshSummaries
+ *       handler: ./jobs.ts#snapshotMetrics
+ *     - name: sync-exchange-rates
+ *       interval: 15m                # simple cadence instead of cron
+ *       handler: ./jobs.ts#syncExchangeRates
  * ```
  *
  * The handler reference is `<module path>#<named export>` relative to the
