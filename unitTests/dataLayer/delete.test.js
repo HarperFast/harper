@@ -180,6 +180,24 @@ describe('Tests for delete.js', () => {
 			expect(test_err_result).to.be.true;
 		});
 
+		it('Test that a null hash value is rejected before the bridge is called (studio#1199)', async () => {
+			// A null/undefined hash value would be coerced downstream into a whole-collection target
+			// and silently delete every record in the table (reported as "1 of 1"). The validator must
+			// reject it up front, before deleteRecords is ever reached.
+			let bridge_spy = sandbox.stub().resolves();
+			let revert = _delete.__set__('harperBridge', { deleteRecords: bridge_spy });
+			let delete_obj = testUtils.deepClone(DELETE_OBJ_TEST);
+			delete_obj.hash_values = [8, null, 9];
+			let test_err_result = await testUtils.testError(
+				_delete.deleteRecord(delete_obj),
+				"'hash_values' must not contain null"
+			);
+
+			expect(test_err_result).to.be.true;
+			expect(bridge_spy).to.not.have.been.called;
+			revert();
+		});
+
 		it('Test for nominal behaviour, success msg is returned', async () => {
 			global.hdb_schema = {
 				[DELETE_RECORDS_TEST.schema]: {
