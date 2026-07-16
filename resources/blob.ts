@@ -51,6 +51,8 @@ import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
+import { isMainThread } from 'node:worker_threads';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';
 import { logger } from '../utility/logging/logger.ts';
@@ -1474,8 +1476,152 @@ function resetDrainedQueue(): void {
 	}
 }
 
+// -- Durable blob-unlink queue (#1832) -------------------------------------------------
+// A decided-and-safe blob deletion must survive its executor's death. Reclamation above is
+// what decides a file is safe to unlink (no holder, no open snapshot, no re-reference) — the
+// durable queue's only job is making that decision survive past the moment it's made: once
+// `runReclamation` claims a file with no holders, it records the unlink as a durable intent
+// row in the database's internal dbi (synchronously, so it's durable before a dying worker
+// can lose it) instead of unlinking inline. Unlinks are executed by drains, which see only
+// due rows (a row is due the instant it's written — reclamation already did the waiting):
+//   - a per-thread coalesced timer shortly after each enqueue (fast path),
+//   - a main-thread safety interval (backstop for worker-thread death),
+//   - a startup drain (backstop for process death, picking up rows a prior life enqueued
+//     but never got to execute).
+// A row is removed only once its file is unlinked or already gone; any other unlink error
+// (e.g. a Windows reader holding the file open) keeps the row for retry. The reclaim claim
+// taken above is released only once the drain confirms the file is gone (see
+// drainBlobUnlinkQueue), never at enqueue time, so a hold cannot be acquired on a file that
+// is already durably committed to disappear.
+// Keys are [symbol, fileId] tuples (like the residency entries): symbol-led keys sort below
+// every boolean/string key, so the attribute-catalog scans over this dbi (which start at
+// `true`) never see them, and they cannot collide with table/attribute names.
+const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
+const UNLINK_QUEUE_DRAIN_DELAY = 25; // coalescing debounce; the row is already durable and due when this fires
+const UNLINK_SAFETY_INTERVAL = 5000; // main-thread backstop cadence; one empty range peek when idle
+const pendingLocalDrains = new Map<any, ReturnType<typeof setTimeout>>(); // per-root coalesced drain timer (this thread)
+const mainSafetyDrains = new WeakSet<any>(); // roots with a main-thread safety interval armed
+
+function unlinkQueueDb(store: any): any {
+	return store?.dbisDb;
+}
+
 /**
- * Delete the file for the blob
+ * Record a durable intent to unlink this blob's file, now \u2014 the caller (reclamation, having
+ * just claimed the file with no holders) has already done the waiting. Always a synchronous,
+ * standalone commit: unlike the record write that superseded it, there is no enclosing
+ * transaction to join at this point, so durability has to come from the write itself landing
+ * before a dying worker can lose it.
+ */
+function enqueueBlobUnlink(storageInfo: StorageInfo): boolean {
+	const queueDb = unlinkQueueDb(storageInfo.store);
+	if (!queueDb) return false;
+	const key = [UNLINK_QUEUE_KEY, storageInfo.fileId];
+	const value = { due: Date.now(), storageIndex: storageInfo.storageIndex };
+	queueDb.putSync(key, value);
+	return true;
+}
+
+/**
+ * Execute all committed, due unlink intents for this database root. Idempotent and safe to
+ * run from any thread: a row is only removed after its file is confirmed gone, and drains
+ * racing on the same row converge (the loser's unlink sees ENOENT).
+ *
+ * Also completes reclamation's bookkeeping for the file: hands back the shared-memory claim
+ * (so a new hold can be taken again) and clears any local `pendingReclamation` entry. Both are
+ * harmless no-ops when this drain is running for a row this process didn't enqueue (a restart
+ * recovering a prior life's rows) \u2014 a fresh process has no claim and no pendingReclamation
+ * entry to clear.
+ */
+export function drainBlobUnlinkQueue(rootStore: any): void {
+	const queueDb = unlinkQueueDb(rootStore);
+	if (!queueDb) return;
+	const now = Date.now();
+	let entries;
+	try {
+		entries = queueDb.getRange({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'] });
+	} catch (error) {
+		logger.debug?.('Unable to read blob unlink queue', error);
+		return;
+	}
+	for (const { key, value } of entries) {
+		if (!value || value.due > now) continue; // not yet due
+		const fileId = key[1];
+		const storageInfo = { storageIndex: value.storageIndex ?? 0, fileId, store: rootStore };
+		const filePath = getFilePath(storageInfo);
+		unlink(filePath, (error) => {
+			if (error && error.code !== 'ENOENT') {
+				// keep the row; a later drain retries (e.g. a reader still holds the file open on Windows)
+				logger.debug?.('Error trying to remove blob file, will retry', error);
+				return;
+			}
+			try {
+				if (queueDb instanceof RocksDatabase) queueDb.removeSync(key);
+				else queueDb.remove(key);
+			} catch (removeError) {
+				logger.debug?.('Unable to remove blob unlink queue entry', removeError);
+			}
+			pendingReclamation.delete(filePath);
+			if (pendingReclamation.size === 0) queueTailDeadline = 0;
+			// Hand the slot back: it is shared by hash, so leaving it claimed would make every later
+			// hold on a colliding fileId report the file as already reclaimed.
+			releaseReclaimClaim(storageInfo);
+		});
+	}
+}
+
+/**
+ * Nudge this thread to drain shortly after the queue was written to. Small fixed debounce: the
+ * row is already durable and due by the time this fires, so it's purely coalescing bursts of
+ * enqueues into one drain pass, not waiting out a retention window (reclamation already did).
+ */
+function scheduleBlobUnlinkDrain(rootStore: any, delay = UNLINK_QUEUE_DRAIN_DELAY): void {
+	if (!unlinkQueueDb(rootStore) || pendingLocalDrains.has(rootStore)) return;
+	const timer = setTimeout(() => {
+		pendingLocalDrains.delete(rootStore);
+		try {
+			drainBlobUnlinkQueue(rootStore);
+		} catch (error) {
+			logger.debug?.('Blob unlink drain failed', error);
+		}
+	}, delay);
+	timer.unref?.(); // never holds a worker open; the main-thread interval and startup drain are the backstops
+	pendingLocalDrains.set(rootStore, timer);
+}
+
+/**
+ * Called when a database root's internal dbi is opened: drain intents left over from a
+ * previous process (crash/restart \u2014 rows a prior life's reclamation decided on but never
+ * finished executing) and, on the main thread, arm the safety interval that reclaims intents
+ * whose enqueueing worker died before its local drain fired.
+ */
+export function initBlobUnlinkQueue(rootStore: any): void {
+	if (!unlinkQueueDb(rootStore)) return;
+	scheduleBlobUnlinkDrain(rootStore); // startup drain; prior-life rows are all due already
+	if (isMainThread && !mainSafetyDrains.has(rootStore)) {
+		mainSafetyDrains.add(rootStore);
+		const interval = setInterval(() => {
+			// self-clear once the database is closed/dropped so the interval's closure doesn't
+			// pin the store and spin on a dead handle
+			if ((rootStore as any).opened === false || (rootStore as any).dbisDb?.opened === false) {
+				clearInterval(interval);
+				mainSafetyDrains.delete(rootStore);
+				return;
+			}
+			try {
+				drainBlobUnlinkQueue(rootStore);
+			} catch (error) {
+				logger.debug?.('Blob unlink safety drain failed', error);
+			}
+		}, UNLINK_SAFETY_INTERVAL);
+		interval.unref?.();
+	}
+}
+
+/**
+ * Delete the file for the blob. Scheduling here is in-memory only (see runReclamation for why);
+ * the durable-queue guarantee (survives thread/process death) applies once reclamation has
+ * decided the file is safe to unlink, not at the moment of supersession.
  * @param blob
  */
 export function deleteBlob(blob: Blob): void {
@@ -1620,6 +1766,16 @@ function runReclamation(): void {
 			const instanceStorageInfo = storageInfoForBlob.get(blob);
 			if (instanceStorageInfo) discardStorage(instanceStorageInfo);
 		}
+		// Durably record the decided unlink before executing it, so a worker/process death between
+		// this decision and the actual unlink can't lose it (#1832): the claim taken above stays held
+		// until drainBlobUnlinkQueue confirms the file is gone and releases it, so a hold can't be
+		// acquired on a file already durably committed to disappear.
+		if (enqueueBlobUnlink(storageInfo)) {
+			scheduleBlobUnlinkDrain(storageInfo.store);
+			continue;
+		}
+		// Fallback for stores without an internal dbi (bare stores in unit tests): unlink directly.
+		// Not durable, but such stores have no queue to recover from anyway.
 		unlink(filePath, (error) => {
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;
