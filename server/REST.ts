@@ -151,7 +151,7 @@ async function http(request: Request, nextHandler) {
 					const inactiveComponent = await findInactiveComponent(url);
 					if (inactiveComponent) {
 						throw new ClientError(
-							`Component '${inactiveComponent}' is deployed but Harper must be restarted before its routes are active.`,
+							`Component '${inactiveComponent}' is deployed but Harper may need to be restarted before its routes are active.`,
 							404
 						);
 					}
