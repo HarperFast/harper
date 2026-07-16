@@ -17,6 +17,9 @@
  */
 import { STATUS_CODES } from 'node:http';
 import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { UwsRequest, UwsRequestBody } from './Request.ts';
 import { Headers } from './Headers.ts';
 import { when } from '../../utility/when.ts';
@@ -74,6 +77,27 @@ export interface HarperResponse {
 const statusText = (s: number) => `${s} ${STATUS_CODES[s] ?? 'Unknown'}`;
 
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {
+	// uWS prebuilds link the raw V8 ABI (not Node-API), so on a pointer-compression Node build they
+	// load cleanly but segfault on first use. Refuse with a clear error — unless the installed addon
+	// was rebuilt against the pointer-compression ABI, which the pointer-compression Docker image
+	// build marks with a `.pointer-compression-build` file next to the swapped-in binaries.
+	if ((process.config?.variables as any)?.v8_enable_pointer_compression === 1) {
+		let pcBuild = false;
+		try {
+			const uwsDir = dirname(createRequire(__filename).resolve('uWebSockets.js'));
+			pcBuild = existsSync(join(uwsDir, '.pointer-compression-build'));
+		} catch {
+			// resolution failure falls through to the guard error below
+		}
+		if (!pcBuild) {
+			throw new Error(
+				'The installed uWebSockets.js prebuilds are not supported on pointer-compression Node builds: ' +
+					'they target the standard V8 ABI and crash under pointer compression. Unset ' +
+					'HARPER_UWS_HTTP/HARPER_UWS_UDS, use a standard Node build, or install a uWS binary compiled ' +
+					'for pointer compression (marked with a .pointer-compression-build file in its package directory).'
+			);
+		}
+	}
 	const { default: uWS } = await import('uWebSockets.js' as any);
 	const {
 		socketPath,

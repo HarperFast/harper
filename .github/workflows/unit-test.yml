@@ -43,6 +43,10 @@ jobs:
       - name: Build
         run: npm run build || true # we currently have type errors so just ignore that
 
+      - name: Type contract tests
+        if: matrix.node-version == 22
+        run: npm run test:types # strict tsc over unitTests/types/ — asserts the shipped public types
+
       - name: Setup Harper
         env:
           DEFAULTS_MODE: 'dev'

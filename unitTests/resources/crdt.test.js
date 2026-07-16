@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { getRecordAtTime, applyForward } = require('#src/resources/crdt');
+const { getRecordAtTime, applyForward, addValues } = require('#src/resources/crdt');
 
 // Build a mock audit history and the `store` shape getRecordAtTime expects. Each event is
 // { version, type: 'put'|'patch'|'delete', value, previousVersion }. The audit store resolves an
@@ -172,6 +172,50 @@ describe('crdt getRecordAtTime', () => {
 			assert.deepStrictEqual(getRecordAtTime(current, 10, store, 1, 'N'), { id: 'N', v: 1 });
 		});
 	});
+
+	it('reconstructs a counter later overwritten by a plain set without leaking the op object', () => {
+		// put(count:5) -> patch(+3) [count=8] -> patch(count:100, plain overwrite) -> current.
+		// The reverse walk marks `count` unknown at the plain set (a plain set has no inverse). Filling
+		// it must forward-replay the add to 8; the prior code copied the nearest audit entry's raw
+		// field and returned the op object { __op__: 'add', value: 3 } instead of the value.
+		const events = [
+			{ version: 10, type: 'put', value: { id: 'X', count: 5 }, previousVersion: 0 },
+			{ version: 20, type: 'patch', value: { count: { __op__: 'add', value: 3 } }, previousVersion: 10 },
+			{ version: 30, type: 'patch', value: { count: 100 }, previousVersion: 20 },
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'X', count: 100 }, 30);
+		assert.deepStrictEqual(getRecordAtTime(current, 25, store, 1, 'X'), { id: 'X', count: 8 });
+	});
+
+	it('does not fill an unknown field from a prototype member (own-property check)', () => {
+		// put(v:1, no `toString`) -> patch(v:2) -> patch(toString:'b') -> current. `toString` is
+		// unknown at t=25 and is NOT an own key of the reconstructed record, so it must keep its live
+		// value rather than being assigned Object.prototype.toString (which `key in priorRecord` did).
+		const events = [
+			{ version: 10, type: 'put', value: { id: 'P', v: 1 }, previousVersion: 0 },
+			{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+			{ version: 30, type: 'patch', value: { toString: 'b' }, previousVersion: 20 },
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'P', v: 2, toString: 'b' }, 30);
+		const result = getRecordAtTime(current, 25, store, 1, 'P');
+		assert.strictEqual(result.toString, 'b');
+		assert.strictEqual(typeof result.toString, 'string');
+	});
+
+	it('fills an unknown field from an older plain put when reconstructing forward', () => {
+		// put(status:'a', v:1) -> patch(v:2) -> patch(status:'b') -> current. At t=25 status is 'a'
+		// (the plain set at 30 is unknown to the reverse walk and resolved from the put at 10).
+		const events = [
+			{ version: 10, type: 'put', value: { id: 'S', status: 'a', v: 1 }, previousVersion: 0 },
+			{ version: 20, type: 'patch', value: { v: 2 }, previousVersion: 10 },
+			{ version: 30, type: 'patch', value: { status: 'b' }, previousVersion: 20 },
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'S', status: 'b', v: 2 }, 30);
+		assert.deepStrictEqual(getRecordAtTime(current, 25, store, 1, 'S'), { id: 'S', status: 'a', v: 2 });
+	});
 });
 
 describe('crdt applyForward', () => {
@@ -183,5 +227,48 @@ describe('crdt applyForward', () => {
 
 	it('throws on an unsupported operation', () => {
 		assert.throws(() => applyForward({}, { x: { __op__: 'multiply', value: 2 } }), /Unsupported operation multiply/);
+	});
+
+	it('does not resolve an Object.prototype member as an operation', () => {
+		// The registry is null-prototype, so `__op__: 'toString'` (a prototype member on a plain
+		// object) resolves to undefined and is rejected like any other unsupported op, rather than
+		// invoking Object.prototype.toString.
+		assert.throws(() => applyForward({}, { x: { __op__: 'toString', value: 2 } }), /Unsupported operation toString/);
+	});
+});
+
+describe('crdt addValues', () => {
+	// Single fold shared by the storage path (crdt.add) and the read/serialize path
+	// (tracked.ts Addition.update), so the two can no longer diverge.
+	it('adds two numbers', () => {
+		assert.strictEqual(addValues(5, 3), 8);
+	});
+
+	it('establishes the value when there is no prior numeric value', () => {
+		assert.strictEqual(addValues(undefined, 3), 3);
+		assert.strictEqual(addValues(NaN, 3), 3);
+		assert.strictEqual(addValues('not a number', 3), 3);
+	});
+
+	it('coerces a numeric-string prior value instead of concatenating', () => {
+		// Regression: crdt.add did "5" + 3 = "53" while the read path coerced to 8.
+		assert.strictEqual(addValues('5', 3), 8);
+	});
+
+	it('folds bigint prior values without throwing', () => {
+		// Regression: the read path (Addition.update) did +bigint and threw a TypeError.
+		assert.strictEqual(addValues(5n, 3), 8n);
+	});
+
+	it('establishes the value from a null/undefined prior, including a bigint delta', () => {
+		assert.strictEqual(addValues(null, 3), 3);
+		assert.strictEqual(addValues(undefined, 3), 3);
+		assert.strictEqual(addValues(null, 3n), 3n); // would throw `0 + 3n` without the null guard
+	});
+
+	it('keeps a number field a number when a stray bigint delta arrives', () => {
+		// number + bigint would otherwise throw a TypeError on the apply path.
+		assert.strictEqual(addValues(5, 3n), 8);
+		assert.strictEqual(typeof addValues(5, 3n), 'number');
 	});
 });

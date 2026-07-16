@@ -334,9 +334,21 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 
 		const tableDoc: string | undefined = entry.Resource.description;
 		const withDoc = (sentence: string) => (tableDoc ? `${tableDoc} ${sentence}` : sentence);
-		const responseSchema = { type: 'object' };
-		// custom (non-table) resources have no generated schema component, so request bodies are loosely typed
+		const genericResponseSchema = { type: 'object' };
+		// custom (non-table) resources have no generated schema component, so request bodies default to
+		// loosely typed — UNLESS a request contract declares the query/body/response,
+		// in which case each verb is driven off the shared JsonSchemaFragment below.
 		const genericRequestBody = { content: { 'application/json': { schema: { type: 'object' } } } };
+		const inputSchemas = entry.Resource.inputSchemas ?? {};
+		const outputSchemas = entry.Resource.outputSchemas ?? {};
+		// query params declared on the verb's contract, appended to the path params
+		const paramsFor = (verb: string) => [...pathParams, ...queryParametersFromFragment(inputSchemas[verb]?.query)];
+		const bodyFor = (verb: string) =>
+			inputSchemas[verb]?.body
+				? { content: { 'application/json': { schema: fragmentToOpenApiSchema(inputSchemas[verb].body) } } }
+				: genericRequestBody;
+		const responseFor = (verb: string) =>
+			outputSchemas[verb] ? fragmentToOpenApiSchema(outputSchemas[verb]) : genericResponseSchema;
 
 		const hasPost = prototype.post !== Resource.prototype.post || prototype.update;
 		const hasPut = typeof prototype.put === 'function';
@@ -353,43 +365,48 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		);
 		if (hasGet) {
 			api.paths[url].get = new Get(
-				pathParams,
+				paramsFor('get'),
 				security,
-				{ '200': new Response200(responseSchema) },
+				{ '200': new Response200(responseFor('get')) },
 				withDoc('handle a GET request for this route')
 			);
 		}
 		if (hasPost) {
 			api.paths[url].post = {
 				description: withDoc('handle a POST request for this route'),
-				parameters: pathParams,
+				parameters: paramsFor('post'),
 				security,
-				requestBody: genericRequestBody,
-				responses: { '200': new Response200(responseSchema) },
+				requestBody: bodyFor('post'),
+				responses: { '200': new Response200(responseFor('post')) },
 			};
 		}
 		if (hasPut) {
 			api.paths[url].put = {
 				description: withDoc('handle a PUT request for this route'),
-				parameters: pathParams,
+				parameters: paramsFor('put'),
 				security,
-				requestBody: genericRequestBody,
-				responses: { '200': new Response200(responseSchema) },
+				requestBody: bodyFor('put'),
+				responses: { '200': new Response200(responseFor('put')) },
 			};
 		}
 		if (hasPatch) {
 			api.paths[url].patch = {
 				description: withDoc('handle a PATCH request for this route'),
-				parameters: pathParams,
+				parameters: paramsFor('patch'),
 				security,
-				requestBody: genericRequestBody,
-				responses: { '200': new Response200(responseSchema) },
+				requestBody: bodyFor('patch'),
+				responses: { '200': new Response200(responseFor('patch')) },
 			};
 		}
 		if (hasDelete) {
-			api.paths[url].delete = new Delete(pathParams, security, withDoc('handle a DELETE request for this route'), {
-				'204': new Response204(),
-			});
+			api.paths[url].delete = new Delete(
+				paramsFor('delete'),
+				security,
+				withDoc('handle a DELETE request for this route'),
+				{
+					'204': new Response204(),
+				}
+			);
 		}
 	}
 
@@ -522,4 +539,39 @@ function Parameter(name, i, type) {
 	this.name = name;
 	this.in = i;
 	this.schema = type;
+}
+
+/**
+ * Project a shared `JsonSchemaFragment` (from a request contract's inputSchemas/outputSchemas) into an
+ * OpenAPI schema object. The fragment vocabulary already mirrors JSON Schema, so this mostly copies the
+ * standard keys recursively and drops Harper-only metadata (primaryKey, assignCreatedTime, hidden).
+ */
+function fragmentToOpenApiSchema(fragment: any): any {
+	if (!fragment || typeof fragment !== 'object') return { type: 'object' };
+	const schema: any = {};
+	if (fragment.type != null) schema.type = fragment.type;
+	if (fragment.format) schema.format = fragment.format;
+	if (fragment.description) schema.description = fragment.description;
+	if (fragment.enum) schema.enum = fragment.enum;
+	if (fragment.nullable) schema.nullable = true;
+	if (fragment.const !== undefined) schema.const = fragment.const;
+	if (fragment.items) schema.items = fragmentToOpenApiSchema(fragment.items);
+	if (fragment.properties) {
+		schema.properties = {};
+		for (const [key, sub] of Object.entries(fragment.properties)) schema.properties[key] = fragmentToOpenApiSchema(sub);
+		if (fragment.required) schema.required = fragment.required;
+		if (fragment.additionalProperties !== undefined) schema.additionalProperties = fragment.additionalProperties;
+	}
+	return schema;
+}
+
+/** Build OpenAPI query `Parameter`s from a contract verb's query fragment (`{ type:'object', properties }`). */
+function queryParametersFromFragment(queryFragment: any): any[] {
+	if (!queryFragment?.properties) return [];
+	const required = new Set(queryFragment.required ?? []);
+	return Object.entries(queryFragment.properties).map(([name, sub]) => {
+		const parameter = new Parameter(name, 'query', fragmentToOpenApiSchema(sub));
+		if (required.has(name)) parameter.required = true;
+		return parameter;
+	});
 }

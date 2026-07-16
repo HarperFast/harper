@@ -5,6 +5,9 @@ const { writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, rmSync } = require('node:fs');
+const { setupTestDBPath } = require('../testUtils');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { defineTable, types } = require('#src/resources/defineTable');
 
 describe('jsResource', () => {
 	let testDir;
@@ -124,5 +127,40 @@ describe('jsResource', () => {
 				return true;
 			}
 		);
+	});
+
+	it('exposes an exported defineTable handle as an endpoint', async () => {
+		// `defineTable` registers eagerly at import time; the handle is a real table class, so the
+		// existing export walk exposes it — the code-first analog of GraphQL's @export, and the same
+		// semantics `export class X extends tables.X {}` has today. No loader special-casing.
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const Widget = defineTable(
+			'Widget',
+			{ id: types.id.primaryKey, name: types.string },
+			{ database: 'jsresource_codefirst' }
+		);
+		const resourceModule = { Widget };
+
+		let capturedHandler;
+		const mockScope = {
+			handleEntry: spy((handler) => {
+				capturedHandler = handler;
+			}),
+			resources: new Map(),
+			logger: { warn: spy(), debug: spy(), error: spy() },
+			requestRestart: spy(),
+			import: async () => resourceModule,
+		};
+
+		await handleApplication(mockScope);
+		await capturedHandler({
+			entryType: 'file',
+			eventType: 'add',
+			absolutePath: join(testDir, 'resources.js'),
+			urlPath: '/resources.js',
+		});
+
+		assert.equal(mockScope.resources.get('/Widget'), Widget, 'exported handle registered at its export name');
 	});
 });

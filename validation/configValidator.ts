@@ -28,6 +28,26 @@ const INVALID_RETENTION_VALUE_MSG =
 const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 
+// Directory-path validation. The previous `([...]+)+$` nested quantifier
+// backtracked catastrophically (ReDoS), hanging the CLI at 100% CPU on any
+// value with a character outside its allow-list after a run of valid ones — a
+// dotted rootPath such as `/Users/john.doe/hdb` is enough (#1779). An allow-list
+// is also the wrong model for file paths: they legitimately contain spaces, `~`,
+// parens (`C:\\Program Files (x86)`), apostrophes, and any Unicode
+// (`/Users/café/hdb`), so any fixed class rejects real, previously-valid
+// configs. These paths only ever reach `fs`/`path` (never a shell), so the
+// character check is just a friendly "reject obvious garbage" gate — the real
+// validation is the existence check in `validatePath`. So this is a denylist:
+// reject only control characters — C0 (`\x00-\x1f`), DEL, and C1 (`\x80-\x9f`,
+// which includes NEL U+0085) — plus the Unicode line/paragraph separators
+// U+2028/U+2029, since paths get logged and any of these could forge log lines,
+// via a single anchored quantifier — linear time, no backtracking. The
+// `(?!\s*$)` guard rejects empty/whitespace-only values, which on Windows
+// silently strip to a valid-but-wrong directory and would pass the existence
+// check; `.`/`..` are allowed since they resolve honestly to real directories.
+// eslint-disable-next-line no-control-regex -- deliberate: reject control characters
+const DIRECTORY_PATH_PATTERN = /^(?!\s*$)[^\x00-\x1f\x7f\x80-\x9f\u2028\u2029]+$/;
+
 const portConstraints = Joi.alternatives([number.min(0), string])
 	.optional()
 	.empty(null);
@@ -93,10 +113,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 
 	const enabledConstraints = boolean.optional();
 	const threadsConstraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
-	const rootConstraints = string
-		.pattern(/^[\\/]$|([\\/a-zA-Z_0-9:-]+)+$/, 'directory path')
-		.empty(null)
-		.default(setDefaultRoot);
+	const rootConstraints = string.pattern(DIRECTORY_PATH_PATTERN, 'directory path').empty(null).default(setDefaultRoot);
 	const pemFileConstraints = string.optional().empty(null);
 
 	const storagePathConstraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
@@ -278,7 +295,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			}).optional(),
 			tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 		}).required(),
-		rootPath: string.pattern(/^[\\/]$|([\\/a-zA-Z_0-9:-]+)+$/, 'directory path').required(),
+		rootPath: string.pattern(DIRECTORY_PATH_PATTERN, 'directory path').required(),
 		mqtt: Joi.object({
 			network: Joi.object({
 				port: portConstraints,
@@ -377,7 +394,7 @@ function doesPathExist(pathToCheck) {
 }
 
 function validatePath(value, helpers) {
-	Joi.assert(value, string.pattern(/^[\\/~]$|([\\/~a-zA-Z_0-9:-]+)+$/, 'directory path'));
+	Joi.assert(value, string.pattern(DIRECTORY_PATH_PATTERN, 'directory path'));
 
 	let resolvedValue;
 	if (value.startsWith('~/')) {

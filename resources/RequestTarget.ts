@@ -56,7 +56,8 @@ export class RequestTarget extends URLSearchParams {
 	declare previousResidency?: string[];
 
 	// Action tracking
-	/** Cache disposition of a get on a caching table; also mirrored onto the request Context. */
+	/** Cache disposition of this get on a caching table: true if loaded from the source, false if
+	 * served from cache. Set per-get; read it on the RequestTarget you passed to the get. */
 	declare loadedFromSource?: boolean;
 	declare createdNewId?: string;
 
@@ -65,6 +66,15 @@ export class RequestTarget extends URLSearchParams {
 
 	declare allowFullScan?: boolean;
 	declare allowConditionsOnDynamicAttributes?: boolean;
+
+	/**
+	 * Predicate-aware vector search (#1241). A `(record) => boolean` filter evaluated during HNSW
+	 * traversal (and as a post-filter for other paths), so a vector sort keeps exploring until it has
+	 * enough MATCHING nearest neighbors instead of post-filtering an under-filled candidate set. The
+	 * function must be synchronous and side-effect free; the record it receives is frozen. JS-API only —
+	 * never parsed from a REST query string (no eval of user-supplied code over HTTP).
+	 */
+	declare vectorFilter?: (record: any) => boolean;
 
 	/**
 	 * When `false`, the query reads against the latest committed data without holding a consistent

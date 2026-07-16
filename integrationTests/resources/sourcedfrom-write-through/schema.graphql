@@ -1,0 +1,22 @@
+# QA-147 — sourcedFrom cache WRITE / write-through semantics.
+#
+# Two cache tables share one in-test HTTP origin but differ in what the SOURCE resource
+# implements (resources.js):
+#   CacheWT  — source defines get() + put() + delete()  => expect WRITE-THROUGH to origin
+#   CacheRO  — source defines ONLY get()                => write-through impossible; probe
+#              whether a cache write is cache-only/silent-divergence or rejected.
+#
+# expiration is long (3600s) so a read-after-write does NOT trigger a refresh that could mask
+# a stale local value — we want to see exactly what the write left in the cache.
+
+type CacheWT @table(expiration: 3600) @export {
+	id: ID @primaryKey
+	value: String
+	fetchedAt: Float
+}
+
+type CacheRO @table(expiration: 3600) @export {
+	id: ID @primaryKey
+	value: String
+	fetchedAt: Float
+}

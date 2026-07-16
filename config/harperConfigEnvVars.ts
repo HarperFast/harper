@@ -28,6 +28,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { cloneDeep } from 'lodash';
 import { getBackupDirPath } from './configHelpers.ts';
+import * as hdbTerms from '../utility/hdbTerms.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
 
@@ -305,7 +306,18 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 /**
  * Flatten nested object to dot-notation paths
  */
-function flattenObject(obj: ConfigObject, prefix = ''): Record<string, any> {
+// One warning per distinct path per process — flattenObject runs on every env apply.
+const warnedEmptyObjectPaths = new Set<string>();
+function warnEmptyObjectDropped(path: string): void {
+	if (warnedEmptyObjectPaths.has(path)) return;
+	warnedEmptyObjectPaths.add(path);
+	getLogger().warn?.(
+		`[env-config] '${path}' is an empty object in env-var config and carries no settings; ` +
+			`it will not appear in the resolved config. Set an explicit value (e.g. '${path}.enabled: true').`
+	);
+}
+
+function flattenObject(obj: ConfigObject, prefix = '', warnOnEmptyDrop = true): Record<string, any> {
 	const result: Record<string, any> = {};
 
 	for (const key in obj) {
@@ -315,8 +327,16 @@ function flattenObject(obj: ConfigObject, prefix = ''): Record<string, any> {
 		const newKey = prefix ? `${prefix}.${key}` : key;
 
 		if (isPlainObject(value) && !isDirectiveObject(value)) {
-			// Recurse for nested objects
-			Object.assign(result, flattenObject(value, newKey));
+			// Recurse for nested objects. An EMPTY object contributes no leaves — that is
+			// load-bearing for removal semantics (`http: {}` in SET_CONFIG means "no
+			// overrides under http", restoring originals) — but it also means a bare
+			// `componentName: {}` carries no signal at all, which has silently confused
+			// users (#1618). Warn once per path so the drop is visible; use an explicit
+			// value (e.g. `enabled: true`) to convey presence. The base config file is
+			// exempt (warnOnEmptyDrop=false): its empty objects are user content and are
+			// restored after composition rather than dropped (#1726 review).
+			if (Object.keys(value).length === 0 && warnOnEmptyDrop) warnEmptyObjectDropped(newKey);
+			Object.assign(result, flattenObject(value, newKey, warnOnEmptyDrop));
 		} else {
 			// Store primitive, array, or directive ({ $union: [...] }) as a leaf
 			result[newKey] = value;
@@ -324,6 +344,34 @@ function flattenObject(obj: ConfigObject, prefix = ''): Record<string, any> {
 	}
 
 	return result;
+}
+
+/**
+ * Re-add empty-object paths from the base config file that `flattenObject` dropped
+ * during composition. The base file is user content, not an override layer: a bare
+ * `componentName: {}` there is a real (empty) scope declaration, unlike an env-layer
+ * `{}` which means "no overrides here". Only paths the composition did not otherwise
+ * populate are restored — an env layer that set or replaced the path wins.
+ */
+function restoreBaseEmptyObjects(source: ConfigObject, target: ConfigObject): void {
+	for (const key in source) {
+		if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+		const value = source[key];
+		if (!isPlainObject(value) || isDirectiveObject(value)) continue;
+		if (Object.keys(value).length === 0) {
+			if (!(key in target)) target[key] = {};
+		} else if (key in target) {
+			// Recurse only while the composed side is still an object; a non-object env
+			// replacement wins over the base subtree.
+			if (isPlainObject(target[key])) restoreBaseEmptyObjects(value, target[key] as ConfigObject);
+		} else {
+			// The subtree produced no leaves at all (its only content was empty objects,
+			// possibly nested) — rebuild just the empty-object skeleton.
+			const skeleton: ConfigObject = {};
+			restoreBaseEmptyObjects(value, skeleton);
+			if (Object.keys(skeleton).length > 0) target[key] = skeleton;
+		}
+	}
 }
 
 /**
@@ -738,22 +786,59 @@ function cleanupRemovedEnvVar(
  */
 export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
 	const result: ConfigObject = {};
+	const baseLayer = cloneDeep(base);
 	const layers: (ConfigObject | null)[] = [
 		parseConfigEnvVar(process.env.HARPER_DEFAULT_CONFIG, 'HARPER_DEFAULT_CONFIG'),
-		cloneDeep(base),
+		baseLayer,
 		parseConfigEnvVar(process.env.HARPER_CONFIG, 'HARPER_CONFIG'),
 		parseConfigEnvVar(process.env.HARPER_SET_CONFIG, 'HARPER_SET_CONFIG'),
 	];
 
 	for (const layer of layers) {
 		if (!layer) continue;
-		for (const [p, value] of Object.entries(flattenObject(layer))) {
+		for (const [p, value] of Object.entries(flattenObject(layer, '', layer !== baseLayer))) {
 			// directive leaves compose against the value accumulated by prior layers
 			setNestedValue(result, p, resolveLeafValue(getNestedValue(result, p), value, p));
 		}
 	}
 
+	// The base file's empty objects are user content (e.g. a bare `componentName: {}`
+	// scope) — restore the ones composition didn't otherwise populate (#1726 review).
+	restoreBaseEmptyObjects(baseLayer, result);
+
 	return result;
+}
+
+/** True when any config-shaping env var (HARPER_DEFAULT_CONFIG / HARPER_CONFIG / HARPER_SET_CONFIG) is set. */
+export function hasConfigEnvVars(): boolean {
+	return Boolean(process.env.HARPER_DEFAULT_CONFIG || process.env.HARPER_CONFIG || process.env.HARPER_SET_CONFIG);
+}
+
+/**
+ * Overlay runtime env config onto a base root-config object, hiding the env-var names and
+ * the composition rules from callers. Returns `base` unchanged when no config env vars are
+ * set (a true no-op — callers can invoke it on every root-config read without branching).
+ * A missing/non-object `base` (e.g. the install window before the config file is written)
+ * is treated as an empty base. Throws (via composeConfigFromEnv) on malformed env-var JSON.
+ */
+export function overlayRootEnvConfig(base: ConfigObject | undefined): ConfigObject | undefined {
+	if (!hasConfigEnvVars()) return base;
+	return composeConfigFromEnv(isPlainObject(base) ? base : {});
+}
+
+/**
+ * True when `filePath` names THE root Harper config file (current or legacy name), as
+ * opposed to a component/application `config.yaml`. Filename-only by design: an exact
+ * path comparison against the resolved root-config path misclassifies watchers in any
+ * environment where a real config instance is resolved (including the unit harness).
+ * FALLBACK ONLY: real component loads thread the loader's authoritative `isRoot` through
+ * `Scope` → `OptionsWatcher(…, isRootConfig)`, so this heuristic applies just to direct
+ * constructions (tests, ad-hoc callers), where a root-named app config file is a known,
+ * accepted false positive.
+ */
+export function isRootConfigFilename(filePath: string): boolean {
+	const name = path.basename(filePath);
+	return name === hdbTerms.HARPER_CONFIG_FILE || name === hdbTerms.HDB_CONFIG_FILE;
 }
 
 /**

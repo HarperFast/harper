@@ -85,6 +85,38 @@ export class IndexRebuildingError extends ServerError {
 	}
 }
 
+/** One structured validation failure. `path` is dot-scoped (`body.price`, `query.sort`, `params.id`). */
+export interface ValidationIssue {
+	/** Where the failure occurred, e.g. `body.price`, `query.expand`, `params.id`. */
+	path: string;
+	/** Machine-readable failure kind, e.g. `required`, `type`, `enum`, `unknown_attribute`. */
+	code: string;
+	/** Human-readable explanation. */
+	message: string;
+}
+
+/**
+ * A 400 carrying per-field validation failures instead of a single joined string. Extends
+ * `ClientError` so existing HTTP handling (status 400, Problem-Details serialization) works
+ * unchanged; the structured issues ride on `detail` so REST's RFC-9457 responder emits them, and
+ * on `errors` for programmatic consumers (MCP passes them through rather than flattening).
+ */
+export class ValidationError extends ClientError {
+	errors: ValidationIssue[];
+	detail: ValidationIssue[];
+	code: string;
+	constructor(errors: ValidationIssue[], message?: string) {
+		super(message ?? errors.map((e) => `${e.path}: ${e.message}`).join('. '), 400);
+		// ClientError returns the argument unchanged when handed an Error; we always pass a string, so
+		// `this` is a real ValidationError here.
+		this.name = 'ValidationError';
+		this.code = 'ValidationError';
+		this.errors = errors;
+		// REST's Problem-Details responder copies `error.detail` into the response body.
+		this.detail = errors;
+	}
+}
+
 /**
  * This handler method is used to effectively evaluate caught errors and either translates them into a custom HdbError or,
  * if it is already a HdbError, just returns the error to continue being thrown up the stack

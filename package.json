@@ -1,7 +1,7 @@
 {
 	"name": "harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
-	"version": "5.2.0-alpha.1",
+	"version": "5.2.0-alpha.5",
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
 	"bugs": {
@@ -56,6 +56,7 @@
 		"build:watch": "npm run build -- --watch --incremental",
 		"typecheck": "tsc --project tsconfig.json",
 		"typecheck:fast": "npx -y -p typescript@7.0.2 tsc --noEmit --project tsconfig.json",
+		"test:types": "tsc --project unitTests/types/tsconfig.json",
 		"package": "./build-tools/build.sh",
 		"lint": "oxlint --format stylish --deny-warnings .",
 		"lint:required": "oxlint --format stylish --quiet .",
@@ -166,7 +167,7 @@
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1012.0",
-		"@aws-sdk/lib-storage": "3.1076.0",
+		"@aws-sdk/lib-storage": "3.1080.0",
 		"@endo/static-module-record": "^1.1.2",
 		"@fastify/autoload": "^6.3.1",
 		"@fastify/compress": "^8.3.1",
@@ -198,7 +199,7 @@
 		"fast-glob": "3.3.3",
 		"fastify": "^5.8.2",
 		"fastify-plugin": "^5.1.0",
-		"fs-extra": "11.3.5",
+		"fs-extra": "11.3.6",
 		"graphql": "^16.10.0",
 		"graphql-http": "^1.22.4",
 		"gunzip-maybe": "1.4.2",

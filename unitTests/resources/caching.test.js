@@ -171,42 +171,66 @@ describe('Caching', () => {
 		assert.equal(target23.loadedFromSource, true);
 	});
 
-	it('loadedFromSource is observable on the context with a plain id', async function () {
-		// with a plain id, the static get dispatch mints an internal RequestTarget the caller
-		// never sees, so the flag must be mirrored onto the context (#1571)
-		CachingTable.setTTLExpiration(30);
-		await CachingTable.invalidate(31);
-		let context = {};
-		let result = await CachingTable.get(31, context);
-		assert.equal(result.id, 31);
-		assert.equal(context.loadedFromSource, true);
-		context = {};
-		result = await CachingTable.get(31, context);
-		assert.equal(result.id, 31);
-		assert.equal(context.loadedFromSource, false);
-		context = { onlyIfCached: true };
-		result = await CachingTable.get(31, context);
-		assert.equal(result.id, 31);
-		assert.equal(context.loadedFromSource, false);
-	});
-
-	it('loadedFromSource is observable on the context with loadAsInstance = false', async function () {
+	it('loadedFromSource is observable on the target with loadAsInstance = false (#1576)', async function () {
+		// disposition is recorded on the RequestTarget of the get; verify the loadAsInstance=false
+		// value path marks it on both cache miss (true) and cache hit (false)
 		const previousLoadAsInstance = CachingTable.loadAsInstance;
 		try {
 			CachingTable.loadAsInstance = false;
 			CachingTable.setTTLExpiration(30);
 			await CachingTable.invalidate(32);
-			let context = {};
-			let result = await CachingTable.get(32, context);
+			let target = new RequestTarget();
+			target.id = 32;
+			let result = await CachingTable.get(target);
 			assert.equal(result.id, 32);
-			assert.equal(context.loadedFromSource, true);
-			context = {};
-			result = await CachingTable.get(32, context);
+			assert.equal(target.loadedFromSource, true);
+			target = new RequestTarget();
+			target.id = 32;
+			result = await CachingTable.get(target);
 			assert.equal(result.id, 32);
-			assert.equal(context.loadedFromSource, false);
+			assert.equal(target.loadedFromSource, false);
 		} finally {
 			CachingTable.loadAsInstance = previousLoadAsInstance;
 		}
+	});
+
+	it('onlyIfCached cache hit marks loadedFromSource=false with loadAsInstance=false (#1576)', async function () {
+		// exercises the value path onlyIfCached cache-hit marking (Table.ts, loadAsInstance=false branch),
+		// the twin of the loadAsInstance=true instance path — previously untested.
+		const previousLoadAsInstance = CachingTable.loadAsInstance;
+		try {
+			CachingTable.setTTLExpiration(30);
+			await CachingTable.invalidate(42);
+			// prime the cache from source and wait until the record is durably cached, so the
+			// onlyIfCached read below is a deterministic cache hit rather than racing the write
+			assert.equal((await CachingTable.get(42)).id, 42);
+			await CachingTable.primaryStore.committed;
+			await waitFor(() => CachingTable.primaryStore.getEntry(42)?.value);
+			// onlyIfCached hit on the loadAsInstance=false value path: served from cache, so the
+			// per-get disposition must be recorded as false on the RequestTarget
+			CachingTable.loadAsInstance = false;
+			const target = new RequestTarget();
+			target.id = 42;
+			const result = await CachingTable.get(target, { onlyIfCached: true });
+			assert.equal(result.id, 42);
+			assert.equal(target.loadedFromSource, false);
+		} finally {
+			CachingTable.loadAsInstance = previousLoadAsInstance;
+		}
+	});
+
+	it('primitive-id instance-API get does not throw setting cache disposition (#1576)', async function () {
+		// getResource() (the instance API) can be called with a primitive id as the target — this is
+		// how source-apply/replication loads a record (see Table.ts Table.getResource(id, ...)). A
+		// primitive can't hold the loadedFromSource flag; without the `typeof target === 'object'`
+		// guard, setLoadedFromSource does `(41).loadedFromSource = ...`, which throws in strict mode
+		// ("Cannot create property 'loadedFromSource' on number '41'"). ensureLoaded routes through
+		// setLoadedFromSource on both the cache-hit and source-load branches, so this covers the guard
+		// regardless of current cache state.
+		CachingTable.setTTLExpiration(30);
+		await CachingTable.invalidate(41);
+		const resource = await CachingTable.getResource(41, {}, { ensureLoaded: true });
+		assert(resource); // resolved without throwing → guard held on the primitive-id target
 	});
 
 	it('Cache stampede is handled', async function () {
@@ -304,10 +328,11 @@ describe('Caching', () => {
 		events = [];
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		// should be stale but not evicted
-		const swrContext = {};
-		let result = await CachingTableStaleWhileRevalidate.get(23, swrContext);
+		const swrTarget = new RequestTarget();
+		swrTarget.id = 23;
+		let result = await CachingTableStaleWhileRevalidate.get(swrTarget);
 		assert(result); // should exist in database even though it is stale
-		assert.equal(swrContext.loadedFromSource, false); // stale value served from cache while revalidating
+		assert.equal(swrTarget.loadedFromSource, false); // stale value served from cache while revalidating
 		assert.equal(sourceRequests, 1); // the source request should be started
 		assert.equal(sourceResponses, 0); // the source request should not be completed yet
 		// the source request should be completed

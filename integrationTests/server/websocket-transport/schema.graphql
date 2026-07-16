@@ -1,0 +1,11 @@
+# QA-159 — WebSocket subscription transport: delivery, disconnect teardown, backpressure.
+#
+# Burst: plain exported table. A WS client connects to /Burst/<id> or /Burst/ (collection),
+# which Harper maps to the WS subscribe path (server/REST.ts: scope.server.ws ->
+# resources.getMatch(url,'ws') -> resource.connect -> Table.subscribe). Each write surfaces
+# as one change frame on the socket. We mutate via REST PUT and observe WS delivery/ordering.
+type Burst @table @export {
+	id: ID @primaryKey
+	value: Int
+	tag: String
+}

@@ -1,0 +1,6 @@
+# Regression fixture for #1419 — per-row allowRead must filter subscription delivery.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true

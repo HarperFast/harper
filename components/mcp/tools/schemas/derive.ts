@@ -70,12 +70,16 @@ function harperTypeToJsonSchema(type: string | undefined): { type: string | stri
 
 function attributeToProperty(attr: HarperAttribute): object {
 	let base: { type?: string | string[]; description?: string; [key: string]: unknown };
-	if (attr.type === 'Object' && attr.properties) {
+	// The GraphQL parser emits nested objects via `.properties` (not a capitalized `'Object'` type) and
+	// list types as lowercase `type: 'array'` with `.elements` — the prior `'Object'`/`'Array'` literal
+	// checks never matched, so nested shapes fell through to a bare `{ type: 'string' }`. Detect them the
+	// way the parser actually emits, matching the shared `attributeToFragment` projector.
+	if (attr.properties) {
 		base = {
 			type: 'object',
 			properties: Object.fromEntries(attr.properties.map((p) => [p.name, attributeToProperty(p)])),
 		};
-	} else if (attr.type === 'Array' && attr.elements) {
+	} else if (attr.type === 'array' && attr.elements) {
 		base = {
 			type: 'array',
 			items: attributeToProperty(attr.elements),

@@ -3,6 +3,13 @@ import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUti
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
+import type { CredentialReference, ResolvedCredential, ResolvedRegistryCredential } from './secretOperations.ts';
+import {
+	GIT_CREDENTIAL_SOCKET_ENV,
+	startGitCredentialSession,
+	type GitCredentialSession,
+	type ResolvedGitCredential,
+} from './gitCredentialServer.ts';
 
 import { basename, dirname, extname, join } from 'node:path';
 import {
@@ -29,6 +36,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
+import semver from 'semver';
 
 interface ApplicationConfig {
 	// define known config properties
@@ -38,10 +46,10 @@ interface ApplicationConfig {
 		timeout?: number;
 		allowInstallScripts?: boolean;
 	};
-	// Private-registry auth in reference form only — each entry names an hdb_secret row, never a
-	// token. Recorded by deploy_component so every (cold) install — reboot, new peer, rollback —
-	// re-resolves the credential from the store rather than needing it re-supplied.
-	registryAuth?: { registry: string; secret: string; scope?: string }[];
+	// Deploy credentials in reference form only — each entry names an hdb_secret row, never a token.
+	// Recorded by deploy_component so every (cold) install — reboot, new peer, rollback — re-resolves
+	// the credential from the store rather than needing it re-supplied.
+	credentials?: CredentialReference[];
 	// an application config can have other arbitrary properties
 	[key: string]: unknown;
 }
@@ -78,18 +86,19 @@ export class InvalidInstallTimeoutError extends TypeError {
 	}
 }
 
-export class InvalidRegistryAuthPropertyError extends TypeError {
-	constructor(applicationName: string, registryAuth: unknown) {
+export class InvalidCredentialsPropertyError extends TypeError {
+	constructor(applicationName: string, credentials: unknown) {
 		super(
-			`Invalid 'registryAuth' property for application ${applicationName}: expected array, got ${typeof registryAuth}`
+			`Invalid 'credentials' property for application ${applicationName}: expected array, got ${typeof credentials}`
 		);
 	}
 }
 
-export class InvalidRegistryAuthEntryError extends TypeError {
+export class InvalidCredentialEntryError extends TypeError {
 	constructor(applicationName: string) {
 		super(
-			`Invalid 'registryAuth' entry for application ${applicationName}: expected { registry, secret, scope? } reference`
+			`Invalid 'credentials' entry for application ${applicationName}: expected a { registry, secret, scope? } ` +
+				`or { host, secret, username? } reference`
 		);
 	}
 }
@@ -131,21 +140,28 @@ export function assertApplicationConfig(
 			);
 		}
 	}
-	if ('registryAuth' in applicationConfig && applicationConfig.registryAuth !== undefined) {
-		const entries = applicationConfig.registryAuth;
+	if ('credentials' in applicationConfig && applicationConfig.credentials !== undefined) {
+		const entries = applicationConfig.credentials;
 		if (!Array.isArray(entries)) {
-			throw new InvalidRegistryAuthPropertyError(applicationName, entries);
+			throw new InvalidCredentialsPropertyError(applicationName, entries);
 		}
 		for (const entry of entries) {
 			// Config carries references only — a literal `token` here would mean a plaintext credential
-			// was persisted to disk, which the deploy path is designed to prevent.
+			// was persisted to disk, which the deploy path is designed to prevent. An entry is npm
+			// registry auth (`registry`) XOR git host auth (`host`); anything else is not a credential we
+			// know how to resolve, so reject it rather than install without it. An entry carrying both
+			// discriminators, or a stray `token`, is rejected rather than coerced into a single kind.
+			const record = entry as any;
+			const hasRegistry = typeof record?.registry === 'string';
+			const hasHost = typeof record?.host === 'string';
 			if (
 				typeof entry !== 'object' ||
 				entry === null ||
-				typeof (entry as any).registry !== 'string' ||
-				typeof (entry as any).secret !== 'string'
+				hasRegistry === hasHost || // neither, or both
+				typeof record.secret !== 'string' ||
+				record.token !== undefined
 			) {
-				throw new InvalidRegistryAuthEntryError(applicationName);
+				throw new InvalidCredentialEntryError(applicationName);
 			}
 		}
 	}
@@ -166,10 +182,230 @@ export function isSSHAuthFailure(stderr: string): boolean {
 	);
 }
 
+// Git-reference package identifier forms recognized below for the credentialed-clone path: the
+// npm git-url spec forms this repo's own derivePackageIdentifier can produce for a git host
+// credential. An identifier that doesn't match falls back to `npm pack --ignore-scripts` (best
+// effort, same as before this fix — not a regression for a form this can't safely reclone).
+const GIT_URL_PREFIX = /^git\+(ssh|https?|file):\/\//i;
+const GIT_PROTOCOL_PREFIX = /^git:\/\//i;
+
+// Hosted-git shorthand prefixes: the same table derivePackageIdentifier implicitly relies on when it
+// defaults a bare `owner/repo` to `github:owner/repo`, plus the other hosts npm's own shorthand spec
+// recognizes. A bare `owner/repo` never reaches parseGitReference directly — the Application
+// constructor always runs packageIdentifier through derivePackageIdentifier first, which turns it
+// into `github:owner/repo` — so only the prefixed forms need handling here.
+const HOSTED_GIT_HOSTS: Record<string, string> = {
+	github: 'github.com',
+	gitlab: 'gitlab.com',
+	bitbucket: 'bitbucket.org',
+	gist: 'gist.github.com',
+};
+const HOSTED_GIT_PREFIX = /^(github|gitlab|bitbucket|gist):(.+)$/i;
+
+interface GitReference {
+	cloneUrl: string;
+	committish?: string;
+}
+
+/**
+ * Parses a `git+ssh://…`/`git+https://…`/`git+http://…`/`git+file://…`/`git://…`, or hosted-git
+ * shorthand (`github:owner/repo`, `gitlab:owner/repo`, `bitbucket:owner/repo`, `gist:id`) package
+ * identifier into a plain clone URL and optional committish, without depending on npm's own git-spec
+ * parser (npm-package-arg/hosted-git-info aren't dependencies of this repo). Returns null for any
+ * other form.
+ */
+export function parseGitReference(packageIdentifier: string): GitReference | null {
+	const hashIndex = packageIdentifier.indexOf('#');
+	const committish = hashIndex === -1 ? undefined : packageIdentifier.slice(hashIndex + 1);
+	const spec = hashIndex === -1 ? packageIdentifier : packageIdentifier.slice(0, hashIndex);
+	if (GIT_URL_PREFIX.test(spec)) return { cloneUrl: spec.slice('git+'.length), committish };
+	if (GIT_PROTOCOL_PREFIX.test(spec)) return { cloneUrl: spec, committish };
+	const hostedMatch = HOSTED_GIT_PREFIX.exec(spec);
+	if (hostedMatch) {
+		const [, prefix, path] = hostedMatch;
+		const host = HOSTED_GIT_HOSTS[prefix.toLowerCase()];
+		// A gist clone URL is keyed by id alone; an optional `owner/` in the shorthand (npm accepts
+		// `gist:[owner/]id`) has no place in the URL and is dropped.
+		const urlPath =
+			prefix.toLowerCase() === 'gist' && path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
+		return { cloneUrl: `https://${host}/${urlPath}.git`, committish };
+	}
+	return null;
+}
+
+const NEUTRALIZED_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepack', 'prepare'];
+
+// npm's hosted-git-info convention (documented in #1799's own worked example, `github:my-org/my-app#semver:v1.2.3`)
+// for a committish that names a semver range instead of a literal ref. `git checkout` has no notion
+// of this syntax, so it must be resolved to a concrete tag before checkout.
+const SEMVER_COMMITTISH_PREFIX = /^semver:/i;
+
+// Matches npm's own git-tag-to-version extraction (@npmcli/git's lines-to-revs.js): a trailing
+// `1.2.3`-shaped suffix, optionally `v`-prefixed, with anything ahead of it ignored — so a tag like
+// `release-v1.2.3` resolves the same way npm's own git-dependency installer treats it.
+const TAG_VERSION_SUFFIX = /v?(\d+\.\d+\.\d+(?:[-+].+)?)$/;
+
+// A conservative safe-charset check on the FULL tag name — not just the version-shaped suffix
+// TAG_VERSION_SUFFIX matches. git's own ref-name rules (`check-ref-format`) permit shell
+// metacharacters like `$`, backticks, `;`, `&`, `|`, `(`, `)` in a tag name; a prefix ahead of the
+// matched suffix (e.g. the `release-` in `release-v1.2.3`) is otherwise unconstrained. The resolved
+// name is later checked out via `nonInteractiveSpawn`, which runs through a shell with no argument
+// escaping, so a tag such as `$(id)v1.2.3` in the cloned repo would otherwise execute on checkout.
+// A tag failing this check is excluded from resolution entirely rather than sanitized or escaped —
+// this only has to reject shell metacharacters, not accept every ref git itself would allow.
+const SAFE_TAG_NAME = /^[\w][\w.-]*$/;
+
+/**
+ * Resolves a `semver:<range>` committish (e.g. `semver:v1.2.3`, `semver:^1.2.3`) against the tags of
+ * the given clone to a concrete, unambiguous tag ref. Returns the committish unchanged if it isn't a
+ * semver-range committish.
+ */
+async function resolveCommittish(application: Application, committish: string, cloneDir: string): Promise<string> {
+	if (!SEMVER_COMMITTISH_PREFIX.test(committish)) return committish;
+	// npm's own package-arg parser URL-decodes the value after `semver:` (a range containing `^`/`~`
+	// can arrive percent-encoded, e.g. `#semver:%5E1.0.0`); do the same rather than evaluating it raw.
+	const rawRange = committish.slice('semver:'.length);
+	let range: string;
+	try {
+		range = decodeURIComponent(rawRange);
+	} catch {
+		range = rawRange;
+	}
+
+	// `git tag --list` rather than `for-each-ref --format=...`: nonInteractiveSpawn runs through a
+	// shell, and a `%(...)` format string is unsafe to pass through one.
+	const { code, stdout, stderr } = await nonInteractiveSpawn(application.name, 'git', ['tag', '--list'], cloneDir);
+	if (code !== 0) {
+		throw new Error(`Failed to list tags to resolve '${committish}' for ${application.packageIdentifier}: ${stderr}`);
+	}
+	const tags = stdout
+		.split('\n')
+		.map((tag) => tag.trim())
+		.filter(Boolean);
+
+	// A tag can be a bare version (`v1.2.3`) or carry a prefix ahead of one (`release-v1.2.3`); only
+	// the trailing version-shaped suffix is evaluated against the range, but the ORIGINAL tag name is
+	// what gets checked out.
+	const versionToTag = new Map<string, string>();
+	for (const tag of tags) {
+		if (!SAFE_TAG_NAME.test(tag)) continue;
+		const match = tag.match(TAG_VERSION_SUFFIX);
+		const version = match && semver.valid(match[1], { loose: true });
+		if (version) versionToTag.set(semver.clean(match[1], { loose: true }) as string, tag);
+	}
+
+	const resolvedVersion = semver.maxSatisfying([...versionToTag.keys()], range, { loose: true });
+	if (!resolvedVersion) {
+		throw new Error(
+			`Failed to resolve '${committish}' for ${application.packageIdentifier}: no tag satisfies range '${range}'. ` +
+				(tags.length ? `Tags found: ${tags.join(', ')}` : 'No tags were found in the repository.')
+		);
+	}
+	// refs/tags/<name> rather than the bare name: an unqualified `git checkout <name>` resolves to a
+	// same-named branch first if one exists, which would silently package the wrong commit.
+	return `refs/tags/${versionToTag.get(resolvedVersion)}`;
+}
+
+/**
+ * Clones a git reference ourselves — with the credential session's env, so the clone itself can
+ * still authenticate — and packs the checkout with its lifecycle scripts stripped, instead of
+ * letting `npm pack <git-url>` clone and pack it directly.
+ *
+ * `--ignore-scripts` is not a reliable suppression for a git source's own `prepare` script: pacote's
+ * DirFetcher runs it unconditionally on npm versions before 11.0.0 (the
+ * `if (this.opts.ignoreScripts) return` guard was only added upstream in npm 11) — which is exactly
+ * what Node 22's bundled npm (10.9.x) ships. A credentialed clone can't depend on which npm version
+ * happens to be on PATH, since a script running while the credential socket is reachable is exactly
+ * what this feature exists to prevent — so the script is removed from the checkout before packing,
+ * which works regardless of npm version.
+ */
+async function packGitReferenceWithoutScripts(
+	application: Application,
+	gitRef: GitReference,
+	parentDirPath: string
+): Promise<string> {
+	const cloneDir = await mkdtemp(join(tmpdir(), 'harper-git-clone-'));
+	try {
+		const { code: cloneCode, stderr: cloneStderr } = await nonInteractiveSpawn(
+			application.name,
+			'git',
+			['clone', '--quiet', gitRef.cloneUrl, cloneDir],
+			parentDirPath,
+			undefined,
+			undefined,
+			undefined,
+			application.gitCredentialEnv
+		);
+		if (cloneCode !== 0) {
+			if (isSSHAuthFailure(cloneStderr)) {
+				throw new Error(
+					`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
+					{ cause: new Error(cloneStderr) }
+				);
+			}
+			throw new Error(`Failed to clone package ${application.packageIdentifier}: ${cloneStderr}`);
+		}
+
+		if (gitRef.committish) {
+			const committish = await resolveCommittish(application, gitRef.committish, cloneDir);
+			const { code: checkoutCode, stderr: checkoutStderr } = await nonInteractiveSpawn(
+				application.name,
+				'git',
+				['checkout', '--quiet', committish],
+				cloneDir
+			);
+			if (checkoutCode !== 0) {
+				throw new Error(`Failed to check out '${committish}' for ${application.packageIdentifier}: ${checkoutStderr}`);
+			}
+		}
+
+		// Strip the checkout's own lifecycle scripts before packing — the mechanism above only
+		// suppresses npm's git-clone behavior; a plain `npm pack <local-dir>` still runs `prepare`
+		// unless it's gone from the manifest.
+		const manifestPath = join(cloneDir, 'package.json');
+		const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+		if (manifest.scripts) {
+			for (const scriptName of NEUTRALIZED_LIFECYCLE_SCRIPTS) delete manifest.scripts[scriptName];
+			await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+		}
+
+		const { stdout, code, stderr } = await nonInteractiveSpawn(
+			application.name,
+			'npm',
+			['pack', '--json', '--ignore-scripts', cloneDir],
+			parentDirPath,
+			undefined,
+			undefined,
+			application.npmUserconfigPath
+		);
+		if (code !== 0) {
+			throw new Error(`Failed to pack package ${application.packageIdentifier}: ${stderr}`);
+		}
+		let packResult: Array<{ filename: string }>;
+		try {
+			packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
+		} catch (err) {
+			throw new Error(
+				`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+			);
+		}
+		if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
+			throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+		}
+		return join(parentDirPath, packResult[0].filename);
+	} finally {
+		await rm(cloneDir, { recursive: true, force: true });
+	}
+}
+
 // Hidden directory under the components root holding component versions renamed aside
 // during a deploy swap (see extractApplication). The leading dot keeps
 // loadComponentDirectories from loading its contents as components.
 export const ASIDE_STAGING_DIR = '.deploy-aside';
+
+// The credential helper git executes for a private git-reference deploy. It ships alongside this
+// module (both in source and in dist), holds no secret, and is inert without a live session.
+export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.js');
 
 /**
  * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
@@ -244,39 +480,72 @@ export async function extractApplication(application: Application) {
 				}
 			}
 		} else {
-			// `npm pack --json` writes a JSON array describing the packed tarball(s).
-			const { stdout, code, stderr } = await nonInteractiveSpawn(
-				application.name,
-				'npm',
-				['pack', '--json', application.packageIdentifier],
-				parentDirPath,
-				undefined,
-				undefined,
-				application.npmUserconfigPath
-			);
-			if (code !== 0) {
-				if (isSSHAuthFailure(stderr)) {
-					throw new Error(
-						`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
-						{ cause: new Error(stderr) }
+			// `npm pack --json` writes a JSON array describing the packed tarball(s). This is also the
+			// spawn that clones a git-reference package, so it is the only one given the git credential
+			// environment.
+			//
+			// Packing a git reference is not just a download: npm clones the repo and, if its manifest
+			// has a prepare/build/install script, runs `npm install` inside the clone and then that
+			// script — so the repo's own code AND its dependencies' install scripts execute on this node,
+			// inheriting this spawn's environment. With a credential session live, that is exactly the
+			// reach the credential must not have (a transitive dependency's postinstall could ask the
+			// socket for a token granted for the top-level repository), so scripts are off for a
+			// credentialed clone unless the deploy explicitly opted into them.
+			const scriptsDisallowed = application.gitCredentialEnv && !application.install?.allowInstallScripts;
+			// `--ignore-scripts` alone isn't a reliable way to enforce that: pacote's DirFetcher runs a
+			// git source's `prepare` unconditionally on npm versions before 11.0.0 (see
+			// packGitReferenceWithoutScripts), which is exactly what Node 22's bundled npm ships. For a
+			// recognized git-reference identifier, clone and pack it ourselves with scripts stripped
+			// instead, sidestepping that npm code path entirely.
+			const gitRef = scriptsDisallowed ? parseGitReference(application.packageIdentifier) : null;
+
+			if (gitRef) {
+				tarballPath = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath);
+			} else {
+				const packArgs = ['pack', '--json', application.packageIdentifier];
+				if (scriptsDisallowed) {
+					packArgs.push('--ignore-scripts');
+				} else if (application.gitCredentialEnv) {
+					application.logger.warn(
+						`Deploying ${application.name} from a git reference with install scripts enabled: the repository's ` +
+							`prepare/build scripts and its dependencies' install scripts run on this node during the clone and ` +
+							`can read the git credential. Unset install_allow_scripts to keep the credential out of their reach.`
 					);
 				}
-				throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
-			}
-
-			let packResult: Array<{ filename: string }>;
-			try {
-				packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
-			} catch (err) {
-				throw new Error(
-					`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+				const { stdout, code, stderr } = await nonInteractiveSpawn(
+					application.name,
+					'npm',
+					packArgs,
+					parentDirPath,
+					undefined,
+					undefined,
+					application.npmUserconfigPath,
+					application.gitCredentialEnv
 				);
-			}
-			if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
-				throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
-			}
+				if (code !== 0) {
+					if (isSSHAuthFailure(stderr)) {
+						throw new Error(
+							`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
+							{ cause: new Error(stderr) }
+						);
+					}
+					throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
+				}
 
-			tarballPath = join(parentDirPath, packResult[0].filename);
+				let packResult: Array<{ filename: string }>;
+				try {
+					packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
+				} catch (err) {
+					throw new Error(
+						`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+					);
+				}
+				if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
+					throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+				}
+
+				tarballPath = join(parentDirPath, packResult[0].filename);
+			}
 			shouldDeleteTarball = true;
 			tarball = createReadStream(tarballPath);
 		}
@@ -551,7 +820,9 @@ interface ApplicationOptions {
 	packageIdentifier?: string;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 	onInstallLine?: OnInstallLine;
-	registryAuth?: RegistryAuthEntry[];
+	// Deploy credentials already resolved to literal tokens, of any kind; partitioned by the
+	// constructor into the npm and git halves, which are injected by entirely different mechanisms.
+	credentials?: ResolvedCredential[];
 }
 
 export class Application {
@@ -563,21 +834,39 @@ export class Application {
 	dirPath: string;
 	logger: Logger;
 	packageManagerPrefix: string; // can be used to configure a package manager prefix, specifically "sfw".
-	// Transient registry auth provided by a deploy. The token is held only in memory and a
-	// per-deploy `.npmrc`; it is never persisted to config, hdb_deployment, or replicated.
-	registryAuth?: RegistryAuthEntry[];
+	// Transient registry credentials provided by a deploy, already resolved to literal tokens. The
+	// token is held only in memory and a per-deploy `.npmrc`; it is never persisted to config,
+	// hdb_deployment, or replicated.
+	registryCredentials?: ResolvedRegistryCredential[];
+	// Transient git-host credentials, likewise resolved to literal tokens and held only in memory:
+	// they are served to git over a per-deploy socket (gitCredentialServer.ts), never written anywhere.
+	gitCredentials?: ResolvedGitCredential[];
 	// Path to the per-deploy `.npmrc`, set by writeTransientNpmrc() during prepareApplication and
-	// passed to the spawn calls; undefined when no registry auth was provided.
+	// passed to the spawn calls; undefined when no registry credentials were provided.
 	npmUserconfigPath?: string;
 	#npmrcTempDir?: string;
+	#gitCredentialSession?: GitCredentialSession;
 
-	constructor({ name, payload, packageIdentifier, install, onInstallLine, registryAuth }: ApplicationOptions) {
+	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
 		this.onInstallLine = onInstallLine;
-		this.registryAuth = registryAuth;
+		// Split by kind: registry credentials go into the transient .npmrc, git credentials into the
+		// credential socket. An entry belongs to exactly one of them (the op schema is an xor).
+		// secretOperations owns the same predicate, but it is only ever imported from here lazily (it
+		// pulls in the datastore), so this stays a local check rather than a boot-time import.
+		if (credentials?.length) {
+			const registryCredentials = credentials.filter(
+				(entry): entry is ResolvedRegistryCredential => (entry as any).registry !== undefined
+			);
+			const gitCredentials = credentials.filter(
+				(entry): entry is ResolvedGitCredential => (entry as any).registry === undefined
+			);
+			if (registryCredentials.length) this.registryCredentials = registryCredentials;
+			if (gitCredentials.length) this.gitCredentials = gitCredentials;
+		}
 		const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		if (!componentsRoot) throw new Error('componentsRoot is not configured');
 		this.dirPath = join(componentsRoot, name);
@@ -586,7 +875,8 @@ export class Application {
 	}
 
 	// Write the transient `.npmrc` into a fresh 0700 temp dir (file mode 0600) and record its path
-	// so the deploy's npm spawns authenticate against the private registry. No-op without registry auth.
+	// so the deploy's npm spawns authenticate against the private registry. No-op without registry
+	// credentials.
 	//
 	// Because `nonInteractiveSpawn` points npm at this single file (replacing any inherited
 	// npm_config_userconfig), prepend the contents of an already-configured userconfig — e.g. a
@@ -594,7 +884,7 @@ export class Application {
 	// survive. The transient auth is appended last so it wins on conflict (npm honors the last
 	// value for a given key).
 	async writeTransientNpmrc(): Promise<void> {
-		if (!this.registryAuth?.length) return;
+		if (!this.registryCredentials?.length) return;
 		// Defensive: if called more than once, remove the prior temp dir first so it isn't leaked.
 		if (this.#npmrcTempDir) await this.cleanupTransientNpmrc();
 		this.#npmrcTempDir = await mkdtemp(join(tmpdir(), 'harper-npmrc-'));
@@ -610,9 +900,40 @@ export class Application {
 				if (error?.code !== 'ENOENT') throw error;
 			}
 		}
-		content += buildNpmrcContent(this.registryAuth);
+		content += buildNpmrcContent(this.registryCredentials);
 		await writeFile(npmrcPath, content, { mode: 0o600 });
 		this.npmUserconfigPath = npmrcPath;
+	}
+
+	// Environment that lets git reach this deploy's credential socket. Applied ONLY to the spawn that
+	// clones the git reference (`npm pack`) — see prepareApplication.
+	get gitCredentialEnv(): Record<string, string> | undefined {
+		return this.#gitCredentialSession?.env;
+	}
+
+	// Start serving this deploy's git-host credentials from memory. No-op without git credentials.
+	async startGitCredentialSession(): Promise<void> {
+		if (!this.gitCredentials?.length) return;
+		if (this.#gitCredentialSession) await this.cleanupGitCredentialSession();
+		this.#gitCredentialSession = await startGitCredentialSession(this.gitCredentials, GIT_CREDENTIAL_HELPER_PATH);
+	}
+
+	// Tear the socket down as soon as the clone is done, so nothing later in the deploy — including
+	// the component's own install scripts — can still ask for the credential.
+	async cleanupGitCredentialSession(): Promise<void> {
+		const session = this.#gitCredentialSession;
+		if (!session) return;
+		this.#gitCredentialSession = undefined;
+		try {
+			await session.close();
+		} catch (error) {
+			// Called from prepareApplication's finally; a throw here would mask the deploy's own error.
+			this.logger.warn(`Failed to close git credential session:`, error);
+		} finally {
+			// Drop the in-memory tokens too, so they can't surface in a later heap dump or error
+			// serialization of this Application instance.
+			this.gitCredentials = undefined;
+		}
 	}
 
 	// Remove the transient `.npmrc` (and its temp dir) once the deploy's npm work is done.
@@ -629,7 +950,7 @@ export class Application {
 			this.npmUserconfigPath = undefined;
 			// Drop the in-memory token array too, so it can't surface in a later heap dump or error
 			// serialization of this Application instance.
-			this.registryAuth = undefined;
+			this.registryCredentials = undefined;
 		}
 	}
 }
@@ -674,7 +995,16 @@ export async function prepareApplication(application: Application) {
 		// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
 		// `npm install` authenticate against the private registry; always remove it afterward.
 		await application.writeTransientNpmrc();
-		await extractApplication(application);
+		try {
+			// The git credential socket only has to be up for extraction — that is where npm resolves and
+			// clones a git-reference package. Closing it before installApplication means the credential is
+			// already gone by the time the component's dependency tree (and any install script it is
+			// allowed to run) executes.
+			await application.startGitCredentialSession();
+			await extractApplication(application);
+		} finally {
+			await application.cleanupGitCredentialSession();
+		}
 		await installApplication(application);
 	} finally {
 		await application.cleanupTransientNpmrc();
@@ -737,20 +1067,19 @@ export async function installApplications() {
 			// This will throw if the config is invalid
 			assertApplicationConfig(name, applicationConfig);
 
-			// Resolve any private-registry auth references from the store so a cold install (fresh
-			// node, wiped components dir, new peer that never installed) can authenticate without the
-			// token being re-supplied. Best-effort: if custody isn't available yet or a referenced
-			// secret is missing, log and install without it (a truly private package then fails in
-			// npm with its own error) rather than blocking boot.
-			let resolvedRegistryAuth: RegistryAuthEntry[] | undefined;
-			if (applicationConfig.registryAuth?.length) {
+			// Resolve any credential references from the store so a cold install (fresh node, wiped
+			// components dir, new peer that never installed) can authenticate without the token being
+			// re-supplied. Best-effort: if custody isn't available yet or a referenced secret is
+			// missing, log and install without it (a truly private package then fails in npm with its
+			// own error) rather than blocking boot.
+			let credentials: ResolvedCredential[] | undefined;
+			if (applicationConfig.credentials?.length) {
 				try {
-					const { resolveRegistryAuth } = await import('./secretOperations.ts');
-					resolvedRegistryAuth = (await resolveRegistryAuth(applicationConfig.registryAuth, name)) as
-						RegistryAuthEntry[] | undefined;
+					const { resolveCredentials } = await import('./secretOperations.ts');
+					credentials = await resolveCredentials(applicationConfig.credentials, name);
 				} catch (error) {
 					logger.warn?.(
-						`Could not resolve registryAuth for application ${name} at install time: ${(error as Error).message}`
+						`Could not resolve credentials for application ${name} at install time: ${(error as Error).message}`
 					);
 				}
 			}
@@ -759,7 +1088,7 @@ export async function installApplications() {
 				name,
 				packageIdentifier: applicationConfig.package,
 				install: applicationConfig.install,
-				registryAuth: resolvedRegistryAuth,
+				credentials,
 			});
 
 			// Lock check: only install if not already installed with matching configuration
@@ -800,12 +1129,6 @@ function getGitSSHCommand() {
 	}
 }
 
-export interface RegistryAuthEntry {
-	registry: string;
-	token: string;
-	scope?: string;
-}
-
 // Normalize a registry to a full URL with a scheme and trailing slash, e.g.
 // `npm.pkg.github.com` or `//npm.pkg.github.com` → `https://npm.pkg.github.com/`.
 function normalizeRegistryUrl(registry: string): string {
@@ -817,16 +1140,16 @@ function normalizeRegistryUrl(registry: string): string {
 	return url;
 }
 
-// Build the contents of a transient `.npmrc` from registry auth entries: an auth-token line keyed
+// Build the contents of a transient `.npmrc` from resolved registry credentials: an auth-token line keyed
 // by npm's registry auth key (scheme stripped, leading `//`, trailing `/`) plus a registry-routing
 // line. A scope routes only that `@scope` to the registry (`@scope:registry=…`); without a scope
 // the entry sets npm's default `registry=…` so an unscoped package spec (e.g. `npm:my-private-app`)
 // or its transitive deps actually resolve against this registry rather than the public default.
 // A scope-less entry therefore requires its registry to serve/proxy whatever npm needs to install;
 // with multiple scope-less entries npm's last-value-wins applies to the default `registry`.
-export function buildNpmrcContent(registryAuth: RegistryAuthEntry[]): string {
+export function buildNpmrcContent(registryCredentials: ResolvedRegistryCredential[]): string {
 	const lines: string[] = [];
-	for (const { registry, token, scope } of registryAuth) {
+	for (const { registry, token, scope } of registryCredentials) {
 		// Enforce the no-newline invariant at the injection point so it holds for every source. The
 		// ops validator already rejects CR/LF in a literal `token`, but a token resolved from an
 		// hdb_secret row bypasses that guard; without this a `\n` in a secret value would inject
@@ -903,7 +1226,8 @@ export function nonInteractiveSpawn(
 	cwd: string,
 	timeoutMs: number = 60 * 60 * 1000,
 	onLine?: (stream: 'stdout' | 'stderr', line: string) => void,
-	npmUserconfigPath?: string
+	npmUserconfigPath?: string,
+	gitCredentialEnv?: Record<string, string>
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
@@ -915,6 +1239,18 @@ export function nonInteractiveSpawn(
 		const gitSSHCommand = getGitSSHCommand();
 		if (gitSSHCommand) {
 			env.GIT_SSH_COMMAND = gitSSHCommand;
+		}
+
+		// The git credential channel is granted per spawn, and only to the one that clones the git
+		// reference. Every other spawn — notably `npm install`, where a dependency's install script can
+		// run — has it removed, so a transitive dependency cannot ask for a credential that was supplied
+		// for the top-level repository. Only the socket variable is stripped rather than any inherited
+		// GIT_ASKPASS/GIT_CONFIG_*: those may be the operator's own git auth, and without a socket to
+		// reach, our helper answers nothing and is inert.
+		if (gitCredentialEnv) {
+			Object.assign(env, gitCredentialEnv);
+		} else {
+			delete env[GIT_CREDENTIAL_SOCKET_ENV];
 		}
 
 		// A deploy carrying transient registry auth points npm at a per-deploy `.npmrc` so

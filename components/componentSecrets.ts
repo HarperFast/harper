@@ -34,8 +34,12 @@
  * rather than guessing. The recommended idiom is a module-top-level destructure
  * (`const { MY_KEY } = secrets;`), where binding is exact in every mode.
  *
- * Late custody / changed secrets heal on restart or component reload (each load cycle re-reads the
- * store) — there is no live re-materialization.
+ * Liveness (#1776): a change watcher on the store keeps the SCOPED tier live — the per-component
+ * accessor (`secrets.NAME`) and `secrets.subscribe(name)` reflect a later set_secret/grant/revoke/delete
+ * without a reload. The GLOBAL (`process.env`) tier stays reload-only: a live change never re-mutates
+ * `process.env` under already-running code (child processes have inherited it; arbitrary code has cached
+ * it), so materialized env values still heal only on restart or component reload. Late custody likewise
+ * heals on reload (each load cycle re-reads and re-decrypts the store).
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { databases } from '../resources/databases.ts';
@@ -47,8 +51,19 @@ import { _assignPackageExport } from '../globals.js';
 
 const SECRET_TABLE = SYSTEM_TABLE_NAMES.SECRET_TABLE_NAME;
 
-/** A per-component secrets view: read-only name→value map exposed as `import { secrets } from 'harper'`. */
-export type SecretsView = Readonly<Record<string, string>>;
+/**
+ * Subscribe to a secret's current value and any subsequent changes (#1776). Yields the current value
+ * first, then on each change; `undefined` means the component has no access right now (never granted,
+ * revoked, or deleted) — the same thing `secrets[name]` reads as. The stream stays open across that,
+ * so a re-grant/re-add resumes on the same iterator.
+ */
+export type SecretSubscribe = (name: string) => AsyncIterableIterator<string | undefined>;
+
+/**
+ * A per-component secrets view: read-only name→value map exposed as `import { secrets } from 'harper'`,
+ * plus the reserved, non-enumerable `subscribe(name)` method for live change subscription.
+ */
+export type SecretsView = Readonly<Record<string, string>> & { readonly subscribe: SecretSubscribe };
 
 export type UnsatisfiedReason = 'missing' | 'ungranted' | 'custody-unavailable';
 
@@ -89,7 +104,40 @@ const ownedEnvKeys = new Set<string>();
 // Per-component registries, rebuilt as each component's env block is processed.
 const declaredEnvNames = new Map<string, Set<string>>();
 const unsatisfiedEnv = new Map<string, UnsatisfiedDeclaration[]>();
+// Cached LIVE per-component view proxies (stable per component; they resolve values on each read, so
+// they never need invalidating on a secret change — only on reset).
 const accessorCache = new Map<string, SecretsView>();
+// Components already warned about a secret named `subscribe` shadowing the reserved method.
+const warnedSubscribeShadow = new Set<string>();
+
+/**
+ * Build the in-memory state for one hdb_secret row: normalize grants, read the tier flag, and
+ * decrypt the envelope with this node's custody. The single source of truth for turning a stored
+ * record into a {grants, processEnv, value?, failure?} — shared by the load-cycle scan
+ * (doMaterializeGlobalSecrets) and the live change watcher (dispatchSecretChange), so both paths
+ * apply identical decrypt/failure semantics.
+ */
+function rowStateFromRecord(record: any): SecretRowState {
+	const state: SecretRowState = {
+		grants: Array.isArray(record.grants) ? [...new Set(record.grants as string[])] : [],
+		processEnv: record.processEnv === true,
+	};
+	if (typeof record.envelope === 'string') {
+		const decryptor = getSecretDecryptor();
+		if (!decryptor) {
+			state.failure = 'no secrets custody is registered on this node';
+		} else {
+			try {
+				state.value = decryptor(record.envelope);
+			} catch (error) {
+				state.failure = `decrypt failed: ${(error as Error).message}`;
+			}
+		}
+	} else {
+		state.failure = 'stored row has no envelope';
+	}
+	return state;
+}
 
 /**
  * Read the hdb_secret store, decrypt what this node's custody allows, materialize the global tier
@@ -118,48 +166,74 @@ export function materializeGlobalSecrets(): Promise<void> {
 }
 let materializeInFlight: Promise<void> | undefined;
 
+// Bump on every applied live change, so a full rescan can detect that its stable-snapshot view raced
+// a newer watcher update and retry rather than clobber it (see scanIntoSecretRows).
+let secretEventSeq = 0;
+const SCAN_RETRY_LIMIT = 5;
+
+/**
+ * Rebuild `secretRows` (the live snapshot behind the scoped accessor and subscriptions) from a full
+ * table scan, then re-deliver current values to every open stream. `table.search` uses a stable
+ * snapshot, so a scan that started before a revoke could otherwise complete afterward and re-authorize
+ * the just-revoked secret; to prevent that we retry the scan when a live change was applied while it
+ * ran, and the final assignment is synchronous (no await) so no event can interleave between the guard
+ * check and the assignment. Does NOT touch process.env — callers that must (re)materialize the global
+ * tier do that separately (it stays reload-only).
+ */
+async function scanIntoSecretRows(table: any): Promise<Map<string, SecretRowState>> {
+	let rows: Map<string, SecretRowState>;
+	let before: number;
+	let attempts = 0;
+	do {
+		before = secretEventSeq;
+		rows = new Map();
+		for await (const record of table.search([])) {
+			const name = record.name;
+			if (typeof name !== 'string' || !name) continue;
+			rows.set(name, rowStateFromRecord(record));
+		}
+	} while (before !== secretEventSeq && ++attempts < SCAN_RETRY_LIMIT);
+	if (before !== secretEventSeq) {
+		logger.warn(
+			'Secrets store changed repeatedly during a rescan; applying the latest scan (heals on the next change)'
+		);
+	}
+	secretRows = rows;
+	storeAvailable = true;
+	redispatchAllStreams();
+	return rows;
+}
+
 async function doMaterializeGlobalSecrets(): Promise<void> {
 	const table = (databases as { system?: Record<string, any> }).system?.[SECRET_TABLE];
 	if (!table) {
 		storeAvailable = false;
 		secretRows = new Map();
 		accessorCache.clear();
+		redispatchAllStreams(); // reflect the store going away to any open streams
 		logger.debug?.(
 			`Secrets store not initialized (system.${SECRET_TABLE} missing); component env declarations can only be satisfied from process.env`
 		);
 		return;
 	}
-	const rows = new Map<string, SecretRowState>();
-	const decryptor = getSecretDecryptor();
+	// Start the watcher BEFORE the scan so a change committed during the scan bumps secretEventSeq and
+	// forces a retry (closing the scan→attach gap where a deletion would otherwise be lost). Non-fatal:
+	// a subscribe failure leaves the node bootable with reload-only secrets.
 	try {
-		for await (const row of table.search([])) {
-			const name = row.name;
-			if (typeof name !== 'string' || !name) continue;
-			const state: SecretRowState = {
-				grants: Array.isArray(row.grants) ? [...new Set(row.grants as string[])] : [],
-				processEnv: row.processEnv === true,
-			};
-			if (typeof row.envelope === 'string') {
-				if (!decryptor) {
-					state.failure = 'no secrets custody is registered on this node';
-				} else {
-					try {
-						state.value = decryptor(row.envelope);
-					} catch (error) {
-						state.failure = `decrypt failed: ${(error as Error).message}`;
-					}
-				}
-			} else {
-				state.failure = 'stored row has no envelope';
-			}
-			rows.set(name, state);
-		}
+		await ensureSecretWatcher(table);
+	} catch (error) {
+		logger.warn(
+			`Could not start the live secrets change watcher (secrets will be reload-only): ${(error as Error).message}`
+		);
+	}
+	let rows: Map<string, SecretRowState>;
+	try {
+		rows = await scanIntoSecretRows(table);
 	} catch (error) {
 		// Leave the previous snapshot (and process.env) untouched rather than acting on a partial read.
 		logger.error(`Failed to read the secrets store (system.${SECRET_TABLE}): ${(error as Error).message}`);
 		return;
 	}
-	storeAvailable = true;
 
 	for (const [name, state] of rows) {
 		if (!state.processEnv) {
@@ -192,8 +266,6 @@ async function doMaterializeGlobalSecrets(): Promise<void> {
 			ownedEnvKeys.delete(name);
 		}
 	}
-	secretRows = rows;
-	accessorCache.clear();
 }
 
 function parseDeclaration(componentName: string, name: string, spec: unknown): EnvDeclaration {
@@ -337,33 +409,407 @@ export function getUnsatisfiedEnv(componentName: string): UnsatisfiedDeclaration
 	return unsatisfiedEnv.get(componentName) ?? [];
 }
 
+// ── Live secret change subscription (#1776) ────────────────────────────────────────────────────
+//
+// `secrets.subscribe(name)` returns an async iterable that yields the secret's current effective
+// value (if the component has access now) and then a new value on every change — so an app can
+// hot-swap an API key without a restart. It is a decrypted, grant-filtered PROJECTION over the
+// replicated `system.hdb_secret` table's own subscription: a `set_secret`/`grant_secret` on ANY
+// node replicates the row, the one shared table watcher observes the commit, and the change fans
+// out to the subscribers of that name. Change authority is re-evaluated per event through the SAME
+// resolver as the read accessor (continuous re-authorization, the property #1414 enforces), so a
+// `revoke_secret`/`delete_secret` that removes the component's access hands the stream `undefined`
+// (and retains no plaintext) rather than the last value — the app can never keep receiving a secret
+// it has lost rights to. The stream stays open across that, so a later re-grant/re-add resumes on it.
+//
+// Tier semantics: the SCOPED tier is fully live (value resolved from the freshly decrypted row).
+// The global (processEnv) tier stays reload-only for `process.env` itself — a live change never
+// silently re-mutates process.env under already-running code — but a subscriber to a declared
+// global name still receives the fresh decrypted value through this channel.
+
 /**
- * The secrets view for a component: scoped-tier rows granted to it, plus its DECLARED names
- * resolved from process.env (global-tier materialized values, env literals, or real env vars).
- * The superset lets app code use `secrets.FOO` uniformly, and lets ops later tighten a secret from
- * global to granted without breaking the app. Values are decrypted eagerly at load; the object is
- * frozen and enumerable (`Object.keys`, spread).
+ * A single (component, secret-name) live subscription: a minimal push async-iterator that yields the
+ * secret's current effective value and then a new value on every change. A value of `undefined` means
+ * the component has no access right now (never granted, revoked, or the secret was deleted) — the same
+ * thing `secrets[name]` reads as. The stream stays open across that transition, so a delete-then-re-add
+ * or revoke-then-re-grant resumes on the SAME iterator with no re-subscribe. It ends only when the
+ * consumer breaks out, the component is unloaded, or the store is unavailable.
+ */
+type SecretValue = string | undefined;
+class SecretChangeStream implements AsyncIterableIterator<SecretValue> {
+	// At most one undelivered value: this is a current-state stream, so a newer value COALESCES over an
+	// unconsumed older one. That also means a revoke (deliver `undefined`) drops any queued plaintext a
+	// slow consumer had not yet read — no stale secret is handed out after access is lost.
+	#queued: { value: SecretValue } | null = null;
+	// FIFO of parked next() resolvers, so concurrent next() calls each settle (a single slot would drop
+	// all but the last).
+	#waiters: Array<(result: IteratorResult<SecretValue>) => void> = [];
+	#closed = false;
+	/** Whether any value has been delivered yet, so the first (possibly `undefined`) value always emits. */
+	#hasEmitted = false;
+	/** Last value delivered, so an unrelated row change doesn't re-emit an unchanged value. */
+	lastValue: SecretValue;
+	readonly componentName: string;
+	readonly name: string;
+
+	constructor(componentName: string, name: string) {
+		this.componentName = componentName;
+		this.name = name;
+	}
+
+	get closed(): boolean {
+		return this.#closed;
+	}
+
+	[Symbol.asyncIterator](): AsyncIterableIterator<SecretValue> {
+		return this;
+	}
+
+	next(): Promise<IteratorResult<SecretValue>> {
+		if (this.#queued) {
+			const { value } = this.#queued;
+			this.#queued = null;
+			return Promise.resolve({ value, done: false });
+		}
+		if (this.#closed) return Promise.resolve({ value: undefined, done: true });
+		return new Promise((resolve) => this.#waiters.push(resolve));
+	}
+
+	// Consumer breaking out of `for await` — tear down and stop tracking this stream.
+	return(): Promise<IteratorResult<SecretValue>> {
+		this.#close();
+		return Promise.resolve({ value: undefined, done: true });
+	}
+
+	// Producer side: deliver the current effective value (bespoke iterator rather than IterableEventQueue
+	// so an `undefined`/empty-string value can't be misread as an empty queue). Dedups so an unrelated
+	// row change doesn't re-emit an unchanged value; the first value always emits so a currently-absent
+	// secret yields `undefined` up front.
+	deliver(value: SecretValue): void {
+		if (this.#closed) return;
+		if (this.#hasEmitted && value === this.lastValue) return;
+		this.#hasEmitted = true;
+		this.lastValue = value;
+		const waiter = this.#waiters.shift();
+		if (waiter) waiter({ value, done: false });
+		else this.#queued = { value }; // replace: coalesce to the latest, dropping any stale queued value
+	}
+
+	// Producer side: end the stream (consumer/component gone, or the store is unavailable). Access loss
+	// is NOT an end — it is delivered as an `undefined` value via deliver().
+	end(): void {
+		this.#close();
+	}
+
+	#close(): void {
+		if (this.#closed) return;
+		this.#closed = true;
+		// Drop any queued plaintext and the retained last value so nothing is readable after close.
+		this.#queued = null;
+		this.lastValue = undefined;
+		unregisterStream(this);
+		const waiters = this.#waiters;
+		this.#waiters = [];
+		for (const waiter of waiters) waiter({ value: undefined, done: true });
+	}
+}
+
+// name → active streams for that name. Keyed by secret name so a change dispatches only to the
+// streams that care, without every stream filtering every commit.
+const secretSubscribers = new Map<string, Set<SecretChangeStream>>();
+
+function registerStream(stream: SecretChangeStream): void {
+	let streams = secretSubscribers.get(stream.name);
+	if (!streams) secretSubscribers.set(stream.name, (streams = new Set()));
+	streams.add(stream);
+}
+
+function unregisterStream(stream: SecretChangeStream): void {
+	const streams = secretSubscribers.get(stream.name);
+	if (!streams) return;
+	streams.delete(stream);
+	if (streams.size === 0) secretSubscribers.delete(stream.name);
+}
+
+/**
+ * Resolve a component's effective view of one secret from a freshly-decrypted row state — the SAME
+ * authority the read accessor applies (scoped rows require a grant; global/absent rows require a
+ * declaration), so the subscription can never widen access. Returns the value when available.
+ */
+function resolveSubscribedSecret(
+	componentName: string,
+	name: string,
+	row: SecretRowState | undefined
+): { available: boolean; value?: string } {
+	// `subscribe` is the reserved accessor method, never a readable secret (it is shadowed on the view),
+	// so it must be uniformly invisible as a value here too — otherwise subscribe('subscribe') would leak
+	// the plaintext of a secret literally named `subscribe` that the accessor hides.
+	if (name === 'subscribe') return { available: false };
+	// Exactly the read accessor's authority (getSecretsForComponent), so a subscription can never
+	// widen access beyond a fresh `secrets[name]` read:
+	//  1. a scoped row granted to this component and decryptable → its live decrypted value;
+	//  2. otherwise, a name this component DECLARED → its process.env value (global-materialized,
+	//     literal, or a real env var — reload-only, precedence already resolved in process.env).
+	// The process.env fallback is gated on declaration: an undeclared, ungranted component must never
+	// read a still-materialized global value out of process.env (that would bypass the grant model).
+	if (row && !row.processEnv && row.value !== undefined && row.grants.includes(componentName)) {
+		return { available: true, value: row.value };
+	}
+	if (declaredEnvNames.get(componentName)?.has(name)) {
+		const envValue = process.env[name];
+		if (envValue !== undefined) return { available: true, value: envValue };
+	}
+	return { available: false };
+}
+
+// The one shared subscription to system.hdb_secret. Lazily started on the first subscribe; a
+// single watcher feeds every stream.
+let secretWatcher: Promise<void> | undefined;
+let secretWatcherSubscription: { emit?: (event: string) => void; end?: () => void } | undefined;
+
+function restartSecretWatcher(): void {
+	// Drop the memo (and any live subscription) so the next ensureSecretWatcher() re-attaches.
+	const sub = secretWatcherSubscription;
+	secretWatcher = undefined;
+	secretWatcherSubscription = undefined;
+	sub?.emit?.('close');
+	sub?.end?.();
+}
+
+function ensureSecretWatcher(table: any): Promise<void> {
+	// Reset the memo on failure so a transient table.subscribe() error doesn't permanently disable live
+	// secrets — the next caller retries instead of reusing a rejected promise.
+	return (secretWatcher ??= (async () => {
+		// omitCurrent: the load-cycle scan (scanIntoSecretRows) seeds and re-syncs the snapshot, and the
+		// watcher is attached BEFORE that scan, so it need not (and should not) replay current rows here —
+		// it only needs subsequent commits, local or replicated.
+		secretWatcherSubscription = await table.subscribe({ omitCurrent: true, listener: onSecretEvent });
+	})().catch((error) => {
+		secretWatcher = undefined;
+		throw error;
+	}));
+}
+
+// Fired for every commit to system.hdb_secret (local or replicated). event.value is the full record
+// on put; null-valued on delete. Keeps `secretRows` (the live view's source) current and fans the
+// change out to any subscribers, WITHOUT touching process.env — the global tier stays reload-only.
+function onSecretEvent(event: any): void {
+	try {
+		// Table.subscribe surfaces an async retained-state/replay failure by delivering the Error THROUGH
+		// the listener (not by rejecting subscribe()), so detect it here and restart the watcher —
+		// otherwise the memo stays fulfilled and every future ensureSecretWatcher reuses a dead subscription.
+		if (event instanceof Error) {
+			logger.warn(`secrets change watcher errored; restarting it: ${event.message}`);
+			restartSecretWatcher();
+			return;
+		}
+		// Base-copy replication of a system table delivers a single `{type:'reload', id:null}` marker
+		// instead of per-row events (harper-pro#495): the whole table was reseeded, so re-scan the LIVE
+		// snapshot to resync adds AND removals (and re-deliver to streams). It does NOT re-materialize
+		// process.env — the global tier stays reload-only even under replicated reloads.
+		if (event?.type === 'reload') {
+			const table = (databases as { system?: Record<string, any> }).system?.[SECRET_TABLE];
+			if (table)
+				scanIntoSecretRows(table).catch((error) =>
+					logger.warn(`secrets store rescan after a reload marker failed: ${(error as Error).message}`)
+				);
+			return;
+		}
+		const name = (event?.value?.name ?? event?.id) as unknown;
+		if (typeof name !== 'string' || !name) return;
+		secretEventSeq++; // let a concurrent rescan know its snapshot is now stale
+		const record = event?.type === 'delete' ? null : (event?.value ?? null);
+		const row = record ? rowStateFromRecord(record) : undefined;
+		if (row) secretRows.set(name, row);
+		else secretRows.delete(name);
+		// The cached views are live proxies (they read secretRows on each access), so no invalidation is
+		// needed here — a fresh `secrets[name]` read already reflects this update.
+		dispatchSecretChange(name, row);
+	} catch (error) {
+		logger.warn(`secrets change subscription failed to dispatch an event: ${(error as Error).message}`);
+	}
+}
+
+function dispatchSecretChange(name: string, row: SecretRowState | undefined): void {
+	const streams = secretSubscribers.get(name);
+	if (!streams || streams.size === 0) return;
+	for (const stream of [...streams]) {
+		// Authority is re-evaluated on EVERY event (continuous re-authorization, the property #1414
+		// enforces): a revoke/delete/custody-loss resolves to unavailable → the stream is handed
+		// `undefined` (no plaintext retained), not the last value. A later re-grant/re-add resolves to a
+		// value again and resumes on the same stream. deliver() dedups unchanged values.
+		const { available, value } = resolveSubscribedSecret(stream.componentName, name, row);
+		stream.deliver(available ? value : undefined);
+	}
+}
+
+// Re-deliver the current effective value to every open stream from the present `secretRows` — used
+// after a full rescan (reload marker or load cycle), where individual per-row events were not seen so
+// a removed row's subscribers would otherwise keep their stale value.
+function redispatchAllStreams(): void {
+	for (const [name, streams] of secretSubscribers) {
+		const row = secretRows.get(name);
+		for (const stream of [...streams]) {
+			const { available, value } = resolveSubscribedSecret(stream.componentName, name, row);
+			stream.deliver(available ? value : undefined);
+		}
+	}
+}
+
+/**
+ * `secrets.subscribe(name)` for a component: the current effective value (matching `secrets[name]`)
+ * then a stream of changes. Returned synchronously for direct use in `for await`. The initial value is
+ * delivered SYNCHRONOUSLY from the live snapshot before the watcher is (re)started, so no change event
+ * can interleave ahead of it and a stale value can never land after a newer one.
+ */
+function subscribeSecret(componentName: string, name: string): AsyncIterableIterator<SecretValue> {
+	const stream = new SecretChangeStream(componentName, name);
+	registerStream(stream);
+	// Initial value from the current snapshot (scoped-granted live, or a declared name's process.env
+	// value even when the store is unavailable — accessor-equivalent).
+	const initial = resolveSubscribedSecret(componentName, name, secretRows.get(name));
+	stream.deliver(initial.available ? initial.value : undefined);
+	const table = (databases as { system?: Record<string, any> }).system?.[SECRET_TABLE];
+	if (table) {
+		// Start (or reuse) the one shared watcher so subsequent changes flow to this stream.
+		ensureSecretWatcher(table).catch((error) => {
+			logger.warn(`secrets.subscribe('${name}'): live change watcher unavailable: ${(error as Error).message}`);
+		});
+	} else {
+		// No store to watch: the stream keeps its initial value and simply won't receive live updates
+		// (nothing can change without the store); a reload/restart re-establishes it.
+		logger.debug?.(
+			`secrets.subscribe('${name}'): secrets store (system.${SECRET_TABLE}) is unavailable; no live updates`
+		);
+	}
+	return stream;
+}
+
+/** Close every live subscription owned by a component (component reload/unload). */
+export function closeComponentSubscriptions(componentName: string): void {
+	// Collect first, then close: stream.end() → unregisterStream() mutates secretSubscribers, so we must
+	// not close while iterating it.
+	const toClose: SecretChangeStream[] = [];
+	for (const streams of secretSubscribers.values()) {
+		for (const stream of streams) if (stream.componentName === componentName) toClose.push(stream);
+	}
+	for (const stream of toClose) stream.end();
+}
+
+// Subscriptions are keyed by component IDENTITY (applicationScope.name), which several concurrently-open
+// Scopes legitimately share — most notably a throwaway deploy-validation Scope loads the SAME directory
+// as the running app and closes in a `finally` before the real restart. Tearing down on any one Scope's
+// close would kill the running app's live streams. So teardown is reference-counted per identity: a Scope
+// retains on construction and releases on close, and streams are ended only when the LAST holder of that
+// identity releases (i.e. the app is truly unloading, not merely a validation load being discarded).
+const subscriptionHolders = new Map<string, number>();
+
+/** A Scope of this identity is now open — hold its live secret subscriptions until it releases. */
+export function retainComponentSubscriptions(componentName: string): void {
+	subscriptionHolders.set(componentName, (subscriptionHolders.get(componentName) ?? 0) + 1);
+}
+
+/** A Scope of this identity closed — end the identity's subscriptions once the last holder is gone. */
+export function releaseComponentSubscriptions(componentName: string): void {
+	const remaining = (subscriptionHolders.get(componentName) ?? 0) - 1;
+	if (remaining > 0) {
+		subscriptionHolders.set(componentName, remaining);
+	} else {
+		subscriptionHolders.delete(componentName);
+		closeComponentSubscriptions(componentName);
+	}
+}
+
+/** The component's current effective value for one name (scoped-granted live, else declared→process.env). */
+function currentSecretValue(componentName: string, name: string): string | undefined {
+	const { available, value } = resolveSubscribedSecret(componentName, name, secretRows.get(name));
+	return available ? value : undefined;
+}
+
+/**
+ * Whether a secret named exactly `name` WOULD be readable to the component if it weren't reserved —
+ * used only to detect (and warn about) a secret named `subscribe` shadowed by the reserved method.
+ */
+function hasRawSecretNamed(componentName: string, name: string): boolean {
+	const row = secretRows.get(name);
+	if (row && !row.processEnv && row.value !== undefined && row.grants.includes(componentName)) return true;
+	return (declaredEnvNames.get(componentName)?.has(name) ?? false) && process.env[name] !== undefined;
+}
+
+/** The names currently visible to a component (granted scoped rows + declared names present in env). */
+function currentSecretNames(componentName: string): string[] {
+	const names = new Set<string>();
+	const declared = declaredEnvNames.get(componentName);
+	if (declared) for (const name of declared) if (process.env[name] !== undefined) names.add(name);
+	for (const [name, row] of secretRows) {
+		if (row.value !== undefined && !row.processEnv && row.grants.includes(componentName)) names.add(name);
+	}
+	names.delete('subscribe'); // reserved for the method — never surfaced as a value key
+	return [...names];
+}
+
+/**
+ * The secrets view for a component: scoped-tier rows granted to it, plus its DECLARED names resolved
+ * from process.env (global-tier materialized values, env literals, or real env vars). The superset
+ * lets app code use `secrets.FOO` uniformly, and lets ops later tighten a secret from global to
+ * granted without breaking the app.
+ *
+ * It is a LIVE view (#1776): a Proxy that resolves each read from the current snapshot, so a scoped
+ * secret's rotation/revoke is reflected by a fresh `secrets.FOO` read under every loader — including a
+ * view captured once by the vm/compartment loader or held as `const v = scope.secrets` (only a
+ * value destructured out, `const { FOO } = secrets`, is a point-in-time copy). Declared global names
+ * still resolve from `process.env` (reload-only). Read-only and null-prototype, so Object.prototype
+ * members can't masquerade as secrets and the view can't be mutated. `subscribe` is a reserved,
+ * non-enumerable method (skipped by Object.keys/spread); a secret literally named `subscribe` is
+ * shadowed by it — logged once when observed.
  */
 export function getSecretsForComponent(componentName: string): SecretsView {
 	let view = accessorCache.get(componentName);
 	if (view) return view;
-	// Null prototype so inherited Object.prototype members (toString, hasOwnProperty, constructor)
-	// can never masquerade as secret values under dynamic access like `secrets[key]`.
-	const entries: Record<string, string> = Object.create(null);
-	const declared = declaredEnvNames.get(componentName);
-	if (declared) {
-		for (const name of declared) {
-			const value = process.env[name];
-			if (value !== undefined) entries[name] = value;
-		}
-	}
-	// Scoped rows granted to this component; on a name collision the scoped value wins.
-	for (const [name, row] of secretRows) {
-		if (row.value !== undefined && !row.processEnv && row.grants.includes(componentName)) {
-			entries[name] = row.value;
-		}
-	}
-	view = Object.freeze(entries);
+	const subscribe: SecretSubscribe = (name: string) => subscribeSecret(componentName, name);
+	view = new Proxy(Object.create(null) as Record<string, string>, {
+		get(_target, property) {
+			if (property === 'subscribe') {
+				// Advisory: warn once per component if a real secret named `subscribe` is shadowed by the
+				// reserved method (it is then unreadable via dot/bracket access — an accepted #1776 tradeoff).
+				if (!warnedSubscribeShadow.has(componentName)) {
+					warnedSubscribeShadow.add(componentName);
+					if (hasRawSecretNamed(componentName, 'subscribe')) {
+						logger.warn(
+							`Component '${componentName}' has a secret named 'subscribe'; it is shadowed by the reserved secrets.subscribe() method and is not readable through the secrets accessor`
+						);
+					}
+				}
+				return subscribe;
+			}
+			if (typeof property === 'symbol') return undefined;
+			return currentSecretValue(componentName, property);
+		},
+		has(_target, property) {
+			if (property === 'subscribe') return true;
+			if (typeof property === 'symbol') return false;
+			return currentSecretValue(componentName, property) !== undefined;
+		},
+		ownKeys() {
+			// Include `subscribe` so own-property reflection is consistent (getOwnPropertyDescriptor
+			// reports it); it is non-enumerable, so spread/Object.keys still skip it.
+			return [...currentSecretNames(componentName), 'subscribe'];
+		},
+		getOwnPropertyDescriptor(_target, property) {
+			if (property === 'subscribe') {
+				return { value: subscribe, writable: false, enumerable: false, configurable: true };
+			}
+			if (typeof property === 'symbol') return undefined;
+			const value = currentSecretValue(componentName, property);
+			if (value === undefined) return undefined;
+			return { value, writable: false, enumerable: true, configurable: true };
+		},
+		set: readOnly,
+		defineProperty: readOnly,
+		deleteProperty: readOnly,
+		preventExtensions: readOnly,
+		setPrototypeOf: readOnly,
+	}) as unknown as SecretsView;
 	accessorCache.set(componentName, view);
 	return view;
 }
@@ -407,6 +853,9 @@ function readOnly(): never {
 export const secrets: SecretsView = new Proxy(
 	{},
 	{
+		// `subscribe` resolves like any other own property of the bound view (it is a non-enumerable
+		// method there); it therefore reads through here, appears in ownKeys as non-enumerable, and is
+		// skipped by spread/Object.keys — no special-casing needed in the traps.
 		get(_target, property) {
 			if (typeof property === 'symbol' || property === 'then') return undefined;
 			return resolveBoundSecrets()[property];
@@ -423,8 +872,7 @@ export const secrets: SecretsView = new Proxy(
 		getOwnPropertyDescriptor(_target, property) {
 			if (typeof property === 'symbol' || componentBinding.getStore() === undefined) return undefined;
 			const descriptor = Object.getOwnPropertyDescriptor(resolveBoundSecrets(), property);
-			// The views are frozen; report configurable so the proxy invariant against its (extensible,
-			// empty) target holds.
+			// Report configurable so the proxy invariant against this (extensible, empty) target holds.
 			return descriptor && { ...descriptor, configurable: true };
 		},
 		set: readOnly,
@@ -436,7 +884,8 @@ export const secrets: SecretsView = new Proxy(
 		preventExtensions: readOnly,
 		setPrototypeOf: readOnly,
 	}
-);
+	// The empty target can't carry the reserved `subscribe` member statically; the get trap supplies it.
+) as unknown as SecretsView;
 _assignPackageExport('secrets', secrets);
 
 /** Reset all module state and retract materialized env values. Intended for tests. */
@@ -448,4 +897,14 @@ export function resetComponentSecrets(): void {
 	declaredEnvNames.clear();
 	unsatisfiedEnv.clear();
 	accessorCache.clear();
+	warnedSubscribeShadow.clear();
+	const openStreams = [...secretSubscribers.values()].flatMap((streams) => [...streams]);
+	secretSubscribers.clear();
+	subscriptionHolders.clear();
+	for (const stream of openStreams) stream.end();
+	// Tear down the shared table watcher too, so a reset doesn't leak an audit-log listener.
+	secretWatcherSubscription?.emit?.('close');
+	secretWatcherSubscription?.end?.();
+	secretWatcher = undefined;
+	secretWatcherSubscription = undefined;
 }
