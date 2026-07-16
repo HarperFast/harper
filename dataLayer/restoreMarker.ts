@@ -62,6 +62,26 @@ export function checkRestoreState(dbPath: string): RestoreState {
 }
 
 /**
+ * fsync a directory so a create/unlink of an entry within it is durable. Best-effort: Windows (and
+ * some filesystems) reject opening a directory for fsync with EPERM/EISDIR/ENOTSUP — the durability
+ * flush is a POSIX nicety, so treat those as a no-op rather than failing the restore.
+ */
+function fsyncDir(dir: string): void {
+	let dirFd: number;
+	try {
+		dirFd = openSync(dir, 'r');
+	} catch (error: any) {
+		if (error.code === 'EPERM' || error.code === 'EISDIR' || error.code === 'ENOTSUP') return;
+		throw error;
+	}
+	try {
+		fsyncSync(dirFd);
+	} finally {
+		closeSync(dirFd);
+	}
+}
+
+/**
  * Acquire the per-database restore lock and write the restoring marker. Call before any
  * destructive step. Returns the lock token for `completeRestore`/`abandonRestore`.
  * Throws (statusCode 409) if another restore already holds the lock.
@@ -83,12 +103,7 @@ export function beginRestore(dbPath: string): number {
 		}
 		// fsync the parent directory so the marker's directory entry is durable — without this a
 		// power loss can lose the entry, and a half-purged database would load as healthy
-		const dirFd = openSync(dirname(dbPath), 'r');
-		try {
-			fsyncSync(dirFd);
-		} finally {
-			closeSync(dirFd);
-		}
+		fsyncDir(dirname(dbPath));
 	} catch (error) {
 		fileLockRelease(token);
 		throw error;
@@ -105,14 +120,8 @@ export function completeRestore(dbPath: string, token: number): void {
 		unlinkSync(restoringMarkerPath(dbPath));
 		// fsync the parent directory so the marker's *removal* is durable — symmetric with the
 		// creation fsync in beginRestore. Without it, a power loss could resurrect the marker's
-		// directory entry and misclassify a fully-restored database as incomplete (blocking its
-		// load until a needless rerun).
-		const dirFd = openSync(dirname(dbPath), 'r');
-		try {
-			fsyncSync(dirFd);
-		} finally {
-			closeSync(dirFd);
-		}
+		// directory entry and misclassify a fully-restored database as incomplete.
+		fsyncDir(dirname(dbPath));
 	} finally {
 		fileLockRelease(token);
 	}

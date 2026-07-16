@@ -276,10 +276,12 @@ export async function validateRestoreBackup(request: any) {
 	} else if ((await listBackupsInDir(backupDir)).length === 0) {
 		throw new BackupNotFoundError(`No backups found for database '${databaseName}'`);
 	}
-	// The database is normally loaded and RocksDB; a database left unloaded by an interrupted
-	// restore is also restorable (rerunning the restore is how it is recovered).
-	const databaseDir = resolveDatabasePath(databaseName);
-	if (checkRestoreState(databaseDir) === 'clear' || getDatabases()[databaseName]) {
+	// Only a loaded database that actually has tables can be validated as a single-root RocksDB
+	// store here (an empty/tableless database has no table to resolve a root store from, and an
+	// unloaded one recovering an interrupted restore isn't open yet); those cases are validated when
+	// the restore job runs. `Object.keys` skips the DEFINED_TABLES symbol, so an empty database is 0.
+	const loaded = getDatabases()[databaseName];
+	if (loaded != null && Object.keys(loaded).length > 0) {
 		requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP);
 	}
 }
@@ -313,12 +315,15 @@ export async function restoreBackup(request: any) {
 	} else {
 		backupId = available.reduce((latest, backup) => Math.max(latest, backup.backupId), 0);
 	}
-	// a loaded database's root store knows its real directory (which can differ from the
-	// computed default, e.g. legacy layouts); fall back to the computed path only when the
-	// database is unloaded (recovering an interrupted restore)
-	const databaseDir = getDatabases()[databaseName]
-		? requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP).path
-		: resolveDatabasePath(databaseName);
+	// a loaded database *with tables* knows its real directory via its root store (which can differ
+	// from the computed default, e.g. legacy layouts); fall back to the computed path when the
+	// database is unloaded (recovering an interrupted restore) or empty (no table to resolve a root
+	// store from — Object.keys skips the DEFINED_TABLES symbol)
+	const loaded = getDatabases()[databaseName];
+	const databaseDir =
+		loaded != null && Object.keys(loaded).length > 0
+			? requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP).path
+			: resolveDatabasePath(databaseName);
 	const lockToken = beginRestoreForDatabase(databaseDir, databaseName);
 	let destructionStarted = false;
 	try {
@@ -332,18 +337,20 @@ export async function restoreBackup(request: any) {
 		await verifyDatabaseClosed(databaseDir, databaseName);
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
-	} catch (error) {
+	} catch (error: any) {
 		if (destructionStarted) {
 			// leave the marker: startup/rescan detection reports the incomplete restore until a rerun succeeds
 			abandonRestore(lockToken);
-			error.message = `Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`;
-		} else {
-			// nothing destructive happened — clear the marker and let every thread reload the intact database
-			completeRestore(databaseDir, lockToken);
-			await signalling.signalSchemaChange(
-				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName)
+			// wrap rather than mutate error.message: a frozen/library error can have a non-writable
+			// message (assigning it throws TypeError under 'use strict')
+			throw new Error(
+				`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`,
+				{ cause: error }
 			);
 		}
+		// nothing destructive happened — clear the marker and let every thread reload the intact database
+		completeRestore(databaseDir, lockToken);
+		await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName));
 		throw error;
 	}
 	completeRestore(databaseDir, lockToken);
@@ -506,10 +513,13 @@ export async function restoreBackupOffline(databaseName: string, backupId?: numb
 	const lockToken = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
 	try {
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
-	} catch (error) {
+	} catch (error: any) {
 		abandonRestore(lockToken);
-		error.message = `Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`;
-		throw error;
+		// wrap rather than mutate error.message (a frozen/library error's message may be non-writable)
+		throw new Error(
+			`Restore of database '${databaseName}' from backup ${backupId} failed (rerun restore_backup to recover): ${error.message}`,
+			{ cause: error }
+		);
 	}
 	completeRestore(databaseDir, lockToken);
 	return { database: databaseName, backupId, restoredTo: databaseDir };

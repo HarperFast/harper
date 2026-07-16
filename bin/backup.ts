@@ -33,6 +33,11 @@ const { OPERATIONS_ENUM } = terms;
  * exception — it streams a live snapshot from a running server and has no offline form.
  */
 export async function runBackupCommand(command: string): Promise<void> {
+	// Load .env before anything reads process.env — useOperationApi and resolveRequestOptions key
+	// the local-vs-remote routing off HARPER_CLI_TARGET/CLI_TARGET, and without this a `.env`-
+	// configured remote target would be invisible, silently running a destructive op locally
+	// (cliOperations does the same on its first line).
+	require('dotenv').config();
 	const request = buildRequest();
 	const databaseName = request.database || 'data';
 
