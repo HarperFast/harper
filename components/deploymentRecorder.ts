@@ -448,6 +448,11 @@ export class DeploymentRecorder {
 // via the `deployment_timeout` operation parameter.
 const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
 
+export function coerceTimeoutMs(value: unknown, fallback: number): number {
+	const requested = Number(value);
+	return Number.isFinite(requested) && requested >= 0 ? requested : fallback;
+}
+
 /**
  * Peer-side helper — wait for the hdb_deployment row to arrive via table replication,
  * then return it. The row is committed on origin before `replicateOperation` is
@@ -475,8 +480,7 @@ export async function awaitDeploymentRow(
 	// concatenates into a far-future "deadline" that silently defeats the timeout. Anything
 	// non-finite or negative falls back to the default rather than producing a NaN deadline
 	// (which would never satisfy `>= deadline` and loop forever).
-	const requested = Number(options.timeoutMs);
-	const timeoutMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+	const timeoutMs = coerceTimeoutMs(options.timeoutMs, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
 	const maxIntervalMs = options.pollIntervalMs ?? 100;
 	// Start fast (5ms) so the common case — replication has already caught up — sees no
 	// human-noticeable latency, then back off exponentially up to maxIntervalMs for the
@@ -577,8 +581,7 @@ async function* readPayloadBlobChunks(
 	options: { timeoutMs?: number; initialBackoffMs?: number; maxBackoffMs?: number },
 	cell: { readable?: Readable }
 ): AsyncGenerator<Buffer> {
-	const requested = Number(options.timeoutMs);
-	const timeoutMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+	const timeoutMs = coerceTimeoutMs(options.timeoutMs, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
 	const initialBackoffMs = options.initialBackoffMs ?? 2000;
 	const maxBackoffMs = options.maxBackoffMs ?? 5000;
 	const deadline = Date.now() + timeoutMs;
