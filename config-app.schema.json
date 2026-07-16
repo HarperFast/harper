@@ -173,7 +173,21 @@
 								"description": "Module path and named export to invoke, relative to the component directory: './jobs.ts#myExport' (omit '#...' to use the default export)."
 							}
 						},
-						"required": ["name", "handler"]
+						"required": ["name", "handler"],
+						"oneOf": [
+							{
+								"required": ["cron"],
+								"not": {
+									"required": ["interval"]
+								}
+							},
+							{
+								"required": ["interval"],
+								"not": {
+									"required": ["cron"]
+								}
+							}
+						]
 					}
 				}
 			},

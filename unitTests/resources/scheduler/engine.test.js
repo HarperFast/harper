@@ -8,6 +8,7 @@ const {
 	findMissedCronOccurrence,
 	registerComponentJobs,
 	unregisterComponentJobs,
+	safeErrorMessage,
 	stopSchedulerEngine,
 	getEngineRole,
 	STALE_THRESHOLD_MS,
@@ -113,6 +114,38 @@ describe('scheduler engine', () => {
 				new Date('2026-07-15T08:00:30Z')
 			);
 			assert.strictEqual(missed, null);
+		});
+	});
+
+	describe('safeErrorMessage', () => {
+		it('extracts a normal error message', () => {
+			assert.strictEqual(safeErrorMessage(new Error('boom')), 'boom');
+		});
+
+		it('handles primitives and message-less values', () => {
+			assert.strictEqual(safeErrorMessage('a string error'), 'a string error');
+			assert.strictEqual(safeErrorMessage(42), '42');
+			assert.strictEqual(safeErrorMessage(undefined), 'undefined');
+		});
+
+		it('survives objects whose message getter throws', () => {
+			const hostile = {};
+			Object.defineProperty(hostile, 'message', {
+				get() {
+					throw new Error('gotcha');
+				},
+			});
+			assert.strictEqual(safeErrorMessage(hostile), String(hostile));
+		});
+
+		it('survives objects that cannot be stringified at all', () => {
+			const unstringifiable = Object.create(null);
+			Object.defineProperty(unstringifiable, 'message', {
+				get() {
+					throw new Error('gotcha');
+				},
+			});
+			assert.strictEqual(safeErrorMessage(unstringifiable), 'unknown error');
 		});
 	});
 

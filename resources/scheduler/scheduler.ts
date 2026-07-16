@@ -6,6 +6,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import { CronExpression, validateTimezone } from './CronExpression.ts';
 import {
 	registerComponentJobs,
+	safeErrorMessage,
 	startSchedulerEngine,
 	unregisterComponentJobs,
 	type JobRunContext,
@@ -175,8 +176,13 @@ async function resolveHandler(
 	try {
 		handlerModule = await scope.import(absolutePath);
 	} catch (error) {
-		error.message = `Scheduler job "${jobName}" in component ${scope.appName}: could not load handler module "${modulePath}": ${error.message}`;
-		throw error;
+		// User modules can throw primitives or frozen errors, so wrap (with
+		// cause) instead of mutating the caught value's message
+		const loadError = new SchedulerConfigError(
+			`Scheduler job "${jobName}" in component ${scope.appName}: could not load handler module "${modulePath}": ${safeErrorMessage(error)}`
+		);
+		loadError.cause = error;
+		throw loadError;
 	}
 	const handler = handlerModule?.[exportName];
 	if (typeof handler !== 'function') {

@@ -88,6 +88,23 @@ function jobRowId(job: ScheduledJob): string {
 	return `job:${job.componentName}:${job.name}`;
 }
 
+/**
+ * Job handlers and storage drivers can throw anything — including objects
+ * whose property getters themselves throw — so even reading .message is
+ * guarded here (surfaced by review).
+ */
+export function safeErrorMessage(error: unknown): string {
+	try {
+		return (error as any)?.message || String(error);
+	} catch {
+		try {
+			return String(error);
+		} catch {
+			return 'unknown error';
+		}
+	}
+}
+
 function currentNodeName(): string {
 	// server.hostname is the node's replication identity; hostname() is only a
 	// local-dev fallback where there is no cluster and the name is just a label
@@ -240,7 +257,12 @@ async function electRole(): Promise<void> {
 	try {
 		leaderRow = await getStateTable().get(LEADER_ROW_ID);
 	} catch (error) {
-		schedulerLogger.warn?.(`Could not read scheduler leader state, proceeding with election: ${error.message}`);
+		// Fail toward followership: electing ourselves while the state table is
+		// unreadable risks a second leader. The failover watcher keeps checking
+		// and promotes once reads succeed and show a leaderless cluster.
+		schedulerLogger.warn?.(`Could not read scheduler leader state, defaulting to follower: ${safeErrorMessage(error)}`);
+		becomeFollower();
+		return;
 	}
 	// Sticky leadership: a node (re)starting while another node is actively
 	// leading defers to it rather than seizing leadership back
@@ -327,8 +349,17 @@ async function heartbeat(): Promise<void> {
 async function failoverCheck(): Promise<void> {
 	if (role !== 'follower') return;
 	const self = currentNodeName();
-	const leaderRow = await getStateTable().get(LEADER_ROW_ID);
-	if (leaderRow && !isHeartbeatStale(leaderRow.lastHeartbeat)) {
+	let leaderRow: any;
+	try {
+		leaderRow = await getStateTable().get(LEADER_ROW_ID);
+	} catch (error) {
+		// Can't tell whether a leader exists; skip this tick (and don't let the
+		// leaderless clock run) rather than risk promoting into a split brain
+		schedulerLogger.warn?.(`Failed to read leader state during failover check: ${safeErrorMessage(error)}`);
+		leaderlessSince = undefined;
+		return;
+	}
+	if (leaderRow != null && !isHeartbeatStale(leaderRow.lastHeartbeat)) {
 		leaderlessSince = undefined;
 		return;
 	}
@@ -358,7 +389,7 @@ async function putStateRow(row: Record<string, unknown>): Promise<void> {
 	} catch (error) {
 		// State persistence failures must never take the scheduler down; the
 		// next heartbeat retries
-		schedulerLogger.warn?.(`Failed to persist scheduler state row ${row.id}: ${error.message}`);
+		schedulerLogger.warn?.(`Failed to persist scheduler state row ${row.id}: ${safeErrorMessage(error)}`);
 	}
 }
 
@@ -432,7 +463,7 @@ async function getJobStateRow(job: ScheduledJob): Promise<any> {
 	try {
 		return await getStateTable().get(jobRowId(job));
 	} catch (error) {
-		schedulerLogger.warn?.(`Failed to read state for job ${jobRowId(job)}: ${error.message}`);
+		schedulerLogger.warn?.(`Failed to read state for job ${jobRowId(job)}: ${safeErrorMessage(error)}`);
 		return undefined;
 	}
 }
@@ -462,13 +493,14 @@ async function executeJob(job: RegisteredJob, scheduledAt: Date, catchUp: boolea
 		});
 	} catch (error) {
 		const durationMs = Date.now() - startedAt.getTime();
-		schedulerLogger.warn?.(`Job ${jobRowId(job)} failed after ${durationMs}ms: ${error.message}`);
+		const errorMessage = safeErrorMessage(error);
+		schedulerLogger.warn?.(`Job ${jobRowId(job)} failed after ${durationMs}ms: ${errorMessage}`);
 		await putStateRow({
 			id: jobRowId(job),
 			firstSeenAt: existingRow?.firstSeenAt ?? startedAt.toISOString(),
 			lastRunAt: startedAt.toISOString(),
 			lastStatus: 'error',
-			lastError: sanitizeStoredError(String(error.message ?? error)),
+			lastError: sanitizeStoredError(errorMessage),
 			lastDurationMs: durationMs,
 		});
 	} finally {
@@ -490,28 +522,35 @@ async function runCatchUp(): Promise<void> {
 	catchUpRunning = true;
 	try {
 		const now = new Date();
+		// Snapshot: each await below yields, and a component reload can mutate
+		// jobsByComponent mid-sweep (surfaced by review)
+		const cronJobs: RegisteredJob[] = [];
 		for (const jobMap of jobsByComponent.values()) {
 			for (const job of jobMap.values()) {
-				if (!job.cron) continue; // interval jobs self-correct in scheduleNextRun
-				try {
-					const stateRow = await getJobStateRow(job);
-					if (!stateRow?.firstSeenAt) {
-						// First time this job is ever seen: record it so future
-						// sweeps have a baseline, without firing immediately
-						await putStateRow({ id: jobRowId(job), firstSeenAt: now.toISOString() });
-						continue;
-					}
-					const baseline = new Date(Date.parse(stateRow.lastRunAt ?? stateRow.firstSeenAt));
-					const missed = findMissedCronOccurrence(job.cron, job.timezone, baseline, now);
-					if (missed) {
-						schedulerLogger.info?.(
-							`Job ${jobRowId(job)} missed its ${missed.toISOString()} occurrence; running catch-up`
-						);
-						await executeJob(job, missed, true);
-					}
-				} catch (error) {
-					schedulerLogger.warn?.(`Catch-up check failed for job ${jobRowId(job)}: ${error.message}`);
+				if (job.cron) cronJobs.push(job); // interval jobs self-correct in scheduleNextRun
+			}
+		}
+		for (const job of cronJobs) {
+			// A job unregistered while the sweep was underway must not fire
+			if (jobsByComponent.get(job.componentName)?.get(job.name) !== job) continue;
+			try {
+				const stateRow = await getJobStateRow(job);
+				if (!stateRow?.firstSeenAt) {
+					// First time this job is ever seen: record it so future
+					// sweeps have a baseline, without firing immediately
+					await putStateRow({ id: jobRowId(job), firstSeenAt: now.toISOString() });
+					continue;
 				}
+				const baseline = new Date(Date.parse(stateRow.lastRunAt ?? stateRow.firstSeenAt));
+				const missed = findMissedCronOccurrence(job.cron, job.timezone, baseline, now);
+				if (missed) {
+					schedulerLogger.info?.(
+						`Job ${jobRowId(job)} missed its ${missed.toISOString()} occurrence; running catch-up`
+					);
+					await executeJob(job, missed, true);
+				}
+			} catch (error) {
+				schedulerLogger.warn?.(`Catch-up check failed for job ${jobRowId(job)}: ${safeErrorMessage(error)}`);
 			}
 		}
 	} finally {
