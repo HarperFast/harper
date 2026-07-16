@@ -156,6 +156,49 @@ describe('CronExpression', () => {
 			// firing is the following day.
 			assert.strictEqual(nextIso('30 1 * * *', '2026-11-01T06:00:00Z', NEW_YORK), '2026-11-02T06:30:00.000Z');
 		});
+
+		// Review repro (kriszyp): a fixed 5-attempt convergence loop returned
+		// null for sub-hourly crons throughout the fall-back window, permanently
+		// unscheduling the job
+		it('converges through the repeated hour for sub-hourly schedules', () => {
+			// 06:10 UTC = 01:10 EST (second pass). Every 5-minute wall time in the
+			// repeated hour maps to its first (EDT) occurrence, all in the past;
+			// convergence must walk ~10 occurrences to reach wall 02:00 = 07:00 UTC
+			assert.strictEqual(nextIso('*/5 * * * *', '2026-11-01T06:10:00Z', NEW_YORK), '2026-11-01T07:00:00.000Z');
+			// Minutely worst case: ~an hour of occurrences to converge
+			assert.strictEqual(nextIso('* * * * *', '2026-11-01T06:10:30Z', NEW_YORK), '2026-11-01T07:00:00.000Z');
+		});
+
+		// Review repro (kriszyp): a single offset probe mapped wall times
+		// 02:00-05:59 after the fall-back one hour early (an hour-early fire for
+		// daily jobs, a silently dropped occurrence for hourly ones)
+		it('maps post-transition wall times to the correct instant', () => {
+			// Wall 02:15 EST on 2026-11-01 is 07:15 UTC (not 06:15, which is wall 01:15)
+			assert.strictEqual(nextIso('15 2 * * *', '2026-11-01T00:00:00Z', NEW_YORK), '2026-11-01T07:15:00.000Z');
+			// Hourly job: the wall 05:30 occurrence (10:30 UTC) is not dropped
+			assert.strictEqual(nextIso('30 * * * *', '2026-11-01T09:45:00Z', NEW_YORK), '2026-11-01T10:30:00.000Z');
+		});
+
+		it('round-trips wall times in the hours after the fall-back transition', () => {
+			for (const [h, m] of [
+				[2, 15],
+				[3, 0],
+				[4, 45],
+				[5, 59],
+			]) {
+				const wall = new Date(Date.UTC(2026, 10, 1, h, m));
+				const instant = fromZonedWallTime(wall, NEW_YORK);
+				assert.strictEqual(
+					toZonedWallTime(instant, NEW_YORK).getTime(),
+					wall.getTime(),
+					`wall ${h}:${m} should round-trip exactly`
+				);
+			}
+			assert.strictEqual(
+				fromZonedWallTime(new Date(Date.UTC(2026, 10, 1, 2, 15)), NEW_YORK).toISOString(),
+				'2026-11-01T07:15:00.000Z'
+			);
+		});
 	});
 
 	describe('timezone helpers', () => {

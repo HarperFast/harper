@@ -166,20 +166,43 @@ export function toZonedWallTime(date: Date, timezone: string): Date {
 
 /**
  * Inverse of toZonedWallTime: given a Date whose UTC fields represent
- * wall-clock time in `timezone`, return the real instant. During DST
- * transitions a wall time may be ambiguous (fall-back) or nonexistent
- * (spring-forward); this resolves to the instant the current offset probe
- * lands on, and callers guard against the result crossing their reference
- * point (see nextDate/prevDate).
+ * wall-clock time in `timezone`, return the real instant.
+ *
+ * Uses the standard two-probe offset resolution: the first probe reads the
+ * offset at the wall time misinterpreted as UTC, which for the first
+ * offset-width hours after a DST transition still sees the pre-transition
+ * offset (surfaced empirically in review: NY wall 02:15 after fall-back
+ * mapped an hour early). The second probe re-resolves at the first candidate
+ * instant and wins when it round-trips exactly. Remaining special cases:
+ * an ambiguous wall time (fall-back overlap) resolves to its first
+ * occurrence, and a nonexistent wall time (spring-forward gap) resolves to
+ * the shifted instant the first probe lands on.
  */
 export function fromZonedWallTime(wallTime: Date, timezone: string): Date {
 	const asUtc = wallTime.getTime();
-	const probe = toZonedWallTime(new Date(asUtc), timezone);
-	const offset = probe.getTime() - asUtc;
-	return new Date(asUtc - offset);
+	const firstOffset = toZonedWallTime(new Date(asUtc), timezone).getTime() - asUtc;
+	const firstCandidate = asUtc - firstOffset;
+	const secondOffset = toZonedWallTime(new Date(firstCandidate), timezone).getTime() - firstCandidate;
+	if (secondOffset !== firstOffset) {
+		const secondCandidate = asUtc - secondOffset;
+		// Accept the re-resolved instant only if it actually shows this wall
+		// time; for a nonexistent (spring-forward) wall time neither candidate
+		// round-trips and we keep the first probe's shifted instant
+		if (toZonedWallTime(new Date(secondCandidate), timezone).getTime() === asUtc) {
+			return new Date(secondCandidate);
+		}
+	}
+	return new Date(firstCandidate);
 }
 
 const MINUTE_MS = 60_000;
+// DST overlaps are at most ~2h (Lord Howe aside, offsets change by <=1h in
+// practice; 3h covers every IANA zone with margin), so occurrence convergence
+// through a fall-back never needs to look further than this past the reference
+const DST_CONVERGENCE_HORIZON_MS = 3 * 60 * 60 * 1000;
+// A minutely cron converging through a 2h overlap needs ~120 occurrences;
+// each iteration is cheap, so the cap is safety against pathologies only
+const MAX_CONVERGENCE_ATTEMPTS = 400;
 
 /**
  * A parsed five-field POSIX cron expression (minute, hour, day-of-month,
@@ -320,14 +343,20 @@ export class CronExpression {
 	 */
 	nextDate(after: Date, timezone: string = getSystemTimezone()): Date | null {
 		let wall = toZonedWallTime(after, timezone);
-		// A DST fall-back overlap can map the computed wall time to an instant
-		// at or before `after`; advance until we cross it (the overlap is at
-		// most an hour or two, so this converges in a couple of iterations)
-		for (let attempts = 0; attempts < 5; attempts++) {
+		// A DST fall-back overlap maps repeated-hour wall times to their FIRST
+		// occurrence, which can sit at or before `after` when `after` is inside
+		// the second pass — advance occurrences until we cross it. The bound is
+		// wall-clock distance, not attempt count: a minutely cron needs ~an
+		// hour's worth of occurrences to converge through the overlap (surfaced
+		// empirically in review; a fixed small attempt cap wedged sub-hourly
+		// jobs for the whole window).
+		const wallHorizon = wall.getTime() + DST_CONVERGENCE_HORIZON_MS;
+		for (let attempts = 0; attempts < MAX_CONVERGENCE_ATTEMPTS; attempts++) {
 			const nextWall = this.nextWallTime(wall);
 			if (nextWall === null) return null;
 			const instant = fromZonedWallTime(nextWall, timezone);
 			if (instant.getTime() > after.getTime()) return instant;
+			if (nextWall.getTime() > wallHorizon) return null;
 			wall = nextWall;
 		}
 		return null;
@@ -339,11 +368,13 @@ export class CronExpression {
 	 */
 	previousDate(before: Date, timezone: string = getSystemTimezone()): Date | null {
 		let wall = toZonedWallTime(before, timezone);
-		for (let attempts = 0; attempts < 5; attempts++) {
+		const wallHorizon = wall.getTime() - DST_CONVERGENCE_HORIZON_MS;
+		for (let attempts = 0; attempts < MAX_CONVERGENCE_ATTEMPTS; attempts++) {
 			const previousWall = this.previousWallTime(wall);
 			if (previousWall === null) return null;
 			const instant = fromZonedWallTime(previousWall, timezone);
 			if (instant.getTime() < before.getTime()) return instant;
+			if (previousWall.getTime() < wallHorizon) return null;
 			wall = previousWall;
 		}
 		return null;

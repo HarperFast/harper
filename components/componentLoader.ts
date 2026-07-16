@@ -562,6 +562,11 @@ export async function loadComponent(
 						// load is validated (see operations.js deploy pre-flight). Skip the worker-shutdown
 						// auto-close so their deploy-lifecycle listeners — and this SHUTDOWN handler — don't
 						// accumulate across deploys (#1462).
+						// Mark it so plugins with process-global side effects (e.g. the scheduler
+						// registering jobs into its engine) can validate without activating —
+						// validation scopes may reuse a live component's identity, so activating
+						// from one can displace the real component's registrations.
+						scope.isTransientValidation = true;
 						options.collectScopes.add(scope);
 					} else {
 						// Track the close so the worker's shutdown path waits for it (and thus for any async

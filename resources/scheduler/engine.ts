@@ -47,6 +47,10 @@ export interface ScheduledJob {
 interface RegisteredJob extends ScheduledJob {
 	timer?: NodeJS.Timeout;
 	running: boolean;
+	// In-memory anchor for interval scheduling: survives state-write failures so
+	// a frozen persisted lastRunAt cannot time-travel the schedule into a hot
+	// loop (review finding: continuous refire under ENOSPC-style write errors)
+	lastAttemptAt?: number;
 }
 
 type EngineRole = 'inactive' | 'follower' | 'leader';
@@ -59,6 +63,9 @@ let catchUpRunning = false;
 // First time this follower observed the cluster leaderless (no row or stale
 // heartbeat); drives the promotion escalation ladder in failoverCheck
 let leaderlessSince: number | undefined;
+// When this node became leader — fallback for the lease row's initializedAt
+// when a heartbeat renews after a failed read
+let leaderInitializedAt: string | undefined;
 const jobsByComponent = new Map<string, Map<string, RegisteredJob>>();
 
 let _stateTable: any;
@@ -66,6 +73,12 @@ function getStateTable() {
 	_stateTable ??= table({
 		database: 'system',
 		table: SCHEDULER_STATE_TABLE,
+		// The cluster-once guarantee depends on every node seeing this table:
+		// declare replication POSITIVELY rather than relying on absence from the
+		// non-replicating list, so an operator-scoped `replication.databases`
+		// config cannot silently exclude it (review finding — that degradation
+		// mode is N independent leaders running every job N times)
+		replicate: true,
 		// Replication of system tables requires auditing
 		audit: true,
 		attributes: [
@@ -244,6 +257,7 @@ export function stopSchedulerEngine(): void {
 	engineStarted = false;
 	catchUpRunning = false;
 	leaderlessSince = undefined;
+	leaderInitializedAt = undefined;
 	_stateTable = undefined;
 }
 
@@ -290,16 +304,30 @@ async function becomeLeader(): Promise<void> {
 		failoverWatcherTimer = undefined;
 	}
 	schedulerLogger.info?.(`Scheduler leader started on ${self}`);
-	const now = new Date().toISOString();
-	await putStateRow({ id: LEADER_ROW_ID, leaderNode: self, lastHeartbeat: now, initializedAt: now });
-	for (const componentName of jobsByComponent.keys()) {
-		await scheduleComponentJobs(componentName);
+	if (getStateTable().replicate === false) {
+		// The cluster-once guarantee is void if this table stops replicating;
+		// fail loudly instead of silently multiplying job executions
+		schedulerLogger.error?.(
+			`${SCHEDULER_STATE_TABLE} is not replicating — scheduled jobs may run on every node instead of once per cluster`
+		);
 	}
-	await runCatchUp();
+	const now = new Date().toISOString();
+	leaderInitializedAt = now;
+	await putStateRow({ id: LEADER_ROW_ID, leaderNode: self, lastHeartbeat: now, initializedAt: now });
+	// The heartbeat interval must be beating BEFORE the promotion catch-up
+	// pass: catch-up runs user handlers serially and can exceed the stale
+	// threshold, and a leader that stops renewing mid-catch-up looks dead —
+	// the next follower would promote and re-run the same occurrences
+	// (review finding). runCatchUp is single-flight, so the first heartbeat
+	// tick overlapping the promotion pass skips its own sweep.
 	heartbeatTimer = setInterval(() => {
 		heartbeat().catch((error) => schedulerLogger.error?.('Scheduler heartbeat failed', error));
 	}, HEARTBEAT_INTERVAL_MS);
 	heartbeatTimer.unref();
+	for (const componentName of jobsByComponent.keys()) {
+		await scheduleComponentJobs(componentName);
+	}
+	await runCatchUp();
 }
 
 function becomeFollower(): void {
@@ -326,11 +354,20 @@ function becomeFollower(): void {
 
 async function heartbeat(): Promise<void> {
 	const self = currentNodeName();
-	const leaderRow = await getStateTable().get(LEADER_ROW_ID);
+	let leaderRow: any;
+	try {
+		leaderRow = await getStateTable().get(LEADER_ROW_ID);
+	} catch (error) {
+		// A failed read must NOT abort the tick: skipping renewal makes a live
+		// leader look stale (a follower would promote and dual-execute), and
+		// skipping the takeover check breaks the path that heals dual
+		// leadership. Renew blind; the step-down check runs on the next tick.
+		schedulerLogger.warn?.(`Failed to read leader state during heartbeat: ${safeErrorMessage(error)}`);
+	}
 	// Split-brain healing: if another node has taken over with a fresh
 	// heartbeat (e.g. we were partitioned long enough to be considered stale),
 	// step down instead of dueling over the lease row
-	if (leaderRow && leaderRow.leaderNode !== self && !isHeartbeatStale(leaderRow.lastHeartbeat)) {
+	if (leaderRow != null && leaderRow.leaderNode !== self && !isHeartbeatStale(leaderRow.lastHeartbeat)) {
 		schedulerLogger.info?.(`Scheduler leadership was taken over by ${leaderRow.leaderNode}; ${self} stepping down`);
 		becomeFollower();
 		return;
@@ -339,7 +376,7 @@ async function heartbeat(): Promise<void> {
 		id: LEADER_ROW_ID,
 		leaderNode: self,
 		lastHeartbeat: new Date().toISOString(),
-		initializedAt: leaderRow?.initializedAt,
+		initializedAt: leaderRow?.initializedAt ?? leaderInitializedAt,
 	});
 	// Periodic missed-run sweep: catches occurrences lost to DST transitions,
 	// worker restarts, and anything else that slipped past the timers
@@ -401,6 +438,14 @@ async function scheduleComponentJobs(componentName: string): Promise<void> {
 	}
 }
 
+// A job is live only while it is the EXACT object the registry holds:
+// registerComponentJobs replaces objects under the same names, so a name-only
+// check would let an in-flight chain re-arm a replaced job forever (review
+// finding: persistent double-fire after redeploy-during-run)
+function isRegistered(job: RegisteredJob): boolean {
+	return jobsByComponent.get(job.componentName)?.get(job.name) === job;
+}
+
 /**
  * Compute the job's next fire time and arm its timer. Interval jobs anchor to
  * their persisted last run so cadence survives restarts and failover; cron
@@ -408,24 +453,34 @@ async function scheduleComponentJobs(componentName: string): Promise<void> {
  * handled by the catch-up sweep instead).
  */
 async function scheduleNextRun(job: RegisteredJob): Promise<void> {
-	if (role !== 'leader' || !jobsByComponent.get(job.componentName)?.has(job.name)) return;
+	if (role !== 'leader' || !isRegistered(job)) return;
 	if (job.timer) clearTimeout(job.timer);
 	const now = new Date();
 	let fireAt: Date;
 	if (job.cron) {
 		const next = job.cron.nextDate(now, job.timezone ?? getSystemTimezone());
 		if (!next) {
-			schedulerLogger.warn?.(`Job ${jobRowId(job)} has no future occurrence; not scheduling`);
+			// Transient (e.g. a DST-window computation edge): the catch-up sweep
+			// re-arms unarmed cron jobs every heartbeat, so this self-heals
+			schedulerLogger.warn?.(`Job ${jobRowId(job)} has no computable next occurrence; retrying at next heartbeat`);
 			return;
 		}
 		fireAt = next;
 	} else {
 		const stateRow = await getJobStateRow(job);
-		const lastRun = stateRow?.lastRunAt ? Date.parse(stateRow.lastRunAt) : NaN;
-		// An overdue interval (downtime longer than the interval) fires
-		// immediately — this is the interval jobs' catch-up path
-		fireAt = Number.isNaN(lastRun) ? new Date(now.getTime() + job.intervalMs) : new Date(lastRun + job.intervalMs);
+		const persistedLastRun = stateRow?.lastRunAt ? Date.parse(stateRow.lastRunAt) : NaN;
+		// Anchor to the LATEST of the persisted run and the in-memory attempt:
+		// the persisted value survives restarts/failover (overdue intervals fire
+		// immediately — the interval catch-up path), while the in-memory value
+		// survives state-WRITE failures so a frozen persisted row cannot cause
+		// an immediate-refire hot loop (review finding)
+		const anchor = Math.max(Number.isNaN(persistedLastRun) ? 0 : persistedLastRun, job.lastAttemptAt ?? 0);
+		fireAt = anchor > 0 ? new Date(anchor + job.intervalMs) : new Date(now.getTime() + job.intervalMs);
 	}
+	// Re-check after the await: the registry (or our role) may have changed
+	// while reading job state, and arming a timer for a stale object leaks a
+	// timer nothing can cancel
+	if (role !== 'leader' || !isRegistered(job)) return;
 	armTimer(job, fireAt);
 }
 
@@ -433,10 +488,16 @@ function armTimer(job: RegisteredJob, fireAt: Date): void {
 	const delay = fireAt.getTime() - Date.now();
 	if (delay > MAX_TIMEOUT_MS) {
 		// Beyond setTimeout's 32-bit range: sleep the maximum and re-arm
-		job.timer = setTimeout(() => armTimer(job, fireAt), MAX_TIMEOUT_MS);
+		job.timer = setTimeout(() => {
+			job.timer = undefined;
+			if (role === 'leader' && isRegistered(job)) armTimer(job, fireAt);
+		}, MAX_TIMEOUT_MS);
 	} else {
 		job.timer = setTimeout(
 			() => {
+				// Cleared at fire time so "unarmed" is observable: the heartbeat
+				// catch-up sweep re-arms cron jobs whose timer is missing
+				job.timer = undefined;
 				executeJob(job, fireAt, false)
 					.catch((error) => schedulerLogger.error?.(`Job ${jobRowId(job)} execution failed unexpectedly`, error))
 					.finally(() => {
@@ -448,7 +509,7 @@ function armTimer(job: RegisteredJob, fireAt: Date): void {
 			Math.max(delay, 0)
 		);
 	}
-	job.timer.unref();
+	job.timer?.unref();
 }
 
 // The persisted error replicates cluster-wide; strip filesystem paths (which
@@ -469,7 +530,11 @@ async function getJobStateRow(job: ScheduledJob): Promise<any> {
 }
 
 async function executeJob(job: RegisteredJob, scheduledAt: Date, catchUp: boolean): Promise<void> {
-	if (role !== 'leader') return;
+	// The registration re-check matters as much as the role check: a timer can
+	// fire after its component's scope closed or after a reload replaced the
+	// job object, and a discarded component's handler must not run against
+	// production state (review finding)
+	if (role !== 'leader' || !isRegistered(job)) return;
 	if (job.running) {
 		// Single-flight: a run that outlasts its own cadence is not stacked
 		schedulerLogger.debug?.(`Job ${jobRowId(job)} is still running; skipping this occurrence`);
@@ -477,6 +542,7 @@ async function executeJob(job: RegisteredJob, scheduledAt: Date, catchUp: boolea
 	}
 	job.running = true;
 	const startedAt = new Date();
+	job.lastAttemptAt = startedAt.getTime();
 	const existingRow = await getJobStateRow(job);
 	schedulerLogger.trace?.(`Running job ${jobRowId(job)}${catchUp ? ' (catch-up)' : ''}`);
 	try {
@@ -531,23 +597,30 @@ async function runCatchUp(): Promise<void> {
 			}
 		}
 		for (const job of cronJobs) {
-			// A job unregistered while the sweep was underway must not fire
-			if (jobsByComponent.get(job.componentName)?.get(job.name) !== job) continue;
+			// A job unregistered (or replaced) while the sweep was underway must
+			// not fire
+			if (!isRegistered(job)) continue;
 			try {
 				const stateRow = await getJobStateRow(job);
 				if (!stateRow?.firstSeenAt) {
 					// First time this job is ever seen: record it so future
 					// sweeps have a baseline, without firing immediately
 					await putStateRow({ id: jobRowId(job), firstSeenAt: now.toISOString() });
-					continue;
+				} else {
+					const baseline = new Date(Date.parse(stateRow.lastRunAt ?? stateRow.firstSeenAt));
+					const missed = findMissedCronOccurrence(job.cron, job.timezone, baseline, now);
+					if (missed) {
+						schedulerLogger.info?.(
+							`Job ${jobRowId(job)} missed its ${missed.toISOString()} occurrence; running catch-up`
+						);
+						await executeJob(job, missed, true);
+					}
 				}
-				const baseline = new Date(Date.parse(stateRow.lastRunAt ?? stateRow.firstSeenAt));
-				const missed = findMissedCronOccurrence(job.cron, job.timezone, baseline, now);
-				if (missed) {
-					schedulerLogger.info?.(
-						`Job ${jobRowId(job)} missed its ${missed.toISOString()} occurrence; running catch-up`
-					);
-					await executeJob(job, missed, true);
+				// Self-heal: a cron job left unarmed (nextDate returned null during
+				// a DST window, or a reschedule failed) gets its timer re-armed here
+				// every heartbeat instead of staying degraded until failover
+				if (!job.running && !job.timer && isRegistered(job)) {
+					await scheduleNextRun(job);
 				}
 			} catch (error) {
 				schedulerLogger.warn?.(`Catch-up check failed for job ${jobRowId(job)}: ${safeErrorMessage(error)}`);

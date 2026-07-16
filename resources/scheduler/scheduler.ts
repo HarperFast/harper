@@ -59,13 +59,11 @@ interface SchedulerJobConfig {
  * occurrence twice.
  */
 export async function handleApplication(scope): Promise<void> {
-	// One worker owns scheduling for the whole node; leadership across nodes is
-	// decided in the engine. This gate is correct in every threading mode,
-	// including threads:0 where the main thread acts as worker 0.
-	if (getWorkerIndex() !== 0) {
-		schedulerLogger.debug?.('Skipping scheduler initialization on non-primary worker');
-		return;
-	}
+	// Validation runs UNCONDITIONALLY — on every worker and on deploy
+	// pre-flight validation loads, which land on an arbitrary worker. Gating
+	// validation behind worker 0 would let a bad config pass pre-flight
+	// nondeterministically and then fail cluster-wide at the next restart
+	// (review finding). Only ACTIVATION is gated below.
 	const config = scope.options.getAll() ?? {};
 	if (config.jobs === undefined) {
 		schedulerLogger.warn?.(`Component ${scope.appName} has a scheduler block with no jobs`);
@@ -86,9 +84,23 @@ export async function handleApplication(scope): Promise<void> {
 		jobs.push(job);
 	}
 
+	// Activation gates: one worker owns scheduling for the whole node
+	// (getWorkerIndex() === 0 is correct in every threading mode, including
+	// threads:0 where the main thread acts as worker 0), and a deploy
+	// pre-flight validation scope must never touch the live engine — it can
+	// share a running component's identity, so registering from it would
+	// displace the real component's jobs (review finding).
+	if (getWorkerIndex() !== 0) {
+		schedulerLogger.debug?.('Scheduler config validated; activation skipped on non-primary worker');
+		return;
+	}
+	if (scope.isTransientValidation) {
+		schedulerLogger.debug?.(`Scheduler config validated for ${scope.appName}; activation skipped for validation load`);
+		return;
+	}
+
 	registerComponentJobs(scope.appName, jobs);
-	// A closing scope (worker shutdown, redeploy, or a discarded
-	// deploy-validation load) must take its timers with it
+	// A closing scope (worker shutdown or redeploy) must take its timers with it
 	scope.on('close', () => unregisterComponentJobs(scope.appName));
 	startSchedulerEngine();
 	schedulerLogger.trace?.(`Registered ${jobs.length} scheduled job(s) for component ${scope.appName}`);
