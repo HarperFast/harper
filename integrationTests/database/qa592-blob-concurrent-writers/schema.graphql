@@ -1,0 +1,11 @@
+# QA-592 — blob x concurrency: N concurrent writers REPLACE the same blob record.
+# Asset: no TTL, default database. `hot` is hammered by concurrent REPLACE (put());
+# `control` is written exactly once, giving disk-file-count assertions a known second
+# live blob so "exactly N files" is an exact invariant, not just "did not grow".
+type Asset @table(audit: false) @sealed @export {
+	id: ID! @primaryKey
+	data: Blob!
+	writer: Long
+	seq: Long
+	sha256: String
+}
