@@ -120,7 +120,7 @@ export function watchCommitSettlement<T>(
 	dbTxn: DatabaseTransaction,
 	kind: 'commit' | 'abort'
 ): Promise<T> | void {
-	if (!(resolution as any)?.then) return resolution as void;
+	if (typeof (resolution as any)?.then !== 'function') return resolution as void;
 	return new Promise<T>((resolve, reject) => {
 		const watch: CommitWatch = {
 			kind,
@@ -186,10 +186,12 @@ export function robustBackoff<T>(ms: number, resume: () => MaybePromise<T>): Pro
  * Sweeps both watchdog registries. `now` is injectable for tests; exported for tests.
  */
 export function sweepCommitWatchdog(now = performance.now()) {
-	for (const watch of backoffWatches) {
+	// Snapshot both registries: fire()/recovery can synchronously add entries (resume → commit()),
+	// and recoveries delete as they go; iterate a stable copy (fresh entries are age-skipped anyway).
+	for (const watch of Array.from(backoffWatches)) {
 		if (now > watch.due + BACKOFF_RECOVERY_GRACE) watch.fire(true);
 	}
-	for (const watch of commitWatches) {
+	for (const watch of Array.from(commitWatches)) {
 		const age = now - watch.start;
 		// Insertion-ordered Set + monotonic start times: entries after the first still-young one are
 		// younger still. Retained sourceApply lingerers are older than the deadline, so they never

@@ -1,5 +1,5 @@
 require('../testUtils');
-const assert = require('assert');
+const assert = require('node:assert/strict');
 const { setTimeout: delay } = require('node:timers/promises');
 const {
 	watchCommitSettlement,
