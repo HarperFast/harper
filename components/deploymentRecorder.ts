@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { databases } from '../resources/databases.ts';
-import { createBlob, isSaving, deleteBlob } from '../resources/blob.ts';
+import { createBlob, isSaving, deleteBlob, BLOB_UNAVAILABLE_STATUS } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { logger } from '../utility/logging/logger.ts';
@@ -520,6 +520,92 @@ export async function awaitDeploymentRow(
 		`Timed out after ${timeoutMs}ms waiting for the deployment payload: ${cause}` +
 			(lastError ? ` (last error: ${(lastError as Error).message ?? lastError})` : '')
 	);
+}
+
+/**
+ * Peer-side helper — read a replicated deploy's payload_blob, retrying on the blob layer's
+ * retryable 503 (`BlobReadError` with `statusCode === BLOB_UNAVAILABLE_STATUS`,
+ * resources/blob.ts). That 503 fires when the row's blob header has replicated but content
+ * bytes stop arriving for `blobReadTimeout` (20s default) — a transient, self-healing stall
+ * (a parked/declined blob send on the origin, or event-loop starvation), not a real failure.
+ * Each fresh `stream()` call gets its own no-progress window, so re-opening after a short
+ * backoff converts the stall into a successful deploy instead of failing the peer's one-shot
+ * 20s window (harper-pro incident, 2026-07-16).
+ *
+ * Chunks are forwarded to the caller as they arrive via an async generator wrapped in
+ * `Readable.from()` — a retry never buffers the whole payload in memory (deploy payloads can
+ * be arbitrarily large, see the large-payload streaming regression test), and, unlike a manual
+ * `ReadableStream` `start()` loop that eagerly drains the source, `Readable.from()`'s pull
+ * protocol only resumes the generator when the consumer wants more, so backpressure from a
+ * slow extraction consumer propagates back to the underlying `Blob.stream()` the same as it
+ * did before this wrapper existed.
+ *
+ * This also bounds *when* a retry is safe: once any chunk has reached the consumer, re-opening
+ * from byte 0 would duplicate it, so we only retry while the current attempt has yielded
+ * nothing yet — the reported failure mode (no content bytes arrive at all within the
+ * no-progress window). A stall after partial content has already been forwarded fails
+ * immediately, exactly as an unwrapped read would.
+ *
+ * Non-retryable classes — 500 corrupt/incomplete, 404 gone/ENOENT, or anything without a
+ * `statusCode` — also fail immediately.
+ *
+ * Cancellation is checked explicitly rather than relying on the generator's own suspension
+ * points: while stuck retrying (no chunk has ever been yielded), the generator never reaches a
+ * `yield`, so `Readable.from()`'s normal `return()`-on-destroy cancellation — which only takes
+ * effect when the generator next suspends at a `yield` — would never get a chance to run,
+ * letting retries continue for the full `timeoutMs` budget after the consumer has already given
+ * up (verified empirically). We route the returned `Readable` into the generator via a shared
+ * cell so it can check `readable.destroyed` at each loop iteration and after each backoff sleep,
+ * stopping within one backoff interval (capped at `maxBackoffMs`) of destroy() instead.
+ *
+ * @param streamFactory Opens a fresh read of the blob, e.g. `() => row.payload_blob.stream()`.
+ *   A factory (not a single stream) so each retry is a genuinely new read with its own
+ *   no-progress window.
+ */
+export function readPayloadBlobWithRetry(
+	streamFactory: () => ReadableStream,
+	options: { timeoutMs?: number; initialBackoffMs?: number; maxBackoffMs?: number } = {}
+): Readable {
+	const cell: { readable?: Readable } = {};
+	const readable = Readable.from(readPayloadBlobChunks(streamFactory, options, cell));
+	cell.readable = readable;
+	return readable;
+}
+
+async function* readPayloadBlobChunks(
+	streamFactory: () => ReadableStream,
+	options: { timeoutMs?: number; initialBackoffMs?: number; maxBackoffMs?: number },
+	cell: { readable?: Readable }
+): AsyncGenerator<Buffer> {
+	const requested = Number(options.timeoutMs);
+	const timeoutMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+	const initialBackoffMs = options.initialBackoffMs ?? 2000;
+	const maxBackoffMs = options.maxBackoffMs ?? 5000;
+	const deadline = Date.now() + timeoutMs;
+	let backoffMs = initialBackoffMs;
+	let forwardedAnyBytes = false;
+	while (true) {
+		if (cell.readable?.destroyed) return;
+		try {
+			for await (const chunk of streamFactory() as unknown as AsyncIterable<Buffer>) {
+				yield chunk;
+				forwardedAnyBytes = true;
+			}
+			return;
+		} catch (error) {
+			if (forwardedAnyBytes || (error as { statusCode?: number })?.statusCode !== BLOB_UNAVAILABLE_STATUS) {
+				throw error;
+			}
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) throw error;
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, Math.min(backoffMs, remaining));
+				timer.unref?.();
+			});
+			if (cell.readable?.destroyed) return;
+			backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
+		}
+	}
 }
 
 function normalizePeerResult(raw: unknown): Record<string, unknown> {

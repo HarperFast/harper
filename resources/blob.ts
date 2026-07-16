@@ -155,7 +155,9 @@ function getBlobReadTimeout(): number {
 // hung connection: 404 when the file is cleanly gone, 503 while a write is still in progress (the
 // client can retry), 500 when the content is confidently corrupt/incomplete.
 const BLOB_GONE_STATUS = 404;
-const BLOB_UNAVAILABLE_STATUS = 503;
+// Exported so callers (e.g. the peer-side deploy_component payload read) can distinguish this
+// retryable class from the permanent ones without duplicating the status code.
+export const BLOB_UNAVAILABLE_STATUS = 503;
 const BLOB_CORRUPT_STATUS = 500;
 class BlobReadError extends Error {
 	statusCode: number;
