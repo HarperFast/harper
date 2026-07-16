@@ -13,9 +13,16 @@ const schedulerLogger = harperLogger.forComponent('scheduler');
 const SCHEDULER_STATE_TABLE = 'hdb_scheduler_state';
 const LEADER_ROW_ID = 'leader';
 
-export const HEARTBEAT_INTERVAL_MS = 60_000;
-export const STALE_THRESHOLD_MS = 5 * 60 * 1000;
-export const FAILOVER_WATCHER_INTERVAL_MS = 75_000;
+// Timing constants are env-overridable (same pattern as liveSubscriptionAuth's
+// sweep interval) primarily so multi-node integration tests can exercise
+// failover without waiting out the production thresholds
+function timingFromEnv(name: string, defaultMs: number): number {
+	const value = Number(process.env[name]);
+	return Number.isFinite(value) && value > 0 ? value : defaultMs;
+}
+export const HEARTBEAT_INTERVAL_MS = timingFromEnv('HARPER_SCHEDULER_HEARTBEAT_INTERVAL_MS', 60_000);
+export const STALE_THRESHOLD_MS = timingFromEnv('HARPER_SCHEDULER_STALE_THRESHOLD_MS', 5 * 60 * 1000);
+export const FAILOVER_WATCHER_INTERVAL_MS = timingFromEnv('HARPER_SCHEDULER_FAILOVER_WATCHER_INTERVAL_MS', 75_000);
 // setTimeout clamps to a 32-bit signed int; longer delays wrap to ~1ms and busy-loop
 const MAX_TIMEOUT_MS = 0x7fffffff;
 const MAX_STORED_ERROR_LENGTH = 500;
