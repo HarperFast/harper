@@ -1214,8 +1214,28 @@ describe('Blob test', () => {
 		unlinkSync(getFilePathForBlob(completeBlob));
 	});
 	it('cleanupOrphans', async () => {
-		let orphansDeleted = await cleanupOrphans(getDatabases().test);
-		assert.equal(orphansDeleted, 0);
+		let { orphans, bytes } = await cleanupOrphans(getDatabases().test);
+		assert.equal(orphans, 0);
+		assert.equal(bytes, 0);
+	});
+
+	it('#1832: cleanupOrphans reports orphan count and bytes, and dryRun leaves the files in place', async () => {
+		// An orphan is a saved blob file no record references. Nothing surfaces that condition today, so
+		// dryRun must measure it without also reclaiming it.
+		const orphan = createBlob(Buffer.alloc(20000, 'z'));
+		await decodeFromDatabase(() => saveBlob(orphan).saving, BlobTest.primaryStore.rootStore);
+		const orphanPath = getFilePathForBlob(orphan);
+		assert(existsSync(orphanPath), 'orphan file must exist before the sweep');
+
+		const dryRun = await cleanupOrphans(getDatabases().test, 'test', true);
+		assert.equal(dryRun.orphans, 1, 'dryRun must report the orphan');
+		assert(dryRun.bytes > 0, `dryRun must report the orphan's bytes, got ${dryRun.bytes}`);
+		assert(existsSync(orphanPath), 'dryRun must NOT delete the orphan file');
+
+		const swept = await cleanupOrphans(getDatabases().test, 'test');
+		assert.equal(swept.orphans, 1, 'the real sweep must still reclaim the orphan');
+		assert.equal(swept.bytes, dryRun.bytes, 'the real sweep must report the same bytes the dryRun did');
+		assert(!existsSync(orphanPath), 'the real sweep must delete the orphan file');
 	});
 
 	// Helper: produce a blob backed ONLY by its on-disk file (no in-memory contentBuffer), the way a

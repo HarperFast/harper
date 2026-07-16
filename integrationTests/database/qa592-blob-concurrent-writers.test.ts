@@ -25,7 +25,7 @@
  * Harper SHA: 3dbcf7b9e (main)
  */
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert/strict';
+import { ok } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readdir, stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -318,6 +318,30 @@ suite(
 			let filesAfterCleanup = filesAfterDelete;
 			let cleanupTrajectory: number[] = [filesAfterDelete];
 			if (filesAfterDelete !== 1) {
+				// A dry run must report the orphan condition without acting on it: this is the only way to
+				// measure stranded bytes without also reclaiming them (harper#1832 ask #2). Asserted here,
+				// where orphans are known to exist, and before the destructive sweep below.
+				const dryRunResp = await client.req().send({
+					operation: 'cleanup_orphan_blobs',
+					database: dbName,
+					dryRun: true,
+				});
+				findings.push(
+					`cleanup_orphan_blobs dryRun invoked: status=${dryRunResp.status} body=${JSON.stringify(dryRunResp.body)}`
+				);
+				ok(dryRunResp.status === 200, `dryRun cleanup_orphan_blobs failed: ${dryRunResp.status}`);
+				// The sweep is async (the op returns immediately), so give it room to finish, then confirm
+				// it left every file in place.
+				await sleep(5_000);
+				const filesAfterDryRun = await countFiles(mainBlobDir);
+				findings.push(
+					`disk files after cleanup_orphan_blobs dryRun: ${filesAfterDryRun} (expected unchanged at ${filesAfterDelete})`
+				);
+				ok(
+					filesAfterDryRun === filesAfterDelete,
+					`DRY RUN DEFECT: cleanup_orphan_blobs with dryRun deleted files — expected the count to stay at ${filesAfterDelete}, found ${filesAfterDryRun}`
+				);
+
 				const cleanupResp = await client.req().send({ operation: 'cleanup_orphan_blobs', database: dbName });
 				findings.push(
 					`cleanup_orphan_blobs invoked (database=${dbName}): status=${cleanupResp.status} body=${JSON.stringify(cleanupResp.body)}`

@@ -18,6 +18,7 @@ import {
 	statfs,
 	readdir,
 	rmdir,
+	stat as statPromised,
 	open as openFile,
 	type FileHandle,
 	unlink as unlinkPromised,
@@ -3298,13 +3299,29 @@ function polyfillBlob() {
 /**
  * Scans for blobs on the file system and then checks to verify they are referenced
  * from the database, and if not, deletes them
- * @param database
+ *
+ * With `dryRun`, the scan runs identically but nothing is unlinked: it only reports how many
+ * unreferenced files there are and how many bytes they hold. Nothing surfaces the orphan condition
+ * otherwise — a stranded file is invisible until someone runs the destructive sweep and reads the
+ * count out of the logs — so this gives operators a way to measure it (alerting, capacity planning)
+ * without also reclaiming, and a way to size the reclaim before committing to it. Both modes are
+ * on-demand only, so neither adds steady-state cost. See harper#1832.
+ *
+ * @param database the database to scan
+ * @param databaseName name used for logging
+ * @param dryRun when true, report orphans without deleting them
+ * @returns the number of orphaned files (deleted, or that would be deleted) and the bytes they hold
  */
-export async function cleanupOrphans(database: any, databaseName?: string) {
+export async function cleanupOrphans(
+	database: any,
+	databaseName?: string,
+	dryRun?: boolean
+): Promise<{ orphans: number; bytes: number }> {
 	const { HAS_BLOBS } = await import('./auditStore.ts');
 	let store: RootDatabase;
 	let auditStore: RootDatabase;
-	let orphansDeleted = 0;
+	let orphansFound = 0;
+	let orphanBytes = 0;
 	for (const tableName in database) {
 		const table = database[tableName];
 		store = table.primaryStore.rootStore;
@@ -3321,8 +3338,12 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 	}
 	// remove all remaining paths are not referenced
 	await removePathsThatAreNotReferenced();
-	logger.warn?.(`Cleaned Orphan Blobs from ${databaseName ?? 'database'}, deleted ${orphansDeleted} blobs)`);
-	return orphansDeleted;
+	logger.warn?.(
+		dryRun
+			? `Checked Orphan Blobs in ${databaseName ?? 'database'}, found ${orphansFound} orphaned blobs holding ${orphanBytes} bytes (dry run, nothing deleted)`
+			: `Cleaned Orphan Blobs from ${databaseName ?? 'database'}, deleted ${orphansFound} blobs holding ${orphanBytes} bytes)`
+	);
+	return { orphans: orphansFound, bytes: orphanBytes };
 	async function searchPath(path: string) {
 		try {
 			if (!existsSync(path)) return;
@@ -3408,11 +3429,16 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 			if ((store as any).tryLock(lockKey)) repairTempLocks.set(path, lockKey);
 			else pathsToCheck.delete(path);
 		}
-		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
-		orphansDeleted += pathsToCheck.size;
+		logger.warn?.(dryRun ? 'Measuring' : 'Deleting', pathsToCheck.size, 'orphaned blobs');
+		orphansFound += pathsToCheck.size;
 		for (const path of pathsToCheck) {
 			try {
-				await unlinkPromised(path);
+				orphanBytes += (await statPromised(path)).size;
+			} catch (error) {
+				logger.debug?.('Error sizing orphaned file', error);
+			}
+			try {
+				if (!dryRun) await unlinkPromised(path);
 			} catch (error) {
 				logger.debug?.('Error deleting file', error);
 			} finally {
@@ -3420,7 +3446,7 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 				if (lockKey) (store as any).unlock(lockKey);
 			}
 		}
-		logger.warn?.('Finished deleting', pathsToCheck.size, 'orphaned blobs');
+		logger.warn?.(dryRun ? 'Finished measuring' : 'Finished deleting', pathsToCheck.size, 'orphaned blobs');
 		pathsToCheck.clear();
 	}
 	// check each object for any blob references and removes from the paths to check if found
