@@ -159,7 +159,7 @@ Every managed backup and every RocksDB `get_backup` includes the audit/transacti
 
 <VersionBadge version="v5.2.0" />
 
-Creates an incremental directory backup of the database (RocksDB only) under the configured backup root. Runs as a background [job](#jobs): the operation returns a `job_id` immediately, and [`get_job`](#get_job) reports the outcome including the new `backupId`, `size`, and `timestamp`. `database` defaults to `data`.
+Creates an incremental directory backup of the database (RocksDB only) under the configured backup root. Runs as a background [job](#jobs): the operation returns a `job_id` immediately, and [`get_job`](#get_job) reports the outcome including the new `backup_id`, `size`, and `timestamp`. `database` defaults to `data`.
 
 Directory backups in the same location share unchanged files, so the second and subsequent backups of a database only copy what changed. Use `purge_backups` to manage retention.
 
@@ -171,7 +171,7 @@ Directory backups in the same location share unchanged files, so the second and 
 
 <VersionBadge version="v5.2.0" />
 
-Returns the managed backups for a database (RocksDB only), each with its `backupId`, `timestamp`, `size`, and file count. Returns an empty array if no backups have been created yet.
+Returns the managed backups for a database (RocksDB only), each with its `backup_id`, `timestamp`, `size`, and `file_count`. Returns an empty array if no backups have been created yet.
 
 ```json
 { "operation": "list_backups", "database": "dev" }
