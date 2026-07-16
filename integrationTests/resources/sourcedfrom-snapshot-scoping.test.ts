@@ -141,10 +141,48 @@ suite(
 			return { status: res.status, body };
 		}
 
-		async function setGap(ms: number): Promise<void> {
+		/**
+		 * Run one trial: `fill` is already in flight (its resolver is mid-gap), `duringFill`
+		 * lands the concurrent commit inside that gap. Both are always awaited, so a trial can
+		 * never leave a request in flight past the end of the test — an orphaned fetch that
+		 * rejects after teardown surfaces as an unhandledRejection blamed on whichever test is
+		 * running by then, masking the real failure (#1833). `duringFill`'s error wins: the
+		 * fill's is usually just downstream of it.
+		 */
+		async function trial<T>(fill: Promise<T>, duringFill: () => Promise<void>): Promise<T> {
+			const [filled, mutated] = await Promise.allSettled([fill, duringFill()]);
+			if (mutated.status === 'rejected') throw mutated.reason;
+			if (filled.status === 'rejected') throw filled.reason;
+			return filled.value;
+		}
+
+		/** POST the gap and return the threadId of the worker now holding it. */
+		async function setGap(ms: number): Promise<number> {
 			const res = await fetch(`${restURL}/Control/`, { method: 'POST', headers, body: JSON.stringify({ gapMs: ms }) });
 			if (res.status !== 200) throw new Error(`Control gapMs=${ms} -> ${res.status}`);
-			await res.text().catch(() => undefined);
+			const body = (await res.json().catch(() => null)) as { gapMs?: number; threadId?: number } | null;
+			ok(body && body.gapMs === ms, `Control did not accept gapMs=${ms}: ${JSON.stringify(body)}`);
+			ok(typeof body!.threadId === 'number', `Control returned no threadId: ${JSON.stringify(body)}`);
+			return body!.threadId!;
+		}
+
+		/**
+		 * `gapMs` is resources.js module state on ONE worker. If that worker is replaced mid-test the
+		 * replacement silently reverts to the default (100ms) gap — shorter than MUTATE_AT_MS — so the
+		 * mutation lands *after* the resolver already read its second row and every probe below becomes
+		 * a vacuous pass: tornCount=0 proves nothing. That is exactly what a premature
+		 * `restartHttpWorkers()` used to cause (#1833). Pin it: the worker we handed the gap to must
+		 * still be the one serving.
+		 */
+		async function assertGapWorkerStillServing(expectedThreadId: number): Promise<void> {
+			const { status, body } = await getJSON<{ threadId: number }>('/WhoAmI/');
+			ok(status === 200 && body, `GET /WhoAmI/ failed: ${status}`);
+			strictEqual(
+				body!.threadId,
+				expectedThreadId,
+				`the worker holding gapMs=${GAP_MS} was replaced mid-test (was thread ${expectedThreadId}, now ` +
+					`${body!.threadId}): the probe ran with the default gap and proves nothing`
+			);
 		}
 
 		before(async () => {
@@ -173,7 +211,7 @@ suite(
 			"P1: single-store real-gap fill — does the resolver's OWN pinned snapshot survive a mid-await commit on the row it hasn't read yet?",
 			{ timeout: 60_000 },
 			async () => {
-				await setGap(GAP_MS);
+				const gapThreadId = await setGap(GAP_MS);
 				const ids = Array.from({ length: N_TRIALS }, (_, i) => `S${i}`);
 
 				// seed slotA/slotB at gen0 for every trial entity
@@ -184,12 +222,17 @@ suite(
 
 				const results: Array<{ id: string; body: SingleBody | null; status: number }> = [];
 				for (const id of ids) {
-					const fillPromise = getJSON<SingleBody>(`/SingleTableSnap/${id}`); // reads slotA(gen0), awaits GAP_MS, reads slotB
-					await sleep(MUTATE_AT_MS); // land the mutation inside the gap, before slotB is read
-					await putCell(id, 'slotB', 1); // concurrent writer: slotB gen0 -> gen1, mid-await
-					const r = await fillPromise;
+					const r = await trial(
+						getJSON<SingleBody>(`/SingleTableSnap/${id}`), // reads slotA(gen0), awaits GAP_MS, reads slotB
+						async () => {
+							await sleep(MUTATE_AT_MS); // land the mutation inside the gap, before slotB is read
+							await putCell(id, 'slotB', 1); // concurrent writer: slotB gen0 -> gen1, mid-await
+						}
+					);
 					results.push({ id, body: r.body, status: r.status });
 				}
+
+				await assertGapWorkerStillServing(gapThreadId);
 
 				let tornCount = 0; // fill's OWN view mixes slotA gen0 with slotB gen1 (post-mutation)
 				const tornSamples: Array<{ id: string; gens: unknown }> = [];
@@ -236,7 +279,7 @@ suite(
 			'P2: cross-database real-gap fill — does a resolver spanning two databases see a torn (mixed-vintage) view across a mid-await commit?',
 			{ timeout: 60_000 },
 			async () => {
-				await setGap(GAP_MS);
+				const gapThreadId = await setGap(GAP_MS);
 				const ids = Array.from({ length: N_TRIALS }, (_, i) => `C${i}`);
 
 				for (const id of ids) {
@@ -247,12 +290,17 @@ suite(
 				const results: Array<{ id: string; body: CrossBody | null; status: number }> = [];
 				let debugLogged = 0;
 				for (const id of ids) {
-					const fillPromise = getJSON<CrossBody>(`/CrossTableSnap/${id}`); // reads RowA(gen0), awaits GAP_MS, reads RowB
-					await sleep(MUTATE_AT_MS);
-					const mutateStartedAt = Date.now();
-					await putRow('RowB', id, 1); // concurrent writer: RowB gen0 -> gen1, mid-await, BEFORE the resolver touches RowB
-					const mutateAckAt = Date.now();
-					const r = await fillPromise;
+					let mutateStartedAt = 0;
+					let mutateAckAt = 0;
+					const r = await trial(
+						getJSON<CrossBody>(`/CrossTableSnap/${id}`), // reads RowA(gen0), awaits GAP_MS, reads RowB
+						async () => {
+							await sleep(MUTATE_AT_MS);
+							mutateStartedAt = Date.now();
+							await putRow('RowB', id, 1); // concurrent writer: RowB gen0 -> gen1, mid-await, BEFORE the resolver touches RowB
+							mutateAckAt = Date.now();
+						}
+					);
 					results.push({ id, body: r.body, status: r.status });
 					if (debugLogged < 5 && r.body) {
 						const b = r.body as any;
@@ -264,6 +312,8 @@ suite(
 						debugLogged++;
 					}
 				}
+
+				await assertGapWorkerStillServing(gapThreadId);
 
 				let tornCount = 0; // fill's own view: genA=0 (pre-gap snapshot) but genB=1 (post-mutation) -- mixed vintage
 				const tornSamples: Array<{ id: string; genA: unknown; genB: unknown }> = [];
@@ -311,7 +361,7 @@ suite(
 			'P3: two DIFFERENT tables in the SAME database — isolates whether the P2 seam is "two tables" or specifically "two databases"',
 			{ timeout: 60_000 },
 			async () => {
-				await setGap(GAP_MS);
+				const gapThreadId = await setGap(GAP_MS);
 				const ids = Array.from({ length: N_TRIALS }, (_, i) => `T${i}`);
 
 				for (const id of ids) {
@@ -321,12 +371,17 @@ suite(
 
 				const results: Array<{ id: string; body: TwoTableSameDbBody | null; status: number }> = [];
 				for (const id of ids) {
-					const fillPromise = getJSON<TwoTableSameDbBody>(`/TwoTableSameDbSnap/${id}`); // reads RowA(gen0), awaits GAP_MS, reads RowC
-					await sleep(MUTATE_AT_MS);
-					await putRow('RowC', id, 1); // concurrent writer: RowC gen0 -> gen1, mid-await, BEFORE the resolver touches RowC
-					const r = await fillPromise;
+					const r = await trial(
+						getJSON<TwoTableSameDbBody>(`/TwoTableSameDbSnap/${id}`), // reads RowA(gen0), awaits GAP_MS, reads RowC
+						async () => {
+							await sleep(MUTATE_AT_MS);
+							await putRow('RowC', id, 1); // concurrent writer: RowC gen0 -> gen1, mid-await, BEFORE the resolver touches RowC
+						}
+					);
 					results.push({ id, body: r.body, status: r.status });
 				}
+
+				await assertGapWorkerStillServing(gapThreadId);
 
 				let tornCount = 0;
 				const tornSamples: Array<{ id: string; genA: unknown; genC: unknown }> = [];
