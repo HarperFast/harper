@@ -12,22 +12,36 @@ const {
 	_setTableForTests,
 } = require('#src/agent/session');
 
+function deepFreeze(o) {
+	if (o && typeof o === 'object') {
+		for (const v of Object.values(o)) deepFreeze(v);
+		Object.freeze(o);
+	}
+	return o;
+}
+
 function makeMockTable() {
 	const store = new Map();
+	// Return FROZEN records like the real store, so an in-place mutation (a mutator missing the
+	// requireSession clone) throws instead of silently passing, as it did in production.
+	const read = (value) => (value ? deepFreeze(structuredClone(value)) : undefined);
 	return {
 		store,
+		// Resource-level put — the versioned write path session.ts writes through. Keys by the record's PK.
+		async put(record) {
+			store.set(record.session_id, structuredClone(record));
+		},
 		primaryStore: {
 			async put(key, value) {
 				store.set(key, structuredClone(value));
 			},
 			async get(key) {
-				const value = store.get(key);
-				return value ? structuredClone(value) : undefined;
+				return read(store.get(key));
 			},
 			getRange({ limit = Infinity, reverse } = {}) {
 				const entries = Array.from(store.entries());
 				if (reverse) entries.reverse();
-				return entries.slice(0, limit).map(([key, value]) => ({ key, value: structuredClone(value) }));
+				return entries.slice(0, limit).map(([key, value]) => ({ key, value: read(value) }));
 			},
 		},
 	};

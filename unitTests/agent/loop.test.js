@@ -4,17 +4,31 @@ const assert = require('node:assert');
 const { runAgent, _resetInFlightForTests } = require('#src/agent/loop');
 const session = require('#src/agent/session');
 
+function deepFreeze(o) {
+	if (o && typeof o === 'object') {
+		for (const v of Object.values(o)) deepFreeze(v);
+		Object.freeze(o);
+	}
+	return o;
+}
+
 function makeMockTable() {
 	const store = new Map();
 	return {
 		store,
+		// Resource-level put — the versioned write path session.ts writes through. Keys by the record's PK.
+		async put(record) {
+			store.set(record.session_id, structuredClone(record));
+		},
 		primaryStore: {
 			async put(key, value) {
 				store.set(key, structuredClone(value));
 			},
 			async get(key) {
 				const value = store.get(key);
-				return value ? structuredClone(value) : undefined;
+				// Return a FROZEN record, like the real store — so an in-place mutation (a mutator missing
+				// the requireSession clone) throws instead of silently passing, as it did in production.
+				return value ? deepFreeze(structuredClone(value)) : undefined;
 			},
 			getRange() {
 				return [];
