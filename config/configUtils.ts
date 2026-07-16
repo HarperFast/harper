@@ -344,9 +344,18 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
  * Deliberately scoped to genuinely-new built-ins — NOT every registered built-in. Component
  * activation is presence-gated (componentLoader iterates the config's keys), so re-adding a
  * long-standing key like `replication` would silently re-enable a component an operator disabled
- * by deleting its block. A newly-introduced built-in has no such history: its absence is always
- * "carried over from before it existed," never "intentionally removed." Add a key here only when
- * shipping a new built-in that must activate on already-upgraded instances.
+ * by deleting its block. A newly-introduced built-in has no such history: at upgrade time its
+ * absence is always "carried over from before it existed," never "intentionally removed."
+ *
+ * Consequence: once a backfilled key is on the safe-list, KEY DELETION IS NO LONGER A DISABLE
+ * MECHANISM for it — every boot re-adds the key and re-activates the component. Disabling must be
+ * explicit: set a falsy value (e.g. `secretCustody: false`). ensureConfigKeysPresent only writes
+ * when the key is entirely absent (hasIn is presence-based, true for `false`/`null`), and the
+ * loader treats a falsy value as disabled (`if (!config[name]) continue`), so an explicit `false`
+ * survives the backfill. This is the correct trade for a security-custody component — disabling it
+ * should be a deliberate act, not an accident of config drift (the exact failure mode of #585) —
+ * but document the falsy-disable convention wherever the key is exposed to operators.
+ * Add a key here only when shipping a new built-in that must activate on already-upgraded instances.
  */
 const UPGRADE_BACKFILL_BUILTIN_KEYS = ['secretCustody'];
 
