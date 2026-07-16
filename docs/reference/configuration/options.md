@@ -257,6 +257,7 @@ storage:
 - `noReadAhead` — Advise OS against read-ahead; _Default_: `false`
 - `prefetchWrites` — Prefetch before write transactions; _Default_: `true`
 - `path` — Database files directory; _Default_: `<rootPath>/database`
+- `backupPath` — Directory for managed database backups (created by [`create_backup`](../operations-api/operations.md#backup--restore)), one subdirectory per database; _Default_: `<rootPath>/backup` (Added in: v5.2.0)
 - `blobPaths` — Blob storage directory or directories; _Default_: `<rootPath>/blobs` (Added in: v4.5.0)
 - `pageSize` — Database page size (bytes); _Default_: OS default
 - `reclamation.threshold` — Free-space ratio below which reclamation begins evicting from caching tables; _Default_: `0.4` (Added in: v4.5.0)
