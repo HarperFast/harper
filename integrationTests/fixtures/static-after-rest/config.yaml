@@ -1,0 +1,10 @@
+graphqlSchema:
+  files: '*.graphql'
+rest: true
+static:
+  files: 'web/**'
+  fallthrough: false
+  notFound:
+    file: 'web/index.html'
+    statusCode: 200
+  after: 'rest'

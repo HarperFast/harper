@@ -1,0 +1,4 @@
+type QA518Record @table @export {
+	id: Long @primaryKey
+	name: String
+}
