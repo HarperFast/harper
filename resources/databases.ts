@@ -13,6 +13,7 @@ import { makeTable } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -1119,6 +1120,29 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		primaryKey = Table.primaryKey;
 		if (Table.primaryStore.rootStore.status === 'closed') {
 			throw new Error(`Can not use a closed data store from ${tableName} class`);
+		}
+		// Reject moving the primary key to a different attribute on a table that already has records.
+		// The storage key (Table.primaryKey) is never re-pointed here, so honoring the change would
+		// leave describe reporting the new attribute while every record — old and newly inserted — stays
+		// keyed by the original one; search_by_id/update/delete by the declared key then all miss. Only
+		// schema-authored callers (@table / defineTable / create_table) reassert the declaration, so
+		// gate on schemaDefinedExplicit to leave cluster schema-replication / data-loader callers alone.
+		// See HarperFast/studio#1199.
+		const declaredPrimaryKey = attributes.find((attribute) => attribute.isPrimaryKey)?.name;
+		if (schemaDefinedExplicit && declaredPrimaryKey && declaredPrimaryKey !== Table.primaryKey) {
+			let hasRecords = false;
+			for (const _entry of Table.primaryStore.getRange({ start: true })) {
+				hasRecords = true;
+				break;
+			}
+			if (hasRecords) {
+				throw new ClientError(
+					`Cannot change the primary key of table '${databaseName}.${tableName}' from '${Table.primaryKey}' to ` +
+						`'${declaredPrimaryKey}' because it already contains records. Recreate the table with the new primary ` +
+						`key, or migrate the existing records.`,
+					400
+				);
+			}
 		}
 		// it table already exists, get the split segments setting
 		if (splitSegments == undefined) splitSegments = Table.splitSegments;
