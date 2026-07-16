@@ -9,16 +9,12 @@ name: Next.js Integration Tests (downstream)
 # as `harper_ref`; the reusable workflow checks out + builds harper at that ref and
 # resolves it as the `harper` the test harness and fixtures run against.
 #
-# Required-check design: this workflow triggers on EVERY pull_request (no `paths:`
-# filter on the trigger). A trigger-level paths filter cannot back a required status
-# check -- GitHub has no "required only if it runs" semantic, so a PR that skips the
-# workflow would wait forever for a check that never reports. Instead the workflow
-# always runs and gates INTERNALLY: the `changes` job decides whether adapter-relevant
-# paths changed, the heavy `nextjs-integration` job runs only when they did, and the
-# always-running `required` gate job reports the single stable status. Mark
-# `required` (job name: "Next.js adapter integration required") as the required check
-# in branch protection -- it reports success both when the suite passes and when it is
-# skipped as irrelevant, and fails only when the suite actually fails.
+# Advisory, non-blocking: this is deliberately pinned to nextjs `@main` rather than a
+# fixed SHA, so a regression on nextjs main against harper surfaces here on the very
+# next harper PR instead of silently drifting. That means this check's outcome depends
+# on nextjs main's health, not just this PR's diff -- so it must NOT be added as a
+# required status check in branch protection, or an unrelated nextjs-side break would
+# block harper merges. It's a signal to act on, not a gate.
 
 on:
   pull_request:
@@ -59,45 +55,12 @@ jobs:
             echo "No adapter-relevant paths changed -> integration suite will be skipped."
           fi
 
-  # Heavy path: only when relevant files changed. When skipped, this caller job
-  # contributes no check runs of its own -- which is exactly why the `required` gate
-  # job below exists to provide the stable, always-reporting status.
+  # Heavy path: only when relevant files changed. Runs and reports informationally --
+  # this is not wired to a required gate job, so it never blocks a harper merge.
   nextjs-integration:
     name: Next.js adapter integration (against this PR's harper)
     needs: changes
     if: needs.changes.outputs.relevant == 'true'
-    uses: HarperFast/nextjs/.github/workflows/integration-tests.yml@d4b5ac951dafaaf8c8a622434d1a09d997a32bf5 # main 2026-07 (nextjs#49 merge SHA)
+    uses: HarperFast/nextjs/.github/workflows/integration-tests.yml@main # tracks nextjs main deliberately, so cross-repo drift is caught
     with:
       harper_ref: ${{ github.event.pull_request.head.sha }}
-
-  # Always runs, so it always reports -- this is the check to mark REQUIRED in branch
-  # protection. Passes when the suite passed OR was skipped as irrelevant; fails only
-  # when the suite actually failed/was cancelled, or when the filter job errored.
-  required:
-    name: Next.js adapter integration required
-    needs: [changes, nextjs-integration]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Evaluate integration result
-        env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          INTEGRATION_RESULT: ${{ needs.nextjs-integration.result }}
-        run: |
-          echo "changes=$CHANGES_RESULT integration=$INTEGRATION_RESULT"
-          if [ "$CHANGES_RESULT" != "success" ]; then
-            echo "::error::path-filter job did not succeed ($CHANGES_RESULT)"
-            exit 1
-          fi
-          case "$INTEGRATION_RESULT" in
-            success)
-              echo "Next.js integration suite passed."
-              ;;
-            skipped)
-              echo "Next.js integration suite skipped (no adapter-relevant paths changed) -- required check satisfied."
-              ;;
-            *)
-              echo "::error::Next.js integration suite result: $INTEGRATION_RESULT"
-              exit 1
-              ;;
-          esac
