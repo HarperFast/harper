@@ -9,12 +9,10 @@ name: Next.js Integration Tests (downstream)
 # as `harper_ref`; the reusable workflow checks out + builds harper at that ref and
 # resolves it as the `harper` the test harness and fixtures run against.
 #
-# Advisory, non-blocking: this is deliberately pinned to nextjs `@main` rather than a
-# fixed SHA, so a regression on nextjs main against harper surfaces here on the very
-# next harper PR instead of silently drifting. That means this check's outcome depends
-# on nextjs main's health, not just this PR's diff -- so it must NOT be added as a
-# required status check in branch protection, or an unrelated nextjs-side break would
-# block harper merges. It's a signal to act on, not a gate.
+# Advisory, non-blocking: this is pinned to the nextjs reusable-workflow fix from
+# HarperFast/nextjs#50. That revision explicitly checks out the adapter repository;
+# without it, workflow_call inherits this caller's checkout context and runs the
+# adapter's package scripts against harper instead.
 
 on:
   pull_request:
@@ -61,6 +59,6 @@ jobs:
     name: Next.js adapter integration (against this PR's harper)
     needs: changes
     if: needs.changes.outputs.relevant == 'true'
-    uses: HarperFast/nextjs/.github/workflows/integration-tests.yml@main # tracks nextjs main deliberately, so cross-repo drift is caught
+    uses: HarperFast/nextjs/.github/workflows/integration-tests.yml@8b1e950dcb1835b24a09bf4ffc0670c1d0cf9fc5 # HarperFast/nextjs#50
     with:
       harper_ref: ${{ github.event.pull_request.head.sha }}
