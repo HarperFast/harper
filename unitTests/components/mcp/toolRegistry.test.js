@@ -209,6 +209,17 @@ describe('mcp/toolRegistry', () => {
 			assert.equal(byName.get('dup').description, 'static wins');
 		});
 
+		it('listProfileTools tolerates a provider without a ready list', () => {
+			addTool(makeTool({ name: 'static_op', profile: 'operations' }));
+			for (const list of [undefined, () => undefined, () => null]) {
+				setProfileToolProvider('operations', { list, get: () => undefined });
+				assert.deepEqual(
+					listProfileTools('operations').map((def) => def.name),
+					['static_op']
+				);
+			}
+		});
+
 		it('lists provider tools merged with statically-registered tools', () => {
 			addTool(makeTool({ name: 'static_op', profile: 'operations' }));
 			setProfileToolProvider('operations', provider([makeTool({ name: 'dynamic_op', profile: 'operations' })]));
