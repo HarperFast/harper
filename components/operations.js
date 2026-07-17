@@ -494,8 +494,7 @@ async function deployComponent(req) {
 		// allow a bounded grace period (same budget as the payload-row wait) for it to replicate in.
 		let credentialsWaitMs = 0;
 		if (isReplicatedExecution) {
-			const requested = Number(req.deployment_timeout);
-			credentialsWaitMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+			credentialsWaitMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
 		}
 		const resolvedCredentials = await resolveCredentials(req.credentials, req.project, {
 			waitMs: credentialsWaitMs,
