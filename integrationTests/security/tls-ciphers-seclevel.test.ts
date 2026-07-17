@@ -181,8 +181,13 @@ suite(
 		});
 
 		after(async () => {
-			await teardownHarper(ctx);
-			await rm(certsDir, { recursive: true, force: true, maxRetries: 3 });
+			// before() can fail prior to certsDir being assigned; still tear Harper down, and only
+			// remove what was actually created
+			try {
+				await teardownHarper(ctx);
+			} finally {
+				if (certsDir) await rm(certsDir, { recursive: true, force: true, maxRetries: 3 });
+			}
 		});
 
 		test('accepts a client cert chained through the SHA-1-signed CA', async () => {
