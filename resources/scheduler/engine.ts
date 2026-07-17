@@ -51,6 +51,9 @@ interface RegisteredJob extends ScheduledJob {
 	// a frozen persisted lastRunAt cannot time-travel the schedule into a hot
 	// loop (review finding: continuous refire under ENOSPC-style write errors)
 	lastAttemptAt?: number;
+	// In-flight scheduling computation, used to coalesce concurrent
+	// scheduleNextRun calls (see scheduleNextRun)
+	scheduling?: Promise<void>;
 }
 
 type EngineRole = 'inactive' | 'follower' | 'leader';
@@ -451,8 +454,22 @@ function isRegistered(job: RegisteredJob): boolean {
  * their persisted last run so cadence survives restarts and failover; cron
  * jobs fire at the next matching wall-clock time (missed occurrences are
  * handled by the catch-up sweep instead).
+ *
+ * Concurrent calls for the same job coalesce onto one computation: the
+ * callers (becomeLeader's initial loop, a registration's fire-and-forget, a
+ * post-run reschedule, the heartbeat sweep) can otherwise interleave across
+ * the state read below, each pass the no-timer check, and each arm a timer —
+ * with only the last handle retained, leaving an uncancellable live timer
+ * (review finding).
  */
-async function scheduleNextRun(job: RegisteredJob): Promise<void> {
+function scheduleNextRun(job: RegisteredJob): Promise<void> {
+	job.scheduling ??= computeAndArmNextRun(job).finally(() => {
+		job.scheduling = undefined;
+	});
+	return job.scheduling;
+}
+
+async function computeAndArmNextRun(job: RegisteredJob): Promise<void> {
 	if (role !== 'leader' || !isRegistered(job)) return;
 	if (job.timer) clearTimeout(job.timer);
 	const now = new Date();
@@ -486,6 +503,13 @@ async function scheduleNextRun(job: RegisteredJob): Promise<void> {
 
 function armTimer(job: RegisteredJob, fireAt: Date): void {
 	const delay = fireAt.getTime() - Date.now();
+	// Fail closed on a non-finite target: setTimeout coerces NaN to ~1ms,
+	// which would hot-loop the job (review finding). Cron jobs re-arm via the
+	// heartbeat sweep; interval bounds are validated at config load.
+	if (!Number.isFinite(delay)) {
+		schedulerLogger.error?.(`Job ${jobRowId(job)} computed a non-finite fire time; not arming`);
+		return;
+	}
 	if (delay > MAX_TIMEOUT_MS) {
 		// Beyond setTimeout's 32-bit range: sleep the maximum and re-arm
 		job.timer = setTimeout(() => {

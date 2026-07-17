@@ -23,6 +23,9 @@ export class SchedulerConfigError extends ClientError {
 }
 
 const MIN_INTERVAL_MS = 1000;
+// Generous for any real maintenance cadence while keeping fire-time
+// arithmetic comfortably inside Date range
+const MAX_INTERVAL_MS = 365 * 24 * 60 * 60 * 1000;
 
 interface SchedulerJobConfig {
 	name?: unknown;
@@ -158,9 +161,14 @@ async function buildJob(scope, jobConfig: SchedulerJobConfig): Promise<Scheduled
 			);
 		}
 		const intervalMs = convertToMS(typeof interval === 'string' ? interval.trim() : interval);
-		if (!(intervalMs >= MIN_INTERVAL_MS)) {
+		// Both bounds matter: values that overflow Date arithmetic (YAML .inf,
+		// 1e309, or absurdly large finite numbers) would otherwise produce an
+		// Invalid Date downstream, whose NaN delay Node's setTimeout coerces to
+		// ~1ms — turning a "practically never" interval into a hot loop
+		// (review finding)
+		if (!Number.isFinite(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_INTERVAL_MS) {
 			throw new SchedulerConfigError(
-				`Scheduler job "${name}" in component ${componentName}: interval "${interval}" must be at least 1 second (e.g. 90s, 5m, 1h)`
+				`Scheduler job "${name}" in component ${componentName}: interval "${interval}" must be between 1 second and 365 days (e.g. 90s, 5m, 1h, 1d)`
 			);
 		}
 		job.intervalMs = intervalMs;

@@ -23,7 +23,11 @@ function basicAuth(username: string, password: string): string {
 
 suite('scheduler component plugin (#951)', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await setupHarperWithFixture(ctx, FIXTURE_PATH);
+		// Run with multiple worker threads so the once-per-occurrence assertions
+		// below actually exercise the worker-0 activation gate — on a single
+		// worker, duplicate-registration bugs are invisible (review finding).
+		// The runtime config overrides the framework's default --THREADS_COUNT=1.
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: { threads: { count: 3 } } });
 	});
 
 	after(async () => {
