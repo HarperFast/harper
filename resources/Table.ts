@@ -2875,8 +2875,10 @@ export function makeTable(options) {
 								} is not a defined attribute`,
 								404
 							);
-						if (attribute.indexed) {
-							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
+						if (attribute.indexed || attribute.isPrimaryKey) {
+							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index.
+							// the primary key has no secondary index, but the primary store is itself keyed in
+							// primary-key order, so scanning it is already aligned with the sort
 							orderAlignedCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
 						} else if (conditions.length === 0 && !target.allowFullScan)
