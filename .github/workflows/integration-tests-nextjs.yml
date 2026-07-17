@@ -62,7 +62,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [20, 22, 24]
+        # Match harper's supported runtimes; its native storage bindings do not
+        # support Node 20 (package.json requires ^22.18 or >=24).
+        node-version: [22, 24, 26]
     steps:
       - name: Checkout Next.js adapter
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
