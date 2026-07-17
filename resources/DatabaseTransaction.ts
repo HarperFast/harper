@@ -41,8 +41,10 @@ export function setCommitLatencyRecorder(recorder: ((durationMs: number) => void
 // queue time. The recorder is wrapped so it can never throw — a metrics failure must neither break the
 // commit nor surface as an unhandled rejection on this floating `.then`. The thenable guard protects
 // against a future caller passing a non-Promise `commitResolution` (today it is always the rocksdb-js
-// async `Transaction.commit()` result, which is guaranteed to be a Promise).
-function recordCommitLatency(commitResolution: Promise<unknown> | void, submittedAt: number) {
+// async `Transaction.commit()` result, which is guaranteed to be a Promise). The parameter matches
+// `commit()`'s honest `Promise<number | void>` result (the coordinated-retry sentinel); the resolved
+// value is intentionally ignored — only the settle timing is recorded.
+function recordCommitLatency(commitResolution: Promise<number | void>, submittedAt: number) {
 	if (!recordCommitLatencyMs) return;
 	const record = () => {
 		try {
@@ -400,8 +402,8 @@ export class DatabaseTransaction implements Transaction {
 						if (this.writes.length > 0) {
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
-							// sentinel is handled in the resolve callback below and never
-							// propagates past that branch.
+							// sentinel (a number) is why commitResolution is typed
+							// Promise<number | void>; it is handled in the resolve callback below.
 							commitResolution = transaction.commit();
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (outstandingCommitStart is
