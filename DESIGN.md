@@ -354,3 +354,51 @@ caller passes `two_phase: false`, or the invocation is a peer replaying a one-sh
 Known gap for a rolling upgrade window: an origin on this version replicating `stage_component` to a
 peer that predates these operations will see that peer fail the op; `two_phase: false` or
 `ignore_replication_errors` is the escape hatch until capability negotiation lands.
+
+## `universalHeaders` (`http.securityHeaders`): ownership, precedence, and per-thread scope
+
+`server/http.ts` exports `universalHeaders: [string, string][]`, applied to responses in the
+Node, Bun, and uWS (`#914`, `HARPER_UWS_HTTP`) request handlers alike. `http.securityHeaders`
+config populates it via `applySecurityHeaders()`, called from `handleApplication()` on load and
+on `scope.options.on('change', ...)`. Three invariants to preserve:
+
+- **Ownership tracking.** Other components may push entries onto the same shared array, so a
+  hot-reload can't clear-and-rebuild it. `applySecurityHeaders` tracks the exact `[name, value]`
+  tuples it previously pushed in a module-level `ownedSecurityHeaders` array and splices only
+  those out (by reference, via `indexOf`) before re-adding the new set. Any future feature that
+  pushes into `universalHeaders` from a hot-reloadable source should follow the same "track what
+  I added, only remove what I added" pattern.
+- **Root scope owns the config.** `'http'` is a `TRUSTED_RESOURCE_PLUGINS` key, so an application
+  `config.yaml` with an `http:` block re-invokes `handleApplication`. A module-level guard makes
+  only the _first_ invocation (the root config, which loads before applications) own
+  `applySecurityHeaders` and its change listener; later invocations still refresh `httpOptions`
+  but cannot wipe root-configured headers.
+- **App wins on conflicts.** Universal headers are _defaults_: `applyUniversalHeaders()` (a shared
+  helper used by all three transports) only sets a header when `has(name)` is false, and the
+  direct-to-`nodeResponse` paths (handlesHeaders, error) check `hasHeader` first. A route that sets
+  `X-Frame-Options: DENY` is never loosened by a configured `SAMEORIGIN`. Response paths covered:
+  normal writeHead, `handlesHeaders` streams (e.g. the static component's `send()`, which writes
+  its own headers directly — universal headers are pre-set on `nodeResponse` / the Bun
+  `responseHeaders` shim so the stream can still override its own names), the thrown-error path,
+  and the `status === -1` cascade — on Node via the Fastify `'unhandled'` event bridge, on Bun/uWS
+  via `injectToFastify` (or the bare-404 fallback when no Fastify instance is registered for the
+  port). Each `status === -1` branch builds a **fresh** `Headers` object from the fallback
+  response rather than reusing the request's original `headers`, so `applyUniversalHeaders()` must
+  be called again on whichever object actually gets returned — applying it only once, before the
+  `status === -1` branch, is a trap that silently drops universal headers on every unhandled/404
+  response. CI first caught this on the uWS shard (the integration suite's only unauthenticated
+  404 case landed there); the same bug existed unnoticed on Bun's parallel `status === -1`
+  branches (`getBunHTTPServer`'s bare-404 return and `bunDelegateToNodeServer`'s two `Response`s)
+  and is fixed alongside it in `harper-1568-fix2`.
+
+**Why the operations API doesn't get these headers in normal mode**: ops requests _do_ flow
+through the Harper-native `requestHandler` (`httpServer()` calls `getServer()` for every
+registration, including Fastify's non-function listener) and cascade to Fastify via the
+`status === -1` branch, which copies `response.headers` onto `nodeResponse`. But the ops API runs
+on the **main thread**, and the main thread loads components with `resources.isWorker = false`
+(`server/loadRootComponents.js`), so the componentLoader's `resources.isWorker &&
+extensionModule.handleApplication` gate (`components/componentLoader.ts`) means http's
+`handleApplication` never runs there — the main thread's `universalHeaders` array stays empty.
+`universalHeaders` is per-thread module state, populated only where the http component loads.
+Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
+so ops responses **will** carry the headers there (benign).

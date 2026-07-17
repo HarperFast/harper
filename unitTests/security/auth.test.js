@@ -363,4 +363,21 @@ describe('auth.ts - certificate verification integration', function () {
 			assert(errorCall.args[1] === 'revoked');
 		});
 	});
+
+	describe('handleApplication registers named middleware', function () {
+		it('registers the authentication listener under name "authentication" so other middleware can order relative to it', function () {
+			const httpStub = sandbox.stub();
+			const scope = {
+				server: { http: httpStub },
+				options: { getAll: () => ({}) },
+			};
+
+			authModule.handleApplication(scope);
+
+			assert(httpStub.calledOnce);
+			const [listener, options] = httpStub.firstCall.args;
+			assert.strictEqual(listener, authModule.authentication);
+			assert.strictEqual(options.name, 'authentication');
+		});
+	});
 });

@@ -14,6 +14,7 @@ import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
+import { setCommitLatencyRecorder } from '../DatabaseTransaction.ts';
 import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js';
 
 const log = forComponent('analytics').conditional;
@@ -129,6 +130,9 @@ export function recordAction(value: Value, metric: string, path?: string, method
 }
 
 server.recordAnalytics = recordAction;
+
+// Let the storage layer emit write-commit latency without statically depending on this module.
+setCommitLatencyRecorder((durationMs) => recordAction(durationMs, METRIC.TRANSACTION_COMMIT_TIME));
 
 export function recordActionBinary(value, metric, path?, method?, type?) {
 	recordAction(Boolean(value), metric, path, method, type);

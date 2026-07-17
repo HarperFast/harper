@@ -27,6 +27,7 @@ import * as globalSchema from '../globalSchema.ts';
 import { promisify } from 'util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
+import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';
 
 // Removes the color formatting that was being applied to the prompt answer.
 const PROMPT_ANSWER_TRANSFORMER = (answer) => answer;
@@ -84,8 +85,19 @@ let ignoreExisting = false;
  * This module orchestrates the installation of Harper.
  */
 
-export { install, updateConfigEnv, setIgnoreExisting };
+export { install, updateConfigEnv, setIgnoreExisting, resolveInstallDestination };
 install.createSuperUser = createSuperUser;
+
+/**
+ * Expands a `~/...` install destination to an absolute path so every downstream consumer
+ * (directory creation, boot props file, harperdb-config.yaml) resolves the same location instead
+ * of each independently (and inconsistently) trying to expand it (harper#672). Absolute paths and
+ * plain relative paths (no `~`, no leading `/`) are returned unchanged, preserving the existing
+ * cwd-relative behavior for relative paths.
+ */
+function resolveInstallDestination(value: string): string {
+	return resolveConfiguredPath(value, undefined) ?? value;
+}
 
 /**
  * Calls all the functions that are needed to install Harper.
@@ -103,6 +115,16 @@ async function install() {
 	// Check to see if any cmd/env vars are passed that override install prompts.
 	const promptOverride = checkForPromptOverride();
 	Object.assign(promptOverride, configFromFile);
+
+	// A cmd/env/config-file-sourced ROOTPATH skips the install prompt (and its `~/...`-expanding
+	// filter) entirely, so resolve it here - before it's validated (installValidator, below) or
+	// used anywhere else - to keep it consistent with the interactively-entered path (harper#672).
+	if (promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] != null) {
+		promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] = resolveInstallDestination(
+			promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH]
+		);
+	}
+
 	const hasRequiredPromptOverrides =
 		promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] &&
 		promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME] &&
@@ -237,6 +259,9 @@ async function installPrompts(promptOverride) {
 			name: hdbTerms.INSTALL_PROMPTS.ROOTPATH,
 			prefix: PROMPT_PREFIX,
 			default: DEFAULT_HDB_ROOT,
+			// Runs before validate, so the existing-install check below (and everything after it)
+			// sees the same expanded path rather than a literal, unresolved `~/...` string.
+			filter: resolveInstallDestination,
 			validate: async (value) => {
 				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
 				if (await fs.pathExists(path.join(value, 'system', 'hdb_user.mdb')))
