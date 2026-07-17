@@ -97,6 +97,13 @@ This is just a brief overview of all operations available as CLI commands. Revie
 | `get_fingerprint`                | Get instance fingerprint              | [Licensing](../operations-api/operations.md#registration--licensing)   | v4.3.0          |
 | `set_license`                    | Set license key                       | [Licensing](../operations-api/operations.md#registration--licensing)   | v4.3.0          |
 | `get_usage_licenses`             | Get usage and license info            | [Licensing](../operations-api/operations.md#registration--licensing)   | v4.7.3          |
+| `create_backup`                  | Create a managed database backup      | [Backups](../backups/operations.md)                                    | v5.2.0          |
+| `list_backups`                   | List managed backups                  | [Backups](../backups/operations.md)                                    | v5.2.0          |
+| `verify_backup`                  | Verify a managed backup's integrity   | [Backups](../backups/operations.md)                                    | v5.2.0          |
+| `delete_backup`                  | Delete a managed backup               | [Backups](../backups/operations.md)                                    | v5.2.0          |
+| `purge_backups`                  | Delete all but the newest backups     | [Backups](../backups/operations.md)                                    | v5.2.0          |
+| `restore_backup`                 | Restore a database from a backup      | [Backups](../backups/operations.md)                                    | v5.2.0          |
+| `get_backup`                     | Download a full database snapshot     | [Backups](../backups/operations.md)                                    | v5.2.0          |
 | `get_job`                        | Get job status                        | [Jobs](../operations-api/operations.md#jobs)                           | v4.3.0          |
 | `search_jobs_by_start_date`      | Search jobs by start date             | [Jobs](../operations-api/operations.md#jobs)                           | v4.3.0          |
 | `read_log`                       | Read application logs                 | [Logging](../operations-api/operations.md#logs)                        | v4.3.0          |

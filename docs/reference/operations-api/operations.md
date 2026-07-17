@@ -136,14 +136,9 @@ Drops an attribute and all its values from the specified table.
 
 ## Backup & Restore
 
-Operations for backing up and restoring databases. A backup is always a whole-database copy (all tables plus the audit/transaction log); there is no per-table granularity.
+Operations for backing up and restoring databases. Managed backups <VersionBadge version="v5.2.0" /> require the RocksDB storage engine; `get_backup` works with both RocksDB and LMDB.
 
-Two complementary mechanisms are exposed:
-
-- **Managed backups** <VersionBadge version="v5.2.0" /> — a server-side, incremental, checksum-verified repository under the configured backup root (`storage.backupPath`, default `<rootPath>/backup`), one subdirectory per database. Create, list, verify, delete, purge, and restore are all available. These operations require the RocksDB storage engine.
-- **Download** — `get_backup` streams a full snapshot of the database in the HTTP response with no server-side artifact, for pulling a copy off-host.
-
-Every managed backup and every RocksDB `get_backup` includes the audit/transaction log, so a restored database keeps its `read_audit_log` history as of the backup point. A restore is a point-in-time rollback; in a replicated cluster, coordinate a restore with replication before bringing the node back.
+Detailed documentation: [Backup Operations](../backups/operations.md)
 
 | Operation        | Description                                                         | Role Required |
 | ---------------- | ------------------------------------------------------------------- | ------------- |
@@ -157,11 +152,7 @@ Every managed backup and every RocksDB `get_backup` includes the audit/transacti
 
 ### `create_backup`
 
-<VersionBadge version="v5.2.0" />
-
-Creates an incremental directory backup of the database (RocksDB only) under the configured backup root. Runs as a background [job](#jobs): the operation returns a `job_id` immediately, and [`get_job`](#get_job) reports the outcome including the new `backup_id`, `size`, and `timestamp`. `database` defaults to `data`.
-
-Directory backups in the same location share unchanged files, so the second and subsequent backups of a database only copy what changed. Use `purge_backups` to manage retention.
+Creates an incremental directory backup of the database under the configured backup root. Runs as a background [job](#jobs) that reports the new `backup_id`.
 
 ```json
 { "operation": "create_backup", "database": "dev" }
@@ -169,9 +160,7 @@ Directory backups in the same location share unchanged files, so the second and 
 
 ### `list_backups`
 
-<VersionBadge version="v5.2.0" />
-
-Returns the managed backups for a database (RocksDB only), each with its `backup_id`, `timestamp`, `size`, and `file_count`. Returns an empty array if no backups have been created yet.
+Returns the managed backups for a database, each with its `backup_id`, `timestamp`, `size`, and `file_count`.
 
 ```json
 { "operation": "list_backups", "database": "dev" }
@@ -179,9 +168,7 @@ Returns the managed backups for a database (RocksDB only), each with its `backup
 
 ### `verify_backup`
 
-<VersionBadge version="v5.2.0" />
-
-Verifies a managed backup's file sizes, and optionally their checksums when `verify_checksum` is `true` (slower). Runs as a background [job](#jobs). `backup_id` is required.
+Verifies a managed backup's integrity, including checksums when `verify_checksum` is `true` (slower). Runs as a background [job](#jobs).
 
 ```json
 { "operation": "verify_backup", "database": "dev", "backup_id": 1, "verify_checksum": true }
@@ -189,9 +176,7 @@ Verifies a managed backup's file sizes, and optionally their checksums when `ver
 
 ### `delete_backup`
 
-<VersionBadge version="v5.2.0" />
-
-Deletes a single managed backup. Files shared with other backups are reference-counted and removed only when no remaining backup references them. `backup_id` is required.
+Deletes a single managed backup.
 
 ```json
 { "operation": "delete_backup", "database": "dev", "backup_id": 1 }
@@ -199,9 +184,7 @@ Deletes a single managed backup. Files shared with other backups are reference-c
 
 ### `purge_backups`
 
-<VersionBadge version="v5.2.0" />
-
-Deletes all but the newest `keep_count` managed backups, returning the number `deleted` and the number `remaining`.
+Deletes all but the newest `keep_count` managed backups.
 
 ```json
 { "operation": "purge_backups", "database": "dev", "keep_count": 3 }
@@ -209,37 +192,15 @@ Deletes all but the newest `keep_count` managed backups, returning the number `d
 
 ### `restore_backup`
 
-<VersionBadge version="v5.2.0" />
-
-Restores a database in place from a managed backup (RocksDB only), without stopping Harper. Runs as a background [job](#jobs): Harper closes the database across all worker threads, restores it, and reloads it. `backup_id` defaults to the latest backup. The audit/transaction log is restored alongside the data.
+Restores a database in place from a managed backup, as a background [job](#jobs). `backup_id` defaults to the latest backup. Restoring the `system` database, or a database a loaded component keeps open, requires the server to be stopped — see [when can a database be restored?](../backups/overview.md#when-can-a-database-be-restored)
 
 ```json
 { "operation": "restore_backup", "database": "dev", "backup_id": 1 }
 ```
 
-#### When can a database be restored?
-
-An in-place restore purges and rewrites the database's files, which requires the database to be **fully closed** first. Harper closes it across its own worker threads, but it cannot close a handle held by a loaded component, nor stop the `system` database it depends on to run. So whether a restore can run online depends on what is holding the database open:
-
-| Database                                           | Online `restore_backup` (server running) | Offline `harper restore_backup` (server stopped) |
-| -------------------------------------------------- | ---------------------------------------- | ------------------------------------------------ |
-| A user database not opened by any loaded component | Yes — restored in place                  | Yes                                              |
-| A user database that a loaded component keeps open | No — the job fails with a `409`          | Yes                                              |
-| The `system` database                              | No — rejected up front                   | Yes                                              |
-
-- **Online** (this operation) works only when no loaded component is holding the database open. If a component is using it, the job fails fast with a `409` telling you to restore offline — Harper cannot force a component's handles closed while the server is running, and restoring under an open instance would corrupt it. (Harper does not track which component uses which database, so it cannot selectively stop one; it can only detect that the database is still open.)
-- **Offline** — the same [`restore_backup`](../cli/commands.md#harper-restore_backup) command run from the CLI with the server **stopped** — works for **any** database, because no components are loaded and nothing holds it open. This is the required path for the `system` database and for any database a component keeps open.
-
-Online restore always restores in place. To restore into a new database instead of overwriting the source, run `restore_backup` with `target_database` from the CLI with the server stopped.
-
-A restore is a point-in-time rollback; in a replicated cluster, coordinate it with replication before bringing the node back (see the note at the top of this section).
-
 ### `get_backup`
 
-Streams a full snapshot of the specified database in the HTTP response for download - there is no server-side artifact and nothing to clean up. Behavior depends on the storage engine:
-
-- **RocksDB** <VersionBadge type="changed" version="v5.2.0" /> — streams a `tar` archive of the current database state (all tables plus the transaction log), **gzipped by default** (`gzip` is RocksDB-only and compresses the snapshot substantially). Pass `"gzip": false` for a plain `tar`. It is always the current state; downloading a specific historical `backup_id` is not supported - to move a retained backup off-host, copy the backup directory.
-- **LMDB** — streams the `.mdb` file. Specify `"table"` for a single table or `"tables"` for a set, and `"include_audit": true` to include the audit store. These options are LMDB-only.
+Streams a full snapshot of the specified database in the HTTP response for download. For RocksDB <VersionBadge type="changed" version="v5.2.0" />, a `tar` archive of the current state, gzipped by default; for LMDB, the `.mdb` file.
 
 ```json
 { "operation": "get_backup", "database": "dev" }
