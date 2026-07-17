@@ -238,8 +238,9 @@ export function snapshotProfileTools(profile: McpProfile): ToolDef[] {
 export function listProfileTools(profile: McpProfile): ToolDef[] {
 	const byName = new Map<string, ToolDef>();
 	const provider = profileProviders.get(profile);
-	if (provider) {
-		for (const def of provider.list()) byName.set(def.name, def);
+	const providerTools = provider?.list?.();
+	if (providerTools) {
+		for (const def of providerTools) byName.set(def.name, def);
 	}
 	for (const def of registry.values()) {
 		if (def.profile === profile) byName.set(def.name, def);
