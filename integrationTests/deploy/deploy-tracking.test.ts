@@ -196,7 +196,9 @@ suite('Deployment tracking', (ctx: ContextWithHarper) => {
 			// match what the install command actually printed; an empty array would pass the
 			// pre-fix code, so assert on the line content too.
 			const body = JSON.parse(response.body);
-			strictEqual(body.phase, 'prepare');
+			// The install runs during the stage phase of a two-phase deploy, so a failed install is
+			// recorded against 'stage' (was 'prepare' in the one-shot flow).
+			strictEqual(body.phase, 'stage');
 			ok(Array.isArray(body.install_output?.lines) && body.install_output.lines.length > 0);
 			ok(
 				body.install_output.lines.some(

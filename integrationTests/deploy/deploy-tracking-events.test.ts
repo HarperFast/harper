@@ -132,9 +132,10 @@ suite('Deployment tracking — events + SSE', (ctx: ContextWithHarper) => {
 		ok(Array.isArray(row.event_log), 'event_log should be an array');
 		ok(row.event_log.length >= 2, `expected at least 2 events, got ${row.event_log.length}`);
 		const phases = row.event_log.filter((e: any) => e.event === 'phase').map((e: any) => e.data?.phase);
-		// We emit prepare → (load) → replicate → success in the lifecycle. Verify the spine.
-		ok(phases.includes('prepare'), `event_log should include a prepare phase: ${phases.join(',')}`);
-		ok(phases.includes('replicate'), `event_log should include a replicate phase: ${phases.join(',')}`);
+		// A two-phase deploy emits stage → (load) → activate → success. Verify the spine (load is only
+		// emitted off the main thread, so it isn't asserted here).
+		ok(phases.includes('stage'), `event_log should include a stage phase: ${phases.join(',')}`);
+		ok(phases.includes('activate'), `event_log should include an activate phase: ${phases.join(',')}`);
 	});
 
 	test('get_deployment with Accept: text/event-stream replays event_log and closes cleanly', async () => {
