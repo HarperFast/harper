@@ -221,6 +221,57 @@ describe('Test configUtils module', () => {
 				dateStub.restore();
 			}
 		});
+
+		it('retries the rename on a transient Windows EPERM/EACCES and succeeds once the holder releases the file', () => {
+			// Simulates a sibling worker's RootConfigWatcher (or AV) briefly holding the
+			// destination open for read: renameSync fails a couple of times, then succeeds.
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			const eaccesError = Object.assign(new Error('EACCES: permission denied, rename'), { code: 'EACCES' });
+			renameStub.onCall(0).throws(epermError);
+			renameStub.onCall(1).throws(eaccesError);
+			renameStub.onCall(2).returns(undefined);
+			try {
+				atomicWriteFile(ATOMIC_TEST_PATH, 'content');
+				expect(renameStub.callCount).to.equal(3);
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		it('gives up after exhausting retries on a persistent EPERM, cleans up the temp file, and rethrows', () => {
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			renameStub.throws(epermError);
+			try {
+				// Use the default retry count (unspecified maxRetries) so this exercises the real
+				// production budget, but override the delay to ~0 so the backoff doesn't burn real
+				// wall-clock time (default backoff would take ~900ms for a persistent failure).
+				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content', { initialDelayMs: 0, maxDelayMs: 0 })).to.throw(
+					epermError
+				);
+				// 1 initial attempt + 8 retries (the production default maxRetries)
+				expect(renameStub.callCount).to.equal(9);
+				const stragglers = fs
+					.readdirSync(ATOMIC_TEST_DIR)
+					.filter((e) => e.startsWith('atomic-write-test.yaml.') && e.endsWith('.tmp'));
+				expect(stragglers).to.be.empty;
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		it('does not retry on a non-permission rename error', () => {
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const enoentError = Object.assign(new Error('ENOENT: no such file or directory, rename'), { code: 'ENOENT' });
+			renameStub.throws(enoentError);
+			try {
+				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content')).to.throw(enoentError);
+				expect(renameStub.callCount).to.equal(1);
+			} finally {
+				renameStub.restore();
+			}
+		});
 	});
 
 	describe('Test ensureConfigKeysPresent function', () => {

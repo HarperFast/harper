@@ -7,6 +7,7 @@ import YAML from 'yaml';
 import path from 'path';
 import { threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import isNumber from 'is-number';
 import propertiesReaderModule from 'properties-reader';
 import _ from 'lodash';
@@ -80,10 +81,30 @@ export function getConfigPath(param: string) {
 // Write atomically via temp file + rename so readers don't observe a truncated/empty file.
 // Temp path includes randomness so two worker threads in the same process (same pid) writing
 // in the same millisecond can't collide on the temp name and then race the rename.
-function atomicWriteFile(filePath, content) {
+//
+// Windows has no POSIX-style "replace an open file" semantics: rename() fails with
+// EPERM/EACCES if another thread/process has the destination momentarily open for read.
+// Every worker thread runs its own RootConfigWatcher (chokidar), so a write on one thread
+// routinely races a hot-reload read on another; Windows Defender / AV real-time scanning can
+// hold a similar transient handle. Retry with exponential backoff to ride out the race -
+// callers are synchronous, so the wait is a synchronous busy-loop rather than a real sleep.
+const RENAME_RETRY_MAX_ATTEMPTS = 8;
+const RENAME_RETRY_INITIAL_DELAY_MS = 10;
+const RENAME_RETRY_MAX_DELAY_MS = 200;
+
+function atomicWriteFile(
+	filePath,
+	content,
+	{
+		maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
+		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
+		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
+	} = {}
+) {
 	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
 	fs.writeFileSync(tempPath, content);
-	let retries = 5;
+	let retries = maxRetries;
+	let delayMs = initialDelayMs;
 	while (true) {
 		try {
 			fs.renameSync(tempPath, filePath);
@@ -91,9 +112,12 @@ function atomicWriteFile(filePath, content) {
 		} catch (err) {
 			if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
 				retries--;
-				// sleep synchronously to allow the reader to close the file
-				const start = Date.now();
-				while (Date.now() - start < 10) {}
+				// Sleep synchronously (all call sites are sync) to allow the reader to close the
+				// file. Uses performance.now() rather than Date.now(): the latter tracks wall-clock
+				// time and can jump backward (NTP sync), which would turn this into an unbounded spin.
+				const start = performance.now();
+				while (performance.now() - start < delayMs) {}
+				delayMs = Math.min(delayMs * 2, maxDelayMs);
 				continue;
 			}
 			// if it fails we should clean up the tmp file
