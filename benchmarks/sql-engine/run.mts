@@ -499,13 +499,15 @@ async function main(): Promise<void> {
 	console.log(`storage=${opts.engine}  threads=${opts.threads}  queries=${queries.length}`);
 	console.log('='.repeat(78));
 
-	console.log('\nBooting legacy instance (HARPER_SQL_ENGINE=legacy)...');
-	const legacy = await boot('legacy', 'legacy', opts);
-	console.log('Booting new instance (HARPER_SQL_ENGINE=new)...');
-	const fresh = await boot('new', 'new', opts);
-
+	let legacy: Instance | undefined;
+	let fresh: Instance | undefined;
 	const results: QueryResult[] = [];
 	try {
+		console.log('\nBooting legacy instance (HARPER_SQL_ENGINE=legacy)...');
+		legacy = await boot('legacy', 'legacy', opts);
+		console.log('Booting new instance (HARPER_SQL_ENGINE=new)...');
+		fresh = await boot('new', 'new', opts);
+
 		console.log(`\nSeeding ${opts.records.toLocaleString()} records into both instances...`);
 		await Promise.all([seed(legacy, opts.records), seed(fresh, opts.records)]);
 		console.log('Seed complete.');
@@ -592,8 +594,8 @@ async function main(): Promise<void> {
 			`SQL_ENGINE_SUMMARY queries=${results.length} faster=${ratios.filter((x) => x < 0.95).length} slower=${ratios.filter((x) => x > 1.05).length} even=${ratios.filter((x) => x >= 0.95 && x <= 1.05).length} unsupported=${results.filter((r) => r.status === 'unsupported').length} mismatch=${results.filter((r) => r.status === 'mismatch').length} error=${results.filter((r) => r.status === 'error').length} geomean_ratio=${geomean.toFixed(3)}`
 		);
 	} finally {
-		await teardownHarper(legacy.ctx).catch(() => {});
-		await teardownHarper(fresh.ctx).catch(() => {});
+		if (legacy) await teardownHarper(legacy.ctx).catch(() => {});
+		if (fresh) await teardownHarper(fresh.ctx).catch(() => {});
 	}
 }
 
