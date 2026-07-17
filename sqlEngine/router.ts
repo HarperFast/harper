@@ -38,26 +38,21 @@ function getLogger(): { info: (msg: string) => void; warn: (msg: string) => void
 
 export function route(opts: RouteOptions, callback: (err: unknown, data?: unknown) => void): void {
 	const config = getSqlEngineConfig();
-	const logger = getLogger();
 
 	if (config.engine === 'legacy') {
 		opts.legacy(opts.statement, callback);
 		return;
 	}
 
-	const tryNew = async (): Promise<unknown> => {
-		return runStatement({
-			variant: opts.variant,
-			jsonMessage: opts.jsonMessage,
-			statement: opts.statement,
-		});
-	};
-
-	tryNew().then(
+	runStatement({
+		variant: opts.variant,
+		jsonMessage: opts.jsonMessage,
+		statement: opts.statement,
+	}).then(
 		(result) => callback(null, result),
 		(err: unknown) => {
 			if (config.engine === 'auto' && err instanceof EngineUnsupportedError) {
-				logger.info(`SQL engine v2 fallback: ${err.reason}`);
+				getLogger().info(`SQL engine v2 fallback: ${err.reason}`);
 				opts.legacy(opts.statement, callback);
 				return;
 			}
