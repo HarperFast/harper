@@ -112,7 +112,9 @@ export async function setupCrlServerWithCerts(
 		try {
 			const { generateCrlCertificates } = await import('./security/crl/generate-test-certs.ts');
 			const certs = await generateCrlCertificates(certsPath, hostname, port);
-			return startCrlServer(certsPath, port, certs);
+			// await so EADDRINUSE from server.listen() lands in the catch and triggers retry
+			// (matches setupOcspResponderWithCerts pattern)
+			return await startCrlServer(certsPath, port, certs);
 		} catch (error: any) {
 			if (error.code === 'EADDRINUSE' && attempt < maxRetries - 1) {
 				continue;
