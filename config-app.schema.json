@@ -151,16 +151,18 @@
 							},
 							"cron": {
 								"type": "string",
-								"description": "Five-field cron expression (minute hour day-of-month month day-of-week), e.g. '0 2 * * *'. Supports lists, ranges, steps, month/day names, and @daily-style macros. Exactly one of cron or interval is required."
+								"description": "Five-field cron expression (minute hour day-of-month month day-of-week), e.g. '0 2 * * *'. Supports lists, ranges, steps, month/day names, and @daily-style macros. Always QUOTE the expression: YAML treats a leading '*' as an alias and '@' as reserved. Exactly one of cron or interval is required."
 							},
 							"interval": {
-								"description": "Simple cadence instead of cron: a duration like 90s, 5m, 1h, 1d (or a number of seconds). Minimum 1 second.",
+								"description": "Simple cadence instead of cron: a duration like 90s, 5m, 1h, 1d (or a number of seconds). Between 1 second and 365 days.",
 								"oneOf": [
 									{
-										"type": "string"
+										"type": "string",
+										"pattern": "^\\d+(\\.\\d+)?[smhd]?$"
 									},
 									{
-										"type": "number"
+										"type": "number",
+										"minimum": 1
 									}
 								]
 							},
@@ -170,7 +172,7 @@
 							},
 							"handler": {
 								"type": "string",
-								"description": "Module path and named export to invoke, relative to the component directory: './jobs.ts#myExport' (omit '#...' to use the default export)."
+								"description": "Module path and named export to invoke, relative to the component directory: './jobs.ts#myExport' (omit '#...' to use the default export). Do not put a space before '#' — YAML would treat the rest as a comment."
 							}
 						},
 						"required": ["name", "handler"],
@@ -184,7 +186,14 @@
 							{
 								"required": ["interval"],
 								"not": {
-									"required": ["cron"]
+									"anyOf": [
+										{
+											"required": ["cron"]
+										},
+										{
+											"required": ["timezone"]
+										}
+									]
 								}
 							}
 						]

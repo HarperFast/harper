@@ -21,7 +21,12 @@ function timingFromEnv(name: string, defaultMs: number): number {
 	return Number.isFinite(value) && value > 0 ? value : defaultMs;
 }
 export const HEARTBEAT_INTERVAL_MS = timingFromEnv('HARPER_SCHEDULER_HEARTBEAT_INTERVAL_MS', 60_000);
-export const STALE_THRESHOLD_MS = timingFromEnv('HARPER_SCHEDULER_STALE_THRESHOLD_MS', 5 * 60 * 1000);
+const rawStaleThreshold = timingFromEnv('HARPER_SCHEDULER_STALE_THRESHOLD_MS', 5 * 60 * 1000);
+// A stale threshold at or below the heartbeat interval makes every healthy
+// leader look dead (leadership flaps, each promotion re-running catch-up);
+// clamp the misconfiguration rather than honor it (audit finding)
+export const STALE_THRESHOLD_MS =
+	rawStaleThreshold > HEARTBEAT_INTERVAL_MS ? rawStaleThreshold : HEARTBEAT_INTERVAL_MS * 5;
 export const FAILOVER_WATCHER_INTERVAL_MS = timingFromEnv('HARPER_SCHEDULER_FAILOVER_WATCHER_INTERVAL_MS', 75_000);
 // setTimeout clamps to a 32-bit signed int; longer delays wrap to ~1ms and busy-loop
 const MAX_TIMEOUT_MS = 0x7fffffff;
@@ -268,6 +273,11 @@ export function getEngineRole(): EngineRole {
 	return role;
 }
 
+/** @internal — testing only */
+export function getRegisteredJobNames(componentName: string): string[] {
+	return [...(jobsByComponent.get(componentName)?.keys() ?? [])];
+}
+
 async function electRole(): Promise<void> {
 	const self = currentNodeName();
 	let leaderRow: any;
@@ -290,21 +300,34 @@ async function electRole(): Promise<void> {
 		becomeFollower();
 		return;
 	}
+	// A fresh lease naming THIS node means a prior same-node incarnation was
+	// just leading (overlapping worker restart) — skip the promotion catch-up
+	// so its still-committing runs are not immediately re-fired
+	const previousIncarnationActive =
+		leaderRow != null && leaderRow.leaderNode === self && !isHeartbeatStale(leaderRow.lastHeartbeat);
 	const roster = nodeRoster();
 	if (roster.length <= 1 || pickNextLeader(roster, null) === self) {
-		await becomeLeader();
+		await becomeLeader(previousIncarnationActive);
 	} else {
 		schedulerLogger.info?.(`Scheduler leader election chose ${pickNextLeader(roster, null)}; ${self} is a follower`);
 		becomeFollower();
 	}
 }
 
-async function becomeLeader(): Promise<void> {
+async function becomeLeader(skipInitialCatchUp = false): Promise<void> {
 	const self = currentNodeName();
 	role = 'leader';
 	if (failoverWatcherTimer) {
 		clearInterval(failoverWatcherTimer);
 		failoverWatcherTimer = undefined;
+	}
+	// A second promotion (e.g. two failover checks in flight) must not orphan
+	// the first heartbeat interval — an orphaned heartbeat would keep renewing
+	// the lease after step-down with no timers armed, silently stopping all
+	// jobs cluster-wide (audit finding)
+	if (heartbeatTimer) {
+		clearInterval(heartbeatTimer);
+		heartbeatTimer = undefined;
 	}
 	schedulerLogger.info?.(`Scheduler leader started on ${self}`);
 	if (getStateTable().replicate === false) {
@@ -330,7 +353,11 @@ async function becomeLeader(): Promise<void> {
 	for (const componentName of jobsByComponent.keys()) {
 		await scheduleComponentJobs(componentName);
 	}
-	await runCatchUp();
+	// Skipped when a prior same-node incarnation was just leading (overlapping
+	// worker restart): its runs may still be committing, and an immediate
+	// catch-up pass would re-fire the occurrence it is mid-executing. The
+	// heartbeat sweep still catches genuinely missed occurrences within 60s.
+	if (!skipInitialCatchUp) await runCatchUp();
 }
 
 function becomeFollower(): void {
@@ -356,6 +383,9 @@ function becomeFollower(): void {
 }
 
 async function heartbeat(): Promise<void> {
+	// A tick from a stale interval (already stepped down / re-promoted) must
+	// not renew the lease
+	if (role !== 'leader') return;
 	const self = currentNodeName();
 	let leaderRow: any;
 	try {
@@ -403,6 +433,10 @@ async function failoverCheck(): Promise<void> {
 		leaderlessSince = undefined;
 		return;
 	}
+	// Re-check after the await: a concurrent (stalled) check may have promoted
+	// this node already, and a second becomeLeader would duplicate work
+	// (audit finding)
+	if (role !== 'follower') return;
 	const now = Date.now();
 	leaderlessSince ??= now;
 	const roster = nodeRoster();
@@ -490,8 +524,13 @@ async function computeAndArmNextRun(job: RegisteredJob): Promise<void> {
 		// the persisted value survives restarts/failover (overdue intervals fire
 		// immediately — the interval catch-up path), while the in-memory value
 		// survives state-WRITE failures so a frozen persisted row cannot cause
-		// an immediate-refire hot loop (review finding)
-		const anchor = Math.max(Number.isNaN(persistedLastRun) ? 0 : persistedLastRun, job.lastAttemptAt ?? 0);
+		// an immediate-refire hot loop (review finding). Clamped to now: a
+		// FUTURE timestamp from a clock-skewed leader must not wedge the job
+		// (audit finding).
+		const anchor = Math.min(
+			Math.max(Number.isNaN(persistedLastRun) ? 0 : persistedLastRun, job.lastAttemptAt ?? 0),
+			now.getTime()
+		);
 		fireAt = anchor > 0 ? new Date(anchor + job.intervalMs) : new Date(now.getTime() + job.intervalMs);
 	}
 	// Re-check after the await: the registry (or our role) may have changed
@@ -544,6 +583,11 @@ function sanitizeStoredError(message: string): string {
 		.slice(0, MAX_STORED_ERROR_LENGTH);
 }
 
+// Swallow-to-undefined is deliberate for the timer-arming path (an unreadable
+// row degrades to "schedule from now"); the catch-up sweep must NOT use this —
+// it needs to distinguish "row absent" from "read failed", because treating a
+// transient read error as "job never seen" previously triggered a destructive
+// first-seen overwrite of the whole run-state row (audit finding)
 async function getJobStateRow(job: ScheduledJob): Promise<any> {
 	try {
 		return await getStateTable().get(jobRowId(job));
@@ -559,6 +603,13 @@ async function executeJob(job: RegisteredJob, scheduledAt: Date, catchUp: boolea
 	// job object, and a discarded component's handler must not run against
 	// production state (review finding)
 	if (role !== 'leader' || !isRegistered(job)) return;
+	// In-memory dedup for catch-up: the sweep decides from a state snapshot
+	// that can predate a run which started (or finished) while the snapshot
+	// read was in flight; lastAttemptAt is set synchronously at run start on
+	// this thread, so it cannot be stale (audit finding)
+	if (catchUp && job.lastAttemptAt !== undefined && job.lastAttemptAt >= scheduledAt.getTime()) {
+		return;
+	}
 	if (job.running) {
 		// Single-flight: a run that outlasts its own cadence is not stacked
 		schedulerLogger.debug?.(`Job ${jobRowId(job)} is still running; skipping this occurrence`);
@@ -566,7 +617,13 @@ async function executeJob(job: RegisteredJob, scheduledAt: Date, catchUp: boolea
 	}
 	job.running = true;
 	const startedAt = new Date();
-	job.lastAttemptAt = startedAt.getTime();
+	// The attempt anchor and persisted lastRunAt cover the occurrence, not
+	// just the wall clock: if a clock step-back lands the run before its own
+	// fireAt, recording the bare start time would make the next sweep
+	// re-deliver the occurrence (audit finding). Catch-up runs (scheduledAt in
+	// the past) keep startedAt. Set synchronously, before any await.
+	job.lastAttemptAt = Math.max(startedAt.getTime(), scheduledAt.getTime());
+	const lastRunAt = new Date(job.lastAttemptAt).toISOString();
 	const existingRow = await getJobStateRow(job);
 	schedulerLogger.trace?.(`Running job ${jobRowId(job)}${catchUp ? ' (catch-up)' : ''}`);
 	try {
@@ -576,7 +633,7 @@ async function executeJob(job: RegisteredJob, scheduledAt: Date, catchUp: boolea
 		await putStateRow({
 			id: jobRowId(job),
 			firstSeenAt: existingRow?.firstSeenAt ?? startedAt.toISOString(),
-			lastRunAt: startedAt.toISOString(),
+			lastRunAt,
 			lastStatus: 'success',
 			lastError: undefined,
 			lastDurationMs: durationMs,
@@ -588,7 +645,7 @@ async function executeJob(job: RegisteredJob, scheduledAt: Date, catchUp: boolea
 		await putStateRow({
 			id: jobRowId(job),
 			firstSeenAt: existingRow?.firstSeenAt ?? startedAt.toISOString(),
-			lastRunAt: startedAt.toISOString(),
+			lastRunAt,
 			lastStatus: 'error',
 			lastError: sanitizeStoredError(errorMessage),
 			lastDurationMs: durationMs,
@@ -625,13 +682,40 @@ async function runCatchUp(): Promise<void> {
 			// not fire
 			if (!isRegistered(job)) continue;
 			try {
-				const stateRow = await getJobStateRow(job);
-				if (!stateRow?.firstSeenAt) {
-					// First time this job is ever seen: record it so future
-					// sweeps have a baseline, without firing immediately
-					await putStateRow({ id: jobRowId(job), firstSeenAt: now.toISOString() });
+				// Unlike the timer-arming path, a read failure here must THROW
+				// (the per-job catch below logs and skips) — conflating it with
+				// "row absent" fed the destructive re-seed below (audit finding)
+				const stateRow = await getStateTable().get(jobRowId(job));
+				// Baseline = the newest of the persisted timestamps and the
+				// in-memory attempt anchor. Including lastAttemptAt closes two
+				// duplicate-execution paths the persisted row alone cannot: a
+				// sustained state-WRITE outage freezing lastRunAt (the sweep
+				// would re-fire a completed occurrence every heartbeat), and a
+				// fast run completing while this sweep's read was in flight.
+				// Clamped to now so a clock-skewed future timestamp cannot
+				// suppress catch-up (audit findings).
+				const parsedBaseline = Math.max(
+					Date.parse(stateRow?.lastRunAt ?? '') || 0,
+					Date.parse(stateRow?.firstSeenAt ?? '') || 0,
+					job.lastAttemptAt ?? 0
+				);
+				if (parsedBaseline === 0) {
+					// Row absent, or timestamps missing/unparseable: (re)seed the
+					// baseline without firing. put is full-record replacement, so
+					// preserve whatever fields exist, and skip while a run is in
+					// flight so the seed cannot clobber its just-committed result
+					if (!job.running) {
+						await putStateRow({
+							id: jobRowId(job),
+							firstSeenAt: now.toISOString(),
+							lastRunAt: stateRow?.lastRunAt,
+							lastStatus: stateRow?.lastStatus,
+							lastError: stateRow?.lastError,
+							lastDurationMs: stateRow?.lastDurationMs,
+						});
+					}
 				} else {
-					const baseline = new Date(Date.parse(stateRow.lastRunAt ?? stateRow.firstSeenAt));
+					const baseline = new Date(Math.min(parsedBaseline, now.getTime()));
 					const missed = findMissedCronOccurrence(job.cron, job.timezone, baseline, now);
 					if (missed) {
 						schedulerLogger.info?.(

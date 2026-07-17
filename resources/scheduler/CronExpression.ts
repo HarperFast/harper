@@ -25,8 +25,11 @@ const MACROS: Record<string, string> = {
 };
 
 // How far ahead/behind nextDate/prevDate will search before concluding the
-// schedule can never fire. Four years covers any leap-day schedule.
-const MAX_SEARCH_YEARS = 4;
+// schedule can never fire. Eight years covers leap-day schedules even across
+// a century non-leap year (2096 -> 2104 is the longest Feb 29 gap).
+const MAX_SEARCH_YEARS = 8;
+// DST transitions shift offsets by at most two hours in the IANA database
+const MAX_DST_DELTA_MS = 2 * 60 * 60 * 1000;
 
 interface FieldSpec {
 	min: number;
@@ -168,31 +171,40 @@ export function toZonedWallTime(date: Date, timezone: string): Date {
  * Inverse of toZonedWallTime: given a Date whose UTC fields represent
  * wall-clock time in `timezone`, return the real instant.
  *
- * Uses the standard two-probe offset resolution: the first probe reads the
- * offset at the wall time misinterpreted as UTC, which for the first
- * offset-width hours after a DST transition still sees the pre-transition
- * offset (surfaced empirically in review: NY wall 02:15 after fall-back
- * mapped an hour early). The second probe re-resolves at the first candidate
- * instant and wins when it round-trips exactly. Remaining special cases:
- * an ambiguous wall time (fall-back overlap) resolves to its first
- * occurrence, and a nonexistent wall time (spring-forward gap) resolves to
- * the shifted instant the first probe lands on.
+ * Offsets are discovered by probing the zone at the wall time misread as UTC,
+ * at the candidate instant that offset implies, and two hours either side of
+ * it (DST deltas never exceed 2h), so both sides of a nearby transition are
+ * seen regardless of hemisphere or offset sign — a single re-probe missed the
+ * pre-transition offset in eastern zones (a Sydney gap job fired an hour
+ * EARLY; Lord Howe ambiguous times resolved to their second occurrence).
+ * Resolution is then deterministic in every zone: a wall time that exists
+ * maps to its instant; an ambiguous (fall-back overlap) wall time maps to its
+ * FIRST occurrence; a nonexistent (spring-forward gap) wall time maps to the
+ * first instant after the gap.
  */
 export function fromZonedWallTime(wallTime: Date, timezone: string): Date {
 	const asUtc = wallTime.getTime();
-	const firstOffset = toZonedWallTime(new Date(asUtc), timezone).getTime() - asUtc;
-	const firstCandidate = asUtc - firstOffset;
-	const secondOffset = toZonedWallTime(new Date(firstCandidate), timezone).getTime() - firstCandidate;
-	if (secondOffset !== firstOffset) {
-		const secondCandidate = asUtc - secondOffset;
-		// Accept the re-resolved instant only if it actually shows this wall
-		// time; for a nonexistent (spring-forward) wall time neither candidate
-		// round-trips and we keep the first probe's shifted instant
-		if (toZonedWallTime(new Date(secondCandidate), timezone).getTime() === asUtc) {
-			return new Date(secondCandidate);
+	const offsetAt = (instant: number) => toZonedWallTime(new Date(instant), timezone).getTime() - instant;
+	const firstOffset = offsetAt(asUtc);
+	const nearCandidate = asUtc - firstOffset;
+	const candidateOffsets = new Set([
+		firstOffset,
+		offsetAt(nearCandidate),
+		offsetAt(nearCandidate - MAX_DST_DELTA_MS),
+		offsetAt(nearCandidate + MAX_DST_DELTA_MS),
+	]);
+	let earliestRoundTrip = Infinity;
+	let latestCandidate = -Infinity;
+	for (const offset of candidateOffsets) {
+		const instant = asUtc - offset;
+		latestCandidate = Math.max(latestCandidate, instant);
+		if (offsetAt(instant) === offset) {
+			earliestRoundTrip = Math.min(earliestRoundTrip, instant);
 		}
 	}
-	return new Date(firstCandidate);
+	// No candidate reproduces this wall time: it falls in a spring-forward gap;
+	// the latest candidate is the first instant after the transition
+	return new Date(Number.isFinite(earliestRoundTrip) ? earliestRoundTrip : latestCandidate);
 }
 
 const MINUTE_MS = 60_000;

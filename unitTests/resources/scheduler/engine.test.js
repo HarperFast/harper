@@ -11,6 +11,7 @@ const {
 	safeErrorMessage,
 	stopSchedulerEngine,
 	getEngineRole,
+	getRegisteredJobNames,
 	STALE_THRESHOLD_MS,
 	PROMOTION_ESCALATION_MS,
 } = require('#src/resources/scheduler/engine');
@@ -165,9 +166,12 @@ describe('scheduler engine', () => {
 
 		it('replaces a component job set on re-registration and forgets it on unregister', () => {
 			registerComponentJobs('test-app', [noopJob('a'), noopJob('b')]);
-			// Re-registration (reload/redeploy) must not accumulate jobs or throw
+			assert.deepStrictEqual(getRegisteredJobNames('test-app').sort(), ['a', 'b']);
+			// Re-registration (reload/redeploy) must replace, not accumulate
 			registerComponentJobs('test-app', [noopJob('b')]);
+			assert.deepStrictEqual(getRegisteredJobNames('test-app'), ['b']);
 			unregisterComponentJobs('test-app');
+			assert.deepStrictEqual(getRegisteredJobNames('test-app'), []);
 			// Unregistering an unknown component is a no-op
 			unregisterComponentJobs('never-registered');
 		});

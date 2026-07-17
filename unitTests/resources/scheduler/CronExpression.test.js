@@ -56,6 +56,13 @@ describe('CronExpression', () => {
 			assert.strictEqual(nextIso('0 0 29 2 *', '2026-07-15T00:00:00Z'), '2028-02-29T00:00:00.000Z');
 		});
 
+		it('finds leap days across the 2100 century non-leap gap', () => {
+			// 2096 -> 2104 is the longest gap between Feb 29ths; a 4-year search
+			// horizon wrongly reported "can never fire" here (audit finding)
+			assert.strictEqual(nextIso('0 0 29 2 *', '2096-03-01T00:00:00Z'), '2104-02-29T00:00:00.000Z');
+			assert.strictEqual(previousIso('0 0 29 2 *', '2104-02-01T00:00:00Z'), '2096-02-29T00:00:00.000Z');
+		});
+
 		it('supports macros', () => {
 			assert.strictEqual(nextIso('@daily', '2026-07-15T10:30:00Z'), '2026-07-16T00:00:00.000Z');
 			assert.strictEqual(nextIso('@hourly', '2026-07-15T10:30:00Z'), '2026-07-15T11:00:00.000Z');
@@ -177,6 +184,24 @@ describe('CronExpression', () => {
 			assert.strictEqual(nextIso('15 2 * * *', '2026-11-01T00:00:00Z', NEW_YORK), '2026-11-01T07:15:00.000Z');
 			// Hourly job: the wall 05:30 occurrence (10:30 UTC) is not dropped
 			assert.strictEqual(nextIso('30 * * * *', '2026-11-01T09:45:00Z', NEW_YORK), '2026-11-01T10:30:00.000Z');
+		});
+
+		// Audit findings: the two-probe resolution was hemisphere-specific —
+		// in zones ahead of UTC a spring-forward gap job fired an hour EARLY
+		// (before the transition) and ambiguous times resolved to their second
+		// occurrence
+		it('fires a spring-forward gap job after the gap in eastern zones (Sydney)', () => {
+			// Sydney 2026: Oct 4, 02:00 AEST(+10) -> 03:00 AEDT(+11); wall 02:30
+			// does not exist. Correct fire is the first instant after the gap
+			// (03:30 AEDT = 16:30Z Oct 3), NOT 01:30 AEST before it.
+			assert.strictEqual(nextIso('30 2 * * *', '2026-10-03T13:30:00Z', 'Australia/Sydney'), '2026-10-03T16:30:00.000Z');
+		});
+
+		it('resolves ambiguous fall-back times to the first occurrence in eastern zones (Lord Howe)', () => {
+			// Lord Howe 2026: Apr 5, 02:00 +11 -> 01:30 +10:30; wall 01:45 occurs
+			// twice. First occurrence is +11: 01:45 - 11:00 = Apr 4 14:45Z.
+			const wall = new Date(Date.UTC(2026, 3, 5, 1, 45));
+			assert.strictEqual(fromZonedWallTime(wall, 'Australia/Lord_Howe').toISOString(), '2026-04-04T14:45:00.000Z');
 		});
 
 		it('round-trips wall times in the hours after the fall-back transition', () => {

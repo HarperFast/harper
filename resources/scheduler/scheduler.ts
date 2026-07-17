@@ -26,6 +26,7 @@ const MIN_INTERVAL_MS = 1000;
 // Generous for any real maintenance cadence while keeping fire-time
 // arithmetic comfortably inside Date range
 const MAX_INTERVAL_MS = 365 * 24 * 60 * 60 * 1000;
+const KNOWN_JOB_KEYS = new Set(['name', 'cron', 'interval', 'timezone', 'handler']);
 
 interface SchedulerJobConfig {
 	name?: unknown;
@@ -68,7 +69,10 @@ export async function handleApplication(scope): Promise<void> {
 	// nondeterministically and then fail cluster-wide at the next restart
 	// (review finding). Only ACTIVATION is gated below.
 	const config = scope.options.getAll() ?? {};
-	if (config.jobs === undefined) {
+	// null covers the common "all jobs commented out" edit, which YAML parses
+	// as `jobs: null` — that must degrade like an absent key, not fail the
+	// whole component load (audit finding)
+	if (config.jobs == null) {
 		schedulerLogger.warn?.(`Component ${scope.appName} has a scheduler block with no jobs`);
 		return;
 	}
@@ -105,6 +109,11 @@ export async function handleApplication(scope): Promise<void> {
 	registerComponentJobs(scope.appName, jobs);
 	// A closing scope (worker shutdown or redeploy) must take its timers with it
 	scope.on('close', () => unregisterComponentJobs(scope.appName));
+	// Scope only requests a restart on option CHANGES; deleting the whole
+	// scheduler: block emits 'remove', which nothing else consumes — without
+	// this, a dev-watch session keeps firing jobs whose config is gone
+	// (audit finding)
+	scope.options.on('remove', () => scope.requestRestart());
 	startSchedulerEngine();
 	schedulerLogger.trace?.(`Registered ${jobs.length} scheduled job(s) for component ${scope.appName}`);
 }
@@ -115,6 +124,17 @@ async function buildJob(scope, jobConfig: SchedulerJobConfig): Promise<Scheduled
 		throw new SchedulerConfigError(`Each scheduler.jobs entry in component ${componentName} must be an object`);
 	}
 	const { name, cron, interval, timezone, handler } = jobConfig;
+	// The schema declares additionalProperties: false but is IDE-only; without
+	// this runtime check a misspelled OPTIONAL key (timeZone:, timzone:) is
+	// silently dropped and the job runs with different behavior — e.g. a cron
+	// evaluated in the server timezone instead of the intended one
+	// (audit finding)
+	const unknownKeys = Object.keys(jobConfig).filter((key) => !KNOWN_JOB_KEYS.has(key));
+	if (unknownKeys.length > 0) {
+		throw new SchedulerConfigError(
+			`Scheduler job entry in component ${componentName} has unrecognized key(s): ${unknownKeys.join(', ')} (allowed: name, cron, interval, timezone, handler)`
+		);
+	}
 	if (typeof name !== 'string' || name.length === 0) {
 		throw new SchedulerConfigError(`Every scheduler job in component ${componentName} needs a non-empty string name`);
 	}
