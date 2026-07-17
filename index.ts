@@ -10,6 +10,14 @@ if (!workerThreads.isMainThread) {
 export { RequestTarget } from './resources/RequestTarget.ts';
 export { flushDatabases } from './resources/databases.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
+// Code-first schema authoring: declare a table as a TypeScript value; the returned
+// handle is the live, registered table class with per-verb shapes inferred from the definition.
+export { defineTable, types } from './resources/defineTable.ts';
+
+// The per-method request contract. `defineResource`/`Resource.withSchema` type
+// handlers from a runtime contract and feed validation + OpenAPI + MCP from one declaration; `t` and
+// `schemaOf` are the built-in query/body vocabulary (both reduce to a JsonSchemaFragment).
+export { defineResource, t, schemaOf, projectTableFragment } from './resources/defineResource.ts';
 
 // Type only exports.
 // Anything exported here will only be available as TypeScript types, not as values.
@@ -28,6 +36,31 @@ export type { RecordObject } from './resources/RecordEncoder.ts';
 export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';
 export type { Attribute } from './resources/Table.ts';
+// Code-first schema types: the table handle and field model. Per-verb record shapes are
+// discoverable on the handle itself: (typeof Track)['$record' | '$insert' | '$upsert' | '$patch' | '$query'].
+export type {
+	TableHandle,
+	Field,
+	DateField,
+	RelationField,
+	Shape,
+	Flags,
+	DefineTableOptions,
+} from './resources/defineTable.ts';
+// Request-contract types.
+export type {
+	Contract,
+	VerbSchemas,
+	VerbName,
+	Schema,
+	SchemaSource,
+	Projection,
+	PathParams,
+	TypedTarget,
+	TypedSearchParams,
+	ImplFor,
+	SchemaClass,
+} from './resources/defineResource.ts';
 export type { Scope } from './components/Scope.ts';
 export type {
 	ModelBackend,
@@ -90,6 +123,7 @@ import type { Logger } from './utility/logging/logger.ts';
 import type { models as ModelsImport } from './resources/models/Models.ts';
 import type { operation as OperationImport } from './server/serverHelpers/serverUtilities.ts';
 import type { Resource as ResourceImport } from './resources/Resource.ts';
+import type { SecretsView as SecretsImport } from './components/componentSecrets.ts'; // per-component secrets view (#1550)
 import type { server as ServerImport } from './server/Server.ts';
 import type { tables as TablesImport } from './resources/databases.ts';
 type ThreadsImport = unknown[]; // TODO: figure out actual type for this
@@ -113,6 +147,7 @@ declare global {
 	const models: typeof ModelsImport;
 	const operation: typeof OperationImport;
 	const Resource: typeof ResourceImport;
+	const secrets: SecretsImport;
 	const server: typeof ServerImport;
 	const tables: typeof TablesImport;
 	const threads: ThreadsImport;
@@ -127,6 +162,7 @@ export declare const logger: Logger;
 export declare const models: typeof ModelsImport;
 export declare const operation: typeof OperationImport;
 export declare const Resource: typeof ResourceImport;
+export declare const secrets: SecretsImport;
 export declare const server: typeof ServerImport;
 export declare const tables: typeof TablesImport;
 export declare const threads: ThreadsImport;
@@ -140,6 +176,7 @@ exports.logger = {};
 exports.models = undefined;
 exports.operation = undefined;
 exports.Resource = undefined;
+exports.secrets = undefined;
 exports.server = {};
 exports.tables = {};
 exports.threads = [];

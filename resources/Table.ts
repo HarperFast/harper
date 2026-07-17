@@ -28,7 +28,14 @@ import { when, promiseNormalize } from '../utility/when.ts';
 import { DatabaseTransaction, ImmediateTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
-import { handleHDBError, ClientError, ServerError, AccessViolation } from '../utility/errors/hdbError.ts';
+import {
+	handleHDBError,
+	ClientError,
+	ServerError,
+	AccessViolation,
+	ValidationError,
+	type ValidationIssue,
+} from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
 import { databases, table } from './databases.ts';
@@ -140,6 +147,55 @@ function isFrozenRecordObject(value: any): boolean {
 		Object.isFrozen(value)
 	);
 }
+// Freeze a decoded record value for cache integrity, guarding the bare-TypedArray-root case:
+// V8 throws "Cannot freeze array buffer views with elements" on Object.freeze of a non-empty
+// TypedArray/DataView (#1298). _writeUpdate now rejects such roots on write, but this read-side
+// guard still backstops records that bypass validation (source/cache population, replication of
+// legacy data) and lets an already-poisoned table be read again after upgrade. The freeze is
+// shallow anyway, so a typed-array root needs none. Only freeze plain objects: skip ArrayBuffer
+// views/ArrayBuffers, and short-circuit primitives/null/undefined to avoid a needless native
+// Object.freeze call on the hot read/scan path.
+export function freezeRecord(value: any): void {
+	if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer))
+		Object.freeze(value);
+}
+// Returns a read-only VIEW of `record` for evaluation (e.g. a record-scoped allowRead guard)
+// without mutating the original. Locally-loaded records are already frozen by loadLocalRecord, so
+// this is a no-op there; the source-revalidation path hands back the SAME object its deferred
+// commit still writes to (createdAt/updatedAt) and persists, so that object can't be frozen
+// directly. A write-blocking Proxy is used instead of a shallow copy: a copy would eagerly invoke
+// every getter (breaking a caching table's lazy structPrototype decode) and silently drop
+// non-enumerable properties like Array.length. Only ordinary objects/arrays are wrapped — Date,
+// Map, Set, RegExp, etc. carry internal slots that throw "incompatible receiver" when their
+// methods run against anything but the exact original instance (a Proxy included), so those are
+// returned unwrapped rather than risk breaking an override that calls a method on one; a cached
+// record CAN legitimately be one of these (getFromSource only requires `typeof === 'object'`).
+export function frozenRecordView(record: any): any {
+	if (record === null || typeof record !== 'object' || ArrayBuffer.isView(record) || record instanceof ArrayBuffer)
+		return record;
+	if (Object.isFrozen(record)) return record;
+	const tag = Object.prototype.toString.call(record);
+	if (tag !== '[object Object]' && tag !== '[object Array]') return record;
+	return new Proxy(record, {
+		get(target, prop) {
+			// receiver = target (not this proxy) so a lazy-decode getter runs with `this` bound to
+			// the real record, matching its behavior when read directly.
+			return Reflect.get(target, prop, target);
+		},
+		set() {
+			return false;
+		},
+		defineProperty() {
+			return false;
+		},
+		deleteProperty() {
+			return false;
+		},
+		setPrototypeOf() {
+			return false;
+		},
+	});
+}
 export const INVALIDATED = 1;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
@@ -151,6 +207,12 @@ const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records du
 // buffer the entire backward chain per record, synchronously, on every worker — pinning the JS heap
 // until the worker OOMs (issue #1114). Beyond this depth we fall back to a bounded reconciliation.
 const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
+// Cap on audit records inspected while backfilling a subscription's `previousCount` history,
+// independent of `count` (the number of AUTHORIZED events collected). `count` only decrements on
+// records that pass the row-level allowRead filter, so an all-deny override would otherwise force
+// a full walk of the retained audit log (#1786) — this bounds that walk regardless of how many
+// records the filter accepts.
+const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -203,6 +265,7 @@ export function makeTable(options) {
 		replicate,
 		description,
 		hidden,
+		cacheControl,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
@@ -306,6 +369,8 @@ export function makeTable(options) {
 		static description = description;
 		static properties = properties;
 		static hidden = hidden;
+		// default `Cache-Control` for anonymous REST reads (from `@table(cacheControl: "...")`), see REST.ts
+		static cacheControl = cacheControl;
 		static outputSchemas: { [verb: string]: JsonSchemaFragment } | undefined;
 		static mcp: { annotations?: { [verb: string]: any } } | undefined;
 		static replicate = replicate;
@@ -326,6 +391,9 @@ export function makeTable(options) {
 		static getResidencyById: (id: Id) => number | void;
 		static get expirationMS() {
 			return expirationMs;
+		}
+		static get evictionMS() {
+			return evictionMs;
 		}
 		static dbisDB = dbisDb;
 		static schemaDefined = schemaDefined;
@@ -727,7 +795,7 @@ export function makeTable(options) {
 							// return 504 (rather than 404) if there is no content and the cache-control header
 							// dictates not to go to source
 							if (!this.doesExist()) throw new ServerError('Entry is not cached', 504);
-							if (hasSourceGet && target) target.loadedFromSource = false; // mark it as cached
+							if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 						} else if (resourceOptions?.ensureLoaded) {
 							const loadingFromSource = ensureLoadedFromSource(
 								(this.constructor as any).source,
@@ -743,7 +811,7 @@ export function makeTable(options) {
 									TableResource._updateResource(this, entry);
 									return this;
 								});
-							} else if (hasSourceGet) target.loadedFromSource = false; // mark it as cached
+							} else if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 						}
 						return this;
 					}
@@ -1229,6 +1297,7 @@ export function makeTable(options) {
 									// return 504 (rather than 404) if there is no content and the cache-control header
 									// dictates not to go to source
 									if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+									if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 								} else if (ensureLoaded) {
 									const loadingFromSource = ensureLoadedFromSource(
 										constructor.source,
@@ -1241,7 +1310,7 @@ export function makeTable(options) {
 									if (loadingFromSource) {
 										txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 										return loadingFromSource.then((entry) => entry?.value);
-									}
+									} else if (hasSourceGet) setLoadedFromSource(target, false); // mark it as cached
 								}
 								return entry?.value;
 							});
@@ -1900,6 +1969,33 @@ export function makeTable(options) {
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							transaction.checkOverloaded();
+							// A record must be a plain object. Reject primitive, string/number, bare-binary,
+							// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
+							// JSON string/number body, or a top-level JSON array. Such roots carry no primary
+							// key or attributes, are meaningless to SQL/get-attributes, and a bare TypedArray
+							// root additionally throws on Object.freeze during scans (#1298). Binary data belongs
+							// in a Bytes/Blob attribute. (Messages go through _writePublish, not here, so raw
+							// publish payloads are unaffected.)
+							const isBinaryRoot = ArrayBuffer.isView(recordUpdate) || recordUpdate instanceof ArrayBuffer;
+							if (
+								recordUpdate === null ||
+								typeof recordUpdate !== 'object' ||
+								isBinaryRoot ||
+								Array.isArray(recordUpdate)
+							) {
+								// Avoid dumping every byte of a large binary body or huge payload into the error.
+								let received: string;
+								if (isBinaryRoot) {
+									received = `${recordUpdate.constructor?.name ?? 'binary'} of ${recordUpdate.byteLength} bytes`;
+								} else {
+									const full = stringify(recordUpdate) ?? typeof recordUpdate;
+									received = full.length > 200 ? full.slice(0, 200) + '...' : full;
+								}
+								throw new ClientError(
+									`A record must be an object, but received ${received}. To store binary data, put it ` +
+										`in a Bytes or Blob attribute (e.g. a record like { "${primaryKey ?? 'id'}": …, "data": <bytes> }).`
+								);
+							}
 							// Records are intentionally immutable: decoded records are frozen (and 5.2 record
 							// caching relies on it), so mutating in place would corrupt cached/shared state.
 							// validate() coerces values and we stamp created/updated times + the primary key
@@ -1951,6 +2047,16 @@ export function makeTable(options) {
 				},
 				before: writeToSource(),
 				commit: (txnTime: number, existingEntry: Entry, retry: boolean, transaction: any) => {
+					// Whether a prior attempt of THIS write appended its own audit entry (sticky, set in
+					// save(); log entries are not part of the aborted rocks transaction, so they survive).
+					// Only such a write can find its own orphaned entry in the dedup lookups below and must
+					// not treat it as "already applied". Per-write on purpose: the transaction-wide retry
+					// flag would also suppress dedup for a genuine re-delivered duplicate co-batched with
+					// the conflicting write (double-applying it) and for fresh writes staged through a
+					// reused transaction whose retries counter is stale. Sticky on purpose: a proxy read
+					// from the last attempt's skipped state launders when a recommit round self-skips
+					// (walk identity tie against its own staged record) before a fresh-transaction replay.
+					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -2071,8 +2177,12 @@ export function makeTable(options) {
 							// local audit time, not version, so this version-keyed lookup doesn't apply there (LMDB keeps the
 							// exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
-							// check above remains the read-your-writes guard.
-							if (isRocksDB && dedupVersionCouldBeRetained(txnTime)) {
+							// check above remains the read-your-writes guard. Never when this write staged in a prior
+							// failed attempt: that attempt already appended this write's own audit entry, so the lookup
+							// would find it and skip the write as "already applied" when the record was never committed.
+							// A recommit of the same transaction survived that skip only because the old write batch
+							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
+							if (isRocksDB && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnTime)) {
 								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -2131,7 +2241,11 @@ export function makeTable(options) {
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
+							// Never a duplicate for a write that staged in a prior failed attempt: that attempt already
+							// appended this write's own audit entry, so the lookup would match it while the record was
+							// never committed (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
+								if (stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(txnTime)) return false; // pre-retention version — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
 								return (
@@ -2576,17 +2690,42 @@ export function makeTable(options) {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			// An application-overridden allowRead is a RECORD-scoped check (#1422 gap 2 / #1241): it is
+			// evaluated once per record during query execution with `this` = the record, instead of once
+			// at entry where `this` is a collection resource with nothing loaded. The framework defaults
+			// (marked isDefaultAllowRead) are this-free table/RBAC checks and keep the entry evaluation.
+			// Record-scoping is SYNC-only: async-declared overrides keep entry-check semantics (the
+			// authorize wrapper awaits them and fails closed) rather than entering the sync traversal.
+			const recordScopedAllowRead =
+				target.checkPermission &&
+				!(this.allowRead as any)?.isDefaultAllowRead &&
+				(this.allowRead as any)?.constructor?.name !== 'AsyncFunction'
+					? this.allowRead
+					: undefined;
 			if (target.checkPermission) {
-				// requesting authorization verification
-				let allowed;
-				try {
-					allowed = this.allowRead((context as any).user, target, context);
-				} catch {
-					// allow* threw — fail closed rather than letting the request proceed
-					throw new AccessViolation((context as any).user);
-				}
-				if (!allowed) {
-					throw new AccessViolation((context as any).user);
+				if (recordScopedAllowRead) {
+					// Compose with role-level column RBAC: the DEFAULT table allowRead is also the
+					// enforcement point for attribute_permissions (it narrows target.select). Run it here
+					// for that side effect — before `select` is captured below — with its verdict
+					// superseded by the per-record override. A per-record super.allowRead call could NOT
+					// restore this: the select-driven output transform is built before iteration starts.
+					try {
+						TableResource.prototype.allowRead.call(this, (context as any).user, target, context);
+					} catch {
+						// narrowing is best-effort under an override; access is governed per record
+					}
+				} else {
+					// requesting authorization verification
+					let allowed;
+					try {
+						allowed = this.allowRead((context as any).user, target, context);
+					} catch {
+						// allow* threw — fail closed rather than letting the request proceed
+						throw new AccessViolation((context as any).user);
+					}
+					if (!allowed) {
+						throw new AccessViolation((context as any).user);
+					}
 				}
 			}
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
@@ -2790,6 +2929,47 @@ export function makeTable(options) {
 			// scans), the read transaction reads against the latest committed data without pinning a
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
+			// Record-level allowRead guard (#1241/#1422): an application-overridden allowRead runs once
+			// per record with `this` = the (frozen) record, participating in query execution — pushed
+			// into HNSW traversal for vector sorts, applied as a post-filter otherwise. It must be
+			// synchronous, side-effect free, and fast; a throw denies that record (fail closed, #1422
+			// gap 1 parity). Dispatched via the method resolved from the resource — never via a
+			// `record.allowRead` property lookup, so a record attribute named allowRead can't shadow it.
+			let recordGuard: ((record: any) => boolean) | undefined;
+			if (recordScopedAllowRead) {
+				const user = (context as any)?.user;
+				let warnedAsync = false;
+				recordGuard = (record: any) => {
+					let allowed;
+					try {
+						allowed = recordScopedAllowRead.call(record, user, target, context);
+					} catch {
+						return false; // fail closed on a throwing check
+					}
+					if (typeof allowed?.then === 'function') {
+						// A sync-declared override that returns a thenable can't be awaited mid-traversal:
+						// deny the record (fail closed, #1422 gap 1 semantics) rather than fail open on
+						// promise truthiness or abort the whole query. Declared-async overrides never get
+						// here — they keep the awaited entry check. We're not observing this rejection, so
+						// attach a no-op handler — otherwise a rejected thenable reaches the global
+						// unhandledRejection logger once per denied candidate. Use `.then(undefined, ...)`,
+						// not `.catch` — a thenable is only guaranteed to have `.then`.
+						allowed.then(undefined, () => {});
+						if (!warnedAsync) {
+							warnedAsync = true;
+							logger.warn?.(
+								`allowRead on ${tableName} returned a promise during per-record evaluation; records are denied (record-scoped allowRead must be synchronous)`
+							);
+						}
+						return false;
+					}
+					return Boolean(allowed);
+				};
+			}
+			const recordAccess =
+				recordGuard || typeof target.vectorFilter === 'function'
+					? { recordGuard, vectorFilter: target.vectorFilter }
+					: undefined;
 			const entries = executeConditions(
 				conditions,
 				operator,
@@ -2798,16 +2978,34 @@ export function makeTable(options) {
 				target,
 				context,
 				(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
-				filtered
+				filtered,
+				recordAccess
 			);
 			const ensure_loaded = (target as any).ensureLoaded !== false;
+			// Authoritative enforcement point (#1241): the guards inside executeConditions evaluate the
+			// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
+			// expired/invalidated row from source and return a DIFFERENT record. An authorization check
+			// must hold on the record actually returned, so the record-scoped allowRead is re-checked
+			// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
+			// traversal). vectorFilter and condition filters intentionally keep the local-record
+			// semantics all query filters have on caching tables.
+			//
+			// A row that is past its TTL but not yet swept by the background eviction
+			// scan is still physically present. A write that is about to overwrite it
+			// anyway (e.g. the SQL engine locating UPDATE/DELETE targets) needs to see
+			// it as a match — the same leniency a direct by-id put/patch already gets,
+			// since those never run the ensureLoaded-gated freshness check this transform
+			// otherwise applies unconditionally to every read.
+			const includeExpired = (target as any).includeExpired === true;
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
 				context,
 				readTxn,
 				filtered,
 				ensure_loaded,
-				true
+				true,
+				recordGuard,
+				includeExpired
 			);
 			let results = TableResource.transformToOrderedSelect(
 				entries,
@@ -3018,9 +3216,23 @@ export function makeTable(options) {
 		 * @param filtered
 		 * @param ensure_loaded
 		 * @param canSkip
+		 * @param recordGuard record-level read check (#1241) applied to the record actually being
+		 * returned — i.e. AFTER any caching-source revalidation replaces a stale local copy — so an
+		 * authorization verdict can't be made on bytes that differ from what the caller receives.
+		 * @param includeExpired when true, a row past its TTL but not yet swept is treated as a live
+		 * match rather than gone (used by the SQL engine's UPDATE/DELETE row-finder).
 		 * @returns
 		 */
-		static transformEntryForSelect(select, context, readTxn, filtered, ensure_loaded?, canSkip?) {
+		static transformEntryForSelect(
+			select,
+			context,
+			readTxn,
+			filtered,
+			ensure_loaded?,
+			canSkip?,
+			recordGuard?,
+			includeExpired?
+		) {
 			let checkLoaded;
 			if (
 				ensure_loaded &&
@@ -3039,6 +3251,7 @@ export function makeTable(options) {
 			}
 			let transformCache;
 			const source = this.source;
+			const resourceClass = this;
 			// Transform an entry to a record. Note that *this* instance is intended to be the iterator.
 			const transform = function (entry: Entry) {
 				let record;
@@ -3067,7 +3280,7 @@ export function makeTable(options) {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
+						(!includeExpired && entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
 					) {
 						// should expiration really apply?
 						if (context.onlyIfCached) {
@@ -3076,13 +3289,35 @@ export function makeTable(options) {
 								message: 'This entry has expired',
 							};
 						}
-						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context);
+						// Stale-while-revalidate is an instance method, but a query has no per-row resource
+						// instance to consult (the single-record `get` path passes `this`). Construct one for this
+						// row — via the same `new constructor(id, context)` the framework's getResource uses — so
+						// the hook sees the current row's identity (this.getId()) and record state, matching the
+						// single-record path. It must be a real instance, not the bare class prototype: every
+						// resource prototype chain ends in a tracked-property Proxy, so reading an absent property
+						// (probing for an undefined `allowStaleWhileRevalidate`, or a hook touching `this.x`) on a
+						// non-instance invokes getChanges() with no backing state and throws (harper#1578). We also
+						// load the stale entry into it (as the single-record path does via _updateResource) so a
+						// hook consulting this.getRecord()/this.<field> sees the stale row, not undefined. `entry`
+						// here may be lazy (its `.value` is a GC-able deref, undefined once collected), so we set the
+						// already-dereferenced `record` explicitly rather than relying on `entry.value`. This runs
+						// only for the expired/invalidated rows already headed to source, so the cost is negligible.
+						const swrResource = new resourceClass(entry.key ?? entry, context);
+						resourceClass._updateResource(swrResource, entry);
+						swrResource.setRecord(record);
+						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
 							return loadingFromSource.then(transform);
 						}
 					}
 				}
 				if (record == null) return canSkip ? SKIP : record;
+				// Record-level RBAC (#1241): enforced here because `record` is now the final, materialized
+				// record — a caching table's source revalidation (above) may have replaced the local copy the
+				// query filters evaluated. Fail closed on the record actually being returned. The guard sees a
+				// frozen view (frozenRecordView) so an allowRead override that writes through `this` can't
+				// mutate a record the source-revalidation path's deferred commit still needs to write and encode.
+				if (recordGuard && !recordGuard(frozenRecordView(record))) return canSkip ? SKIP : undefined;
 				if (select && !(select[0] === '*' && select.length === 1)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
@@ -3251,6 +3486,57 @@ export function makeTable(options) {
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
+			// Record-scoped allowRead on subscription delivery (#1419, reviving #1524 on the unified
+			// model): the subscribe entry check already granted the connection (topic ACL / collection
+			// scope); here we ADDITIONALLY re-evaluate a sync application-overridden allowRead per
+			// record-bearing event with `this` = the event's record, the delivery-path analog of the
+			// per-record query guard. Gated to (1) an overridden allowRead (the default is
+			// record-independent and already enforced at connect, so the common case stays zero-overhead)
+			// and (2) an authorization-checked subscription — the entry check clears checkPermission
+			// before we get here and an anonymous-but-checked subscription has no user to key on, so the
+			// wrapper stamps a durable `rowLevelAuthChecked` flag; internal subscribers (replication,
+			// system watchers) never set it and keep full delivery.
+			// Fails closed: a throwing or thenable-returning override drops the event rather than leaks it.
+			//
+			// Known limitation (as in #1524): only put/invalidate events carry the authoritative full
+			// record. delete (tombstone, null value), message payloads, and rawEvents partial values may
+			// mis-decide an override keyed on row fields; closing the primary leak (record updates) is
+			// the goal here — authorizing non-record-bearing event types against the full row is deferred.
+			const subContext = this.getContext() as any;
+			const subAllowRead = this.allowRead;
+			const filterRowReads = (request as any)?.rowLevelAuthChecked && !(subAllowRead as any)?.isDefaultAllowRead;
+			let warnedAsyncEvent = false;
+			const allowsEvent = filterRowReads
+				? (event: any): boolean => {
+						if (event.type === 'end_txn' || event.type === 'reload') return true; // control markers, no record
+						// Freeze the record before the override sees it, mirroring the query path — event.value
+						// is the shared primaryStore object, so an override that writes to `this` would otherwise
+						// mutate the cache for every reader on the node.
+						if (event.value) freezeRecord(event.value);
+						let decision;
+						try {
+							// Evaluate against the LIVE context user, not a subscribe-time snapshot: #1414 re-auth
+							// updates subContext.user in place, so a role/claims change must be reflected per event.
+							decision = subAllowRead.call(event.value ?? null, subContext.user, request, subContext);
+						} catch {
+							return false; // fail closed: a throwing override drops the event
+						}
+						if (decision != null && typeof decision.then === 'function') {
+							// Not observing this rejection — attach a no-op handler so it doesn't reach the
+							// global unhandledRejection logger once per dropped event. Use `.then(undefined,
+							// ...)`, not `.catch` — a thenable is only guaranteed to have `.then`.
+							decision.then(undefined, () => {});
+							if (!warnedAsyncEvent) {
+								warnedAsyncEvent = true;
+								logger.warn?.(
+									`allowRead on ${tableName} returned a promise during subscription event evaluation; events are dropped (record-scoped allowRead must be synchronous)`
+								);
+							}
+							return false;
+						}
+						return Boolean(decision);
+					}
+				: null;
 			const subscription = addSubscription(
 				TableResource,
 				thisId,
@@ -3292,8 +3578,11 @@ export function makeTable(options) {
 							type,
 							beginTxn,
 						};
+						// Queued events are filtered when the queue drains through send() below; events sent
+						// directly (queue already drained) are filtered here. Each event is filtered once.
 						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
 						else {
+							if (allowsEvent && !allowsEvent(event)) return;
 							if (databaseName !== 'system') {
 								recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
 							}
@@ -3368,24 +3657,44 @@ export function makeTable(options) {
 						}
 					} else if (count) {
 						const history = [];
+						let inspected = 0;
 						// we are collecting the history in reverse order to get the right count, then reversing to send
 						for (const auditRecord of auditStore.getRange({ start: 'z', end: false, reverse: true })) {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
 								await rest();
+								// Subscription.end() nulls `subscriptions` on close; stop backfilling a dead
+								// subscriber rather than continuing to walk the retained audit log.
+								if (!subscription.subscriptions) break;
 							}
 							try {
 								if (auditRecord.tableId !== tableId) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
+									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
+									// AUTHORIZED) — an all-deny allowRead override must not force a full walk of
+									// the retained audit log (#1786), even though it returns fewer than `count`
+									// authorized events. Counted only once a record is known to be in scope (right
+									// table, right id) so unrelated cross-table/cross-scope audit traffic in a busy
+									// shared log can't spuriously cut a backfill short.
+									if (++inspected > MAX_PREVIOUS_COUNT_SCAN) {
+										logger.warn?.(
+											`previousCount backfill on ${tableName} stopped after inspecting ${MAX_PREVIOUS_COUNT_SCAN} in-scope audit records without collecting ${request.previousCount} authorized event(s); returning ${history.length} instead`
+										);
+										break;
+									}
 									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
-									history.push({
+									const historyEntry = {
 										id,
 										localTime: auditRecord.localTime,
 										value,
 										version: auditRecord.version,
 										type: auditRecord.type,
-									});
+									};
+									// Filter denied rows BEFORE they consume a previousCount slot, so an authorized
+									// subscriber still receives up to `count` readable events (#1419).
+									if (allowsEvent && !allowsEvent(historyEntry)) continue;
+									history.push(historyEntry);
 									if (--count <= 0) break;
 								}
 							} catch (error) {
@@ -3527,6 +3836,8 @@ export function makeTable(options) {
 				subscription.send(error);
 			});
 			function send(event: any) {
+				// Covers the pendingRealTimeQueue drain and the reload re-snapshot (#495) delivery.
+				if (allowsEvent && !allowsEvent(event)) return;
 				if (databaseName !== 'system') {
 					recordAction(event.size ?? 1, 'db-message', tableName, null);
 				}
@@ -3741,13 +4052,21 @@ export function makeTable(options) {
 		}
 		// #section: validation
 		validate(record: any, patch?: boolean) {
-			let validationErrors;
+			// Accumulate structured per-field issues so the 400 carries `{ path, code,
+			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
+			// message is still built for the HTTP title, preserving back-compat for callers that read it.
+			let validationErrors: ValidationIssue[] | undefined;
+			const addError = (path: string, code: string, message: string) => {
+				(validationErrors || (validationErrors = [])).push({ path, code, message });
+			};
 			const validateValue = (value, attribute: Attribute, name) => {
 				if (attribute.type && value != null) {
 					if (patch && value.__op__) value = value.value;
 					if (attribute.properties) {
 						if (typeof value !== 'object') {
-							(validationErrors || (validationErrors = [])).push(
+							addError(
+								name,
+								'type',
 								`Value ${stringify(value)} in property ${name} must be an object${
 									attribute.type ? ' (' + attribute.type + ')' : ''
 								}`
@@ -3758,7 +4077,9 @@ export function makeTable(options) {
 							const attribute = properties[i];
 							if (attribute.relationship || attribute.computed) {
 								if (record.hasOwnProperty(attribute.name)) {
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										`${name}.${attribute.name}`,
+										'computed',
 										`Computed property ${name}.${attribute.name} may not be directly assigned a value`
 									);
 								}
@@ -3770,7 +4091,9 @@ export function makeTable(options) {
 						if (attribute.sealed && value != null && typeof value === 'object') {
 							for (const key in value) {
 								if (!properties.find((property) => property.name === key)) {
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										`${name}.${key}`,
+										'unknown_property',
 										`Property ${key} is not allowed within object in property ${name}`
 									);
 								}
@@ -3780,13 +4103,17 @@ export function makeTable(options) {
 						switch (attribute.type) {
 							case 'Int':
 								if (typeof value !== 'number' || value >> 0 !== value)
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										name,
+										'type',
 										`Value ${stringify(value)} in property ${name} must be an integer (from -2147483648 to 2147483647)`
 									);
 								break;
 							case 'Long':
 								if (typeof value !== 'number' || !(Math.floor(value) === value && Math.abs(value) <= 9007199254740992))
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										name,
+										'type',
 										`Value ${stringify(
 											value
 										)} in property ${name} must be an integer (from -9007199254740992 to 9007199254740992)`
@@ -3794,53 +4121,46 @@ export function makeTable(options) {
 								break;
 							case 'Float':
 								if (typeof value !== 'number')
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a number`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a number`);
 								break;
 							case 'ID':
 								if (!(
 									typeof value === 'string' ||
 									(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
 								))
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										name,
+										'type',
 										`Value ${stringify(value)} in property ${name} must be a string, or an array of strings`
 									);
 								break;
 							case 'String':
 								if (typeof value !== 'string')
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a string`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a string`);
 								break;
 							case 'Boolean':
 								if (typeof value !== 'boolean')
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a boolean`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a boolean`);
 								break;
 							case 'Date':
 								if (!(value instanceof Date)) {
 									if (typeof value === 'string' || typeof value === 'number') return new Date(value);
-									else
-										(validationErrors || (validationErrors = [])).push(
-											`Value ${stringify(value)} in property ${name} must be a Date`
-										);
+									else addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a Date`);
 								}
 								break;
 							case 'BigInt':
 								if (typeof value !== 'bigint') {
 									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
 									if (typeof value === 'string' || typeof value === 'number') return BigInt(value);
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a bigint`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
 								}
 								break;
 							case 'Bytes':
 								if (!(value instanceof Uint8Array)) {
 									if (typeof value === 'string') return Buffer.from(value);
-									(validationErrors || (validationErrors = [])).push(
+									addError(
+										name,
+										'type',
 										`Value ${stringify(value)} in property ${name} must be a Buffer or Uint8Array`
 									);
 								}
@@ -3851,9 +4171,7 @@ export function makeTable(options) {
 									if (value instanceof Buffer) {
 										return createBlob(value, { type: 'text/plain' });
 									}
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a Blob`
-									);
+									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a Blob`);
 								}
 								break;
 							case 'array':
@@ -3865,26 +4183,23 @@ export function makeTable(options) {
 											if (updated) value[i] = updated;
 										}
 									}
-								} else
-									(validationErrors || (validationErrors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be an Array`
-									);
+								} else addError(name, 'type', `Value ${stringify(value)} in property ${name} must be an Array`);
 
 								break;
 						}
 					}
 				}
 				if (attribute.nullable === false && value == null) {
-					(validationErrors || (validationErrors = [])).push(
-						`Property ${name} is required (and not does not allow null values)`
-					);
+					addError(name, 'required', `Property ${name} is required (and not does not allow null values)`);
 				}
 			};
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
 				if (attribute.relationship || attribute.computed) {
 					if (Object.hasOwn(record, attribute.name)) {
-						(validationErrors || (validationErrors = [])).push(
+						addError(
+							attribute.name,
+							'computed',
 							`Computed property ${attribute.name} may not be directly assigned a value`
 						);
 					}
@@ -3898,13 +4213,13 @@ export function makeTable(options) {
 			if (sealed) {
 				for (const key in record) {
 					if (!attributes.find((attribute) => attribute.name === key)) {
-						(validationErrors || (validationErrors = [])).push(`Property ${key} is not allowed`);
+						addError(key, 'unknown_property', `Property ${key} is not allowed`);
 					}
 				}
 			}
 
 			if (validationErrors) {
-				throw new ClientError(validationErrors.join('. '));
+				throw new ValidationError(validationErrors, validationErrors.map((issue) => issue.message).join('. '));
 			}
 		}
 		// #section: stats-admin
@@ -4147,7 +4462,7 @@ export function makeTable(options) {
 										});
 										if (value?.then) hasPromises = true;
 										// for now, we shouldn't be getting promises until rocksdb
-										if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
+										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 										return value;
 									});
 									return relationship.filterMissing
@@ -4162,7 +4477,7 @@ export function makeTable(options) {
 									transaction: txnForContext(context).getReadTxn(),
 								});
 								// for now, we shouldn't be getting promises until rocksdb
-								if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
+								if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 								return value;
 							};
 							attribute.set = (object, related) => {
@@ -4392,6 +4707,26 @@ export function makeTable(options) {
 		}
 	);
 
+	// Mark the table-level allowRead as a framework default (it is a this-free table/RBAC check):
+	// only an APPLICATION override is record-scoped and evaluated per record during query execution
+	// (#1422 gap 2 / #1241). supportsRowLevelAllowRead tells the authorization wrapper in
+	// Resource.ts that this class has the per-record machinery to defer collection reads to.
+	(TableResource.prototype.allowRead as any).isDefaultAllowRead = true;
+	(TableResource as any).supportsRowLevelAllowRead = true;
+	// Records can be asked directly (`record.allowRead(user, target, context)`), delegating to the
+	// table's allowRead with `this` = the record. Non-enumerable so it never serializes; defined on
+	// the per-table record prototype alongside computed properties. Engine-level enforcement does
+	// NOT route through this (it resolves the active resource class's allowRead, which honors
+	// endpoint subclass overrides and can't be shadowed by a record attribute of the same name).
+	if (primaryStore?.encoder?.structPrototype) {
+		Object.defineProperty(primaryStore.encoder.structPrototype, 'allowRead', {
+			value: function (user: User, target: RequestTarget, context: Context) {
+				return TableResource.prototype.allowRead.call(this, user, target, context);
+			},
+			configurable: true,
+			writable: true,
+		});
+	}
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
 	if (expiresAtProperty) runRecordExpirationEviction();
@@ -4533,7 +4868,7 @@ export function makeTable(options) {
 			// we need to freeze entry records to ensure the integrity of the cache;
 			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
 			// issues
-			Object.freeze(entry?.value);
+			freezeRecord(entry?.value);
 			if (
 				entry?.residencyId &&
 				entry.metadataFlags & INVALIDATED &&
@@ -4650,6 +4985,11 @@ export function makeTable(options) {
 		}
 	}
 
+	function setLoadedFromSource(target: RequestTarget | undefined, loadedFromSource: boolean) {
+		// cache disposition is a per-get result, recorded on the RequestTarget of the get (#1576)
+		// target may be a primitive id on instance-API calls, which can't hold the flag
+		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
+	}
 	function ensureLoadedFromSource(source: typeof TableResource, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
 			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
@@ -4882,7 +5222,7 @@ export function makeTable(options) {
 				whenResolved(getFromSource(source, id, primaryStore.getEntry(id), context, target));
 			else {
 				// served from cache after waiting for another request to resolve
-				if (target) target.loadedFromSource = false;
+				setLoadedFromSource(target, false);
 				whenResolved(entry);
 			}
 		};
@@ -4897,7 +5237,7 @@ export function makeTable(options) {
 			});
 		}
 		// lock acquired — this request will actually load from source
-		if (target) target.loadedFromSource = true;
+		setLoadedFromSource(target, true);
 
 		const existingRecord = existingEntry?.value;
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing

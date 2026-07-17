@@ -1,10 +1,13 @@
 /**
  * Operations API surface for the built-in agent (#626).
  *
- * Six handlers, all super_user-only — the auth check is inline because none
- * of these ops are registered in `utility/operation_authorization.ts`'s
- * `requiredPermissions` map. Without the inline gate, a non-SU request would
- * fall through the standard flow and be allowed.
+ * Six handlers, super_user by default. Authorization is declared via
+ * `requiresSuperUser: true` on each OperationDefinition, so `registerOperation`
+ * registers them with the central `verifyPerms` system and they participate in
+ * the role `operations` allowlist — an operator can grant a scoped, non-super_user
+ * "delegation" role access to these ops (e.g. `operations: ['agent']`) without
+ * granting full super_user. verifyPerms runs before the handler for every
+ * ops-API request, so no inline gate is needed here.
  */
 
 import type { OperationDefinition } from '../server/serverHelpers/serverUtilities.ts';
@@ -25,38 +28,37 @@ export function buildOperations(deps: OperationDeps): OperationDefinition[] {
 		{
 			name: OPERATIONS_ENUM.AGENT_PROMPT,
 			execute: async (op) => agentPrompt(op, deps),
+			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.GET_AGENT_SESSION,
 			execute: async (op) => getAgentSession(op),
+			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.LIST_AGENT_SESSIONS,
 			execute: async (op) => listAgentSessions(op),
+			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.CANCEL_AGENT_RUN,
 			execute: async (op) => cancelAgentRun(op, deps),
+			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.APPROVE_AGENT_ACTION,
 			execute: async (op) => approveAgentAction(op, deps),
+			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.SET_AGENT_CONFIG,
 			execute: async (op) => setAgentConfig(op, deps),
+			requiresSuperUser: true,
 		},
 	];
 }
 
-function requireSuperUser(op: any): void {
-	if (!op?.hdb_user?.role?.permission?.super_user) {
-		throw new ClientError('Agent operations require super_user', 403);
-	}
-}
-
 async function agentPrompt(op: any, deps: OperationDeps) {
-	requireSuperUser(op);
 	const config = deps.getConfig();
 	if (!config.enabled) {
 		throw new ClientError('Agent component is disabled (agent.enabled=false)', 409);
@@ -90,7 +92,6 @@ async function agentPrompt(op: any, deps: OperationDeps) {
 }
 
 async function getAgentSession(op: any) {
-	requireSuperUser(op);
 	const sessionId = String(op?.session_id ?? '');
 	if (!sessionId) throw new ClientError('session_id is required', 400);
 	const session = await getSession(sessionId);
@@ -99,13 +100,11 @@ async function getAgentSession(op: any) {
 }
 
 async function listAgentSessions(op: any) {
-	requireSuperUser(op);
 	const limit = Number.isFinite(op?.limit) ? Number(op.limit) : undefined;
 	return { sessions: await listSessions({ limit }) };
 }
 
 async function cancelAgentRun(op: any, deps: OperationDeps) {
-	requireSuperUser(op);
 	const sessionId = String(op?.session_id ?? '');
 	if (!sessionId) throw new ClientError('session_id is required', 400);
 	const session = await getSession(sessionId);
@@ -120,7 +119,6 @@ async function cancelAgentRun(op: any, deps: OperationDeps) {
 }
 
 async function approveAgentAction(op: any, deps: OperationDeps) {
-	requireSuperUser(op);
 	const sessionId = String(op?.session_id ?? '');
 	const approvalId = String(op?.approval_id ?? '');
 	if (!sessionId || !approvalId) {
@@ -135,9 +133,17 @@ async function approveAgentAction(op: any, deps: OperationDeps) {
 }
 
 async function setAgentConfig(op: any, deps: OperationDeps) {
-	requireSuperUser(op);
 	const patch: Partial<AgentConfig> = {};
-	for (const key of ['enabled', 'provider', 'model', 'maxTurns', 'maxCostUsd', 'autoApprove', 'allowDestructive']) {
+	for (const key of [
+		'enabled',
+		'provider',
+		'model',
+		'maxTurns',
+		'maxCostUsd',
+		'autoApprove',
+		'allowDestructive',
+		'systemPromptAppend',
+	]) {
 		if (op?.[key] !== undefined) (patch as any)[key] = op[key];
 	}
 	return deps.setConfig(patch);

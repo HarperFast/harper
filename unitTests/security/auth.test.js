@@ -1,5 +1,6 @@
 const assert = require('node:assert');
 const sinon = require('sinon');
+const { Headers } = require('#src/server/serverHelpers/Headers');
 
 // First set up test environment
 const testUtils = require('../testUtils.js');
@@ -87,9 +88,7 @@ describe('auth.ts - certificate verification integration', function () {
 
 			response = {
 				status: 200,
-				headers: {
-					set: sandbox.stub(),
-				},
+				headers: new Headers(),
 				body: {},
 			};
 
@@ -346,9 +345,7 @@ describe('auth.ts - certificate verification integration', function () {
 
 			nextHandler = sandbox.stub().resolves({
 				status: 200,
-				headers: {
-					set: sandbox.stub(),
-				},
+				headers: new Headers(),
 			});
 		});
 
@@ -364,6 +361,23 @@ describe('auth.ts - certificate verification integration', function () {
 			const errorCall = authEventLogStub.error.firstCall;
 			assert(errorCall.args[0].includes('Certificate verification failed'));
 			assert(errorCall.args[1] === 'revoked');
+		});
+	});
+
+	describe('handleApplication registers named middleware', function () {
+		it('registers the authentication listener under name "authentication" so other middleware can order relative to it', function () {
+			const httpStub = sandbox.stub();
+			const scope = {
+				server: { http: httpStub },
+				options: { getAll: () => ({}) },
+			};
+
+			authModule.handleApplication(scope);
+
+			assert(httpStub.calledOnce);
+			const [listener, options] = httpStub.firstCall.args;
+			assert.strictEqual(listener, authModule.authentication);
+			assert.strictEqual(options.name, 'authentication');
 		});
 	});
 });

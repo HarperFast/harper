@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import { overlayRootEnvConfig, isRootConfigFilename } from '../config/harperConfigEnvVars.ts';
 
 export interface Config {
 	[key: string]: ConfigValue;
@@ -86,6 +87,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#watcher!: FSWatcher;
 	#scopedConfig?: ConfigValue;
 	#rootConfig?: Config;
+	#isRootConfig: boolean;
 	#name: string;
 	#logger: Logger;
 	#usingPolling: boolean;
@@ -94,10 +96,14 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#pendingReads: Set<Promise<void>> = new Set();
 	ready: Promise<any[]>;
 
-	constructor(name: string, filePath: string, logger?: Logger) {
+	constructor(name: string, filePath: string, logger?: Logger, isRootConfig?: boolean) {
 		super();
 		this.#name = name;
 		this.#filePath = filePath;
+		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
+		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
+		// Application scopes watch their own config.yaml and are never overlaid.
+		this.#isRootConfig = isRootConfig ?? isRootConfigFilename(filePath);
 		this.#logger = logger || loggerWithTag(name);
 		this.#usingPolling = false;
 		this.#closed = false;
@@ -122,7 +128,15 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#handleChange() {
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
 			.then((contents) => {
-				const parsed = yaml.parse(contents);
+				let parsed = yaml.parse(contents);
+				// The on-disk root config is not guaranteed to include runtime env config at
+				// boot: the file flush races component loading, so a scope's boot-time reads
+				// (e.g. an `enabled` gate in handleApplication) could observe pre-env values
+				// the componentLoader itself never saw. Ask the config layer to overlay env
+				// config onto EVERY root-config read so scope.options matches the resolved
+				// view (#1618). Non-root scopes and the no-env-vars case are untouched
+				// (overlayRootEnvConfig is a no-op there).
+				if (this.#isRootConfig) parsed = overlayRootEnvConfig(parsed);
 				this.#rootConfig = parsed && typeof parsed === 'object' ? parsed : undefined;
 				// If the extension is in the config file
 				if (this.#rootConfig && this.#name in this.#rootConfig) {
@@ -150,6 +164,14 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			.catch((error) => {
 				// If the config file does not exist
 				if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+					// A readFile ENOENT here is the install window (file not written yet) or a
+					// transient read race — NOT a real deletion, which chokidar routes to
+					// `#handleUnlink`. Env config is file-independent, so when it provides this
+					// scope the missing file must not discard it (#1618). When it does not, fall
+					// through to the original ENOENT handling with #rootConfig untouched, so a
+					// first boot still emits `ready` (not `remove`, which nothing consumes at
+					// boot → `ready` would hang forever).
+					if (this.#applyEnvOnlyConfig()) return;
 					// And a config already exists, reset it to the default
 					if (this.#rootConfig) {
 						this.#resetConfig();
@@ -196,11 +218,49 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	}
 
 	#handleUnlink(path: string) {
+		// A real deletion still leaves env-var config in force: an env-defined scope must
+		// survive it exactly as on the ENOENT read path — same fallback, same error routing
+		// (#1618, #1726 review).
+		if (this.#applyEnvOnlyConfig()) {
+			this.#logger.warn?.(
+				`Configuration file ${path} was deleted; the env-var-defined configuration for '${this.#name}' remains in effect.`
+			);
+			return;
+		}
 		this.#logger.warn?.(
 			`Configuration file ${path} was deleted. Reverting to default configuration. Recreate it to restore the options watcher.`
 		);
 		this.#resetConfig();
 		this.emit('remove');
+	}
+
+	/**
+	 * Shared fallback for the ENOENT read path and `#handleUnlink`: when config env vars
+	 * define this scope, apply the env-only overlay (first application → `ready`; already
+	 * configured → `merge`, never reset). Returns true when the event was handled —
+	 * including the malformed-env case, which routes to `error` like the file-read path
+	 * rather than an unhandled rejection. Returns false (root config untouched) when this
+	 * is not a root config or the env config does not provide the scope, so callers keep
+	 * their own reset semantics.
+	 */
+	#applyEnvOnlyConfig(): boolean {
+		if (!this.#isRootConfig) return false;
+		let composed: Config | undefined;
+		try {
+			composed = overlayRootEnvConfig(undefined) as Config | undefined;
+		} catch (composeError) {
+			this.emit('error', composeError);
+			return true;
+		}
+		if (!composed || !(this.#name in composed)) return false;
+		this.#rootConfig = composed;
+		if (!this.#scopedConfig) {
+			this.#scopedConfig = composed[this.#name];
+			this.emit('ready', this.#scopedConfig);
+		} else {
+			this.#merge(composed[this.#name], this.#scopedConfig);
+		}
+		return true;
 	}
 
 	#resetConfig() {

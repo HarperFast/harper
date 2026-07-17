@@ -9,7 +9,8 @@ import { httpRequest } from '../utility/common_utils.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
-import { streamPackagedDirectory, getPackagedDirectorySize, packageDirectory } from '../components/packageComponent.ts';
+import { Readable } from 'node:stream';
+import { streamPackagedDirectory, packageDirectory, scanPackageDirectory } from '../components/packageComponent.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
@@ -18,6 +19,12 @@ import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
+
+// Shown for any local-instance connection failure (missing pid, missing/stale domain
+// socket, or a refused/ENOENT connect against it) — they're all the same user-facing
+// scenario: Harper isn't running. Remote-target failures keep the detailed error instead,
+// since there's no single "just start it" fix for those.
+const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or `harperdb start`) to start it.';
 
 // Operations whose responses should be consumed as text/event-stream so live phase events
 // (prepare, load, replicate, restart) render as they happen instead of after the whole
@@ -84,6 +91,21 @@ async function targetSupportsStreamingDeploy(options: any): Promise<boolean> {
 	}
 }
 
+// Wraps the local packaging stream so an fs error while tar'ing up the payload (e.g. a file
+// vanishing after the pre-deploy scan, or a permissions failure reading the project tree)
+// surfaces as a descriptive packaging error instead of a raw fs error code. Without this, an
+// ENOENT from *packaging* is indistinguishable from an ENOENT/ECONNREFUSED connecting to the
+// local domain socket, and the catch block below (which classifies purely on err.code) would
+// misreport it as "Harper is not running" even though Harper is running fine. Mirrors the
+// legacy deploy path's wrapping of packageDirectory() below.
+async function* wrapPackagingStream(stream: Readable, projectPath: string): AsyncGenerator<Buffer> {
+	try {
+		for await (const chunk of stream) yield chunk as Buffer;
+	} catch (err: any) {
+		throw new Error(`Failed to package component directory '${projectPath}': ${err.message}`, { cause: err });
+	}
+}
+
 // Build the JSON operation-field set from `req`, dropping the CLI's internal (`_`-prefixed)
 // and transport-only fields so neither the CLI internals nor credentials leak into the
 // request body. Shared by the multipart and legacy-JSON deploy body builders.
@@ -113,9 +135,20 @@ const PREPARE_OPERATION: any = {
 		// so the pre-gzip onBytes callback can be wired directly to renderer.countUploadBytes.
 		req._projectPath = projectPath;
 		req._packageOptions = packageOptions;
-		// Pre-walk the directory for an uncompressed-size estimate. Both the progress counter
-		// and this total are in uncompressed units so the bar tracks to 100% naturally.
-		req._uploadSizeEstimate = await getPackagedDirectorySize(projectPath, packageOptions);
+		// Pre-walk the directory once for both the uncompressed-size estimate (progress bar
+		// total) and the dangling-symlink list — a dangling symlink would otherwise silently
+		// truncate the tarball (tar-fs finalizes early on the broken target). Packaging skips
+		// them; the list is reused below (no second walk) and warns the user which links were
+		// skipped so the omission is visible.
+		const scan = await scanPackageDirectory(projectPath, packageOptions);
+		req._uploadSizeEstimate = scan.totalSize;
+		req._danglingSymlinks = scan.danglingSymlinks;
+		if (scan.danglingSymlinks.length) {
+			process.stderr.write(
+				`warning: skipping ${scan.danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
+					scan.danglingSymlinks.map((p) => `  ${p}\n`).join('')
+			);
+		}
 		req._multipart = true;
 	},
 };
@@ -202,12 +235,12 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		console.error('Connecting to local Harper instance');
 		initConfig();
 		if (!getHdbPid()) {
-			console.error('Harper must be running to perform this operation');
+			console.error(LOCAL_NOT_RUNNING_MESSAGE);
 			process.exit(1);
 		}
 
 		if (!fs.existsSync(getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
-			console.error('No domain socket found, unable to perform this operation');
+			console.error(LOCAL_NOT_RUNNING_MESSAGE);
 			process.exit(1);
 		}
 	}
@@ -306,14 +339,15 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			const packageStream = streamPackagedDirectory(
 				req._projectPath,
 				req._packageOptions,
-				renderer ? (n) => renderer.countUploadBytes(n) : undefined
+				renderer ? (n) => renderer.countUploadBytes(n) : undefined,
+				req._danglingSymlinks
 			);
 			const fields = operationFields(req);
 			const multipart = buildMultipartBody(fields, {
 				name: 'payload',
 				filename: 'package.tar.gz',
 				contentType: 'application/gzip',
-				stream: packageStream,
+				stream: Readable.from(wrapPackagingStream(packageStream, req._projectPath)),
 			});
 			options.headers['Content-Type'] = multipart.contentType;
 			// Use chunked transfer-encoding: we don't know the total size up front because the
@@ -420,14 +454,23 @@ async function cliOperations(req: any, skipResponseLog = false) {
 
 		return responseData;
 	} catch (err) {
-		if (err.code === 'ENOENT' || err.code === 'ECONNREFUSED') {
-			console.error(`error: Failed to connect to Harper (${err.code}): ${err.message}`);
-		} else if (err.code === 'EACCES') {
-			console.error(`error: Permission denied accessing the domain socket: ${err.message}`);
-		} else if (err.code === 'ENOTFOUND') {
-			console.error(`error: Host not found: "${err.hostname}" ${err.message}`);
+		let code, message, hostname;
+		try {
+			code = err?.code;
+			message = err?.message;
+			hostname = err?.hostname;
+		} catch {}
+		const isConnectionFailure = code === 'ENOENT' || code === 'ECONNREFUSED';
+		if (isConnectionFailure && !target) {
+			console.error(LOCAL_NOT_RUNNING_MESSAGE);
+		} else if (isConnectionFailure) {
+			console.error(`error: Failed to connect to Harper (${code}): ${message}`);
+		} else if (code === 'EACCES') {
+			console.error(`error: Permission denied accessing the domain socket: ${message}`);
+		} else if (code === 'ENOTFOUND') {
+			console.error(`error: Host not found: "${hostname}" ${message}`);
 		} else {
-			console.error(`error: ${err.message ?? err}`);
+			console.error(`error: ${message ?? err}`);
 		}
 		process.exit(1);
 	}

@@ -172,7 +172,15 @@
 					]
 				},
 				"maxHeapMemory": { "type": "number", "description": "Heap memory limit per thread (MB)." },
-				"heapSnapshotNearLimit": { "type": "boolean", "description": "Take a heap snapshot when near the heap limit." }
+				"heapSnapshotNearLimit": { "type": "boolean", "description": "Take a heap snapshot when near the heap limit." },
+				"preload": {
+					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
+					"description": "Module(s) to preload via --import (ESM/loader-hook registration) before any Harper or app module on each worker thread, e.g. an APM agent's 'dd-trace/register.js' — the entry that instruments worker threads. Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
+				},
+				"preloadRequire": {
+					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
+					"description": "Module(s) to preload via --require (CJS) before any Harper or app module on each worker thread, for agents that document the require path (e.g. 'dd-trace/init', Dynatrace OneAgent). Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
+				}
 			}
 		},
 
@@ -341,8 +349,15 @@
 					"properties": {
 						"enabled": { "type": "boolean", "description": "Enable log rotation. Default: true" },
 						"compress": { "type": "boolean", "description": "Compress rotated logs with gzip. Default: false" },
-						"interval": { "type": ["string", "null"], "description": "Time between rotations (e.g. '1D','6H','30M')." },
+						"interval": {
+							"type": ["string", "null"],
+							"description": "Time between rotations (e.g. '1D', '6H', '30m'). Units: D (days), H (hours), M (months), m (minutes)."
+						},
 						"maxSize": { "type": ["string", "null"], "description": "Max size before rotation (e.g. '100M', '1G')." },
+						"retention": {
+							"type": ["string", "null"],
+							"description": "Delete rotated logs older than this age (e.g. '30D', '12H', '1M' for one month). Units: D (days), H (hours), M (months), m (minutes). When unset, rotated logs are kept indefinitely."
+						},
 						"path": { "type": "string", "description": "Directory to store rotated logs. Default: <ROOTPATH>/log" }
 					}
 				},
@@ -634,6 +649,10 @@
 				"componentsScope": {
 					"type": "string",
 					"description": "Filesystem scope for component edits, relative to rootPath. Default: ./components"
+				},
+				"systemPromptAppend": {
+					"type": "string",
+					"description": "Operator text appended to the agent's system prompt, after the built-in grounding and the Harper best-practices overview. Tunable at runtime via set_agent_config."
 				}
 			}
 		},
@@ -697,7 +716,12 @@
 					"description": "Path to private key file. Default: <ROOTPATH>/keys/privateKey.pem"
 				},
 				"ciphers": { "type": "string", "description": "Optional explicit cipher list." },
-				"host": { "type": "string", "description": "Optional SNI host this certificate applies to." }
+				"host": { "type": "string", "description": "Optional SNI host this certificate applies to." },
+				"certificateWatchInterval": {
+					"type": "number",
+					"minimum": 0,
+					"description": "Interval in ms for the periodic re-read safety net that re-checks watched cert/key files in case an inotify change event was missed (e.g. on overlayfs/containers/network mounts). Honored on the top-level tls block. Default: 300000 (5 min). 0 disables polling, leaving only the inotify watcher."
+				}
 			}
 		}
 	},

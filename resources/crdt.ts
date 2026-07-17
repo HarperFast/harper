@@ -1,11 +1,18 @@
+// Single definition of the numeric `add` fold, shared by the storage-time merge (crdt.add, via
+// updateAndFreeze) and the read/serialize path (tracked.ts Addition.update). One implementation
+// keeps the two from diverging: a numeric string was concatenated on the storage path but coerced
+// on the read path, and a bigint folded on the storage path but threw (`+bigint`) on the read path.
+export function addValues(previousValue: any, value: any) {
+	if (typeof previousValue === 'bigint') return previousValue + BigInt(value);
+	if (previousValue == null) return value; // no prior value: the add establishes it
+	const previous = +previousValue; // coerce so a numeric string adds instead of concatenating
+	if (isNaN(previous)) return value; // non-numeric prior: the add establishes it
+	// A number-typed field stays a number even if a stray bigint delta arrives, rather than throwing
+	// a number+bigint TypeError on the apply path.
+	return previous + (typeof value === 'bigint' ? Number(value) : value);
+}
 export function add(record, property, action) {
-	const previousValue = record[property];
-	if (typeof previousValue === 'bigint') {
-		record[property] = previousValue + BigInt(action.value);
-	} else if (isNaN(record[property])) record[property] = action.value;
-	else {
-		record[property] = previousValue + action.value;
-	}
+	record[property] = addValues(record[property], action.value);
 }
 add.reverse = function (record, property, action) {
 	const previousValue = record[property];
@@ -15,9 +22,16 @@ add.reverse = function (record, property, action) {
 		record[property] = previousValue - action.value;
 	}
 };
-const operations = {
+// The CRDT operation registry. Exported so the storage/apply path (tracked.ts updateAndFreeze)
+// resolves ops against this explicit set rather than the module's export namespace — otherwise a
+// crafted/corrupt `__op__` naming any exported function (addValues, getRecordAtTime, …) would
+// resolve truthy and be invoked with the wrong arguments (throwing and wedging the apply path, or
+// silently corrupting the field). applyReverse/applyForward below already resolve through this.
+// Null-prototype so a crafted `__op__` naming an Object.prototype member (toString, valueOf,
+// constructor, …) resolves to undefined rather than an inherited function.
+export const operations = Object.assign(Object.create(null), {
 	add,
-};
+});
 
 /**
  * Rebuild a record update that has a timestamp before the provided newer update
@@ -179,30 +193,22 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		const boundaryEntry = auditStore.get(auditTime, tableId, recordId);
 		if (boundaryEntry?.type === 'delete') return null;
 	}
-	// some patches may leave properties in an unknown state, so we need to fill in the blanks
-	// first we determine if there any unknown properties
-	// then continue to iterate back through the audit history, filling in the blanks
-	while (unknowns.size > 0 && auditTime > 0) {
-		const auditEntry = auditStore.get(auditTime, tableId, recordId);
-		// The history needed to resolve the remaining unknowns may have been pruned away; stop
-		// rather than dereferencing a missing entry (mirrors the reverse-walk guard above).
-		if (!auditEntry) break;
-		let priorRecord: any;
-		switch (auditEntry.type) {
-			case 'put':
-				priorRecord = auditEntry.getValue(store);
-				break;
-			case 'patch':
-				priorRecord = auditEntry.getValue(store);
-				break;
-		}
-		for (const key in priorRecord) {
-			if (unknowns.has(key)) {
-				record[key] = priorRecord[key];
-				unknowns.delete(key);
+	// A reversed patch that set a field to a plain value can't be undone (a plain set has no inverse),
+	// so those fields are left "unknown": their value at `timestamp` must come from older history.
+	// Reconstruct that state forward from the nearest base so CRDT ops accumulate correctly — e.g. a
+	// counter built up by `add` patches and later overwritten by a plain set. The prior code copied
+	// the nearest audit entry's raw field, which for a patch is an unresolved `{ __op__ }` object or a
+	// single delta rather than the folded value at `timestamp`. If the history needed to reconstruct a
+	// key is unavailable (pruned), the key keeps its live value (best effort, as before).
+	if (unknowns.size > 0 && auditTime > 0) {
+		const priorRecord = reconstructForward(auditStore, store, tableId, recordId, auditTime, timestamp);
+		if (priorRecord) {
+			for (const key of unknowns) {
+				// Object.hasOwn, not `in`: an unknown field named like a prototype member (toString,
+				// constructor, …) must not be filled from priorRecord's prototype chain.
+				if (Object.hasOwn(priorRecord, key)) record[key] = priorRecord[key];
 			}
 		}
-		auditTime = auditEntry.previousVersion;
 	}
 	// finally return the record in the state it was at the requested timestamp
 	return record;

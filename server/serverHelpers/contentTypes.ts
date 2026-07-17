@@ -623,19 +623,10 @@ function transformIterable(iterable, transform) {
 				next() {
 					const step = iterator.next();
 					if (step.then) {
-						// Async iterator: skip transform on terminal step (done: true) so
-						// serialize() is never called with undefined. Generator return values
-						// are not iterable items and must not be serialised (#631).
-						return step.then((step) => {
-							if (step.done) return step;
-							return { value: transform(step.value), done: false };
-						});
+						// don't transform the terminal sentinel step, whose value is undefined
+						return step.then((result) => (result.done ? result : { value: transform(result.value), done: false }));
 					}
-					if (step.done) return step;
-					return {
-						value: transform(step.value),
-						done: false,
-					};
+					return step.done ? step : { value: transform(step.value), done: false };
 				},
 				return(value) {
 					return iterator.return(value);

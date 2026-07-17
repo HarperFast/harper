@@ -9,6 +9,7 @@ const hdbLogger = require('../utility/logging/harper_logger.ts');
 const configUtils = require('../config/configUtils.ts');
 const { hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS } = hdbErrors;
+const { ENV_ENCRYPTED_PREFIX } = require('../utility/envFile.ts');
 
 // File name can only be alphanumeric, dash and underscores
 const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
@@ -30,6 +31,9 @@ module.exports = {
 	getEnvKeysValidator,
 	setEnvValueValidator,
 	deleteEnvValueValidator,
+	setSecretValidator,
+	grantSecretValidator,
+	deleteSecretValidator,
 };
 
 /**
@@ -240,6 +244,77 @@ function deleteEnvValueValidator(req) {
 	return validator.validateBySchema(req, schema);
 }
 
+// A secret name doubles as an env key when materialized, so it is held to the same character set.
+const SECRET_NAME = Joi.string()
+	.pattern(ENV_KEY_REGEX)
+	.required()
+	.messages({ 'string.pattern.base': `'name' must only contain word characters, dots and dashes` });
+
+// The encrypted-value marker followed by a base64url envelope body (structural validation of the
+// decoded JSON happens in the handler via parseEnvelopeFields). Derived from the shared prefix
+// constant so validator and handler can't drift; the prefix contains no regex metacharacters.
+// Trailing `=` padding is tolerated — some browser encoders emit padded base64url, and Node's
+// base64url decoder accepts either form.
+const SECRET_ENVELOPE_REGEX = new RegExp(`^${ENV_ENCRYPTED_PREFIX}[A-Za-z0-9_-]+={0,2}$`);
+
+// Size cap for secret values and envelopes: rows live forever in a replicated, audited system
+// table, so unbounded payloads are a storage/replication hazard, not a feature.
+const SECRET_MAX_LENGTH = 256 * 1024;
+
+/**
+ * Validate set_secret requests: `name` plus exactly one of `value` (plaintext) or `envelope`
+ * (`enc:v1:` ciphertext), with optional `metadata`, and a tier of either `processEnv` or `grants`
+ * (the handler rejects the two together — a processEnv secret is global, so scoping it is meaningless).
+ * @param req
+ * @returns {*}
+ */
+function setSecretValidator(req) {
+	const schema = Joi.object({
+		name: SECRET_NAME,
+		value: Joi.string().allow('').max(SECRET_MAX_LENGTH),
+		envelope: Joi.string()
+			.max(SECRET_MAX_LENGTH)
+			.pattern(SECRET_ENVELOPE_REGEX)
+			.messages({ 'string.pattern.base': `'envelope' must be an '${ENV_ENCRYPTED_PREFIX}' base64url envelope` }),
+		// Modest structural caps: metadata is a small free-form label object, not a payload store,
+		// and grants is a set (explicit duplicates rejected here; write paths also dedupe dirty state).
+		metadata: Joi.object().max(100),
+		grants: Joi.array().items(Joi.string().min(1)).max(100).unique(),
+		// process.env delivery tier; mutually exclusive with grants (enforced in the handler so the
+		// check also covers a grants add against an already-processEnv stored row).
+		processEnv: Joi.boolean(),
+	}).xor('value', 'envelope');
+
+	return validator.validateBySchema(req, schema);
+}
+
+/**
+ * Validate grant_secret / revoke_secret requests (same shape: `name` + `component`).
+ * @param req
+ * @returns {*}
+ */
+function grantSecretValidator(req) {
+	const schema = Joi.object({
+		name: SECRET_NAME,
+		component: Joi.string().min(1).required(),
+	});
+
+	return validator.validateBySchema(req, schema);
+}
+
+/**
+ * Validate delete_secret requests.
+ * @param req
+ * @returns {*}
+ */
+function deleteSecretValidator(req) {
+	const schema = Joi.object({
+		name: SECRET_NAME,
+	});
+
+	return validator.validateBySchema(req, schema);
+}
+
 /**
  * Validate addCustomFunctionProject requests.
  * @param req
@@ -296,6 +371,69 @@ function packageComponentValidator(req) {
 	return validator.validateBySchema(req, packageProjSchema);
 }
 
+// An npm registry-auth credential entry, identified by its `registry` key. `host` is forbidden
+// rather than merely unused: operation validation allows unknown keys, so without this an entry
+// carrying both discriminators would validate as npm registry auth and its git half would be
+// silently dropped.
+const REGISTRY_CREDENTIAL_ENTRY = Joi.object({
+	host: Joi.any().forbidden().messages({
+		'any.unknown': `a credential entry is either npm registry auth ('registry') or git host auth ('host'), not both`,
+	}),
+	// registry and token are written verbatim into the transient .npmrc, which is line-based;
+	// forbid CR/LF so a super_user can't inject extra npm config lines. (registry also accepts
+	// bare hosts and //host/ forms, so a strict URI validator would reject supported inputs — the
+	// newline guard is the right scope here.)
+	registry: Joi.string()
+		.pattern(/^[^\r\n]+$/)
+		.required(),
+	token: Joi.string().pattern(/^[^\r\n]+$/),
+	// A reference into the hdb_secret store; same name grammar as set_secret's `name`.
+	secret: Joi.string()
+		.pattern(ENV_KEY_REGEX)
+		.messages({ 'string.pattern.base': `'secret' must only contain word characters, dots and dashes` }),
+	scope: Joi.string()
+		.pattern(/^@[a-z0-9-_.]+$/)
+		.optional(),
+})
+	.xor('token', 'secret')
+	// The whole operation validates with allowUnknown, but a credential entry must not: an unknown
+	// key here (a typo'd or future secret-bearing field like `password`) would pass through ingest
+	// unchanged and be persisted to config/hdb_deployment and replicated, defeating reference-only.
+	.unknown(false);
+
+// A git-host credential entry, identified by its `host` key (#1792). Used to authenticate the
+// `git clone`/`git ls-remote` npm runs for a git-reference `package` (e.g. `github:org/repo`); the
+// token is served to git from memory, never written to a file or a URL.
+const GIT_CREDENTIAL_ENTRY = Joi.object({
+	// A bare host, optionally with a port — `github.com`, `git.example.com:8443`. A scheme or path is
+	// tolerated and normalized away, but a credential is matched by host, so keep the grammar tight.
+	host: Joi.string()
+		.pattern(/^[^\s/@\\]+$/)
+		.required()
+		.messages({ 'string.pattern.base': `'host' must be a bare git host, e.g. 'github.com'` }),
+	// The username half of git's HTTPS basic auth. Defaults to GitHub's `x-access-token` convention;
+	// GitLab wants `oauth2` and Bitbucket `x-token-auth`.
+	username: Joi.string()
+		.pattern(/^[^\r\n:]+$/)
+		.optional(),
+	// Capped like other secret-bearing fields (SECRET_MAX_LENGTH, above): an unbounded literal token
+	// here feeds straight into synchronous envelope-sealing crypto, so without a cap it's a
+	// resource-exhaustion vector, not just a storage one.
+	token: Joi.string()
+		.pattern(/^[^\r\n]+$/)
+		.max(SECRET_MAX_LENGTH),
+	secret: Joi.string()
+		.pattern(ENV_KEY_REGEX)
+		.messages({ 'string.pattern.base': `'secret' must only contain word characters, dots and dashes` }),
+	// `registry` forbidden for symmetry with the npm entry: an entry carrying both discriminators has
+	// no single kind and must be rejected, not silently treated as git auth.
+	registry: Joi.any().forbidden().messages({
+		'any.unknown': `a credential entry is either npm registry auth ('registry') or git host auth ('host'), not both`,
+	}),
+})
+	.xor('token', 'secret')
+	.unknown(false);
+
 /**
  * Validate deployComponent requests.
  * @param req
@@ -323,6 +461,35 @@ function deployComponentValidator(req) {
 			})
 			.optional()
 			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
+		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
+		// identifying key rather than a separate discriminator field, so a new kind is added as
+		// another item alternative here without reshaping the field. Today: npm registry auth
+		// (`registry`) and git host auth for a git-reference package (`host`, #1792).
+		//
+		// Every kind supplies its credential exactly one of two ways:
+		//   - `token`: a literal token, used only for this node's install and never persisted or
+		//     replicated (stripped from req before replicateOperation).
+		//   - `secret`: the name of an hdb_secret row (#1550); the token is resolved by decrypting
+		//     that row on this node at deploy time, so the credential lives in the secrets store
+		//     (reference, not embed) instead of travelling in the operation body.
+		// Dispatched on the presence of `registry` rather than tried as alternatives, so a malformed
+		// entry reports what is actually wrong with it (a newline in the token, an invalid scope) rather
+		// than a generic "no alternative matched".
+		credentials: Joi.array()
+			.items(
+				Joi.alternatives().conditional('.registry', {
+					is: Joi.exist(),
+					then: REGISTRY_CREDENTIAL_ENTRY,
+					otherwise: GIT_CREDENTIAL_ENTRY,
+				})
+			)
+			.optional(),
+		// `registryAuth` was this field's name on the 5.2 dev line before it grew to carry other
+		// credential kinds. Rejected rather than ignored: validation allows unknown keys, so a caller
+		// still sending it would otherwise get a deploy that silently installs with no credentials.
+		registryAuth: Joi.any().forbidden().messages({
+			'any.unknown': `'registryAuth' has been renamed to 'credentials'`,
+		}),
 	}).with('urlPath', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);

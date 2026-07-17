@@ -90,4 +90,66 @@ describe('composeConfigFromEnv', function () {
 
 		assert.throws(() => composeConfigFromEnv(), /HARPER_SET_CONFIG/);
 	});
+
+	it('drops an empty-object value without clobbering the base (documented no-signal semantics, #1618)', function () {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ http: {}, modelsGateway: {} });
+
+		const result = composeConfigFromEnv({ http: { port: 9925 } });
+		// `http: {}` must NOT wipe base values (it means "no overrides under http")...
+		assert.strictEqual(result.http.port, 9925);
+		// ...and a bare `componentName: {}` carries no signal — the key is dropped
+		// (a once-per-path warning is logged; presence needs an explicit value).
+		assert.strictEqual('modelsGateway' in result, false);
+	});
+});
+
+describe('composeConfigFromEnv base empty-object preservation (#1726 review)', function () {
+	let originalDefault;
+	let originalSet;
+
+	beforeEach(function () {
+		originalDefault = process.env.HARPER_DEFAULT_CONFIG;
+		originalSet = process.env.HARPER_SET_CONFIG;
+		delete process.env.HARPER_DEFAULT_CONFIG;
+		delete process.env.HARPER_SET_CONFIG;
+	});
+
+	afterEach(function () {
+		if (originalDefault !== undefined) process.env.HARPER_DEFAULT_CONFIG = originalDefault;
+		else delete process.env.HARPER_DEFAULT_CONFIG;
+		if (originalSet !== undefined) process.env.HARPER_SET_CONFIG = originalSet;
+		else delete process.env.HARPER_SET_CONFIG;
+	});
+
+	it('a bare `componentName: {}` in the base survives composition with env vars set', function () {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ http: { port: 2 } });
+		const result = composeConfigFromEnv({ modelsGateway: {}, http: { port: 1 } });
+		assert.deepStrictEqual(result.modelsGateway, {}, 'base empty-object scope must not be dropped');
+		assert.strictEqual(result.http.port, 2, 'env layer still wins where it sets values');
+	});
+
+	it('nested base empty objects are preserved', function () {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ http: { port: 2 } });
+		const result = composeConfigFromEnv({ a: { b: {} } });
+		assert.deepStrictEqual(result.a, { b: {} });
+	});
+
+	it('an env layer that replaces the path wins over the base empty object', function () {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ modelsGateway: false });
+		const result = composeConfigFromEnv({ modelsGateway: {} });
+		assert.strictEqual(result.modelsGateway, false, 'env replacement must not be resurrected as {}');
+	});
+
+	it('an env layer that populates the path wins over the base empty object', function () {
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ modelsGateway: { enabled: true } });
+		const result = composeConfigFromEnv({ modelsGateway: {} });
+		assert.deepStrictEqual(result.modelsGateway, { enabled: true });
+	});
+
+	it('empty objects in ENV layers keep their no-overrides drop semantics', function () {
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ http: { port: 1 } });
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ http: {} });
+		const result = composeConfigFromEnv({});
+		assert.strictEqual(result.http.port, 1, 'env-layer `http: {}` must stay a no-op, not clobber the subtree');
+	});
 });

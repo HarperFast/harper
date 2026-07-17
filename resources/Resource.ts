@@ -10,7 +10,7 @@ import {
 	RequestTargetOrId,
 } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction, type Transaction } from './DatabaseTransaction.ts';
+import { DatabaseTransaction, TRANSACTION_STATE, type Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
@@ -18,8 +18,10 @@ import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
+import { logger } from '../utility/logging/logger.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
+import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -59,6 +61,26 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static outputSchemas?: { [verb: string]: JsonSchemaFragment };
 	static mcp?: { annotations?: { [verb: string]: { [key: string]: unknown } } };
 	static hidden?: boolean;
+	/** The per-method request contract, when this resource was built via `withSchema`. */
+	static requestContract?: Contract;
+	/** Per-verb `{ query?, body? }` input schemas derived from the request contract, read by OpenAPI/MCP. */
+	static inputSchemas?: { [verb: string]: { query?: JsonSchemaFragment; body?: JsonSchemaFragment } };
+
+	/**
+	 * Declare a per-method request contract and get back a Resource subclass typed by it. Extend the
+	 * returned class and implement the declared verbs; handlers receive the SAME
+	 * `RequestTarget`, structurally narrowed (path params typed, `target.get(param)` typed by the query
+	 * schema). Each declared verb validates/coerces `query`/`body` before dispatch and returns a
+	 * structured 400 on failure, which is what justifies the narrowed types. The contract also feeds
+	 * OpenAPI and MCP from the one declaration.
+	 */
+	static withSchema<Base extends new (...args: any[]) => any, const C extends Contract>(
+		this: Base,
+		contract: C
+	): SchemaClass<Base, C> {
+		return makeSchemaClass(this, contract);
+	}
+
 	constructor(identifier: Id, source: any) {
 		this.#id = identifier;
 		const context = source?.getContext ? (source.getContext() ?? null) : undefined;
@@ -67,10 +89,6 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 	doesExist(): boolean {
 		return true; // Subclasses should override if needed
-	}
-
-	wasLoadedFromSource(): boolean | void {
-		// Subclasses should override if needed
 	}
 
 	addTo(_property: keyof Record, _value: Record[keyof Record]): void {
@@ -287,6 +305,19 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 	static query = transactional(
 		function (resource: any, query: RequestTarget, _request: Context, data: any) {
+			// On the table path, search(target) uses `data` (the request body carrying the conditions) as
+			// its sole target, while checkPermission was set on the URL `query`. Thread it across so
+			// Table.search sees the flag and enforces row-level allowRead — otherwise a QUERY on a table
+			// with an overridden allowRead returns the full unfiltered set (the deferral skips the entry
+			// check on the promise that search consumes checkPermission, which it never sees).
+			// checkPermission is framework-owned: `data` is the client-controlled QUERY body, so it must
+			// always be overwritten here (not just filled when nullish) — otherwise a client could send
+			// `checkPermission: false` in the body to disable Table.search's row-level allowRead guard.
+			if (resource.constructor.loadAsInstance !== false && data && typeof data === 'object') {
+				const checkPermission = (query as any)?.checkPermission;
+				if (checkPermission == null) delete (data as any).checkPermission;
+				else (data as any).checkPermission = checkPermission;
+			}
 			return resource.search
 				? resource.constructor.loadAsInstance === false
 					? resource.search(query, data)
@@ -495,6 +526,26 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 
 _assignPackageExport('Resource', Resource);
 
+// Warn once per table when an ASYNC allowRead override is used on a row-level-capable table: it is
+// evaluated only at the collection-scope entry check and gets NO per-record/per-event filtering, so
+// the collection-permissive "open, filter per record" pattern would fail open. Row-level filtering
+// requires a synchronous override.
+const asyncAllowReadWarned = new Set<string>();
+function warnAsyncAllowReadOnce(tableName: string | undefined): void {
+	const key = tableName ?? '<anonymous>';
+	if (asyncAllowReadWarned.has(key)) return;
+	asyncAllowReadWarned.add(key);
+	logger.warn?.(
+		`allowRead override on table "${key}" is async: it is evaluated only at request entry (collection scope) with NO per-record or per-event filtering. Row-level (record-scoped) authorization requires a synchronous allowRead — an async collection-permissive override would return unfiltered results.`
+	);
+}
+
+// Mark the built-in allowRead so the authorization flow can tell a framework default from an
+// application override. An overridden allowRead on a table is evaluated per RECORD during query
+// execution (#1422 gap 2 / #1241) — with `this` being each record — instead of once at collection
+// entry where `this` has no record to inspect. Table.ts marks its table-level default the same way.
+(Resource.prototype.allowRead as any).isDefaultAllowRead = true;
+
 export function snakeCase(camelCase: string) {
 	return (
 		camelCase[0].toLowerCase() +
@@ -638,8 +689,11 @@ function transactional(
 				query = new RequestTarget();
 				query.id = id;
 				if (id == null) {
-					if (options.method === 'get') {
-						throw new Error(`Using an argument with a value of ${id} for ${options.method}, is not allowed`);
+					if (options.method === 'get' || options.method === 'delete') {
+						// For delete, a bare null/undefined id would be coerced into a whole-collection
+						// target and silently delete every record (studio#1199); a deliberate delete-all
+						// must use an explicit query object instead.
+						throw new ClientError(`Using an argument with a value of ${id} for ${options.method}, is not allowed`);
 					}
 					query.isCollection = true;
 				}
@@ -662,8 +716,34 @@ function transactional(
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
 		const loadAsInstance = this.loadAsInstance;
-		if (context?.transaction) {
-			// we are already in a transaction, proceed
+		// Only join an existing transaction if it is still genuinely OPEN (mirrors the reuse check
+		// resources/transaction.ts's transaction() helper already applies to itself). A `context`
+		// object can carry a *stale* `.transaction` left over from an earlier, unrelated call that
+		// already ran to completion: ambient contexts obtained via contextStorage.getStore() are
+		// no longer guaranteed to be fresh, one-shot objects now that processLocalTransaction (#1591/
+		// #1592) installs one shared, long-lived context for the lifetime of an entire operation
+		// handler. Without this check, a second, logically-independent static Resource API call made
+		// later in the same handler (no explicit context of its own) would see that leftover
+		// `.transaction` reference and wrongly treat it as "still open," silently folding its write
+		// into a transaction whose commit lifecycle was already driven to completion by the first
+		// call — coalescing two unrelated writes and risking the first one being dropped. See
+		// harper-pro's replication/subscriptionManager.ts ensureNode(), which is called twice in
+		// sequence (once for this node, once for a peer) from a single add_node/add_node_back
+		// operation handler and reproduced this exact loss in a live cluster-formation test.
+		//
+		// A transaction that is no longer OPEN reached that state one of two ways, and they need
+		// opposite treatment:
+		//  - committed: the prior call ran to completion normally. Safe to silently start a fresh
+		//    transaction for this independent call (the case above).
+		//  - aborted due to exceeding storage.maxTransactionOpenTime (#1411, DatabaseTransaction.ts
+		//    abortDueToTimeout(), marked via the `timedOut` poison flag): the whole logical operation
+		//    must fail atomically, not have this write quietly land on a brand-new transaction while
+		//    the earlier write(s) were rolled back. Joining the poisoned transaction here (instead of
+		//    starting fresh) makes the write throw transactionOpenTooLongError via addWrite()/commit()'s
+		//    poison check, correctly propagating the abort to the caller. See
+		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
+		if (context?.transaction?.open === TRANSACTION_STATE.OPEN || context?.transaction?.timedOut) {
+			// we are already in a transaction (or it was poisoned by a timeout abort and must fail), proceed
 			const resource = this.getResource(query, context, resourceOptions);
 			return resource.then
 				? resource.then(authorizeActionOnResource)
@@ -711,6 +791,43 @@ function transactional(
 			}
 			if (checkPermission) {
 				if (loadAsInstance !== false) {
+					// Does this table carry an APPLICATION-overridden allowRead (record-scoped, #1422 gap 2)?
+					// The framework defaults are marked isDefaultAllowRead; anything else is an app override.
+					// Row-level authorization (per-record query traversal, per-event delivery) is SYNC-only.
+					// A SYNC application override participates in it; an ASYNC override cannot (traversal
+					// and delivery can't await), so it is evaluated ONLY at the collection-scope entry
+					// check — a table/connection-level decision, the same as before this feature. It must
+					// therefore make a complete decision at collection scope; the collection-permissive
+					// "open, filter per record" pattern requires a synchronous override (warned below).
+					const overridden =
+						options.type === 'read' &&
+						(resource.constructor as any)?.supportsRowLevelAllowRead &&
+						!(resource.allowRead as any)?.isDefaultAllowRead;
+					const rowLevelOverride = overridden && (resource.allowRead as any)?.constructor?.name !== 'AsyncFunction';
+					if (rowLevelOverride) {
+						// Durable signal that this read was authorization-checked, for the subscription
+						// delivery filter (the entry check below clears query.checkPermission before
+						// Table.subscribe runs, and an anonymous-but-checked subscription has no user to key on).
+						(query as any).rowLevelAuthChecked = true;
+					} else if (overridden) {
+						warnAsyncAllowReadOnce((resource.constructor as any)?.name);
+					}
+					// Deferral (per-record enforcement instead of a meaningless collection-scope entry
+					// verdict): `get` with a non-null id is a true single-record read (entry check runs with
+					// the record loaded) and only defers when isCollection — mirroring the isSearchTarget
+					// routing. ALL search/query calls defer: a present id there is a starts_with/prefix SEED
+					// (multi-record scan), so an entry verdict would gate — or grant — the whole scan; both
+					// invoke instance search() directly, which consumes checkPermission and arms the guard.
+					// subscribe/connect are NOT deferred: the entry check is the connection grant, and an
+					// override there may be connection-level (e.g. an MQTT topic ACL that decides on
+					// context.topic, not record fields, and must run at subscribe time); a record-level
+					// override returns permissive at collection scope to open, and Table.subscribe then
+					// filters each delivered event per record (#1419).
+					if (rowLevelOverride && !isSubscribeAction && (options.method !== 'get' || query.isCollection)) {
+						return when(data, (data) => {
+							return runAction(data);
+						});
+					}
 					// do permission checks, with allow methods
 					let allowed;
 					try {
@@ -780,8 +897,13 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, qu
 			// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 			// not the stale user captured at subscribe time.
 			if (context) (context as any).user = fresh;
-			// Re-run the same table/RBAC-level allowRead the subscription was granted with, against the
-			// fresh user. No per-record evaluation — this matches how access was originally granted.
+			// Re-run the SAME allowRead the subscribe entry check ran, against the fresh user — this
+			// mirrors the connection grant exactly. For a record-scoped override (#1419), that override
+			// gated the connection at collection scope (typically composing the table/RBAC grant via
+			// `super.allowRead`), and its per-record decisions are enforced separately during delivery;
+			// re-running it here re-verifies whatever it gated the connection on — a connection-level
+			// override (e.g. an MQTT topic ACL) re-checks its topic grant, and a record-scoped override
+			// that composes `super` re-checks the RBAC baseline. No per-record evaluation here.
 			const reTarget: any = new RequestTarget();
 			reTarget.id = capturedId;
 			reTarget.isCollection = capturedIsCollection;

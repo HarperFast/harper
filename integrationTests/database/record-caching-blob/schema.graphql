@@ -1,0 +1,10 @@
+# Fixture for the Blob-attribute record-caching cross-worker test.
+# BlobRec has a genuinely file-backed Blob attribute (payload is kept well above the
+# file-storage threshold so it is never stored inline). sha256 is the independently
+# verifiable checksum of whatever bytes are currently stored in payload, set by the
+# writer alongside the blob on every put/replace.
+type BlobRec @table @sealed @export {
+	id: ID! @primaryKey
+	payload: Blob
+	sha256: String
+}

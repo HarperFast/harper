@@ -1,7 +1,17 @@
 /**
- * Operations-profile tool generation. Walks Harper's `OPERATION_FUNCTION_MAP`
- * and registers one MCP tool per operation that survives the
- * `mcp.operations.allow` / `deny` filter.
+ * Operations-profile tool generation. Exposes one MCP tool per Harper
+ * operation that survives the `mcp.operations.allow` / `deny` filter, computed
+ * *lazily* by walking Harper's live `OPERATION_FUNCTION_MAP` on each
+ * `tools/list` / `tools/call`.
+ *
+ * The list is computed lazily (not snapshotted at registration) because
+ * components register their operations via `server.registerOperation` during
+ * `startOnMainThread`, which runs AFTER the MCP operations profile registers
+ * (see components/mcp/index.ts → registerMcpProfile). A one-time walk at
+ * registration time would miss every component-registered operation (e.g. the
+ * built-in agent's `agent_prompt`), so `mcp.operations.allow` listing them
+ * would silently have no effect — #1562. Walking the live map per request
+ * removes the ordering dependence and stays consistent as components load.
  *
  * The default v1 allow list is read-only and intentionally narrow:
  * `describe_*`, `list_*`, `search_*`, plus an explicit set of safe
@@ -26,12 +36,21 @@
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
-import { addTool, canRoleInvokeOperation, type AuthedUser, type ToolResult } from '../toolRegistry.ts';
+import {
+	canRoleInvokeOperation,
+	setProfileToolProvider,
+	type AuthedUser,
+	type ProfileToolProvider,
+	type ToolDef,
+	type ToolResult,
+} from '../toolRegistry.ts';
 import { OPERATION_INPUT_SCHEMAS, PERMISSIVE_SCHEMA } from './schemas/operations.ts';
 import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 
-// Eager-resolved at module load. The map is built at Harper boot and
-// doesn't mutate, so caching here is safe.
+// Resolved from Harper's server-helpers graph on demand. The map is built at
+// Harper boot but keeps mutating as components register operations during
+// `startOnMainThread` — the provider below re-reads it per request rather than
+// snapshotting (#1562).
 type OperationFunction = (json: object) => unknown | Promise<unknown>;
 type OperationFunctionMap = Map<string, { operation_function: OperationFunction }>;
 
@@ -114,6 +133,25 @@ export const DEFAULT_ALLOW: readonly string[] = [
 	'read_log',
 	'read_audit_log',
 ];
+
+/**
+ * Operations excluded from the DEFAULT allow surface even when a glob matches
+ * (`list_*` would otherwise pull in `list_secrets`). The secrets store is key
+ * custody management, not data reads — none of it belongs on an LLM-facing
+ * surface by default, same rationale as the sensitive `get_*` exclusions
+ * above. Operators can still expose these deliberately via
+ * `mcp.operations.allow` (an explicit allow list replaces the default and is
+ * not filtered by this set), where the audit-log redaction of
+ * `value`/`values`/`envelope` applies.
+ */
+export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
+	'set_secret',
+	'grant_secret',
+	'revoke_secret',
+	'list_secrets',
+	'delete_secret',
+	'get_secrets_public_key',
+]);
 
 /**
  * Operations that carry `destructiveHint: true` when opted into the allow
@@ -202,7 +240,9 @@ function matchesAny(operation: string, patterns: readonly string[] | undefined):
 }
 
 function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
-	const allowList = config.allow && config.allow.length > 0 ? config.allow : DEFAULT_ALLOW;
+	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
+	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
+	const allowList = usingDefaultAllow ? DEFAULT_ALLOW : config.allow;
 	if (!matchesAny(operation, allowList)) return false;
 	if (matchesAny(operation, config.deny)) return false;
 	return true;
@@ -236,7 +276,7 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
  * matches the MCP spec's `tools/call` convention so the LLM sees and can
  * adapt to the failure.
  */
-function makeOperationToolHandler(operationName: string) {
+export function makeOperationToolHandler(operationName: string) {
 	return async function operationToolHandler(args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
 		const body: Record<string, unknown> = {
 			...(args && typeof args === 'object' ? (args as Record<string, unknown>) : {}),
@@ -277,35 +317,65 @@ function makeOperationToolHandler(operationName: string) {
 }
 
 /**
- * Idempotent registration: walk the op map, register every operation that
- * passes the allow/deny filter. Safe to invoke multiple times — `addTool`
- * is `Map.set`-backed.
+ * Build the `ToolDef` for one operation. Cheap and stateless — a def is a pure
+ * function of the operation name (its schema, description, annotations, RBAC
+ * predicate, and handler don't depend on the allow/deny config, which only
+ * decides *whether* the op is exposed, checked per request in the provider).
+ * `tools/list` isn't a hot path, so the provider rebuilds defs per call rather
+ * than caching (no module-level state to leak or stale-cache across tests).
+ */
+function buildOperationToolDef(operationName: string): ToolDef {
+	const inputSchema = OPERATION_INPUT_SCHEMAS[operationName] ?? PERMISSIVE_SCHEMA;
+	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
+	if (isReadOnly(operationName)) annotations.readOnlyHint = true;
+	if (isDestructive(operationName)) annotations.destructiveHint = true;
+	if (isIdempotent(operationName)) annotations.idempotentHint = true;
+	return {
+		name: operationName,
+		description: buildDescription(operationName, operationName in OPERATION_INPUT_SCHEMAS),
+		inputSchema,
+		profile: 'operations',
+		...(Object.keys(annotations).length > 0 ? { annotations } : {}),
+		visibleTo: (user) => canRoleInvokeOperation(user, operationName),
+		handler: makeOperationToolHandler(operationName),
+	};
+}
+
+/**
+ * Lazy operations-profile tool provider. Consulted by the registry on every
+ * `tools/list` / `tools/call`, so it reflects the live `OPERATION_FUNCTION_MAP`
+ * — including operations registered by components after MCP boot (#1562).
+ */
+const operationsToolProvider: ProfileToolProvider = {
+	list(): ToolDef[] {
+		const opMap = getOperationFunctionMap();
+		if (!opMap) {
+			harperLogger.warn('MCP operations profile: OPERATION_FUNCTION_MAP not available; no tools listed');
+			return [];
+		}
+		const config = getOperationsConfig();
+		const defs: ToolDef[] = [];
+		for (const operationName of opMap.keys()) {
+			if (!isOperationAllowed(operationName, config)) continue;
+			defs.push(buildOperationToolDef(operationName));
+		}
+		return defs;
+	},
+	get(operationName: string): ToolDef | undefined {
+		const opMap = getOperationFunctionMap();
+		if (!opMap || !opMap.has(operationName)) return undefined;
+		if (!isOperationAllowed(operationName, getOperationsConfig())) return undefined;
+		return buildOperationToolDef(operationName);
+	},
+};
+
+/**
+ * Install the operations-profile tool provider. The provider is walked lazily
+ * per request rather than snapshotting the op map here, so component operations
+ * registered after this runs still surface once allow-listed (#1562).
+ * Idempotent — re-installing the provider is a no-op swap.
  */
 export function registerOperationsTools(): void {
-	const opMap = getOperationFunctionMap();
-	if (!opMap) {
-		harperLogger.warn('MCP operations profile: OPERATION_FUNCTION_MAP not available; no tools registered');
-		return;
-	}
-	const config = getOperationsConfig();
-	let registered = 0;
-	for (const operationName of opMap.keys()) {
-		if (!isOperationAllowed(operationName, config)) continue;
-		const inputSchema = OPERATION_INPUT_SCHEMAS[operationName] ?? PERMISSIVE_SCHEMA;
-		const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
-		if (isReadOnly(operationName)) annotations.readOnlyHint = true;
-		if (isDestructive(operationName)) annotations.destructiveHint = true;
-		if (isIdempotent(operationName)) annotations.idempotentHint = true;
-		addTool({
-			name: operationName,
-			description: buildDescription(operationName, operationName in OPERATION_INPUT_SCHEMAS),
-			inputSchema,
-			profile: 'operations',
-			...(Object.keys(annotations).length > 0 ? { annotations } : {}),
-			visibleTo: (user) => canRoleInvokeOperation(user, operationName),
-			handler: makeOperationToolHandler(operationName),
-		});
-		registered++;
-	}
-	harperLogger.info(`MCP operations profile: registered ${registered} tool(s)`);
+	setProfileToolProvider('operations', operationsToolProvider);
+	harperLogger.info('MCP operations profile: lazy tool provider installed');
 }

@@ -455,6 +455,25 @@ const DEVICE_RESOURCES_JS =
 	'doorlockblob.sourcedFrom(DoorlockBlobSource);\n' +
 	'sensorblob.sourcedFrom(SensorBlobSource);\n\n';
 
+// `restart_service http_workers` (and the /openapi readiness probe it waits on)
+// only guarantees the workers are back up — NOT that the component's
+// schema.graphql has been parsed and all three device tables registered and
+// propagated to the metadata that describe_all / REST reads. Poll describe_all
+// until every device schema is visible so the assertions below don't race
+// component load (fixes the intermittent "sensor schema missing" flake).
+async function waitForDeviceSchemas(client, timeoutMs) {
+	const required = ['"thermostat":{"ThermostatBlob"', '"doorlock":{"DoorlockBlob"', '"sensor":{"SensorBlob"'];
+	const deadline = Date.now() + timeoutMs;
+	let body = '';
+	while (Date.now() < deadline) {
+		const r = await client.req().send({ operation: 'describe_all' });
+		body = JSON.stringify(r.body);
+		if (required.every((frag) => body.includes(frag))) return;
+		await setTimeout(250);
+	}
+	throw new Error(`device schemas not all visible within ${timeoutMs}ms\n` + body);
+}
+
 suite('Per-device-type LMDB database sharding', { skip: skipSuite }, (ctx) => {
 	let client;
 	const thermostatId = randomInt(1000000);
@@ -500,6 +519,7 @@ suite('Per-device-type LMDB database sharding', { skip: skipSuite }, (ctx) => {
 			.expect(200);
 
 		await restartHttpWorkers(client, '/openapi', 120000);
+		await waitForDeviceSchemas(client, 30000);
 
 		const configResp = await client.req().send({ operation: 'get_configuration' }).expect(200);
 		rootPath = configResp.body.rootPath;

@@ -29,6 +29,8 @@ In `getFromSource()` (`Table.ts`), the promise that callers await resolves with 
 
 Consequence: never replace `entry.value` with a copy of `updatedRecord` in this path — the copy won't receive the commit callback's mutations.
 
+The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
+
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.
@@ -43,6 +45,16 @@ The mitigations live in three places:
 When adding a new commit-handler early-return path: reset `write.skipped = false` at the top of the handler if you don't already, then set `write.skipped = true` immediately before the `return`. Decide first whether the audit log will reference the blob (via `auditRecordToStore`) — if it does, leave `skipped` unset. `cleanupOrphans` is the periodic safety net; don't rely on it for transactional correctness.
 
 **Source-unavailable blobs must not abort the commit.** `startPreCommitBlobsForRecord().complete()` awaits each blob's `saving` promise; a rejection there propagates up and aborts the record's apply (the replication subscription loop catches and logs it as `error in subscription handler`). For a blob the replication source can no longer provide — evicted/expired at the origin, the receiver having flagged the rejection `sourceBlobUnavailable` (harper-pro#403) — that abort permanently wedged a replication copy stream on an expiration cache table whose TTL-evicted blobs are gone everywhere: every orphaned record's apply re-threw, the copy never advanced, and backpressure pinned at ~100%. `complete()` therefore tolerates a `sourceBlobUnavailable` rejection (`isSourceBlobUnavailable`): the record commits with a diverged blob reference, left for proactive backfill (harper-pro#388). Local/transient save faults stay unmarked and still reject, so the write aborts and a reconnect retries it — no silent loss. This is the apply/commit-side complement to the replication receiver's resume-cursor advance (harper-pro#403/#405), which handles the durability-watermark side of the same missing blob.
+
+## Over-time transactions are aborted, not force-committed (`DatabaseTransaction`/`LMDBTransaction`)
+
+`startMonitoringTxns()` (a `setInterval` per engine) watches `trackedTxns` and acts when a transaction's `timeout` reaches 0 (after ~2 ticks of `STORAGE_MAXTRANSACTIONOPENTIME`, default 30s). A transaction is tracked once it acquires a read snapshot (`getReadTxn`).
+
+- **Write-bearing request transactions are aborted and poisoned** (issue #1407). The monitor calls `abortDueToTimeout()`, which sets `timedOut`, forces `open = CLOSED` (so `doneReadTxn` takes the discard path instead of re-entering `commit()` via the `LINGERING` branch — which would now throw), then `abort()`s. `addWrite`/`commit` both guard on `timedOut` and throw `transactionOpenTooLongError` (503), so the in-flight request rolls back cleanly rather than the monitor silently force-committing a partial write set (atomicity violation + orphaned secondary-index entries that only a full rebuild repairs). The old behavior `commit()`d and reused the still-open transaction.
+- **`hasPendingWrites()` walks the `next` chain.** Writes to a second database live on `transaction.next` (see `txnForContext`), so a transaction that reads database A (head, tracked via its read snapshot, empty `writes`) and writes database B (`next`) is still write-bearing. Without the walk the head looks read-only and the monitor's force-commit path would cascade-commit B. `abortDueToTimeout()` poisons + aborts the whole chain.
+- **Read-only, `sourceApply`, and `isReplay` transactions keep the prior force-commit behavior.** Read-only long transactions (large scans/exports) have no atomicity/index risk and must not have their ongoing reads poisoned. Canonical-source applies (replication peer / external caching source) and crash-recovery replay have no resubscribe/resume path: aborting a write would drop it while the resume cursor advances past it — a permanent divergence (harper-pro#348). `sourceApply` is propagated down the `next` chain in `txnForContext`, so gating on the head suffices. (Replay is additionally synchronous, so the async monitor can't fire mid-replay anyway.)
+
+Known minor: if the monitor aborts a write transaction whose async `commit()` is already in flight (awaiting `before` hooks), the resumed continuation double-decrements `readTxnsUsed` and double-`abort()`s the underlying transaction (swallowed by the existing try/catch). Data is still correctly rolled back and the request errors; the only artifact is an inert negative counter on a dead transaction object.
 
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
@@ -153,6 +165,22 @@ A handful of design points are non-obvious and easy to break:
   (`METHOD_CAPABILITY`) against the client capabilities captured at `initialize`; the registry is bounded
   (timeout + high-water-mark) so a non-responding client can't leak promises.
 
+- **Application tools must be rebuilt after JS resources register, not just on schema changes.** The
+  application-profile tool scan (`registerApplicationTools`) runs at MCP component boot and on schema-change
+  ITC events — both of which fire while the `@table` classes register, **before** the `jsResource` plugin
+  registers the component's exported `class X extends tables.X` subclass. That subclass is the object the
+  registry ends up holding (REST routes to it) and the only place author opt-ins (`static mcpTools`/
+  `mcpPrompts`) live, so a scan that ran earlier sees only the base table class and misses them (#1448). The
+  fix: `jsResource` fires `signalResourcesRegistered()` (a deliberately **local-only**, non-ITC signal in
+  `utility/signalling.ts`, backed by `resourceHandler` in `server/itc/serverHandlers.js` — each worker
+  registers its own JS resources, so the rebuild belongs in that worker) after registration; `listChanged`
+  subscribes and re-runs the scan. Consequence: the verb tools (`create_*` etc.) now bind to the subclass and
+  honor its `post`/`patch` overrides, matching REST — previously they bound to the base table class and
+  silently bypassed those overrides. Advertised CRUD output schemas are still table-derived, so an overridden
+  write verb whose return diverges from `{ id }`/`{ ok }`/`{ deleted }` advertises a subset shape (the in-use
+  SDK tolerates supersets; tightening per-override envelopes is sibling-issue work — see the `derive.ts`
+  envelope note).
+
 - **Resource subscriptions are row-backed via the audit log.** `resources/subscribe` resolves the URI to a
   Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as the
   "Audit-store `'committed'` notification batching" section above). The targeting is the subtle part:
@@ -236,3 +264,92 @@ replicability metadata is deferred to the cluster-level-config work (CORE-3018),
 schema. Per-peer failures never reject: they come back as `{status: 'failed', reason, node}` entries
 in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
 operators must inspect the array for per-node outcomes.
+
+## Config is composed and memoized before any component runs (`config/configUtils.ts`)
+
+`getConfigObj()` composes the config once per thread (module-level memo) at its first call, which
+happens before the root component loads and long before any user component's plugins run. Anything a
+component does at load time — like `loadEnv` writing `process.env` — therefore cannot affect the
+composed config (#1513). By design this stays true: configuration is strictly top-down, so the three
+config-shaping env vars (`HARPER_DEFAULT_CONFIG`/`HARPER_CONFIG`/`HARPER_SET_CONFIG`) are **never
+honored** from a component `.env`. What #1513 fixed is the silence: `config/componentEnvPrepass.ts`
+scans `componentsRoot` + `RUN_HDB_APP` for `loadEnv` declarations during `initConfig` and emits an
+actionable warning per config-shaping var found, and `resources/loadEnv.ts` warns again at
+component-load time (covering post-boot deploys) and **skips the `process.env` assignment** for the
+trio — enforce-at-injection, so anything downstream that (re)composes from `process.env`
+(#1618/#1726) can rely on the trio arriving only via sanctioned channels. The pre-pass deliberately
+mirrors loader behaviors that must stay in sync if the loader changes: config filename precedence
+(`harper-config.yaml` → `harperdb-config.yaml` → `config.yaml`) and `files` pattern validation
+(`..` and absolute patterns rejected). Known limitation: a `componentsRoot` override that itself
+arrives via env var cannot redirect the scan.
+
+## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
+
+Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
+tar-fs's own walker calls `fs.stat` (not `lstat`) on every discovered entry when dereferencing; a
+dangling symlink's target throws `ENOENT`, and tar-fs's `statAll` loop treats _any_ `ENOENT` from
+a walk-discovered (not explicitly-requested) entry as end-of-stream — it calls `pack.finalize()`
+immediately, silently dropping every entry still queued (BFS order) after the link. No error is
+ever emitted, so `packStream.on('error', ...)` never fires and `deploy_component` reports success
+on a truncated archive. `scanPackageDirectory()` now pre-walks the tree once (async) to build a
+skip-set of dangling symlinks, which `streamPackagedDirectory`'s `tar.pack({ ignore })` consults via
+a synchronous `Set.has()` — **`ignore` is called synchronously by tar-fs with no Promise support**,
+so any fix here has to resolve the dangling set _before_ constructing `tar.pack`, not from inside
+the callback (an earlier draft used `lstatSync`/`statSync` per entry there, which would have added
+blocking I/O to a path that also runs inline on the Harper server's event loop via the
+`package_component` operation). The scan recurses into _valid_ symlinked directories the same way
+tar-fs's dereferenced walk does (readdir through the link), since a dangling symlink nested inside
+one is just as capable of tripping the same early-finalize — skipping recursion into symlinked
+dirs there would silently reintroduce the bug for that case. Circular directory symlinks are not
+guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existing tar-fs limitation
+this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
+declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
+other future cause would still report success silently; that's a deferred, separate fix.
+
+## `universalHeaders` (`http.securityHeaders`): ownership, precedence, and per-thread scope
+
+`server/http.ts` exports `universalHeaders: [string, string][]`, applied to responses in the
+Node, Bun, and uWS (`#914`, `HARPER_UWS_HTTP`) request handlers alike. `http.securityHeaders`
+config populates it via `applySecurityHeaders()`, called from `handleApplication()` on load and
+on `scope.options.on('change', ...)`. Three invariants to preserve:
+
+- **Ownership tracking.** Other components may push entries onto the same shared array, so a
+  hot-reload can't clear-and-rebuild it. `applySecurityHeaders` tracks the exact `[name, value]`
+  tuples it previously pushed in a module-level `ownedSecurityHeaders` array and splices only
+  those out (by reference, via `indexOf`) before re-adding the new set. Any future feature that
+  pushes into `universalHeaders` from a hot-reloadable source should follow the same "track what
+  I added, only remove what I added" pattern.
+- **Root scope owns the config.** `'http'` is a `TRUSTED_RESOURCE_PLUGINS` key, so an application
+  `config.yaml` with an `http:` block re-invokes `handleApplication`. A module-level guard makes
+  only the _first_ invocation (the root config, which loads before applications) own
+  `applySecurityHeaders` and its change listener; later invocations still refresh `httpOptions`
+  but cannot wipe root-configured headers.
+- **App wins on conflicts.** Universal headers are _defaults_: `applyUniversalHeaders()` (a shared
+  helper used by all three transports) only sets a header when `has(name)` is false, and the
+  direct-to-`nodeResponse` paths (handlesHeaders, error) check `hasHeader` first. A route that sets
+  `X-Frame-Options: DENY` is never loosened by a configured `SAMEORIGIN`. Response paths covered:
+  normal writeHead, `handlesHeaders` streams (e.g. the static component's `send()`, which writes
+  its own headers directly — universal headers are pre-set on `nodeResponse` / the Bun
+  `responseHeaders` shim so the stream can still override its own names), the thrown-error path,
+  and the `status === -1` cascade — on Node via the Fastify `'unhandled'` event bridge, on Bun/uWS
+  via `injectToFastify` (or the bare-404 fallback when no Fastify instance is registered for the
+  port). Each `status === -1` branch builds a **fresh** `Headers` object from the fallback
+  response rather than reusing the request's original `headers`, so `applyUniversalHeaders()` must
+  be called again on whichever object actually gets returned — applying it only once, before the
+  `status === -1` branch, is a trap that silently drops universal headers on every unhandled/404
+  response. CI first caught this on the uWS shard (the integration suite's only unauthenticated
+  404 case landed there); the same bug existed unnoticed on Bun's parallel `status === -1`
+  branches (`getBunHTTPServer`'s bare-404 return and `bunDelegateToNodeServer`'s two `Response`s)
+  and is fixed alongside it in `harper-1568-fix2`.
+
+**Why the operations API doesn't get these headers in normal mode**: ops requests _do_ flow
+through the Harper-native `requestHandler` (`httpServer()` calls `getServer()` for every
+registration, including Fastify's non-function listener) and cascade to Fastify via the
+`status === -1` branch, which copies `response.headers` onto `nodeResponse`. But the ops API runs
+on the **main thread**, and the main thread loads components with `resources.isWorker = false`
+(`server/loadRootComponents.js`), so the componentLoader's `resources.isWorker &&
+extensionModule.handleApplication` gate (`components/componentLoader.ts`) means http's
+`handleApplication` never runs there — the main thread's `universalHeaders` array stays empty.
+`universalHeaders` is per-thread module state, populated only where the http component loads.
+Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
+so ops responses **will** carry the headers there (benign).

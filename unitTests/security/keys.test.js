@@ -500,4 +500,261 @@ describe('Test keys module', () => {
 			expect(record.certificate, 'an older file must not overwrite the stored cert').to.equal('SENTINEL-FUTURE');
 		});
 	});
+
+	describe('loadAndWatch periodic re-read safety net (#586)', () => {
+		const loadAndWatch = keys.__get__('loadAndWatch');
+		const watchTimers = keys.__get__('certificateWatchTimers');
+		const watchPollers = keys.__get__('certificateWatchPollers');
+		const localSandbox = sinon.createSandbox();
+		let watchPath;
+
+		beforeEach(() => {
+			// Stub chokidar's watch so these tests exercise only the poll path and never open a real
+			// FSWatcher (real watchers would leak fds and risk EMFILE across repeated runs).
+			const chokidar = require('chokidar');
+			localSandbox.stub(chokidar, 'watch').returns({ on: () => {} });
+			watchPath = path.join(test_dir, `watch-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pem`);
+			fs.writeFileSync(watchPath, 'PEM-V1');
+		});
+
+		afterEach(() => {
+			localSandbox.restore();
+			const timer = watchTimers.get(watchPath);
+			if (timer) clearInterval(timer);
+			watchTimers.delete(watchPath);
+			watchPollers.delete(watchPath);
+			if (fs.existsSync(watchPath)) fs.removeSync(watchPath);
+		});
+
+		it('a cert swap missed by inotify is still picked up by the poll (mtime advanced)', () => {
+			const loaded = [];
+			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
+
+			// Initial synchronous load on registration.
+			expect(loaded).to.eql(['PEM-V1']);
+
+			// Simulate a renewal that inotify missed: new content + advanced mtime, no chokidar event.
+			fs.writeFileSync(watchPath, 'PEM-V2');
+			const future = (Date.now() + 5000) / 1000;
+			fs.utimesSync(watchPath, future, future);
+
+			// Drive a single poll (what the unref'd interval would do on its tick).
+			watchPollers.get(watchPath)();
+
+			expect(loaded).to.eql(['PEM-V1', 'PEM-V2']);
+		});
+
+		it("chokidar's 'change' event reloads even when it emits no stats (alwaysStat off)", () => {
+			// chokidar v4 defaults alwaysStat:false, so the 'change' handler is called with undefined
+			// stats; loadFile must stat the file itself rather than throw and silently skip the reload.
+			let changeHandler;
+			localSandbox.restore();
+			const chokidar = require('chokidar');
+			localSandbox.stub(chokidar, 'watch').returns({
+				on: (event, handler) => {
+					if (event === 'change') changeHandler = handler;
+				},
+			});
+
+			const loaded = [];
+			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
+			expect(loaded).to.eql(['PEM-V1']);
+
+			fs.writeFileSync(watchPath, 'PEM-V2');
+			const future = (Date.now() + 5000) / 1000;
+			fs.utimesSync(watchPath, future, future);
+
+			// Fire the watcher's change event the way chokidar does when alwaysStat is off: no stats.
+			changeHandler(watchPath, undefined);
+
+			expect(loaded).to.eql(['PEM-V1', 'PEM-V2']);
+		});
+
+		it('does not reload when the file is unchanged (mtime fingerprint dedup)', () => {
+			const loaded = [];
+			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
+			expect(loaded).to.eql(['PEM-V1']);
+
+			// Repeated polls with no on-disk change must not re-invoke the loader.
+			const poll = watchPollers.get(watchPath);
+			poll();
+			poll();
+			expect(loaded).to.eql(['PEM-V1']);
+		});
+
+		it('resolves the configured interval and registers an unref-ed poll timer', () => {
+			localSandbox.stub(env_mgr, 'get').callsFake((param) => {
+				if (param === 'tls_certificateWatchInterval') return 1234;
+				return undefined;
+			});
+
+			expect(keys.__get__('getCertificateWatchInterval')()).to.equal(1234);
+
+			loadAndWatch(watchPath, () => {}, 'certificate');
+
+			const timer = watchTimers.get(watchPath);
+			expect(timer, 'a poll timer should be registered').to.exist;
+			// .unref() prevents the timer from holding the event loop / process open.
+			expect(typeof timer.unref).to.equal('function');
+			expect(timer.hasRef()).to.be.false;
+		});
+
+		it('falls back to the default interval when unconfigured or invalid', () => {
+			const getCertificateWatchInterval = keys.__get__('getCertificateWatchInterval');
+			const DEFAULT = keys.__get__('DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS');
+			const stub = localSandbox.stub(env_mgr, 'get');
+			stub.callsFake(() => undefined);
+			expect(getCertificateWatchInterval()).to.equal(DEFAULT);
+			stub.callsFake(() => 'not-a-number');
+			expect(getCertificateWatchInterval()).to.equal(DEFAULT);
+			stub.callsFake(() => -5);
+			expect(getCertificateWatchInterval()).to.equal(DEFAULT);
+		});
+
+		it('clamps a too-small configured interval up to the minimum, but 0 still disables', () => {
+			const getCertificateWatchInterval = keys.__get__('getCertificateWatchInterval');
+			const MIN = keys.__get__('MIN_CERTIFICATE_WATCH_INTERVAL_MS');
+			const stub = localSandbox.stub(env_mgr, 'get');
+			stub.callsFake(() => 1); // typo'd 1ms must not become a tight poll loop
+			expect(getCertificateWatchInterval()).to.equal(MIN);
+			stub.callsFake(() => 0); // 0 is the explicit "disable polling" sentinel
+			expect(getCertificateWatchInterval()).to.equal(0);
+		});
+
+		it('registers a poll for a private-key watch (key poll must run on all threads, including workers)', () => {
+			// Private keys are loaded per-thread directly from disk (no hdb_certificate propagation), so
+			// the poll safety net must be wired for 'private key' watches regardless of thread. On the
+			// main thread the poller is registered either way; this asserts the key path stays wired.
+			loadAndWatch(watchPath, () => {}, 'private key');
+			expect(watchPollers.get(watchPath), 'a poller should be registered for the private key').to.exist;
+		});
+
+		it('does not register a poll timer when the interval is configured to 0', () => {
+			localSandbox.stub(env_mgr, 'get').callsFake((param) => {
+				if (param === 'tls_certificateWatchInterval') return 0;
+				return undefined;
+			});
+
+			loadAndWatch(watchPath, () => {}, 'certificate');
+
+			expect(watchTimers.get(watchPath), 'no timer should be registered when polling is disabled').to.be.undefined;
+		});
+	});
+
+	describe('resolveEffectiveTlsCiphers', () => {
+		const resolve = keys.__get__('resolveEffectiveTlsCiphers');
+		const RELAXED = 'DEFAULT@SECLEVEL=0';
+		const layers = (config) => [{ source: 'tls', config }];
+
+		it('returns undefined when nothing configures ciphers', () => {
+			expect(resolve(layers({ certificate: 'x' }), [], 'server', false)).to.be.undefined;
+			expect(resolve(undefined, undefined, 'server', true)).to.be.undefined;
+		});
+
+		it('applies a lone tls.ciphers as-is', () => {
+			expect(resolve(layers({ ciphers: 'HIGH' }), [], 'server', false)).to.equal('HIGH');
+		});
+
+		it('composes a CA record SECLEVEL onto explicit tls.ciphers suites instead of replacing them', () => {
+			const records = [{ name: 'ca', is_authority: true, ciphers: RELAXED }];
+			expect(resolve(layers({ ciphers: 'HIGH' }), records, 'server', true)).to.equal('HIGH@SECLEVEL=0');
+		});
+
+		it('honors a tls array entry beyond [0] (previously silently ignored)', () => {
+			expect(
+				resolve(layers([{ certificate: 'a' }, { certificate: 'b', ciphers: RELAXED }]), [], 'server', false)
+			).to.equal(RELAXED);
+		});
+
+		it('excludes a CA array entry when the listener does not verify client certificates', () => {
+			expect(
+				resolve(
+					layers([{ certificate: 'a' }, { certificateAuthority: 'ca.pem', ciphers: RELAXED }]),
+					[],
+					'server',
+					false
+				)
+			).to.be.undefined;
+		});
+
+		it('includes a CA array entry when the listener verifies client certificates', () => {
+			expect(
+				resolve(
+					layers([{ certificate: 'a' }, { certificateAuthority: 'ca.pem', ciphers: RELAXED }]),
+					[],
+					'server',
+					true
+				)
+			).to.equal(RELAXED);
+		});
+
+		it('applies a matching-use certificate record when config sets no ciphers', () => {
+			const records = [{ name: 'cert', uses: ['server'], ciphers: RELAXED }];
+			expect(resolve(layers({}), records, 'server', false)).to.equal(RELAXED);
+		});
+
+		it('applies generic (no uses) and legacy https records, mirroring selector relevance', () => {
+			expect(resolve(layers({}), [{ name: 'generic', ciphers: RELAXED }], 'server', false)).to.equal(RELAXED);
+			expect(resolve(layers({}), [{ name: 'legacy', uses: ['https'], ciphers: RELAXED }], 'server', false)).to.equal(
+				RELAXED
+			);
+		});
+
+		it('normalizes a legacy scalar uses value', () => {
+			const records = [{ name: 'cert', uses: 'server', ciphers: RELAXED }];
+			expect(resolve(layers({}), records, 'server', false)).to.equal(RELAXED);
+		});
+
+		it('applies an authority record when the listener verifies client certificates', () => {
+			// the incident shape: a client-CA record carrying SECLEVEL=0 for SHA-1-signed chains
+			const records = [{ name: 'legacy-client-ca', is_authority: true, ciphers: RELAXED }];
+			expect(resolve(layers({}), records, 'server', true)).to.equal(RELAXED);
+		});
+
+		it('ignores an authority record when the listener does not verify client certificates', () => {
+			const records = [{ name: 'ca', is_authority: true, ciphers: RELAXED }];
+			expect(resolve(layers({}), records, 'server', false)).to.be.undefined;
+		});
+
+		it('ignores records whose uses do not match the listener type', () => {
+			const records = [{ name: 'ops-cert', uses: ['operations-api'], ciphers: RELAXED }];
+			expect(resolve(layers({}), records, 'server', false)).to.be.undefined;
+		});
+
+		it('keeps the configured suite and applies the minimum explicit @SECLEVEL from a CA', () => {
+			const records = [{ name: 'ca', is_authority: true, ciphers: RELAXED }];
+			expect(resolve(layers([{ certificate: 'a', ciphers: 'DEFAULT' }]), records, 'server', true)).to.equal(
+				'DEFAULT@SECLEVEL=0'
+			);
+			expect(resolve(layers([{ certificate: 'a', ciphers: 'HIGH:!aNULL' }]), records, 'server', true)).to.equal(
+				'HIGH:!aNULL@SECLEVEL=0'
+			);
+		});
+
+		it('does not assume a level for plain suites — an explicit @SECLEVEL always applies', () => {
+			// the runtime default varies across Node/OpenSSL builds (2 on current Node), so 'HIGH'
+			// carries no assumed level and the explicit SECLEVEL=1 must not lose a tie
+			const records = [{ name: 'b', uses: ['server'], ciphers: 'DEFAULT@SECLEVEL=1' }];
+			expect(resolve(layers([{ certificate: 'a', ciphers: 'HIGH' }]), records, 'server', false)).to.equal(
+				'HIGH@SECLEVEL=1'
+			);
+		});
+
+		it('prefers the operationsApi.tls layer over root tls for the operations listener', () => {
+			const opsLayers = [
+				{ source: 'operationsApi.tls', config: { ciphers: 'HIGH' } },
+				{ source: 'tls', config: { ciphers: 'DEFAULT' } },
+			];
+			expect(resolve(opsLayers, [], 'operations-api', false)).to.equal('HIGH');
+		});
+
+		it('anchors a bare @SECLEVEL override to DEFAULT', () => {
+			expect(resolve(layers({ ciphers: '@SECLEVEL=0' }), [], 'server', false)).to.equal('DEFAULT@SECLEVEL=0');
+		});
+
+		it('skips records without ciphers', () => {
+			const records = [{ name: 'plain', uses: ['server'] }, null];
+			expect(resolve(layers({}), records, 'server', false)).to.be.undefined;
+		});
+	});
 });

@@ -14,6 +14,8 @@ http:
 threads:
   count: null
   debug: false
+  preload: null
+  preloadRequire: null
 authentication:
   authorizeLocal: false
   cacheTTL: 30000
@@ -77,5 +79,6 @@ storage:
   prefetchWrites: true
 tls:
   privateKey: null
+  certificateWatchInterval: 300000
 node:
   hostname: null

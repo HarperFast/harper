@@ -1127,27 +1127,31 @@ describe('Querying through Resource API', () => {
 					},
 				],
 			});
-			let last;
+			const writes = [];
 			for (let i = 0; i < 1000; i++) {
-				last = Bigger.put({
-					'id': [i >> 8, i & 255],
-					'10values': random(10),
-					'20values': random(20),
-					'40values': random(40),
-					'50values': random(50),
-					'100values': random(100),
-					'relatedId': random(5),
-					'relatedName': 'related name ' + (i % 7),
-				});
+				writes.push(
+					Bigger.put({
+						'id': [i >> 8, i & 255],
+						'10values': random(10),
+						'20values': random(20),
+						'40values': random(40),
+						'50values': random(50),
+						'100values': random(100),
+						'relatedId': random(5),
+						'relatedName': 'related name ' + (i % 7),
+					})
+				);
 			}
 			for (let i = 0; i < 100; i++) {
-				last = BiggerRelated.put({
-					'id': i,
-					'20values': random(20),
-					'biggerId': [0, random(256)],
-				});
+				writes.push(
+					BiggerRelated.put({
+						'id': i,
+						'20values': random(20),
+						'biggerId': [0, random(256)],
+					})
+				);
 			}
-			await last;
+			await Promise.all(writes);
 		});
 		it('Uses both indices for two similar conditions', async function () {
 			let results = [];

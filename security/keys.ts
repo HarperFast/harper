@@ -36,6 +36,13 @@ import { isMainThread } from 'worker_threads';
 import { TLSSocket } from 'node:tls';
 
 const CERT_VALIDITY_DAYS = 3650;
+// Default interval (ms) for the periodic cert-file re-read safety net. The chokidar (inotify)
+// watcher is the fast path; this poll catches changes on filesystems where inotify is unreliable
+// (overlayfs, many container setups, network mounts). Overridable via tls.certificateWatchInterval; 0 disables.
+const DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS = 300_000;
+// Lower bound (ms) for a configured poll interval; a misconfigured sub-second value is clamped up
+// to keep the safety-net poll from becoming a tight stat() loop. 0 still disables polling entirely.
+const MIN_CERTIFICATE_WATCH_INTERVAL_MS = 1000;
 const CERT_DOMAINS = ['127.0.0.1', 'localhost', '::1'];
 export const CERT_ATTRIBUTES = [
 	{ name: 'countryName', value: 'USA' },
@@ -292,7 +299,39 @@ export function loadCertificates() {
 }
 
 /**
- * Load the certificate file and watch for changes and reload with any changes
+ * Resolve the periodic cert-watch poll interval (ms) from config, falling back to the default.
+ * Returns 0 (polling disabled) only when explicitly configured to 0.
+ *
+ * This is a single global watcher-behavior knob, read from the top-level `tls.certificateWatchInterval`
+ * (mirrors how `tls.unixDomainSockets`/`tls.ciphers` are read globally via env.get). It is not honored
+ * per-cert inside an SNI `tls` array or under `operationsApi.tls`; those configs use the default.
+ */
+function getCertificateWatchInterval(): number {
+	const configured = envManager.get(CONFIG_PARAMS.TLS_CERTIFICATEWATCHINTERVAL);
+	if (configured == null) return DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS;
+	const interval = Number(configured);
+	if (!Number.isFinite(interval) || interval < 0) return DEFAULT_CERTIFICATE_WATCH_INTERVAL_MS;
+	// 0 explicitly disables the poll; otherwise floor at MIN to keep a typo (e.g. 1ms) from
+	// spinning a stat() loop. This is a safety net, not a hot-poll path, so sub-second is never wanted.
+	if (interval === 0) return 0;
+	return Math.max(interval, MIN_CERTIFICATE_WATCH_INTERVAL_MS);
+}
+
+// Active poll timers, keyed by watched path (exposed for test cleanup).
+const certificateWatchTimers = new Map<string, NodeJS.Timeout>();
+// The poll callback for each watched path, keyed by path. Exposed so tests can drive a single
+// re-read deterministically (simulating a missed inotify event) without waiting for the interval.
+const certificateWatchPollers = new Map<string, () => void>();
+
+/**
+ * Load the certificate file and watch for changes and reload with any changes.
+ *
+ * Two detection mechanisms feed the same reload path (and share the `lastModified` fingerprint,
+ * so they never double-reload for the same change):
+ *   1. chokidar inotify watcher — the fast path, reacts immediately to fs events.
+ *   2. A periodic re-read (main thread only) — a safety net for filesystems where inotify is
+ *      unreliable (overlayfs/containers/network mounts), where a real renewal can otherwise be
+ *      silently missed. Interval is tls.certificateWatchInterval (default 5m); 0 disables it.
  * @param path
  * @param loadCert
  * @param type
@@ -301,7 +340,10 @@ function loadAndWatch(path, loadCert, type) {
 	let lastModified;
 	const loadFile = (path, stats) => {
 		try {
-			let modified = stats.mtimeMs;
+			// chokidar's 'change' event omits stats unless alwaysStat is set (default off in v4), so
+			// stat the file here when it's missing — otherwise the inotify fast path would throw and
+			// silently never reload, leaving only the periodic poll to catch the change.
+			let modified = (stats ?? statSync(path)).mtimeMs;
 			if (modified && modified !== lastModified) {
 				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
 				lastModified = modified;
@@ -314,6 +356,39 @@ function loadAndWatch(path, loadCert, type) {
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
 	watch(path, { persistent: false }).on('change', loadFile);
+
+	// Periodic re-read safety net. For certificates, this runs on the main thread only — workers
+	// receive cert updates via the hdb_certificate table subscription, so polling the cert file on
+	// every worker would be wasteful. Private keys are different: each worker loads its own key
+	// directly from disk into its privateKeys map (no table propagation), so a renewal missed by
+	// inotify on a worker would strand the stale key — therefore the key poll must run on all
+	// threads. mtime is checked first against the last-loaded fingerprint, so an unchanged file does
+	// no PEM read and no reload (and shares the fingerprint with the chokidar watcher, so the two
+	// detection paths never double-reload the same change).
+	const pollsOnThisThread = isMainThread || type === 'private key';
+	if (pollsOnThisThread) {
+		const poll = () => {
+			let stats;
+			try {
+				stats = statSync(path);
+			} catch (error) {
+				// File may be transiently absent (e.g. atomic-rename renewal in flight); the chokidar
+				// watcher and the next poll will pick up the replacement.
+				logger.trace?.(`Watch poll could not stat ${type}:`, path, error);
+				return;
+			}
+			loadFile(path, stats);
+		};
+		certificateWatchPollers.set(path, poll);
+		const interval = getCertificateWatchInterval();
+		if (interval > 0) {
+			const existingTimer = certificateWatchTimers.get(path);
+			if (existingTimer) clearInterval(existingTimer);
+			const timer = setInterval(poll, interval);
+			timer.unref();
+			certificateWatchTimers.set(path, timer);
+		}
+	}
 }
 
 function getHost() {
@@ -745,6 +820,139 @@ if (typeof globalThis.Bun === 'undefined') {
 
 let caCerts = new Map();
 
+const SECLEVEL_PATTERN = /@SECLEVEL=(\d+)/i;
+/** Split a cipher string into its suite list and its explicit `@SECLEVEL` (undefined when unset). */
+function parseCipherString(ciphers) {
+	const match = SECLEVEL_PATTERN.exec(ciphers);
+	return {
+		suite: ciphers.replace(SECLEVEL_PATTERN, '').trim() || undefined,
+		level: match ? Number(match[1]) : undefined,
+	};
+}
+
+/**
+ * Whether a certificate (record or `tls[]` entry) can affect the given listener, mirroring
+ * createTLSSelector's tolerant selection: no `uses` is a generic certificate, `'https'` is the
+ * legacy generic use, and an authority matters exactly when the listener verifies client chains.
+ */
+function ciphersCandidateRelevant(usesRaw, isAuthority, servesCertificate, type, verifiesClientCerts) {
+	if (isAuthority && verifiesClientCerts) return true;
+	if (!servesCertificate) return false;
+	// normalize: stored as scalar in legacy/manual entries, expected array
+	const uses = Array.isArray(usesRaw) ? usesRaw : usesRaw ? [usesRaw] : [];
+	return uses.length === 0 || uses.includes(type) || uses.includes('https');
+}
+
+/**
+ * Resolve the single cipher string that actually governs a TLS listener.
+ *
+ * OpenSSL takes the cipher list — and any `@SECLEVEL=n` embedded in it, which controls
+ * client-certificate chain verification — from the context the server was created with. A context
+ * swapped in later by the SNI callback does not carry its own cipher list onto the connection,
+ * so per-certificate `ciphers` — whether on a `tls` array entry or a certificate record — cannot
+ * take effect on their own; a listener has exactly one effective cipher string. Historically only
+ * `tls.ciphers ?? tls[0].ciphers` was applied and every other configured value was silently
+ * ignored, including a CA record needing a relaxed security level to verify legacy client chains
+ * (e.g. SHA-1-signed CAs requiring `DEFAULT@SECLEVEL=0`, which fail with
+ * `authorizationError: UNSPECIFIED` at the default level).
+ *
+ * Resolution composes rather than picks a winner, because `@SECLEVEL` and the suite list are
+ * separable OpenSSL commands:
+ * 1. Candidates come from the listener's config layers in priority order (`configLayers`, e.g.
+ *    `operationsApi.tls` before root `tls` — an object's `ciphers` directly, an array's entries
+ *    filtered by {@link ciphersCandidateRelevant}) and then from relevant certificate records.
+ * 2. The suite list comes from the highest-priority suite-bearing candidate — a CA needing a
+ *    relaxed level must not replace or broaden the listener's configured suites.
+ * 3. The security level is the minimum explicit `@SECLEVEL` across candidates (a chain that needs
+ *    the relaxed level fails outright without it; the others merely also accept it). Candidates
+ *    without an explicit `@SECLEVEL` keep the runtime default — no level is assumed for them,
+ *    since the OpenSSL default varies across Node builds.
+ * Anything composed across sources or dropped (extra suite lists) is logged as a warning.
+ */
+export function resolveEffectiveTlsCiphers(configLayers, certRecords, type, verifiesClientCerts): string | undefined {
+	const candidates = [];
+	for (const { source, config } of configLayers ?? []) {
+		if (!config) continue;
+		if (Array.isArray(config)) {
+			for (let index = 0; index < config.length; index++) {
+				const entry = config[index];
+				if (!entry?.ciphers) continue;
+				const isAuthority = Boolean(entry.certificateAuthority);
+				const servesCertificate = Boolean(entry.certificate) || !isAuthority;
+				if (ciphersCandidateRelevant(entry.uses, isAuthority, servesCertificate, type, verifiesClientCerts)) {
+					candidates.push({ source: `${source}[${index}]`, ciphers: entry.ciphers });
+				}
+			}
+		} else if (config.ciphers) {
+			// an object layer's ciphers is the listener config's own knob — always relevant
+			candidates.push({ source: `${source}.ciphers`, ciphers: config.ciphers });
+		}
+	}
+	for (const cert of certRecords ?? []) {
+		if (!cert?.ciphers) continue;
+		// authority records are never served as listener certs — they matter only for verification
+		if (
+			ciphersCandidateRelevant(cert.uses, Boolean(cert.is_authority), !cert.is_authority, type, verifiesClientCerts)
+		) {
+			candidates.push({ source: `certificate '${cert.name}'`, ciphers: cert.ciphers });
+		}
+	}
+	if (candidates.length === 0) return undefined;
+
+	const parsed = candidates.map((candidate) => ({ ...candidate, ...parseCipherString(candidate.ciphers) }));
+	const suiteBearing = parsed.filter((candidate) => candidate.suite);
+	const suiteSource = suiteBearing[0];
+	let levelSource;
+	for (const candidate of parsed) {
+		if (candidate.level !== undefined && (levelSource === undefined || candidate.level < levelSource.level)) {
+			levelSource = candidate;
+		}
+	}
+	// no suite anywhere means a bare @SECLEVEL override — anchor it to DEFAULT
+	const suite = suiteSource?.suite ?? 'DEFAULT';
+	const effective = levelSource === undefined ? suite : `${suite}@SECLEVEL=${levelSource.level}`;
+
+	const notes = [];
+	const droppedSuites = suiteBearing.filter((candidate) => candidate.suite !== suiteSource.suite);
+	if (droppedSuites.length) {
+		notes.push(
+			`suites from ${suiteSource.source} ('${suiteSource.suite}'); ignoring suite lists from ${droppedSuites
+				.map((candidate) => `${candidate.source} ('${candidate.suite}')`)
+				.join(', ')}`
+		);
+	}
+	if (levelSource !== undefined && levelSource.source !== suiteSource?.source) {
+		notes.push(`security level ${levelSource.level} required by ${levelSource.source}`);
+	}
+	if (notes.length) {
+		logger.warn?.(
+			`Composed TLS cipher configuration for the '${type}' listener ('${effective}'): ${notes.join('; ')} — a listener has a single effective cipher string`
+		);
+	}
+	return effective;
+}
+
+/**
+ * Resolve the effective cipher string for a listener from the live config and certificate table.
+ * Safe to call before the certificate table exists (install, early boot) — config-only then.
+ */
+export function getEffectiveTlsCiphers(type, mtlsOptions?): string | undefined {
+	let certRecords;
+	try {
+		certRecords = databases?.system?.hdb_certificate?.search([]);
+	} catch (error) {
+		logger.trace?.('Certificate table not available while resolving TLS ciphers', error);
+	}
+	const configLayers = [];
+	// the operations API listener has its own tls section (merged separately by config
+	// composition, may inherit the root certificate while overriding ciphers) — it outranks root
+	if (type === 'operations-api') {
+		configLayers.push({ source: 'operationsApi.tls', config: envManager.get(CONFIG_PARAMS.OPERATIONSAPI_TLS) });
+	}
+	configLayers.push({ source: 'tls', config: envManager.get('tls') });
+	return resolveEffectiveTlsCiphers(configLayers, certRecords, type, Boolean(mtlsOptions));
+}
+
 /**
  * Create a TLS selector that will choose the best TLS configuration/context for a given hostname
  * @param type
@@ -875,6 +1083,25 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							}
 						} catch (error) {
 							logger.error?.('Error applying TLS for', cert.name, error);
+						}
+					}
+					// The listener's cipher string (and its @SECLEVEL, which governs client-cert chain
+					// verification) is fixed at server creation and cannot be swapped by rebuilding SNI
+					// contexts. If a rebuild finds the effective value has changed (e.g. a certificate
+					// record with `ciphers` was added), the listener won't honor it until restart — warn
+					// instead of silently serving with the stale value.
+					if (server && server.appliedCiphers !== undefined) {
+						// use the same verifies-client-certs flag the listener was created with (http servers
+						// derive it from more than the selector's mtlsOptions) so this compares like with like
+						const effectiveCiphers =
+							getEffectiveTlsCiphers(type, server.verifiesClientCerts ?? Boolean(mtlsOptions)) ?? null;
+						// latch per distinct value: rebuilds recur (cert-table changes, key reloads) and the
+						// pending change shouldn't re-warn on every cycle until the restart happens
+						if (effectiveCiphers !== server.appliedCiphers && server.lastWarnedCiphers !== effectiveCiphers) {
+							server.lastWarnedCiphers = effectiveCiphers;
+							logger.warn?.(
+								`TLS cipher configuration for the '${type}' listener is now '${effectiveCiphers}' but the listener was started with '${server.appliedCiphers}' — a restart is required to apply it`
+							);
 						}
 					}
 					server?.secureContextsListeners.forEach((listener) => listener());

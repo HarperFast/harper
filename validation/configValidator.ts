@@ -14,16 +14,74 @@ import * as validator from './validationWrapper.ts';
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_COMPONENTS_FOLDER = 'components';
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
-const INVALID_INTERVAL_UNIT_MSG = 'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)';
+const INVALID_INTERVAL_UNIT_MSG =
+	'Invalid logging.rotation.interval unit. Available units are D (days), H (hours), M (months) or m (minutes)';
 const INVALID_MAX_SIZE_VALUE_MSG =
 	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
 const INVALID_INTERVAL_VALUE_MSG =
 	"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'";
+const INVALID_RETENTION_UNIT_MSG =
+	'Invalid logging.rotation.retention unit. Available units are D (days), H (hours), M (months) or m (minutes)';
+const INVALID_RETENTION_VALUE_MSG =
+	"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'";
+// Units accepted for rotation durations, matching convertToMS: note capital M (months) vs lowercase m (minutes).
+const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
+
+// Directory-path validation. The previous `([...]+)+$` nested quantifier
+// backtracked catastrophically (ReDoS), hanging the CLI at 100% CPU on any
+// value with a character outside its allow-list after a run of valid ones — a
+// dotted rootPath such as `/Users/john.doe/hdb` is enough (#1779). An allow-list
+// is also the wrong model for file paths: they legitimately contain spaces, `~`,
+// parens (`C:\\Program Files (x86)`), apostrophes, and any Unicode
+// (`/Users/café/hdb`), so any fixed class rejects real, previously-valid
+// configs. These paths only ever reach `fs`/`path` (never a shell), so the
+// character check is just a friendly "reject obvious garbage" gate — the real
+// validation is the existence check in `validatePath`. So this is a denylist:
+// reject only control characters — C0 (`\x00-\x1f`), DEL, and C1 (`\x80-\x9f`,
+// which includes NEL U+0085) — plus the Unicode line/paragraph separators
+// U+2028/U+2029, since paths get logged and any of these could forge log lines,
+// via a single anchored quantifier — linear time, no backtracking. The
+// `(?!\s*$)` guard rejects empty/whitespace-only values, which on Windows
+// silently strip to a valid-but-wrong directory and would pass the existence
+// check; `.`/`..` are allowed since they resolve honestly to real directories.
+// eslint-disable-next-line no-control-regex -- deliberate: reject control characters
+const DIRECTORY_PATH_PATTERN = /^(?!\s*$)[^\x00-\x1f\x7f\x80-\x9f\u2028\u2029]+$/;
 
 const portConstraints = Joi.alternatives([number.min(0), string])
 	.optional()
 	.empty(null);
+// Controlled-flow ("directional") replication fields. A route's `replicates` is either a boolean
+// (full replication on/off) or an object describing per-direction flow; `sends`/`receives` and
+// `sendsTo`/`receivesFrom` are also accepted as top-level route keys (iterateRoutes normalizes both
+// forms). Entries in sendsTo/receivesFrom are a peer name (string) or an object scoping the edge by
+// target/source + database, with an optional per-table excludeTables list. harper-pro#498 — these
+// were previously unvalidated (allowUnknown), so typos/wrong types passed silently.
+const routeEntryConstraints = Joi.alternatives([
+	string,
+	{
+		target: string,
+		source: string,
+		database: string,
+		excludeTables: array.items(string),
+	},
+]);
+const replicatesConstraints = Joi.alternatives([
+	boolean,
+	{
+		sends: boolean,
+		sendsTo: array.items(routeEntryConstraints),
+		receives: boolean,
+		receivesFrom: array.items(routeEntryConstraints),
+	},
+]);
+const directionalRouteFields = {
+	replicates: replicatesConstraints,
+	sends: boolean,
+	receives: boolean,
+	sendsTo: array.items(routeEntryConstraints),
+	receivesFrom: array.items(routeEntryConstraints),
+};
 export const routeConstraints = Joi.alternatives([
 	array
 		.items(
@@ -31,10 +89,12 @@ export const routeConstraints = Joi.alternatives([
 			{
 				host: string.required(),
 				port: portConstraints,
+				...directionalRouteFields,
 			},
 			{
 				hostname: string.required(),
 				port: portConstraints,
+				...directionalRouteFields,
 			}
 		)
 		.empty(null),
@@ -53,10 +113,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 
 	const enabledConstraints = boolean.optional();
 	const threadsConstraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
-	const rootConstraints = string
-		.pattern(/^[\\/]$|([\\/a-zA-Z_0-9:-]+)+$/, 'directory path')
-		.empty(null)
-		.default(setDefaultRoot);
+	const rootConstraints = string.pattern(DIRECTORY_PATH_PATTERN, 'directory path').empty(null).default(setDefaultRoot);
 	const pemFileConstraints = string.optional().empty(null);
 
 	const storagePathConstraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
@@ -64,6 +121,10 @@ export function configValidator(configJson, skipFsValidation = false) {
 		certificate: pemFileConstraints,
 		certificateAuthority: pemFileConstraints,
 		privateKey: pemFileConstraints,
+		// Periodic re-read interval (ms) for the cert-file watcher's polling safety net.
+		// 0 disables polling, leaving only the inotify-based chokidar watcher. Honored on the
+		// top-level tls block (a single global setting); see getCertificateWatchInterval in security/keys.ts.
+		certificateWatchInterval: number.min(0).optional().empty(null),
 	});
 
 	// MCP — sub-issue #613 lands the config surface ahead of the transport (#614).
@@ -214,6 +275,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				compress: boolean.optional(),
 				interval: string.custom(validateRotationInterval).optional().empty(null),
 				maxSize: string.custom(validateRotationMaxSize).optional().empty(null),
+				retention: string.custom(validateRotationRetention).optional().empty(null),
 				path: string.optional().empty(null).default(setDefaultRoot),
 			}).required(),
 			root: rootConstraints,
@@ -233,7 +295,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 			}).optional(),
 			tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 		}).required(),
-		rootPath: string.pattern(/^[\\/]$|([\\/a-zA-Z_0-9:-]+)+$/, 'directory path').required(),
+		rootPath: string.pattern(DIRECTORY_PATH_PATTERN, 'directory path').required(),
 		mqtt: Joi.object({
 			network: Joi.object({
 				port: portConstraints,
@@ -267,6 +329,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 				}),
 			]),
 			threadRange: Joi.alternatives([array.optional(), string.optional()]),
+			securityHeaders: Joi.object()
+				.pattern(string, Joi.alternatives([string, number, boolean]))
+				.optional(),
 		}).required(),
 		threads: Joi.alternatives(
 			threadsConstraints.optional(),
@@ -281,6 +346,12 @@ export function configValidator(configJson, skipFsValidation = false) {
 					})
 				),
 				maxHeapMemory: number.min(0).optional(),
+				preload: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
+				preloadRequire: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
 			})
 		),
 		storage: Joi.object({
@@ -326,7 +397,7 @@ function doesPathExist(pathToCheck) {
 }
 
 function validatePath(value, helpers) {
-	Joi.assert(value, string.pattern(/^[\\/~]$|([\\/~a-zA-Z_0-9:-]+)+$/, 'directory path'));
+	Joi.assert(value, string.pattern(DIRECTORY_PATH_PATTERN, 'directory path'));
 
 	let resolvedValue;
 	if (value.startsWith('~/')) {
@@ -358,7 +429,7 @@ function validateRotationMaxSize(value, helpers) {
 
 function validateRotationInterval(value, helpers) {
 	const unit = value.slice(-1);
-	if (unit !== 'D' && unit !== 'H' && unit !== 'M') {
+	if (!VALID_ROTATION_DURATION_UNITS.includes(unit)) {
 		return helpers.message(INVALID_INTERVAL_UNIT_MSG);
 	}
 
@@ -369,9 +440,38 @@ function validateRotationInterval(value, helpers) {
 
 	return value;
 }
+function validateRotationRetention(value, helpers) {
+	if (typeof value !== 'string' || !value.trim()) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
+	}
+
+	const unit = value.slice(-1);
+	if (!VALID_ROTATION_DURATION_UNITS.includes(unit)) {
+		return helpers.message(INVALID_RETENTION_UNIT_MSG);
+	}
+
+	// parseFloat + strictly-positive check: convertToMS accepts fractional intervals, and a zero or
+	// negative retention makes every rotated log older than the (<=0) window, deleting them immediately.
+	const age = parseFloat(value.slice(0, -1));
+	if (isNaN(age) || age <= 0) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
+	}
+
+	return value;
+}
 
 function setDefaultThreads(parent, helpers) {
 	const configParam = helpers.state.path.join('.');
+	// Without SO_REUSEPORT (macOS is unreliable, Windows lacks it) worker threads cannot share the
+	// HTTP/socket ports — the main thread binds them all first and serves alone, so extra HTTP
+	// workers never receive direct TCP traffic. Default to a single worker there; an explicit
+	// threads.count still overrides.
+	if (process.platform === 'darwin' || process.platform === 'win32') {
+		hdbLogger.info(
+			`Defaulting ${configParam} to 1 on ${process.platform}: without SO_REUSEPORT, additional HTTP workers cannot share the server ports`
+		);
+		return 1;
+	}
 	let processors = os.cpus().length;
 
 	// default to one less than the number of logical CPU/processors so we can have good concurrency with the

@@ -12,6 +12,12 @@ import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
+import {
+	getSecretsForComponent,
+	retainComponentSubscriptions,
+	releaseComponentSubscriptions,
+} from './componentSecrets.ts';
+import type { SecretsView } from './componentSecrets.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
@@ -53,6 +59,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#entryHandler?: EntryHandler;
 	#entryHandlers: EntryHandler[];
 	#logger: Logger;
+	#secretsReleased = false;
 	#pendingInitialLoads: Set<Promise<void>>;
 	#deployStartHandler: (name: string) => void;
 	#deployEndHandler: (name: string) => void;
@@ -76,7 +83,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		directory: string,
 		configFilePath: string,
 		applicationScope: ApplicationScope,
-		origin: string = appName
+		origin: string = appName,
+		isRootConfig?: boolean
 	) {
 		super();
 
@@ -89,6 +97,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
+		// Hold this identity's live secret subscriptions (#1776) for as long as this Scope is open, so a
+		// throwaway deploy-validation Scope closing can't tear down a sibling/running Scope's streams.
+		retainComponentSubscriptions(applicationScope?.name ?? appName);
 		this.resources = applicationScope?.resources ?? resources;
 		this.models = modelsSingleton;
 
@@ -124,7 +135,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.ready = once(this, 'ready');
 
 		// Create the options instance for the scope immediately
-		this.options = new OptionsWatcher(pluginName, configFilePath, this.#logger)
+		// isRootConfig is the loader's authoritative isRoot signal — it decides whether the
+		// watcher overlays runtime env config (#1618). When a caller doesn't provide it,
+		// OptionsWatcher falls back to its root-config filename heuristic.
+		this.options = new OptionsWatcher(pluginName, configFilePath, this.#logger, isRootConfig)
 			.on('error', this.#handleError.bind(this))
 			.on('change', this.#optionsWatcherChangeListener.bind(this)())
 			.on('ready', this.#handleOptionsWatcherReady.bind(this));
@@ -144,6 +158,18 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	get logger(): Logger {
 		return this.#logger;
+	}
+
+	/**
+	 * The application's secrets view (#1550): hdb_secret rows granted to this application plus its
+	 * declared global-tier env names. A live, read-only view (#1776) — scoped values reflect the latest
+	 * store state on each read and it carries the reserved `subscribe(name)` method. Keyed by the
+	 * ApplicationScope's name (the application directory name — the identity grants and env declarations
+	 * use, and the same binding `import { secrets } from 'harper'` resolves); `#appName` can differ on
+	 * paths like RUN_HDB_APP, where it is the full directory path.
+	 */
+	get secrets(): SecretsView {
+		return getSecretsForComponent(this.applicationScope?.name ?? this.#appName);
 	}
 
 	get appName(): string {
@@ -210,6 +236,15 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		);
 
 		this.removeAllListeners();
+
+		// Release this identity's subscription hold (#1776), AFTER the close listeners (so a subscription a
+		// close listener created is still accounted for). Streams end only when the LAST holder of the
+		// identity releases — so a discarded validation-load Scope can't kill a still-running app's streams.
+		// Guarded so a double close() can't underflow the refcount.
+		if (!this.#secretsReleased) {
+			this.#secretsReleased = true;
+			releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
+		}
 
 		return this;
 	}

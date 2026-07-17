@@ -315,4 +315,88 @@ describe('ComponentLoader Status Integration', function () {
 			dataLoaderModule.handleApplication = originalhandleApplication;
 		});
 	});
+
+	describe('deploy lifecycle listener lifecycle (#1462)', function () {
+		const { deployLifecycle } = require('#src/components/deployLifecycle');
+
+		// Each Scope created for a handleApplication component registers a deploy:start /
+		// deploy:end listener on the shared deployLifecycle emitter and only removes them in
+		// close(). The deploy operation's pre-flight validation load (operations.js) creates
+		// such Scopes purely to surface load errors; if they are never closed, their listeners
+		// accumulate across deploys and eventually trip MaxListenersExceededWarning.
+		function makeProbeComponent(pluginName, onScope) {
+			const componentDir = path.join(tempDir, `leak-probe-${pluginName}`);
+			if (!existsSync(componentDir)) mkdirSync(componentDir);
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${pluginName}: {}`);
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
+				handleApplication(scope) {
+					onScope?.(scope);
+				},
+			};
+			return componentDir;
+		}
+
+		it('leaks a deploy:start listener per load when validation scopes are never closed', async function () {
+			const pluginName = 'leakProbeUnclosed';
+			const createdScopes = [];
+			const componentDir = makeProbeComponent(pluginName, (scope) => createdScopes.push(scope));
+
+			const baseline = deployLifecycle.listenerCount('deploy:start');
+			const loads = 5;
+			try {
+				for (let i = 0; i < loads; i++) {
+					componentLoader.loadedPaths.clear(); // a fresh deploy re-validates past the path-load guard
+					await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
+				}
+
+				assert.equal(
+					deployLifecycle.listenerCount('deploy:start') - baseline,
+					loads,
+					'each unclosed validation load leaks one deploy:start listener'
+				);
+			} finally {
+				// Remove the leaked listeners so the shared emitter does not affect other tests.
+				await Promise.allSettled(createdScopes.map((scope) => scope.close()));
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+				componentLoader.loadedPaths.clear();
+			}
+
+			assert.equal(
+				deployLifecycle.listenerCount('deploy:start'),
+				baseline,
+				'closing the scopes removes their deploy:start listeners'
+			);
+		});
+
+		it('stays bounded across repeated loads when collectScopes is closed after each load', async function () {
+			const pluginName = 'leakProbeCollected';
+			const componentDir = makeProbeComponent(pluginName);
+
+			const baseline = deployLifecycle.listenerCount('deploy:start');
+			const loads = 12; // exceed the default maxListeners (10) to mirror the reported warning
+			try {
+				for (let i = 0; i < loads; i++) {
+					componentLoader.loadedPaths.clear();
+					const collectScopes = new Set();
+					await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin', {
+						collectScopes,
+					});
+
+					assert.ok(collectScopes.size >= 1, 'collectScopes should capture the validation scope(s)');
+
+					// The deploy operation closes these throwaway scopes once validation completes.
+					await Promise.allSettled([...collectScopes].map((scope) => scope.close()));
+				}
+
+				assert.equal(
+					deployLifecycle.listenerCount('deploy:start'),
+					baseline,
+					'deploy:start listeners return to baseline after each validation load is closed'
+				);
+			} finally {
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+				componentLoader.loadedPaths.clear();
+			}
+		});
+	});
 });

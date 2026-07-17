@@ -15,7 +15,7 @@
  * nothing.
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { listResources } from './resources.ts';
+import { listResources, listResourceTemplates } from './resources.ts';
 import {
 	type RegisteredSession,
 	forEachSessionByProfile,
@@ -32,23 +32,18 @@ const MAX_RESOURCES_PAGE = 1000;
 let initialized = false;
 let onUserChangeBound: (() => void) | undefined;
 let onSchemaChangeBound: (() => void) | undefined;
+let onResourcesRegisteredBound: (() => void) | undefined;
+
+interface ItcHandlers {
+	userHandler?: { addListener?: (fn: () => void) => void };
+	schemaHandler?: { addListener?: (fn: () => void) => void };
+	resourceHandler?: { addListener?: (fn: () => void) => void };
+}
 
 // Test seams: avoid importing the real ITC handler from unit tests.
-let _itcHandlersOverride:
-	| {
-			userHandler?: { addListener?: (fn: () => void) => void };
-			schemaHandler?: { addListener?: (fn: () => void) => void };
-	  }
-	| undefined;
+let _itcHandlersOverride: ItcHandlers | undefined;
 
-export function _setItcHandlersForTest(
-	h:
-		| {
-				userHandler?: { addListener?: (fn: () => void) => void };
-				schemaHandler?: { addListener?: (fn: () => void) => void };
-		  }
-		| undefined
-): void {
+export function _setItcHandlersForTest(h: ItcHandlers | undefined): void {
 	_itcHandlersOverride = h;
 }
 
@@ -56,14 +51,10 @@ export function _resetListChangedForTest(): void {
 	initialized = false;
 	onUserChangeBound = undefined;
 	onSchemaChangeBound = undefined;
+	onResourcesRegisteredBound = undefined;
 }
 
-function loadItcHandlers():
-	| {
-			userHandler?: { addListener?: (fn: () => void) => void };
-			schemaHandler?: { addListener?: (fn: () => void) => void };
-	  }
-	| undefined {
+function loadItcHandlers(): ItcHandlers | undefined {
 	if (_itcHandlersOverride) return _itcHandlersOverride;
 	try {
 		return require('../../server/itc/serverHandlers');
@@ -106,7 +97,16 @@ function toolsListNames(profile: McpProfile, session: RegisteredSession): Array<
 
 function resourcesListUris(profile: McpProfile, session: RegisteredSession): Array<{ uri: string }> {
 	const result = listResources({ user: session.user, profile, limit: MAX_RESOURCES_PAGE });
-	return result.resources.map((r) => ({ uri: r.uri }));
+	const uris = result.resources.map((r) => ({ uri: r.uri }));
+	// Templates are part of the advertised resource surface too: a rebuild can
+	// add/remove a custom mcpResources uriTemplate while the fixed-URI set stays
+	// identical (#1609). Fold them into the diffed snapshot (prefixed so a
+	// template can't collide with a fixed URI of the same spelling).
+	const templates = listResourceTemplates(profile, undefined, MAX_RESOURCES_PAGE);
+	for (const t of templates.resourceTemplates) {
+		uris.push({ uri: `template:${t.uriTemplate}` });
+	}
+	return uris;
 }
 
 function sameSet(
@@ -152,6 +152,34 @@ function maybeNotifyResourcesChanged(record: RegisteredSession): void {
 		});
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged resources/* for session ${record.sessionId}: ${(err as Error).message}`);
+	}
+}
+
+/**
+ * Re-diff every session's visible resource list on a profile and push
+ * `notifications/resources/list_changed` to the sessions whose list actually
+ * changed. Called by the application registration after a rebuild so custom
+ * `mcpResources` additions/removals propagate (#1609); the per-session diff in
+ * `maybeNotifyResourcesChanged` keeps no-op rebuilds silent.
+ */
+export function notifyResourcesListChanged(profile: McpProfile): void {
+	for (const record of snapshotSessions(profile)) {
+		maybeNotifyResourcesChanged(record);
+	}
+}
+
+/**
+ * Re-diff every session's visible tool list on a profile and push
+ * `notifications/tools/list_changed` to the sessions whose list actually
+ * changed. The schema-change handler already does this, but the lazy
+ * per-request rebuild (`ensureApplicationToolsFresh`, #1609) can add/remove
+ * custom `mcpTools` outside any schema event — without this, a session that
+ * initialized before a tableless component registered keeps a stale tool
+ * list until it happens to re-poll `tools/list`.
+ */
+export function notifyToolsListChanged(profile: McpProfile): void {
+	for (const record of snapshotSessions(profile)) {
+		maybeNotifyToolsChanged(record);
 	}
 }
 
@@ -250,6 +278,27 @@ async function onSchemaChange(): Promise<void> {
 }
 
 /**
+ * A component's JS resources (resources.js) register on the local worker AFTER the MCP component's
+ * own boot scan and after the schema-change rebuilds (which fire while the @table classes register —
+ * still before the JS subclass that extends them). That JS subclass is where authors declare
+ * `static mcpTools`/`mcpPrompts`, so without a rebuild here the application tool list never reflects
+ * them (#1448). Rebuild and re-notify application sessions; no user re-resolution (a resource
+ * registration doesn't change the acting user) and no operations-profile work (its tool/resource
+ * set isn't derived from JS resources).
+ */
+function onResourcesRegistered(): void {
+	try {
+		refreshApplicationTools();
+	} catch (err) {
+		harperLogger.warn(`MCP listChanged refreshApplicationTools (resources) failed: ${(err as Error).message}`);
+	}
+	for (const r of snapshotSessions('application')) {
+		maybeNotifyToolsChanged(r);
+		maybeNotifyResourcesChanged(r);
+	}
+}
+
+/**
  * Idempotent: subscribe once at component boot. Repeated calls are
  * no-ops. Returns true if subscriptions were actually installed (false
  * if Harper's ITC handlers aren't available in this process).
@@ -274,6 +323,11 @@ export function initListChanged(): boolean {
 			onSchemaChange().catch((err) => harperLogger.trace(`MCP listChanged onSchemaChange: ${(err as Error).message}`));
 		};
 		handlers.schemaHandler.addListener(onSchemaChangeBound);
+		installed++;
+	}
+	if (handlers.resourceHandler?.addListener) {
+		onResourcesRegisteredBound = onResourcesRegistered;
+		handlers.resourceHandler.addListener(onResourcesRegisteredBound);
 		installed++;
 	}
 	initialized = installed > 0;

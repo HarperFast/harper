@@ -123,6 +123,11 @@ describe('test MQTT connections and commands', function () {
 	});
 
 	it('subscribe to retained/persisted record', async function () {
+		// Retained delivery is async (transaction -> persisted-record read -> serialization ->
+		// setImmediate yield -> socket write -> client message event) and on a loaded CI runner
+		// this has been observed taking well over the previous 8 s budget. Give this test more
+		// room than the suite-level 10 s, same as the QoS=1 reconnect test below.
+		this.timeout(20000);
 		let path = 'VariedProps/' + available_records[1];
 		// Register the message listener before subscribing so a retained message delivered
 		// during the subscribe round-trip can't be missed.
@@ -143,16 +148,16 @@ describe('test MQTT connections and commands', function () {
 		// Await the suback so a subscribe failure surfaces immediately rather than hanging
 		// until the retained-message timeout.
 		await clientV4.subscribeAsync(path);
-		// Retained delivery is async (transaction -> persisted-record read -> serialization ->
-		// setImmediate yield -> socket write -> client message event) and can run after the suback.
-		// On loaded CI runners this routinely exceeds 1 s, so wait up to a budget under the 10 s
-		// suite timeout before failing.
+		// Wait for the actual message, bounded by a backstop derived from this test's own mocha
+		// timeout (rather than a hardcoded value) so the two can never race each other — a fixed
+		// inner timeout close to (or exceeding) the outer mocha timeout previously meant this could
+		// fail with our own message right as it also became a hairline call against mocha's timeout.
 		let timer;
 		try {
 			await Promise.race([
 				messageReceived,
 				new Promise((_, reject) => {
-					timer = setTimeout(() => reject(new Error('Timeout waiting for retained message')), 8000);
+					timer = setTimeout(() => reject(new Error('Timeout waiting for retained message')), this.timeout() - 2000);
 				}),
 			]);
 		} finally {
@@ -1115,17 +1120,17 @@ describe('test MQTT connections and commands', function () {
 			return global.server.socket(() => {}, options);
 		};
 		try {
-			assert.equal(!!makeListener('linux', { port: 21883 }).noReusePort, false, 'TCP should share the port on Linux');
+			const linuxTcp = makeListener('linux', { port: 21883 });
+			assert.equal(!!linuxTcp.noReusePort, false, 'TCP should share the port on Linux');
+			assert.equal(linuxTcp.dedicatedListener, true, 'TCP listener should be marked worker-owned/dedicated');
 			assert.equal(
 				makeListener('darwin', { port: 21884 }).noReusePort,
 				true,
 				'TCP should opt out of reusePort on macOS'
 			);
-			assert.equal(
-				!!makeListener('linux', { securePort: 28883 }).noReusePort,
-				false,
-				'TLS should share the port on Linux'
-			);
+			const linuxTls = makeListener('linux', { securePort: 28883 });
+			assert.equal(!!linuxTls.noReusePort, false, 'TLS should share the port on Linux');
+			assert.equal(linuxTls.dedicatedListener, true, 'TLS listener should be marked worker-owned/dedicated');
 			assert.equal(
 				makeListener('darwin', { securePort: 28884 }).noReusePort,
 				true,

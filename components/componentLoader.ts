@@ -24,7 +24,7 @@ import * as modelsGateway from '../resources/models/v1/index.ts';
 import * as REST from '../server/REST.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
@@ -47,6 +47,7 @@ import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
 import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
+import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
 import { getEnvBuiltInComponents } from './Application.ts';
 import { pathToFileURL } from 'node:url';
@@ -62,9 +63,14 @@ let resources;
  * @param loadedPluginModules
  * @param loadedResources
  */
-export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
+export async function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
+	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
+	// any application loads (root components — including the Pro custody registration — have
+	// already loaded by this point). Re-runs on each reload cycle, which is how changed/late-custody
+	// secrets heal. Never throws.
+	await materializeGlobalSecrets();
 	const cfsLoaded: Promise<any>[] = [];
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
@@ -305,6 +311,11 @@ export interface LoadComponentOptions {
 	autoReload?: boolean;
 	providedLoadedComponents?: Map<any, any>;
 	appName?: string;
+	// When provided, every Scope created during this load is added to this set instead of being
+	// auto-closed on worker shutdown. The caller then owns closing them. Used by transient loads
+	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
+	// across deploys (#1462).
+	collectScopes?: Set<Scope>;
 }
 
 /**
@@ -368,6 +379,34 @@ export async function loadComponent(
 		// per-component iteration below; built-in entries register synchronously.
 		if (isRoot) await bootstrapModels(config);
 
+		// The `env:` block declares the component's environment expectations (string literal →
+		// process.env; object → declaration satisfied from the hdb_secret store / process.env).
+		// Processed before any of the component's plugins load, so literals and the load-gate apply
+		// to everything below. A failed gate contains to this component — nothing of this
+		// component's is registered (its URL space is simply absent) and the instance keeps running.
+		if (config.env !== undefined) {
+			if (isRoot) {
+				harperLogger.warn(
+					`The 'env' config block is not supported in the root config; declare env expectations in each component's config`
+				);
+			} else {
+				const componentStatusName = basename(componentDirectory);
+				try {
+					// Refresh the store snapshot so out-of-cycle loads (e.g. deploy validation in a
+					// long-lived worker, after a set_secret/grant_secret since boot) gate against
+					// current data. Cheap (one small system-table scan per env-declaring component).
+					await materializeGlobalSecrets();
+					processComponentEnv(componentStatusName, config.env);
+				} catch (error) {
+					error.message = `Could not load component '${componentStatusName}' due to: ${error.message}`;
+					errorReporter?.(error);
+					(getWorkerIndex() === 0 ? console : harperLogger).error(error);
+					componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+					return undefined;
+				}
+			}
+		}
+
 		if (!isRoot) {
 			try {
 				await symlinkHarperModule(componentDirectory);
@@ -385,6 +424,7 @@ export async function loadComponent(
 		const componentFunctionality = {};
 		// iterate through the app handlers so they can each do their own loading process
 		for (const componentName in config) {
+			if (componentName === 'env') continue; // handled above — not a plugin
 			// For root components, use just the component name
 			// For application components, use applicationName.componentName format (directoryName.componentName)
 			const componentStatusName = isRoot ? componentName : `${basename(componentDirectory)}.${componentName}`;
@@ -444,6 +484,7 @@ export async function loadComponent(
 								applicationScope: subApplicationScope,
 								autoReload: false,
 								appName: appName || componentName,
+								collectScopes: options.collectScopes,
 							});
 							componentFunctionality[componentName] = true;
 						}
@@ -509,12 +550,24 @@ export async function loadComponent(
 						componentDirectory,
 						configPath,
 						applicationScope,
-						origin
+						origin,
+						// authoritative root-ness: only root-load scopes watch THE root config and
+						// get the runtime env-config overlay (#1618) — an app component that happens
+						// to ship a root-named config file does not
+						isRoot
 					);
 
-					// Track the close so the worker's shutdown path waits for it (and thus for any async
-					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
-					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => trackScopeClose(scope.close()));
+					if (options.collectScopes) {
+						// A transient/validation load owns these scopes and closes them itself once the
+						// load is validated (see operations.js deploy pre-flight). Skip the worker-shutdown
+						// auto-close so their deploy-lifecycle listeners — and this SHUTDOWN handler — don't
+						// accumulate across deploys (#1462).
+						options.collectScopes.add(scope);
+					} else {
+						// Track the close so the worker's shutdown path waits for it (and thus for any async
+						// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
+						onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, () => trackScopeClose(scope.close()));
+					}
 
 					await sequentiallyHandleApplication(scope, extensionModule);
 
@@ -609,7 +662,7 @@ export async function loadComponent(
 					error.message
 				}`;
 				errorReporter?.(error);
-				(getWorkerIndex() === 0 ? console : harperLogger).error(error);
+				(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error));
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
 				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 			}
@@ -685,7 +738,7 @@ export async function loadComponent(
 				);
 		}
 	} catch (error) {
-		console.error(`Could not load application directory ${componentDirectory}`, error);
+		console.error(`Could not load application directory ${componentDirectory}`, errorForLog(error));
 		error.message = `Could not load application due to ${error.message}`;
 		errorReporter?.(error);
 		resources.set('', new ErrorResource(error));

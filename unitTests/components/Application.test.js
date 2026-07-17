@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { isSSHAuthFailure } = require('#src/components/Application');
+const { isSSHAuthFailure, assertApplicationConfig, parseGitReference } = require('#src/components/Application');
 
 describe('isSSHAuthFailure', () => {
 	it('returns true for "Could not read from remote repository"', () => {
@@ -63,5 +63,119 @@ npm error 404 '@scope/nonexistent-pkg@latest' is not in this registry.
 
 	it('returns false for empty stderr', () => {
 		assert.strictEqual(isSSHAuthFailure(''), false);
+	});
+});
+
+describe('parseGitReference', () => {
+	it('parses an explicit git+https:// identifier', () => {
+		assert.deepStrictEqual(parseGitReference('git+https://example.com/owner/repo.git'), {
+			cloneUrl: 'https://example.com/owner/repo.git',
+			committish: undefined,
+		});
+	});
+
+	it('parses a git:// identifier with a committish', () => {
+		assert.deepStrictEqual(parseGitReference('git://example.com/owner/repo.git#v1.2.3'), {
+			cloneUrl: 'git://example.com/owner/repo.git',
+			committish: 'v1.2.3',
+		});
+	});
+
+	it("resolves the github: shorthand this repo's own derivePackageIdentifier defaults to", () => {
+		assert.deepStrictEqual(parseGitReference('github:my-org/my-app'), {
+			cloneUrl: 'https://github.com/my-org/my-app.git',
+			committish: undefined,
+		});
+	});
+
+	it("resolves github: shorthand with a committish, matching the PR's own worked example", () => {
+		assert.deepStrictEqual(parseGitReference('github:my-org/my-app#semver:v1.2.3'), {
+			cloneUrl: 'https://github.com/my-org/my-app.git',
+			committish: 'semver:v1.2.3',
+		});
+	});
+
+	it('resolves the gitlab: shorthand', () => {
+		assert.deepStrictEqual(parseGitReference('gitlab:my-org/my-app'), {
+			cloneUrl: 'https://gitlab.com/my-org/my-app.git',
+			committish: undefined,
+		});
+	});
+
+	it('resolves the bitbucket: shorthand', () => {
+		assert.deepStrictEqual(parseGitReference('bitbucket:my-org/my-app'), {
+			cloneUrl: 'https://bitbucket.org/my-org/my-app.git',
+			committish: undefined,
+		});
+	});
+
+	it('resolves the gist: shorthand by id', () => {
+		assert.deepStrictEqual(parseGitReference('gist:af99f4b3ec6df5c56b03'), {
+			cloneUrl: 'https://gist.github.com/af99f4b3ec6df5c56b03.git',
+			committish: undefined,
+		});
+	});
+
+	it('resolves the gist: shorthand with an owner prefix, dropping the owner segment', () => {
+		assert.deepStrictEqual(parseGitReference('gist:my-org/af99f4b3ec6df5c56b03'), {
+			cloneUrl: 'https://gist.github.com/af99f4b3ec6df5c56b03.git',
+			committish: undefined,
+		});
+	});
+
+	it('returns null for an npm registry identifier', () => {
+		assert.strictEqual(parseGitReference('npm:some-package'), null);
+	});
+
+	it('returns null for a file identifier', () => {
+		assert.strictEqual(parseGitReference('file:../local-app'), null);
+	});
+});
+
+describe('assertApplicationConfig credentials', () => {
+	it('accepts a config with no credentials', () => {
+		assert.doesNotThrow(() => assertApplicationConfig('app', { package: 'npm:@org/app@1.0.0' }));
+	});
+
+	it('accepts credential reference entries', () => {
+		assert.doesNotThrow(() =>
+			assertApplicationConfig('app', {
+				package: 'npm:@org/app@1.0.0',
+				credentials: [{ registry: 'https://npm.pkg.github.com', secret: 'deploy.app.gh', scope: '@org' }],
+			})
+		);
+	});
+
+	it('rejects credentials that is not an array', () => {
+		assert.throws(
+			() => assertApplicationConfig('app', { package: 'p', credentials: { registry: 'r', secret: 's' } }),
+			/expected array/
+		);
+	});
+
+	it('accepts a git-host reference entry (#1792)', () => {
+		assert.doesNotThrow(() =>
+			assertApplicationConfig('app', {
+				package: 'github:myorg/private-app',
+				credentials: [{ host: 'github.com', secret: 'deploy.app.github.com' }],
+			})
+		);
+	});
+
+	it('rejects a credential entry carrying a literal token (references only on disk)', () => {
+		for (const entry of [
+			{ registry: 'r', token: 'tok' },
+			{ host: 'github.com', token: 'tok' },
+		]) {
+			assert.throws(
+				() => assertApplicationConfig('app', { package: 'p', credentials: [entry] }),
+				/reference$/m,
+				JSON.stringify(entry)
+			);
+		}
+	});
+
+	it('rejects a credential entry with no recognized identity (neither registry nor host)', () => {
+		assert.throws(() => assertApplicationConfig('app', { package: 'p', credentials: [{ secret: 's' }] }), /reference/);
 	});
 });

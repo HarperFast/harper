@@ -57,6 +57,15 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Can be deferred: Yes, this only loaded when secure sand-boxing is enabled and modules are loaded.
 - Eventual removal: Same as above
 
+## uWebSockets.js
+
+- Need for usage: Optional high-performance HTTP/WebSocket backend (#914), gated default-off behind HARPER_UWS_UDS (plaintext UDS behind symphony) / HARPER_UWS_HTTP (direct plaintext TCP). Loaded lazily only when a flag is set.
+- Size/memory cost: Prebuilt native V8 addon (~1MB per platform binary; the git dependency clones the repo with all platform binaries).
+- Security: Actively maintained C++ HTTP server; no npm advisory registry entry (installed as a git dependency, not from npm).
+- Binary compilation: Yes — ABI-locked, platform-specific prebuilt `.node` binaries committed in the repo. No musl/Alpine (glibc only). Installed via `github:uNetworking/uWebSockets.js#<tag>`, so it needs git at install time; being an optionalDependency, install tolerates its absence (missing git, unsupported platform) and Harper runs without it.
+- Overlap: Overlaps `ws` (WebSockets) and the Node/Bun HTTP paths; this is an alternative transport, not an addition.
+- Eventual removal: Kept as long as it demonstrates a meaningful throughput/latency win over the Node path; the flags let it be dropped without touching the default path.
+
 ## ws
 
 - Need for usage: We need to support WebSockets
@@ -173,6 +182,28 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Binary compilation: No.
 - Eventual removal: We could implement SigV4 ourselves (~300 lines) and call Bedrock's HTTP endpoint with native `fetch`, matching the pattern used by the other three backends. Worth revisiting if SDK version churn becomes a maintenance burden or if the optional-peerDep pattern proves operator-unfriendly. The dynamic-import boundary means the swap is contained to `components/bedrock/index.ts`.
 
+## @harperfast/skills
+
+- Need for usage: Ships the `harper-best-practices` skill content (rule index + per-rule guidance for schema design, relationships, auth, caching, vector indexing, TypeScript type-stripping, deployment, etc.) that the built-in agent uses to ground itself (#626). Sourcing it from the published package versions the guidance with the Harper release instead of drifting from a separately-updated copy.
+- Size/memory cost: ~412KB on disk, no transitive dependencies. The package's single export (`.`) surfaces the skill content as JS — `skillSummary`, `ruleNames`, and a `rules` name→markdown map — so the rule bodies are resident in the worker's heap once imported (~400KB of markdown). Only the `SKILL.md` overview (~1.2K tokens) is fed into the agent's system prompt eagerly; individual rule bodies are handed to the model on demand via the `harper_best_practice` tool, so context spend still stays lazy.
+- Security: No reported vulnerabilities; a first-party Harper package.
+- Environment interaction: None. The skill content is consumed via the package's module exports — no filesystem access or dynamic resolution.
+- Overlap: None.
+- Can be deferred: No — it's a declared runtime dependency imported by the agent module. If the built-in agent is disabled the code path isn't exercised, but the module is still installed and imported like any other dependency.
+- Binary compilation: No.
+- Eventual removal: The best-practices content could be vendored directly into `harper` if the separate package ever became a maintenance burden, at the cost of losing independent versioning/updates.
+
+## weak-lru-cache
+
+- Need for usage: Powers the PrimaryRocksDatabase record cache. Stores record values under a WeakRef-based LRU so cached records are GC-reclaimable once they cycle out of the LRU stages — a strong-reference cache would be an unbounded leak, since every accessed record would be retained indefinitely. lmdb-js uses the same library for its CachingStore. Values are stored via `setValue`/`getValue` (WeakRef semantics) rather than `set`/`get` (strong semantics).
+- Size/memory cost: ~6 KB. The cache itself is bounded by the LRU capacity; each slot holds only a WeakRef to the record, so GC can reclaim entries not recently accessed.
+- Security: No reported vulnerabilities. Authored and maintained by David Beaumont / lmdb-js author (same authorship chain as lmdb-js, already a trusted dependency).
+- Environment interaction: None.
+- Overlap: lmdb-js already vendors this for its CachingStore; adding it as a direct dep aligns with the existing usage pattern and avoids importing a private lmdb-js internal.
+- Can be deferred: No — the WeakLRUCache is constructed at store-open time for tables with caching enabled.
+- Binary compilation: No.
+- Eventual removal: Could be replaced by a custom WeakRef-based LRU if the dependency ever lapses, or removed if a native VT-only freshness check (without a JS-side record cache) proves sufficient.
+
 ## busboy
 
 - Need for usage: Streaming multipart/form-data parser for the operations API. Required so `deploy_component` payloads can exceed the Node.js 2 GB Buffer cap by being piped straight into extraction (gunzip + tar-fs) instead of buffered. Used only on the operations API ingest path; outbound multipart bodies on the CLI are formatted inline in `bin/multipartBuilder.ts` and do not depend on busboy.
@@ -184,3 +215,11 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Binary compilation: No.
 - Can be deferred: The require happens only when `server/serverHelpers/multipartParser.ts` is imported, which is loaded by `registerContentHandlers` at operations-server boot. Realistically always loaded.
 - Eventual removal: Could be replaced by writing our own streaming multipart parser (a few hundred lines plus tests for edge cases) if maintenance ever lapses, or by Node.js's `request.formData()` once that API supports streaming file parts without buffering (currently it doesn't on the standard Node http server interface used by Fastify).
+
+## typescript@7 (not a dependency — invoked via npx, pinned separately from the `typescript` devDependency)
+
+- Need for usage: TypeScript 7 merges the native (Go-ported) compiler preview directly into the `typescript` package's `tsc` binary — there is no separate `tsgo` binary or `@typescript/native-preview` package at 7.0.2+. Wired as an opt-in `npm run typecheck:fast` script — a faster local/CI type-check loop alongside the existing `tsc`-based `build`, not a replacement for either.
+- Not a `package.json` dependency: `typecheck:fast` runs `npx -y -p typescript@<pinned-version> tsc ...` rather than adding this as a `devDependency`. This is deliberate, and for the same reason as before: an earlier version of this change had the equivalent tool (`@typescript/native-preview`) as a plain `devDependency`, which meant `npm ci` fetched it for every CI job (unit, integration, smoke, stress), not just the opt-in checker. Since the package name here is `typescript` — the same name as our existing 5.x devDependency — it also could not be added as a second `package.json` entry at a different version without colliding; `npx -p typescript@7.0.2` sidesteps this too, resolving and running the pinned 7.x tarball from npm's npx cache without touching the project's installed 5.x `typescript`. Running it via `npx` on-demand confines a pruned-tarball failure to `typecheck:fast` alone, matching its actually-opt-in nature. Trade-off: no `package-lock.json` integrity-hash pinning for this tool (the exact version is still pinned in the npx invocation itself, just not hash-verified against a lockfile entry).
+- Security: Microsoft-maintained TypeScript compiler, same publisher/package as the 5.x devDependency.
+- Overlap: Complements, does not replace, the `typescript` devDependency — TypeScript 7.0 ships no compiler API yet (planned for 7.1), so `@typescript-eslint/parser` still needs `typescript` 5.x. The 5.x and 7.x versions never coexist in `node_modules` at once: 5.x is the installed devDependency, 7.x is fetched on-demand by `npx` purely for `typecheck:fast`.
+- Eventual removal: Once TypeScript 7 stabilizes as the primary `typescript` devDependency (post-7.1's compiler API), this becomes redundant and `typecheck:fast` can be dropped.

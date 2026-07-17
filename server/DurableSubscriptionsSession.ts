@@ -126,7 +126,11 @@ export async function getSession({
 	if (will) {
 		will.id = sessionId;
 		will.user = { username: user?.username };
-		getLastWill().put(will);
+		// Must be durably persisted before CONNACK is sent (getSession() resolving is what lets
+		// mqtt.ts send CONNACK). Otherwise a client that connects and then disconnects abruptly
+		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()
+		// reads this same record back to publish the will, finds nothing, and silently drops it.
+		await getLastWill().put(will);
 	}
 	if (keepalive) {
 		// keep alive is the interval in seconds that the client will send a ping to the server

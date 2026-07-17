@@ -1,0 +1,13 @@
+# QA-314 — over-time txn atomicity tie-breaker.
+#
+# A single request transaction: write N rows, sleep past maxTransactionOpenTime,
+# write 1 marker row. Oracle: (HTTP status, surviving rows).
+# Dangerous outcome = 2xx + silent partial drop (5 rows missing, marker only).
+#
+# `tag` is the @indexed attribute so we can cross-check index vs base.
+type Atomic @table @export {
+	id: ID @primaryKey
+	tag: String @indexed
+	seq: Int
+	payload: String
+}

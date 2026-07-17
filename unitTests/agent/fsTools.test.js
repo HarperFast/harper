@@ -27,56 +27,62 @@ describe('agent/fsTools', () => {
 		scopes = mkScopes();
 	});
 
-	it('read_file returns contents inside componentsRoot', async () => {
+	it('read_file returns contents from the components scope (default root)', async () => {
 		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'hello');
-		const result = await readFileTool.handler({ path: join(scopes.componentsRoot, 'a.txt') }, ctx(scopes));
+		const result = await readFileTool.handler({ path: 'a.txt' }, ctx(scopes));
 		assert.equal(result.content, 'hello');
 	});
 
-	it('read_file rejects paths outside scope roots', async () => {
-		writeFileSync(join(scopes.root, 'outside.txt'), 'nope');
-		await assert.rejects(
-			readFileTool.handler({ path: join(scopes.root, 'outside.txt') }, ctx(scopes)),
-			/outside the agent's read scope/
-		);
+	it('read_file reads from the logs scope when root is specified', async () => {
+		writeFileSync(join(scopes.logDir, 'srv.log'), 'log line');
+		const result = await readFileTool.handler({ root: 'logs', path: 'srv.log' }, ctx(scopes));
+		assert.equal(result.content, 'log line');
 	});
 
-	it('write_file refuses writes to logDir', async () => {
-		await assert.rejects(
-			writeFileTool.handler({ path: join(scopes.logDir, 'evil.txt'), content: 'x' }, ctx(scopes)),
-			/outside the agent's write scope/
-		);
+	it('read_file rejects absolute paths', async () => {
+		await assert.rejects(readFileTool.handler({ path: '/etc/passwd' }, ctx(scopes)), /must be relative/);
 	});
 
-	it('write_file creates parents and writes within componentsRoot', async () => {
-		const target = join(scopes.componentsRoot, 'nested', 'b.txt');
-		const result = await writeFileTool.handler({ path: target, content: 'x' }, ctx(scopes));
+	it('read_file rejects an unknown root', async () => {
+		await assert.rejects(readFileTool.handler({ root: 'secrets', path: 'a.txt' }, ctx(scopes)), /Invalid fs root/);
+	});
+
+	it('write_file refuses to escape the components scope via ..', async () => {
+		await assert.rejects(
+			writeFileTool.handler({ path: join('..', 'logs', 'evil.txt'), content: 'x' }, ctx(scopes)),
+			/outside the agent's 'components' scope/
+		);
+		assert.equal(existsSync(join(scopes.logDir, 'evil.txt')), false);
+	});
+
+	it('write_file creates parents and writes within the components scope', async () => {
+		const result = await writeFileTool.handler({ path: join('nested', 'b.txt'), content: 'x' }, ctx(scopes));
 		assert.equal(result.bytesWritten, 1);
-		assert.equal(readFileSync(target, 'utf8'), 'x');
+		assert.equal(readFileSync(join(scopes.componentsRoot, 'nested', 'b.txt'), 'utf8'), 'x');
 	});
 
 	it('write_file is marked destructive', () => {
 		assert.equal(writeFileTool.destructive, true);
 	});
 
-	it('list_dir enumerates direct children of an allowed scope', async () => {
+	it('list_dir enumerates direct children of a scope (default root)', async () => {
 		writeFileSync(join(scopes.componentsRoot, 'a.txt'), '1');
 		mkdirSync(join(scopes.componentsRoot, 'sub'));
-		const { entries } = await listDirTool.handler({ path: scopes.componentsRoot }, ctx(scopes));
+		const { entries } = await listDirTool.handler({}, ctx(scopes));
 		const names = entries.map((e) => e.name).sort();
 		assert.deepEqual(names, ['a.txt', 'sub']);
 	});
 
 	it('grep_files finds matches and respects maxResults', async () => {
 		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'apple\nbanana\nApple');
-		const { results } = await grepFilesTool.handler({ root: scopes.componentsRoot, pattern: 'apple' }, ctx(scopes));
+		const { results } = await grepFilesTool.handler({ pattern: 'apple' }, ctx(scopes));
 		assert.equal(results.length, 2);
 		assert.equal(results[0].line, 1);
 	});
 
-	it('tail_file returns the last N lines', async () => {
+	it('tail_file returns the last N lines from the logs scope', async () => {
 		writeFileSync(join(scopes.logDir, 'srv.log'), 'a\nb\nc\nd\n');
-		const { lines } = await tailFileTool.handler({ path: join(scopes.logDir, 'srv.log'), lines: 2 }, ctx(scopes));
+		const { lines } = await tailFileTool.handler({ root: 'logs', path: 'srv.log', lines: 2 }, ctx(scopes));
 		assert.deepEqual(lines, ['c', 'd']);
 	});
 
@@ -95,7 +101,7 @@ describe('agent/fsTools', () => {
 			throw err;
 		}
 		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'PRIVATE');
-		const { results } = await grepFilesTool.handler({ root: scopes.componentsRoot, pattern: 'PRIVATE' }, ctx(scopes));
+		const { results } = await grepFilesTool.handler({ pattern: 'PRIVATE' }, ctx(scopes));
 		// Should only find the file in componentsRoot, not the file behind the symlink.
 		assert.equal(results.length, 1);
 		assert.match(results[0].path, /a\.txt$/);
@@ -111,23 +117,20 @@ describe('agent/fsTools', () => {
 			throw err;
 		}
 		await assert.rejects(
-			writeFileTool.handler({ path: join(scopes.componentsRoot, 'escape-link'), content: 'pwned' }, ctx(scopes)),
+			writeFileTool.handler({ path: 'escape-link', content: 'pwned' }, ctx(scopes)),
 			/through a symlink/
 		);
 		assert.equal(existsSync(outsideTarget), false);
 	});
 
-	it('refuses paths that resolve outside scope via ..', async () => {
-		const escape = join(scopes.componentsRoot, '..', '..', 'etc', 'passwd');
-		await assert.rejects(readFileTool.handler({ path: escape }, ctx(scopes)), /outside the agent's read scope/);
+	it('read_file refuses paths that resolve outside scope via ..', async () => {
+		const escape = join('..', '..', 'etc', 'passwd');
+		await assert.rejects(readFileTool.handler({ path: escape }, ctx(scopes)), /outside the agent's 'components' scope/);
 	});
 
 	it('write_file enforces the byte cap', async () => {
 		const big = 'x'.repeat(6 * 1024 * 1024);
-		await assert.rejects(
-			writeFileTool.handler({ path: join(scopes.componentsRoot, 'big.txt'), content: big }, ctx(scopes)),
-			/exceeds/
-		);
+		await assert.rejects(writeFileTool.handler({ path: 'big.txt', content: big }, ctx(scopes)), /exceeds/);
 		assert.equal(existsSync(join(scopes.componentsRoot, 'big.txt')), false);
 	});
 });
