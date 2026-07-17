@@ -185,12 +185,29 @@ describe('mcp/toolRegistry', () => {
 	});
 
 	describe('setProfileToolProvider (dynamic per-profile tools)', () => {
-		const { setProfileToolProvider } = require('#src/components/mcp/toolRegistry');
+		const { setProfileToolProvider, listProfileTools } = require('#src/components/mcp/toolRegistry');
 
 		function provider(defs) {
 			const byName = new Map(defs.map((d) => [d.name, d]));
 			return { list: () => defs, get: (name) => byName.get(name) };
 		}
+
+		// listProfileTools is what the built-in agent drains (unlike
+		// snapshotProfileTools, which is static-only and misses providers).
+		it('listProfileTools includes provider tools and merges static (static wins)', () => {
+			addTool(makeTool({ name: 'dup', profile: 'operations', description: 'static wins' }));
+			addTool(makeTool({ name: 'static_only', profile: 'operations' }));
+			setProfileToolProvider(
+				'operations',
+				provider([
+					makeTool({ name: 'dup', profile: 'operations', description: 'provider loses' }),
+					makeTool({ name: 'prov_only', profile: 'operations' }),
+				])
+			);
+			const byName = new Map(listProfileTools('operations').map((d) => [d.name, d]));
+			assert.deepEqual([...byName.keys()].sort(), ['dup', 'prov_only', 'static_only']);
+			assert.equal(byName.get('dup').description, 'static wins');
+		});
 
 		it('lists provider tools merged with statically-registered tools', () => {
 			addTool(makeTool({ name: 'static_op', profile: 'operations' }));

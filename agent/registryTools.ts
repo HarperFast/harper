@@ -20,7 +20,7 @@
 
 import { registerOperationsTools } from '../components/mcp/tools/operations.ts';
 import {
-	snapshotProfileTools,
+	listProfileTools,
 	type AuthedUser,
 	type ToolCallContext,
 	type ToolDef as RegistryToolDef,
@@ -60,7 +60,7 @@ export function ensureOperationsToolsRegistered(): void {
  *     is never cached in the handler closure.
  */
 export function composeRegistryTools(listingUser: AuthedUser, resolveIdentity: () => Promise<AuthedUser>): AgentTool[] {
-	const defs = snapshotProfileTools('operations');
+	const defs = listProfileTools('operations');
 	const out: AgentTool[] = [];
 	for (const def of defs) {
 		if (!def.visibleTo(listingUser)) continue;
