@@ -321,7 +321,7 @@ could leave a peer half-installed after other peers had already restarted onto t
 request/response contract is unchanged; only the SSE phase names differ (`stage`/`activate` vs the
 old `prepare`/`replicate`). `two_phase: false` forces the legacy one-shot path.
 
-The staging directory (`.deploy-staging/<name>/<deploymentId>`) lives **under the components root**,
+The staging directory (`.deploy-staging/<deploymentId>/<name>`) lives **under the components root**,
 not in `os.tmpdir()`, even though its contents are transient. This is deliberate and load-bearing:
 the go-live step is `rename(stagingDir, liveDir)`, which is only atomic when both paths share a
 filesystem. `os.tmpdir()` is frequently a different mount (tmpfs, a separate volume); a cross-device
@@ -335,7 +335,13 @@ scoped to `activateApplication`, the only phase that writes the live path. Stagi
 from the deployment id precisely so `activate_component` (a separate replicated operation, and on
 peers a separate invocation from `stage_component`) can reconstruct the same path the stage built —
 peers build a fresh `Application` per sub-operation, so there is no shared in-memory handle to rely
-on. `extractApplication`/`installApplication` build into `application.buildDirPath`, which defaults
+on. The deployment id sits ABOVE the component name (`…/<deploymentId>/<name>`, not
+`…/<name>/<deploymentId>`) for two reasons: the leaf directory's basename is then the real component
+name, which the pre-go-live validation load needs (`componentLoader` keys the `ApplicationScope` and
+status registry off `basename(componentDirectory)`, so a UUID leaf would register the throwaway load
+under a bogus name); and each deploy gets its own parent directory, so a parallel or queued deploy of
+the same component can never share a directory or have its staged build swept by another's cleanup.
+`extractApplication`/`installApplication` build into `application.buildDirPath`, which defaults
 to the live dir (`dirPath`) — this is what keeps the legacy one-shot path, boot-time
 `installApplications`, and the direct `extractApplication` callers unchanged — and is repointed at
 the staging dir only for the duration of a stage.

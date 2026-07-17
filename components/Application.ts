@@ -18,12 +18,14 @@ import {
 	access,
 	constants,
 	cp,
+	lstat,
 	mkdir,
 	mkdtemp,
 	readdir,
 	readFile,
 	rename,
 	rm,
+	rmdir,
 	stat,
 	symlink,
 	writeFile,
@@ -438,7 +440,11 @@ export const DEPLOY_STAGING_DIR = '.deploy-staging';
 async function moveDirAside(targetDirPath: string): Promise<string | null> {
 	const asideStagingDir = join(dirname(targetDirPath), ASIDE_STAGING_DIR, basename(targetDirPath));
 	try {
-		await access(targetDirPath, constants.F_OK);
+		// lstat, not access(F_OK): access follows symlinks, so a DANGLING symlink at the path (left by a
+		// prior `file:`-directory deploy whose target was removed) would report ENOENT and be skipped
+		// here — then mkdir(targetDirPath) fails EEXIST because the dead link still occupies the path.
+		// lstat sees the link itself, so we move it aside like any other occupant.
+		await lstat(targetDirPath);
 	} catch (err) {
 		if (err.code === 'ENOENT') return null; // nothing there to move
 		throw err;
@@ -942,12 +948,19 @@ export class Application {
 		return this.#buildDirPath ?? this.dirPath;
 	}
 
-	// Hidden, per-deploy staging directory the incoming version is built into before it goes live.
-	// Deterministic from (component name, stagingId) so `activate_component` can find what
-	// `stage_component` built. Sits under the components root (dirname(dirPath)) so the go-live
-	// rename() into `dirPath` stays on one filesystem and is therefore atomic. See DEPLOY_STAGING_DIR.
+	// Hidden, per-deploy staging directory the incoming version is built into before it goes live:
+	// `<componentsRoot>/.deploy-staging/<stagingId>/<name>`. Deterministic from (stagingId, component
+	// name) so `activate_component` can find what `stage_component` built. Sits under the components
+	// root (dirname(dirPath)) so the go-live rename() into `dirPath` stays on one filesystem and is
+	// therefore atomic. Two properties fall out of putting the deployment id ABOVE the component name:
+	//   - the leaf directory's basename IS the component name, so the pre-go-live validation load
+	//     (componentLoader keys the ApplicationScope + status off basename) sees the real name, not a
+	//     UUID; and
+	//   - each deployment gets its OWN parent (.deploy-staging/<stagingId>), so a parallel or queued
+	//     deploy of the same component never shares a directory — cleanup can't sweep a sibling.
+	// See DEPLOY_STAGING_DIR.
 	get stagingDirPath(): string {
-		return join(dirname(this.dirPath), DEPLOY_STAGING_DIR, this.name, this.stagingId);
+		return join(dirname(this.dirPath), DEPLOY_STAGING_DIR, this.stagingId, this.name);
 	}
 
 	// Route extract/install into the staging directory. Called by stageApplication().
@@ -1124,6 +1137,11 @@ export async function stageApplication(application: Application): Promise<string
 	// Start from a clean slate so a retried stage (same deployment id) can't inherit a half-built
 	// tree from a previous attempt.
 	await rm(application.stagingDirPath, { recursive: true, force: true });
+	// Create the per-deploy staging parent (.deploy-staging/<stagingId>) up front. extractApplication's
+	// own mkdir only covers the payload path — for a `package` deploy the FIRST filesystem touch is the
+	// `npm pack`/git-clone spawn, whose cwd is this parent directory; without it the spawn fails with
+	// ENOENT (posix_spawn) before any tarball is produced.
+	await mkdir(dirname(application.stagingDirPath), { recursive: true });
 	try {
 		await application.writeTransientNpmrc();
 		try {
@@ -1185,12 +1203,16 @@ export async function activateApplication(application: Application): Promise<voi
 	} finally {
 		broadcastDeployEnd(application.name);
 	}
-	// Best-effort cleanup of the outgoing version (see cleanupAsideDir) and the now-empty per-component
-	// staging parent.
+	// Best-effort cleanup of the outgoing version (see cleanupAsideDir). The rename already consumed
+	// stagingDirPath, so all that remains is this deploy's now-empty staging parent
+	// (.deploy-staging/<stagingId>). Remove it with a NON-recursive rmdir, which succeeds only when it
+	// is empty — a belt-and-suspenders guard against ever recursively deleting a directory that could
+	// hold another deploy's build. ENOTEMPTY and ENOENT (already gone) are expected and ignored.
 	cleanupAsideDir(asideStagingDir, application.name);
-	rm(dirname(stagingDirPath), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
-		logger.trace?.(`Deferred cleanup of ${application.name} staging directory: ${err.message}`)
-	);
+	rmdir(dirname(stagingDirPath)).catch((err) => {
+		if (err.code !== 'ENOTEMPTY' && err.code !== 'ENOENT')
+			logger.trace?.(`Deferred cleanup of ${application.name} staging directory: ${err.message}`);
+	});
 }
 
 /**

@@ -168,4 +168,64 @@ describe('two-phase deploy primitives (stage / activate / discard)', function ()
 
 		await Promise.all([discardStagedApplication(a), discardStagedApplication(b)]);
 	});
+
+	it('stages a `file:` tarball package identifier (the package path, no payload)', async () => {
+		// Regression for the staging parent dir: extractApplication's `file:`-tarball branch (and the
+		// npm-pack branch) resolve paths relative to dirname(stagingDirPath), which must exist before
+		// extraction. A payload-only test never exercises that branch.
+		const name = `stage_test_${process.pid}_${counter++}`;
+		const tgzDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-stage-tgz-'));
+		const tgzPath = path.join(tgzDir, 'component.tgz');
+		await fs.writeFile(tgzPath, await makeComponentPayload('from-tarball'));
+
+		const app = new Application({ name, packageIdentifier: `file:${tgzPath}` });
+		await stageApplication(app);
+		assert.match(await readMarker(app.stagingDirPath), /from-tarball/, 'tarball extracted into staging');
+		assert.strictEqual(existsSync(app.dirPath), false, 'live dir untouched by staging a tarball');
+
+		await discardStagedApplication(app);
+		await fs.rm(tgzDir, { recursive: true, force: true });
+	});
+
+	it('activate cleanup does NOT sweep a sibling staged build of the same component', async () => {
+		// Two deploys of the same component staged concurrently share the .deploy-staging/<name> parent.
+		// Activating one must not recursively delete that parent and destroy the other's staged build.
+		const name = `stage_test_${process.pid}_${counter++}`;
+		const first = new Application({ name, payload: await makeComponentPayload('first') });
+		const second = new Application({ name, payload: await makeComponentPayload('second') });
+		await stageApplication(first);
+		await stageApplication(second);
+		assert.notStrictEqual(first.stagingDirPath, second.stagingDirPath);
+
+		await activateApplication(first);
+
+		assert.match(await readMarker(first.dirPath), /first/, 'first went live');
+		assert.ok(existsSync(second.stagingDirPath), 'the sibling staged build survived the activate cleanup');
+
+		await fs.rm(first.dirPath, { recursive: true, force: true });
+		await discardStagedApplication(second);
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+	});
+
+	it('activate moves a DANGLING symlink at the live path aside instead of failing EEXIST', async () => {
+		// A prior `file:`-directory deploy leaves the live path as a symlink; if its target is later
+		// removed the link dangles. moveDirAside must detect it via lstat (access(F_OK) follows the link
+		// and reports ENOENT) so the swap replaces it cleanly.
+		const name = `stage_test_${process.pid}_${counter++}`;
+		const dirPath = path.join(COMPONENTS_ROOT, name);
+		await fs.symlink(path.join(os.tmpdir(), `does-not-exist-${process.pid}-${counter}`), dirPath);
+		assert.strictEqual(existsSync(dirPath), false, 'precondition: the symlink is dangling');
+
+		const app = new Application({ name, payload: await makeComponentPayload('replaced') });
+		await stageApplication(app);
+		await activateApplication(app);
+
+		const stat = await fs.lstat(dirPath);
+		assert.strictEqual(stat.isSymbolicLink(), false, 'live path is now a real directory, not the dead link');
+		assert.match(await readMarker(dirPath), /replaced/);
+
+		await fs.rm(dirPath, { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+	});
 });
