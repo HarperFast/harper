@@ -328,7 +328,9 @@ function startWorker(path, options = {}) {
 	// resolved paths are passed as file URLs. Not supported under Bun, which does not use
 	// execArgv here. Safe mode also omits preloads because they are configured code,
 	// which safe mode must not resolve or execute.
-	if (!isBun && !process.env.HARPER_SAFE_MODE) {
+	const isSafeMode =
+		process.env.HARPER_SAFE_MODE && process.env.HARPER_SAFE_MODE !== 'false' && process.env.HARPER_SAFE_MODE !== '0';
+	if (!isBun && !isSafeMode) {
 		for (const importPath of getImportModules()) execArgv.push('--import', pathToFileURL(importPath).href);
 		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
 	}
