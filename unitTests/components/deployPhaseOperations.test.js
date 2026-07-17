@@ -1,98 +1,141 @@
 'use strict';
 
-// Operation-level orchestration tests for the two-phase deploy handlers: stage_component,
-// activate_component, and the legacy one-shot deploy_component (two_phase: false). The heavy,
-// environment-dependent internals (the actual build/swap, payload blob ingest, credential resolution)
-// are rewired to stubs so these assert the ORCHESTRATION — which primitive runs, whether replication
-// and restart fire, the response shape — without needing npm/network or the full component loader.
+// Operation-level tests for the two-phase deploy handlers: stage_component, activate_component, and
+// deploy_component (both the two-phase default and the two_phase:false one-shot fallback). These run
+// the real handlers against a real temp filesystem with a real tarball payload — no stubbing — in the
+// deployStaging.test.js style (AGENTS.md: new tests use plain `assert` against real modules, no
+// sinon/rewire). Payload deploys are used throughout so nothing reaches the component loader (a
+// `package` deploy's protected-name guard would), and no test requests a restart.
 
 const assert = require('node:assert');
-const rewire = require('rewire');
-const sinon = require('sinon');
+const fs = require('node:fs/promises');
+const { existsSync } = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const zlib = require('node:zlib');
+const tarfs = require('tar-fs');
 
-const operations = rewire('#js/components/operations');
-const manageThreads = require('#src/server/threads/manageThreads');
+const testUtils = require('../testUtils.js');
+testUtils.preTestPrep();
 
-// Neutralize the parts that touch the filesystem / datastore / cluster, leaving the control flow.
-function stubInternals(sandbox) {
-	const stage = sandbox.stub().resolves('/staging');
-	const activate = sandbox.stub().resolves();
-	const prepare = sandbox.stub().resolves();
-	operations.__set__('stageApplication', stage);
-	operations.__set__('activateApplication', activate);
-	operations.__set__('prepareApplication', prepare);
-	// Skip payload-blob ingest and credential resolution — not what these tests exercise.
-	operations.__set__('sourceExtractionPayload', sandbox.stub().resolves(Buffer.from('tarball')));
-	operations.__set__('resolveNodeCredentials', sandbox.stub().resolves([]));
-	// Don't actually bounce workers.
-	sandbox.stub(manageThreads, 'restartWorkers');
-	return { stage, activate, prepare };
+const operations = require('#src/components/operations');
+const { DEPLOY_STAGING_DIR } = require('#src/components/Application');
+const { getConfigPath } = require('#src/config/configUtils');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+const COMPONENTS_ROOT = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+
+// Pack a directory's CONTENTS into a gzipped tar Buffer, the shape a deploy payload takes.
+function packDirectory(dir) {
+	return new Promise((resolve, reject) => {
+		const chunks = [];
+		tarfs
+			.pack(dir)
+			.pipe(zlib.createGzip())
+			.on('data', (c) => chunks.push(c))
+			.on('end', () => resolve(Buffer.concat(chunks)))
+			.on('error', reject);
+	});
 }
 
-describe('stage_component / activate_component / one-shot deploy orchestration', () => {
-	let sandbox;
-	beforeEach(() => {
-		sandbox = sinon.createSandbox();
+// A component source that already contains node_modules, so installApplication short-circuits and no
+// npm/network is needed.
+async function makeComponentPayload(marker) {
+	const src = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-op-src-'));
+	await fs.writeFile(path.join(src, 'package.json'), JSON.stringify({ name: 'op-fixture', version: '1.0.0' }));
+	await fs.writeFile(path.join(src, 'index.js'), `module.exports = ${JSON.stringify(marker)};\n`);
+	await fs.mkdir(path.join(src, 'node_modules'), { recursive: true });
+	await fs.writeFile(path.join(src, 'node_modules', '.marker'), marker);
+	const payload = await packDirectory(src);
+	await fs.rm(src, { recursive: true, force: true });
+	return payload;
+}
+
+const readIndex = (dir) => fs.readFile(path.join(dir, 'index.js'), 'utf8');
+
+describe('deploy operations: stage_component / activate_component / deploy_component', function () {
+	this.timeout(30_000);
+
+	before(async () => {
+		await fs.mkdir(COMPONENTS_ROOT, { recursive: true });
 	});
-	afterEach(() => {
-		sandbox.restore();
+
+	let counter = 0;
+	const names = [];
+	function freshName() {
+		const name = `op_test_${process.pid}_${counter++}`;
+		names.push(name);
+		return name;
+	}
+
+	// Sweep any live dirs, staging, and aside created by the suite.
+	after(async () => {
+		for (const name of names) await fs.rm(path.join(COMPONENTS_ROOT, name), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-aside'), { recursive: true, force: true });
 	});
 
-	it('stageComponent stages, replicates, and returns a staged marker + deployment_id — no restart, no config write', async () => {
-		const { stage, activate, prepare } = stubInternals(sandbox);
-		const addConfig = sandbox.stub(require('#src/config/configUtils'), 'addConfig').resolves();
+	it('stage_component builds the incoming version into staging without going live, and returns a deployment_id', async () => {
+		const name = freshName();
+		const res = await operations.stageComponent({ project: name, payload: await makeComponentPayload('op-staged') });
 
-		const res = await operations.stageComponent({ project: 'my_app', payload: Buffer.from('x') });
-
-		assert.strictEqual(stage.calledOnce, true, 'stageApplication was called');
-		assert.strictEqual(activate.called, false, 'activate never runs during a stage');
-		assert.strictEqual(prepare.called, false, 'the one-shot prepare path is not used');
 		assert.strictEqual(res.staged, true);
-		assert.strictEqual(res.project, 'my_app');
-		assert.ok(res.deployment_id, 'a deployment_id is returned');
-		assert.strictEqual(addConfig.called, false, 'staging never writes root config');
-		assert.strictEqual(manageThreads.restartWorkers.called, false, 'staging never restarts');
+		assert.strictEqual(res.project, name);
+		assert.strictEqual(typeof res.deployment_id, 'string');
+
+		const stagedDir = path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, res.deployment_id, name);
+		assert.ok(existsSync(path.join(stagedDir, 'index.js')), 'component was built into the staging dir');
+		assert.strictEqual(existsSync(path.join(COMPONENTS_ROOT, name)), false, 'staging did not touch the live path');
 	});
 
-	it('activateComponent swaps live and restarts when restart:true; returns an activated marker', async () => {
-		const { activate } = stubInternals(sandbox);
-
-		const res = await operations.activateComponent({
-			project: 'my_app',
-			deployment_id: 'dep-123',
-			restart: true,
+	it('activate_component takes a prior stage live', async () => {
+		const name = freshName();
+		const staged = await operations.stageComponent({
+			project: name,
+			payload: await makeComponentPayload('op-activated'),
 		});
+		const res = await operations.activateComponent({ project: name, deployment_id: staged.deployment_id });
 
-		assert.strictEqual(activate.calledOnce, true, 'activateApplication was called');
 		assert.strictEqual(res.activated, true);
-		assert.strictEqual(res.project, 'my_app');
-		assert.strictEqual(manageThreads.restartWorkers.calledWith('http'), true, 'restarted the http workers');
+		assert.strictEqual(res.project, name);
+		const liveDir = path.join(COMPONENTS_ROOT, name);
+		assert.ok(existsSync(liveDir), 'live component dir now exists');
+		assert.match(await readIndex(liveDir), /op-activated/);
+		// A restart was not requested, so the message must not claim one.
+		assert.doesNotMatch(res.message, /restart/i);
 	});
 
-	it('activateComponent does not restart when restart is omitted', async () => {
-		const { activate } = stubInternals(sandbox);
-		await operations.activateComponent({ project: 'my_app', deployment_id: 'dep-123' });
-		assert.strictEqual(activate.calledOnce, true);
-		assert.strictEqual(manageThreads.restartWorkers.called, false);
+	it('activate_component rejects when no deployment_id is supplied', async () => {
+		const name = freshName();
+		await assert.rejects(() => operations.activateComponent({ project: name }), /deployment_id.*required/i);
 	});
 
-	it('activateComponent rejects when no deployment_id is supplied', async () => {
-		stubInternals(sandbox);
-		await assert.rejects(() => operations.activateComponent({ project: 'my_app' }), /deployment_id.*required/i);
+	it('deploy_component (two-phase default) stages then activates end-to-end', async () => {
+		const name = freshName();
+		const res = await operations.deployComponent({ project: name, payload: await makeComponentPayload('op-deployed') });
+
+		assert.match(res.message, /Successfully deployed/);
+		assert.strictEqual(typeof res.deployment_id, 'string');
+		const liveDir = path.join(COMPONENTS_ROOT, name);
+		assert.match(await readIndex(liveDir), /op-deployed/, 'component is live after a two-phase deploy');
+		// The staged copy was consumed by the swap; its per-deploy staging parent is cleaned up.
+		assert.strictEqual(
+			existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, res.deployment_id)),
+			false,
+			'per-deploy staging parent removed after activation'
+		);
 	});
 
-	it('deploy_component with two_phase:false takes the legacy one-shot path (prepareApplication, not stage/activate)', async () => {
-		const { stage, activate, prepare } = stubInternals(sandbox);
-
+	it('deploy_component with two_phase:false runs the legacy one-shot path', async () => {
+		const name = freshName();
 		const res = await operations.deployComponent({
-			project: 'my_app',
-			payload: Buffer.from('x'),
+			project: name,
+			payload: await makeComponentPayload('op-oneshot'),
 			two_phase: false,
 		});
 
-		assert.strictEqual(prepare.calledOnce, true, 'one-shot prepareApplication was called');
-		assert.strictEqual(stage.called, false, 'two-phase stage not used on the one-shot path');
-		assert.strictEqual(activate.called, false, 'two-phase activate not used on the one-shot path');
 		assert.match(res.message, /Successfully deployed/);
+		const liveDir = path.join(COMPONENTS_ROOT, name);
+		assert.match(await readIndex(liveDir), /op-oneshot/, 'component is live after a one-shot deploy');
 	});
 });
