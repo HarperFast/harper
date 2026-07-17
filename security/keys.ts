@@ -821,11 +821,26 @@ if (typeof globalThis.Bun === 'undefined') {
 let caCerts = new Map();
 
 const SECLEVEL_PATTERN = /@SECLEVEL=(\d+)/i;
-// OpenSSL's default security level when a cipher string doesn't set one explicitly
-const DEFAULT_OPENSSL_SECURITY_LEVEL = 1;
-function securityLevelOf(ciphers) {
+/** Split a cipher string into its suite list and its explicit `@SECLEVEL` (undefined when unset). */
+function parseCipherString(ciphers) {
 	const match = SECLEVEL_PATTERN.exec(ciphers);
-	return match ? Number(match[1]) : DEFAULT_OPENSSL_SECURITY_LEVEL;
+	return {
+		suite: ciphers.replace(SECLEVEL_PATTERN, '').trim() || undefined,
+		level: match ? Number(match[1]) : undefined,
+	};
+}
+
+/**
+ * Whether a certificate (record or `tls[]` entry) can affect the given listener, mirroring
+ * createTLSSelector's tolerant selection: no `uses` is a generic certificate, `'https'` is the
+ * legacy generic use, and an authority matters exactly when the listener verifies client chains.
+ */
+function ciphersCandidateRelevant(usesRaw, isAuthority, servesCertificate, type, verifiesClientCerts) {
+	if (isAuthority && verifiesClientCerts) return true;
+	if (!servesCertificate) return false;
+	// normalize: stored as scalar in legacy/manual entries, expected array
+	const uses = Array.isArray(usesRaw) ? usesRaw : usesRaw ? [usesRaw] : [];
+	return uses.length === 0 || uses.includes(type) || uses.includes('https');
 }
 
 /**
@@ -837,62 +852,84 @@ function securityLevelOf(ciphers) {
  * so per-certificate `ciphers` — whether on a `tls` array entry or a certificate record — cannot
  * take effect on their own; a listener has exactly one effective cipher string. Historically only
  * `tls.ciphers ?? tls[0].ciphers` was applied and every other configured value was silently
- * ignored, including a CA record needing a relaxed
- * security level to verify legacy client chains (e.g. SHA-1-signed CAs requiring
- * `DEFAULT@SECLEVEL=0`, which fail with `authorizationError: UNSPECIFIED` at the default level).
+ * ignored, including a CA record needing a relaxed security level to verify legacy client chains
+ * (e.g. SHA-1-signed CAs requiring `DEFAULT@SECLEVEL=0`, which fail with
+ * `authorizationError: UNSPECIFIED` at the default level).
  *
- * Resolution:
- * 1. Top-level `tls.ciphers` wins when set (the explicit global knob).
- * 2. Otherwise every `tls[]` entry and relevant certificate record is a candidate: records whose
- *    `uses` includes the listener type, plus authority records when the listener verifies client
- *    certificates (mTLS) — a CA that needs a relaxed level must relax the listener itself.
- * 3. Conflicting candidates can't be honored together: the lowest explicit `@SECLEVEL` wins (a
- *    chain that needs the relaxed level fails outright without it, while the others merely also
- *    accept it), and everything ignored is logged as a warning.
+ * Resolution composes rather than picks a winner, because `@SECLEVEL` and the suite list are
+ * separable OpenSSL commands:
+ * 1. Candidates come from the listener's config layers in priority order (`configLayers`, e.g.
+ *    `operationsApi.tls` before root `tls` — an object's `ciphers` directly, an array's entries
+ *    filtered by {@link ciphersCandidateRelevant}) and then from relevant certificate records.
+ * 2. The suite list comes from the highest-priority suite-bearing candidate — a CA needing a
+ *    relaxed level must not replace or broaden the listener's configured suites.
+ * 3. The security level is the minimum explicit `@SECLEVEL` across candidates (a chain that needs
+ *    the relaxed level fails outright without it; the others merely also accept it). Candidates
+ *    without an explicit `@SECLEVEL` keep the runtime default — no level is assumed for them,
+ *    since the OpenSSL default varies across Node builds.
+ * Anything composed across sources or dropped (extra suite lists) is logged as a warning.
  */
-export function resolveEffectiveTlsCiphers(tlsConfig, certRecords, type, verifiesClientCerts): string | undefined {
+export function resolveEffectiveTlsCiphers(configLayers, certRecords, type, verifiesClientCerts): string | undefined {
 	const candidates = [];
-	const topLevel = Array.isArray(tlsConfig) ? undefined : tlsConfig?.ciphers;
-	if (Array.isArray(tlsConfig)) {
-		for (let index = 0; index < tlsConfig.length; index++) {
-			if (tlsConfig[index]?.ciphers) candidates.push({ source: `tls[${index}]`, ciphers: tlsConfig[index].ciphers });
+	for (const { source, config } of configLayers ?? []) {
+		if (!config) continue;
+		if (Array.isArray(config)) {
+			for (let index = 0; index < config.length; index++) {
+				const entry = config[index];
+				if (!entry?.ciphers) continue;
+				const isAuthority = Boolean(entry.certificateAuthority);
+				const servesCertificate = Boolean(entry.certificate) || !isAuthority;
+				if (ciphersCandidateRelevant(entry.uses, isAuthority, servesCertificate, type, verifiesClientCerts)) {
+					candidates.push({ source: `${source}[${index}]`, ciphers: entry.ciphers });
+				}
+			}
+		} else if (config.ciphers) {
+			// an object layer's ciphers is the listener config's own knob — always relevant
+			candidates.push({ source: `${source}.ciphers`, ciphers: config.ciphers });
 		}
 	}
 	for (const cert of certRecords ?? []) {
 		if (!cert?.ciphers) continue;
-		// normalize: stored as scalar in legacy/manual entries, expected array
-		const uses = Array.isArray(cert.uses) ? cert.uses : cert.uses ? [cert.uses] : [];
-		if (uses.includes(type) || (cert.is_authority && verifiesClientCerts)) {
+		// authority records are never served as listener certs — they matter only for verification
+		if (
+			ciphersCandidateRelevant(cert.uses, Boolean(cert.is_authority), !cert.is_authority, type, verifiesClientCerts)
+		) {
 			candidates.push({ source: `certificate '${cert.name}'`, ciphers: cert.ciphers });
 		}
 	}
-	if (topLevel) {
-		const ignored = candidates.filter((candidate) => candidate.ciphers !== topLevel);
-		if (ignored.length) {
-			logger.warn?.(
-				`tls.ciphers ('${topLevel}') is set and overrides the cipher configuration from ${ignored
-					.map((candidate) => `${candidate.source} ('${candidate.ciphers}')`)
-					.join(', ')} — a TLS listener has a single effective cipher string`
-			);
-		}
-		return topLevel;
-	}
 	if (candidates.length === 0) return undefined;
-	let chosen = candidates[0];
-	for (const candidate of candidates) {
-		if (securityLevelOf(candidate.ciphers) < securityLevelOf(chosen.ciphers)) chosen = candidate;
+
+	const parsed = candidates.map((candidate) => ({ ...candidate, ...parseCipherString(candidate.ciphers) }));
+	const suiteBearing = parsed.filter((candidate) => candidate.suite);
+	const suiteSource = suiteBearing[0];
+	let levelSource;
+	for (const candidate of parsed) {
+		if (candidate.level !== undefined && (levelSource === undefined || candidate.level < levelSource.level)) {
+			levelSource = candidate;
+		}
 	}
-	const ignored = candidates.filter((candidate) => candidate.ciphers !== chosen.ciphers);
-	if (ignored.length) {
-		logger.warn?.(
-			`Multiple TLS cipher configurations for the '${type}' listener; using '${chosen.ciphers}' from ${
-				chosen.source
-			} (lowest security level) and ignoring ${ignored
-				.map((candidate) => `${candidate.source} ('${candidate.ciphers}')`)
-				.join(', ')} — a TLS listener has a single effective cipher string`
+	// no suite anywhere means a bare @SECLEVEL override — anchor it to DEFAULT
+	const suite = suiteSource?.suite ?? 'DEFAULT';
+	const effective = levelSource === undefined ? suite : `${suite}@SECLEVEL=${levelSource.level}`;
+
+	const notes = [];
+	const droppedSuites = suiteBearing.filter((candidate) => candidate.suite !== suiteSource.suite);
+	if (droppedSuites.length) {
+		notes.push(
+			`suites from ${suiteSource.source} ('${suiteSource.suite}'); ignoring suite lists from ${droppedSuites
+				.map((candidate) => `${candidate.source} ('${candidate.suite}')`)
+				.join(', ')}`
 		);
 	}
-	return chosen.ciphers;
+	if (levelSource !== undefined && levelSource.source !== suiteSource?.source) {
+		notes.push(`security level ${levelSource.level} required by ${levelSource.source}`);
+	}
+	if (notes.length) {
+		logger.warn?.(
+			`Composed TLS cipher configuration for the '${type}' listener ('${effective}'): ${notes.join('; ')} — a listener has a single effective cipher string`
+		);
+	}
+	return effective;
 }
 
 /**
@@ -906,7 +943,14 @@ export function getEffectiveTlsCiphers(type, mtlsOptions?): string | undefined {
 	} catch (error) {
 		logger.trace?.('Certificate table not available while resolving TLS ciphers', error);
 	}
-	return resolveEffectiveTlsCiphers(envManager.get('tls'), certRecords, type, Boolean(mtlsOptions));
+	const configLayers = [];
+	// the operations API listener has its own tls section (merged separately by config
+	// composition, may inherit the root certificate while overriding ciphers) — it outranks root
+	if (type === 'operations-api') {
+		configLayers.push({ source: 'operationsApi.tls', config: envManager.get(CONFIG_PARAMS.OPERATIONSAPI_TLS) });
+	}
+	configLayers.push({ source: 'tls', config: envManager.get('tls') });
+	return resolveEffectiveTlsCiphers(configLayers, certRecords, type, Boolean(mtlsOptions));
 }
 
 /**

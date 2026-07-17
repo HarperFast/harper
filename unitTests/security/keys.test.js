@@ -644,65 +644,117 @@ describe('Test keys module', () => {
 	describe('resolveEffectiveTlsCiphers', () => {
 		const resolve = keys.__get__('resolveEffectiveTlsCiphers');
 		const RELAXED = 'DEFAULT@SECLEVEL=0';
+		const layers = (config) => [{ source: 'tls', config }];
 
 		it('returns undefined when nothing configures ciphers', () => {
-			expect(resolve({ certificate: 'x' }, [], 'server', false)).to.be.undefined;
+			expect(resolve(layers({ certificate: 'x' }), [], 'server', false)).to.be.undefined;
 			expect(resolve(undefined, undefined, 'server', true)).to.be.undefined;
 		});
 
-		it('top-level tls.ciphers wins, including over conflicting certificate records', () => {
+		it('applies a lone tls.ciphers as-is', () => {
+			expect(resolve(layers({ ciphers: 'HIGH' }), [], 'server', false)).to.equal('HIGH');
+		});
+
+		it('composes a CA record SECLEVEL onto explicit tls.ciphers suites instead of replacing them', () => {
 			const records = [{ name: 'ca', is_authority: true, ciphers: RELAXED }];
-			expect(resolve({ ciphers: 'DEFAULT' }, records, 'server', true)).to.equal('DEFAULT');
+			expect(resolve(layers({ ciphers: 'HIGH' }), records, 'server', true)).to.equal('HIGH@SECLEVEL=0');
 		});
 
 		it('honors a tls array entry beyond [0] (previously silently ignored)', () => {
-			expect(resolve([{ certificate: 'a' }, { certificate: 'b', ciphers: RELAXED }], [], 'server', false)).to.equal(
-				RELAXED
-			);
+			expect(
+				resolve(layers([{ certificate: 'a' }, { certificate: 'b', ciphers: RELAXED }]), [], 'server', false)
+			).to.equal(RELAXED);
+		});
+
+		it('excludes a CA array entry when the listener does not verify client certificates', () => {
+			expect(
+				resolve(
+					layers([{ certificate: 'a' }, { certificateAuthority: 'ca.pem', ciphers: RELAXED }]),
+					[],
+					'server',
+					false
+				)
+			).to.be.undefined;
+		});
+
+		it('includes a CA array entry when the listener verifies client certificates', () => {
+			expect(
+				resolve(
+					layers([{ certificate: 'a' }, { certificateAuthority: 'ca.pem', ciphers: RELAXED }]),
+					[],
+					'server',
+					true
+				)
+			).to.equal(RELAXED);
 		});
 
 		it('applies a matching-use certificate record when config sets no ciphers', () => {
 			const records = [{ name: 'cert', uses: ['server'], ciphers: RELAXED }];
-			expect(resolve({}, records, 'server', false)).to.equal(RELAXED);
+			expect(resolve(layers({}), records, 'server', false)).to.equal(RELAXED);
+		});
+
+		it('applies generic (no uses) and legacy https records, mirroring selector relevance', () => {
+			expect(resolve(layers({}), [{ name: 'generic', ciphers: RELAXED }], 'server', false)).to.equal(RELAXED);
+			expect(resolve(layers({}), [{ name: 'legacy', uses: ['https'], ciphers: RELAXED }], 'server', false)).to.equal(
+				RELAXED
+			);
 		});
 
 		it('normalizes a legacy scalar uses value', () => {
 			const records = [{ name: 'cert', uses: 'server', ciphers: RELAXED }];
-			expect(resolve({}, records, 'server', false)).to.equal(RELAXED);
+			expect(resolve(layers({}), records, 'server', false)).to.equal(RELAXED);
 		});
 
 		it('applies an authority record when the listener verifies client certificates', () => {
 			// the incident shape: a client-CA record carrying SECLEVEL=0 for SHA-1-signed chains
 			const records = [{ name: 'legacy-client-ca', is_authority: true, ciphers: RELAXED }];
-			expect(resolve({}, records, 'server', true)).to.equal(RELAXED);
+			expect(resolve(layers({}), records, 'server', true)).to.equal(RELAXED);
 		});
 
 		it('ignores an authority record when the listener does not verify client certificates', () => {
 			const records = [{ name: 'ca', is_authority: true, ciphers: RELAXED }];
-			expect(resolve({}, records, 'server', false)).to.be.undefined;
+			expect(resolve(layers({}), records, 'server', false)).to.be.undefined;
 		});
 
 		it('ignores records whose uses do not match the listener type', () => {
 			const records = [{ name: 'ops-cert', uses: ['operations-api'], ciphers: RELAXED }];
-			expect(resolve({}, records, 'server', false)).to.be.undefined;
+			expect(resolve(layers({}), records, 'server', false)).to.be.undefined;
 		});
 
-		it('picks the lowest explicit @SECLEVEL among conflicting candidates', () => {
+		it('keeps the configured suite and applies the minimum explicit @SECLEVEL from a CA', () => {
 			const records = [{ name: 'ca', is_authority: true, ciphers: RELAXED }];
-			expect(resolve([{ certificate: 'a', ciphers: 'DEFAULT' }], records, 'server', true)).to.equal(RELAXED);
+			expect(resolve(layers([{ certificate: 'a', ciphers: 'DEFAULT' }]), records, 'server', true)).to.equal(
+				'DEFAULT@SECLEVEL=0'
+			);
+			expect(resolve(layers([{ certificate: 'a', ciphers: 'HIGH:!aNULL' }]), records, 'server', true)).to.equal(
+				'HIGH:!aNULL@SECLEVEL=0'
+			);
 		});
 
-		it('treats candidates without @SECLEVEL as the OpenSSL default level and keeps the first on ties', () => {
-			const records = [
-				{ name: 'a', uses: ['server'], ciphers: 'HIGH' },
-				{ name: 'b', uses: ['server'], ciphers: 'DEFAULT' },
+		it('does not assume a level for plain suites — an explicit @SECLEVEL always applies', () => {
+			// the runtime default varies across Node/OpenSSL builds (2 on current Node), so 'HIGH'
+			// carries no assumed level and the explicit SECLEVEL=1 must not lose a tie
+			const records = [{ name: 'b', uses: ['server'], ciphers: 'DEFAULT@SECLEVEL=1' }];
+			expect(resolve(layers([{ certificate: 'a', ciphers: 'HIGH' }]), records, 'server', false)).to.equal(
+				'HIGH@SECLEVEL=1'
+			);
+		});
+
+		it('prefers the operationsApi.tls layer over root tls for the operations listener', () => {
+			const opsLayers = [
+				{ source: 'operationsApi.tls', config: { ciphers: 'HIGH' } },
+				{ source: 'tls', config: { ciphers: 'DEFAULT' } },
 			];
-			expect(resolve({}, records, 'server', false)).to.equal('HIGH');
+			expect(resolve(opsLayers, [], 'operations-api', false)).to.equal('HIGH');
+		});
+
+		it('anchors a bare @SECLEVEL override to DEFAULT', () => {
+			expect(resolve(layers({ ciphers: '@SECLEVEL=0' }), [], 'server', false)).to.equal('DEFAULT@SECLEVEL=0');
 		});
 
 		it('skips records without ciphers', () => {
 			const records = [{ name: 'plain', uses: ['server'] }, null];
-			expect(resolve({}, records, 'server', false)).to.be.undefined;
+			expect(resolve(layers({}), records, 'server', false)).to.be.undefined;
 		});
 	});
 });
