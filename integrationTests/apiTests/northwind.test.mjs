@@ -5411,7 +5411,12 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('select * dev.remarks_blob like w/ special chars pt2', async () => {
+		// pt2 is a prefix LIKE ('literal...%' -> starts_with), which the new SQL engine
+		// serves via an index range scan. On Bun that routes blob string-key decoding
+		// through ordered-binary's new Function reader, which hits the finishUtf8 scope
+		// bug (kriszyp/ordered-binary#8). Passes on all Node versions. The %...% patterns
+		// (pt1/3/4/5) fall back to the legacy engine and are unaffected.
+		test('select * dev.remarks_blob like w/ special chars pt2', { skip: bunSkip }, async () => {
 			await client
 				.req()
 				.send({
