@@ -1696,6 +1696,11 @@ async function runIndexing(Table, attributes, indicesToRemove, retryAttempt = 0)
 							attributeErrorReported[property] = true;
 							if (Table.primaryStore?.rootStore?.status === 'closed')
 								logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, error);
+							else if (isTransientIndexingError(error))
+								// Expected under bulk-ingest load and retried in-process; the pass-level
+								// retry warn carries the operator signal, so per-record detail stays at
+								// debug — a retried pass must not multiply error-level noise (#1371 review).
+								logger.debug(`Transient error indexing attribute ${property} (pass will be retried)`, error);
 							else logger.error(`Error indexing attribute ${property}`, error);
 						}
 					}
@@ -1706,8 +1711,15 @@ async function runIndexing(Table, attributes, indicesToRemove, retryAttempt = 0)
 					(error) => {
 						outstanding--;
 						hadIndexingErrors = true;
-						if (!isTransientIndexingError(error)) hadPermanentIndexingError = true;
-						logger.error(error);
+						if (isTransientIndexingError(error)) {
+							// See the sync catch above: transient rejections are retried in-process and
+							// summarized by the pass-level retry warn — debug keeps a bulk-load ERR_BUSY
+							// burst from emitting an error line per put per pass (#1371 review).
+							logger.debug(error);
+						} else {
+							hadPermanentIndexingError = true;
+							logger.error(error);
+						}
 					}
 				);
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
@@ -1738,8 +1750,13 @@ async function runIndexing(Table, attributes, indicesToRemove, retryAttempt = 0)
 			await lastResolution;
 		} catch (error) {
 			hadIndexingErrors = true;
-			if (!isTransientIndexingError(error)) hadPermanentIndexingError = true;
-			logger.error(error);
+			if (isTransientIndexingError(error)) {
+				// Same transient-noise rule as the per-record handlers (#1371 review).
+				logger.debug(error);
+			} else {
+				hadPermanentIndexingError = true;
+				logger.error(error);
+			}
 		}
 		// Yield one more event turn so any queued when() error callbacks (which fire as
 		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
