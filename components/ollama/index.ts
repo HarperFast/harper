@@ -44,13 +44,18 @@ export interface OllamaBackendConfig {
 	host?: string;
 	/** Default model when the caller doesn't pass `opts.model`. */
 	model?: string;
-	/** Per-request timeout. When set, combined with `opts.signal` via `AbortSignal.any`. */
+	/**
+	 * Overall deadline for a backend call — spans ALL retry attempts and backoff
+	 * sleeps, not one request. Combined with `opts.signal` via `AbortSignal.any`.
+	 */
 	requestTimeoutMs?: number;
 	/**
 	 * Retries after the initial attempt for retriable failures — HTTP 408/429/5xx
 	 * and transient network errors (#1594). Honors `Retry-After`; jittered
 	 * exponential backoff otherwise. All attempts share the `requestTimeoutMs` /
-	 * caller-signal budget. `0` disables. Default 2.
+	 * caller-signal budget. `0` disables. Default 2, clamped to 10. Note: a
+	 * retried `generate` is not exactly-once — a request that succeeded upstream
+	 * but failed in transit may re-execute.
 	 */
 	maxRetries?: number;
 	/** Initial retry backoff in ms (default 500); doubles per attempt with jitter. */

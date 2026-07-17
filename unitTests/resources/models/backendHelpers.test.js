@@ -21,6 +21,7 @@ const {
 	computeRetryDelayMs,
 	abortableSleep,
 	fetchWithRetry,
+	MAX_CONFIG_RETRIES,
 } = require('#src/resources/models/backendHelpers');
 
 // Backend-specific error class used to verify the helpers route the thrown
@@ -374,6 +375,11 @@ describe('backendHelpers retry (#1594)', () => {
 			for (const retryBackoffMs of [0, -100, NaN, Infinity, '500']) {
 				assert.strictEqual(resolveRetryConfig({ retryBackoffMs }).retryBackoffMs, DEFAULT_RETRY_BACKOFF_MS);
 			}
+		});
+
+		it('clamps oversized maxRetries to MAX_CONFIG_RETRIES', () => {
+			assert.strictEqual(resolveRetryConfig({ maxRetries: 10_000 }).maxRetries, MAX_CONFIG_RETRIES);
+			assert.strictEqual(resolveRetryConfig({ maxRetries: MAX_CONFIG_RETRIES }).maxRetries, MAX_CONFIG_RETRIES);
 		});
 	});
 

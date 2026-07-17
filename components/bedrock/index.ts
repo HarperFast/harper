@@ -77,8 +77,12 @@ export interface BedrockBackendConfig {
 	 * Retries after the initial attempt for retriable failures (#1594). Plumbed
 	 * to the AWS SDK's `maxAttempts` (`maxRetries + 1`) — the SDK owns the retry
 	 * loop and backoff for Bedrock, unlike the fetch-based backends. `0` disables.
-	 * Default 2, matching both the other backends and the SDK's own default.
-	 * There is no `retryBackoffMs` here; the SDK's retry strategy manages delays.
+	 * Default 2 (clamped to 10), matching both the other backends and the SDK's
+	 * own default. There is no `retryBackoffMs` here; the SDK's retry strategy
+	 * manages delays. `requestTimeoutMs` spans all SDK attempts (the composed
+	 * abort signal wraps the whole `send`). Note: a retried `generate` is not
+	 * exactly-once — a request that succeeded upstream but failed in transit may
+	 * re-execute.
 	 */
 	maxRetries?: number;
 }

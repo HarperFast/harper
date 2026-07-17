@@ -78,12 +78,18 @@ export interface AnthropicBackendConfig {
 	apiKey?: string;
 	model?: string;
 	baseUrl?: string;
+	/**
+	 * Overall deadline for a backend call — spans ALL retry attempts and backoff
+	 * sleeps, not one request. Combined with `opts.signal` via `AbortSignal.any`.
+	 */
 	requestTimeoutMs?: number;
 	/**
 	 * Retries after the initial attempt for retriable failures — HTTP 408/429/5xx
 	 * (including Anthropic's 529 overloaded) and transient network errors (#1594).
 	 * Honors `Retry-After`; jittered exponential backoff otherwise. All attempts
-	 * share the `requestTimeoutMs` / caller-signal budget. `0` disables. Default 2.
+	 * share the `requestTimeoutMs` / caller-signal budget. `0` disables. Default 2,
+	 * clamped to 10. Note: a retried `generate` is not exactly-once — a request
+	 * that succeeded upstream but failed in transit may re-execute.
 	 */
 	maxRetries?: number;
 	/** Initial retry backoff in ms (default 500); doubles per attempt with jitter. */

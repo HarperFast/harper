@@ -43,6 +43,14 @@ export const MAX_RETRY_DELAY_MS = 10_000;
  * server's request) or held open (which would stall the caller's write).
  */
 export const MAX_RETRY_AFTER_MS = 30_000;
+/**
+ * Sanity clamp on configured `maxRetries`. A fat-fingered large value with no
+ * `requestTimeoutMs`/caller signal would otherwise wedge the embed/write path
+ * for minutes (backoff caps at 10s and `Retry-After` at 30s PER ATTEMPT) —
+ * and on the cache-from-source path that time is spent under a per-record
+ * store lock.
+ */
+export const MAX_CONFIG_RETRIES = 10;
 
 /** Config fields shared by every backend that supports retry. */
 export interface RetryConfig {
@@ -54,13 +62,15 @@ export interface RetryConfig {
  * Validate the retry knobs from a backend config entry, falling back to the
  * defaults on missing or malformed values (negative, non-integer `maxRetries`;
  * non-positive or non-finite `retryBackoffMs`). `maxRetries: 0` is a valid,
- * deliberate "no retries" setting.
+ * deliberate "no retries" setting; values above `MAX_CONFIG_RETRIES` clamp.
  */
 export function resolveRetryConfig(config: RetryConfig): { maxRetries: number; retryBackoffMs: number } {
 	const { maxRetries, retryBackoffMs } = config;
 	return {
 		maxRetries:
-			Number.isInteger(maxRetries) && (maxRetries as number) >= 0 ? (maxRetries as number) : DEFAULT_MAX_RETRIES,
+			Number.isInteger(maxRetries) && (maxRetries as number) >= 0
+				? Math.min(maxRetries as number, MAX_CONFIG_RETRIES)
+				: DEFAULT_MAX_RETRIES,
 		retryBackoffMs:
 			typeof retryBackoffMs === 'number' && Number.isFinite(retryBackoffMs) && retryBackoffMs > 0
 				? retryBackoffMs
