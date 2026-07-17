@@ -640,4 +640,69 @@ describe('Test keys module', () => {
 			expect(watchTimers.get(watchPath), 'no timer should be registered when polling is disabled').to.be.undefined;
 		});
 	});
+
+	describe('resolveEffectiveTlsCiphers', () => {
+		const resolve = keys.__get__('resolveEffectiveTlsCiphers');
+		const RELAXED = 'DEFAULT@SECLEVEL=0';
+
+		it('returns undefined when nothing configures ciphers', () => {
+			expect(resolve({ certificate: 'x' }, [], 'server', false)).to.be.undefined;
+			expect(resolve(undefined, undefined, 'server', true)).to.be.undefined;
+		});
+
+		it('top-level tls.ciphers wins, including over conflicting certificate records', () => {
+			const records = [{ name: 'ca', is_authority: true, ciphers: RELAXED }];
+			expect(resolve({ ciphers: 'DEFAULT' }, records, 'server', true)).to.equal('DEFAULT');
+		});
+
+		it('honors a tls array entry beyond [0] (previously silently ignored)', () => {
+			expect(resolve([{ certificate: 'a' }, { certificate: 'b', ciphers: RELAXED }], [], 'server', false)).to.equal(
+				RELAXED
+			);
+		});
+
+		it('applies a matching-use certificate record when config sets no ciphers', () => {
+			const records = [{ name: 'cert', uses: ['server'], ciphers: RELAXED }];
+			expect(resolve({}, records, 'server', false)).to.equal(RELAXED);
+		});
+
+		it('normalizes a legacy scalar uses value', () => {
+			const records = [{ name: 'cert', uses: 'server', ciphers: RELAXED }];
+			expect(resolve({}, records, 'server', false)).to.equal(RELAXED);
+		});
+
+		it('applies an authority record when the listener verifies client certificates', () => {
+			// the incident shape: a client-CA record carrying SECLEVEL=0 for SHA-1-signed chains
+			const records = [{ name: 'legacy-client-ca', is_authority: true, ciphers: RELAXED }];
+			expect(resolve({}, records, 'server', true)).to.equal(RELAXED);
+		});
+
+		it('ignores an authority record when the listener does not verify client certificates', () => {
+			const records = [{ name: 'ca', is_authority: true, ciphers: RELAXED }];
+			expect(resolve({}, records, 'server', false)).to.be.undefined;
+		});
+
+		it('ignores records whose uses do not match the listener type', () => {
+			const records = [{ name: 'ops-cert', uses: ['operations-api'], ciphers: RELAXED }];
+			expect(resolve({}, records, 'server', false)).to.be.undefined;
+		});
+
+		it('picks the lowest explicit @SECLEVEL among conflicting candidates', () => {
+			const records = [{ name: 'ca', is_authority: true, ciphers: RELAXED }];
+			expect(resolve([{ certificate: 'a', ciphers: 'DEFAULT' }], records, 'server', true)).to.equal(RELAXED);
+		});
+
+		it('treats candidates without @SECLEVEL as the OpenSSL default level and keeps the first on ties', () => {
+			const records = [
+				{ name: 'a', uses: ['server'], ciphers: 'HIGH' },
+				{ name: 'b', uses: ['server'], ciphers: 'DEFAULT' },
+			];
+			expect(resolve({}, records, 'server', false)).to.equal('HIGH');
+		});
+
+		it('skips records without ciphers', () => {
+			const records = [{ name: 'plain', uses: ['server'] }, null];
+			expect(resolve({}, records, 'server', false)).to.be.undefined;
+		});
+	});
 });
