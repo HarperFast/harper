@@ -261,7 +261,7 @@ async function installPrompts(promptOverride) {
 			default: DEFAULT_HDB_ROOT,
 			// Runs before validate, so the existing-install check below (and everything after it)
 			// sees the same expanded path rather than a literal, unresolved `~/...` string.
-			filter: (value) => resolveInstallDestination(value),
+			filter: resolveInstallDestination,
 			validate: async (value) => {
 				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
 				if (await fs.pathExists(path.join(value, 'system', 'hdb_user.mdb')))
