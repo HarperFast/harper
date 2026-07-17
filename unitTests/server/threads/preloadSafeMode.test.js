@@ -10,6 +10,28 @@ const { startWorker } = require('#js/server/threads/manageThreads');
 const FIXTURES = path.join(__dirname, 'preloadSafeMode-fixtures');
 const WORKER_FIXTURE = path.join(FIXTURES, 'worker.cjs');
 
+async function getWorkerReport() {
+	let worker;
+	try {
+		return await new Promise((resolve, reject) => {
+			worker = startWorker(WORKER_FIXTURE, {
+				name: 'safe-mode-preload-test',
+				autoRestart: false,
+				onStarted(spawned) {
+					spawned.once('message', resolve);
+					spawned.once('error', reject);
+					spawned.once('exit', (code) => reject(new Error(`Worker exited before reporting (code ${code})`)));
+				},
+			});
+		});
+	} finally {
+		if (worker) {
+			worker.wasShutdown = true;
+			await worker.terminate();
+		}
+	}
+}
+
 describe('worker preloads in safe mode', () => {
 	let originalSafeMode;
 	let originalPreload;
@@ -33,28 +55,20 @@ describe('worker preloads in safe mode', () => {
 
 	it('does not load or add flags for threads.preload and threads.preloadRequire modules', async function () {
 		this.timeout(30000);
-		let worker;
-		try {
-			const report = await new Promise((resolve, reject) => {
-				worker = startWorker(WORKER_FIXTURE, {
-					name: 'safe-mode-preload-test',
-					autoRestart: false,
-					onStarted(spawned) {
-						spawned.once('message', resolve);
-						spawned.once('error', reject);
-						spawned.once('exit', (code) => reject(new Error(`Worker exited before reporting (code ${code})`)));
-					},
-				});
-			});
-			assert.equal(report.importLoaded, false);
-			assert.equal(report.requireLoaded, false);
-			assert.equal(report.execArgv.includes('--import'), false);
-			assert.equal(report.execArgv.includes('--require'), false);
-		} finally {
-			if (worker) {
-				worker.wasShutdown = true;
-				await worker.terminate();
-			}
-		}
+		const report = await getWorkerReport();
+		assert.strictEqual(report.importLoaded, false);
+		assert.strictEqual(report.requireLoaded, false);
+		assert.strictEqual(report.execArgv.includes('--import'), false);
+		assert.strictEqual(report.execArgv.includes('--require'), false);
+	});
+
+	it('loads both configured preload forms outside safe mode', async function () {
+		this.timeout(30000);
+		delete process.env.HARPER_SAFE_MODE;
+		const report = await getWorkerReport();
+		assert.strictEqual(report.importLoaded, true);
+		assert.strictEqual(report.requireLoaded, true);
+		assert.strictEqual(report.execArgv.includes('--import'), true);
+		assert.strictEqual(report.execArgv.includes('--require'), true);
 	});
 });
