@@ -329,6 +329,9 @@ export function configValidator(configJson, skipFsValidation = false) {
 				}),
 			]),
 			threadRange: Joi.alternatives([array.optional(), string.optional()]),
+			securityHeaders: Joi.object()
+				.pattern(string, Joi.alternatives([string, number, boolean]))
+				.optional(),
 		}).required(),
 		threads: Joi.alternatives(
 			threadsConstraints.optional(),

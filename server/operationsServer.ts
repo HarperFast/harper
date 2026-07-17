@@ -87,9 +87,11 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 			// call would mis-tag the secure entry with the plain port and leave the secure
 			// listener's chain without authentication.
 			if (typeof globalThis.Bun === 'undefined') {
-				if (options.port) serverRegistration.http(authentication, { port: options.port });
-				if (options.securePort) serverRegistration.http(authentication, { securePort: options.securePort });
-				if (!options.port && !options.securePort) serverRegistration.http(authentication, { port: 'all' });
+				if (options.port) serverRegistration.http(authentication, { port: options.port, name: 'authentication' });
+				if (options.securePort)
+					serverRegistration.http(authentication, { securePort: options.securePort, name: 'authentication' });
+				if (!options.port && !options.securePort)
+					serverRegistration.http(authentication, { port: 'all', name: 'authentication' });
 			}
 			// On Bun, register the Fastify instance so requests can be delegated via inject()
 			if (typeof globalThis.Bun !== 'undefined') {

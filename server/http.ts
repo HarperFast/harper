@@ -15,7 +15,7 @@ import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
 import { createTLSSelector } from '../security/keys.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
-import { createServer, IncomingMessage } from 'node:http';
+import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
@@ -136,11 +136,65 @@ export function cleanupSocketsDirectory() {
 	} catch {}
 }
 
+// Entries in `universalHeaders` that were pushed by `applySecurityHeaders`, so a config
+// hot-reload can remove exactly the entries it owns without clobbering entries pushed by
+// other components.
+let ownedSecurityHeaders: [string, string][] = [];
+
+/** Validate and apply `http.securityHeaders` config into `universalHeaders`, replacing any entries owned by a prior call. */
+function applySecurityHeaders(securityHeaders: HttpOptions['securityHeaders']) {
+	for (const entry of ownedSecurityHeaders) {
+		const index = universalHeaders.indexOf(entry);
+		if (index !== -1) universalHeaders.splice(index, 1);
+	}
+	ownedSecurityHeaders = [];
+	if (!securityHeaders) return;
+	if (typeof securityHeaders !== 'object' || Array.isArray(securityHeaders)) {
+		harperLogger.error('Invalid http.securityHeaders value: expected a map of header names to values');
+		return;
+	}
+	for (const [name, rawValue] of Object.entries(securityHeaders)) {
+		const value = '' + rawValue;
+		try {
+			validateHeaderName(name);
+			validateHeaderValue(name, value);
+		} catch (error) {
+			harperLogger.error(`Invalid http.securityHeaders entry "${name}": ${errorToString(error)}`);
+			continue;
+		}
+		const entry: [string, string] = [name, value];
+		ownedSecurityHeaders.push(entry);
+		universalHeaders.push(entry);
+	}
+}
+
+/** Merge `universalHeaders` into `headers` as defaults: a header the app already set (matched by name) is never overridden (app-wins precedence). */
+function applyUniversalHeaders(headers: { has(name: string): boolean; set(name: string, value: string): void }) {
+	for (const [key, value] of universalHeaders) {
+		if (!headers.has(key)) headers.set(key, value);
+	}
+}
+
+// Only the first http scope to load (the root config) owns securityHeaders: 'http' is a
+// trusted plugin key, so an application config.yaml with an `http:` block re-invokes
+// handleApplication, and without this guard that call would wipe root-configured headers.
+let securityHeadersOwned = false;
+
+/** Test seam: reset the module-level guard so tests can re-invoke handleApplication. */
+export function _resetSecurityHeadersOwnedForTest(): void {
+	applySecurityHeaders(undefined);
+	securityHeadersOwned = false;
+}
+
 export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll() as HttpOptions;
+	const ownsSecurityHeaders = !securityHeadersOwned;
+	securityHeadersOwned = true;
+	if (ownsSecurityHeaders) applySecurityHeaders(httpOptions.securityHeaders);
 	scope.options.on('change', (_key) => {
 		// TODO: Check to see if the key is something we can or can't handle
 		httpOptions = scope.options.getAll() as HttpOptions;
+		if (ownsSecurityHeaders) applySecurityHeaders(httpOptions.securityHeaders);
 	});
 }
 export function getHttpOptions() {
@@ -459,9 +513,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-				for (let [key, value] of universalHeaders) {
-					response.headers.set(key, value);
-				}
+				if (universalHeaders.length > 0) applyUniversalHeaders(response.headers);
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
@@ -532,6 +584,16 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						else nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 					}
 					if (sentBody) nodeResponse.end(body);
+				} else if (universalHeaders.length > 0 && !nodeResponse.headersSent) {
+					// Known limitation: a handler that synchronously calls writeHead before
+					// returning { handlesHeaders: true } has already sent headers and cannot
+					// receive universal headers (no in-tree component does this).
+					// handlesHeaders responses (e.g. static's send() stream) write their own headers
+					// directly to nodeResponse; pre-set universal headers as defaults — a header the
+					// stream sets itself (same name) will overwrite these
+					for (const [key, value] of universalHeaders) {
+						if (!nodeResponse.hasHeader(key)) nodeResponse.setHeader(key, value);
+					}
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
@@ -573,6 +635,13 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const statusCode = error.statusCode ?? error.status;
 				const status = statusCode || 500;
 				try {
+					if (universalHeaders.length > 0 && !nodeResponse.headersSent) {
+						// universal headers apply to error responses too; writeHead's explicit
+						// headers take precedence, so error-provided headers still win
+						for (const [key, value] of universalHeaders) {
+							if (!nodeResponse.hasHeader(key)) nodeResponse.setHeader(key, value);
+						}
+					}
 					nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 				} catch {} // silently ignore errors writing headers, because they may have been set already
 				nodeResponse.end(errorToString(error));
@@ -734,11 +803,12 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 		if (!response) response = unhandled(request);
 		let headers = response.headers;
 		if (!headers?.set) headers = new Headers(headers);
-		for (const [key, value] of universalHeaders) headers.set(key, value);
 		if (response.status === -1) {
 			// The chain didn't handle it. If a Fastify fallback is registered for this port (legacy
 			// custom-function routes via server.http(fastify.server)), delegate to it via inject(),
-			// mirroring the Bun path; otherwise it's a genuine 404.
+			// mirroring the Bun path; otherwise it's a genuine 404. Neither branch below reuses
+			// `headers` above (both build a fresh Headers from the fallback response), so universal
+			// headers must be (re-)applied on whichever Headers object actually gets returned.
 			const fastify = fastifyInstances[port];
 			if (fastify) {
 				const injectResult = await injectToFastify(fastify, {
@@ -756,6 +826,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 					if (Array.isArray(v)) respHeaders.set(k, k.toLowerCase() === 'set-cookie' ? v : v.join(', '));
 					else respHeaders.set(k, String(v));
 				}
+				if (universalHeaders.length > 0) applyUniversalHeaders(respHeaders);
 				logHttpRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
 				const responseStream = injectResult.stream();
 				// Event-stream (SSE) responses must reach the client incrementally — stream the body and,
@@ -777,8 +848,11 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 				};
 			}
 			logHttpRequest(request, 404, requestId, performance.now() - startTime);
-			return { status: 404, headers: new Headers({ 'content-type': 'text/plain' }), body: 'Not found\n' };
+			const notFoundHeaders = new Headers({ 'content-type': 'text/plain' });
+			if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
+			return { status: 404, headers: notFoundHeaders, body: 'Not found\n' };
 		}
+		if (universalHeaders.length > 0) applyUniversalHeaders(headers);
 		const status = response.status || 200;
 		const executionTime = performance.now() - startTime;
 		if (!response.handlesHeaders) {
@@ -942,9 +1016,7 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-				for (let [key, value] of universalHeaders) {
-					response.headers.set(key, value);
-				}
+				if (universalHeaders.length > 0) applyUniversalHeaders(response.headers);
 				if (response.status === -1) {
 					const fallbackServer = fallbackServers[port];
 					if (fallbackServer) {
@@ -954,7 +1026,9 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 						return await bunDelegateToNodeServer(fallbackServer, webRequest, request);
 					}
 					logHttpRequest(request, 404, requestId, performance.now() - startTime);
-					return new Response('Not found\n', { status: 404 });
+					const notFoundHeaders = new globalThis.Headers();
+					if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
+					return new Response('Not found\n', { status: 404, headers: notFoundHeaders });
 				}
 				const status = response.status || 200;
 				const endTime = performance.now();
@@ -989,6 +1063,13 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					} else if (body instanceof Blob) {
 						if (body.size) responseHeaders.set('Content-Length', String(body.size));
 						body = body.stream();
+					}
+				} else if (universalHeaders.length > 0) {
+					// handlesHeaders responses write their own headers via the pipe shim below;
+					// pre-set universal headers as defaults — the stream's own setHeader calls
+					// (same name) overwrite these
+					for (const [key, value] of universalHeaders) {
+						responseHeaders.set(key, value);
 					}
 				}
 				// Propagate Connection: close so Bun closes the TCP connection after this response,
@@ -1067,6 +1148,23 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					if (statusCode === 500) harperLogger.warn(errorForLog(error));
 					else harperLogger.info(errorForLog(error));
 				} else harperLogger.error(errorForLog(error));
+				const errorHeaders = error.headers;
+				if (errorHeaders || universalHeaders.length > 0) {
+					const headers = new globalThis.Headers();
+					// error.headers may be an iterable Headers or a plain object, same as
+					// toWriteHeadHeaders accepts on the Node path
+					if (errorHeaders?.[Symbol.iterator]) {
+						for (const [key, value] of errorHeaders) headers.append(key, String(value));
+					} else if (errorHeaders) {
+						for (const [key, value] of Object.entries(errorHeaders)) {
+							if (Array.isArray(value)) for (const item of value) headers.append(key, String(item));
+							else headers.set(key, String(value));
+						}
+					}
+					// universal headers apply to error responses too; error-provided headers win
+					applyUniversalHeaders(headers);
+					return new Response(errorToString(error), { status, headers });
+				}
 				return new Response(errorToString(error), { status });
 			}
 		};
@@ -1170,6 +1268,7 @@ async function bunDelegateToNodeServer(
 			if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
 				webHeaders.set('connection', 'close');
 			}
+			if (universalHeaders.length > 0) applyUniversalHeaders(webHeaders);
 			const responseStream = injectResult.stream();
 			// Event-stream responses (MCP SSE) must reach the client incrementally — return
 			// the body as a stream. Everything else keeps the prior buffered behavior:
@@ -1202,7 +1301,9 @@ async function bunDelegateToNodeServer(
 		}
 	}
 	// No Fastify instance found — return 404
-	return new Response('Not found\n', { status: 404 });
+	const notFoundHeaders = new globalThis.Headers();
+	if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
+	return new Response('Not found\n', { status: 404, headers: notFoundHeaders });
 }
 
 type SerializedRoute = { host?: string; urlPath?: string; order: string[] };
