@@ -715,7 +715,10 @@ async function runCatchUp(): Promise<void> {
 				// Unlike the timer-arming path, a read failure here must THROW
 				// (the per-job catch below logs and skips) — conflating it with
 				// "row absent" fed the destructive re-seed below (audit finding)
-				const stateRow = await withStateTimeout(getStateTable().get(jobRowId(job)), `job state read ${jobRowId(job)}`);
+				const stateRow = await withStateTimeout<any>(
+					getStateTable().get(jobRowId(job)),
+					`job state read ${jobRowId(job)}`
+				);
 				// Baseline = the newest of the persisted timestamps and the
 				// in-memory attempt anchor. Including lastAttemptAt closes two
 				// duplicate-execution paths the persisted row alone cannot: a
