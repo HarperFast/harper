@@ -326,8 +326,9 @@ function startWorker(path, options = {}) {
 	// instruments worker threads); `threads.preloadRequire` uses --require for CJS agents that
 	// document that path (e.g. dd-trace/init, Dynatrace OneAgent). --import is URL-based, so
 	// resolved paths are passed as file URLs. Not supported under Bun, which does not use
-	// execArgv here.
-	if (!isBun) {
+	// execArgv here. Safe mode also omits preloads because they are configured code,
+	// which safe mode must not resolve or execute.
+	if (!isBun && !process.env.HARPER_SAFE_MODE) {
 		for (const importPath of getImportModules()) execArgv.push('--import', pathToFileURL(importPath).href);
 		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
 	}
