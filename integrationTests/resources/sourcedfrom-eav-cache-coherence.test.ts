@@ -350,7 +350,7 @@ suite('QA-595 EAV catalog x sourcedFrom cache coherence', { skip: skipSuite }, (
 
 			await spray;
 
-			const errors = spraySamples.filter((s) => typeof s.status !== 'number');
+			const errors = spraySamples.filter((s) => typeof s.status !== 'number' || s.status >= 400);
 			console.log(
 				`[QA-595 P3] spray samples=${spraySamples.length} mutate@+${mutateAtOffset}ms errors=${errors.length}` +
 					(errors.length ? ` samples: ${JSON.stringify(errors.slice(0, 5))}` : '')
