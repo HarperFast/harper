@@ -535,6 +535,14 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(customFunctionOperations.deployComponent)
 	);
 	opFuncMap.set(
+		terms.OPERATIONS_ENUM.STAGE_COMPONENT,
+		new OperationFunctionObject(customFunctionOperations.stageComponent)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.ACTIVATE_COMPONENT,
+		new OperationFunctionObject(customFunctionOperations.activateComponent)
+	);
+	opFuncMap.set(
 		terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS,
 		new OperationFunctionObject(deploymentOperations.handleListDeployments)
 	);

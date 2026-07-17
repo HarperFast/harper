@@ -49,8 +49,14 @@ type DeploymentStatus =
 	| 'pending'
 	| 'extracting'
 	| 'installing'
+	// Two-phase deploy: building the incoming version into staging cluster-wide (stage phase), and the
+	// terminal resting state of a stage_component that has not yet been activated.
+	| 'staging'
+	| 'staged'
 	| 'loading'
 	| 'replicating'
+	// Two-phase deploy: swapping the staged build into the live path cluster-wide (activate phase).
+	| 'activating'
 	| 'restarting'
 	| 'success'
 	| 'failed'
@@ -395,7 +401,7 @@ export class DeploymentRecorder {
 		this.sealed = true;
 	}
 
-	async finish(status: 'success' | 'failed' | 'rolled_back', error?: unknown): Promise<void> {
+	async finish(status: 'success' | 'failed' | 'rolled_back' | 'staged', error?: unknown): Promise<void> {
 		if (this.finished) return;
 		// Send a terminal sentinel through the emitter (if any) BEFORE we unsubscribe and
 		// remove it from the registry, so any SSE tail subscribers can resolve their wait
@@ -564,10 +570,14 @@ function startStatusFor(phase: string | undefined): DeploymentStatus | null {
 			return 'extracting';
 		case 'install':
 			return 'installing';
+		case 'stage':
+			return 'staging';
 		case 'load':
 			return 'loading';
 		case 'replicate':
 			return 'replicating';
+		case 'activate':
+			return 'activating';
 		case 'restart':
 			return 'restarting';
 		default:

@@ -24,7 +24,15 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
 const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
-const { Application, prepareApplication, ASIDE_STAGING_DIR } = require('./Application.ts');
+const {
+	Application,
+	prepareApplication,
+	stageApplication,
+	activateApplication,
+	discardStagedApplication,
+	ASIDE_STAGING_DIR,
+	DEPLOY_STAGING_DIR,
+} = require('./Application.ts');
 const { server } = require('../server/Server.ts');
 const { DeploymentRecorder, awaitDeploymentRow, DEFAULT_AWAIT_ROW_TIMEOUT_MS } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
@@ -352,11 +360,23 @@ async function packageComponent(req) {
 }
 
 /**
- * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
- * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
- * will write string to a temp tar file and extract that file into the deployed project in hdb/components.
+ * Deploy a component. Front door for the deploy family: derives the project name, validates, ingests
+ * any credential token into the secrets store (so it lives as a replicated reference, not embedded),
+ * then dispatches to the two-phase orchestrator (default) or the legacy one-shot path.
+ *
+ * Two-phase (stage → activate) builds the incoming version into a hidden staging directory on EVERY
+ * node first, verifies it landed everywhere, and only then swaps it live cluster-wide — so a node
+ * that can't fetch the package or fails `npm install` fails the deploy while the live component is
+ * still untouched on every node, and the go-live window shrinks to a fast atomic directory swap.
+ * See stageApplication/activateApplication in components/Application.ts.
+ *
+ * The request/response contract is unchanged: same inputs (`package`/payload, `restart`,
+ * `install_*`, `credentials`, `ignore_replication_errors`, `deployment_timeout`, …), same
+ * `deployment_id` in the response, same SSE progress stream (now emitting `stage`/`activate` phases
+ * instead of `prepare`/`replicate`). Pass `two_phase: false` to force the legacy one-shot path.
+ *
  * @param req
- * @returns {Promise<string>}
+ * @returns {Promise<object>}
  */
 async function deployComponent(req) {
 	if (req.project) {
@@ -374,53 +394,46 @@ async function deployComponent(req) {
 	// replicated ciphertext (reference, not embed); already-reference entries pass through, and with
 	// no custody a literal token stays as a transient, this-node-only fallback (#1158). Peers
 	// re-running a replicated deploy already carry references and never re-ingest.
-	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
+	const { ingestCredentials } = require('./secretOperations.ts');
 	req.credentials = await ingestCredentials(req, req.credentials, req.project);
 	// References are safe to persist (config + deployment row) and replicate; a no-custody literal
-	// token is not — it is used only for this node's install below, then stripped before replication.
+	// token is not — it is used only for this node's install, then stripped before replication.
 	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
 
-	// Write to root config if the request contains a package identifier
-	if (req.package) {
-		// Check if trying to overwrite a core component (requires force)
-		// Lazy-load to avoid circular dependency with componentLoader
-		const { TRUSTED_RESOURCE_PLUGINS } = require('./componentLoader.ts');
-		if (TRUSTED_RESOURCE_PLUGINS[req.project] && !req.force) {
-			throw handleHDBError(
-				new Error(),
-				`Cannot deploy component with name '${req.project}': this is a protected core component name. Use force: true to overwrite.`,
-				HTTP_STATUS_CODES.CONFLICT
-			);
-		}
-
-		const applicationConfig = { package: req.package };
-		// Avoid writing an empty `install:` block
-		if (req.install_command || req.install_timeout || req.install_allow_scripts !== undefined) {
-			applicationConfig.install = {
-				command: req.install_command,
-				timeout: req.install_timeout,
-				allowInstallScripts: req.install_allow_scripts,
-			};
-		}
-		if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
-		// Persist credential references (never tokens) so every cold install of this component —
-		// reboot, new peer, rollback — re-resolves the credential from the store.
-		if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
-		await configUtils.addConfig(req.project, applicationConfig);
-	}
-
-	// Create a hdb_deployment row up front so the deploy is observable and auditable
-	// even if the CLI disconnects. The row also holds the payload in a Blob attribute,
-	// which doubles as the source for peer replication and (later) rollback.
-	//
-	// Only the origin node records — peers receiving a replicated deploy_component skip
-	// recording so we don't accumulate one row per node for the same deploy. The row
-	// reaches peers via the table's standard replication; the peer-side branch below
-	// reads payload_blob back from there.
+	// A peer replaying a replicated ONE-SHOT deploy_component arrives with `_deploymentId` set. In
+	// two-phase mode the origin never sends deploy_component to peers (it sends stage_component /
+	// activate_component), so `_deploymentId` here always means "legacy peer".
 	const isReplicatedExecution = typeof req._deploymentId === 'string';
-	// An SSE-bound caller already attached a ProgressEmitter (created in the server
-	// handler so it can also drive the response stream). Reuse it; otherwise spin up a
-	// fresh emitter so the recorder still gets phase events for non-SSE deploys.
+
+	// Two-phase is the default, but it leans on the system table's replication channel to carry the
+	// payload and correlate the stage/activate steps across the cluster. Fall back to the legacy
+	// one-shot deploy when: the caller opted out (`two_phase: false`); this is a peer replaying a
+	// one-shot deploy; or `system` isn't replicated on this node (a narrow REPLICATION_DATABASES).
+	if (req.two_phase === false || isReplicatedExecution || !isSystemDatabaseReplicated()) {
+		return deployComponentOneShot(req, credentialReferences, isReplicatedExecution);
+	}
+	return deployComponentTwoPhase(req, credentialReferences);
+}
+
+/**
+ * Legacy one-shot deploy: extract + `npm install` in place on the origin, then replicate the whole
+ * deploy_component operation to peers, which each do the same. Preserved verbatim (behavior-for-
+ * behavior) as the fallback path for `two_phase: false` and for peers replaying a one-shot deploy.
+ * The wrapper has already derived the project name, validated, and ingested credentials.
+ */
+async function deployComponentOneShot(req, credentialReferences, isReplicatedExecution) {
+	const { resolveCredentials } = require('./secretOperations.ts');
+
+	// Write to root config if the request contains a package identifier
+	if (req.package) await writeComponentRootConfig(req, credentialReferences);
+
+	// Create a hdb_deployment row up front so the deploy is observable and auditable even if the CLI
+	// disconnects. The row also holds the payload in a Blob attribute, which doubles as the source for
+	// peer replication and (later) rollback. Only the origin node records — peers replaying the
+	// replicated deploy skip recording so we don't accumulate one row per node for the same deploy.
+	// An SSE-bound caller already attached a ProgressEmitter (created in the server handler so it can
+	// also drive the response stream). Reuse it; otherwise spin up a fresh emitter so the recorder
+	// still gets phase events for non-SSE deploys.
 	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
 	if (emitter && !req.progress) req.progress = emitter;
 	const recorder = isReplicatedExecution
@@ -438,76 +451,27 @@ async function deployComponent(req) {
 
 	const emit = (event, data) => emitter?.emit(event, data);
 
-	// The new payload-via-replicated-row path depends on the `system` database actually
-	// being replicated on this node. If the cluster is configured with a narrower
-	// REPLICATION_DATABASES list that excludes `system`, peers won't see the
-	// hdb_deployment row and falling back to sending req.payload through the operation
-	// body is the only viable path.
+	// The payload-via-replicated-row path depends on `system` actually replicating on this node.
 	const systemReplicated = isSystemDatabaseReplicated();
 
-	let extractionPayload = req.payload;
-	// Bounded ring buffer of install stdout/stderr so a non-SSE caller sees the tail
-	// in the thrown error. SSE callers still stream every line live.
+	// Bounded ring buffer of install stdout/stderr so a non-SSE caller sees the tail in the thrown
+	// error. SSE callers still stream every line live.
 	const installCapture = createInstallCapture();
 	try {
-		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
-		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
-		// from the persisted blob. When `system` replicates, the blob becomes the channel
-		// peers read from; when it doesn't, the blob stays local for audit and rollback.
-		if (recorder && req.payload != null) {
-			await recorder.ingestPayload(req.payload);
-			extractionPayload = recorder.row.payload_blob.stream();
-		} else if (isReplicatedExecution && req.payload == null && !req.package) {
-			// Peer received a replicated deploy without a payload — read the tarball from
-			// the replicated hdb_deployment row's payload_blob. Blob.stream() blocks on
-			// in-flight BLOB_CHUNK writes until the chunks land. If the row never arrives
-			// within the timeout, peer records a failure and origin sees it in peer_results.
-			// The wait budget defaults to 120s but is overridable per-deploy via
-			// `deployment_timeout` (ms) for clusters where the system-table channel is
-			// heavily backlogged (harper-pro#402).
-			const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: req.deployment_timeout });
-			extractionPayload = row.payload_blob.stream();
-		}
-
-		// Resolve credential references into concrete tokens for this node's npm pack/install
-		// (a no-custody literal-token fallback passes through unchanged). On a peer running a
-		// replicated deploy, the referenced hdb_secret row may arrive just behind the deploy op, so
-		// allow a bounded grace period (same budget as the payload-row wait) for it to replicate in.
-		let credentialsWaitMs = 0;
-		if (isReplicatedExecution) {
-			const requested = Number(req.deployment_timeout);
-			credentialsWaitMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
-		}
-		const resolvedCredentials = await resolveCredentials(req.credentials, req.project, {
-			waitMs: credentialsWaitMs,
-		});
-
-		const application = new Application({
-			name: req.project,
-			payload: extractionPayload,
-			packageIdentifier: req.package,
-			install: {
-				command: req.install_command,
-				timeout: req.install_timeout,
-				allowInstallScripts: req.install_allow_scripts,
-			},
-			// Tee each install line into both the capture buffer (for the thrown-error
-			// fallback) and the SSE channel (when a caller is streaming). Peers have no
-			// emitter, so their install output goes to the local logger and the buffer only.
-			onInstallLine: (manager, stream, line) => {
-				installCapture.push(manager, stream, line);
-				if (emitter) emit('install', { manager, stream, line });
-			},
-			// Deploy credentials (already resolved above), used here for this node's npm pack/install:
-			// registry entries via a transient .npmrc, git-host entries via the in-memory credential
-			// socket the clone spawn talks to.
-			credentials: resolvedCredentials,
+		const extractionPayload = await sourceExtractionPayload({ req, recorder, isReplicatedExecution });
+		const resolvedCredentials = await resolveNodeCredentials({ req, resolveCredentials, isReplicatedExecution });
+		const application = buildDeployApplication({
+			req,
+			extractionPayload,
+			resolvedCredentials,
+			installCapture,
+			emitter,
+			emit,
 		});
 		// Reduce req.credentials to references only (never a token) before it can reach an error/log
 		// path or replication: references are what peers resolve from their own replicated hdb_secret
 		// copy; a no-custody literal token is dropped entirely (peers fall back to their fabric-injected
-		// NPM_CONFIG_USERCONFIG, as before). This also fixes the prior success-only strip that leaked a
-		// literal token on a prepare/load failure.
+		// NPM_CONFIG_USERCONFIG, as before).
 		if (credentialReferences.length) req.credentials = credentialReferences;
 		else delete req.credentials;
 
@@ -515,83 +479,33 @@ async function deployComponent(req) {
 		await prepareApplication(application);
 		emit('phase', { phase: 'prepare', status: 'done' });
 
-		// now we attempt to actually load the component in case there is
-		// an error we can immediately detect and report, but app code should not run on the main thread
-		if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
-			const pseudoResources = new Resources();
-			pseudoResources.isWorker = true;
+		// Load the component to surface load-time errors early (throwaway scopes; see loadValidateComponent).
+		await loadValidateComponent({ dirPath: application.dirPath, emit });
 
-			const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
-			const { trackScopeClose } = require('./scopeShutdown.ts');
-			let lastError;
-			componentLoader.setErrorReporter((error) => (lastError = error));
-			emit('phase', { phase: 'load', status: 'start' });
-			// This load exists only to surface load-time errors early; the Scopes it creates are
-			// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
-			// can close them here once validation completes — otherwise each deploy leaks the Scope's
-			// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
-			// (#1462).
-			const validationScopes = new Set();
-			const validation = (async () => {
-				try {
-					await componentLoader.loadComponent(application.dirPath, pseudoResources, undefined, {
-						collectScopes: validationScopes,
-					});
-				} finally {
-					const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
-					for (const result of closeResults) {
-						if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
-					}
-				}
-			})();
-			// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
-			// disposing — a plugin may start a native runtime in handleApplication — before realExit.
-			trackScopeClose(validation);
-			await validation;
-			emit('phase', { phase: 'load', status: 'done' });
-
-			if (lastError) throw lastError;
-		}
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;
-		// ProgressEmitter holds function listeners that can't survive the replication
-		// channel's serialization; strip it unconditionally.
+		// ProgressEmitter holds function listeners that can't survive the replication channel's
+		// serialization; strip it unconditionally.
 		delete req.progress;
-		// req.credentials was already deleted immediately after the Application ctor (above) so the
-		// token never reaches the replication channel or a peer's operation log; peers authenticate
-		// against the private registry via their own fabric-injected NPM_CONFIG_USERCONFIG on reinstall.
 		if (systemReplicated && recorder) {
-			// The hdb_deployment row + payload_blob will reach peers via table replication,
-			// so peers can look up the payload by deployment_id. Drop req.payload to keep
-			// the operation body small (the operations channel has frame-size limits the
-			// blob-replication channel doesn't share). _deploymentId is the handoff that
-			// lets peers find the replicated row.
+			// The hdb_deployment row + payload_blob reach peers via table replication, so peers look up
+			// the payload by deployment_id. Drop req.payload to keep the operation body small.
 			delete req.payload;
 		}
-		// As each peer settles, update the origin row so observers polling get_deployment
-		// see per-peer progress in real time rather than only at the aggregate end.
-		// replicateOperation in harper-pro accepts an optional onPeerResult callback that
-		// fires per peer; callers without the callback (older replicator) fall back to
-		// the aggregate response.replicated below.
 		const onPeerResult = recorder
 			? (result) => {
 					recorder.recordPeer(result);
 					emit('peer', result);
 				}
 			: undefined;
-		// Seal the recorder before the replicate phase so the row's terminal write (finish())
-		// isn't part of the tight put burst that can commit out of order on a peer and revert
-		// it (harperdb/harper#1170). onPeerResult/peer_results accumulate in memory and land in
-		// finish()'s single write; live SSE 'peer' events still fire below.
+		// Seal before the replicate phase so the row's terminal write (finish()) isn't part of the tight
+		// put burst that can commit out of order on a peer and revert it (harperdb/harper#1170).
 		recorder?.seal();
 		emit('phase', { phase: 'replicate', status: 'start' });
 		let response = await server.replication.replicateOperation(req, { onPeerResult });
 		emit('phase', { phase: 'replicate', status: 'done' });
 		if (recorder && response?.replicated) {
-			// Fallback path for replicators that don't honor onPeerResult: re-record the
-			// aggregate. recordPeer's upsert-by-node-name semantics make this idempotent
-			// when the per-peer callback already fired for these.
 			recorder.recordPeers(response.replicated);
 		}
 		if (req.restart === true) {
@@ -613,21 +527,15 @@ async function deployComponent(req) {
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else response.message = `Successfully deployed: ${application.name}`;
 
-		// Replication failures don't reject replicateOperation — they surface as 'failed'
-		// entries in peer_results. By default, treat any failed peer as an overall deploy
-		// failure so the operation returns a non-2xx status (and the CLI a non-zero exit
-		// code). The component is already deployed — and, if requested, restarted — on this
-		// origin node; the failure signals that one or more peers did not receive it. Pass
-		// ignore_replication_errors: true for best-effort deploys to partially-available clusters.
+		// Replication failures don't reject replicateOperation — they surface as 'failed' entries in
+		// peer_results. By default, treat any failed peer as an overall deploy failure so the operation
+		// returns a non-2xx status. Pass ignore_replication_errors: true for best-effort deploys.
 		if (recorder && !req.ignore_replication_errors) {
 			const failedPeers = recorder.getFailedPeers();
 			if (failedPeers.length > 0) {
-				const detail = failedPeers
-					.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? 'unknown error'})`)
-					.join(', ');
 				throw new ServerError(
 					`Component '${application.name}' was deployed on the origin node but failed to replicate to ` +
-						`${failedPeers.length} of ${recorder.row.peer_results.length} peer node(s): ${detail}. ` +
+						`${failedPeers.length} of ${recorder.row.peer_results.length} peer node(s): ${describePeers(failedPeers)}. ` +
 						`See deployment ${recorder.deploymentId} (get_deployment) for details, or pass ` +
 						`ignore_replication_errors: true to treat replication failures as non-fatal.`
 				);
@@ -636,69 +544,541 @@ async function deployComponent(req) {
 
 		if (recorder) {
 			response.deployment_id = recorder.deploymentId;
-			// Reclaim the payload tarball for large deploys: every peer has now installed from
-			// the blob (replicateOperation resolved) and the origin no longer needs it. Dropping
-			// the reference before finish() folds the null into the single terminal write, which
-			// unlinks the file locally and replicates the null so peers drop their copies too.
-			// Metadata (size, hash, event_log) is retained for the audit trail. Two guards keep
-			// the tarball when it's still the artifact you'd debug or retry with: failed deploys
-			// don't reach this branch, and a deploy that reached here only because
-			// ignore_replication_errors masked failed peers keeps its payload for those peers.
-			const payloadSize = recorder.row.payload_size;
-			const retentionMaxSize = getPayloadRetentionMaxSize();
-			if (typeof payloadSize === 'number' && payloadSize > retentionMaxSize && recorder.getFailedPeers().length === 0) {
-				const freed = recorder.dropPayload();
-				if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
-			}
+			maybeReclaimPayload(recorder, emit);
 			emit('phase', { phase: 'success', status: 'done' });
 			await recorder.finish('success');
 		}
 		return response;
 	} catch (err) {
-		// Pack phase, install output tail, and deployment_id into http_resp_msg so the
-		// Fastify error handler forwards them verbatim (it does when http_resp_msg is an
-		// object). Non-SSE callers see structured failure detail; SSE callers already
-		// got the same data live via emit('error', ...) below.
-		const capture = installCapture.snapshot();
-		const phase = recorder?.row.phase;
-		const baseMessage = err?.message ?? String(err);
-		const structured = { error: baseMessage };
-		if (phase) structured.phase = phase;
-		if (capture.lines.length > 0) structured.install_output = capture;
-		if (recorder?.deploymentId) structured.deployment_id = recorder.deploymentId;
-		// Surface failed peer outcomes so callers see which nodes the deploy did not reach
-		// without a second get_deployment round-trip. Populated for replication failures (the
-		// throw above) and any other failure that occurred after peers reported. Carried on
-		// both the structured non-SSE body and the SSE 'error' event below so the two transports
-		// stay symmetric (the CLI uses SSE for deploy_component).
-		const failedPeers = recorder?.getFailedPeers() ?? [];
-		if (failedPeers.length > 0) structured.failed_peers = failedPeers;
+		throw await finalizeDeployFailure({ err, recorder, installCapture, emit });
+	}
+}
 
-		// Wrap as a ServerError so the Fastify error handler picks a 500 by default; preserve
-		// an upstream statusCode (e.g. a ClientError from payload validation) if present.
-		const outErr = new ServerError(baseMessage, err?.statusCode);
-		outErr.http_resp_msg = structured;
+/**
+ * Two-phase deploy orchestrator (origin node). Builds the incoming version into staging on every
+ * node (phase 1, stage_component), gates on every node succeeding, then atomically swaps it live on
+ * every node (phase 2, activate_component). The live component on every node is untouched until the
+ * whole cluster has the bits in place, and the go-live window is just the swap + restart.
+ */
+async function deployComponentTwoPhase(req, credentialReferences) {
+	const { resolveCredentials } = require('./secretOperations.ts');
+	// Fail fast on a protected core name before we create any state or touch the cluster.
+	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
 
-		emit('error', {
-			message: baseMessage,
-			code: outErr?.statusCode ?? err?.code,
-			phase,
-			install_output: capture.lines.length > 0 ? capture : undefined,
-			deployment_id: recorder?.deploymentId,
-			failed_peers: failedPeers.length > 0 ? failedPeers : undefined,
+	// The origin always records (a two-phase origin is never itself a replicated execution).
+	const emitter = req.progress ?? new ProgressEmitter();
+	if (!req.progress) req.progress = emitter;
+	const recorder = await DeploymentRecorder.create({
+		project: req.project,
+		package_identifier: req.package ?? null,
+		user: req.hdb_user?.username,
+		restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
+		credentials: credentialReferences.length ? credentialReferences : null,
+		emitter,
+	});
+	req._deploymentId = recorder.deploymentId;
+	const emit = (event, data) => emitter.emit(event, data);
+	const installCapture = createInstallCapture();
+	const rollingRestart = req.restart === 'rolling';
+	const recordPeer = (result) => {
+		recorder.recordPeer(result);
+		emit('peer', result);
+	};
+	let application;
+
+	try {
+		// Tee the payload into the row's blob (the replication channel peers read from) and re-source
+		// extraction from it. Two-phase requires systemReplicated, so peers always fetch from the row.
+		const extractionPayload = await sourceExtractionPayload({ req, recorder, isReplicatedExecution: false });
+		const resolvedCredentials = await resolveNodeCredentials({ req, resolveCredentials, isReplicatedExecution: false });
+		// stagingId = deployment id so peers (which build a fresh Application per sub-op) resolve the
+		// same staging path this deployment used.
+		application = buildDeployApplication({
+			req,
+			extractionPayload,
+			resolvedCredentials,
+			stagingId: recorder.deploymentId,
+			installCapture,
+			emitter,
+			emit,
 		});
-		// Record the terminal failure, but never let a finish() write error (full disk, lock,
-		// dropped system table) mask the actual deploy failure — outErr carries the phase,
-		// install output, and failed_peers the caller needs.
-		if (recorder) {
-			try {
-				await recorder.finish('failed', err);
-			} catch (finishErr) {
-				log.warn('Failed to record deployment failure row', finishErr);
+		// Strip tokens from req before any replication/log path; keep references (peers resolve those
+		// from their own hdb_secret copy). Strip the emitter and payload too — peers read the payload
+		// from the replicated row, keeping the sub-operation bodies small.
+		if (credentialReferences.length) req.credentials = credentialReferences;
+		else delete req.credentials;
+		delete req.progress;
+		delete req.payload;
+
+		// ===== PHASE 1: STAGE — build on every node; nothing goes live. =====
+		emit('phase', { phase: 'stage', status: 'start' });
+		await stageApplication(application);
+		const stageOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.STAGE_COMPONENT);
+		const stageResp = await server.replication.replicateOperation(stageOp, { onPeerResult: recordPeer });
+		if (stageResp?.replicated) recorder.recordPeers(stageResp.replicated);
+		emit('phase', { phase: 'stage', status: 'done' });
+
+		// ---- Cluster barrier: every node must have staged before ANY node activates. ----
+		if (!req.ignore_replication_errors) {
+			const failed = recorder.getFailedPeers();
+			if (failed.length > 0) {
+				await discardStagedApplication(application).catch(() => {});
+				throw new ServerError(
+					`Component '${req.project}' failed to stage on ${failed.length} of ` +
+						`${recorder.row.peer_results.length} peer node(s): ${describePeers(failed)}. No node was activated — ` +
+						`the live component is unchanged everywhere. See deployment ${recorder.deploymentId} (get_deployment), ` +
+						`or pass ignore_replication_errors: true to activate the nodes that did stage.`
+				);
 			}
 		}
-		throw outErr;
+
+		// Validate the staged build before go-live (loads from the staging dir; see loadValidateComponent).
+		await loadValidateComponent({ dirPath: application.buildDirPath, emit });
+
+		// ===== PHASE 2: ACTIVATE — atomic swap + restart, now the bits are in place everywhere. =====
+		// Persist root config now (not before staging) so a `package` config never points at a version
+		// that failed to stage.
+		if (req.package) await writeComponentRootConfig(req, credentialReferences);
+		// if doing a rolling restart set restart to false so peers don't also immediately restart.
+		req.restart = rollingRestart ? false : req.restart;
+
+		emit('phase', { phase: 'activate', status: 'start' });
+		await activateApplication(application);
+		const activateOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.ACTIVATE_COMPONENT, {
+			restart: req.restart,
+			deploymentId: recorder.deploymentId,
+		});
+		// Seal before the activate replicate burst (same #1170 rationale as one-shot).
+		recorder.seal();
+		const activateResp = await server.replication.replicateOperation(activateOp, { onPeerResult: recordPeer });
+		emit('phase', { phase: 'activate', status: 'done' });
+		let response = activateResp && typeof activateResp === 'object' ? activateResp : { message: '' };
+		if (activateResp?.replicated) recorder.recordPeers(activateResp.replicated);
+
+		// ---- Restart on the origin. ----
+		if (req.restart === true) {
+			emit('phase', { phase: 'restart', status: 'start' });
+			manageThreads.restartWorkers('http');
+			emit('phase', { phase: 'restart', status: 'done' });
+			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
+		} else if (rollingRestart) {
+			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+			emit('phase', { phase: 'restart', status: 'start' });
+			const jobResponse = await serverUtilities.executeJob({
+				operation: 'restart_service',
+				service: 'http',
+				replicated: true,
+			});
+			emit('phase', { phase: 'restart', status: 'done' });
+			response.restartJobId = jobResponse.job_id;
+			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
+		} else response.message = `Successfully deployed: ${application.name}`;
+
+		// ---- Activate gate: rare, but a node can stage OK and then fail the swap. ----
+		if (!req.ignore_replication_errors) {
+			const failed = recorder.getFailedPeers();
+			if (failed.length > 0) {
+				throw new ServerError(
+					`Component '${application.name}' was activated on the origin but failed to activate on ${failed.length} ` +
+						`of ${recorder.row.peer_results.length} peer node(s): ${describePeers(failed)}. Those nodes have the staged ` +
+						`build but did not go live. See deployment ${recorder.deploymentId} (get_deployment), or pass ` +
+						`ignore_replication_errors: true.`
+				);
+			}
+		}
+
+		response.deployment_id = recorder.deploymentId;
+		maybeReclaimPayload(recorder, emit);
+		emit('phase', { phase: 'success', status: 'done' });
+		await recorder.finish('success');
+		return response;
+	} catch (err) {
+		// An aborted deploy leaves the live component untouched; drop any staged build so it can't leak.
+		if (application) await discardStagedApplication(application).catch(() => {});
+		throw await finalizeDeployFailure({ err, recorder, installCapture, emit });
 	}
+}
+
+/**
+ * stage_component — phase 1 of a two-phase deploy, as a first-class operation. Builds the incoming
+ * version into the hidden staging directory on this node (and, when invoked directly rather than via
+ * replication, replicates the stage across the cluster). Never writes the live component directory,
+ * writes no root config, and never restarts — so it is safe to run cluster-wide and gate on.
+ *
+ * Reached three ways: directly by an operator (stage now, activate later), by a peer replaying a
+ * replicated stage (`_deploymentId` set), and indirectly — deploy_component drives staging itself,
+ * so it does not call this handler.
+ */
+async function stageComponent(req) {
+	if (req.project) {
+		req.project = path.parse(req.project).name;
+	} else if (req.package) {
+		req.project = getProjectNameFromPackage(req.package);
+	}
+	const validation = validator.stageComponentValidator(req);
+	if (validation) throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+
+	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
+	req.credentials = await ingestCredentials(req, req.credentials, req.project);
+	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
+	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
+
+	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
+	if (emitter && !req.progress) req.progress = emitter;
+	// Standalone stage records so it has a deployment_id + payload row for peers to fetch; a peer
+	// replaying the stage skips recording (the origin owns the row).
+	const recorder = isReplicatedExecution
+		? null
+		: await DeploymentRecorder.create({
+				project: req.project,
+				package_identifier: req.package ?? null,
+				user: req.hdb_user?.username,
+				restart_mode: null,
+				credentials: credentialReferences.length ? credentialReferences : null,
+				emitter,
+			});
+	if (recorder) req._deploymentId = recorder.deploymentId;
+	const emit = (event, data) => emitter?.emit(event, data);
+	const installCapture = createInstallCapture();
+	let application;
+
+	try {
+		const extractionPayload = await sourceExtractionPayload({ req, recorder, isReplicatedExecution });
+		const resolvedCredentials = await resolveNodeCredentials({ req, resolveCredentials, isReplicatedExecution });
+		application = buildDeployApplication({
+			req,
+			extractionPayload,
+			resolvedCredentials,
+			stagingId: req._deploymentId,
+			installCapture,
+			emitter,
+			emit,
+		});
+		if (credentialReferences.length) req.credentials = credentialReferences;
+		else delete req.credentials;
+		delete req.progress;
+
+		emit('phase', { phase: 'stage', status: 'start' });
+		await stageApplication(application);
+		emit('phase', { phase: 'stage', status: 'done' });
+
+		const response = { message: `Staged component: ${req.project}`, project: req.project, staged: true };
+		if (recorder) {
+			response.deployment_id = recorder.deploymentId;
+			// Replicate staging to peers so the bits land cluster-wide. Keep the payload in the body only
+			// when the row can't carry it (system not replicated on this node).
+			if (isSystemDatabaseReplicated()) delete req.payload;
+			const stageOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.STAGE_COMPONENT, {
+				includePayload: !isSystemDatabaseReplicated(),
+			});
+			recorder.seal();
+			const rep = await server.replication.replicateOperation(stageOp, {
+				onPeerResult: (result) => {
+					recorder.recordPeer(result);
+					emit('peer', result);
+				},
+			});
+			if (rep?.replicated) recorder.recordPeers(rep.replicated);
+			if (!req.ignore_replication_errors) {
+				const failed = recorder.getFailedPeers();
+				if (failed.length > 0) {
+					throw new ServerError(
+						`Component '${req.project}' failed to stage on ${failed.length} of ` +
+							`${recorder.row.peer_results.length} peer node(s): ${describePeers(failed)}. ` +
+							`See deployment ${recorder.deploymentId} (get_deployment).`
+					);
+				}
+			}
+			// Leave the row in a 'staged' resting state — the build exists cluster-wide but nothing is
+			// live yet; a subsequent activate_component (or the caller) takes it live.
+			emit('phase', { phase: 'staged', status: 'done' });
+			await recorder.finish('staged');
+		}
+		return response;
+	} catch (err) {
+		if (application) await discardStagedApplication(application).catch(() => {});
+		throw await finalizeDeployFailure({ err, recorder, installCapture, emit });
+	}
+}
+
+/**
+ * activate_component — phase 2 of a two-phase deploy, as a first-class operation. Atomically swaps a
+ * previously-staged build (identified by `deployment_id`) into the live component directory, persists
+ * the component's root config for a `package` deploy, and restarts as requested. When invoked
+ * directly it also replicates the activation across the cluster.
+ *
+ * Reached two ways: directly by an operator to take a prior stage live, and by a peer replaying a
+ * replicated activate (`_deploymentId` set). deploy_component drives activation itself.
+ */
+async function activateComponent(req) {
+	if (req.project) req.project = path.parse(req.project).name;
+	const validation = validator.activateComponentValidator(req);
+	if (validation) throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+
+	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	const stagingId = req._deploymentId ?? req.deployment_id;
+	if (!stagingId) {
+		throw handleHDBError(
+			new Error(),
+			`'deployment_id' is required to activate a staged component`,
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
+	}
+	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
+	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
+
+	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
+	const emit = (event, data) => emitter?.emit(event, data);
+	const rollingRestart = req.restart === 'rolling';
+	// Reconstruct the Application against the staged build. Only name + stagingId are needed to locate
+	// and swap it — the staged directory already holds the fully-installed incoming version.
+	const application = new Application({ name: req.project, packageIdentifier: req.package, stagingId });
+
+	emit('phase', { phase: 'activate', status: 'start' });
+	await activateApplication(application);
+	emit('phase', { phase: 'activate', status: 'done' });
+
+	// Persist root config now that the component is live (package deploys, on every node).
+	if (req.package) await writeComponentRootConfig(req, credentialReferences);
+
+	const response = { message: `Activated component: ${req.project}`, project: req.project, activated: true };
+
+	// Replicate the activation to peers (direct invocation only; a peer replaying an activate must not
+	// re-fan it out).
+	if (!isReplicatedExecution) {
+		delete req.progress;
+		const restartForPeers = rollingRestart ? false : req.restart;
+		const activateOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.ACTIVATE_COMPONENT, {
+			restart: restartForPeers,
+			deploymentId: stagingId,
+		});
+		const rep = await server.replication.replicateOperation(activateOp, {});
+		if (rep?.replicated) response.replicated = rep.replicated;
+	}
+
+	// Restart on this node. A peer replaying an immediate-restart activate restarts locally; the
+	// rolling path is driven only by the direct invoker via a replicated restart_service job.
+	if (req.restart === true) {
+		emit('phase', { phase: 'restart', status: 'start' });
+		manageThreads.restartWorkers('http');
+		emit('phase', { phase: 'restart', status: 'done' });
+		response.message = `Activated component: ${req.project}, restarting Harper`;
+	} else if (rollingRestart && !isReplicatedExecution) {
+		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+		emit('phase', { phase: 'restart', status: 'start' });
+		const jobResponse = await serverUtilities.executeJob({
+			operation: 'restart_service',
+			service: 'http',
+			replicated: true,
+		});
+		emit('phase', { phase: 'restart', status: 'done' });
+		response.restartJobId = jobResponse.job_id;
+		response.message = `Activated component: ${req.project}, restarting Harper`;
+	}
+	return response;
+}
+
+// ————————————————————————————————————————————————————————————————————————————
+// Shared deploy-family helpers (used by deploy_component, stage_component, activate_component).
+// ————————————————————————————————————————————————————————————————————————————
+
+// Reject deploying over a protected core component name unless force is set. Lazy-loads
+// componentLoader to avoid a circular dependency.
+function assertNotProtectedCoreComponent(project, force) {
+	const { TRUSTED_RESOURCE_PLUGINS } = require('./componentLoader.ts');
+	if (TRUSTED_RESOURCE_PLUGINS[project] && !force) {
+		throw handleHDBError(
+			new Error(),
+			`Cannot deploy component with name '${project}': this is a protected core component name. Use force: true to overwrite.`,
+			HTTP_STATUS_CODES.CONFLICT
+		);
+	}
+}
+
+// Persist a `package` deploy's entry into root config so every cold install (reboot, new peer,
+// rollback) reinstalls it. In two-phase this runs at activation, once the bits are staged everywhere.
+async function writeComponentRootConfig(req, credentialReferences) {
+	assertNotProtectedCoreComponent(req.project, req.force);
+	const applicationConfig = { package: req.package };
+	// Avoid writing an empty `install:` block
+	if (req.install_command || req.install_timeout || req.install_allow_scripts !== undefined) {
+		applicationConfig.install = {
+			command: req.install_command,
+			timeout: req.install_timeout,
+			allowInstallScripts: req.install_allow_scripts,
+		};
+	}
+	if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
+	// Persist credential references (never tokens) so every cold install re-resolves from the store.
+	if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
+	await configUtils.addConfig(req.project, applicationConfig);
+}
+
+// Resolve the tarball to extract from. On the origin, tee req.payload into the row's blob (the
+// channel peers read from) and re-source extraction from the persisted blob. On a peer replaying a
+// deploy without a payload, read the tarball from the replicated row's blob (bounded wait).
+async function sourceExtractionPayload({ req, recorder, isReplicatedExecution }) {
+	if (recorder && req.payload != null) {
+		await recorder.ingestPayload(req.payload);
+		return recorder.row.payload_blob.stream();
+	}
+	if (isReplicatedExecution && req.payload == null && !req.package) {
+		// Blob.stream() blocks on in-flight BLOB_CHUNK writes until the chunks land. If the row never
+		// arrives within the timeout, the peer records a failure and the origin sees it in peer_results.
+		const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: req.deployment_timeout });
+		return row.payload_blob.stream();
+	}
+	return req.payload;
+}
+
+// Resolve credential references into concrete tokens for this node's npm pack/install. On a peer, the
+// referenced hdb_secret row may arrive just behind the deploy op, so allow a bounded grace period.
+async function resolveNodeCredentials({ req, resolveCredentials, isReplicatedExecution }) {
+	let credentialsWaitMs = 0;
+	if (isReplicatedExecution) {
+		const requested = Number(req.deployment_timeout);
+		credentialsWaitMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+	}
+	return resolveCredentials(req.credentials, req.project, { waitMs: credentialsWaitMs });
+}
+
+// Construct the Application for a deploy, teeing each install line into the capture buffer (for the
+// thrown-error tail) and the SSE channel (when a caller is streaming).
+function buildDeployApplication({
+	req,
+	extractionPayload,
+	resolvedCredentials,
+	stagingId,
+	installCapture,
+	emitter,
+	emit,
+}) {
+	return new Application({
+		name: req.project,
+		payload: extractionPayload,
+		packageIdentifier: req.package,
+		install: {
+			command: req.install_command,
+			timeout: req.install_timeout,
+			allowInstallScripts: req.install_allow_scripts,
+		},
+		onInstallLine: (manager, stream, line) => {
+			installCapture.push(manager, stream, line);
+			if (emitter) emit('install', { manager, stream, line });
+		},
+		credentials: resolvedCredentials,
+		stagingId,
+	});
+}
+
+// Load a component directory to surface load-time errors early (throwaway scopes). No-op on the main
+// thread or in safe mode. In two-phase this loads the STAGED directory before go-live; in one-shot it
+// loads the live directory after in-place prepare.
+async function loadValidateComponent({ dirPath, emit }) {
+	if (isMainThread || process.env.HARPER_SAFE_MODE) return;
+	const pseudoResources = new Resources();
+	pseudoResources.isWorker = true;
+
+	const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
+	const { trackScopeClose } = require('./scopeShutdown.ts');
+	let lastError;
+	componentLoader.setErrorReporter((error) => (lastError = error));
+	emit('phase', { phase: 'load', status: 'start' });
+	// The Scopes this load creates are throwaway. Collect them (instead of registering for
+	// worker-shutdown auto-close) so we can close them here once validation completes — otherwise each
+	// deploy leaks the Scope's deploy-lifecycle listeners on this worker (#1462).
+	const validationScopes = new Set();
+	const validation = (async () => {
+		try {
+			await componentLoader.loadComponent(dirPath, pseudoResources, undefined, { collectScopes: validationScopes });
+		} finally {
+			const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
+			for (const result of closeResults) {
+				if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
+			}
+		}
+	})();
+	// Track the load+close so a concurrent worker shutdown waits for these scopes to finish disposing.
+	trackScopeClose(validation);
+	await validation;
+	emit('phase', { phase: 'load', status: 'done' });
+	if (lastError) throw lastError;
+}
+
+// Build a replicated sub-operation body (stage_component / activate_component) from the deploy
+// request. Carries only what a peer needs: project, the deployment id (correlation + payload lookup +
+// staging id), the build/config inputs, and credential REFERENCES (tokens are already stripped).
+function buildReplicatedSubOp(req, operation, { includePayload = false, restart, deploymentId } = {}) {
+	const op = { operation, project: req.project, _deploymentId: deploymentId ?? req._deploymentId };
+	if (req.package) op.package = req.package;
+	if (req.install_command != null) op.install_command = req.install_command;
+	if (req.install_timeout != null) op.install_timeout = req.install_timeout;
+	if (req.install_allow_scripts !== undefined) op.install_allow_scripts = req.install_allow_scripts;
+	if (req.deployment_timeout != null) op.deployment_timeout = req.deployment_timeout;
+	if (req.urlPath !== undefined) op.urlPath = req.urlPath;
+	if (req.force !== undefined) op.force = req.force;
+	if (req.ignore_replication_errors !== undefined) op.ignore_replication_errors = req.ignore_replication_errors;
+	if (Array.isArray(req.credentials) && req.credentials.length) op.credentials = req.credentials;
+	if (includePayload && req.payload != null) op.payload = req.payload;
+	if (restart !== undefined) op.restart = restart;
+	return op;
+}
+
+// Render failed peer outcomes as "node (error)" for an operator-facing error message.
+function describePeers(failedPeers) {
+	return failedPeers.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? 'unknown error'})`).join(', ');
+}
+
+// Reclaim the payload tarball for large deploys once every peer has installed from the blob. Dropping
+// the reference before finish() folds the null into the single terminal write, which unlinks the file
+// locally and replicates the null so peers drop their copies too. Metadata is retained. Kept when a
+// peer failed (still the retry artifact) or the payload is small.
+function maybeReclaimPayload(recorder, emit) {
+	const payloadSize = recorder.row.payload_size;
+	const retentionMaxSize = getPayloadRetentionMaxSize();
+	if (typeof payloadSize === 'number' && payloadSize > retentionMaxSize && recorder.getFailedPeers().length === 0) {
+		const freed = recorder.dropPayload();
+		if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
+	}
+}
+
+// Build the structured failure (phase, install-output tail, deployment_id, failed peers) that the
+// Fastify error handler forwards verbatim, emit the matching SSE 'error' event so the two transports
+// stay symmetric, and record the terminal failure row. Returns the ServerError to throw.
+async function finalizeDeployFailure({ err, recorder, installCapture, emit }) {
+	const capture = installCapture.snapshot();
+	const phase = recorder?.row.phase;
+	const baseMessage = err?.message ?? String(err);
+	const structured = { error: baseMessage };
+	if (phase) structured.phase = phase;
+	if (capture.lines.length > 0) structured.install_output = capture;
+	if (recorder?.deploymentId) structured.deployment_id = recorder.deploymentId;
+	const failedPeers = recorder?.getFailedPeers() ?? [];
+	if (failedPeers.length > 0) structured.failed_peers = failedPeers;
+
+	// Wrap as a ServerError so the Fastify error handler picks a 500 by default; preserve an upstream
+	// statusCode (e.g. a ClientError from payload validation) if present.
+	const outErr = new ServerError(baseMessage, err?.statusCode);
+	outErr.http_resp_msg = structured;
+
+	emit('error', {
+		message: baseMessage,
+		code: outErr?.statusCode ?? err?.code,
+		phase,
+		install_output: capture.lines.length > 0 ? capture : undefined,
+		deployment_id: recorder?.deploymentId,
+		failed_peers: failedPeers.length > 0 ? failedPeers : undefined,
+	});
+	// Record the terminal failure, but never let a finish() write error mask the actual deploy failure.
+	if (recorder) {
+		try {
+			await recorder.finish('failed', err);
+		} catch (finishErr) {
+			log.warn('Failed to record deployment failure row', finishErr);
+		}
+	}
+	return outErr;
 }
 
 // Ring buffer of install stdout/stderr lines, capped by both line count and bytes so
@@ -796,7 +1176,7 @@ async function getComponents() {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
 				const itemName = item.name;
-				if (itemName === 'node_modules' || itemName === ASIDE_STAGING_DIR) continue;
+				if (itemName === 'node_modules' || itemName === ASIDE_STAGING_DIR || itemName === DEPLOY_STAGING_DIR) continue;
 				const itemPath = path.join(dir, itemName);
 				if (item.isDirectory() || item.isSymbolicLink()) {
 					let res = {
@@ -1129,6 +1509,8 @@ exports.addComponent = addComponent;
 exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
+exports.stageComponent = stageComponent;
+exports.activateComponent = activateComponent;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;

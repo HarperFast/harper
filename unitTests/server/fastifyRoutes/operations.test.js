@@ -520,9 +520,11 @@ describe('Test custom functions operations', () => {
 			// Mock addConfig to prevent actual file writes
 			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
 
-			// Mock prepareApplication to prevent actual installation
-			const prepareApplicationStub = sandbox.stub();
-			operations.__set__('prepareApplication', prepareApplicationStub);
+			// Mock the two-phase build/swap primitives to prevent actual install + filesystem work.
+			const stageApplicationStub = sandbox.stub().resolves('/tmp/staging');
+			const activateApplicationStub = sandbox.stub().resolves();
+			operations.__set__('stageApplication', stageApplicationStub);
+			operations.__set__('activateApplication', activateApplicationStub);
 
 			// This should work - user components can be overwritten without force
 			await operations.deployComponent({
@@ -530,13 +532,14 @@ describe('Test custom functions operations', () => {
 				package: '@org/new-package',
 			});
 
-			// Verify addConfig was called
+			// Verify addConfig was called (at activation, once the bits are staged)
 			expect(addConfigStub.calledOnce).to.be.true;
 			expect(addConfigStub.firstCall.args[0]).to.equal('existing-component');
 			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/new-package');
 
-			// Verify prepareApplication was called
-			expect(prepareApplicationStub.calledOnce).to.be.true;
+			// Verify the component was staged then activated
+			expect(stageApplicationStub.calledOnce).to.be.true;
+			expect(activateApplicationStub.calledOnce).to.be.true;
 		});
 
 		it('Test deployComponent allows deploying new component without force flag', async () => {
@@ -546,9 +549,11 @@ describe('Test custom functions operations', () => {
 			// Mock addConfig to prevent actual file writes
 			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
 
-			// Mock prepareApplication to prevent actual installation
-			const prepareApplicationStub = sandbox.stub();
-			operations.__set__('prepareApplication', prepareApplicationStub);
+			// Mock the two-phase build/swap primitives to prevent actual install + filesystem work.
+			const stageApplicationStub = sandbox.stub().resolves('/tmp/staging');
+			const activateApplicationStub = sandbox.stub().resolves();
+			operations.__set__('stageApplication', stageApplicationStub);
+			operations.__set__('activateApplication', activateApplicationStub);
 
 			// This should work fine - no component exists yet
 			await operations.deployComponent({
@@ -560,8 +565,9 @@ describe('Test custom functions operations', () => {
 			expect(addConfigStub.calledOnce).to.be.true;
 			expect(addConfigStub.firstCall.args[0]).to.equal('new-component');
 
-			// Verify prepareApplication was called
-			expect(prepareApplicationStub.calledOnce).to.be.true;
+			// Verify the component was staged then activated
+			expect(stageApplicationStub.calledOnce).to.be.true;
+			expect(activateApplicationStub.calledOnce).to.be.true;
 		});
 
 		it('Test deployComponent prevents overwriting core component without force flag', async () => {
@@ -592,9 +598,11 @@ describe('Test custom functions operations', () => {
 			// Mock addConfig to prevent actual file writes
 			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
 
-			// Mock prepareApplication to prevent actual installation
-			const prepareApplicationStub = sandbox.stub();
-			operations.__set__('prepareApplication', prepareApplicationStub);
+			// Mock the two-phase build/swap primitives to prevent actual install + filesystem work.
+			const stageApplicationStub = sandbox.stub().resolves('/tmp/staging');
+			const activateApplicationStub = sandbox.stub().resolves();
+			operations.__set__('stageApplication', stageApplicationStub);
+			operations.__set__('activateApplication', activateApplicationStub);
 
 			// This should NOT throw an error because force is true
 			await operations.deployComponent({
@@ -608,8 +616,9 @@ describe('Test custom functions operations', () => {
 			expect(addConfigStub.firstCall.args[0]).to.equal('graphql');
 			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/override-package');
 
-			// Verify prepareApplication was called
-			expect(prepareApplicationStub.calledOnce).to.be.true;
+			// Verify the component was staged then activated
+			expect(stageApplicationStub.calledOnce).to.be.true;
+			expect(activateApplicationStub.calledOnce).to.be.true;
 		});
 
 		it('Test deployComponent prevents overwriting multiple core component names', async () => {

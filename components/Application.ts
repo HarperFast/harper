@@ -401,9 +401,63 @@ async function packGitReferenceWithoutScripts(
 }
 
 // Hidden directory under the components root holding component versions renamed aside
-// during a deploy swap (see extractApplication). The leading dot keeps
+// during a deploy swap (see activateApplication). The leading dot keeps
 // loadComponentDirectories from loading its contents as components.
 export const ASIDE_STAGING_DIR = '.deploy-aside';
+
+// Hidden directory under the components root where the INCOMING version of a component is
+// fully built (extracted + `npm install`) before it goes live — the counterpart to
+// ASIDE_STAGING_DIR, which holds the OUTGOING version. Two-phase deploy stages here first
+// (stage_component), then activateApplication renames the staged copy into the live
+// component path in one atomic step (activate_component).
+//
+// It lives UNDER the components root on purpose, even though the bytes are "temporary":
+//   - Same filesystem as the live path, so the go-live rename() is atomic. An os.tmpdir()
+//     location is frequently a different mount (tmpfs / separate volume); a cross-device
+//     rename throws EXDEV and degrades to a slow recursive copy — reintroducing the very
+//     downtime window the two-phase split exists to remove.
+//   - The leading dot keeps loadComponentDirectories (componentLoader) from loading it as a
+//     phantom component, and it is not the watched base of any component's file watcher
+//     (those are rooted at each live component dir), so building here triggers no
+//     restart-on-change storm and needs no deploy:start watcher suppression.
+export const DEPLOY_STAGING_DIR = '.deploy-staging';
+
+/**
+ * Atomically move `targetDirPath` aside into a hidden, per-component staging directory if it
+ * exists, returning the aside staging directory (for best-effort cleanup) or null when there was
+ * nothing to move.
+ *
+ * Renaming the old directory aside — instead of clearing it in place — is immune to the race where
+ * a still-running worker keeps writing into the directory (e.g. a live Next.js app writing into
+ * `.next/cache`): an in-place recursive rm races that writer and fails with ENOTEMPTY, whereas the
+ * rename is atomic and the old worker harmlessly keeps writing into the renamed inode until it is
+ * replaced on restart. The aside lives on the same filesystem (sibling hidden dir under the same
+ * parent) so the rename stays atomic, and is per-component so a sibling deploy never collides with
+ * or sweeps another's aside.
+ */
+async function moveDirAside(targetDirPath: string): Promise<string | null> {
+	const asideStagingDir = join(dirname(targetDirPath), ASIDE_STAGING_DIR, basename(targetDirPath));
+	try {
+		await access(targetDirPath, constants.F_OK);
+	} catch (err) {
+		if (err.code === 'ENOENT') return null; // nothing there to move
+		throw err;
+	}
+	await mkdir(asideStagingDir, { recursive: true });
+	await rename(targetDirPath, join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`));
+	return asideStagingDir;
+}
+
+// Best-effort removal of a per-component aside staging directory. The old worker may still hold
+// files open in a renamed copy (the live writer that motivated the rename), so a failure here is
+// expected in that case and logged at trace rather than as a warning — the survivor is swept by
+// the next deploy.
+function cleanupAsideDir(asideStagingDir: string | null, componentName: string): void {
+	if (!asideStagingDir) return;
+	rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
+		logger.trace?.(`Deferred cleanup of previous ${componentName} component directory: ${err.message}`)
+	);
+}
 
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
 // module (both in source and in dist), holds no secret, and is inert without a live session.
@@ -414,7 +468,10 @@ export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.j
  *
  * Only one of `application.payload` or `application.package` should be specified; otherwise, an error is thrown.
  *
- * Writes the application to the configured components root directory using the `application.name` and overwrites any existing directory.
+ * Writes the application into `application.buildDirPath`, overwriting any existing directory there.
+ * By default that is the live component directory (`application.dirPath`); during a two-phase deploy
+ * `stageApplication` points it at the hidden staging directory instead, so the live path is never
+ * touched until `activateApplication` swaps the staged copy into place.
  *
  * This method should only be called from the main thread
  */
@@ -447,8 +504,10 @@ export async function extractApplication(application: Application) {
 			tarball = Readable.from(payload as Buffer);
 		}
 	} else {
-		// Given a package, there are a a couple options
-		const parentDirPath = dirname(application.dirPath);
+		// Given a package, there are a a couple options. The tarball is packed next to the build
+		// target (the staging dir during a two-phase deploy) so it lands on the same filesystem and
+		// is swept with the staging area rather than littering the live components root.
+		const parentDirPath = dirname(application.buildDirPath);
 
 		// If the package identifier is a file path we need to check if its a tarball or a directory
 		if (application.packageIdentifier.startsWith('file:')) {
@@ -458,8 +517,11 @@ export async function extractApplication(application: Application) {
 				const stats = await stat(packagePath);
 
 				if (stats.isDirectory()) {
-					// If its a directory, symlink
-					await symlink(packagePath, application.dirPath, 'dir');
+					// If its a directory, symlink. A stale build target (e.g. a retried stage) would
+					// make symlink() throw EEXIST, so clear it first.
+					await rm(application.buildDirPath, { recursive: true, force: true });
+					await mkdir(dirname(application.buildDirPath), { recursive: true });
+					await symlink(packagePath, application.buildDirPath, 'dir');
 					// And return early since we're done; no extraction needed
 					return;
 				}
@@ -553,56 +615,38 @@ export async function extractApplication(application: Application) {
 		}
 	}
 
-	// Replace any existing component directory atomically instead of clearing it in
-	// place. A previous version's worker can still be running and actively writing
-	// into this directory — e.g. a live Next.js app writing into `.next/cache` — and
-	// an in-place recursive rm races that writer: rm empties `.next`, then its leaf
-	// `rmdir('.next')` fails with ENOTEMPTY because the worker just re-created a cache
-	// entry. (`force: true` only suppresses ENOENT; ENOTEMPTY is not retried unless
-	// `maxRetries` is set, and a continuously-writing app would outlast retries
-	// anyway.) Renaming the old directory aside is atomic and immune to the race: the
-	// still-running worker keeps writing into the renamed inode harmlessly until it's
-	// replaced on restart, and the aside copy is removed best-effort below.
-	//
-	// The aside lives under a hidden, component-scoped staging directory inside the
-	// components root: same filesystem as the source so the rename stays atomic, the
-	// leading dot keeps loadComponentDirectories from picking it up as a phantom
-	// component, and the per-component path means a sibling component never collides
-	// with (or sweeps) another's aside.
-	const asideStagingDir = join(dirname(application.dirPath), ASIDE_STAGING_DIR, basename(application.dirPath));
-	let didRenameAside = false;
-	try {
-		await access(application.dirPath, constants.F_OK);
-		await mkdir(asideStagingDir, { recursive: true });
-		await rename(application.dirPath, join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`));
-		didRenameAside = true;
-	} catch (err) {
-		// Ignore does not exist error
-		if (err.code !== 'ENOENT') {
-			throw err;
-		}
-	}
-	// Finally, create the application directory fresh
-	await mkdir(application.dirPath, { recursive: true });
+	const buildDirPath = application.buildDirPath;
+
+	// Replace any existing build directory atomically instead of clearing it in place. When the
+	// build target IS the live directory (the legacy in-place path, and boot-time installs), a
+	// previous version's worker can still be running and actively writing into it — e.g. a live
+	// Next.js app writing into `.next/cache` — and an in-place recursive rm races that writer,
+	// failing with ENOTEMPTY. moveDirAside renames it aside atomically instead. When the build
+	// target is a fresh two-phase staging dir there is normally nothing to move (a retried stage
+	// is the exception), so this is a cheap no-op on the common path.
+	const asideStagingDir = await moveDirAside(buildDirPath);
+
+	// Create the build directory fresh
+	await mkdir(buildDirPath, { recursive: true });
 
 	// Now pipeline the tarball into maybe-gunzip then tar-fs to reliably decompress and extract the contents
-	await pipeline(tarball, gunzip(), extract(application.dirPath));
+	await pipeline(tarball, gunzip(), extract(buildDirPath));
 
 	// If the extracted directory contains a single folder, move the contents up one level
 	// The `npm pack` command does this (the top-level folder is called "package")
 	// Other packing tools may have similar behavior, but the directory name is not guaranteed.
-	const extracted = await readdir(application.dirPath, { withFileTypes: true });
+	const extracted = await readdir(buildDirPath, { withFileTypes: true });
 	if (extracted.length === 1 && extracted[0].isDirectory()) {
-		const topLevelDirPath = join(application.dirPath, extracted[0].name);
+		const topLevelDirPath = join(buildDirPath, extracted[0].name);
 
-		const tempDirPath = await mkdtemp(application.dirPath);
+		const tempDirPath = await mkdtemp(buildDirPath);
 
 		// Copy contents of top-level directory to temp directory (in order to avoid collisions of top-level directory name and one of the contents)
 		await cp(topLevelDirPath, tempDirPath, { recursive: true });
 		// Remove top-level directory
 		await rm(topLevelDirPath, { recursive: true, force: true });
 		// Copy contents of temp directory to application directory
-		await cp(tempDirPath, application.dirPath, { recursive: true });
+		await cp(tempDirPath, buildDirPath, { recursive: true });
 		// Finally, remove the temp dir
 		await rm(tempDirPath, { recursive: true, force: true });
 	}
@@ -612,33 +656,29 @@ export async function extractApplication(application: Application) {
 		await rm(tarballPath, { force: true });
 	}
 
-	// Remove this component's aside copies. The old worker may still hold files open
-	// in the just-renamed copy (the live writer that motivated the rename), so this is
-	// best-effort: removing the whole staging subdirectory also clears leftovers from
-	// earlier deploys whose workers have since exited, and a copy that survives because
-	// its worker is still live is swept by the next deploy. The failure is expected in
-	// the live-worker case, so it's logged at trace rather than as a warning.
-	if (didRenameAside) {
-		rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
-			logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
-		);
-	}
+	// Remove this component's aside copies (best-effort; see cleanupAsideDir).
+	cleanupAsideDir(asideStagingDir, application.name);
 }
 
 /**
- * Install an application to its relative `application.dirPath` using either a
+ * Install an application into `application.buildDirPath` using either a
  * configured `application.install` command, a derived package manager from the
  * application's `package.json#devEngines`, or falling back to the default
  * package manager, `npm`.
  *
- * Will return early if `node_modules` already exists within the `application.dirPath`
+ * `buildDirPath` is the live component directory by default, or the hidden staging directory
+ * during a two-phase deploy (see stageApplication) — so `npm install`, the slowest and most
+ * failure-prone step, runs against the staged copy and never leaves the live path half-installed.
+ *
+ * Will return early if `node_modules` already exists within the build directory.
  *
  * This method should only be called from the main thread
  */
 export async function installApplication(application: Application) {
+	const buildDirPath = application.buildDirPath;
 	let packageJSON: any;
 	try {
-		packageJSON = JSON.parse(await readFile(join(application.dirPath, 'package.json'), 'utf8'));
+		packageJSON = JSON.parse(await readFile(join(buildDirPath, 'package.json'), 'utf8'));
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;
 		// If no package.json, nothing to install
@@ -647,7 +687,7 @@ export async function installApplication(application: Application) {
 	}
 	try {
 		// Does node_modules exist?
-		await access(join(application.dirPath, 'node_modules'), constants.F_OK);
+		await access(join(buildDirPath, 'node_modules'), constants.F_OK);
 		application.logger.info(`Application ${application.name} already has node_modules; skipping install`);
 		return;
 	} catch (err) {
@@ -665,7 +705,7 @@ export async function installApplication(application: Application) {
 			application.name,
 			command,
 			args,
-			application.dirPath,
+			buildDirPath,
 			application.install?.timeout,
 			customOnLine,
 			application.npmUserconfigPath
@@ -726,7 +766,7 @@ export async function installApplication(application: Application) {
 			application.name,
 			(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + packageManager.name,
 			application.install?.allowInstallScripts ? ['install'] : ['install', '--ignore-scripts'], // All of `npm`, `yarn`, and `pnpm` support the `install` command. If we need to configure options here we may have to use some other defaults though
-			application.dirPath,
+			buildDirPath,
 			application.install?.timeout,
 			pmOnLine,
 			application.npmUserconfigPath
@@ -783,7 +823,7 @@ export async function installApplication(application: Application) {
 		application.name,
 		(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + 'npm',
 		npmInstallArgs,
-		application.dirPath,
+		buildDirPath,
 		application.install?.timeout,
 		npmOnLine,
 		application.npmUserconfigPath
@@ -825,6 +865,11 @@ interface ApplicationOptions {
 	// Deploy credentials already resolved to literal tokens, of any kind; partitioned by the
 	// constructor into the npm and git halves, which are injected by entirely different mechanisms.
 	credentials?: ResolvedCredential[];
+	// Stable identifier for the hidden staging directory this deploy builds into, so a two-phase
+	// deploy's `activate_component` step can reconstruct the same staging path a prior
+	// `stage_component` built (both derive it from the deployment id). Defaults to a random UUID for
+	// callers that stage and activate against one in-memory Application instance.
+	stagingId?: string;
 }
 
 export class Application {
@@ -846,10 +891,23 @@ export class Application {
 	// Path to the per-deploy `.npmrc`, set by writeTransientNpmrc() during prepareApplication and
 	// passed to the spawn calls; undefined when no registry credentials were provided.
 	npmUserconfigPath?: string;
+	// Stable id for this deploy's staging directory (see ApplicationOptions.stagingId).
+	stagingId: string;
+	// When set, extract/install build here instead of the live `dirPath`. stageApplication() points
+	// it at `stagingDirPath`; activateApplication() clears it after swapping the staged copy live.
+	#buildDirPath?: string;
 	#npmrcTempDir?: string;
 	#gitCredentialSession?: GitCredentialSession;
 
-	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
+	constructor({
+		name,
+		payload,
+		packageIdentifier,
+		install,
+		onInstallLine,
+		credentials,
+		stagingId,
+	}: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
@@ -872,8 +930,35 @@ export class Application {
 		const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		if (!componentsRoot) throw new Error('componentsRoot is not configured');
 		this.dirPath = join(componentsRoot, name);
+		this.stagingId = stagingId ?? randomUUID();
 		this.logger = logger.loggerWithTag(name);
 		this.packageManagerPrefix = getConfigValue(CONFIG_PARAMS.APPLICATIONS_PACKAGEMANAGERPREFIX);
+	}
+
+	// Directory where extract/install currently build. Defaults to the live component directory
+	// (`dirPath`) — the legacy in-place path, still used by boot-time installApplications() — and is
+	// repointed at the hidden staging directory for the duration of a two-phase deploy.
+	get buildDirPath(): string {
+		return this.#buildDirPath ?? this.dirPath;
+	}
+
+	// Hidden, per-deploy staging directory the incoming version is built into before it goes live.
+	// Deterministic from (component name, stagingId) so `activate_component` can find what
+	// `stage_component` built. Sits under the components root (dirname(dirPath)) so the go-live
+	// rename() into `dirPath` stays on one filesystem and is therefore atomic. See DEPLOY_STAGING_DIR.
+	get stagingDirPath(): string {
+		return join(dirname(this.dirPath), DEPLOY_STAGING_DIR, this.name, this.stagingId);
+	}
+
+	// Route extract/install into the staging directory. Called by stageApplication().
+	useStagingBuildDir(): void {
+		this.#buildDirPath = this.stagingDirPath;
+	}
+
+	// Restore the live component directory as the build target. Called by activateApplication()
+	// once the staged copy has been swapped into place.
+	useLiveBuildDir(): void {
+		this.#buildDirPath = undefined;
 	}
 
 	// Write the transient `.npmrc` into a fresh 0700 temp dir (file mode 0600) and record its path
@@ -1012,6 +1097,122 @@ export async function prepareApplication(application: Application) {
 		await application.cleanupTransientNpmrc();
 		broadcastDeployEnd(application.name);
 	}
+}
+
+/**
+ * Phase 1 of a two-phase deploy: build the INCOMING version of a component completely — download /
+ * `npm pack` (incl. a git clone), extract, and `npm install` — into the hidden staging directory,
+ * WITHOUT touching the live component directory.
+ *
+ * This is the slow, failure-prone half of a deploy, and doing it off to the side has two payoffs:
+ *   - It is safe to run across the whole cluster and gate on: if a node can't fetch the package or
+ *     `npm install` fails, that node reports the failure and NOTHING has changed anywhere — the live
+ *     component is untouched on every node. Contrast the one-shot deploy, where a peer can fail
+ *     mid-install with a half-written live directory while other peers have already gone live.
+ *   - The staging directory is not the watched base of any component's file watcher and is ignored
+ *     by the component loader (leading dot), so building here triggers no restart-on-change storm.
+ *     No deploy:start/deploy:end watcher suppression is needed for this phase — that is reserved for
+ *     activateApplication, which is the only phase that writes the live path.
+ *
+ * This method should only be called from the main thread.
+ *
+ * @param application The application to stage.
+ * @returns The absolute path of the staging directory the incoming version was built into.
+ */
+export async function stageApplication(application: Application): Promise<string> {
+	application.useStagingBuildDir();
+	// Start from a clean slate so a retried stage (same deployment id) can't inherit a half-built
+	// tree from a previous attempt.
+	await rm(application.stagingDirPath, { recursive: true, force: true });
+	try {
+		await application.writeTransientNpmrc();
+		try {
+			await application.startGitCredentialSession();
+			await extractApplication(application);
+		} finally {
+			await application.cleanupGitCredentialSession();
+		}
+		await installApplication(application);
+	} catch (err) {
+		// A failed stage leaves nothing live; remove the partial staging tree so it can't accumulate
+		// or be mistaken for a good build. Best-effort — never mask the original failure.
+		await rm(application.stagingDirPath, { recursive: true, force: true }).catch(() => {});
+		application.useLiveBuildDir();
+		throw err;
+	} finally {
+		await application.cleanupTransientNpmrc();
+	}
+	return application.stagingDirPath;
+}
+
+/**
+ * Phase 2 of a two-phase deploy: swap the already-staged incoming version into the live component
+ * directory in one atomic `rename()`, then let watchers restart onto it.
+ *
+ * This is the short, low-risk half — no network, no install, just a directory swap — so the window
+ * during which the component is being replaced is as small as the filesystem allows, and it is only
+ * entered once staging has succeeded (cluster-wide, when orchestrated by deploy_component).
+ *
+ * Bracketed with deploy:start/deploy:end so every thread's file watchers suppress restart-on-change
+ * while the live directory is replaced (harper#488) — the same suppression the one-shot deploy used
+ * to hold for the entire extract+install; here it wraps only the swap.
+ *
+ * This method should only be called from the main thread.
+ */
+export async function activateApplication(application: Application): Promise<void> {
+	const stagingDirPath = application.stagingDirPath;
+	try {
+		await access(stagingDirPath, constants.F_OK);
+	} catch (err) {
+		if (err.code === 'ENOENT') {
+			throw new Error(
+				`Cannot activate ${application.name}: no staged build found at ${stagingDirPath}. ` +
+					`Stage the component (stage_component) before activating it.`
+			);
+		}
+		throw err;
+	}
+	await broadcastDeployStart(application.name);
+	let asideStagingDir: string | null = null;
+	try {
+		// Move the current live version aside (atomic; tolerates a still-writing worker), then rename
+		// the staged copy into place. Both live under the components root, so the rename is same-fs and
+		// atomic — there is no interval where `dirPath` is a partially populated directory.
+		asideStagingDir = await moveDirAside(application.dirPath);
+		await mkdir(dirname(application.dirPath), { recursive: true });
+		await rename(stagingDirPath, application.dirPath);
+		application.useLiveBuildDir();
+	} finally {
+		broadcastDeployEnd(application.name);
+	}
+	// Best-effort cleanup of the outgoing version (see cleanupAsideDir) and the now-empty per-component
+	// staging parent.
+	cleanupAsideDir(asideStagingDir, application.name);
+	rm(dirname(stagingDirPath), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
+		logger.trace?.(`Deferred cleanup of ${application.name} staging directory: ${err.message}`)
+	);
+}
+
+/**
+ * Discard a staged-but-not-activated build (an aborted two-phase deploy). Best-effort: removes the
+ * staging tree and tears down any transient credential state. The live component directory is never
+ * touched. Safe to call whether or not staging ever ran.
+ */
+export async function discardStagedApplication(application: Application): Promise<void> {
+	try {
+		await application.cleanupGitCredentialSession();
+	} catch {
+		/* best-effort */
+	}
+	try {
+		await application.cleanupTransientNpmrc();
+	} catch {
+		/* best-effort */
+	}
+	application.useLiveBuildDir();
+	await rm(application.stagingDirPath, { recursive: true, force: true }).catch((err) =>
+		logger.trace?.(`Failed to discard ${application.name} staging directory: ${err.message}`)
+	);
 }
 
 /**

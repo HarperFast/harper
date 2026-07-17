@@ -291,6 +291,12 @@ export const OPERATIONS_ENUM = {
 	DEPLOY_CUSTOM_FUNCTION_PROJECT: 'deploy_custom_function_project',
 	PACKAGE_COMPONENT: 'package_component',
 	DEPLOY_COMPONENT: 'deploy_component',
+	// Two-phase deploy sub-operations. stage_component builds the incoming version into a hidden
+	// staging directory cluster-wide (no go-live); activate_component atomically swaps the staged
+	// copy into the live path and restarts. deploy_component orchestrates the two so existing callers
+	// are unaffected. See components/Application.ts (stageApplication/activateApplication).
+	STAGE_COMPONENT: 'stage_component',
+	ACTIVATE_COMPONENT: 'activate_component',
 	READ_TRANSACTION_LOG: 'read_transaction_log',
 	DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
 	INSTALL_NODE_MODULES: 'install_node_modules',

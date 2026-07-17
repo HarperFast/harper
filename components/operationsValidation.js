@@ -25,6 +25,8 @@ module.exports = {
 	dropCustomFunctionProjectValidator,
 	packageComponentValidator,
 	deployComponentValidator,
+	stageComponentValidator,
+	activateComponentValidator,
 	setComponentFileValidator,
 	getComponentFileValidator,
 	dropComponentFileValidator,
@@ -434,6 +436,39 @@ const GIT_CREDENTIAL_ENTRY = Joi.object({
 	.xor('token', 'secret')
 	.unknown(false);
 
+// The kind-heterogeneous deploy credentials array, shared by deploy_component and its two-phase
+// sub-operations (stage_component / activate_component) so the three stay in lockstep. An entry's
+// kind is implied by its identifying key (`registry` → npm registry auth, otherwise git host auth),
+// dispatched here so a malformed entry reports what is actually wrong with it rather than a generic
+// "no alternative matched".
+const CREDENTIALS_ARRAY_SCHEMA = Joi.array()
+	.items(
+		Joi.alternatives().conditional('.registry', {
+			is: Joi.exist(),
+			then: REGISTRY_CREDENTIAL_ENTRY,
+			otherwise: GIT_CREDENTIAL_ENTRY,
+		})
+	)
+	.optional();
+
+// A component's URL mount path. Rejects `..` so a deploy can't mount a component outside its intended
+// path. Shared across deploy_component and the two-phase sub-operations that persist component config.
+const URL_PATH_SCHEMA = Joi.string()
+	.min(1)
+	.custom((value, helpers) => {
+		if (value.includes('..')) return helpers.error('any.invalid');
+		return value;
+	})
+	.optional()
+	.messages({ 'any.invalid': 'urlPath must not contain ".."' });
+
+// `registryAuth` was the credentials field's name on the 5.2 dev line. Rejected rather than ignored:
+// validation allows unknown keys, so a caller still sending it would otherwise get a deploy that
+// silently installs with no credentials. Shared so every deploy-family op rejects it identically.
+const FORBIDDEN_REGISTRY_AUTH = Joi.any().forbidden().messages({
+	'any.unknown': `'registryAuth' has been renamed to 'credentials'`,
+});
+
 /**
  * Validate deployComponent requests.
  * @param req
@@ -453,44 +488,80 @@ function deployComponentValidator(req) {
 		deployment_timeout: Joi.number().min(0).optional(),
 		force: Joi.boolean().optional(),
 		ignore_replication_errors: Joi.boolean().optional(),
-		urlPath: Joi.string()
-			.min(1)
-			.custom((value, helpers) => {
-				if (value.includes('..')) return helpers.error('any.invalid');
-				return value;
-			})
-			.optional()
-			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
-		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
-		// identifying key rather than a separate discriminator field, so a new kind is added as
-		// another item alternative here without reshaping the field. Today: npm registry auth
-		// (`registry`) and git host auth for a git-reference package (`host`, #1792).
-		//
-		// Every kind supplies its credential exactly one of two ways:
-		//   - `token`: a literal token, used only for this node's install and never persisted or
-		//     replicated (stripped from req before replicateOperation).
-		//   - `secret`: the name of an hdb_secret row (#1550); the token is resolved by decrypting
-		//     that row on this node at deploy time, so the credential lives in the secrets store
-		//     (reference, not embed) instead of travelling in the operation body.
-		// Dispatched on the presence of `registry` rather than tried as alternatives, so a malformed
-		// entry reports what is actually wrong with it (a newline in the token, an invalid scope) rather
-		// than a generic "no alternative matched".
-		credentials: Joi.array()
-			.items(
-				Joi.alternatives().conditional('.registry', {
-					is: Joi.exist(),
-					then: REGISTRY_CREDENTIAL_ENTRY,
-					otherwise: GIT_CREDENTIAL_ENTRY,
-				})
-			)
-			.optional(),
-		// `registryAuth` was this field's name on the 5.2 dev line before it grew to carry other
-		// credential kinds. Rejected rather than ignored: validation allows unknown keys, so a caller
-		// still sending it would otherwise get a deploy that silently installs with no credentials.
-		registryAuth: Joi.any().forbidden().messages({
-			'any.unknown': `'registryAuth' has been renamed to 'credentials'`,
-		}),
+		// Opt out of the two-phase (stage-then-activate) deploy and use the legacy one-shot path
+		// instead. Provided as an escape hatch for mixed-version clusters where a peer predates the
+		// stage_component/activate_component operations. Defaults to two-phase.
+		two_phase: Joi.boolean().optional(),
+		urlPath: URL_PATH_SCHEMA,
+		// Deploy credentials. Each entry is npm registry auth (`registry`) or git host auth (`host`,
+		// #1792), and supplies its secret either as a literal `token` (used only for this node's
+		// install, never persisted/replicated) or a `secret` reference to an hdb_secret row (#1550).
+		credentials: CREDENTIALS_ARRAY_SCHEMA,
+		registryAuth: FORBIDDEN_REGISTRY_AUTH,
 	}).with('urlPath', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);
+}
+
+/**
+ * Validate stage_component requests — phase 1 of a two-phase deploy. Accepts the same build-time
+ * inputs as deploy_component (package/payload, install options, credentials) but no go-live controls
+ * (`restart`), since staging never restarts. `restart` is intentionally absent; a stray one is
+ * ignored (operations validate with allowUnknown).
+ * @param req
+ * @returns {*}
+ */
+function stageComponentValidator(req) {
+	const stageSchema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		package: Joi.string().optional(),
+		install_command: Joi.string().optional(),
+		install_timeout: Joi.number().optional(),
+		install_allow_scripts: Joi.boolean().optional(),
+		deployment_timeout: Joi.number().min(0).optional(),
+		force: Joi.boolean().optional(),
+		// urlPath is not applied at stage time (config is written at activate), but it is accepted and
+		// carried through so a single request body can flow stage → activate unchanged.
+		urlPath: URL_PATH_SCHEMA,
+		credentials: CREDENTIALS_ARRAY_SCHEMA,
+		registryAuth: FORBIDDEN_REGISTRY_AUTH,
+	}).with('urlPath', 'package');
+
+	return validator.validateBySchema(req, stageSchema);
+}
+
+/**
+ * Validate activate_component requests — phase 2 of a two-phase deploy. Swaps an already-staged
+ * build (identified by `deployment_id`) into the live path and optionally restarts. Also carries the
+ * config-persistence inputs (package/install/credentials/urlPath) so a `package` deploy's root config
+ * is written at go-live rather than before the bits are in place.
+ * @param req
+ * @returns {*}
+ */
+function activateComponentValidator(req) {
+	const activateSchema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		// Identifies which staged build to activate. Required for a standalone activate; the
+		// deploy_component orchestrator supplies it as the deployment id it staged under.
+		deployment_id: Joi.string().optional(),
+		package: Joi.string().optional(),
+		install_command: Joi.string().optional(),
+		install_timeout: Joi.number().optional(),
+		install_allow_scripts: Joi.boolean().optional(),
+		deployment_timeout: Joi.number().min(0).optional(),
+		restart: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('rolling')).optional(),
+		force: Joi.boolean().optional(),
+		ignore_replication_errors: Joi.boolean().optional(),
+		urlPath: URL_PATH_SCHEMA,
+		credentials: CREDENTIALS_ARRAY_SCHEMA,
+		registryAuth: FORBIDDEN_REGISTRY_AUTH,
+	}).with('urlPath', 'package');
+
+	return validator.validateBySchema(req, activateSchema);
 }

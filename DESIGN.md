@@ -305,3 +305,46 @@ guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existin
 this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
 declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
 other future cause would still report success silently; that's a deferred, separate fix.
+
+## Two-phase deploy: stage then activate (`components/Application.ts`, `components/operations.js`)
+
+`deploy_component` splits into two replicated phases so a cluster deploy is all-or-nothing at the
+point of go-live. **Phase 1 (`stage_component`)** builds the incoming version — download/`npm pack`
+(incl. a git clone), extract, `npm install` — into a hidden staging directory on every node.
+**Phase 2 (`activate_component`)** atomically renames the staged copy into the live component path and
+restarts. `deploy_component` orchestrates the two: it stages on the origin, replicates
+`stage_component` to peers, **waits for every node to report a successful stage before any node
+activates** (`ignore_replication_errors` opts out of the barrier), then replicates
+`activate_component`. If a node can't fetch the package or fails `npm install`, it fails during
+staging while the live component is still untouched _on every node_ — where the old one-shot path
+could leave a peer half-installed after other peers had already restarted onto the new code. The
+request/response contract is unchanged; only the SSE phase names differ (`stage`/`activate` vs the
+old `prepare`/`replicate`). `two_phase: false` forces the legacy one-shot path.
+
+The staging directory (`.deploy-staging/<name>/<deploymentId>`) lives **under the components root**,
+not in `os.tmpdir()`, even though its contents are transient. This is deliberate and load-bearing:
+the go-live step is `rename(stagingDir, liveDir)`, which is only atomic when both paths share a
+filesystem. `os.tmpdir()` is frequently a different mount (tmpfs, a separate volume); a cross-device
+rename throws `EXDEV` and Node has no atomic fallback — you'd be back to a slow recursive copy at the
+exact moment you want the swap to be instantaneous, reintroducing the downtime window the split
+exists to remove. The leading dot keeps `loadComponentDirectories` from loading it as a phantom
+component, and it is **not** the watched base of any component's file watcher (those are rooted at
+each live component dir, `EntryHandler`/`deriveCommonPatternBase`) — so building here fires no
+restart-on-change events and needs no `deploy:start` watcher suppression. That suppression is now
+scoped to `activateApplication`, the only phase that writes the live path. Staging is deterministic
+from the deployment id precisely so `activate_component` (a separate replicated operation, and on
+peers a separate invocation from `stage_component`) can reconstruct the same path the stage built —
+peers build a fresh `Application` per sub-operation, so there is no shared in-memory handle to rely
+on. `extractApplication`/`installApplication` build into `application.buildDirPath`, which defaults
+to the live dir (`dirPath`) — this is what keeps the legacy one-shot path, boot-time
+`installApplications`, and the direct `extractApplication` callers unchanged — and is repointed at
+the staging dir only for the duration of a stage.
+
+Two-phase requires the `system` database to be replicated on the origin (`isSystemDatabaseReplicated`),
+since the `hdb_deployment` row's `payload_blob` is how peers fetch the tarball and correlate the two
+phases by deployment id. When `system` is excluded from a narrow `REPLICATION_DATABASES`, or the
+caller passes `two_phase: false`, or the invocation is a peer replaying a one-shot deploy,
+`deploy_component` falls back to `deployComponentOneShot` (the previous behavior, preserved verbatim).
+Known gap for a rolling upgrade window: an origin on this version replicating `stage_component` to a
+peer that predates these operations will see that peer fail the op; `two_phase: false` or
+`ignore_replication_errors` is the escape hatch until capability negotiation lands.
