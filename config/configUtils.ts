@@ -283,6 +283,116 @@ export function getConfigFilePath(bootPropsFilePath = hdbUtils.getPropsFilePath(
 }
 
 /**
+ * Ensure the given top-level keys exist in the on-disk config file, writing an empty block (`{}`)
+ * for each one that is absent. Only missing keys are added — existing values are never touched.
+ *
+ * Built-in components only load when their config key is present: componentLoader iterates the
+ * resolved config's keys, so a registered built-in with no matching key is never activated. Fresh
+ * installs get those keys from defaultConfig.yaml, but an in-place upgrade carries the pre-existing
+ * config forward, so a built-in introduced in a newer release (e.g. `secretCustody` in 5.2) stays
+ * dormant until its key appears. This restores parity with a fresh install. Callers pass the keys
+ * for the built-ins registered in THIS runtime, so nothing is added for a component the running
+ * distribution doesn't ship.
+ *
+ * @param keys - top-level config keys to ensure exist
+ * @returns the keys that were added (empty when none were missing)
+ */
+export function ensureConfigKeysPresent(keys: string[]): string[] {
+	const configFilePath = getConfigFilePath();
+	if (!configFilePath || !fs.existsSync(configFilePath)) return [];
+
+	const configDoc = parseYamlDoc(configFilePath);
+	if (configDoc.errors?.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Error parsing ${configFilePath} ${configDoc.errors}`,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+		);
+	}
+
+	const added: string[] = [];
+	for (const key of keys) {
+		if (!key || configDoc.hasIn([key])) continue;
+		configDoc.setIn([key], {});
+		added.push(key);
+	}
+	if (added.length === 0) return [];
+
+	atomicWriteFile(configFilePath, String(configDoc));
+
+	// Mirror the additions into the already-memoized config so a built-in gated on the new key
+	// activates on the CURRENT boot: componentLoader reads the root config from getConfigObj(),
+	// which is cached early in boot — before an upgrade backfill runs — so a file-only write would
+	// otherwise not take effect until the next restart. flatConfigObj is backfilled alongside it so
+	// getFlatConfigObj()/getConfigValue() also see the new key on this boot rather than undefined.
+	if (configObj) {
+		for (const key of added) {
+			if (configObj[key] === undefined) configObj[key] = {};
+			const flatKey = key.toLowerCase();
+			if (flatConfigObj && flatConfigObj[flatKey] === undefined) flatConfigObj[flatKey] = configObj[key];
+		}
+	}
+	return added;
+}
+
+/**
+ * Built-in components introduced in a recent release whose config key must be backfilled onto
+ * in-place-upgraded instances. Fresh installs get these from defaultConfig.yaml, but an upgrade
+ * carries the old config forward without them, leaving the component dormant (harper-pro#585:
+ * secretCustody added in 5.2).
+ *
+ * Deliberately scoped to genuinely-new built-ins — NOT every registered built-in. Component
+ * activation is presence-gated (componentLoader iterates the config's keys), so re-adding a
+ * long-standing key like `replication` would silently re-enable a component an operator disabled
+ * by deleting its block. A newly-introduced built-in has no such history: at upgrade time its
+ * absence is always "carried over from before it existed," never "intentionally removed."
+ *
+ * Consequence: once a backfilled key is on the safe-list, KEY DELETION IS NO LONGER A DISABLE
+ * MECHANISM for it — every boot re-adds the key and re-activates the component. Disabling must be
+ * explicit: set a falsy value (e.g. `secretCustody: false`). ensureConfigKeysPresent only writes
+ * when the key is entirely absent (hasIn is presence-based, true for `false`/`null`), and the
+ * loader treats a falsy value as disabled (`if (!config[name]) continue`), so an explicit `false`
+ * survives the backfill. This is the correct trade for a security-custody component — disabling it
+ * should be a deliberate act, not an accident of config drift (the exact failure mode of #585) —
+ * but document the falsy-disable convention wherever the key is exposed to operators.
+ * Add a key here only when shipping a new built-in that must activate on already-upgraded instances.
+ */
+const UPGRADE_BACKFILL_BUILTIN_KEYS = ['secretCustody'];
+
+/**
+ * Ensure the config keys for recently-introduced built-in components exist, so a component added in
+ * a newer release activates on an in-place-upgraded instance (see UPGRADE_BACKFILL_BUILTIN_KEYS).
+ * Only keys for built-ins registered in THIS runtime (HARPER_BUILTIN_COMPONENTS) are considered, so
+ * nothing is written for a component the running distribution doesn't ship — e.g. secretCustody is
+ * Pro-only and is never added on OSS core, which registers no built-ins.
+ *
+ * Safe to call on every boot: idempotent (writes only when a key is genuinely missing) and cheap (a
+ * config read plus a key check). Running it unconditionally — rather than only on the upgrade path —
+ * means a transient write failure self-heals on the next boot, and version transitions that ship no
+ * data-migration directive are still covered. Never throws.
+ *
+ * @returns the keys that were added (empty when none were missing)
+ */
+export function ensureBuiltInComponentConfigKeys(): string[] {
+	const registeredBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
+	if (!registeredBuiltIns) return [];
+	const registered = new Set(
+		registeredBuiltIns
+			.split(',')
+			.map((definition) => definition.split('=')[0].trim())
+			.filter(Boolean)
+	);
+	const keys = UPGRADE_BACKFILL_BUILTIN_KEYS.filter((key) => registered.has(key));
+	if (keys.length === 0) return [];
+	try {
+		return ensureConfigKeysPresent(keys);
+	} catch (error) {
+		logger.error('Failed to backfill built-in component config keys', error);
+		return [];
+	}
+}
+
+/**
  * If in memory config obj is undefined or init is being forced,
  * read and parses the Harper config file and add to config object.
  * @param force
