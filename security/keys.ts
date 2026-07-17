@@ -820,6 +820,139 @@ if (typeof globalThis.Bun === 'undefined') {
 
 let caCerts = new Map();
 
+const SECLEVEL_PATTERN = /@SECLEVEL=(\d+)/i;
+/** Split a cipher string into its suite list and its explicit `@SECLEVEL` (undefined when unset). */
+function parseCipherString(ciphers) {
+	const match = SECLEVEL_PATTERN.exec(ciphers);
+	return {
+		suite: ciphers.replace(SECLEVEL_PATTERN, '').trim() || undefined,
+		level: match ? Number(match[1]) : undefined,
+	};
+}
+
+/**
+ * Whether a certificate (record or `tls[]` entry) can affect the given listener, mirroring
+ * createTLSSelector's tolerant selection: no `uses` is a generic certificate, `'https'` is the
+ * legacy generic use, and an authority matters exactly when the listener verifies client chains.
+ */
+function ciphersCandidateRelevant(usesRaw, isAuthority, servesCertificate, type, verifiesClientCerts) {
+	if (isAuthority && verifiesClientCerts) return true;
+	if (!servesCertificate) return false;
+	// normalize: stored as scalar in legacy/manual entries, expected array
+	const uses = Array.isArray(usesRaw) ? usesRaw : usesRaw ? [usesRaw] : [];
+	return uses.length === 0 || uses.includes(type) || uses.includes('https');
+}
+
+/**
+ * Resolve the single cipher string that actually governs a TLS listener.
+ *
+ * OpenSSL takes the cipher list — and any `@SECLEVEL=n` embedded in it, which controls
+ * client-certificate chain verification — from the context the server was created with. A context
+ * swapped in later by the SNI callback does not carry its own cipher list onto the connection,
+ * so per-certificate `ciphers` — whether on a `tls` array entry or a certificate record — cannot
+ * take effect on their own; a listener has exactly one effective cipher string. Historically only
+ * `tls.ciphers ?? tls[0].ciphers` was applied and every other configured value was silently
+ * ignored, including a CA record needing a relaxed security level to verify legacy client chains
+ * (e.g. SHA-1-signed CAs requiring `DEFAULT@SECLEVEL=0`, which fail with
+ * `authorizationError: UNSPECIFIED` at the default level).
+ *
+ * Resolution composes rather than picks a winner, because `@SECLEVEL` and the suite list are
+ * separable OpenSSL commands:
+ * 1. Candidates come from the listener's config layers in priority order (`configLayers`, e.g.
+ *    `operationsApi.tls` before root `tls` — an object's `ciphers` directly, an array's entries
+ *    filtered by {@link ciphersCandidateRelevant}) and then from relevant certificate records.
+ * 2. The suite list comes from the highest-priority suite-bearing candidate — a CA needing a
+ *    relaxed level must not replace or broaden the listener's configured suites.
+ * 3. The security level is the minimum explicit `@SECLEVEL` across candidates (a chain that needs
+ *    the relaxed level fails outright without it; the others merely also accept it). Candidates
+ *    without an explicit `@SECLEVEL` keep the runtime default — no level is assumed for them,
+ *    since the OpenSSL default varies across Node builds.
+ * Anything composed across sources or dropped (extra suite lists) is logged as a warning.
+ */
+export function resolveEffectiveTlsCiphers(configLayers, certRecords, type, verifiesClientCerts): string | undefined {
+	const candidates = [];
+	for (const { source, config } of configLayers ?? []) {
+		if (!config) continue;
+		if (Array.isArray(config)) {
+			for (let index = 0; index < config.length; index++) {
+				const entry = config[index];
+				if (!entry?.ciphers) continue;
+				const isAuthority = Boolean(entry.certificateAuthority);
+				const servesCertificate = Boolean(entry.certificate) || !isAuthority;
+				if (ciphersCandidateRelevant(entry.uses, isAuthority, servesCertificate, type, verifiesClientCerts)) {
+					candidates.push({ source: `${source}[${index}]`, ciphers: entry.ciphers });
+				}
+			}
+		} else if (config.ciphers) {
+			// an object layer's ciphers is the listener config's own knob — always relevant
+			candidates.push({ source: `${source}.ciphers`, ciphers: config.ciphers });
+		}
+	}
+	for (const cert of certRecords ?? []) {
+		if (!cert?.ciphers) continue;
+		// authority records are never served as listener certs — they matter only for verification
+		if (
+			ciphersCandidateRelevant(cert.uses, Boolean(cert.is_authority), !cert.is_authority, type, verifiesClientCerts)
+		) {
+			candidates.push({ source: `certificate '${cert.name}'`, ciphers: cert.ciphers });
+		}
+	}
+	if (candidates.length === 0) return undefined;
+
+	const parsed = candidates.map((candidate) => ({ ...candidate, ...parseCipherString(candidate.ciphers) }));
+	const suiteBearing = parsed.filter((candidate) => candidate.suite);
+	const suiteSource = suiteBearing[0];
+	let levelSource;
+	for (const candidate of parsed) {
+		if (candidate.level !== undefined && (levelSource === undefined || candidate.level < levelSource.level)) {
+			levelSource = candidate;
+		}
+	}
+	// no suite anywhere means a bare @SECLEVEL override — anchor it to DEFAULT
+	const suite = suiteSource?.suite ?? 'DEFAULT';
+	const effective = levelSource === undefined ? suite : `${suite}@SECLEVEL=${levelSource.level}`;
+
+	const notes = [];
+	const droppedSuites = suiteBearing.filter((candidate) => candidate.suite !== suiteSource.suite);
+	if (droppedSuites.length) {
+		notes.push(
+			`suites from ${suiteSource.source} ('${suiteSource.suite}'); ignoring suite lists from ${droppedSuites
+				.map((candidate) => `${candidate.source} ('${candidate.suite}')`)
+				.join(', ')}`
+		);
+	}
+	if (levelSource !== undefined && levelSource.source !== suiteSource?.source) {
+		notes.push(`security level ${levelSource.level} required by ${levelSource.source}`);
+	}
+	if (notes.length) {
+		logger.warn?.(
+			`Composed TLS cipher configuration for the '${type}' listener ('${effective}'): ${notes.join('; ')} — a listener has a single effective cipher string`
+		);
+	}
+	return effective;
+}
+
+/**
+ * Resolve the effective cipher string for a listener from the live config and certificate table.
+ * Safe to call before the certificate table exists (install, early boot) — config-only then.
+ */
+export function getEffectiveTlsCiphers(type, mtlsOptions?): string | undefined {
+	let certRecords;
+	try {
+		certRecords = databases?.system?.hdb_certificate?.search([]);
+	} catch (error) {
+		logger.trace?.('Certificate table not available while resolving TLS ciphers', error);
+	}
+	const configLayers = [];
+	// the operations API listener has its own tls section (merged separately by config
+	// composition, may inherit the root certificate while overriding ciphers) — it outranks root
+	if (type === 'operations-api') {
+		configLayers.push({ source: 'operationsApi.tls', config: envManager.get(CONFIG_PARAMS.OPERATIONSAPI_TLS) });
+	}
+	configLayers.push({ source: 'tls', config: envManager.get('tls') });
+	return resolveEffectiveTlsCiphers(configLayers, certRecords, type, Boolean(mtlsOptions));
+}
+
 /**
  * Create a TLS selector that will choose the best TLS configuration/context for a given hostname
  * @param type
@@ -950,6 +1083,25 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							}
 						} catch (error) {
 							logger.error?.('Error applying TLS for', cert.name, error);
+						}
+					}
+					// The listener's cipher string (and its @SECLEVEL, which governs client-cert chain
+					// verification) is fixed at server creation and cannot be swapped by rebuilding SNI
+					// contexts. If a rebuild finds the effective value has changed (e.g. a certificate
+					// record with `ciphers` was added), the listener won't honor it until restart — warn
+					// instead of silently serving with the stale value.
+					if (server && server.appliedCiphers !== undefined) {
+						// use the same verifies-client-certs flag the listener was created with (http servers
+						// derive it from more than the selector's mtlsOptions) so this compares like with like
+						const effectiveCiphers =
+							getEffectiveTlsCiphers(type, server.verifiesClientCerts ?? Boolean(mtlsOptions)) ?? null;
+						// latch per distinct value: rebuilds recur (cert-table changes, key reloads) and the
+						// pending change shouldn't re-warn on every cycle until the restart happens
+						if (effectiveCiphers !== server.appliedCiphers && server.lastWarnedCiphers !== effectiveCiphers) {
+							server.lastWarnedCiphers = effectiveCiphers;
+							logger.warn?.(
+								`TLS cipher configuration for the '${type}' listener is now '${effectiveCiphers}' but the listener was started with '${server.appliedCiphers}' — a restart is required to apply it`
+							);
 						}
 					}
 					server?.secureContextsListeners.forEach((listener) => listener());

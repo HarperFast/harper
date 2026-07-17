@@ -12,7 +12,7 @@ import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
-import { createTLSSelector } from '../security/keys.ts';
+import { createTLSSelector, getEffectiveTlsCiphers } from '../security/keys.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue } from 'node:http';
@@ -474,7 +474,6 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		let http2;
 
 		if (secure) {
-			const tlsConfig = env.get('tls');
 			// check if we want to enable HTTP/2; operations server doesn't use HTTP/2 because it doesn't allow the
 			// ALPNCallback to work with our custom protocol for replication
 			http2 = env.get(serverPrefix + '_http2');
@@ -489,7 +488,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				requestCert: Boolean(mtls || isMtls),
 				ticketKeys: getTicketKeys(),
 				SNICallback: createTLSSelector(usageType ?? 'server', mtls),
-				ciphers: tlsConfig.ciphers ?? tlsConfig[0]?.ciphers,
+				// the listener-level cipher string is the only one OpenSSL honors (SNI contexts can't
+				// carry their own), so resolve it from every configured source
+				ciphers: getEffectiveTlsCiphers(usageType ?? 'server', mtls || isMtls),
 			});
 		}
 		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
@@ -688,6 +689,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		if (secure) {
 			if (!server.ports) server.ports = [];
 			server.ports.push(port);
+			server.appliedCiphers = options.ciphers ?? null;
+			server.verifiesClientCerts = Boolean(mtls || isMtls);
 			options.SNICallback.initialize(server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
@@ -1180,6 +1183,9 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 		};
 		if (secure) {
 			// TLS config for Bun
+			// The resolved listener cipher string (getEffectiveTlsCiphers) is deliberately not applied
+			// here: Bun terminates TLS with BoringSSL, which has no OpenSSL @SECLEVEL concept, and the
+			// pseudo-server carries no appliedCiphers stamp so updateTLS's restart warning stays quiet.
 			const mtls = env.get(serverPrefix + '_mtls');
 			const tlsSelector = createTLSSelector(usageType ?? 'server', mtls);
 			// Create a pseudo-server object so the TLS selector can store secureContexts on it
