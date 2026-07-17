@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784274926012,
+  "lastUpdate": 1784274928179,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -5680,6 +5680,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 145.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "1df0df5609a20664029fa21e5ccb3e76e903f5b7",
+          "message": "Release v5.2.0-alpha.6",
+          "timestamp": "2026-07-17T00:33:58Z",
+          "url": "https://github.com/HarperFast/harper/commit/1df0df5609a20664029fa21e5ccb3e76e903f5b7"
+        },
+        "date": 1784274927758,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.65,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.75,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 20.55,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 19.14,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 24.65,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 18.04,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 36.42,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 16.04,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 19.03,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 45.24,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 188.84,
             "unit": "ms"
           }
         ]
