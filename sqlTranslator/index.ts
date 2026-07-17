@@ -16,6 +16,7 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
+import * as sqlEngineRouter from '../sqlEngine/router.ts';
 
 //here we call to define and import custom functions to alasql
 alasqlFunctionImporter(alasql);
@@ -158,13 +159,22 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 			default:
 				throw new Error(`unsupported SQL type ${parsedSqlObject.variant} in SQL: ${jsonMessage}`);
 		}
-		sqlFunction(statement, (err, data) => {
-			if (err) {
-				callback(err);
-				return;
+
+		sqlEngineRouter.route(
+			{
+				variant: parsedSqlObject.variant,
+				jsonMessage,
+				statement,
+				legacy: sqlFunction,
+			},
+			(err, data) => {
+				if (err) {
+					callback(err);
+					return;
+				}
+				callback(null, data);
 			}
-			callback(null, data);
-		});
+		);
 	} catch (e) {
 		return callback(e);
 	}

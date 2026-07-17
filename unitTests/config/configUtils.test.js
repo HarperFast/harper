@@ -3,6 +3,7 @@
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
+const assert = require('node:assert/strict');
 const rewire = require('rewire');
 const path = require('path');
 const fs = require('fs-extra');
@@ -219,6 +220,216 @@ describe('Test configUtils module', () => {
 				renameStub.restore();
 				dateStub.restore();
 			}
+		});
+
+		it('retries the rename on a transient Windows EPERM/EACCES and succeeds once the holder releases the file', () => {
+			// Simulates a sibling worker's RootConfigWatcher (or AV) briefly holding the
+			// destination open for read: renameSync fails a couple of times, then succeeds.
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			const eaccesError = Object.assign(new Error('EACCES: permission denied, rename'), { code: 'EACCES' });
+			renameStub.onCall(0).throws(epermError);
+			renameStub.onCall(1).throws(eaccesError);
+			renameStub.onCall(2).returns(undefined);
+			try {
+				atomicWriteFile(ATOMIC_TEST_PATH, 'content');
+				expect(renameStub.callCount).to.equal(3);
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		it('gives up after exhausting retries on a persistent EPERM, cleans up the temp file, and rethrows', () => {
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			renameStub.throws(epermError);
+			try {
+				// Use the default retry count (unspecified maxRetries) so this exercises the real
+				// production budget, but override the delay to ~0 so the backoff doesn't burn real
+				// wall-clock time (default backoff would take ~900ms for a persistent failure).
+				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content', { initialDelayMs: 0, maxDelayMs: 0 })).to.throw(
+					epermError
+				);
+				// 1 initial attempt + 8 retries (the production default maxRetries)
+				expect(renameStub.callCount).to.equal(9);
+				const stragglers = fs
+					.readdirSync(ATOMIC_TEST_DIR)
+					.filter((e) => e.startsWith('atomic-write-test.yaml.') && e.endsWith('.tmp'));
+				expect(stragglers).to.be.empty;
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		it('does not retry on a non-permission rename error', () => {
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const enoentError = Object.assign(new Error('ENOENT: no such file or directory, rename'), { code: 'ENOENT' });
+			renameStub.throws(enoentError);
+			try {
+				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content')).to.throw(enoentError);
+				expect(renameStub.callCount).to.equal(1);
+			} finally {
+				renameStub.restore();
+			}
+		});
+	});
+
+	describe('Test ensureConfigKeysPresent function', () => {
+		const { ensureConfigKeysPresent } = config_utils_rw;
+		const ENSURE_DIR = path.join(DIRNAME, 'yaml', 'ensure-keys');
+		const ENSURE_CONFIG_PATH = path.join(ENSURE_DIR, hdbTerms.HARPER_CONFIG_FILE);
+
+		beforeEach(() => {
+			fs.ensureDirSync(ENSURE_DIR);
+			// getConfigFilePath() resolves the config file from the CLI/env root; point it at our
+			// temp dir. resolvePath() passes an absolute path through unchanged.
+			sandbox.stub(common_utils, 'getEnvCliRootPath').returns(ENSURE_DIR);
+		});
+
+		afterEach(() => {
+			sandbox.restore();
+			fs.removeSync(ENSURE_DIR);
+		});
+
+		function writeConfig(yaml) {
+			fs.writeFileSync(ENSURE_CONFIG_PATH, yaml);
+		}
+
+		it('adds an empty block for a missing key and reports it', () => {
+			writeConfig('replication: {}\nanalytics:\n  enabled: true\n');
+			const added = ensureConfigKeysPresent(['secretCustody']);
+			assert.deepStrictEqual(added, ['secretCustody']);
+			const doc = YAML.parse(fs.readFileSync(ENSURE_CONFIG_PATH, 'utf8'));
+			assert.ok('secretCustody' in doc);
+			assert.deepStrictEqual(doc.secretCustody, {});
+		});
+
+		it('never touches an existing key or its value', () => {
+			writeConfig('analytics:\n  enabled: true\n');
+			ensureConfigKeysPresent(['analytics']);
+			const doc = YAML.parse(fs.readFileSync(ENSURE_CONFIG_PATH, 'utf8'));
+			// existing value preserved, not overwritten with {}
+			assert.deepStrictEqual(doc.analytics, { enabled: true });
+		});
+
+		it('only adds the keys that are missing', () => {
+			writeConfig('replication: {}\n');
+			const added = ensureConfigKeysPresent(['replication', 'secretCustody', 'analytics']);
+			assert.deepStrictEqual(added.sort(), ['analytics', 'secretCustody']);
+		});
+
+		it('is idempotent — a second run adds nothing', () => {
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), ['secretCustody']);
+			assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), []);
+		});
+
+		it('does not rewrite the file when no keys are missing', () => {
+			writeConfig('secretCustody: {}\n');
+			const before = fs.statSync(ENSURE_CONFIG_PATH).mtimeMs;
+			const added = ensureConfigKeysPresent(['secretCustody']);
+			assert.deepStrictEqual(added, []);
+			assert.strictEqual(fs.statSync(ENSURE_CONFIG_PATH).mtimeMs, before);
+		});
+
+		it('ignores empty/falsy key names', () => {
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureConfigKeysPresent(['', undefined]), []);
+		});
+
+		it('returns [] when the config file does not exist', () => {
+			// no writeConfig — dir exists but file does not
+			assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), []);
+		});
+
+		it('mirrors added keys into the memoized configObj so they take effect on the current boot', () => {
+			writeConfig('replication: {}\n');
+			// Simulate config already memoized earlier in boot (before this backfill runs).
+			const restore = config_utils_rw.__set__('configObj', { replication: {} });
+			try {
+				ensureConfigKeysPresent(['secretCustody']);
+				assert.ok('secretCustody' in config_utils_rw.__get__('configObj'));
+				assert.deepStrictEqual(config_utils_rw.__get__('configObj').secretCustody, {});
+			} finally {
+				restore();
+			}
+		});
+
+		it('mirrors added keys into the memoized flatConfigObj so getConfigValue sees them on the current boot', () => {
+			writeConfig('replication: {}\n');
+			const restoreConfigObj = config_utils_rw.__set__('configObj', { replication: {} });
+			const restoreFlatConfigObj = config_utils_rw.__set__('flatConfigObj', { replication: {} });
+			try {
+				ensureConfigKeysPresent(['secretCustody']);
+				assert.ok('secretcustody' in config_utils_rw.__get__('flatConfigObj'));
+				assert.deepStrictEqual(config_utils_rw.__get__('flatConfigObj').secretcustody, {});
+			} finally {
+				restoreFlatConfigObj();
+				restoreConfigObj();
+			}
+		});
+	});
+
+	describe('Test ensureBuiltInComponentConfigKeys function', () => {
+		const { ensureBuiltInComponentConfigKeys } = config_utils_rw;
+		const BI_DIR = path.join(DIRNAME, 'yaml', 'ensure-builtins');
+		const BI_CONFIG_PATH = path.join(BI_DIR, hdbTerms.HARPER_CONFIG_FILE);
+		let savedBuiltIns;
+
+		beforeEach(() => {
+			fs.ensureDirSync(BI_DIR);
+			sandbox.stub(common_utils, 'getEnvCliRootPath').returns(BI_DIR);
+			savedBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
+		});
+
+		afterEach(() => {
+			sandbox.restore();
+			fs.removeSync(BI_DIR);
+			if (savedBuiltIns === undefined) delete process.env.HARPER_BUILTIN_COMPONENTS;
+			else process.env.HARPER_BUILTIN_COMPONENTS = savedBuiltIns;
+		});
+
+		function writeConfig(yaml) {
+			fs.writeFileSync(BI_CONFIG_PATH, yaml);
+		}
+
+		it('backfills secretCustody when it is a registered built-in and the key is missing', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS =
+				'replication=@/dist/replication/replicator.js,secretCustody=@/dist/security/keyCustody.js';
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), ['secretCustody']);
+			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
+			assert.deepStrictEqual(doc.secretCustody, {});
+		});
+
+		it('never re-adds a long-standing built-in absent from the config (e.g. admin-removed replication)', () => {
+			// replication is registered but NOT in the new-built-in backfill list, so a config that
+			// omits it (operator disabled it by removing the block) must stay without it.
+			process.env.HARPER_BUILTIN_COMPONENTS =
+				'replication=@/dist/replication/replicator.js,secretCustody=@/dist/security/keyCustody.js';
+			writeConfig('analytics: {}\n');
+			const added = ensureBuiltInComponentConfigKeys();
+			assert.deepStrictEqual(added, ['secretCustody']);
+			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
+			assert.ok(!('replication' in doc));
+		});
+
+		it('adds nothing on OSS core, which registers no built-ins', () => {
+			delete process.env.HARPER_BUILTIN_COMPONENTS;
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
+		});
+
+		it('adds nothing when secretCustody is not registered in this runtime', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'replication=@/dist/replication/replicator.js';
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
+		});
+
+		it('is a no-op when secretCustody is already present', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'secretCustody=@/dist/security/keyCustody.js';
+			writeConfig('secretCustody: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
 		});
 	});
 

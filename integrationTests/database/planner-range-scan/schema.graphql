@@ -1,0 +1,10 @@
+# QA-558 — generalization probe for harper#1796 (get_analytics condition-reordering
+# cost-misestimation). Ordinary user table shaped like the analytics case:
+#   id    Long   @primaryKey   — range-queryable (monotonically increasing)
+#   kind  String @indexed      — LOW selectivity: 90% of rows share one value ('common')
+#   payload String             — filler, non-indexed
+type Event @table @export {
+	id: Long @primaryKey
+	kind: String @indexed
+	payload: String
+}

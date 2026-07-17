@@ -1,12 +1,12 @@
 /**
  * Tool composer for the built-in agent (#626).
  *
- * Operator-only tools (FS, schedule, fetch) are inline today. Once the
- * unified MCP tool registry (#615) lands with the Operations (#617) and
- * Application (#618) profiles, this is the seam where RBAC-filtered
- * registry tools get folded in for the agent's configured user. The shape
- * of {@link composeToolset} won't change — only the body gains a registry
- * lookup.
+ * Two sources merge here: operator-only tools (FS, schedule, fetch, inspector)
+ * that are private to this component, and RBAC-filtered tools drained from the
+ * unified MCP tool registry (#615) for the agent's configured user — the
+ * Operations profile (#617) today, adapted in `registryTools.ts`. Operator-only
+ * tools win on a name collision: a private tool must never be shadowed by a
+ * same-named registry tool, since the two have different runtime assumptions.
  */
 
 import { fsTools } from './tools/fsTools.ts';
@@ -19,6 +19,16 @@ export interface ComposeToolsetOpts extends ScheduleToolDeps {
 	allowDestructive?: boolean;
 	/** Operator-injected extras (tests, custom plugins). */
 	extraTools?: AgentTool[];
+	/**
+	 * V8 inspector (CDP) tools, built from runtime debug config (`buildInspectorTools`).
+	 * Operator-only, like the FS/schedule/fetch tools.
+	 */
+	inspectorTools?: AgentTool[];
+	/**
+	 * RBAC-filtered registry tools for the agent's configured user (from
+	 * `composeRegistryTools`). Shadowed by any operator-only tool of the same name.
+	 */
+	registryTools?: AgentTool[];
 }
 
 export interface ComposedToolset {
@@ -28,7 +38,17 @@ export interface ComposedToolset {
 
 export function composeToolset(opts: ComposeToolsetOpts): ComposedToolset {
 	const schedule = buildScheduleTool(opts);
-	const all: AgentTool[] = [...fsTools, httpFetchTool, schedule.tool, ...(opts.extraTools ?? [])];
+	// Operator-only tools first — they own their names. Registry tools that collide are dropped.
+	const operator: AgentTool[] = [
+		...fsTools,
+		httpFetchTool,
+		schedule.tool,
+		...(opts.inspectorTools ?? []),
+		...(opts.extraTools ?? []),
+	];
+	const operatorNames = new Set(operator.map((t) => t.def.name));
+	const registry = (opts.registryTools ?? []).filter((t) => !operatorNames.has(t.def.name));
+	const all = [...operator, ...registry];
 	const tools = opts.allowDestructive === false ? all.filter((t) => !t.destructive) : all;
 	return { tools, scheduled: schedule.pending };
 }

@@ -73,6 +73,18 @@ type BulkExpiry @table(expiration: 5) @export {
 	id: ID @primaryKey
 	value: String
 }
+
+# 2s TTL so reads hide a record shortly after write, but a 1h eviction window so the
+# expired record stays PHYSICALLY present ("expired but not swept") for the whole test:
+# expiration sets when reads hide the row (expiresAt = write + 2s), while eviction holds
+# off physical reclamation until expiresAt + 1h. This gives a deterministic window to
+# assert the SQL-engine row-finder's includeExpired behavior (QA-269) — see the
+# "SQL UPDATE/DELETE" test below. (eviction is persisted on the primary attribute,
+# unlike scanInterval, so it survives a schema reload.)
+type SqlTtl @table(expiration: 2, eviction: 3600) @export {
+	id: ID @primaryKey
+	payload: String
+}
 `;
 
 const CONFIG_YAML = `rest: true
@@ -238,5 +250,74 @@ suite('TTL edge cases', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 			const count = r.body[0]['COUNT(*)'];
 			strictEqual(count, 0, `expected 0 records after TTL expiry, got ${count}`);
 		}, 25_000);
+	});
+
+	/**
+	 * Test 5: SQL UPDATE/DELETE row-finder sees a not-yet-swept expired row (QA-269)
+	 *
+	 * A plain SQL SELECT is right to HIDE a row whose TTL has passed but the eviction
+	 * scan hasn't reclaimed yet — and, in fact, reading it lazily evicts it. A SQL
+	 * UPDATE/DELETE must NOT drop it: like every other write surface (REST PUT/PATCH/
+	 * DELETE, ops update/delete) it targets the row directly and must find it, or the
+	 * write silently touches nothing (an UPDATE would never get to reset the TTL). The
+	 * new engine's mutation row-finder passes `includeExpired` for exactly this reason
+	 * (runMutation.ts).
+	 *
+	 * Each id is exercised by exactly ONE surface: because a plain SELECT lazily evicts
+	 * the expired row it reads, the hidden/update/delete legs must use DISTINCT ids —
+	 * otherwise the SELECT leg would drop the row the mutation legs are meant to find.
+	 * SqlTtl's 1h eviction window keeps the un-read rows physically present so the
+	 * mutation legs are deterministic (no background sweep reclaims them mid-test).
+	 */
+	test('SQL UPDATE/DELETE find a not-yet-swept expired row; plain SELECT hides it', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'insert',
+				schema: 'data',
+				table: 'SqlTtl',
+				records: [
+					{ id: 'sel', payload: 'orig' },
+					{ id: 'upd', payload: 'orig' },
+					{ id: 'del', payload: 'orig' },
+				],
+			})
+			.expect(200);
+
+		// Let all rows pass their 2s TTL. No sweep reclaims them (1h eviction window),
+		// and none has been read yet, so none has been lazily evicted.
+		await sleep(2_500);
+
+		// Leg 1 — a plain SELECT hides the expired row (and lazily evicts 'sel'; that's
+		// why the mutation legs below use their own ids).
+		const hidden = await client
+			.req()
+			.send({ operation: 'sql', sql: "SELECT id, payload FROM data.SqlTtl WHERE id = 'sel'" })
+			.expect(200);
+		strictEqual(hidden.body.length, 0, `plain SELECT should hide the expired row, got: ${JSON.stringify(hidden.body)}`);
+
+		// Leg 2a — SQL UPDATE finds the expired 'upd' row (includeExpired) and resets its TTL.
+		await client
+			.req()
+			.send({ operation: 'sql', sql: "UPDATE data.SqlTtl SET payload = 'reset' WHERE id = 'upd'" })
+			.expect((r: any) => strictEqual(r.body.message, 'updated 1 of 1 records', r.text))
+			.expect((r: any) => strictEqual(r.body.update_hashes[0], 'upd', r.text))
+			.expect(200);
+
+		// The UPDATE reset the TTL, so the row is live again and a plain SELECT sees it.
+		await client
+			.req()
+			.send({ operation: 'sql', sql: "SELECT payload FROM data.SqlTtl WHERE id = 'upd'" })
+			.expect((r: any) => strictEqual(r.body.length, 1, r.text))
+			.expect((r: any) => strictEqual(r.body[0].payload, 'reset', r.text))
+			.expect(200);
+
+		// Leg 2b — SQL DELETE finds the still-expired 'del' row and removes it (1 of 1, not 0 of 0).
+		await client
+			.req()
+			.send({ operation: 'sql', sql: "DELETE FROM data.SqlTtl WHERE id = 'del'" })
+			.expect((r: any) => ok(r.body.message.includes('1 of 1 record successfully deleted'), r.text))
+			.expect((r: any) => strictEqual(r.body.deleted_hashes[0], 'del', r.text))
+			.expect(200);
 	});
 });

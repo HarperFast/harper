@@ -282,6 +282,13 @@ export class ResourceBridge extends BridgeMethods {
 		return transaction(context, async (transaction) => {
 			const ids: Id[] =
 				deleteObj.ids || deleteObj.hash_values || deleteObj.records.map((record) => record[Table.primaryKey]);
+			// A null/undefined hash value must never reach Table.delete: with no key bound it is coerced
+			// into a whole-collection target and silently deletes EVERY record in the table (reported as
+			// "1 of 1 record successfully deleted"). Reject before touching anything, mirroring the
+			// primary-key guard search_by_id already enforces. See HarperFast/studio#1199.
+			for (const id of ids) {
+				if (id == null) throw new ClientError('Invalid primary key of null', 400);
+			}
 			const deleted = [];
 			const skipped = [];
 			for (const id of ids) {

@@ -8,17 +8,25 @@
  * is realized lazily on first use, and the loop runs in-process.
  *
  * The component intentionally avoids `handleApplication`: it has nothing
- * worker-thread-shaped to do. Operator-only tools (FS, schedule, fetch) are
- * inline; registry-backed tools (#615/#617/#618) will fold in via toolset.ts
- * once those land.
+ * worker-thread-shaped to do. Two tool sources compose: operator-only tools
+ * (FS, schedule, fetch, and the V8 inspector) that are inline, and RBAC-filtered
+ * registry tools (#615/#617) drained for the agent's configured user via
+ * `registryTools.ts`.
  */
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import * as env from '../utility/environment/environmentManager.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { Models } from '../resources/models/Models.ts';
+import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
+import { workers } from '../server/threads/manageThreads.js';
 import { composeToolset } from './toolset.ts';
+import { buildInspectorTools } from './tools/inspectorTool.ts';
+import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';
+import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
+import { registerAgentMcpTools } from './mcpTools.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
 import { appendMessage, getSession } from './session.ts';
 import type { AgentConfig, AgentScopes, AgentTool } from './types.ts';
@@ -37,6 +45,8 @@ const DEFAULT_CONFIG: AgentConfig = {
 interface StartOpts {
 	server: {
 		registerOperation: (def: { name: string; execute: (op: any) => any | Promise<any> }) => void;
+		/** Resolve a Harper user (with role/permissions) by username. Password/request unused here. */
+		getUser?: (username: string, password: string | null, request: unknown) => Promise<AuthedUser> | AuthedUser;
 	};
 	// Component-level config plumbed by componentLoader (`...componentConfig`).
 	enabled?: boolean;
@@ -48,6 +58,7 @@ interface StartOpts {
 	allowDestructive?: boolean;
 	user?: string;
 	componentsScope?: string;
+	systemPromptAppend?: string;
 }
 
 export async function startOnMainThread(opts: StartOpts): Promise<void> {
@@ -64,10 +75,62 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const models = new Models();
 	const abortControllers = new Map<string, AbortController>();
 	let liveConfig: AgentConfig = config;
-	let composed = composeToolset({
-		allowDestructive: liveConfig.allowDestructive,
-		onFollowup: handleFollowup,
+
+	// Populate the Operations MCP profile on the main thread. `agentIdentity` resolves the enforcement
+	// identity fresh on each call (so a live role change is honored, and an unresolvable non-default
+	// user fails closed); the startup snapshot below is only for `visibleTo` listing.
+	ensureOperationsToolsRegistered();
+	const agentIdentity = () => resolveAgentIdentity(opts.server, liveConfig.user);
+	let registryTools = await composeRegistryToolsForListing(agentIdentity);
+
+	// Operator-only V8 inspector tools. Debug config is read once here — enabling threads_debug opens the
+	// worker inspector ports at thread boot, so it can't be toggled without a restart anyway. Worker
+	// count is a live closure over the pool, so attaches range-check against the current worker set.
+	const inspectorTools = buildInspectorTools({
+		debugEnabled: env.get(CONFIG_PARAMS.THREADS_DEBUG) !== false,
+		startingPort: (env.get(CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT) as number | undefined) ?? undefined,
+		host: (env.get(CONFIG_PARAMS.THREADS_DEBUG_HOST) as string | undefined) ?? '127.0.0.1',
+		getWorkerCount: () => workers.length,
 	});
+
+	// Harper best-practices skill (@harperfast/skills): the SKILL.md overview goes in the system prompt;
+	// the `harper_best_practice` tool serves the detailed rules on demand. Both degrade to nothing if the
+	// package isn't resolvable, so the agent still runs without it.
+	const bestPracticesOverview = loadBestPracticesOverview();
+	const bestPracticeTool = buildBestPracticeTool();
+	const extraTools: AgentTool[] = bestPracticeTool ? [bestPracticeTool] : [];
+
+	// The grounding + best-practices portion of the system prompt is static for the component's
+	// lifetime (scopes don't change), so build it once here; only the operator's per-run
+	// `systemPromptAppend` is folded on at run time in `startRun`.
+	const staticSystemPrompt = buildStaticSystemPrompt(scopes, bestPracticesOverview);
+
+	function compose(): ReturnType<typeof composeToolset> {
+		return composeToolset({
+			allowDestructive: liveConfig.allowDestructive,
+			onFollowup: handleFollowup,
+			inspectorTools,
+			registryTools,
+			extraTools,
+		});
+	}
+
+	let composed = compose();
+
+	// Build the listing snapshot best-effort: if the configured user can't be resolved (and isn't the
+	// default bootstrap user), `agentIdentity` fails closed — the agent then runs with only its
+	// operator-only tools until the operator fixes `agent.user`. Never falls back to an escalated list.
+	async function composeRegistryToolsForListing(resolveIdentity: () => Promise<AuthedUser>): Promise<AgentTool[]> {
+		try {
+			const listingUser = await resolveIdentity();
+			return composeRegistryTools(listingUser, resolveIdentity);
+		} catch (err) {
+			log.error?.(
+				`Registry tools disabled — agent.user='${liveConfig.user}' could not be resolved: ${err instanceof Error ? err.message : String(err)}`
+			);
+			return [];
+		}
+	}
 
 	// Only warn when the operator explicitly configured `maxCostUsd`. Logging on the default
 	// every boot would flood the log without telling anyone anything actionable.
@@ -109,6 +172,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 			autoApprove: liveConfig.autoApprove,
 			signal: controller.signal,
 			generateOpts: { model: liveConfig.model },
+			systemPrompt: composeSystemPrompt(staticSystemPrompt, liveConfig.systemPromptAppend),
 		})
 			.catch((err) => log.error?.(`Agent run failed for ${sessionId}: ${(err as Error)?.message ?? err}`))
 			.finally(() => {
@@ -137,10 +201,7 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 		const previousAllowDestructive = liveConfig.allowDestructive;
 		liveConfig = { ...liveConfig, ...patch };
 		if (liveConfig.allowDestructive !== previousAllowDestructive) {
-			composed = composeToolset({
-				allowDestructive: liveConfig.allowDestructive,
-				onFollowup: handleFollowup,
-			});
+			composed = compose();
 		}
 		// NOTE: an already in-flight run captured its toolset (and autoApprove) at start, so flipping
 		// allowDestructive here only affects subsequent runs — the live loop finishes on its existing
@@ -158,7 +219,87 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	});
 	for (const op of operations) opts.server.registerOperation(op);
 
+	// Expose the agent over MCP: register curated agent tools into the registry AFTER the ops exist.
+	// (The generic operations-profile walk ran before this, so allow-listing the agent ops wouldn't
+	// surface them — see mcpTools.ts.) They only reach clients when the MCP surface is enabled.
+	registerAgentMcpTools(operations);
+
 	log.info?.(`Agent component initialized with ${composed.tools.length} tools`);
+}
+
+/**
+ * Grounding prompt so the agent knows what it is, where its files live, and how a Harper app is
+ * shaped. The filesystem tools take a `root` scope enum, so we describe the scopes rather than
+ * spelling out path-prefixing rules.
+ *
+ * We deliberately do NOT enumerate individual tool names here — the model already receives the full
+ * tool schema from the SDK, and duplicating names in the prompt drifts as tools are added/removed and
+ * invites hallucinated calls. This describes the tool *surface* at a category level only.
+ *
+ * The built-in grounding and best-practices overview are static for the component's lifetime, so the
+ * caller precomputes them once (`buildStaticSystemPrompt`) and only the operator
+ * `agent.systemPromptAppend` — which can change via `set_agent_config` without a restart — is folded
+ * in per run by `composeSystemPrompt`.
+ */
+function buildStaticSystemPrompt(scopes: AgentScopes, bestPracticesOverview?: string): string {
+	const parts = [
+		'You are the built-in Harper agent, running on the main thread inside a live Harper server.',
+		'You operate this instance for an operator through the tools provided to you: Harper database/cluster operations, scoped filesystem tools, HTTP fetch against this server, followup scheduling, and (when available) V8 inspector tools for debugging worker threads plus a Harper best-practices lookup. Consult the provided tool schemas for the exact set and their parameters.',
+		'',
+		'Filesystem scopes (the fs tools take a `root` naming one of these; paths are relative to it):',
+		`- components — the app source directory, your only WRITE scope: ${scopes.componentsRoot}`,
+		`- logs — read-only: ${scopes.logDir}`,
+		`- config — read-only: ${scopes.configDir}`,
+		'',
+		'A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL `.graphql` with `@table`/`@export`, or `config.yaml` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then verify by querying the REST endpoint via an HTTP fetch against this server.',
+		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the best-practice tool. Be concise and verify your work.',
+	];
+	if (bestPracticesOverview) {
+		parts.push('', '=== Harper best practices (overview) ===', bestPracticesOverview);
+	}
+	return parts.join('\n');
+}
+
+/** Fold the operator's per-run `systemPromptAppend` onto the precomputed static base. */
+function composeSystemPrompt(staticPrompt: string, append?: string): string {
+	if (typeof append === 'string' && append.trim()) {
+		return `${staticPrompt}\n\n=== Operator instructions ===\n${append.trim()}`;
+	}
+	return staticPrompt;
+}
+
+/**
+ * Resolve the identity the agent's tool calls run as. Registry tools are enforced
+ * (`hdb_user` at call time) against this user, so an operator who sets `agent.user`
+ * to a restricted role gets a narrowed surface — and a later role change is honored,
+ * because this runs per call rather than once at startup.
+ *
+ * Failure policy — fail closed, with one bounded exception:
+ *   - If `agent.user` resolves to a permissioned user, use it.
+ *   - If it can't be resolved AND it's the *default* `hdb_agent` bootstrap user,
+ *     fall back to a super_user identity (the system user isn't provisioned yet —
+ *     #626 defers creating it). This is the documented default-agent behavior.
+ *   - If it can't be resolved and the operator configured a *non-default* user,
+ *     throw. Silently escalating a misconfigured/transient restricted account to
+ *     super_user is the vulnerability we refuse to introduce.
+ */
+export async function resolveAgentIdentity(server: StartOpts['server'], username: string): Promise<AuthedUser> {
+	let resolved: AuthedUser | undefined;
+	if (typeof server.getUser === 'function') {
+		try {
+			const user = await server.getUser(username, null, null);
+			if (user?.role?.permission) resolved = user;
+		} catch (err) {
+			log.warn?.(`Failed to resolve agent.user='${username}': ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+	if (resolved) return resolved;
+
+	if (username === DEFAULT_CONFIG.user) {
+		log.warn?.(`Default agent user '${username}' is not provisioned yet; using super_user bootstrap identity`);
+		return { username, role: { permission: { super_user: true } } };
+	}
+	throw new Error(`agent.user '${username}' could not be resolved to a permissioned user; failing closed`);
 }
 
 function resolveScopes(
@@ -194,6 +335,7 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
 		...(opts.user !== undefined && { user: String(opts.user) }),
 		...(opts.componentsScope !== undefined && { componentsScope: String(opts.componentsScope) }),
+		...(opts.systemPromptAppend !== undefined && { systemPromptAppend: String(opts.systemPromptAppend) }),
 	};
 }
 

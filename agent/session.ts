@@ -60,7 +60,13 @@ export async function createSession(opts: CreateSessionOpts): Promise<AgentSessi
 		createdAt: now,
 		updatedAt: now,
 	};
-	await getAgentSessionTable().primaryStore.put(row.session_id, row);
+	// Write through the Resource-level `put` (transactional), NOT `primaryStore.put`: the transactional
+	// path stages the version/local-timestamp metadata so the record is stored with the metadata prefix.
+	// A raw `primaryStore.put` writes a prefix-less record, which — when it begins with classic shared-
+	// structure record-id #2 (byte 0x42 == 66) — is misread by the RocksDB decode heuristic as a
+	// timestamp-prefixed record (8 bytes stripped → corrupt → "Could not find typed structure"). See
+	// RecordEncoder.ts:328-335.
+	await getAgentSessionTable().put(row);
 	return row;
 }
 
@@ -102,7 +108,7 @@ export function appendMessage(sessionId: string, message: AgentMessage): Promise
 		const session = await requireSession(sessionId);
 		session.messages.push(message);
 		session.updatedAt = Date.now();
-		await getAgentSessionTable().primaryStore.put(sessionId, session);
+		await getAgentSessionTable().put(session);
 		return session;
 	});
 }
@@ -113,7 +119,7 @@ export function setStatus(sessionId: string, status: AgentRunStatus, lastError?:
 		session.status = status;
 		session.lastError = lastError;
 		session.updatedAt = Date.now();
-		await getAgentSessionTable().primaryStore.put(sessionId, session);
+		await getAgentSessionTable().put(session);
 		return session;
 	});
 }
@@ -128,7 +134,7 @@ export function addPendingApproval(
 		session.pendingApprovals.push(entry);
 		session.status = 'awaiting_approval';
 		session.updatedAt = Date.now();
-		await getAgentSessionTable().primaryStore.put(sessionId, session);
+		await getAgentSessionTable().put(session);
 		return entry;
 	});
 }
@@ -142,7 +148,7 @@ export function markApprovalConsumed(sessionId: string, approvalId: string): Pro
 		if (entry.consumed) return;
 		entry.consumed = true;
 		session.updatedAt = Date.now();
-		await getAgentSessionTable().primaryStore.put(sessionId, session);
+		await getAgentSessionTable().put(session);
 	});
 }
 
@@ -162,7 +168,7 @@ export function resolveApproval(sessionId: string, approvalId: string, approved:
 			session.status = 'idle';
 		}
 		session.updatedAt = Date.now();
-		await getAgentSessionTable().primaryStore.put(sessionId, session);
+		await getAgentSessionTable().put(session);
 		return entry;
 	});
 }
@@ -170,7 +176,10 @@ export function resolveApproval(sessionId: string, approvalId: string, approved:
 async function requireSession(sessionId: string): Promise<AgentSessionRow> {
 	const session = await getSession(sessionId);
 	if (!session) throw new Error(`No agent session ${sessionId}`);
-	return session;
+	// The store returns a frozen record, so the read-modify-write mutators below (status, messages,
+	// approvals) would throw "Cannot assign to read only property" if they mutated it in place.
+	// Return a mutable deep copy; the mutator writes it back with `put`.
+	return structuredClone(session);
 }
 
 /**

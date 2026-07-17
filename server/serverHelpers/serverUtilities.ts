@@ -84,13 +84,26 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
 			// Need to remove auth variables and secret-bearing fields, but we don't want to create
-			// an object unless the logging is actually going to happen. registryAuth carries a
-			// transient private registry token on deploy_component; value/values carry .env secrets
-			// from set_env_value; value/envelope carry secrets from set_secret — none may reach the
+			// an object unless the logging is actually going to happen. credentials carries a
+			// transient token on deploy_component (registryAuth is its pre-rename name — still
+			// stripped, since this runs ahead of the validation that now rejects it, and a stale
+			// caller's token must not reach the log); value/values carry .env secrets from
+			// set_env_value; value/envelope carry secrets from set_secret — none may reach the
 			// operations log.
-			// eslint-disable-next-line @typescript-eslint/no-unused-vars
-			const { hdb_user, hdbAuthHeader, password, payload, registryAuth, value, values, envelope, ...cleanBody } =
-				req.body;
+			/* eslint-disable no-unused-vars, @typescript-eslint/no-unused-vars */
+			const {
+				hdb_user,
+				hdbAuthHeader,
+				password,
+				payload,
+				credentials,
+				registryAuth,
+				value,
+				values,
+				envelope,
+				...cleanBody
+			} = req.body;
+			/* eslint-enable no-unused-vars, @typescript-eslint/no-unused-vars */
 			operationLog.info(cleanBody);
 		}
 	} catch (e) {

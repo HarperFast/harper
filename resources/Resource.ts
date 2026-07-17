@@ -689,8 +689,11 @@ function transactional(
 				query = new RequestTarget();
 				query.id = id;
 				if (id == null) {
-					if (options.method === 'get') {
-						throw new Error(`Using an argument with a value of ${id} for ${options.method}, is not allowed`);
+					if (options.method === 'get' || options.method === 'delete') {
+						// For delete, a bare null/undefined id would be coerced into a whole-collection
+						// target and silently delete every record (studio#1199); a deliberate delete-all
+						// must use an explicit query object instead.
+						throw new ClientError(`Using an argument with a value of ${id} for ${options.method}, is not allowed`);
 					}
 					query.isCollection = true;
 				}

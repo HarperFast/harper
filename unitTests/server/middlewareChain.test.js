@@ -357,6 +357,34 @@ describe('makeCallbackChain', () => {
 		assert.deepStrictEqual(order, ['authentication', 'rest']);
 	});
 
+	it('a `before: "authentication"` entry runs before authentication, regardless of registration order', () => {
+		// Registered AFTER authentication, but declares before: 'authentication' -
+		// e.g. a WAF/rate-limiter that must inspect the request before auth runs.
+		const order = [];
+		const responders = [
+			{
+				name: 'authentication',
+				port: 9000,
+				listener: (r, next) => {
+					order.push('authentication');
+					return next(r);
+				},
+			},
+			{
+				name: 'waf',
+				port: 9000,
+				before: 'authentication',
+				listener: (r, next) => {
+					order.push('waf');
+					return next(r);
+				},
+			},
+		];
+		const chain = makeCallbackChain(responders, 9000, UNHANDLED);
+		chain(req());
+		assert.deepStrictEqual(order, ['waf', 'authentication']);
+	});
+
 	it('filters by port: only includes matching port entries', () => {
 		const order = [];
 		const responders = [

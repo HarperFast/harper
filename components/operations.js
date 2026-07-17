@@ -370,15 +370,15 @@ async function deployComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	// Ingest any provided registry token into the secrets store so the credential lives as
+	// Ingest any provided credential token into the secrets store so the credential lives as
 	// replicated ciphertext (reference, not embed); already-reference entries pass through, and with
 	// no custody a literal token stays as a transient, this-node-only fallback (#1158). Peers
 	// re-running a replicated deploy already carry references and never re-ingest.
-	const { ingestRegistryAuth, resolveRegistryAuth } = require('./secretOperations.ts');
-	req.registryAuth = await ingestRegistryAuth(req, req.registryAuth, req.project);
+	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
+	req.credentials = await ingestCredentials(req, req.credentials, req.project);
 	// References are safe to persist (config + deployment row) and replicate; a no-custody literal
 	// token is not — it is used only for this node's install below, then stripped before replication.
-	const registryAuthReferences = (req.registryAuth ?? []).filter((entry) => entry && entry.secret !== undefined);
+	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
 
 	// Write to root config if the request contains a package identifier
 	if (req.package) {
@@ -403,9 +403,9 @@ async function deployComponent(req) {
 			};
 		}
 		if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
-		// Persist registry-auth references (never tokens) so every cold install of this component —
+		// Persist credential references (never tokens) so every cold install of this component —
 		// reboot, new peer, rollback — re-resolves the credential from the store.
-		if (registryAuthReferences.length) applicationConfig.registryAuth = registryAuthReferences;
+		if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
 		await configUtils.addConfig(req.project, applicationConfig);
 	}
 
@@ -430,8 +430,8 @@ async function deployComponent(req) {
 				package_identifier: req.package ?? null,
 				user: req.hdb_user?.username,
 				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
-				// Reference form only — the rollback source for re-resolving registry auth.
-				registry_auth: registryAuthReferences.length ? registryAuthReferences : null,
+				// Reference form only — the rollback source for re-resolving the credential.
+				credentials: credentialReferences.length ? credentialReferences : null,
 				emitter,
 			});
 	if (recorder) req._deploymentId = recorder.deploymentId;
@@ -469,17 +469,17 @@ async function deployComponent(req) {
 			extractionPayload = row.payload_blob.stream();
 		}
 
-		// Resolve registryAuth references into concrete tokens for this node's npm pack/install
+		// Resolve credential references into concrete tokens for this node's npm pack/install
 		// (a no-custody literal-token fallback passes through unchanged). On a peer running a
 		// replicated deploy, the referenced hdb_secret row may arrive just behind the deploy op, so
 		// allow a bounded grace period (same budget as the payload-row wait) for it to replicate in.
-		let registryAuthWaitMs = 0;
+		let credentialsWaitMs = 0;
 		if (isReplicatedExecution) {
 			const requested = Number(req.deployment_timeout);
-			registryAuthWaitMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+			credentialsWaitMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
 		}
-		const resolvedRegistryAuth = await resolveRegistryAuth(req.registryAuth, req.project, {
-			waitMs: registryAuthWaitMs,
+		const resolvedCredentials = await resolveCredentials(req.credentials, req.project, {
+			waitMs: credentialsWaitMs,
 		});
 
 		const application = new Application({
@@ -498,16 +498,18 @@ async function deployComponent(req) {
 				installCapture.push(manager, stream, line);
 				if (emitter) emit('install', { manager, stream, line });
 			},
-			// Private-registry auth (already resolved above), used here for this node's npm pack/install.
-			registryAuth: resolvedRegistryAuth,
+			// Deploy credentials (already resolved above), used here for this node's npm pack/install:
+			// registry entries via a transient .npmrc, git-host entries via the in-memory credential
+			// socket the clone spawn talks to.
+			credentials: resolvedCredentials,
 		});
-		// Reduce req.registryAuth to references only (never a token) before it can reach an error/log
+		// Reduce req.credentials to references only (never a token) before it can reach an error/log
 		// path or replication: references are what peers resolve from their own replicated hdb_secret
 		// copy; a no-custody literal token is dropped entirely (peers fall back to their fabric-injected
 		// NPM_CONFIG_USERCONFIG, as before). This also fixes the prior success-only strip that leaked a
 		// literal token on a prepare/load failure.
-		if (registryAuthReferences.length) req.registryAuth = registryAuthReferences;
-		else delete req.registryAuth;
+		if (credentialReferences.length) req.credentials = credentialReferences;
+		else delete req.credentials;
 
 		emit('phase', { phase: 'prepare', status: 'start' });
 		await prepareApplication(application);
@@ -556,7 +558,7 @@ async function deployComponent(req) {
 		// ProgressEmitter holds function listeners that can't survive the replication
 		// channel's serialization; strip it unconditionally.
 		delete req.progress;
-		// req.registryAuth was already deleted immediately after the Application ctor (above) so the
+		// req.credentials was already deleted immediately after the Application ctor (above) so the
 		// token never reaches the replication channel or a peer's operation log; peers authenticate
 		// against the private registry via their own fabric-injected NPM_CONFIG_USERCONFIG on reinstall.
 		if (systemReplicated && recorder) {
