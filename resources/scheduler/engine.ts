@@ -109,6 +109,36 @@ function jobRowId(job: ScheduledJob): string {
 	return `job:${job.componentName}:${job.name}`;
 }
 
+// Every state-table operation is bounded: observed empirically (2-node
+// failover) that a read/write issued on a freshly promoted leader — while the
+// replication link to the dead peer is still churning — can stall
+// indefinitely, wedging the promotion pipeline behind its await while the
+// already-started heartbeat keeps renewing the lease. The result was a
+// healthy-looking leader running zero jobs, with no error anywhere. A bounded
+// operation instead fails into the existing degraded paths (schedule from
+// now / skip this sweep / retry next heartbeat).
+const STATE_OPERATION_TIMEOUT_MS = 10_000;
+
+function withStateTimeout<T>(operation: Promise<T>, what: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(
+			() => reject(new Error(`${what} timed out after ${STATE_OPERATION_TIMEOUT_MS}ms`)),
+			STATE_OPERATION_TIMEOUT_MS
+		);
+		timer.unref();
+		operation.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			}
+		);
+	});
+}
+
 /**
  * Job handlers and storage drivers can throw anything — including objects
  * whose property getters themselves throw — so even reading .message is
@@ -282,7 +312,7 @@ async function electRole(): Promise<void> {
 	const self = currentNodeName();
 	let leaderRow: any;
 	try {
-		leaderRow = await getStateTable().get(LEADER_ROW_ID);
+		leaderRow = await withStateTimeout(getStateTable().get(LEADER_ROW_ID), 'leader state read');
 	} catch (error) {
 		// Fail toward followership: electing ourselves while the state table is
 		// unreadable risks a second leader. The failover watcher keeps checking
@@ -389,7 +419,7 @@ async function heartbeat(): Promise<void> {
 	const self = currentNodeName();
 	let leaderRow: any;
 	try {
-		leaderRow = await getStateTable().get(LEADER_ROW_ID);
+		leaderRow = await withStateTimeout(getStateTable().get(LEADER_ROW_ID), 'leader state read');
 	} catch (error) {
 		// A failed read must NOT abort the tick: skipping renewal makes a live
 		// leader look stale (a follower would promote and dual-execute), and
@@ -421,7 +451,7 @@ async function failoverCheck(): Promise<void> {
 	const self = currentNodeName();
 	let leaderRow: any;
 	try {
-		leaderRow = await getStateTable().get(LEADER_ROW_ID);
+		leaderRow = await withStateTimeout(getStateTable().get(LEADER_ROW_ID), 'leader state read');
 	} catch (error) {
 		// Can't tell whether a leader exists; skip this tick (and don't let the
 		// leaderless clock run) rather than risk promoting into a split brain
@@ -459,7 +489,7 @@ async function failoverCheck(): Promise<void> {
 
 async function putStateRow(row: Record<string, unknown>): Promise<void> {
 	try {
-		await getStateTable().put(row);
+		await withStateTimeout(getStateTable().put(row), `state write ${row.id}`);
 	} catch (error) {
 		// State persistence failures must never take the scheduler down; the
 		// next heartbeat retries
@@ -590,7 +620,7 @@ function sanitizeStoredError(message: string): string {
 // first-seen overwrite of the whole run-state row (audit finding)
 async function getJobStateRow(job: ScheduledJob): Promise<any> {
 	try {
-		return await getStateTable().get(jobRowId(job));
+		return await withStateTimeout(getStateTable().get(jobRowId(job)), `job state read ${jobRowId(job)}`);
 	} catch (error) {
 		schedulerLogger.warn?.(`Failed to read state for job ${jobRowId(job)}: ${safeErrorMessage(error)}`);
 		return undefined;
@@ -685,7 +715,7 @@ async function runCatchUp(): Promise<void> {
 				// Unlike the timer-arming path, a read failure here must THROW
 				// (the per-job catch below logs and skips) — conflating it with
 				// "row absent" fed the destructive re-seed below (audit finding)
-				const stateRow = await getStateTable().get(jobRowId(job));
+				const stateRow = await withStateTimeout(getStateTable().get(jobRowId(job)), `job state read ${jobRowId(job)}`);
 				// Baseline = the newest of the persisted timestamps and the
 				// in-memory attempt anchor. Including lastAttemptAt closes two
 				// duplicate-execution paths the persisted row alone cannot: a
