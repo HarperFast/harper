@@ -19,6 +19,7 @@ import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue 
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
+import { decodeProxyHeader, applyProxyHeader, applyDefaultPeerCertificate } from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable, Writable, pipeline } from 'node:stream';
@@ -79,12 +80,27 @@ export function cleanupUdsFiles() {
 }
 
 /** Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server. */
-export function writeUdsMetadata(yamlPath: string, port: number | string, secureServer: any, protocol?: string) {
+export function writeUdsMetadata(
+	yamlPath: string,
+	port: number | string,
+	secureServer: any,
+	protocol?: string,
+	mtlsForwarding = true
+) {
 	const contexts = secureServer.secureContexts;
 	let yaml = `pid: ${process.pid}\ntid: ${currentThreadId()}\nport: ${port}\n`;
 	// Which application protocol this socket speaks (absent = http/1.1, the historical
 	// default) — lets a fronting proxy route by negotiated ALPN.
 	if (protocol) yaml += `protocol: ${protocol}\n`;
+	// Whether the mirrored port verifies client certificates: a fronting proxy that
+	// terminates TLS should request client certs (mtlsRequired: reject when absent)
+	// and forward the verified chain via PROXY v2 TLVs. Only advertised when the
+	// mirror can actually decode that header (mtlsForwarding=false for the uWS
+	// mirror, which speaks X-Forwarded-For and has no PROXY parsing).
+	if (mtlsForwarding && secureServer.verifiesClientCerts) {
+		yaml += `mtls: true\n`;
+		if (secureServer.mtlsRequired) yaml += `mtlsRequired: true\n`;
+	}
 	yaml += `certificates:\n`;
 	if (contexts?.size > 0) {
 		const seen = new Set();
@@ -689,6 +705,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.ports.push(port);
 			server.appliedCiphers = options.ciphers ?? null;
 			server.verifiesClientCerts = Boolean(mtls || isMtls);
+			server.mtlsRequired = Boolean(mtlsRequired);
 			options.SNICallback.initialize(server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
@@ -742,12 +759,17 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				);
 
 				udsServer.isPerThreadSocket = true;
+				// Mirror the secure server's mTLS config so a client cert forwarded by the
+				// fronting proxy (PROXY v2 TLVs) authenticates exactly like one this worker
+				// terminated itself.
+				udsServer.verifiesClientCerts = server.verifiesClientCerts;
+				if (mtls) udsServer.mtlsConfig = mtls;
 				enableProxyProtocol(udsServer);
 				SERVERS[udsPath] = udsServer;
 			}
 			registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server);
+			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
 			options.SNICallback.ready.then(writeMetadata);
 			server.secureContextsListeners.push(writeMetadata);
 
@@ -769,6 +791,16 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				});
 				const h2Front = createH2CProxyFront(h2Server) as any;
 				h2Front.isPerThreadSocket = true;
+				// Same mTLS mirroring as the h1 UDS server. Set on both servers: the
+				// compat req.socket.server resolves through the accepting net server
+				// (the front), but guard against Node reassigning socket.server during
+				// the h2 connection handoff.
+				h2Front.verifiesClientCerts = server.verifiesClientCerts;
+				(h2Server as any).verifiesClientCerts = server.verifiesClientCerts;
+				if (mtls) {
+					h2Front.mtlsConfig = mtls;
+					(h2Server as any).mtlsConfig = mtls;
+				}
 				SERVERS[udsPathH2] = h2Front;
 				registerUdsCleanupPaths(udsPathH2, yamlPathH2);
 
@@ -1559,10 +1591,6 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 	return servers;
 }
 
-// PROXY protocol v1 max header length per spec: 108 bytes
-const PROXY_V1_MAX_HEADER = 108;
-const PROXY_V1_PREFIX = Buffer.from('PROXY ');
-
 export function enableProxyProtocol(httpServer) {
 	// In Node.js v24+, the HTTP parser's data path goes through the C++ stream layer
 	// and does not call socket.emit('data') via JavaScript method dispatch.
@@ -1574,6 +1602,9 @@ export function enableProxyProtocol(httpServer) {
 	// process.nextTick fires before any I/O callbacks, so it is guaranteed to run before
 	// the first network data chunk reaches the socket — making the interception race-free.
 	httpServer.prependListener('connection', (socket) => {
+		// TLSSocket-shaped defaults so mTLS-aware auth paths see a "no client cert"
+		// TLS connection unless the PROXY v2 header forwards a verified identity.
+		applyDefaultPeerCertificate(socket);
 		process.nextTick(() => {
 			// Capture the HTTP parser's 'data' listener(s) registered during this connection event.
 			const dataListeners = socket.listeners('data') as ((chunk: Buffer) => void)[];
@@ -1586,46 +1617,26 @@ export function enableProxyProtocol(httpServer) {
 			let headerHandled = false;
 			// Accumulates a possibly-split PROXY header. Raw protocols (MQTT/replication) can't
 			// recover from a corrupted first packet, so we must not forward a partial header —
-			// the line can arrive across multiple data events.
+			// it can arrive across multiple data events.
 			let pending: Buffer | null = null;
 			socket.on('data', (chunk: Buffer) => {
 				if (headerHandled) return forward(chunk);
 				if (pending) chunk = Buffer.concat([pending, chunk]);
 
-				// Compare against "PROXY " for as many bytes as we have so far.
-				const cmpLen = Math.min(PROXY_V1_PREFIX.length, chunk.length);
-				if (chunk.compare(PROXY_V1_PREFIX, 0, cmpLen, 0, cmpLen) !== 0) {
-					// Not a PROXY v1 header — forward everything unchanged.
-					headerHandled = true;
-					pending = null;
-					return forward(chunk);
+				const decision = decodeProxyHeader(chunk);
+				if (decision.kind === 'incomplete') {
+					pending = chunk;
+					return;
 				}
-
-				const header = chunk.toString('latin1', 0, Math.min(PROXY_V1_MAX_HEADER, chunk.length));
-				const eol = header.indexOf('\r\n');
-				if (eol === -1) {
-					// Header not complete yet. Keep buffering until the CRLF arrives, unless we've
-					// passed the spec max without one — then it isn't a valid PROXY header.
-					if (chunk.length < PROXY_V1_MAX_HEADER) {
-						pending = chunk;
-						return;
-					}
-					headerHandled = true;
-					pending = null;
-					return forward(chunk);
-				}
-
-				// Complete header: "PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>"
 				headerHandled = true;
 				pending = null;
-				const parts = header.slice(0, eol).split(' ');
-				if (parts.length === 6) {
-					// Override the UDS socket's undefined remoteAddress/remotePort with the real client values.
-					Object.defineProperty(socket, 'remoteAddress', { value: parts[2], configurable: true });
-					Object.defineProperty(socket, 'remotePort', { value: parseInt(parts[4], 10), configurable: true });
+				if (decision.kind === 'none') {
+					// Not a PROXY header — forward everything unchanged.
+					return forward(chunk);
 				}
+				applyProxyHeader(socket, decision);
 				// Forward only the bytes after the PROXY header to the protocol parser.
-				const rest = chunk.subarray(eol + 2);
+				const rest = chunk.subarray(decision.headerLength);
 				if (rest.length > 0) forward(rest);
 			});
 		});
@@ -1633,7 +1644,8 @@ export function enableProxyProtocol(httpServer) {
 }
 
 /**
- * Front a cleartext HTTP/2 server with optional PROXY v1 handling on a Unix domain socket.
+ * Front a cleartext HTTP/2 server with optional PROXY (v1 or v2) handling on a Unix
+ * domain socket.
  *
  * enableProxyProtocol() can't be used here: Node's Http2Session consumes the socket's
  * native handle directly, so data never surfaces as JS 'data' events to intercept. The
@@ -1670,6 +1682,9 @@ export function createH2CProxyFront(h2Server, prehandoffTimeout = 10_000) {
 		socket.on('error', onPrehandoffError);
 		const onPrehandoffTimeout = () => socket.destroy();
 		socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
+		// http2's compat req.socket proxies through to the underlying socket, so the
+		// overridden remoteAddress and the synthesized peer cert reach request handlers.
+		applyDefaultPeerCertificate(socket);
 		const handoff = (rest: Buffer) => {
 			prehandoffSockets.delete(socket);
 			socket.removeListener('readable', onReadable);
@@ -1683,24 +1698,14 @@ export function createH2CProxyFront(h2Server, prehandoffTimeout = 10_000) {
 			let chunk: Buffer;
 			while ((chunk = socket.read()) !== null) {
 				buf = buf ? Buffer.concat([buf, chunk]) : chunk;
-				// Compare against "PROXY " for as many bytes as we have so far; a non-PROXY
-				// prefix (e.g. a direct h2 client with no fronting proxy) is handed off as-is.
-				const cmpLen = Math.min(PROXY_V1_PREFIX.length, buf.length);
-				if (buf.compare(PROXY_V1_PREFIX, 0, cmpLen, 0, cmpLen) !== 0) return handoff(buf);
-				const eol = buf.indexOf('\r\n');
-				if (eol !== -1) {
-					// Complete header: "PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>"
-					const parts = buf.toString('latin1', 0, eol).split(' ');
-					if (parts.length === 6) {
-						// Override the UDS socket's undefined remoteAddress/remotePort with the real
-						// client values; http2's compat req.socket proxies through to these.
-						Object.defineProperty(socket, 'remoteAddress', { value: parts[2], configurable: true });
-						Object.defineProperty(socket, 'remotePort', { value: parseInt(parts[4], 10), configurable: true });
-					}
-					return handoff(buf.subarray(eol + 2));
-				}
-				// No CRLF within the spec max — not a valid PROXY header after all.
-				if (buf.length >= PROXY_V1_MAX_HEADER) return handoff(buf);
+				const decision = decodeProxyHeader(buf);
+				// Incomplete: a valid header may still be forming — keep buffering.
+				if (decision.kind === 'incomplete') continue;
+				// A non-PROXY prefix (e.g. a direct h2 client with no fronting proxy) is
+				// handed off as-is.
+				if (decision.kind === 'none') return handoff(buf);
+				applyProxyHeader(socket, decision);
+				return handoff(buf.subarray(decision.headerLength));
 			}
 		};
 		socket.on('readable', onReadable);
