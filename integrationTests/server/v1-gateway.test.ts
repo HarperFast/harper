@@ -166,7 +166,9 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		assert.equal(typeof body.data[0].embedding, 'string', 'expected base64 string embedding');
 		const buf = Buffer.from(body.data[0].embedding, 'base64');
 		assert.equal(buf.byteLength % 4, 0, 'expected float32-aligned byte length');
-		const floats = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+		// Copy into a fresh buffer before viewing as Float32Array — a pooled
+		// Buffer's byteOffset is not guaranteed 4-byte-aligned.
+		const floats = new Float32Array(new Uint8Array(buf).buffer);
 		assert.ok(floats.length > 0);
 		assert.ok(Math.abs(floats[0] - 0.1) < 1e-6, `expected first float ~0.1, got ${floats[0]}`);
 	});

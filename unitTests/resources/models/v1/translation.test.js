@@ -282,7 +282,9 @@ describe('toEmbedResponse', () => {
 		assert.equal(typeof embedding, 'string');
 		const buf = Buffer.from(embedding, 'base64');
 		assert.equal(buf.byteLength, vec.byteLength);
-		const roundTripped = new Float32Array(buf.buffer, buf.byteOffset, vec.length);
+		// Copy into a fresh buffer before viewing as Float32Array — a pooled
+		// Buffer's byteOffset is not guaranteed 4-byte-aligned.
+		const roundTripped = new Float32Array(new Uint8Array(buf).buffer);
 		assert.deepEqual(Array.from(roundTripped), Array.from(vec));
 	});
 
@@ -292,6 +294,6 @@ describe('toEmbedResponse', () => {
 		const resp = toEmbedResponse([view], 'm', undefined, 'base64');
 		const buf = Buffer.from(resp.data[0].embedding, 'base64');
 		assert.equal(buf.byteLength, 8);
-		assert.deepEqual(Array.from(new Float32Array(buf.buffer, buf.byteOffset, 2)), [2, 3]);
+		assert.deepEqual(Array.from(new Float32Array(new Uint8Array(buf).buffer)), [2, 3]);
 	});
 });
