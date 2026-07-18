@@ -218,17 +218,32 @@ export function toChatCompletion(result: GenerateResult, model: string, id?: str
 
 export interface OAIEmbedResponse {
 	object: 'list';
-	data: Array<{ embedding: number[]; index: number; object: 'embedding' }>;
+	/** `embedding` is `number[]` for encoding_format 'float', base64 string for 'base64'. */
+	data: Array<{ embedding: number[] | string; index: number; object: 'embedding' }>;
 	model: string;
 	usage: { prompt_tokens: number; total_tokens: number };
 }
 
-/** Map `Float32Array[]` from `models.embed()` to an OpenAI embeddings response. */
-export function toEmbedResponse(vecs: Float32Array[], model: string, usage?: TokenUsage): OAIEmbedResponse {
+/**
+ * Map `Float32Array[]` from `models.embed()` to an OpenAI embeddings response.
+ *
+ * `encodingFormat: 'base64'` returns each vector as base64-encoded little-endian
+ * float32 bytes. This is not optional for drop-in compatibility: the OpenAI
+ * Node.js SDK defaults to requesting base64 when the caller doesn't specify a
+ * format and unconditionally base64-decodes the response — a float array
+ * response would be silently corrupted, not rejected. LangChain.js inherits
+ * this via its OpenAI client.
+ */
+export function toEmbedResponse(
+	vecs: Float32Array[],
+	model: string,
+	usage?: TokenUsage,
+	encodingFormat: 'float' | 'base64' = 'float'
+): OAIEmbedResponse {
 	return {
 		object: 'list',
 		data: vecs.map((vec, index) => ({
-			embedding: Array.from(vec),
+			embedding: encodingFormat === 'base64' ? toBase64Embedding(vec) : Array.from(vec),
 			index,
 			object: 'embedding',
 		})),
@@ -239,4 +254,10 @@ export function toEmbedResponse(vecs: Float32Array[], model: string, usage?: Tok
 			total_tokens: usage?.embeddingTokens ?? usage?.promptTokens ?? 0,
 		},
 	};
+}
+
+/** Base64-encode a vector as little-endian float32 bytes (OpenAI base64 wire format). */
+function toBase64Embedding(vec: Float32Array | number[]): string {
+	const f32 = vec instanceof Float32Array ? vec : Float32Array.from(vec);
+	return Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength).toString('base64');
 }

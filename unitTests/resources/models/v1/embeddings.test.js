@@ -61,4 +61,26 @@ describe('V1Embeddings.post', () => {
 		const result = await V1Embeddings.post(undefined, 'not an object', {});
 		assert.equal(result.status, 401, 'auth must be checked ahead of body validation');
 	});
+
+	it("returns base64 string embeddings for encoding_format: 'base64'", async () => {
+		const body = { input: 'hello', encoding_format: 'base64' };
+		const result = await V1Embeddings.post(undefined, body, { user: SUPER_USER });
+		assert.equal(result.object, 'list');
+		assert.equal(typeof result.data[0].embedding, 'string');
+		const buf = Buffer.from(result.data[0].embedding, 'base64');
+		assert.equal(buf.byteLength % 4, 0, 'expected float32-aligned bytes');
+	});
+
+	it("accepts an explicit encoding_format: 'float'", async () => {
+		const body = { input: 'hello', encoding_format: 'float' };
+		const result = await V1Embeddings.post(undefined, body, { user: SUPER_USER });
+		assert.ok(Array.isArray(result.data[0].embedding));
+	});
+
+	it('rejects an unknown encoding_format with a 400 OpenAI-shape envelope', async () => {
+		const body = { input: 'hello', encoding_format: 'int8' };
+		const result = await V1Embeddings.post(undefined, body, { user: SUPER_USER });
+		assert.equal(result.status, 400);
+		assert.equal(result.data.error.type, 'invalid_request_error');
+	});
 });

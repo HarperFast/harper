@@ -130,6 +130,7 @@
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.6",
 		"@harperfast/integration-testing": "^0.6.2",
+		"@langchain/openai": "^1.5.5",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/busboy": "^1.5.4",
 		"@types/fs-extra": "^11.0.4",
@@ -176,6 +177,7 @@
 		"@fastify/static": "^9.1.3",
 		"@harperfast/extended-iterable": "^1.0.1",
 		"@harperfast/rocksdb-js": "^2.4.0",
+		"@harperfast/skills": "^1.10.8",
 		"@turf/area": "6.5.0",
 		"@turf/boolean-contains": "6.5.0",
 		"@turf/boolean-disjoint": "6.5.0",
@@ -212,7 +214,6 @@
 		"jsonata": "1.8.7",
 		"jsonwebtoken": "9.0.3",
 		"lmdb": "3.5.6",
-		"weak-lru-cache": "^1.2.2",
 		"lodash": "^4.17.23",
 		"mathjs": "11.12.0",
 		"micromatch": "^4.0.8",
@@ -246,9 +247,9 @@
 		"ulidx": "0.5.0",
 		"uuid": "11.1.1",
 		"validate.js": "0.13.1",
+		"weak-lru-cache": "^1.2.2",
 		"ws": "8.21.0",
-		"yaml": "2.9.0",
-		"@harperfast/skills": "^1.10.8"
+		"yaml": "2.9.0"
 	},
 	"overrides": {
 		"alasql": {
@@ -258,8 +259,8 @@
 	"optionalDependencies": {
 		"bufferutil": "^4.0.9",
 		"segfault-handler": "^1.3.0",
-		"uWebSockets.js": "https://github.com/uNetworking/uWebSockets.js/archive/624987739d4da0acb628aaf2a10fc43e7ce27c5c.tar.gz",
-		"utf-8-validate": "^5.0.10"
+		"utf-8-validate": "^5.0.10",
+		"uWebSockets.js": "https://github.com/uNetworking/uWebSockets.js/archive/624987739d4da0acb628aaf2a10fc43e7ce27c5c.tar.gz"
 	},
 	"peerDependencies": {
 		"@aws-sdk/client-bedrock-runtime": "^3.0.0"
