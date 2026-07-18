@@ -260,7 +260,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			// SSL TLV (0x20): client = SSL|CERT_CONN, verify = 0; then a 0xE0 cert TLV
 			const ssl = Buffer.from([0x20, 0x00, 0x05, 0x03, 0, 0, 0, 0]);
 			const der = Buffer.from('not-a-real-der-but-forwarded-opaquely');
-			const certTlv = Buffer.concat([Buffer.from([0xe0, 0x00, der.length]), der]);
+			const certTlv = Buffer.concat([Buffer.from([0xe2, 0x00, der.length]), der]);
 			const socket = new EventEmitter();
 			await feed(socket, Buffer.concat([buildV2Header(Buffer.concat([ssl, certTlv])), Buffer.from('APP')]));
 			assert.strictEqual(socket.authorized, true);

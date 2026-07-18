@@ -5,7 +5,7 @@
  *
  * Beyond the client source address, the v2 TLV vector can carry TLS facts the
  * proxy observed — most importantly the mTLS client certificate chain (custom
- * TLV 0xE0, one DER-encoded certificate per TLV, leaf first). Symphony only
+ * TLV 0xE2, one DER-encoded certificate per TLV, leaf first). Symphony only
  * emits the chain after its verifier accepted it, so on a trusted link a
  * forwarded chain is treated like a directly-terminated, verified client cert:
  * `applyProxyHeader` gives the socket TLSSocket-shaped `authorized` and
@@ -28,15 +28,15 @@ const PROXY_V2_SIGNATURE = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a
 const PP2_FAMILY_TCP4 = 0x11;
 const PP2_FAMILY_TCP6 = 0x21;
 const PP2_TYPE_SSL = 0x20;
-// Custom-range TLV (0xE0-0xEF are application-specific per the spec); matches
-// symphony's PP2_TYPE_CLIENT_CERT.
-const PP2_TYPE_CLIENT_CERT = 0xe0;
+// Custom-range TLVs (0xE0-0xEF are application-specific per the spec), matching
+// symphony's allocation: 0xE0 = JA3, 0xE1 = JA4, 0xE2 = client cert chain.
+const PP2_TYPE_CLIENT_CERT = 0xe2;
 const PP2_CLIENT_CERT_CONN = 0x02;
 
 export interface ForwardedTls {
 	/** True when the proxy reported the presented client cert as verified (PP2 SSL TLV verify == 0). */
 	verified: boolean;
-	/** Client certificate chain (DER, leaf first) from PP2 0xE0 TLVs. */
+	/** Client certificate chain (DER, leaf first) from PP2 0xE2 TLVs. */
 	clientCertChain: Buffer[];
 }
 
@@ -197,6 +197,59 @@ export function applyProxyHeader(socket: any, header: DecodedProxyHeader): void 
 			return leafCertificate;
 		};
 	}
+}
+
+/**
+ * Consume a leading PROXY header (v1 or v2) from a socket that has no data
+ * listeners attached yet, apply it to the socket, then call `handoff`. Bytes
+ * beyond the header are unshifted so whatever parser `handoff` attaches reads
+ * them first. Connections that don't start with a PROXY header hand off on
+ * first bytes, unmodified.
+ */
+export function consumeProxyHeader(socket: any, handoff: () => void): void {
+	let buffered: Buffer | null = null;
+	const onReadable = () => {
+		let chunk: Buffer;
+		while ((chunk = socket.read()) !== null) {
+			buffered = buffered ? Buffer.concat([buffered, chunk]) : chunk;
+			const decision = decodeProxyHeader(buffered);
+			// A valid header may still be forming — keep buffering.
+			if (decision.kind === 'incomplete') continue;
+			socket.removeListener('readable', onReadable);
+			let rest = buffered;
+			if (decision.kind === 'header') {
+				applyProxyHeader(socket, decision);
+				rest = buffered.subarray(decision.headerLength);
+			}
+			if (rest.length > 0) socket.unshift(rest);
+			return handoff();
+		}
+	};
+	socket.on('readable', onReadable);
+}
+
+/**
+ * Wrap a raw-socket connection listener so any leading PROXY header is decoded
+ * and applied BEFORE the listener runs. enableProxyProtocol-style data-path
+ * interception only fixes up the socket when the first data event fires — too
+ * late for protocols like MQTT that read `socket.authorized`/`remoteAddress`
+ * at connection time. A connection that stalls before completing the header is
+ * destroyed after `prehandoffTimeout` ms so it can't hold an fd forever.
+ */
+export function withProxyProtocol(listener: (socket: any) => void, prehandoffTimeout = 10_000): (socket: any) => void {
+	return (socket: any) => {
+		applyDefaultPeerCertificate(socket);
+		// The listener's own error/timeout handling isn't attached yet.
+		const onPrehandoff = () => socket.destroy();
+		socket.on('error', onPrehandoff);
+		socket.setTimeout(prehandoffTimeout, onPrehandoff);
+		consumeProxyHeader(socket, () => {
+			socket.removeListener('error', onPrehandoff);
+			socket.setTimeout(0);
+			socket.removeListener('timeout', onPrehandoff);
+			listener(socket);
+		});
+	};
 }
 
 const returnEmptyPeerCertificate = () => ({});
