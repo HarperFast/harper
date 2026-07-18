@@ -92,6 +92,10 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 		} finally {
 			restore();
 		}
+		// unhandledRejection is emitted on a later event-loop turn than the rejection itself;
+		// drain before asserting or a leaked rejection could land after the check (and after
+		// the listener is removed in the after hook)
+		await delay(50);
 		assert.deepEqual(unhandled, [], 'exhaustion must not leak an unhandled rejection');
 	});
 
@@ -107,6 +111,10 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 		} finally {
 			restore();
 		}
+		// unhandledRejection is emitted on a later event-loop turn than the rejection itself;
+		// drain before asserting or a leaked rejection could land after the check (and after
+		// the listener is removed in the after hook)
+		await delay(50);
 		assert.deepEqual(unhandled, [], 'exhaustion must not leak an unhandled rejection');
 	});
 
@@ -123,6 +131,10 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 		} finally {
 			restore();
 		}
+		// unhandledRejection is emitted on a later event-loop turn than the rejection itself;
+		// drain before asserting or a leaked rejection could land after the check (and after
+		// the listener is removed in the after hook)
+		await delay(50);
 		assert.deepEqual(unhandled, [], 'exhaustion must not leak an unhandled rejection');
 	});
 });
