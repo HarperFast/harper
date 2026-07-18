@@ -913,11 +913,14 @@ describe('Blob test', () => {
 	it('gates a local write on a manually started, still-streaming blob save', async () => {
 		// saveBlob assigns the fileId as soon as the save STARTS, so a fileId check alone would
 		// exempt a mid-save blob from the local-write gate and reopen the orphan-reference window
+		const store = BlobTest.primaryStore.rootStore;
 		const slow = new PassThrough();
 		const blob = createBlob(slow);
-		saveBlob(blob);
+		// saveBlob resolves the blob storage path from module-global currentStore; bind it via
+		// decodeFromDatabase (as the sibling #406 test does) so this test doesn't depend on a
+		// prior test leaving currentStore set.
+		decodeFromDatabase(() => saveBlob(blob), store);
 		slow.write('partial content');
-		const store = BlobTest.primaryStore.rootStore;
 		const preCommit = startPreCommitBlobsForRecord({ id: 8, blob }, store, false, false);
 		assert(preCommit && preCommit.blobs.includes(blob), 'mid-save blob must gate the commit');
 		let completed = false;
