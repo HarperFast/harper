@@ -15,9 +15,10 @@
  *
  * NOTE: `modelsGateway: { enabled: true }` is passed explicitly because the
  * gateway is off by default (`enabled: false` in defaultConfig.yaml). The test
- * harness plumbs this via HARPER_SET_CONFIG. On CI (Linux, fast startup), the
- * env-var config can race component loading; that race is tracked in #1618 and
- * the fix there will make this test reliable without needing further changes here.
+ * harness plumbs this via HARPER_SET_CONFIG. This suite runs against a bare
+ * instance (no deployed apps), so no component config contains a `rest` key —
+ * the gateway itself must activate REST serving (REST.ensureStarted) for these
+ * endpoints to be reachable. That activation is part of what this suite covers.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';

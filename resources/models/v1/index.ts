@@ -27,6 +27,7 @@
  */
 
 import type { Scope } from '../../../components/Scope.ts';
+import { ensureStarted as ensureRestServing } from '../../../server/REST.ts';
 import { V1Embeddings } from './embeddings.ts';
 import { V1ChatCompletions } from './chatCompletions.ts';
 import { V1Models } from './models.ts';
@@ -36,4 +37,8 @@ export function handleApplication(scope: Scope): void {
 	scope.resources.set('v1/models', V1Models);
 	scope.resources.set('v1/embeddings', V1Embeddings);
 	scope.resources.set('v1/chat/completions', V1ChatCompletions);
+	// REST's middleware chain only activates when some component config contains a
+	// `rest`/`REST` key; on a bare instance (no apps) nothing provides one, so the
+	// resources above would be registered but unservable (#631).
+	ensureRestServing(scope);
 }

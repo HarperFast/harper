@@ -24,11 +24,24 @@ describe('V1Models.get', () => {
 
 	it('lists registered generative and embedding backends for a super_user', () => {
 		setGenerative('default', new TestBackend());
-		setEmbedding('default', new TestBackend());
+		setEmbedding('embed-small', new TestBackend());
 		const result = V1Models.get(undefined, { user: SUPER_USER });
 		assert.equal(result.object, 'list');
-		assert.equal(result.data.length, 2);
+		assert.deepEqual(
+			result.data.map((m) => m.id),
+			['default', 'embed-small']
+		);
 		assert.ok(result.data.every((m) => m.object === 'model'));
+	});
+
+	it('dedupes a logical name registered for both generative and embedding', () => {
+		setGenerative('default', new TestBackend());
+		setEmbedding('default', new TestBackend());
+		const result = V1Models.get(undefined, { user: SUPER_USER });
+		assert.deepEqual(
+			result.data.map((m) => m.id),
+			['default']
+		);
 	});
 
 	it('rejects an anonymous request with a 401 OpenAI-shape envelope', () => {

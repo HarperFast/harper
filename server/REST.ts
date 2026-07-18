@@ -335,6 +335,16 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		// If they really want to enable expensive record count estimates
 		(Request.prototype as any).includeExpensiveRecordCountEstimates = true;
 	}
+	ensureStarted(scope);
+}
+
+/**
+ * Idempotently register REST's HTTP/WS handlers on the middleware chain. Split from
+ * `handleApplication` so core plugins that register REST-served resources (e.g. the /v1
+ * models gateway) can activate serving on instances where no component config contains a
+ * `rest`/`REST` key — without adopting their own config section as REST's http options.
+ */
+export function ensureStarted(scope: import('../components/Scope.ts').Scope) {
 	resources = scope.resources;
 	if (started) return;
 	started = true;

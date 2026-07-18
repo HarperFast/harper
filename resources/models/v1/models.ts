@@ -32,18 +32,17 @@ export class V1Models extends Resource {
 		if (authError) return authError;
 
 		const created = Math.floor(Date.now() / 1000);
-		const generative = listBackends('generative').map(({ logicalName }): OAIModelEntry => ({
-			id: logicalName,
-			object: 'model',
-			created,
-			owned_by: 'harper',
-		}));
-		const embedding = listBackends('embedding').map(({ logicalName }): OAIModelEntry => ({
-			id: logicalName,
-			object: 'model',
-			created,
-			owned_by: 'harper',
-		}));
-		return { object: 'list', data: [...generative, ...embedding] };
+		// OpenAI model ids are unique; a logical name registered for both generative and
+		// embedding (e.g. `default` in each section) is one model id to callers.
+		const ids = new Set<string>();
+		const data: OAIModelEntry[] = [];
+		for (const kind of ['generative', 'embedding'] as const) {
+			for (const { logicalName } of listBackends(kind)) {
+				if (ids.has(logicalName)) continue;
+				ids.add(logicalName);
+				data.push({ id: logicalName, object: 'model', created, owned_by: 'harper' });
+			}
+		}
+		return { object: 'list', data };
 	}
 }
