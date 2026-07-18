@@ -255,14 +255,20 @@ export class DatabaseTransaction implements Transaction {
 				// requested the commit already received its resolution (the writes were acknowledged when
 				// the transaction went LINGERING, since blocking on iterator completion could deadlock a
 				// response that streams the iterator), so a failure here cannot reject any awaited chain —
-				// log it loudly rather than leaking an unhandled rejection, and abort so the failed
-				// writes' blob files are cleaned up (no error middleware runs this late).
-				const committed = this.commit() as Promise<CommitResolution>;
-				if (committed?.then)
-					committed.catch((error) => {
-						harperLogger.error?.('Failed to commit lingering writes after read iterators completed', error);
-						this.abort();
-					});
+				// log it loudly rather than leaking an unhandled rejection (or throwing into the iterator
+				// consumer: with no async completions pending, commit() runs — and can throw —
+				// synchronously), and abort so the failed writes' blob files are cleaned up (no error
+				// middleware runs this late).
+				const onDeferredCommitError = (error: any) => {
+					harperLogger.error?.('Failed to commit lingering writes after read iterators completed', error);
+					this.abort();
+				};
+				try {
+					const committed = this.commit() as Promise<CommitResolution>;
+					if (committed?.then) committed.catch(onDeferredCommitError);
+				} catch (error) {
+					onDeferredCommitError(error);
+				}
 			} else {
 				this.transaction?.abort();
 				this.transaction = null;
@@ -618,7 +624,17 @@ export class DatabaseTransaction implements Transaction {
 									);
 								}
 								return this.commit({ ...options, transaction }); // try again
-							} else throw error;
+							} else {
+								// terminal (non-conflict) failure: release the native handle so it doesn't leak;
+								// usually already released by the failed commit itself, abort for the unexpected
+								// case (same defensive pattern as the retry-exhaustion give-up above)
+								try {
+									transaction.abort();
+								} catch (abortError) {
+									harperLogger.debug?.('aborting transaction after failed commit', abortError);
+								}
+								throw error;
+							}
 						}
 					);
 				}
