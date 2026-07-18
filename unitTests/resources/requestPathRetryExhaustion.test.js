@@ -38,6 +38,10 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 		process.removeListener('unhandledRejection', onUnhandled);
 	});
 
+	afterEach(() => {
+		unhandled.length = 0; // isolate tests: one leak must not taint the following tests' assertions
+	});
+
 	// Force native commits against the test database to fail: `reject` mode rejects with the given
 	// error code (the uncoordinated conflict path), `retryNow` mode resolves with the RETRY_NOW
 	// sentinel (the coordinatedRetry conflict path). abort() stays real so retry transactions
