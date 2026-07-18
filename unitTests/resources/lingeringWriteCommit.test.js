@@ -14,6 +14,10 @@ const { setTimeout: delay } = require('node:timers/promises');
 // this.writes on the LINGERING fall-through, so the deferred commit found an empty write set and
 // aborted the native transaction, silently dropping every write the caller was told succeeded.
 describe('lingering commit preserves writes staged while iterators are open', () => {
+	// RocksDB-only: LMDB never defers a commit on open read transactions (its reads don't block
+	// writes; a post-LINGERING write goes through an ImmediateTransaction), so the deferral this
+	// pins doesn't exist there.
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let LingerTable;
 	const unhandled = [];
 	const onUnhandled = (error) => unhandled.push(error);
