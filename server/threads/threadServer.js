@@ -587,6 +587,7 @@ function onSocket(listener, options) {
 		);
 		socketServer.appliedCiphers = effectiveCiphers ?? null;
 		socketServer.verifiesClientCerts = Boolean(options.mtls);
+		socketServer.mtlsRequired = Boolean(options.mtls?.required);
 		SNICallback.initialize(socketServer);
 		// Only opt out of reusePort on macOS, which doesn't reliably support SO_REUSEPORT on all
 		// socket types (ENOTSUP). Everywhere else, sharing the port lets every worker accept
