@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784274928179,
+  "lastUpdate": 1784360809311,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -2447,6 +2447,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1029.99,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "56a2bace9f27526d9066a1d05ff9161d012ecab6",
+          "message": "fix(tls): honor `ciphers`/`SECLEVEL` from every configured source when building TLS listeners (#1841)\n\n* fix(tls): honor ciphers/SECLEVEL from every configured source when building TLS listeners\n\nA TLS listener has exactly one effective cipher string: OpenSSL takes the\ncipher list (and any @SECLEVEL, which governs client-cert chain\nverification) from the context the server was created with; SNI-swapped\ncontexts don't carry their own cipher list onto the connection. Harper\napplied only tls.ciphers ?? tls[0].ciphers and silently ignored every\nother configured value — tls[] entries beyond [0] and certificate\nrecords, including client-CA records carrying DEFAULT@SECLEVEL=0 for\nSHA-1-signed chains, which then failed with authorizationError\nUNSPECIFIED on valid in-date certs.\n\nresolveEffectiveTlsCiphers (security/keys.ts) now resolves the listener\nstring from all sources: top-level tls.ciphers wins; otherwise tls[]\nentries plus relevant cert records (uses-matched, and authorities when\nthe listener verifies client certs) are candidates, with the lowest\nexplicit @SECLEVEL winning conflicts and everything ignored logged.\nPost-boot changes to the resolved value warn (once per value) that a\nrestart is required. Bun path untouched (BoringSSL has no @SECLEVEL).\n\nCloses #1840\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* test(tls): guard seclevel test teardown when setup fails early\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(tls): compose suite and minimum SECLEVEL per listener instead of picking one cipher string\n\nAddresses the external review on #1841: config array entries are now\nrelevance-filtered like certificate records (CA entries only when the\nlistener verifies client certs; uses matched with the selector's\ntolerant rule incl. legacy 'https' and no-uses generics), the suite\nlist is preserved from the highest-priority suite-bearing candidate\nwith only the minimum explicit @SECLEVEL composed on (no assumed\nruntime default level), and the operations API listener resolves from\noperationsApi.tls before root tls so an inherited-certificate override\nis no longer ignored.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-17T20:39:05Z",
+          "url": "https://github.com/HarperFast/harper/commit/56a2bace9f27526d9066a1d05ff9161d012ecab6"
+        },
+        "date": 1784360808853,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6114.33,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 9148.22,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 9278.13,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6697.41,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4887.7,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 9038.81,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1217.41,
             "unit": "ops/sec"
           }
         ]
