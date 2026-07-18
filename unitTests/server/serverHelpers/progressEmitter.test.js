@@ -134,6 +134,21 @@ describe('createSSEResponseStream', () => {
 		assert.strictEqual(events.length, 1);
 		assert.strictEqual(events[0].event, 'done');
 	});
+
+	it('writes an event whose data is undefined without throwing', async () => {
+		// JSON.stringify(undefined) returns the primitive `undefined`, not a string, so a
+		// naive `.split()` on it throws. An emitter can carry `data: unknown`, so this path
+		// has to survive an event with no payload.
+		const emitter = new ProgressEmitter();
+		const stream = createSSEResponseStream(emitter, async () => {
+			emitter.emit('ping', undefined);
+			return { ok: true };
+		});
+		const events = parseSSEBlocks(await collect(stream));
+		const ping = events.find((e) => e.event === 'ping');
+		assert.ok(ping, 'expected a `ping` event to be written');
+		assert.strictEqual(events[events.length - 1].event, 'done');
+	});
 });
 
 // keep Readable import live for any future tests that need stream sources
