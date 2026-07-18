@@ -222,7 +222,12 @@ describe('proxyProtocol applyProxyHeader', () => {
 		assert.strictEqual(socket.authorized, true);
 		const cert = socket.getPeerCertificate(true);
 		assert.strictEqual(cert.subject.CN, 'test-client');
-		assert.strictEqual(socket.getPeerCertificate(), cert, 'certificate object should be memoized');
+		assert.strictEqual(socket.getPeerCertificate(true), cert, 'detailed certificate should be memoized');
+		// Node semantics: without detailed=true the issuerCertificate chain is omitted
+		const leaf = socket.getPeerCertificate();
+		assert.strictEqual(leaf.subject.CN, 'test-client');
+		assert.strictEqual(leaf.issuerCertificate, undefined);
+		assert.strictEqual(socket.getPeerCertificate(), leaf, 'leaf certificate should be memoized');
 	});
 
 	it('leaves authorized=false when the proxy reported the cert as unverified', () => {

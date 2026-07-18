@@ -181,10 +181,21 @@ export function applyProxyHeader(socket: any, header: DecodedProxyHeader): void 
 	}
 	const tls = header.tls;
 	if (tls) {
-		let peerCertificate: any;
+		let detailedCertificate: any;
+		let leafCertificate: any;
 		socket.authorized = tls.verified;
-		// Lazy so X509 parsing only happens when an auth path actually reads the cert.
-		socket.getPeerCertificate = () => (peerCertificate ??= synthesizePeerCertificate(tls.clientCertChain));
+		// Lazy so X509 parsing only happens when an auth path actually reads the
+		// cert. Matches Node's TLSSocket API: detailed=true includes the
+		// issuerCertificate chain, otherwise just the peer certificate.
+		socket.getPeerCertificate = (detailed?: boolean) => {
+			detailedCertificate ??= synthesizePeerCertificate(tls.clientCertChain);
+			if (detailed) return detailedCertificate;
+			if (!leafCertificate) {
+				const { issuerCertificate: _omitted, ...leaf } = detailedCertificate;
+				leafCertificate = leaf;
+			}
+			return leafCertificate;
+		};
 	}
 }
 
