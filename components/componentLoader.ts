@@ -668,6 +668,16 @@ export async function loadComponent(
 			}
 		}
 
+		// The /v1 models gateway registers REST-served resources (#631), but REST's chain
+		// only activates via a `rest`/`REST` config section, and a bare instance (no apps)
+		// has none — leaving the gateway's resources registered but unservable. Activate
+		// REST with default options here, after every root plugin has loaded: if any
+		// `rest`/`REST` section exists — whatever its key order — its handleApplication
+		// already ran with the user's options and this is a no-op.
+		if (isRoot && resources.isWorker && (config as any).modelsGateway?.enabled) {
+			REST.ensureStarted({ server, resources });
+		}
+
 		compName = parentCompName;
 		if (isMainThread && !watchesSetup && autoReload) {
 			let debounceTimer: ReturnType<typeof setTimeout> | null = null;

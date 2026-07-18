@@ -17,8 +17,9 @@
  * gateway is off by default (`enabled: false` in defaultConfig.yaml). The test
  * harness plumbs this via HARPER_SET_CONFIG. This suite runs against a bare
  * instance (no deployed apps), so no component config contains a `rest` key —
- * the gateway itself must activate REST serving (REST.ensureStarted) for these
- * endpoints to be reachable. That activation is part of what this suite covers.
+ * componentLoader activates REST (REST.ensureStarted, after root plugin
+ * loading) when the gateway is enabled so its chain serves these endpoints.
+ * That activation path is part of what this suite covers.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
