@@ -97,8 +97,9 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
 			body: JSON.stringify({ model: 'default', input: 'hello world' }),
 		});
-		assert.equal(res.status, 200, `expected 200, got ${res.status}: ${await res.text()}`);
-		const body = (await res.json()) as {
+		const text = await res.text();
+		assert.equal(res.status, 200, `expected 200, got ${res.status}: ${text}`);
+		const body = JSON.parse(text) as {
 			object: string;
 			data: Array<{ embedding: number[]; index: number; object: string }>;
 		};
@@ -150,8 +151,9 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 				messages: [{ role: 'user', content: 'hello' }],
 			}),
 		});
-		assert.equal(res.status, 200, `expected 200, got ${res.status}: ${await res.text()}`);
-		const body = (await res.json()) as {
+		const text = await res.text();
+		assert.equal(res.status, 200, `expected 200, got ${res.status}: ${text}`);
+		const body = JSON.parse(text) as {
 			id: string;
 			object: string;
 			choices: Array<{ message: { role: string; content: string }; finish_reason: string }>;
@@ -188,12 +190,26 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		// so the stream: true request lands in post() via Harper's REST layer.
 		// This test validates the full SSE framing path end-to-end.
 		//
-		// AUTHENTICATION_AUTHORIZELOCAL=true (set by the test harness) means all
-		// requests from loopback addresses bypass auth, so the SDK's `apiKey` is
-		// not validated — any non-empty string works.
+		// The SDK sends its apiKey as `Authorization: Bearer <key>`. A present-but-
+		// invalid credential is rejected by Harper's auth (401 "invalid token") even
+		// under AUTHENTICATION_AUTHORIZELOCAL (which only covers requests with no
+		// credentials at all). Mint a real operation token — this is also the
+		// documented production flow: a Harper JWT is the OpenAI api key.
+		const tokenRes = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Authorization': authHeader(ctx) },
+			body: JSON.stringify({
+				operation: 'create_authentication_tokens',
+				username: ctx.harper.admin.username,
+				password: ctx.harper.admin.password,
+			}),
+		});
+		const { operation_token } = (await tokenRes.json()) as { operation_token: string };
+		assert.ok(operation_token, 'expected create_authentication_tokens to return an operation_token');
+
 		const { OpenAI } = (await import('openai')) as { OpenAI: new (opts: object) => any };
 		const client = new OpenAI({
-			apiKey: 'test-key',
+			apiKey: operation_token,
 			baseURL: `${ctx.harper.httpURL}/v1`,
 		});
 
