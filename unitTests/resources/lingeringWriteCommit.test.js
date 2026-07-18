@@ -68,10 +68,13 @@ describe('lingering commit preserves writes staged while iterators are open', ()
 		assert.deepEqual(unhandled, [], 'the deferred commit must not leak an unhandled rejection');
 	});
 
-	it('commits writes staged after the transaction went lingering', async function () {
+	it('a write after the transaction went lingering commits independently; the lingering write still lands', async function () {
 		this.timeout(15000);
-		// a LINGERING transaction still accepts writes (save() stages into the retained native
-		// transaction); those must also survive to the deferred commit
+		// The transactional wrapper only reuses a context transaction that is OPEN (Resource.ts), so a
+		// put against the same context after LINGERING runs on a fresh transaction and commits
+		// immediately — it must not disturb the lingering transaction's deferred writes. (Internal
+		// paths that reach a LINGERING transaction via txnForContext stage into the retained native
+		// transaction and ride the same deferred commit as the pre-lingering writes pinned above.)
 		let iterator;
 		const context = {};
 		await transaction(context, async () => {
@@ -80,12 +83,14 @@ describe('lingering commit preserves writes staged while iterators are open', ()
 			await iterator.next();
 			await LingerTable.put({ id: 'linger-early', v: 1 }, context);
 		});
-		assert.equal(context.transaction.open, TRANSACTION_STATE.LINGERING);
+		const lingeringTxn = context.transaction;
+		assert.equal(lingeringTxn.open, TRANSACTION_STATE.LINGERING);
 		await LingerTable.put({ id: 'linger-late', v: 2 }, context);
+		assert.notEqual(context.transaction, lingeringTxn, 'premise: the late write ran on a fresh transaction');
+		assert.ok(await LingerTable.get('linger-late'), 'the independent write must be committed immediately');
 		while (!(await iterator.next()).done);
-		for (let i = 0; i < 200 && !(await LingerTable.get('linger-late')); i++) await delay(10);
-		assert.ok(await LingerTable.get('linger-early'), 'pre-lingering write must be committed');
-		assert.ok(await LingerTable.get('linger-late'), 'post-lingering write must be committed');
+		for (let i = 0; i < 200 && !(await LingerTable.get('linger-early')); i++) await delay(10);
+		assert.ok(await LingerTable.get('linger-early'), 'the lingering write must still be committed');
 		assert.deepEqual(unhandled, [], 'the deferred commit must not leak an unhandled rejection');
 	});
 
