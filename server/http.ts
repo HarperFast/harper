@@ -763,6 +763,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				// fronting proxy (PROXY v2 TLVs) authenticates exactly like one this worker
 				// terminated itself.
 				udsServer.verifiesClientCerts = server.verifiesClientCerts;
+				udsServer.mtlsRequired = server.mtlsRequired;
 				if (mtls) udsServer.mtlsConfig = mtls;
 				enableProxyProtocol(udsServer);
 				SERVERS[udsPath] = udsServer;
@@ -796,7 +797,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				// (the front), but guard against Node reassigning socket.server during
 				// the h2 connection handoff.
 				h2Front.verifiesClientCerts = server.verifiesClientCerts;
+				h2Front.mtlsRequired = server.mtlsRequired;
 				(h2Server as any).verifiesClientCerts = server.verifiesClientCerts;
+				(h2Server as any).mtlsRequired = server.mtlsRequired;
 				if (mtls) {
 					h2Front.mtlsConfig = mtls;
 					(h2Server as any).mtlsConfig = mtls;
