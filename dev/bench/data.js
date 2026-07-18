@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784360809311,
+  "lastUpdate": 1784360811539,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -5814,6 +5814,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 188.84,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "56a2bace9f27526d9066a1d05ff9161d012ecab6",
+          "message": "fix(tls): honor `ciphers`/`SECLEVEL` from every configured source when building TLS listeners (#1841)\n\n* fix(tls): honor ciphers/SECLEVEL from every configured source when building TLS listeners\n\nA TLS listener has exactly one effective cipher string: OpenSSL takes the\ncipher list (and any @SECLEVEL, which governs client-cert chain\nverification) from the context the server was created with; SNI-swapped\ncontexts don't carry their own cipher list onto the connection. Harper\napplied only tls.ciphers ?? tls[0].ciphers and silently ignored every\nother configured value — tls[] entries beyond [0] and certificate\nrecords, including client-CA records carrying DEFAULT@SECLEVEL=0 for\nSHA-1-signed chains, which then failed with authorizationError\nUNSPECIFIED on valid in-date certs.\n\nresolveEffectiveTlsCiphers (security/keys.ts) now resolves the listener\nstring from all sources: top-level tls.ciphers wins; otherwise tls[]\nentries plus relevant cert records (uses-matched, and authorities when\nthe listener verifies client certs) are candidates, with the lowest\nexplicit @SECLEVEL winning conflicts and everything ignored logged.\nPost-boot changes to the resolved value warn (once per value) that a\nrestart is required. Bun path untouched (BoringSSL has no @SECLEVEL).\n\nCloses #1840\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* test(tls): guard seclevel test teardown when setup fails early\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(tls): compose suite and minimum SECLEVEL per listener instead of picking one cipher string\n\nAddresses the external review on #1841: config array entries are now\nrelevance-filtered like certificate records (CA entries only when the\nlistener verifies client certs; uses matched with the selector's\ntolerant rule incl. legacy 'https' and no-uses generics), the suite\nlist is preserved from the highest-priority suite-bearing candidate\nwith only the minimum explicit @SECLEVEL composed on (no assumed\nruntime default level), and the operations API listener resolves from\noperationsApi.tls before root tls so an inherited-certificate override\nis no longer ignored.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-17T20:39:05Z",
+          "url": "https://github.com/HarperFast/harper/commit/56a2bace9f27526d9066a1d05ff9161d012ecab6"
+        },
+        "date": 1784360811036,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.49,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 14.76,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 20.46,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.09,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 27.23,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.19,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 35.18,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.71,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 20.3,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 50.61,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 169.22,
             "unit": "ms"
           }
         ]
