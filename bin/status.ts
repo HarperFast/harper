@@ -61,5 +61,5 @@ async function status() {
 	}
 
 	console.log(YAML.stringify(status));
-	process.exit();
+	process.exit(0);
 }

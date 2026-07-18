@@ -468,4 +468,301 @@ describe('cliOperations', () => {
 			);
 		});
 	});
+
+	describe('exit codes on failure', () => {
+		const target = 'https://example.com:9925/';
+		let originalExit;
+		let originalConsoleError;
+		let exitCalls;
+		let consoleErrorLines;
+
+		beforeEach(() => {
+			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+
+			exitCalls = [];
+			originalExit = process.exit;
+			process.exit = (code) => {
+				exitCalls.push(code);
+			};
+
+			consoleErrorLines = [];
+			originalConsoleError = console.error;
+			console.error = (...args) => {
+				consoleErrorLines.push(args.join(' '));
+			};
+		});
+
+		afterEach(() => {
+			process.exit = originalExit;
+			console.error = originalConsoleError;
+		});
+
+		it('exits non-zero with a clear message when the request times out', async () => {
+			commonUtilsModule.httpRequest = async () => {
+				const err = new Error('Request timed out after 60000ms with no response from the server');
+				err.code = 'ETIMEDOUT';
+				throw err;
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.deepStrictEqual(exitCalls, [1]);
+			assert.ok(
+				consoleErrorLines.some((line) => line.includes('timed out')),
+				`expected a timeout message on stderr, got: ${consoleErrorLines}`
+			);
+		});
+
+		it('exits non-zero on a generic connection error', async () => {
+			commonUtilsModule.httpRequest = async () => {
+				const err = new Error('connect ECONNREFUSED 127.0.0.1:9925');
+				err.code = 'ECONNREFUSED';
+				throw err;
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.deepStrictEqual(exitCalls, [1]);
+		});
+
+		it('exits non-zero when the server returns a non-2xx status', async () => {
+			commonUtilsModule.httpRequest = async () => ({
+				statusCode: 500,
+				body: JSON.stringify({ error: 'boom' }),
+			});
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.deepStrictEqual(exitCalls, [1]);
+		});
+
+		it('applies a default idle-socket timeout to the request options', async () => {
+			let capturedOptions;
+			commonUtilsModule.httpRequest = async (options) => {
+				capturedOptions = options;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.strictEqual(typeof capturedOptions.timeout, 'number');
+			assert.ok(capturedOptions.timeout > 0);
+		});
+
+		it('exits non-zero with a clear message (not a bare "aborted") when an SSE deploy_component times out mid-stream', async () => {
+			commonUtilsModule.httpRequest = async (options, req) => {
+				if (req.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				// Simulate the real streamed response: headers arrive and one phase event
+				// flows, then the connection goes idle. httpRequest's own timeout handling
+				// (common_utils.ts) destroys this response with its descriptive ETIMEDOUT
+				// error — mirror that here rather than letting Node manufacture a generic
+				// "aborted" error, since that manufacturing only happens on a real socket.
+				let pushed = false;
+				const response = new Readable({
+					read() {
+						if (!pushed) {
+							pushed = true;
+							this.push('event: phase\ndata: {"phase":"prepare"}\n\n');
+							return;
+						}
+						const err = new Error('Request timed out after 600000ms with no response from the server');
+						err.code = 'ETIMEDOUT';
+						this.destroy(err);
+					},
+				});
+				response.statusCode = 200;
+				response.headers = { 'content-type': 'text/event-stream' };
+				return response;
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+				true
+			);
+
+			assert.deepStrictEqual(exitCalls, [1]);
+			assert.ok(
+				consoleErrorLines.some((line) => line.includes('timed out')),
+				`expected a timeout message on stderr, got: ${consoleErrorLines}`
+			);
+			assert.ok(
+				!consoleErrorLines.some((line) => /^error:\s*aborted\s*$/i.test(line.trim())),
+				`should not surface a bare "aborted" message, got: ${consoleErrorLines}`
+			);
+		});
+	});
+
+	describe('operation timeout selection', () => {
+		const target = 'https://example.com:9925/';
+
+		// Streams an SSE `done` event so the modern (>= 5.1) deploy path resolves.
+		const sseDoneResponse = (result) =>
+			Object.assign(Readable.from([`event: done\ndata: ${JSON.stringify({ result })}\n\n`]), {
+				statusCode: 200,
+				headers: { 'content-type': 'text/event-stream' },
+			});
+
+		// Forces a fresh module instance so its module-level timeout constants are recomputed
+		// against the current process.env (they're only evaluated once, at first require).
+		function reloadCliOperations() {
+			const resolved = require.resolve('#src/bin/cliOperations');
+			delete require.cache[resolved];
+			return require('#src/bin/cliOperations');
+		}
+
+		beforeEach(() => {
+			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+		});
+
+		it('defaults to 60000ms (60s) for non-SSE operations', async () => {
+			let capturedOptions;
+			commonUtilsModule.httpRequest = async (options) => {
+				capturedOptions = options;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.strictEqual(capturedOptions.timeout, 60000);
+		});
+
+		it('defaults to 600000ms (10 min) for SSE-based operations like deploy_component', async () => {
+			let capturedOptions;
+			commonUtilsModule.httpRequest = async (options, req) => {
+				if (req.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				capturedOptions = options;
+				return sseDoneResponse({ message: 'Successfully deployed', success: true });
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+				true
+			);
+
+			assert.strictEqual(capturedOptions.timeout, 600000);
+		});
+
+		it('uses the non-SSE timeout for the streaming-deploy version probe, not the 10-minute SSE timeout', async () => {
+			let probeOptions;
+			commonUtilsModule.httpRequest = async (options, req) => {
+				if (req.operation === 'registration_info') {
+					probeOptions = options;
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				return sseDoneResponse({ message: 'Successfully deployed', success: true });
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+				true
+			);
+
+			assert.strictEqual(probeOptions.timeout, 60000);
+		});
+
+		it('uses the non-SSE timeout for an operation-token refresh, not the 10-minute SSE timeout', async () => {
+			tokenAuthModule.isJWTExpired = (token) => token === 'expired-token';
+			saveCredentials(target, { operation_token: 'expired-token', refresh_token: 'refresh-token' });
+
+			let refreshOptions;
+			commonUtilsModule.httpRequest = async (options, req) => {
+				if (req.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				if (req.operation === 'refresh_operation_token') {
+					refreshOptions = options;
+					return { statusCode: 200, body: JSON.stringify({ operation_token: 'new-token' }) };
+				}
+				return sseDoneResponse({ message: 'Successfully deployed', success: true });
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+				true
+			);
+
+			assert.strictEqual(refreshOptions.timeout, 60000);
+		});
+
+		it('HARPER_CLI_TIMEOUT_MS overrides the non-SSE default', async () => {
+			const originalEnv = process.env.HARPER_CLI_TIMEOUT_MS;
+			process.env.HARPER_CLI_TIMEOUT_MS = '5000';
+			try {
+				const freshModule = reloadCliOperations();
+
+				let capturedOptions;
+				commonUtilsModule.httpRequest = async (options) => {
+					capturedOptions = options;
+					return { statusCode: 200, body: JSON.stringify({ success: true }) };
+				};
+
+				await freshModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+				assert.strictEqual(capturedOptions.timeout, 5000);
+			} finally {
+				if (originalEnv === undefined) delete process.env.HARPER_CLI_TIMEOUT_MS;
+				else process.env.HARPER_CLI_TIMEOUT_MS = originalEnv;
+				reloadCliOperations();
+			}
+		});
+
+		it('HARPER_CLI_TIMEOUT_MS overrides the SSE default too (single override for both paths)', async () => {
+			const originalEnv = process.env.HARPER_CLI_TIMEOUT_MS;
+			process.env.HARPER_CLI_TIMEOUT_MS = '5000';
+			try {
+				const freshModule = reloadCliOperations();
+
+				let capturedOptions;
+				commonUtilsModule.httpRequest = async (options, req) => {
+					if (req.operation === 'registration_info') {
+						return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+					}
+					capturedOptions = options;
+					return sseDoneResponse({ message: 'Successfully deployed', success: true });
+				};
+
+				await freshModule.cliOperations(
+					{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
+					true
+				);
+
+				assert.strictEqual(capturedOptions.timeout, 5000);
+			} finally {
+				if (originalEnv === undefined) delete process.env.HARPER_CLI_TIMEOUT_MS;
+				else process.env.HARPER_CLI_TIMEOUT_MS = originalEnv;
+				reloadCliOperations();
+			}
+		});
+
+		it('HARPER_CLI_TIMEOUT_MS above the 32-bit setTimeout ceiling falls back to the default instead of the raw value', async () => {
+			const originalEnv = process.env.HARPER_CLI_TIMEOUT_MS;
+			// Exceeds 2147483647 (2^31 - 1): Node's setTimeout silently coerces values above this
+			// and fires almost immediately, so out-of-range input must fall back like any other
+			// invalid input rather than being passed through as the raw oversized value.
+			process.env.HARPER_CLI_TIMEOUT_MS = '9999999999';
+			try {
+				const freshModule = reloadCliOperations();
+
+				let capturedOptions;
+				commonUtilsModule.httpRequest = async (options) => {
+					capturedOptions = options;
+					return { statusCode: 200, body: JSON.stringify({ success: true }) };
+				};
+
+				await freshModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+				assert.strictEqual(capturedOptions.timeout, 60000);
+			} finally {
+				if (originalEnv === undefined) delete process.env.HARPER_CLI_TIMEOUT_MS;
+				else process.env.HARPER_CLI_TIMEOUT_MS = originalEnv;
+				reloadCliOperations();
+			}
+		});
+	});
 });
