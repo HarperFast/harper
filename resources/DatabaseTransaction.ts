@@ -251,8 +251,16 @@ export class DatabaseTransaction implements Transaction {
 		if (--this.readTxnsUsed === 0) {
 			trackedTxns.delete(this);
 			if (this.open === TRANSACTION_STATE.LINGERING) {
-				// if we have lingering writes, we have to call commit to finish them
-				this.commit();
+				// if we have lingering writes, we have to call commit to finish them. The caller that
+				// requested the commit already received its resolution (the writes were acknowledged when
+				// the transaction went LINGERING, since blocking on iterator completion could deadlock a
+				// response that streams the iterator), so a failure here cannot reject any awaited chain —
+				// log it loudly rather than leaking an unhandled rejection.
+				const committed = this.commit() as Promise<CommitResolution>;
+				if (committed?.then)
+					committed.then(null, (error) =>
+						harperLogger.error?.('Failed to commit lingering writes after read iterators completed', error)
+					);
 			} else {
 				this.transaction?.abort();
 				this.transaction = null;
@@ -612,11 +620,17 @@ export class DatabaseTransaction implements Transaction {
 						}
 					);
 				}
-				for (const write of this.writes) {
-					if (write?.skipped && write?.savedBlobs)
-						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+				if (this.open !== TRANSACTION_STATE.LINGERING) {
+					for (const write of this.writes) {
+						if (write?.skipped && write?.savedBlobs)
+							cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+					}
+					// A LINGERING commit deferred its writes to the doneReadTxn() commit that runs when the
+					// last outstanding read iterator finishes; clearing them here would make that deferred
+					// commit find an empty write set and abort the native transaction, silently dropping
+					// every staged write after the caller was told the commit succeeded.
+					this.writes = [];
 				}
-				this.writes = [];
 				if (this.#context?.resourceCache) this.#context.resourceCache = null;
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
