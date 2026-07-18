@@ -153,15 +153,15 @@ describe('proxyProtocol decodeProxyHeader', () => {
 	});
 
 	it('returns incomplete for partial v2 headers (signature, length, body)', () => {
-		const header = buildV2Header({ tlvs: [sslTlv(), tlv(0xe0, CLIENT_DER)] });
+		const header = buildV2Header({ tlvs: [sslTlv(), tlv(0xe2, CLIENT_DER)] });
 		assert.strictEqual(decodeProxyHeader(header.subarray(0, 5)).kind, 'incomplete');
 		assert.strictEqual(decodeProxyHeader(header.subarray(0, 15)).kind, 'incomplete');
 		assert.strictEqual(decodeProxyHeader(header.subarray(0, header.length - 1)).kind, 'incomplete');
 		assert.strictEqual(decodeProxyHeader(header).kind, 'header');
 	});
 
-	it('extracts the client cert chain from SSL + 0xE0 TLVs', () => {
-		const header = buildV2Header({ tlvs: [sslTlv(), tlv(0xe0, CLIENT_DER), tlv(0xe0, CA_DER)] });
+	it('extracts the client cert chain from SSL + 0xE2 TLVs', () => {
+		const header = buildV2Header({ tlvs: [sslTlv(), tlv(0xe2, CLIENT_DER), tlv(0xe2, CA_DER)] });
 		const decision = decodeProxyHeader(header);
 		assert.strictEqual(decision.kind, 'header');
 		assert.ok(decision.tls, 'tls facts expected');
@@ -172,22 +172,30 @@ describe('proxyProtocol decodeProxyHeader', () => {
 	});
 
 	it('reports verified=false when the SSL TLV verify field is nonzero', () => {
-		const header = buildV2Header({ tlvs: [sslTlv({ verify: 1 }), tlv(0xe0, CLIENT_DER)] });
+		const header = buildV2Header({ tlvs: [sslTlv({ verify: 1 }), tlv(0xe2, CLIENT_DER)] });
 		const decision = decodeProxyHeader(header);
 		assert.strictEqual(decision.tls.verified, false);
 	});
 
 	it('ignores cert TLVs when the SSL TLV does not report a presented cert', () => {
-		const header = buildV2Header({ tlvs: [sslTlv({ certPresented: false }), tlv(0xe0, CLIENT_DER)] });
+		const header = buildV2Header({ tlvs: [sslTlv({ certPresented: false }), tlv(0xe2, CLIENT_DER)] });
 		assert.strictEqual(decodeProxyHeader(header).tls, undefined);
 	});
 
-	it('skips unknown TLV types', () => {
+	it('skips unknown TLV types, including the JA3/JA4 fingerprint TLVs (0xE0/0xE1)', () => {
 		const header = buildV2Header({
-			tlvs: [tlv(0x01, Buffer.from('h2')), tlv(0x02, Buffer.from('example.com')), sslTlv(), tlv(0xe0, CLIENT_DER)],
+			tlvs: [
+				tlv(0x01, Buffer.from('h2')),
+				tlv(0x02, Buffer.from('example.com')),
+				tlv(0xe0, Buffer.from('771,4865-4866,0-11-10,29-23,0')),
+				tlv(0xe1, Buffer.from('t13d1516h2_8daaf6152771_02713d6af862')),
+				sslTlv(),
+				tlv(0xe2, CLIENT_DER),
+			],
 		});
 		const decision = decodeProxyHeader(header);
 		assert.strictEqual(decision.tls.clientCertChain.length, 1);
+		assert.ok(decision.tls.clientCertChain[0].equals(CLIENT_DER));
 	});
 
 	it('consumes a LOCAL command header without reading addresses', () => {
@@ -210,7 +218,7 @@ describe('proxyProtocol decodeProxyHeader', () => {
 
 describe('proxyProtocol applyProxyHeader', () => {
 	it('overrides remoteAddress/remotePort and synthesizes the peer cert lazily', () => {
-		const header = buildV2Header({ srcIp: [203, 0, 113, 9], srcPort: 443, tlvs: [sslTlv(), tlv(0xe0, CLIENT_DER)] });
+		const header = buildV2Header({ srcIp: [203, 0, 113, 9], srcPort: 443, tlvs: [sslTlv(), tlv(0xe2, CLIENT_DER)] });
 		const socket = {};
 		applyDefaultPeerCertificate(socket);
 		assert.strictEqual(socket.authorized, false);
@@ -231,7 +239,7 @@ describe('proxyProtocol applyProxyHeader', () => {
 	});
 
 	it('leaves authorized=false when the proxy reported the cert as unverified', () => {
-		const header = buildV2Header({ tlvs: [sslTlv({ verify: 2 }), tlv(0xe0, CLIENT_DER)] });
+		const header = buildV2Header({ tlvs: [sslTlv({ verify: 2 }), tlv(0xe2, CLIENT_DER)] });
 		const socket = {};
 		applyDefaultPeerCertificate(socket);
 		applyProxyHeader(socket, decodeProxyHeader(header));
@@ -282,5 +290,120 @@ describe('proxyProtocol synthesizePeerCertificate', () => {
 
 	it('returns an empty object for an entirely unparseable chain', () => {
 		assert.deepStrictEqual(synthesizePeerCertificate([Buffer.from('garbage')]), {});
+	});
+});
+
+// ─── withProxyProtocol (pre-handoff wrapper for raw-protocol listeners) ───────
+// Real sockets: MQTT-style handlers read socket.authorized/remoteAddress at
+// connection time, so the identity must be applied BEFORE the listener runs.
+
+describe('proxyProtocol withProxyProtocol', () => {
+	const net = require('node:net');
+	const { withProxyProtocol } = require('#src/server/serverHelpers/proxyProtocol');
+
+	let server;
+	let port;
+	let connections;
+
+	function listen(listener, prehandoffTimeout) {
+		connections = [];
+		server = net.createServer(withProxyProtocol(listener, prehandoffTimeout));
+		return new Promise((resolve) => {
+			server.listen(0, '127.0.0.1', () => {
+				port = server.address().port;
+				resolve();
+			});
+		});
+	}
+
+	afterEach((done) => {
+		server.close(() => done());
+	});
+
+	// Listener that snapshots identity at invocation time, then echoes stream data.
+	function snapshotListener(socket) {
+		const snapshot = {
+			authorized: socket.authorized,
+			remoteAddress: socket.remoteAddress,
+			remotePort: socket.remotePort,
+			certCN: socket.getPeerCertificate(true)?.subject?.CN,
+			data: [],
+		};
+		connections.push(snapshot);
+		socket.on('data', (chunk) => {
+			snapshot.data.push(chunk);
+			socket.write(chunk);
+		});
+	}
+
+	function roundTrip(payload, { split } = {}) {
+		return new Promise((resolve, reject) => {
+			const socket = net.connect(port, '127.0.0.1', () => {
+				if (split) {
+					socket.write(payload.subarray(0, split));
+					setTimeout(() => socket.write(payload.subarray(split)), 20);
+				} else {
+					socket.write(payload);
+				}
+			});
+			const chunks = [];
+			socket.on('data', (chunk) => {
+				chunks.push(chunk);
+				socket.end();
+			});
+			socket.on('close', () => resolve(Buffer.concat(chunks)));
+			socket.on('error', reject);
+			setTimeout(() => reject(new Error('roundTrip timeout')), 3000);
+		});
+	}
+
+	it('applies the forwarded mTLS identity before the listener runs', async () => {
+		await listen(snapshotListener);
+		const header = buildV2Header({
+			srcIp: [203, 0, 113, 9],
+			srcPort: 45678,
+			tlvs: [sslTlv(), tlv(0xe2, CLIENT_DER)],
+		});
+		const echoed = await roundTrip(Buffer.concat([header, Buffer.from('MQTT-CONNECT')]));
+		assert.strictEqual(echoed.toString(), 'MQTT-CONNECT');
+		assert.strictEqual(connections.length, 1);
+		// The listener saw the identity synchronously at connection time
+		assert.strictEqual(connections[0].authorized, true);
+		assert.strictEqual(connections[0].certCN, 'test-client');
+		assert.strictEqual(connections[0].remoteAddress, '203.0.113.9');
+		assert.strictEqual(connections[0].remotePort, 45678);
+	});
+
+	it('handles a header split across packets', async () => {
+		await listen(snapshotListener);
+		const header = buildV2Header({ srcIp: [9, 9, 9, 9], tlvs: [sslTlv(), tlv(0xe2, CLIENT_DER)] });
+		const payload = Buffer.concat([header, Buffer.from('HELLO')]);
+		const echoed = await roundTrip(payload, { split: 7 });
+		assert.strictEqual(echoed.toString(), 'HELLO');
+		assert.strictEqual(connections[0].authorized, true);
+		assert.strictEqual(connections[0].remoteAddress, '9.9.9.9');
+	});
+
+	it('hands off non-PROXY connections with no-client-cert defaults', async () => {
+		await listen(snapshotListener);
+		const echoed = await roundTrip(Buffer.from('MQTTCONNECT'));
+		assert.strictEqual(echoed.toString(), 'MQTTCONNECT');
+		assert.strictEqual(connections[0].authorized, false);
+		assert.strictEqual(connections[0].certCN, undefined);
+	});
+
+	it('destroys a connection that stalls before completing the header', async () => {
+		await listen(snapshotListener, 100);
+		const header = buildV2Header({});
+		await new Promise((resolve, reject) => {
+			const socket = net.connect(port, '127.0.0.1', () => socket.write(header.subarray(0, 7)));
+			socket.on('error', () => {});
+			const timer = setTimeout(() => reject(new Error('stalled connection was not destroyed')), 2000);
+			socket.on('close', () => {
+				clearTimeout(timer);
+				resolve();
+			});
+		});
+		assert.strictEqual(connections.length, 0, 'listener must not run for an incomplete header');
 	});
 });

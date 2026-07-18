@@ -31,6 +31,7 @@ const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/ke
 const { startupLog } = require('../../bin/run.ts');
 const { SERVERS, setPortServerMap, portServer, socketOptionDefaults } = require('../serverRegistry.ts');
 const httpComponent = require('../http.ts');
+const { withProxyProtocol } = require('../serverHelpers/proxyProtocol.ts');
 const globals = require('../../globals.js');
 const { whenScopesClosed } = require('../../components/scopeShutdown.ts');
 
@@ -610,13 +611,14 @@ function onSocket(listener, options) {
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
-			const udsServer = createSocketServer({ ...socketOptionDefaults }, listener);
+			// Strip the PROXY header (v1 or v2) a fronting proxy (e.g. symphony) prepends,
+			// BEFORE invoking the listener: raw-protocol handlers (MQTT) read
+			// socket.authorized/remoteAddress at connection time, so the data-interception
+			// approach the HTTP UDS mirror uses (enableProxyProtocol) would apply the
+			// forwarded mTLS identity too late.
+			const udsServer = createSocketServer({ ...socketOptionDefaults }, withProxyProtocol(listener));
 
 			udsServer.isPerThreadSocket = true;
-			// Strip the PROXY v1 header a fronting proxy (e.g. symphony) prepends, same as the
-			// HTTP UDS mirror. Without this the header is fed to the protocol parser (e.g. MQTT),
-			// corrupting the first packet.
-			httpComponent.enableProxyProtocol(udsServer);
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 

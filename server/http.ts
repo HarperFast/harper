@@ -19,7 +19,12 @@ import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue 
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
-import { decodeProxyHeader, applyProxyHeader, applyDefaultPeerCertificate } from './serverHelpers/proxyProtocol.ts';
+import {
+	decodeProxyHeader,
+	applyProxyHeader,
+	applyDefaultPeerCertificate,
+	withProxyProtocol,
+} from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable, Writable, pipeline } from 'node:stream';
@@ -1674,44 +1679,20 @@ export function createH2CProxyFront(h2Server, prehandoffTimeout = 10_000) {
 		sessions.add(session);
 		session.on('close', () => sessions.delete(session));
 	});
-	const front = createNetServer({ noDelay: true }, (socket) => {
-		let buf: Buffer | null = null;
-		// Until handoff the h2 session's own handlers aren't attached yet: swallow socket
-		// errors (a reset mid-header) and bound how long we'll wait for the header, so a
-		// stalled connection can't hold an fd forever.
+	// http2's compat req.socket proxies through to the underlying socket, so the
+	// overridden remoteAddress and the synthesized peer cert reach request handlers.
+	// withProxyProtocol also swallows socket errors and bounds the header wait until
+	// handoff, when the h2 session's own handlers take over.
+	const front = createNetServer(
+		{ noDelay: true },
+		withProxyProtocol((socket) => {
+			prehandoffSockets.delete(socket);
+			h2Server.emit('connection', socket);
+		}, prehandoffTimeout)
+	);
+	front.prependListener('connection', (socket) => {
 		prehandoffSockets.add(socket);
 		socket.on('close', () => prehandoffSockets.delete(socket));
-		const onPrehandoffError = () => socket.destroy();
-		socket.on('error', onPrehandoffError);
-		const onPrehandoffTimeout = () => socket.destroy();
-		socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
-		// http2's compat req.socket proxies through to the underlying socket, so the
-		// overridden remoteAddress and the synthesized peer cert reach request handlers.
-		applyDefaultPeerCertificate(socket);
-		const handoff = (rest: Buffer) => {
-			prehandoffSockets.delete(socket);
-			socket.removeListener('readable', onReadable);
-			socket.removeListener('error', onPrehandoffError);
-			socket.setTimeout(0);
-			socket.removeListener('timeout', onPrehandoffTimeout);
-			if (rest.length > 0) socket.unshift(rest);
-			h2Server.emit('connection', socket);
-		};
-		const onReadable = () => {
-			let chunk: Buffer;
-			while ((chunk = socket.read()) !== null) {
-				buf = buf ? Buffer.concat([buf, chunk]) : chunk;
-				const decision = decodeProxyHeader(buf);
-				// Incomplete: a valid header may still be forming — keep buffering.
-				if (decision.kind === 'incomplete') continue;
-				// A non-PROXY prefix (e.g. a direct h2 client with no fronting proxy) is
-				// handed off as-is.
-				if (decision.kind === 'none') return handoff(buf);
-				applyProxyHeader(socket, decision);
-				return handoff(buf.subarray(decision.headerLength));
-			}
-		};
-		socket.on('readable', onReadable);
 	});
 	const netClose = front.close.bind(front);
 	front.close = (callback?: (error?: Error) => void) => {
