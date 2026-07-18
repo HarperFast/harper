@@ -40,7 +40,11 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 
 	afterEach(() => {
 		unhandled.length = 0; // isolate tests: one leak must not taint the following tests' assertions
+		// safety net: restore the commit stub even if a test bails before its finally runs
+		while (pendingRestores.length) pendingRestores.pop()();
 	});
+
+	const pendingRestores = [];
 
 	// Force native commits against the test database to fail: `reject` mode rejects with the given
 	// error code (the uncoordinated conflict path), `retryNow` mode resolves with the RETRY_NOW
@@ -59,7 +63,9 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 			if (mode === 'retryNow') return Promise.resolve(RETRY_NOW_VALUE);
 			return Promise.reject(Object.assign(new Error('forced conflict'), { code }));
 		};
-		return { attempts, restore: () => (Transaction.prototype.commit = originalCommit) };
+		const restore = () => (Transaction.prototype.commit = originalCommit);
+		pendingRestores.push(restore);
+		return { attempts, restore };
 	}
 
 	async function writeThatExhausts(id) {
@@ -78,7 +84,8 @@ describe('request-path commit retry exhaustion rejects the awaited chain', () =>
 				() => ({ outcome: 'committed' }),
 				(error) => ({ outcome: 'rejected', error })
 			),
-			delay(ms).then(() => ({ outcome: 'hung' })),
+			// unref the race timer so a settled race doesn't keep the event loop alive for up to `ms`
+			delay(ms, undefined, { ref: false }).then(() => ({ outcome: 'hung' })),
 		]);
 	}
 
