@@ -466,7 +466,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			highWaterMark: 128 * 1024,
 			noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 			keepAlive: true,
-			keepAliveInitialDelay: 600, // lower the initial delay to 10 minutes, we want to be proactive about closing unused connections
+			keepAliveInitialDelay: 600_000, // in ms: probe after 10 minutes idle, to proactively detect and close dead connections
 			maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 		};
 		const mtls = env.get(serverPrefix + '_mtls');
@@ -734,7 +734,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						highWaterMark: 128 * 1024,
 						noDelay: true,
 						keepAlive: true,
-						keepAliveInitialDelay: 600,
+						keepAliveInitialDelay: 600_000,
 						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 					},
 					(nodeRequest: IncomingMessage, nodeResponse: any) => {
