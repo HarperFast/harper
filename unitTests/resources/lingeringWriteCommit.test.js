@@ -57,6 +57,7 @@ describe('lingering commit preserves writes staged while iterators are open', ()
 		while (!(await iterator.next()).done);
 		// the deferred commit runs from the iterator's onDone; give its async resolution a beat
 		for (let i = 0; i < 200 && !(await LingerTable.get(writeId)); i++) await delay(10);
+		return context;
 	}
 
 	it('commits the staged write once the iterator completes', async function () {
@@ -65,6 +66,7 @@ describe('lingering commit preserves writes staged while iterators are open', ()
 		const record = await LingerTable.get('linger-write');
 		assert.ok(record, 'the write staged during the lingering transaction must be committed, not dropped');
 		assert.equal(record.v, 42);
+		await delay(50); // unhandledRejection lands on a later event-loop turn
 		assert.deepEqual(unhandled, [], 'the deferred commit must not leak an unhandled rejection');
 	});
 
@@ -91,26 +93,38 @@ describe('lingering commit preserves writes staged while iterators are open', ()
 		while (!(await iterator.next()).done);
 		for (let i = 0; i < 200 && !(await LingerTable.get('linger-early')); i++) await delay(10);
 		assert.ok(await LingerTable.get('linger-early'), 'the lingering write must still be committed');
+		await delay(50); // unhandledRejection lands on a later event-loop turn
 		assert.deepEqual(unhandled, [], 'the deferred commit must not leak an unhandled rejection');
 	});
 
-	it('a failing deferred commit is logged, not an unhandled rejection', async function () {
+	it('a failing deferred commit is logged and aborted, not an unhandled rejection', async function () {
 		this.timeout(15000);
 		const { Transaction } = require('@harperfast/rocksdb-js');
 		const originalCommit = Transaction.prototype.commit;
 		const targetDb = LingerTable.primaryStore.store.db;
 		let forcedFailures = 0;
-		await commitWithOpenIterator('linger-fail', () => {
-			// arm after the transaction is set up: fail the deferred native commit terminally
-			Transaction.prototype.commit = function (...args) {
-				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
-				forcedFailures++;
-				return Promise.reject(Object.assign(new Error('forced terminal failure'), { code: 'ERR_CORRUPTION' }));
-			};
-		}).finally(() => (Transaction.prototype.commit = originalCommit));
+		let context;
+		try {
+			context = await commitWithOpenIterator('linger-fail', () => {
+				// arm after the transaction is set up: fail the deferred native commit terminally
+				Transaction.prototype.commit = function (...args) {
+					if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+					forcedFailures++;
+					return Promise.reject(Object.assign(new Error('forced terminal failure'), { code: 'ERR_CORRUPTION' }));
+				};
+			});
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
 		assert.ok(forcedFailures > 0, 'premise: the deferred commit must have run and failed');
 		assert.equal(await LingerTable.get('linger-fail'), undefined, 'the failed write is not committed');
+		// unhandledRejection is emitted on a later event-loop turn; drain before asserting
 		await delay(100);
 		assert.deepEqual(unhandled, [], 'a deferred-commit failure must be caught and logged, never unhandled');
+		assert.equal(
+			context.transaction.writes.length,
+			0,
+			'the failed deferred commit must abort so staged writes (and their blob files) are cleaned up'
+		);
 	});
 });

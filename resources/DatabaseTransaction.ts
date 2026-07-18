@@ -255,12 +255,14 @@ export class DatabaseTransaction implements Transaction {
 				// requested the commit already received its resolution (the writes were acknowledged when
 				// the transaction went LINGERING, since blocking on iterator completion could deadlock a
 				// response that streams the iterator), so a failure here cannot reject any awaited chain —
-				// log it loudly rather than leaking an unhandled rejection.
+				// log it loudly rather than leaking an unhandled rejection, and abort so the failed
+				// writes' blob files are cleaned up (no error middleware runs this late).
 				const committed = this.commit() as Promise<CommitResolution>;
 				if (committed?.then)
-					committed.then(null, (error) =>
-						harperLogger.error?.('Failed to commit lingering writes after read iterators completed', error)
-					);
+					committed.catch((error) => {
+						harperLogger.error?.('Failed to commit lingering writes after read iterators completed', error);
+						this.abort();
+					});
 			} else {
 				this.transaction?.abort();
 				this.transaction = null;
