@@ -607,9 +607,10 @@ function armTimer(job: RegisteredJob, fireAt: Date): void {
 
 // The persisted error replicates cluster-wide; strip filesystem paths (which
 // leak node-local layout) and bound the length
-function sanitizeStoredError(message: string): string {
+export function sanitizeStoredError(message: string): string {
 	return message
-		.replace(/\/(?:Users|home|var|tmp|opt|etc|root)\/[^\s:)]+/g, '[path]')
+		.replace(/\/(?:Users|home|var|tmp|opt|etc|root|srv|data|mnt)\/[^\s:)]+/g, '[path]')
+		.replace(/[A-Za-z]:\\[^\s:)]+/g, '[path]')
 		.slice(0, MAX_STORED_ERROR_LENGTH);
 }
 

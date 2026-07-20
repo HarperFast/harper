@@ -9,6 +9,7 @@ const {
 	registerComponentJobs,
 	unregisterComponentJobs,
 	safeErrorMessage,
+	sanitizeStoredError,
 	stopSchedulerEngine,
 	getEngineRole,
 	getRegisteredJobNames,
@@ -147,6 +148,30 @@ describe('scheduler engine', () => {
 				},
 			});
 			assert.strictEqual(safeErrorMessage(unstringifiable), 'unknown error');
+		});
+	});
+
+	describe('sanitizeStoredError', () => {
+		it('redacts Unix-style paths, including less common mount points', () => {
+			assert.strictEqual(sanitizeStoredError('ENOENT: /home/deploy/app/jobs.ts not found'), 'ENOENT: [path] not found');
+			assert.strictEqual(sanitizeStoredError('read failed at /srv/harper/config.yaml'), 'read failed at [path]');
+			assert.strictEqual(sanitizeStoredError('read failed at /data/harper/config.yaml'), 'read failed at [path]');
+			assert.strictEqual(sanitizeStoredError('read failed at /mnt/vol1/config.yaml'), 'read failed at [path]');
+		});
+
+		it('redacts Windows-style paths', () => {
+			assert.strictEqual(
+				sanitizeStoredError(String.raw`ENOENT: C:\Users\deploy\app\jobs.ts not found`),
+				'ENOENT: [path] not found'
+			);
+			assert.strictEqual(
+				sanitizeStoredError(String.raw`read failed at D:\harper\components\app\config.yaml`),
+				'read failed at [path]'
+			);
+		});
+
+		it('bounds the stored length to 500 characters', () => {
+			assert.strictEqual(sanitizeStoredError('x'.repeat(5000)).length, 500);
 		});
 	});
 
