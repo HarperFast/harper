@@ -34,11 +34,14 @@ const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or
 const SSE_OPERATIONS = new Set(['deploy_component']);
 
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
-// They never get serialized into the request body.
+// They never get serialized into the request body. `username`/`password` are deliberately
+// NOT here: those args are payload fields (e.g. the user add_user/alter_user create/alter),
+// not transport — use `auth_username`/`auth_password` (or env-var/`harper login` auth) to
+// authenticate as a different user than the one being operated on.
 const TRANSPORT_ONLY_FIELDS = new Set([
 	'target',
-	'username',
-	'password',
+	'auth_username',
+	'auth_password',
 	'rejectUnauthorized',
 	'json',
 	'skip_node_modules',
@@ -255,8 +258,25 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			protocol: target.protocol,
 			hostname: target.hostname,
 			port: target.port,
-			username: req.username || target.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME,
-			password: req.password || target.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD,
+			// Dedicated auth args win outright (the CI/CD non-interactive path: authenticate as
+			// one user while creating/altering a different one). URL-embedded creds are next —
+			// also unambiguous auth intent. Env-var auth then wins over plain `username=`/
+			// `password=` so a configured CI login isn't silently shadowed by an operation's
+			// payload fields (e.g. add_user's `username=`/`password=` are the new user's
+			// credentials, not the caller's) — `username=`/`password=` remain the auth fallback
+			// for ops where they legitimately ARE the auth and nothing else is configured.
+			username:
+				req.auth_username ||
+				target.username ||
+				process.env.HARPER_CLI_USERNAME ||
+				process.env.CLI_TARGET_USERNAME ||
+				req.username,
+			password:
+				req.auth_password ||
+				target.password ||
+				process.env.HARPER_CLI_PASSWORD ||
+				process.env.CLI_TARGET_PASSWORD ||
+				req.password,
 			rejectUnauthorized: req.rejectUnauthorized,
 			resolvedTarget,
 		};
@@ -404,7 +424,10 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				body = fields;
 			}
 		} else {
-			body = req;
+			// Same TRANSPORT_ONLY_FIELDS stripping as the deploy body paths above — auth_username/
+			// auth_password (and target/rejectUnauthorized/json/etc.) must never reach the wire as
+			// operation-payload fields, on this path either.
+			body = operationFields(req);
 		}
 		let response: any = await httpRequest(options, body);
 

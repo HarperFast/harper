@@ -765,4 +765,164 @@ describe('cliOperations', () => {
 			}
 		});
 	});
+
+	describe('dedicated auth args vs operation payload fields (harper#1872)', () => {
+		const captureRequest = () => {
+			const calls = [];
+			commonUtilsModule.httpRequest = async (options, body) => {
+				calls.push({ options, body });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+			return calls;
+		};
+
+		it('authenticates with auth_username/auth_password while add_user payload username/password stay in the body, not the auth header', async () => {
+			const calls = captureRequest();
+
+			await cliOperationsModule.cliOperations(
+				{
+					operation: 'add_user',
+					target: 'example.com',
+					auth_username: 'admin',
+					auth_password: 'admin-secret',
+					username: 'newuser',
+					password: 'new-user-secret',
+				},
+				true
+			);
+
+			assert.strictEqual(calls.length, 1);
+			const { options, body } = calls[0];
+			assert.strictEqual(
+				options.headers.Authorization,
+				`Basic ${Buffer.from('admin:admin-secret').toString('base64')}`
+			);
+			assert.strictEqual(body.username, 'newuser');
+			assert.strictEqual(body.password, 'new-user-secret');
+			assert.strictEqual(body.auth_username, undefined);
+			assert.strictEqual(body.auth_password, undefined);
+			assert.strictEqual(body.target, undefined);
+		});
+
+		it('falls back to plain username/password as auth when no auth_username/env-var auth is configured (backward compatible)', async () => {
+			const calls = captureRequest();
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'test', target: 'example.com', username: 'admin', password: 'admin-secret' },
+				true
+			);
+
+			const { options } = calls[0];
+			assert.strictEqual(
+				options.headers.Authorization,
+				`Basic ${Buffer.from('admin:admin-secret').toString('base64')}`
+			);
+		});
+
+		it('prefers env-var auth over payload username/password when auth_username/auth_password are absent', async () => {
+			const calls = captureRequest();
+			const originalUser = process.env.HARPER_CLI_USERNAME;
+			const originalPass = process.env.HARPER_CLI_PASSWORD;
+			process.env.HARPER_CLI_USERNAME = 'env-admin';
+			process.env.HARPER_CLI_PASSWORD = 'env-secret';
+			try {
+				await cliOperationsModule.cliOperations(
+					{ operation: 'add_user', target: 'example.com', username: 'newuser', password: 'new-user-secret' },
+					true
+				);
+			} finally {
+				if (originalUser === undefined) delete process.env.HARPER_CLI_USERNAME;
+				else process.env.HARPER_CLI_USERNAME = originalUser;
+				if (originalPass === undefined) delete process.env.HARPER_CLI_PASSWORD;
+				else process.env.HARPER_CLI_PASSWORD = originalPass;
+			}
+
+			const { options, body } = calls[0];
+			assert.strictEqual(
+				options.headers.Authorization,
+				`Basic ${Buffer.from('env-admin:env-secret').toString('base64')}`
+			);
+			// Env-var auth wins the transport leg, but the payload fields for the user being
+			// created are untouched — this is the whole point of the fix.
+			assert.strictEqual(body.username, 'newuser');
+			assert.strictEqual(body.password, 'new-user-secret');
+		});
+
+		it('strips auth_username/auth_password from a package deploy JSON body (the same non-multipart body path add_user uses)', async () => {
+			const calls = [];
+			commonUtilsModule.httpRequest = async (options, body) => {
+				calls.push({ options, body });
+				if (body?.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.0.31' }) };
+				}
+				return { statusCode: 200, body: JSON.stringify({ message: 'Successfully deployed', success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations(
+				{
+					operation: 'deploy_component',
+					package: '@scope/widget',
+					project: 'widget',
+					target: 'example.com',
+					auth_username: 'admin',
+					auth_password: 'admin-secret',
+				},
+				true
+			);
+
+			assert.strictEqual(calls.length, 2);
+			const deploy = calls[1];
+			assert.strictEqual(
+				deploy.options.headers.Authorization,
+				`Basic ${Buffer.from('admin:admin-secret').toString('base64')}`
+			);
+			assert.strictEqual(deploy.body.auth_username, undefined);
+			assert.strictEqual(deploy.body.auth_password, undefined);
+		});
+
+		it('strips auth_username/auth_password from the multipart directory-deploy body fields', async () => {
+			const originalScan = packageComponentModule.scanPackageDirectory;
+			const originalStream = packageComponentModule.streamPackagedDirectory;
+			packageComponentModule.scanPackageDirectory = async () => ({ totalSize: 0, danglingSymlinks: [] });
+			packageComponentModule.streamPackagedDirectory = () => Readable.from(Buffer.from('fake-tar-bytes'));
+
+			const sseDoneResponse = (result) =>
+				Object.assign(Readable.from([`event: done\ndata: ${JSON.stringify({ result })}\n\n`]), {
+					statusCode: 200,
+					headers: { 'content-type': 'text/event-stream' },
+				});
+
+			let multipartText;
+			commonUtilsModule.httpRequest = async (options, body) => {
+				if (body && typeof body.operation === 'string' && body.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				// The multipart deploy body: a stream of form-data chunks, not a plain object.
+				const chunks = [];
+				for await (const chunk of body) chunks.push(Buffer.from(chunk));
+				multipartText = Buffer.concat(chunks).toString('utf8');
+				return sseDoneResponse({ message: 'Successfully deployed', success: true });
+			};
+
+			try {
+				await cliOperationsModule.cliOperations(
+					{
+						operation: 'deploy_component',
+						project: 'widget',
+						target: 'example.com',
+						auth_username: 'admin',
+						auth_password: 'admin-secret',
+					},
+					true
+				);
+			} finally {
+				packageComponentModule.scanPackageDirectory = originalScan;
+				packageComponentModule.streamPackagedDirectory = originalStream;
+			}
+
+			assert.doesNotMatch(multipartText, /name="auth_username"/);
+			assert.doesNotMatch(multipartText, /name="auth_password"/);
+			assert.match(multipartText, /name="operation"/);
+		});
+	});
 });
