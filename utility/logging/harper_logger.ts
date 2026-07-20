@@ -101,7 +101,11 @@ let hdbProperties;
 let rootConfig;
 
 function updateLogger(logger: any, logOptions: any, name?: string) {
-	logger.rotation = logOptions.rotation;
+	// Fall back to the main logger's rotation (like level/path below) so an external/component
+	// logger with no rotation block of its own inherits maxSize/interval/etc rather than losing
+	// rotation entirely (#1877). Excluded when `logger` IS mainLogger: the fallback would just
+	// reassign mainLogger.rotation to itself, making it impossible to ever clear main's rotation.
+	logger.rotation = logOptions.rotation ?? (logger === mainLogger ? undefined : mainLogger?.rotation);
 	let path = logOptions.path;
 	if (path) {
 		if (!logOptions.root) logOptions.root = pathModule.dirname(path);

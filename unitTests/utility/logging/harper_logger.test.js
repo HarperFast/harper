@@ -931,6 +931,87 @@ describe('Test harper_logger module', () => {
 			this.externalLogger.rotation = this.originalExternalOptions.rotation;
 		});
 	});
+
+	describe('Test external/component logger rotation inheritance (#1877)', () => {
+		const ROTATION_TEST_DIR = path.join(__dirname, 'rotationInheritanceTest');
+		let harper_logger, updateLogger;
+
+		beforeEach(() => {
+			fs.mkdirpSync(ROTATION_TEST_DIR);
+			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+			updateLogger = harper_logger.__get__('updateLogger');
+		});
+
+		afterEach(() => {
+			// Stop rotator intervals and close file descriptors before removing the directory —
+			// the loggers in these tests get their path reassigned (mainLogPath -> externalLogPath),
+			// which leaves the public logger's own `.closeLogFile` bound to the wrong (stale) file
+			// entry, so close every registered file logger directly via the module's internal map.
+			for (const fileLogger of harper_logger.__get__('fileLoggers').values()) {
+				fileLogger.rotator?.end();
+				fileLogger.closeLogFile?.();
+			}
+			fs.removeSync(ROTATION_TEST_DIR);
+		});
+
+		it('inherits the main rotation config (incl. maxSize) and rotates the external log file when no component rotation is configured', async () => {
+			const mainRotation = { enabled: true, maxSize: '1K', auditInterval: 100 };
+			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const testMainLogger = harper_logger.createLogger({ path: mainLogPath, level: 'info' });
+			// Point the module's private `mainLogger` reference (what updateLogger falls back to) at
+			// our test main logger, mirroring how updateLogSettings() always has a real mainLogger set.
+			harper_logger.__set__('mainLogger', testMainLogger);
+			// updateLogSettings() always applies the main logging options (incl. rotation) first,
+			// before ever touching the external logger — reproduce that ordering here.
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation });
+
+			const externalLogger = testMainLogger.forComponent('external');
+			const externalLogPath = path.join(ROTATION_TEST_DIR, 'external.log');
+
+			// This is the same call updateLogSettings() makes for `logging.external`: a path of its
+			// own, but no rotation block — it must inherit the main rotation, not lose it.
+			updateLogger(externalLogger, { path: externalLogPath });
+
+			expect(externalLogger.rotation).to.deep.equal(mainRotation);
+
+			for (let i = 0; i < 30; i++) externalLogger.info('x'.repeat(80));
+
+			const rotatedDir = path.join(ROTATION_TEST_DIR, 'rotated');
+			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+				timeout: 5000,
+				message: 'Expected the external log to be rotated using the inherited main maxSize',
+			});
+		});
+
+		it('preserves an explicit component rotation override instead of the inherited main config', () => {
+			const mainRotation = { enabled: true, maxSize: '1K' };
+			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const testMainLogger = harper_logger.createLogger({ path: mainLogPath, level: 'info' });
+			harper_logger.__set__('mainLogger', testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation });
+
+			const externalLogger = testMainLogger.forComponent('external');
+			const override = { enabled: false };
+			updateLogger(externalLogger, { path: path.join(ROTATION_TEST_DIR, 'external.log'), rotation: override });
+
+			expect(externalLogger.rotation).to.deep.equal(override);
+		});
+
+		it('still allows clearing the main logger rotation itself (no self-referential lock-in)', () => {
+			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const testMainLogger = harper_logger.createLogger({ path: mainLogPath, level: 'info' });
+			harper_logger.__set__('mainLogger', testMainLogger);
+
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: { enabled: true, maxSize: '1K' } });
+			expect(testMainLogger.rotation).to.deep.equal({ enabled: true, maxSize: '1K' });
+
+			// A reload with no rotation block at all (logOptions.rotation undefined) must still be
+			// able to clear the main logger's own rotation, not fall back to itself and get stuck.
+			updateLogger(testMainLogger, { path: mainLogPath });
+			expect(testMainLogger.rotation).to.equal(undefined);
+		});
+	});
+
 	it('Test suppressLogging function', () => {
 		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 		const fake_func = sandbox.stub().callsFake(() => {});
