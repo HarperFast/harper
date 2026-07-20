@@ -56,6 +56,51 @@ function recordCommitLatency(commitResolution: Promise<void>, submittedAt: numbe
 	}
 }
 
+// Queue-depth gauges surfaced through the analytics pipeline (write-transaction-queue-depth /
+// read-transaction-queue-depth). Per-thread state; the analytics aggregator sums across threads.
+// `writeTxnQueueDepth` counts write commits handed to the storage engine but not yet resolved —
+// this is the backlog that, when it drains too slowly, produces the "Outstanding write transactions
+// have too long of queue" overload error. Read depth is derived from the live `trackedTxns` set
+// (every tracked transaction holds an open read snapshot). We also retain a high-water mark per
+// sampling window because the queue can fill and drain within a single (~1s) analytics period, so an
+// instantaneous sample taken at emit time would routinely miss the spike operators need to see.
+// RocksDB-write-path only: LMDB routes through the separate LMDBTransaction.commit()/getReadTxn()
+// overrides (resources/LMDBTransaction.ts), which maintain their own unrelated `trackedTxns` set and
+// do not call into this accounting.
+let writeTxnQueueDepth = 0;
+let writeTxnQueueDepthHighWater = 0;
+let readTxnQueueDepthHighWater = 0;
+
+function enterWriteQueue() {
+	if (++writeTxnQueueDepth > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+}
+function leaveWriteQueue() {
+	// Floor at zero: accounting is balanced by construction (every enterWriteQueue has exactly one
+	// matching settlement), but the guard is cheap insurance against a future call-site imbalance
+	// producing a negative depth that would corrupt every subsequent sample.
+	if (writeTxnQueueDepth > 0) writeTxnQueueDepth--;
+}
+
+/**
+ * Returns the current write/read transaction queue depths for this thread along with the high-water
+ * mark observed since the previous call, then resets the high-water marks to the current depth so the
+ * next sampling window starts fresh. Consumed by the analytics writer (see analytics/write.ts).
+ */
+export function getTransactionQueueDepths() {
+	// `readTxnQueueDepthHighWater` is maintained at the single trackedTxns growth site, so it already
+	// dominates the current size here — no need to reconcile against `readDepth` before reporting.
+	const readDepth = trackedTxns.size;
+	const depths = {
+		writeDepth: writeTxnQueueDepth,
+		writeMaxDepth: writeTxnQueueDepthHighWater,
+		readDepth,
+		readMaxDepth: readTxnQueueDepthHighWater,
+	};
+	writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+	readTxnQueueDepthHighWater = readDepth;
+	return depths;
+}
+
 let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
@@ -190,6 +235,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 		trackedTxns.add(this);
+		if (trackedTxns.size > readTxnQueueDepthHighWater) readTxnQueueDepthHighWater = trackedTxns.size;
 		return this.transaction;
 	}
 
@@ -368,6 +414,19 @@ export class DatabaseTransaction implements Transaction {
 							// (the abort() branch below), but in this branch it is the `commit()` promise cast to
 							// `Promise<void>` just above; recordCommitLatency only awaits it for timing.
 							recordCommitLatency(commitResolution as Promise<void>, performance.now());
+							// Count this commit against the write queue depth until the storage engine
+							// resolves it. A transient-conflict retry rejects this promise and issues a
+							// fresh commit() (re-entering here), so the enter/leave stays balanced. leaveWriteQueue
+							// never throws, so the settled promise resolves and needs no rejection handling of its own.
+							// The thenable guard protects against a future caller passing a non-Promise
+							// `commitResolution` (today it is always rocksdb-js's async Transaction.commit()
+							// result, guaranteed to be a Promise).
+							enterWriteQueue();
+							if (commitResolution && typeof (commitResolution as any).then === 'function') {
+								commitResolution.then(leaveWriteQueue, leaveWriteQueue);
+							} else {
+								leaveWriteQueue();
+							}
 						} else {
 							try {
 								commitResolution = transaction.abort();
