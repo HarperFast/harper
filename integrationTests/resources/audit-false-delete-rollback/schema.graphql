@@ -1,0 +1,12 @@
+# F-147 / #1854 — aborted delete on an audit:false @indexed table must roll back cleanly.
+#
+# `_writeDelete()`'s non-audit branch (resources/Table.ts) removes the base row via
+# removeEntry(). Without threading the enclosing transaction into that call, the removal
+# commits standalone against the raw store and survives a transaction abort, leaving a
+# dangling secondary-index entry behind. `audit: false` is required to reach this branch
+# (the audit:true branch goes through updateRecord(), which already threads {transaction}).
+type Item @table(audit: false) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	payload: String
+}
