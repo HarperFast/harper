@@ -96,9 +96,12 @@ describe('scheduler engine election and failover (simulated peer, #1866)', () =>
 		stopSchedulerEngine();
 	});
 
-	after(() => {
+	after(async () => {
 		stopSchedulerEngine();
 		global.server.nodes = originalNodes;
+		// Leave the shared system table the way we found it
+		await stateTable.delete(LEADER_ROW_ID).catch(() => {});
+		await stateTable.delete('job:election-test:nightly').catch(() => {});
 	});
 
 	// The tests below are deliberately sequential: they walk one node through
@@ -171,7 +174,9 @@ describe('scheduler engine election and failover (simulated peer, #1866)', () =>
 
 	it('steps down when a heartbeat finds another node took the lease (racing write)', async () => {
 		// The peer recovered and wrote a FRESH takeover lease between our
-		// heartbeats — the write-race the takeover check exists to heal
+		// heartbeats — the committed state a racing write leaves behind, which
+		// the takeover check exists to heal (true concurrent-write races are
+		// exercised in the harper-pro cluster harness)
 		await stateTable.put({
 			id: LEADER_ROW_ID,
 			leaderNode: PEER,
@@ -204,6 +209,24 @@ describe('scheduler engine election and failover (simulated peer, #1866)', () =>
 		assert.strictEqual(handlerRuns.length, 0, 'a never-run job must not fire on promotion');
 		const jobRow = await stateTable.get('job:election-test:nightly');
 		assert.ok(jobRow?.firstSeenAt, 'promotion must record the catch-up baseline for a new job');
+	});
+
+	it('loses a cold-start election to an alphabetically-preferred roster peer', async () => {
+		// No lease row at all: the decision comes ONLY from the roster
+		// (server.nodes + self) via nodeRoster()/pickNextLeader — this is the
+		// one outcome that cannot pass unless that wiring is correct
+		stopSchedulerEngine();
+		handlerRuns.length = 0;
+		await stateTable.delete(LEADER_ROW_ID);
+		await stateTable.delete('job:election-test:nightly');
+		global.server.nodes = [{ name: PEER }];
+		registerComponentJobs('election-test', [makeCronJob('nightly')]);
+		startSchedulerEngine();
+		await electionSettledForTests();
+		assert.strictEqual(getEngineRole(), 'follower', 'a roster peer that sorts first must win the election');
+		assert.strictEqual(handlerRuns.length, 0, 'the election loser must not run jobs');
+		const lease = await stateTable.get(LEADER_ROW_ID);
+		assert.ok(lease == null, 'the election loser must not claim the lease row');
 	});
 
 	it('replaces the job set on re-registration and forgets it on unregister', async () => {
