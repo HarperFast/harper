@@ -18,7 +18,16 @@ import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 
-const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
+const OP_ALIASES = {
+	deploy: 'deploy_component',
+	package: 'package_component',
+	// Two-phase deploy: `harper stage` packages + uploads the incoming version to a hidden staging
+	// dir cluster-wide (no go-live); `harper activate` swaps a staged deployment live; `harper revert`
+	// swaps the live version back to its retained previous version.
+	stage: 'stage_component',
+	activate: 'activate_component',
+	revert: 'revert_component',
+};
 
 // Shown for any local-instance connection failure (missing pid, missing/stale domain
 // socket, or a refused/ENOENT connect against it) — they're all the same user-facing
@@ -31,7 +40,7 @@ const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or
 // deploy completes. Add an operation here only after wiring its server-side
 // SSE_PROGRESS_OPERATIONS entry — otherwise the server returns the buffered JSON path and
 // the SSE parser sees no events.
-const SSE_OPERATIONS = new Set(['deploy_component']);
+const SSE_OPERATIONS = new Set(['deploy_component', 'stage_component', 'activate_component', 'revert_component']);
 
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
 // They never get serialized into the request body.
@@ -151,38 +160,47 @@ function operationFields(req: any): any {
 }
 
 export { cliOperations, buildRequest };
-const PREPARE_OPERATION: any = {
-	deploy_component: async (req) => {
-		if (req.package) {
-			return;
-		}
 
-		const projectPath = process.cwd();
-		if (!req.project) req.project = path.basename(projectPath);
-		const packageOptions = {
-			skip_node_modules: req.skip_node_modules !== false,
-			skip_symlinks: req.skip_symlinks === true,
-		};
-		// Store path + options for deferred stream creation after the renderer is set up,
-		// so the pre-gzip onBytes callback can be wired directly to renderer.countUploadBytes.
-		req._projectPath = projectPath;
-		req._packageOptions = packageOptions;
-		// Pre-walk the directory once for both the uncompressed-size estimate (progress bar
-		// total) and the dangling-symlink list — a dangling symlink would otherwise silently
-		// truncate the tarball (tar-fs finalizes early on the broken target). Packaging skips
-		// them; the list is reused below (no second walk) and warns the user which links were
-		// skipped so the omission is visible.
-		const scan = await scanPackageDirectory(projectPath, packageOptions);
-		req._uploadSizeEstimate = scan.totalSize;
-		req._danglingSymlinks = scan.danglingSymlinks;
-		if (scan.danglingSymlinks.length) {
-			process.stderr.write(
-				`warning: skipping ${scan.danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
-					scan.danglingSymlinks.map((p) => `  ${p}\n`).join('')
-			);
-		}
-		req._multipart = true;
-	},
+// Package the current working directory into a multipart tarball upload. Shared by `deploy` and
+// `stage` — both send the incoming component version as a `payload` (unless a `package` identifier is
+// given, in which case the server fetches it and there is nothing to upload).
+const packageCwdForUpload = async (req) => {
+	if (req.package) {
+		return;
+	}
+
+	const projectPath = process.cwd();
+	if (!req.project) req.project = path.basename(projectPath);
+	const packageOptions = {
+		skip_node_modules: req.skip_node_modules !== false,
+		skip_symlinks: req.skip_symlinks === true,
+	};
+	// Store path + options for deferred stream creation after the renderer is set up,
+	// so the pre-gzip onBytes callback can be wired directly to renderer.countUploadBytes.
+	req._projectPath = projectPath;
+	req._packageOptions = packageOptions;
+	// Pre-walk the directory once for both the uncompressed-size estimate (progress bar
+	// total) and the dangling-symlink list — a dangling symlink would otherwise silently
+	// truncate the tarball (tar-fs finalizes early on the broken target). Packaging skips
+	// them; the list is reused below (no second walk) and warns the user which links were
+	// skipped so the omission is visible.
+	const scan = await scanPackageDirectory(projectPath, packageOptions);
+	req._uploadSizeEstimate = scan.totalSize;
+	req._danglingSymlinks = scan.danglingSymlinks;
+	if (scan.danglingSymlinks.length) {
+		process.stderr.write(
+			`warning: skipping ${scan.danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
+				scan.danglingSymlinks.map((p) => `  ${p}\n`).join('')
+		);
+	}
+	req._multipart = true;
+};
+
+const PREPARE_OPERATION: any = {
+	deploy_component: packageCwdForUpload,
+	// `harper stage` uploads the same tarball as `harper deploy`. activate/revert take no payload
+	// (they operate on an already-staged / already-retained version), so they need no prep step.
+	stage_component: packageCwdForUpload,
 };
 
 /**

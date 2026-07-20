@@ -27,6 +27,7 @@ module.exports = {
 	deployComponentValidator,
 	stageComponentValidator,
 	activateComponentValidator,
+	revertComponentValidator,
 	setComponentFileValidator,
 	getComponentFileValidator,
 	dropComponentFileValidator,
@@ -488,9 +489,11 @@ function deployComponentValidator(req) {
 		deployment_timeout: Joi.number().min(0).optional(),
 		force: Joi.boolean().optional(),
 		ignore_replication_errors: Joi.boolean().optional(),
-		// Opt out of the two-phase (stage-then-activate) deploy and use the legacy one-shot path
-		// instead. Provided as an escape hatch for mixed-version clusters where a peer predates the
-		// stage_component/activate_component operations. Defaults to two-phase.
+		// If the activate phase fails on some nodes (leaving the cluster split across versions), swap the
+		// whole cluster back to the retained previous version before reporting the failure. Off by default.
+		revert_on_failure: Joi.boolean().optional(),
+		// Opt out of the two-phase (stage-then-activate) deploy and use the legacy one-shot path instead.
+		// Defaults to two-phase.
 		two_phase: Joi.boolean().optional(),
 		urlPath: URL_PATH_SCHEMA,
 		// Deploy credentials. Each entry is npm registry auth (`registry`) or git host auth (`host`,
@@ -564,4 +567,28 @@ function activateComponentValidator(req) {
 	}).with('urlPath', 'package');
 
 	return validator.validateBySchema(req, activateSchema);
+}
+
+/**
+ * Validate revert_component requests — swap a component's live version back to its retained previous
+ * version. No build inputs (nothing is fetched or installed); just the project, an optional restart,
+ * and the replication controls.
+ * @param req
+ * @returns {*}
+ */
+function revertComponentValidator(req) {
+	const revertSchema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		// The deployment being reverted, recorded as the rollback's `rollback_of` for the audit trail.
+		// Optional — revert operates on whatever version is currently live regardless.
+		deployment_id: Joi.string().optional(),
+		restart: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('rolling')).optional(),
+		deployment_timeout: Joi.number().min(0).optional(),
+		ignore_replication_errors: Joi.boolean().optional(),
+	});
+
+	return validator.validateBySchema(req, revertSchema);
 }

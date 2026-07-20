@@ -71,7 +71,36 @@ describe('activateComponentValidator', () => {
 	});
 });
 
-describe('deployComponentValidator two_phase flag', () => {
+describe('revertComponentValidator', () => {
+	it('accepts a project-only revert', () => {
+		ok(validator.revertComponentValidator({ project: 'my_app' }));
+	});
+
+	it('accepts a deployment_id, restart, and ignore_replication_errors', () => {
+		ok(
+			validator.revertComponentValidator({
+				project: 'my_app',
+				deployment_id: 'abc-123',
+				restart: 'rolling',
+				ignore_replication_errors: true,
+			})
+		);
+	});
+
+	it('requires a project', () => {
+		rejected(validator.revertComponentValidator({ deployment_id: 'abc-123' }));
+	});
+
+	it('rejects an invalid restart value', () => {
+		rejected(validator.revertComponentValidator({ project: 'my_app', restart: 'sideways' }));
+	});
+});
+
+describe('deployComponentValidator two_phase + revert_on_failure flags', () => {
+	it('accepts revert_on_failure: true', () => {
+		ok(validator.deployComponentValidator({ project: 'my_app', package: 'npm:x', revert_on_failure: true }));
+	});
+
 	it('accepts two_phase: false (legacy opt-out)', () => {
 		ok(validator.deployComponentValidator({ project: 'my_app', package: 'npm:x', two_phase: false }));
 	});

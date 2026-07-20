@@ -29,9 +29,11 @@ const {
 	prepareApplication,
 	stageApplication,
 	activateApplication,
+	revertApplication,
 	discardStagedApplication,
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
+	DEPLOY_PREVIOUS_DIR,
 } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
 const { DeploymentRecorder, awaitDeploymentRow, DEFAULT_AWAIT_ROW_TIMEOUT_MS } = require('./deploymentRecorder.ts');
@@ -678,10 +680,31 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 		if (!req.ignore_replication_errors) {
 			const failed = recorder.getFailedPeers();
 			if (failed.length > 0) {
+				let revertNote = '';
+				// Opt-in swap-back: some nodes went live and some didn't, leaving the cluster split across
+				// versions. When revert_on_failure is set, roll the whole cluster (incl. this origin) back to
+				// the retained previous version so it converges on one version again. Best-effort — a revert
+				// failure must not mask the original activate failure.
+				if (req.revert_on_failure) {
+					try {
+						emit('phase', { phase: 'revert', status: 'start' });
+						await revertApplication(application);
+						const revertOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT, {
+							restart: req.restart,
+							deploymentId: recorder.deploymentId,
+						});
+						await server.replication.replicateOperation(revertOp, {});
+						emit('phase', { phase: 'revert', status: 'done' });
+						revertNote = ` The cluster was rolled back to the previous version (revert_on_failure); verify with get_components.`;
+					} catch (revertErr) {
+						log.warn('revert_on_failure rollback failed', revertErr);
+						revertNote = ` An automatic rollback (revert_on_failure) was attempted but also failed: ${revertErr?.message ?? revertErr}.`;
+					}
+				}
 				throw new ServerError(
 					`Component '${application.name}' was activated on the origin but failed to activate on ${failed.length} ` +
 						`of ${recorder.row.peer_results.length} peer node(s): ${describePeers(failed)}. Those nodes have the staged ` +
-						`build but did not go live. See deployment ${recorder.deploymentId} (get_deployment), or pass ` +
+						`build but did not go live.${revertNote} See deployment ${recorder.deploymentId} (get_deployment), or pass ` +
 						`ignore_replication_errors: true.`
 				);
 			}
@@ -877,6 +900,110 @@ async function activateComponent(req) {
 		response.message = `Activated component: ${req.project}, restarting Harper`;
 	}
 	return response;
+}
+
+/**
+ * revert_component — swap a component's live version back to its retained previous version
+ * (`.deploy-previous/<name>`, kept by the last activate), cluster-wide, then restart. Backs
+ * customer-driven rollback (deploy → run your own health checks → revert if unhappy) and a
+ * swap-back after a partially-failed activate. The swap is bidirectional, so reverting a revert
+ * rolls forward again.
+ *
+ * Reached two ways: directly by an operator, and by a peer replaying a replicated revert
+ * (`_deploymentId` set). deploy_component's `revert_on_failure` path drives it internally.
+ */
+async function revertComponent(req) {
+	if (req.project) req.project = path.parse(req.project).name;
+	const validation = validator.revertComponentValidator(req);
+	if (validation) throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+
+	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
+	if (emitter && !req.progress) req.progress = emitter;
+	// The origin records a rollback row for observability; a peer replaying the revert does not.
+	const recorder = isReplicatedExecution
+		? null
+		: await DeploymentRecorder.create({
+				project: req.project,
+				package_identifier: null,
+				user: req.hdb_user?.username,
+				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
+				rollback_of: req.deployment_id ?? null,
+				emitter,
+			});
+	if (recorder) req._deploymentId = recorder.deploymentId;
+	const emit = (event, data) => emitter?.emit(event, data);
+	const installCapture = createInstallCapture(); // revert has no install output, but finalizeDeployFailure expects one
+	const rollingRestart = req.restart === 'rolling';
+
+	try {
+		const application = new Application({ name: req.project });
+		emit('phase', { phase: 'revert', status: 'start' });
+		await revertApplication(application);
+		emit('phase', { phase: 'revert', status: 'done' });
+
+		const response = { message: `Reverted component: ${req.project}`, project: req.project, reverted: true };
+		if (recorder) response.deployment_id = recorder.deploymentId;
+
+		// Replicate the revert to peers (direct invocation only; a peer replaying must not re-fan).
+		req.restart = rollingRestart ? false : req.restart;
+		if (!isReplicatedExecution) {
+			delete req.progress;
+			const revertOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT, {
+				restart: req.restart,
+				deploymentId: recorder?.deploymentId,
+			});
+			recorder?.seal();
+			const rep = await server.replication.replicateOperation(revertOp, {
+				onPeerResult: recorder
+					? (result) => {
+							recorder.recordPeer(result);
+							emit('peer', result);
+						}
+					: undefined,
+			});
+			if (recorder && rep?.replicated) recorder.recordPeers(rep.replicated);
+		}
+
+		// Restart on this node (peers replaying an immediate-restart revert restart locally; the rolling
+		// path is driven only by the direct invoker via a replicated restart_service job).
+		if (req.restart === true) {
+			emit('phase', { phase: 'restart', status: 'start' });
+			manageThreads.restartWorkers('http');
+			emit('phase', { phase: 'restart', status: 'done' });
+			response.message = `Reverted component: ${req.project}, restarting Harper`;
+		} else if (rollingRestart && !isReplicatedExecution) {
+			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+			emit('phase', { phase: 'restart', status: 'start' });
+			const jobResponse = await serverUtilities.executeJob({
+				operation: 'restart_service',
+				service: 'http',
+				replicated: true,
+			});
+			emit('phase', { phase: 'restart', status: 'done' });
+			response.restartJobId = jobResponse.job_id;
+			response.message = `Reverted component: ${req.project}, restarting Harper`;
+		}
+
+		if (recorder && !req.ignore_replication_errors) {
+			const failed = recorder.getFailedPeers();
+			if (failed.length > 0) {
+				throw new ServerError(
+					`Component '${req.project}' was reverted on the origin but failed to revert on ${failed.length} ` +
+						`of ${recorder.row.peer_results.length} peer node(s): ${describePeers(failed)}. ` +
+						`See deployment ${recorder.deploymentId} (get_deployment), or pass ignore_replication_errors: true.`
+				);
+			}
+		}
+
+		if (recorder) {
+			emit('phase', { phase: 'success', status: 'done' });
+			await recorder.finish('rolled_back');
+		}
+		return response;
+	} catch (err) {
+		throw await finalizeDeployFailure({ err, recorder, installCapture, emit });
+	}
 }
 
 // ————————————————————————————————————————————————————————————————————————————
@@ -1176,7 +1303,13 @@ async function getComponents() {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
 				const itemName = item.name;
-				if (itemName === 'node_modules' || itemName === ASIDE_STAGING_DIR || itemName === DEPLOY_STAGING_DIR) continue;
+				if (
+					itemName === 'node_modules' ||
+					itemName === ASIDE_STAGING_DIR ||
+					itemName === DEPLOY_STAGING_DIR ||
+					itemName === DEPLOY_PREVIOUS_DIR
+				)
+					continue;
 				const itemPath = path.join(dir, itemName);
 				if (item.isDirectory() || item.isSymbolicLink()) {
 					let res = {
@@ -1511,6 +1644,7 @@ exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
 exports.stageComponent = stageComponent;
 exports.activateComponent = activateComponent;
+exports.revertComponent = revertComponent;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;

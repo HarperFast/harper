@@ -288,6 +288,7 @@ requiredPermissions.set(functionsOperations.packageComponent.name, new (permissi
 requiredPermissions.set(functionsOperations.deployComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.stageComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.activateComponent.name, new (permission as any)(true, []));
+requiredPermissions.set(functionsOperations.revertComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(
 	deploymentOperations.handleListDeployments.name,
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS)

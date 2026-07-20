@@ -68,10 +68,11 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		return name;
 	}
 
-	// Sweep any live dirs, staging, and aside created by the suite.
+	// Sweep any live dirs, staging, previous, and aside created by the suite.
 	after(async () => {
 		for (const name of names) await fs.rm(path.join(COMPONENTS_ROOT, name), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-previous'), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-aside'), { recursive: true, force: true });
 	});
 
@@ -137,5 +138,29 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		assert.match(res.message, /Successfully deployed/);
 		const liveDir = path.join(COMPONENTS_ROOT, name);
 		assert.match(await readIndex(liveDir), /op-oneshot/, 'component is live after a one-shot deploy');
+	});
+
+	it('revert_component swaps the live version back to the previous deployment', async () => {
+		const name = freshName();
+		const liveDir = path.join(COMPONENTS_ROOT, name);
+		await operations.deployComponent({ project: name, payload: await makeComponentPayload('rev-v1') });
+		await operations.deployComponent({ project: name, payload: await makeComponentPayload('rev-v2') });
+		assert.match(await readIndex(liveDir), /rev-v2/, 'v2 is live before revert');
+
+		const res = await operations.revertComponent({ project: name });
+
+		assert.strictEqual(res.reverted, true);
+		assert.strictEqual(res.project, name);
+		assert.match(await readIndex(liveDir), /rev-v1/, 'revert restored v1 to live');
+	});
+
+	it('revert_component rejects a component with no retained previous version', async () => {
+		const name = freshName();
+		await operations.deployComponent({ project: name, payload: await makeComponentPayload('rev-once') });
+		await assert.rejects(() => operations.revertComponent({ project: name }), /no previous version is retained/i);
+	});
+
+	it('revert_component requires a project', async () => {
+		await assert.rejects(() => operations.revertComponent({}), /project/i);
 	});
 });

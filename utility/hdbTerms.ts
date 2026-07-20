@@ -297,6 +297,10 @@ export const OPERATIONS_ENUM = {
 	// are unaffected. See components/Application.ts (stageApplication/activateApplication).
 	STAGE_COMPONENT: 'stage_component',
 	ACTIVATE_COMPONENT: 'activate_component',
+	// Swap a component's live version back to its retained previous version, cluster-wide. Backs
+	// customer-driven rollback (activate → test → revert) and swap-back on a partially-failed activate.
+	// See components/Application.ts (revertApplication).
+	REVERT_COMPONENT: 'revert_component',
 	READ_TRANSACTION_LOG: 'read_transaction_log',
 	DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
 	INSTALL_NODE_MODULES: 'install_node_modules',

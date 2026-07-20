@@ -351,9 +351,35 @@ since the `hdb_deployment` row's `payload_blob` is how peers fetch the tarball a
 phases by deployment id. When `system` is excluded from a narrow `REPLICATION_DATABASES`, or the
 caller passes `two_phase: false`, or the invocation is a peer replaying a one-shot deploy,
 `deploy_component` falls back to `deployComponentOneShot` (the previous behavior, preserved verbatim).
-Known gap for a rolling upgrade window: an origin on this version replicating `stage_component` to a
-peer that predates these operations will see that peer fail the op; `two_phase: false` or
-`ignore_replication_errors` is the escape hatch until capability negotiation lands.
+Cross-version skew is a non-issue by policy — a cluster stays in lockstep on its Harper version, so
+every node understands `stage_component`/`activate_component` — which is why there is no capability
+negotiation on the fan-out.
+
+**Replicator contract this rides on (`harper-pro/replication/replicator.ts`).**
+`server.replication.replicateOperation(op, {onPeerResult})` fans `op` to every node in `server.nodes`
+in parallel, setting `op.replicated = false` on the copy it sends so a peer never re-fans (the deploy
+handlers instead detect a replicated execution by the presence of `_deploymentId`, which is always set
+on the sub-operations). Per-peer failures never throw — `sendOperationToNode` rejections are caught and
+surface as `{status:'failed', reason, node}` entries in the returned `replicated[]` array and via
+`onPeerResult`, which is exactly the shape `DeploymentRecorder.normalizePeerResult` consumes. Peers
+authenticate node-to-node by TLS certificate, and the receive side runs the op via
+`server.operation(data, {user}, !isAuthorizedNode)` — for a trusted cluster node the authorize flag is
+`false`, so a replicated super-user op skips the permission gate. That is why `stage_component` /
+`activate_component` / `revert_component` (registered with the same `permission(true, [])` as
+`deploy_component`, dispatched by `operation` name) replicate without an `hdb_user`, identically to the
+long-proven `deploy_component` fan-out.
+
+**Reversibility: retained previous + `revert_component`.** `activateApplication` no longer discards the
+outgoing live version — it retains it as `.deploy-previous/<name>` (`retainAsPrevious`, evicting the
+older one so exactly one previous is kept per component). `revert_component` swaps the live directory
+with that retained previous via three same-filesystem renames through a hidden holding path, cluster-
+wide and replicated like activate. The swap is bidirectional, so reverting a revert rolls forward
+again. This backs two things: a customer can deploy, run their own health checks against the live
+version, and `revert` if unhappy even when the cluster looks healthy; and `deploy_component`'s opt-in
+`revert_on_failure` rolls the whole cluster back to the previous version when the activate phase leaves
+some nodes live and some not, so the cluster reconverges on one version. The previous copy is retained
+per-node (each node retains its own outgoing version during its own activate), so a replicated revert
+has a local rollback source on every node.
 
 ## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
 

@@ -57,6 +57,8 @@ type DeploymentStatus =
 	| 'replicating'
 	// Two-phase deploy: swapping the staged build into the live path cluster-wide (activate phase).
 	| 'activating'
+	// revert_component: swapping the live version back to its retained previous version.
+	| 'reverting'
 	| 'restarting'
 	| 'success'
 	| 'failed'
@@ -578,6 +580,8 @@ function startStatusFor(phase: string | undefined): DeploymentStatus | null {
 			return 'replicating';
 		case 'activate':
 			return 'activating';
+		case 'revert':
+			return 'reverting';
 		case 'restart':
 			return 'restarting';
 		default:

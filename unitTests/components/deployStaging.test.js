@@ -21,8 +21,10 @@ const {
 	Application,
 	stageApplication,
 	activateApplication,
+	revertApplication,
 	discardStagedApplication,
 	DEPLOY_STAGING_DIR,
+	DEPLOY_PREVIOUS_DIR,
 	ASIDE_STAGING_DIR,
 } = require('#src/components/Application');
 const { getConfigPath } = require('#src/config/configUtils');
@@ -226,6 +228,74 @@ describe('two-phase deploy primitives (stage / activate / discard)', function ()
 		assert.match(await readMarker(dirPath), /replaced/);
 
 		await fs.rm(dirPath, { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+	});
+
+	// Deploy a version (stage + activate) through the primitives, returning the app.
+	async function deployVersion(name, marker) {
+		const app = new Application({ name, payload: await makeComponentPayload(marker) });
+		await stageApplication(app);
+		await activateApplication(app);
+		return app;
+	}
+
+	it('activate retains the outgoing version as .deploy-previous/<name>', async () => {
+		const name = `stage_test_${process.pid}_${counter++}`;
+		await deployVersion(name, 'v1');
+		await deployVersion(name, 'v2');
+
+		const liveDir = path.join(COMPONENTS_ROOT, name);
+		const previousDir = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		assert.match(await readMarker(liveDir), /v2/, 'live is the newest version');
+		assert.match(await readMarker(previousDir), /v1/, 'the outgoing version is retained as previous');
+
+		await fs.rm(liveDir, { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+	});
+
+	it('revertApplication swaps live <-> previous, and a second revert rolls forward again', async () => {
+		const name = `stage_test_${process.pid}_${counter++}`;
+		await deployVersion(name, 'v1');
+		const app = await deployVersion(name, 'v2');
+		const liveDir = path.join(COMPONENTS_ROOT, name);
+		const previousDir = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+
+		await revertApplication(app);
+		assert.match(await readMarker(liveDir), /v1/, 'reverted live back to v1');
+		assert.match(await readMarker(previousDir), /v2/, 'the reverted-away v2 is now the previous');
+
+		await revertApplication(app);
+		assert.match(await readMarker(liveDir), /v2/, 'reverting the revert rolls forward to v2');
+		assert.match(await readMarker(previousDir), /v1/, 'v1 is the previous again');
+
+		await fs.rm(liveDir, { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+	});
+
+	it('revertApplication throws when there is no retained previous (deployed only once)', async () => {
+		const name = `stage_test_${process.pid}_${counter++}`;
+		const app = await deployVersion(name, 'only'); // first-ever deploy: nothing retained as previous
+
+		await assert.rejects(() => revertApplication(app), /no previous version is retained/i);
+
+		await fs.rm(path.join(COMPONENTS_ROOT, name), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+	});
+
+	it('only one previous is retained across three deploys (older previous evicted)', async () => {
+		const name = `stage_test_${process.pid}_${counter++}`;
+		await deployVersion(name, 'v1');
+		await deployVersion(name, 'v2');
+		await deployVersion(name, 'v3');
+
+		const previousDir = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		assert.match(await readMarker(path.join(COMPONENTS_ROOT, name)), /v3/, 'live is v3');
+		assert.match(await readMarker(previousDir), /v2/, 'previous is v2; v1 was evicted');
+
+		await fs.rm(path.join(COMPONENTS_ROOT, name), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
 	});
 });

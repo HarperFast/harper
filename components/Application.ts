@@ -424,6 +424,20 @@ export const ASIDE_STAGING_DIR = '.deploy-aside';
 //     restart-on-change storm and needs no deploy:start watcher suppression.
 export const DEPLOY_STAGING_DIR = '.deploy-staging';
 
+// Hidden directory under the components root that RETAINS the immediately-previous live version of a
+// component (`.deploy-previous/<name>`) after an activate swap, so it can be swapped back by
+// revert_component. Exactly one previous version is kept per component — each activate evicts the
+// older one — so the retention cost is bounded at one extra copy. Same filesystem as the live path
+// (atomic swap on revert), leading-dot-hidden (loader/watchers ignore it). This is what turns the
+// deploy swap into something reversible: a customer can activate, run their own health checks, and
+// revert if unhappy; and a partially-failed activate can be swapped back cluster-wide.
+export const DEPLOY_PREVIOUS_DIR = '.deploy-previous';
+
+// Absolute path of the retained-previous copy for a component's live directory.
+function previousDirPathFor(liveDirPath: string): string {
+	return join(dirname(liveDirPath), DEPLOY_PREVIOUS_DIR, basename(liveDirPath));
+}
+
 /**
  * Atomically move `targetDirPath` aside into a hidden, per-component staging directory if it
  * exists, returning the aside staging directory (for best-effort cleanup) or null when there was
@@ -463,6 +477,34 @@ function cleanupAsideDir(asideStagingDir: string | null, componentName: string):
 	rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
 		logger.trace?.(`Deferred cleanup of previous ${componentName} component directory: ${err.message}`)
 	);
+}
+
+/**
+ * Retain the current live version of a component as its rollback source: rename it to
+ * `.deploy-previous/<name>`, evicting any older retained-previous first. Returns the aside directory
+ * holding the evicted older-previous (for best-effort cleanup), or null when there was no live
+ * version to retain (a first-ever deploy).
+ *
+ * The eviction moves the older-previous ASIDE (an atomic rename that can't fail on a directory a
+ * lingering worker still holds open) rather than an in-place rm, so the subsequent rename onto
+ * `.deploy-previous/<name>` never races an incomplete delete (ENOTEMPTY). Like the aside swap, the
+ * still-running worker of the version being retained keeps writing into the renamed inode harmlessly
+ * until it exits on restart.
+ */
+async function retainAsPrevious(liveDirPath: string): Promise<string | null> {
+	const previousPath = previousDirPathFor(liveDirPath);
+	try {
+		await lstat(liveDirPath); // lstat, not access: see moveDirAside — a dangling symlink must still move
+	} catch (err) {
+		if (err.code === 'ENOENT') return null; // no live version yet — nothing to retain
+		throw err;
+	}
+	// Evict the older retained-previous (2 deploys ago; its worker exited on the last restart) by moving
+	// it aside atomically, clearing the target for the rename below.
+	const evictedAside = await moveDirAside(previousPath);
+	await mkdir(dirname(previousPath), { recursive: true });
+	await rename(liveDirPath, previousPath);
+	return evictedAside;
 }
 
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
@@ -963,6 +1005,12 @@ export class Application {
 		return join(dirname(this.dirPath), DEPLOY_STAGING_DIR, this.stagingId, this.name);
 	}
 
+	// The retained-previous copy this component would revert to (`.deploy-previous/<name>`). See
+	// DEPLOY_PREVIOUS_DIR / activateApplication / revertApplication.
+	get previousDirPath(): string {
+		return previousDirPathFor(this.dirPath);
+	}
+
 	// Route extract/install into the staging directory. Called by stageApplication().
 	useStagingBuildDir(): void {
 		this.#buildDirPath = this.stagingDirPath;
@@ -1175,6 +1223,9 @@ export async function stageApplication(application: Application): Promise<string
  * while the live directory is replaced (harper#488) — the same suppression the one-shot deploy used
  * to hold for the entire extract+install; here it wraps only the swap.
  *
+ * The outgoing live version is not discarded — it is retained as `.deploy-previous/<name>` so
+ * revert_component can swap it back. See retainAsPrevious.
+ *
  * This method should only be called from the main thread.
  */
 export async function activateApplication(application: Application): Promise<void> {
@@ -1191,28 +1242,88 @@ export async function activateApplication(application: Application): Promise<voi
 		throw err;
 	}
 	await broadcastDeployStart(application.name);
-	let asideStagingDir: string | null = null;
+	let evictedAside: string | null = null;
 	try {
-		// Move the current live version aside (atomic; tolerates a still-writing worker), then rename
+		// Retain the current live version as the rollback source (.deploy-previous/<name>), then rename
 		// the staged copy into place. Both live under the components root, so the rename is same-fs and
-		// atomic — there is no interval where `dirPath` is a partially populated directory.
-		asideStagingDir = await moveDirAside(application.dirPath);
+		// atomic — there is no interval where `dirPath` is a partially populated directory. retainAsPrevious
+		// tolerates a still-writing worker exactly as the old aside swap did.
+		evictedAside = await retainAsPrevious(application.dirPath);
 		await mkdir(dirname(application.dirPath), { recursive: true });
 		await rename(stagingDirPath, application.dirPath);
 		application.useLiveBuildDir();
 	} finally {
 		broadcastDeployEnd(application.name);
 	}
-	// Best-effort cleanup of the outgoing version (see cleanupAsideDir). The rename already consumed
-	// stagingDirPath, so all that remains is this deploy's now-empty staging parent
+	// Best-effort cleanup of the EVICTED older-previous (the version from two deploys ago; see
+	// cleanupAsideDir) — NOT the retained previous, which is kept for revert. The rename already consumed
+	// stagingDirPath, so all that remains of staging is this deploy's now-empty parent
 	// (.deploy-staging/<stagingId>). Remove it with a NON-recursive rmdir, which succeeds only when it
 	// is empty — a belt-and-suspenders guard against ever recursively deleting a directory that could
 	// hold another deploy's build. ENOTEMPTY and ENOENT (already gone) are expected and ignored.
-	cleanupAsideDir(asideStagingDir, application.name);
+	cleanupAsideDir(evictedAside, application.name);
 	rmdir(dirname(stagingDirPath)).catch((err) => {
 		if (err.code !== 'ENOTEMPTY' && err.code !== 'ENOENT')
 			logger.trace?.(`Deferred cleanup of ${application.name} staging directory: ${err.message}`);
 	});
+}
+
+/**
+ * Swap a component's live version with its retained previous version (`.deploy-previous/<name>`),
+ * atomically, then let watchers restart onto it. This is what backs revert_component: a customer can
+ * activate a deploy, run their own health checks, and swap back if unhappy; and a partially-failed
+ * activate can be rolled back cluster-wide.
+ *
+ * The swap is bidirectional: the outgoing live becomes the new retained previous, so a second revert
+ * toggles forward again. Three same-filesystem renames via a hidden holding path — the only window
+ * where `dirPath` is momentarily absent is between two atomic renames, and deploy:start suppresses
+ * watchers across it (same as activate).
+ *
+ * Throws if there is no retained previous version (a component deployed only once, or never).
+ *
+ * This method should only be called from the main thread.
+ */
+export async function revertApplication(application: Application): Promise<void> {
+	const liveDirPath = application.dirPath;
+	const previousPath = previousDirPathFor(liveDirPath);
+	try {
+		await lstat(previousPath);
+	} catch (err) {
+		if (err.code === 'ENOENT') {
+			throw new Error(
+				`Cannot revert ${application.name}: no previous version is retained. A component must have ` +
+					`been deployed over a prior version (which activate retains as .deploy-previous) to be reverted.`
+			);
+		}
+		throw err;
+	}
+	await broadcastDeployStart(application.name);
+	try {
+		// Does a live version currently exist? (It always should after a deploy, but guard so a missing
+		// live dir degrades to "restore previous" rather than throwing mid-swap.)
+		let liveExists = true;
+		try {
+			await lstat(liveDirPath);
+		} catch (err) {
+			if (err.code === 'ENOENT') liveExists = false;
+			else throw err;
+		}
+		await mkdir(dirname(previousPath), { recursive: true });
+		if (liveExists) {
+			// Three-way atomic swap: live → holding, previous → live, holding(old live) → previous.
+			const holding = join(dirname(previousPath), `.reverting-${basename(liveDirPath)}-${randomUUID()}`);
+			await rename(liveDirPath, holding);
+			await rename(previousPath, liveDirPath);
+			await rename(holding, previousPath);
+		} else {
+			// No live version to preserve; just restore the previous into place (nothing becomes the new
+			// previous, so the component can't be re-reverted until its next deploy).
+			await rename(previousPath, liveDirPath);
+		}
+		application.useLiveBuildDir();
+	} finally {
+		broadcastDeployEnd(application.name);
+	}
 }
 
 /**
