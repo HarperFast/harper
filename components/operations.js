@@ -682,20 +682,40 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 			if (failed.length > 0) {
 				let revertNote = '';
 				// Opt-in swap-back: some nodes went live and some didn't, leaving the cluster split across
-				// versions. When revert_on_failure is set, roll the whole cluster (incl. this origin) back to
-				// the retained previous version so it converges on one version again. Best-effort — a revert
-				// failure must not mask the original activate failure.
+				// versions. When revert_on_failure is set, roll the nodes that DID activate back to the
+				// retained previous version so the cluster reconverges. Best-effort — a revert failure must
+				// not mask the original activate failure.
 				if (req.revert_on_failure) {
 					try {
 						emit('phase', { phase: 'revert', status: 'start' });
+						// The origin activated, so revert it.
 						await revertApplication(application);
+						// Revert ONLY the peers that successfully activated. A peer that FAILED to activate never
+						// swapped in the new version (validation/timeout/transport failures fire before
+						// activateApplication runs retainAsPrevious) — its live directory is still the correct
+						// pre-deploy version, and its `.deploy-previous` holds a copy from TWO deploys ago. Reverting
+						// it would roll it back an EXTRA version, splitting the cluster across three versions instead
+						// of reconverging on one. replicateOperation has no subset targeting (it fans to every
+						// server.node), so send point-to-point to the activated peers via sendOperationToNode,
+						// skipping recorder.getFailedPeers().
+						const failedNodeNames = new Set(failed.map((peer) => peer.node).filter(Boolean));
+						const activatedPeers = (server.nodes ?? []).filter((node) => !failedNodeNames.has(node.name));
 						const revertOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT, {
 							restart: req.restart,
 							deploymentId: recorder.deploymentId,
 						});
-						await server.replication.replicateOperation(revertOp, {});
+						revertOp.replicated = false; // point-to-point; the peer must not re-fan the revert
+						const revertResults = await Promise.allSettled(
+							activatedPeers.map((node) => server.replication.sendOperationToNode(node, revertOp))
+						);
+						const revertFailures = revertResults.filter((result) => result.status === 'rejected').length;
 						emit('phase', { phase: 'revert', status: 'done' });
-						revertNote = ` The cluster was rolled back to the previous version (revert_on_failure); verify with get_components.`;
+						revertNote =
+							` Rolled the origin and ${activatedPeers.length - revertFailures} of ${activatedPeers.length} ` +
+							`activated peer(s) back to the previous version (revert_on_failure); the ${failed.length} peer(s) ` +
+							`that never activated were left on their current (correct) version.` +
+							(revertFailures > 0 ? ` ${revertFailures} peer revert(s) also failed.` : '') +
+							` Verify with get_components.`;
 					} catch (revertErr) {
 						log.warn('revert_on_failure rollback failed', revertErr);
 						revertNote = ` An automatic rollback (revert_on_failure) was attempted but also failed: ${revertErr?.message ?? revertErr}.`;
