@@ -3,6 +3,8 @@ import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases } from '../resources/databases.ts';
 import { models as harperModelsSingleton } from '../resources/models/Models.ts';
+import { defineTable, types } from '../resources/defineTable.ts';
+import { defineResource, t, schemaOf, projectTableFragment } from '../resources/defineResource.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -805,6 +807,12 @@ function getHarperExports(scope: ApplicationScope) {
 		Resource,
 		tables,
 		databases,
+		defineTable,
+		types,
+		defineResource,
+		t,
+		schemaOf,
+		projectTableFragment,
 		// `harper.models` — same singleton that's surfaced as the top-level
 		// `models` package export (see `resources/models/Models.ts`).  The
 		// registry it reads from is populated at boot by
