@@ -697,9 +697,17 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 						// it would roll it back an EXTRA version, splitting the cluster across three versions instead
 						// of reconverging on one. replicateOperation has no subset targeting (it fans to every
 						// server.node), so send point-to-point to the activated peers via sendOperationToNode,
-						// skipping recorder.getFailedPeers().
+						// skipping recorder.getFailedPeers() — and skipping THIS node, which was already reverted
+						// directly above and would otherwise be reverted a second time (a bidirectional swap that
+						// flips it back to the just-activated version). server.nodes normally excludes self, but a
+						// not-yet-named node can slip in (knownNodes) and every point-to-point fan-out in the code
+						// base guards self anyway (bin/restart.ts).
+						const { getThisNodeName } = require('../server/nodeName.ts');
+						const thisNode = getThisNodeName();
 						const failedNodeNames = new Set(failed.map((peer) => peer.node).filter(Boolean));
-						const activatedPeers = (server.nodes ?? []).filter((node) => !failedNodeNames.has(node.name));
+						const activatedPeers = (server.nodes ?? []).filter(
+							(node) => node.name !== thisNode && !failedNodeNames.has(node.name)
+						);
 						const revertOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT, {
 							restart: req.restart,
 							deploymentId: recorder.deploymentId,
