@@ -551,8 +551,13 @@ function activateComponentValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		// Identifies which staged build to activate. Required for a standalone activate; the
-		// deploy_component orchestrator supplies it as the deployment id it staged under.
-		deployment_id: Joi.string().optional(),
+		// deploy_component orchestrator supplies it as the deployment id it staged under. Constrained to
+		// the same safe charset as `project` because it becomes a path segment of the staging directory
+		// (`.deploy-staging/<deployment_id>/<name>`) — without this a `../` value would resolve the staging
+		// source outside `.deploy-staging`. Defense-in-depth (the op is super_user-only).
+		deployment_id: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).optional().messages({
+			'string.pattern.base': `'deployment_id' must only contain letters, numbers, dashes, and underscores`,
+		}),
 		package: Joi.string().optional(),
 		install_command: Joi.string().optional(),
 		install_timeout: Joi.number().optional(),
@@ -583,8 +588,11 @@ function revertComponentValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		// The deployment being reverted, recorded as the rollback's `rollback_of` for the audit trail.
-		// Optional — revert operates on whatever version is currently live regardless.
-		deployment_id: Joi.string().optional(),
+		// Optional — revert operates on whatever version is currently live regardless. Same safe charset
+		// as elsewhere (it is an id, and this keeps the deploy family's `deployment_id` consistent).
+		deployment_id: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).optional().messages({
+			'string.pattern.base': `'deployment_id' must only contain letters, numbers, dashes, and underscores`,
+		}),
 		restart: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('rolling')).optional(),
 		deployment_timeout: Joi.number().min(0).optional(),
 		ignore_replication_errors: Joi.boolean().optional(),

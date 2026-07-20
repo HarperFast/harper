@@ -321,6 +321,17 @@ could leave a peer half-installed after other peers had already restarted onto t
 request/response contract is unchanged; only the SSE phase names differ (`stage`/`activate` vs the
 old `prepare`/`replicate`). `two_phase: false` forces the legacy one-shot path.
 
+**Scope of the barrier's guarantee: fetch + install, not load.** The cluster-wide "nobody activates
+until everybody staged" guarantee covers the download/`npm pack` and `npm install` steps — the slow,
+failure-prone work. The pre-go-live component _load_ check (`loadValidateComponent`, which surfaces a
+component that installs cleanly but throws at load) runs during stage on the origin and on any node
+whose stage executes on a worker (the op-API worker for a standalone `stage_component`), but it is a
+no-op on the main thread — and replicated peer executions of `stage_component` run on the main thread
+(`replicateOperation` → `sendOperationToNode` execute there), where app code deliberately isn't
+loaded. So a load-time-only fault on a peer is not caught by the barrier; it surfaces at
+activate/restart like any other. Gating load-time faults cluster-wide would require dispatching the
+throwaway load to a worker on each peer during stage — a possible follow-up, not done here.
+
 The staging directory (`.deploy-staging/<deploymentId>/<name>`) lives **under the components root**,
 not in `os.tmpdir()`, even though its contents are transient. This is deliberate and load-bearing:
 the go-live step is `rename(stagingDir, liveDir)`, which is only atomic when both paths share a

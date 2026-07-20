@@ -69,6 +69,18 @@ describe('activateComponentValidator', () => {
 	it('rejects an invalid restart value', () => {
 		rejected(validator.activateComponentValidator({ project: 'my_app', restart: 'sideways' }));
 	});
+
+	it('rejects a path-traversal deployment_id (it becomes a staging-dir path segment)', () => {
+		for (const bad of ['../evil', 'a/b', 'dep/../..', '.', '..']) {
+			rejected(validator.activateComponentValidator({ project: 'my_app', deployment_id: bad }));
+		}
+	});
+
+	it('accepts a normal UUID-shaped deployment_id', () => {
+		ok(
+			validator.activateComponentValidator({ project: 'my_app', deployment_id: '41faded8-6cf5-4a2a-95f8-863e7ea498fa' })
+		);
+	});
 });
 
 describe('revertComponentValidator', () => {

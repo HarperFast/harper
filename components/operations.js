@@ -800,6 +800,13 @@ async function stageComponent(req) {
 
 		emit('phase', { phase: 'stage', status: 'start' });
 		await stageApplication(application);
+		// Surface load-time errors on the staged build before it can be activated, matching what
+		// deployComponentTwoPhase does on the origin (and closing the gap where a standalone
+		// stage_component never validated at all). Loads the STAGED dir (application.buildDirPath). This
+		// is a no-op on the main thread — where replicated peer executions run — because app code must
+		// not load there; so load-time faults are gated where the stage runs on a worker (origin op-API
+		// worker, standalone stage), while fetch + install remain gated cluster-wide by the barrier.
+		await loadValidateComponent({ dirPath: application.buildDirPath, emit });
 		emit('phase', { phase: 'stage', status: 'done' });
 
 		const response = { message: `Staged component: ${req.project}`, project: req.project, staged: true };
