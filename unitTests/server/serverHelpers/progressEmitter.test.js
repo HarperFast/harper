@@ -149,6 +149,20 @@ describe('createSSEResponseStream', () => {
 		assert.ok(ping, 'expected a `ping` event to be written');
 		assert.strictEqual(events[events.length - 1].event, 'done');
 	});
+
+	it('preserves an explicit null payload as the JSON value null', async () => {
+		// A persisted event replayed with `data: null` must keep that value; only `undefined`
+		// (no payload) should collapse to an empty record.
+		const emitter = new ProgressEmitter();
+		const stream = createSSEResponseStream(emitter, async () => {
+			emitter.emit('ping', null);
+			return { ok: true };
+		});
+		const events = parseSSEBlocks(await collect(stream));
+		const ping = events.find((e) => e.event === 'ping');
+		assert.ok(ping, 'expected a `ping` event to be written');
+		assert.strictEqual(JSON.parse(ping.data), null);
+	});
 });
 
 // keep Readable import live for any future tests that need stream sources
