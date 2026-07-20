@@ -85,6 +85,7 @@ describe('Login', () => {
 		let originalCwd;
 		let originalExit;
 		let originalStdoutWrite;
+		let originalStdinIsTTY;
 
 		// Mock cliOperations
 		const cliOperationsModule = require('#src/bin/cliOperations');
@@ -107,6 +108,11 @@ describe('Login', () => {
 			originalStdoutWrite = process.stdout.write;
 			process.stdout.write = () => {};
 
+			// A non-TTY stdin makes login skip the interactive CI/CD env prompt (as in CI), so
+			// these tests never block on it regardless of how the suite is launched.
+			originalStdinIsTTY = process.stdin.isTTY;
+			process.stdin.isTTY = false;
+
 			originalCliOperations = cliOperationsModule.cliOperations;
 			cliOperationsModule.cliOperations = async (req) => {
 				if (req.operation === 'create_authentication_tokens') {
@@ -124,6 +130,7 @@ describe('Login', () => {
 			process.cwd = originalCwd;
 			process.exit = originalExit;
 			process.stdout.write = originalStdoutWrite;
+			process.stdin.isTTY = originalStdinIsTTY;
 			cliOperationsModule.cliOperations = originalCliOperations;
 			fs.rmSync(testDir, { recursive: true, force: true });
 		});
@@ -176,6 +183,7 @@ describe('Login', () => {
 		let originalCwd;
 		let originalExit;
 		let originalStdoutWrite;
+		let originalStdinIsTTY;
 		let originalPrompt;
 		let originalCliOperations;
 		let loginRequest;
@@ -190,6 +198,10 @@ describe('Login', () => {
 			};
 			originalStdoutWrite = process.stdout.write;
 			process.stdout.write = () => {};
+			// Non-interactive stdin so login skips the CI/CD env-var confirm; these tests are about
+			// which credentials are sent, and shouldn't depend on whether the runner has a TTY.
+			originalStdinIsTTY = process.stdin.isTTY;
+			process.stdin.isTTY = false;
 			originalPrompt = inquirer.prompt;
 			inquirer.prompt = async (questions) => {
 				const q = Array.isArray(questions) ? questions[0] : questions;
@@ -206,6 +218,7 @@ describe('Login', () => {
 			process.cwd = originalCwd;
 			process.exit = originalExit;
 			process.stdout.write = originalStdoutWrite;
+			process.stdin.isTTY = originalStdinIsTTY;
 			inquirer.prompt = originalPrompt;
 			cliOperationsModule.cliOperations = originalCliOperations;
 			fs.rmSync(testDir, { recursive: true, force: true });
@@ -260,6 +273,101 @@ describe('Login', () => {
 			assert.strictEqual(loginRequest.auth_password, 'harper-secret');
 			assert.strictEqual(loginRequest.username, 'harper-admin');
 			assert.strictEqual(loginRequest.password, 'harper-secret');
+		});
+	});
+
+	describe('CI/CD environment variable output', () => {
+		const testDir = path.join(os.tmpdir(), `harper-test-login-cicd-${Date.now()}`);
+		const cliOperationsModule = require('#src/bin/cliOperations');
+		let originalCwd;
+		let originalHome;
+		let originalExit;
+		let originalStdinIsTTY;
+		let originalPrompt;
+		let originalConsoleLog;
+		let originalCliOperations;
+		let logged;
+		let confirmAnswer;
+
+		before(() => {
+			fs.mkdirSync(testDir, { recursive: true });
+			originalCwd = process.cwd;
+			process.cwd = () => testDir;
+
+			// Keep saveCredentials off the developer's real ~/.harperdb/credentials.json.
+			originalHome = process.env.HOME;
+			process.env.HOME = testDir;
+
+			originalExit = process.exit;
+			process.exit = (code) => {
+				if (code !== 0) throw new Error('process.exit:' + code);
+			};
+
+			// Interactive stdin so login reaches the CI/CD confirm prompt.
+			originalStdinIsTTY = process.stdin.isTTY;
+			process.stdin.isTTY = true;
+
+			originalPrompt = inquirer.prompt;
+			inquirer.prompt = async (questions) => {
+				const q = Array.isArray(questions) ? questions[0] : questions;
+				if (q.name === 'show') return { show: confirmAnswer };
+				return { [q.name]: 'mock-response' };
+			};
+
+			originalCliOperations = cliOperationsModule.cliOperations;
+			cliOperationsModule.cliOperations = async (req) => {
+				if (req.operation === 'create_authentication_tokens') {
+					return { operation_token: 'op-tok', refresh_token: 'ref-tok', target: req.target };
+				}
+				return {};
+			};
+		});
+
+		after(() => {
+			process.cwd = originalCwd;
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
+			process.exit = originalExit;
+			process.stdin.isTTY = originalStdinIsTTY;
+			inquirer.prompt = originalPrompt;
+			cliOperationsModule.cliOperations = originalCliOperations;
+			fs.rmSync(testDir, { recursive: true, force: true });
+		});
+
+		beforeEach(() => {
+			logged = [];
+			originalConsoleLog = console.log;
+			console.log = (...args) => {
+				logged.push(args.join(' '));
+			};
+			// Password from env so login stays non-interactive apart from the CI/CD confirm.
+			process.env.HARPER_CLI_PASSWORD = 'password';
+		});
+
+		afterEach(() => {
+			console.log = originalConsoleLog;
+			delete process.env.HARPER_CLI_PASSWORD;
+			delete process.env.HARPER_CLI_TARGET;
+			delete process.env.CLI_TARGET;
+		});
+
+		it('prints the target and refresh token (only) when the user opts in', async () => {
+			confirmAnswer = true;
+			await login('example.com', 'mockuser');
+			const out = logged.join('\n');
+			assert.ok(out.includes('HARPER_CLI_TARGET=https://example.com:9925/'), out);
+			assert.ok(out.includes('HARPER_CLI_REFRESH_TOKEN=ref-tok'), out);
+			// The short-lived operation token is intentionally not emitted — the refresh token is
+			// the single durable secret; the CLI mints an operation token from it on each run.
+			assert.ok(!out.includes('HARPER_CLI_OPERATION_TOKEN'), out);
+		});
+
+		it('does not print tokens when the user declines', async () => {
+			confirmAnswer = false;
+			await login('example.com', 'mockuser');
+			const out = logged.join('\n');
+			assert.ok(!out.includes('HARPER_CLI_OPERATION_TOKEN='), out);
+			assert.ok(!out.includes('HARPER_CLI_REFRESH_TOKEN='), out);
 		});
 	});
 });

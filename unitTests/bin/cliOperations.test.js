@@ -111,6 +111,110 @@ describe('cliOperations', () => {
 		assert.strictEqual(creds.targets[target].operation_token, 'new-token');
 	});
 
+	describe('env-var token auth (CI/CD)', () => {
+		const target = 'https://example.com:9925/';
+		const envVars = [
+			'HARPER_CLI_OPERATION_TOKEN',
+			'HARPER_CLI_REFRESH_TOKEN',
+			'CLI_TARGET_OPERATION_TOKEN',
+			'CLI_TARGET_REFRESH_TOKEN',
+		];
+		const saved = {};
+
+		beforeEach(() => {
+			for (const v of envVars) {
+				saved[v] = process.env[v];
+				delete process.env[v];
+			}
+		});
+
+		afterEach(() => {
+			for (const v of envVars) {
+				if (saved[v] === undefined) delete process.env[v];
+				else process.env[v] = saved[v];
+			}
+		});
+
+		it('uses HARPER_CLI_OPERATION_TOKEN directly, overriding stored file credentials', async () => {
+			// A stored file token that must NOT win against the explicit env override.
+			saveCredentials(target, { operation_token: 'file-token', refresh_token: 'file-refresh' });
+			process.env.HARPER_CLI_OPERATION_TOKEN = 'env-op-token';
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let seenAuth;
+			commonUtilsModule.httpRequest = async (options) => {
+				seenAuth = options.headers.Authorization;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			const result = await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(seenAuth, 'Bearer env-op-token');
+			assert.strictEqual(result.success, true);
+		});
+
+		it('mints an operation token from HARPER_CLI_REFRESH_TOKEN alone, without persisting it', async () => {
+			process.env.HARPER_CLI_REFRESH_TOKEN = 'env-refresh';
+			tokenAuthModule.isJWTExpired = () => true;
+
+			const calls = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				calls.push({ options, req });
+				if (req.operation === 'refresh_operation_token') {
+					assert.strictEqual(options.headers.Authorization, 'Bearer env-refresh');
+					return { statusCode: 200, body: JSON.stringify({ operation_token: 'minted-token' }) };
+				}
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			const result = await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(calls[0].req.operation, 'refresh_operation_token');
+			assert.strictEqual(calls[1].options.headers.Authorization, 'Bearer minted-token');
+			assert.strictEqual(result.success, true);
+
+			// Env-var tokens have no backing file, so nothing is written to credentials.json.
+			const { loadCredentials } = require('#src/bin/cliCredentials');
+			assert.strictEqual(loadCredentials().targets[target], undefined);
+		});
+
+		it('refreshes an expired HARPER_CLI_OPERATION_TOKEN using HARPER_CLI_REFRESH_TOKEN, without persisting', async () => {
+			process.env.HARPER_CLI_OPERATION_TOKEN = 'expired-env-token';
+			process.env.HARPER_CLI_REFRESH_TOKEN = 'env-refresh';
+			tokenAuthModule.isJWTExpired = (token) => token === 'expired-env-token';
+
+			const calls = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				calls.push({ options, req });
+				if (req.operation === 'refresh_operation_token') {
+					assert.strictEqual(options.headers.Authorization, 'Bearer env-refresh');
+					return { statusCode: 200, body: JSON.stringify({ operation_token: 'minted-token' }) };
+				}
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			const result = await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(calls[0].req.operation, 'refresh_operation_token');
+			assert.strictEqual(calls[1].options.headers.Authorization, 'Bearer minted-token');
+			assert.strictEqual(result.success, true);
+
+			const { loadCredentials } = require('#src/bin/cliCredentials');
+			assert.strictEqual(loadCredentials().targets[target], undefined);
+		});
+
+		it('also reads the CLI_TARGET_* alias variables', async () => {
+			process.env.CLI_TARGET_OPERATION_TOKEN = 'alias-op-token';
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let seenAuth;
+			commonUtilsModule.httpRequest = async (options) => {
+				seenAuth = options.headers.Authorization;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(seenAuth, 'Bearer alias-op-token');
+		});
+	});
+
 	describe('deploy_component cross-version compatibility', () => {
 		const target = 'https://example.com:9925/';
 		let originalPackageDirectory;

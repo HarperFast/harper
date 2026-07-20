@@ -328,19 +328,28 @@ function resolveTarget(req, allCredentials) {
 }
 
 /**
- * If `tokens.operation_token` is expired and a `refresh_token` is on hand, refreshes it via
- * `refresh_operation_token`, persisting the new token to the credentials file and updating
- * `tokens.operation_token` in place. Shared by `cliOperations` and any other CLI transport
- * (e.g. `harper agent`) authenticating with stored `harper login` tokens, so refresh behavior
- * stays in one place instead of drifting between callers.
+ * Ensures `tokens.operation_token` is usable, minting a fresh one via `refresh_operation_token`
+ * when it is expired — or absent entirely, which is the refresh-token-only shape a CI/CD runner
+ * gets from `HARPER_CLI_REFRESH_TOKEN`. Updates `tokens.operation_token` in place.
+ *
+ * `persistKey` is the credentials-file key to write the refreshed token back to; pass `null` for
+ * tokens sourced from env vars, which have no file entry and stay in memory for this invocation
+ * only. Shared by `cliOperations` and any other CLI transport (e.g. `harper agent`) authenticating
+ * with tokens, so refresh behavior stays in one place instead of drifting between callers.
  */
 async function refreshExpiredOperationToken(
 	options: any,
-	tokens: { operation_token: string; refresh_token: string },
-	lookupKey: string
+	tokens: { operation_token?: string; refresh_token?: string },
+	persistKey: string | null
 ): Promise<void> {
-	if (!tokens.refresh_token || !isJWTExpired(tokens.operation_token)) return;
-	console.error('Operation token expired, attempting to refresh...');
+	if (!tokens.refresh_token) return;
+	// Short-circuited so `isJWTExpired` never runs on an absent token.
+	if (tokens.operation_token && !isJWTExpired(tokens.operation_token)) return;
+	console.error(
+		tokens.operation_token
+			? 'Operation token expired, attempting to refresh...'
+			: 'Minting an operation token from the refresh token...'
+	);
 	try {
 		// Always use the standard operation timeout for this call, even when the caller's
 		// own options carry the longer SSE timeout (e.g. a deploy_component retry) — the
@@ -354,10 +363,13 @@ async function refreshExpiredOperationToken(
 			const refreshData = JSON.parse(refreshResponse.body);
 			if (refreshData.operation_token) {
 				tokens.operation_token = refreshData.operation_token;
-				saveCredentials(lookupKey, {
-					operation_token: tokens.operation_token,
-					refresh_token: tokens.refresh_token,
-				});
+				// Only file-based credentials are persisted; env-var tokens have no file entry.
+				if (persistKey) {
+					saveCredentials(persistKey, {
+						operation_token: tokens.operation_token,
+						refresh_token: tokens.refresh_token,
+					});
+				}
 				console.error('Operation token refreshed successfully.');
 			}
 		} else if (refreshResponse.statusCode === 401) {
@@ -430,25 +442,41 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		options.headers = { 'Content-Type': 'application/json' };
 		options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
 		// Authentication precedence: explicitly configured credentials (dedicated args, URL
-		// userinfo, env vars) beat everything, then the saved `harper login` token, and only then
-		// the legacy `username=`/`password=` payload fallback below. The saved token must outrank
-		// that fallback: for add_user/alter_user those args are the credentials of the user being
-		// created/altered, so treating them as auth would authenticate as a user who doesn't exist
-		// yet (or as the wrong identity) instead of using the admin's existing session.
+		// userinfo, env vars) beat everything, then env-var tokens, then the saved `harper login`
+		// token, and only then the legacy `username=`/`password=` payload fallback below. The
+		// tokens must outrank that fallback: for add_user/alter_user those args are the credentials
+		// of the user being created/altered, so treating them as auth would authenticate as a user
+		// who doesn't exist yet (or as the wrong identity) instead of using the admin's session.
 		const transportCredentials = target ? resolveTransportCredentials(req, urlCredentials) : undefined;
 		if (transportCredentials) {
 			options.headers.Authorization = basicAuthHeader(transportCredentials.username, transportCredentials.password);
-		} else if (allCredentials) {
-			let tokens = null;
-			let lookupKey = null;
-			if (target && allCredentials.targets) {
-				lookupKey = target.resolvedTarget;
-				tokens = allCredentials.targets[lookupKey] ?? null;
+		} else {
+			// Bearer-token auth. Env-var tokens (for CI/CD — see `harper login`) take precedence
+			// over the stored ~/.harperdb/credentials.json entry: they're an explicit per-invocation
+			// override that needs no prior `harper login` on the runner. A token refreshed from env
+			// vars is used in-memory only (there's no file to write back to); a token refreshed from
+			// the credentials file is persisted as before.
+			const envOperationToken = (
+				process.env.HARPER_CLI_OPERATION_TOKEN || process.env.CLI_TARGET_OPERATION_TOKEN
+			)?.trim();
+			const envRefreshToken = (
+				process.env.HARPER_CLI_REFRESH_TOKEN || process.env.CLI_TARGET_REFRESH_TOKEN
+			)?.trim();
+
+			let tokens: { operation_token?: string; refresh_token?: string } | null = null;
+			let persistKey: string | null = null; // non-null => persist a refreshed operation token back to the file
+			if (envOperationToken || envRefreshToken) {
+				tokens = { operation_token: envOperationToken, refresh_token: envRefreshToken };
+			} else if (target && allCredentials?.targets) {
+				persistKey = target.resolvedTarget;
+				tokens = allCredentials.targets[persistKey] ?? null;
 			}
 
-			if (tokens?.operation_token) {
-				await refreshExpiredOperationToken(options, tokens, lookupKey || target?.resolvedTarget);
-				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
+			if (tokens?.operation_token || tokens?.refresh_token) {
+				await refreshExpiredOperationToken(options, tokens, persistKey);
+				if (tokens.operation_token) {
+					options.headers.Authorization = `Bearer ${tokens.operation_token}`;
+				}
 			}
 		}
 		// Legacy fallback for operations where `username=`/`password=` genuinely ARE the caller's

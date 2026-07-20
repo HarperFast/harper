@@ -138,8 +138,45 @@ export async function login(targetArg: string, usernameArg: string): Promise<voi
 		}
 
 		console.log(`Successfully logged in to ${resolvedTarget} and saved credentials.`);
+
+		await maybePrintCiCdEnv(resolvedTarget, response.refresh_token);
+
 		process.exit(0);
 	} else {
 		throw new Error('Failed to retrieve authentication tokens.');
 	}
+}
+
+/**
+ * After a successful interactive login, offer to print the environment variables that let a
+ * CI/CD pipeline (GitHub Actions, etc.) run `harper deploy` without a stored password. Emits the
+ * long-lived refresh token only — cliOperations' Bearer-token path mints a fresh operation token
+ * from it on each run (HARPER_CLI_REFRESH_TOKEN), so it's the single durable secret CI needs.
+ *
+ * Skipped when stdin isn't a TTY (e.g. a scripted/CI login driven by HARPER_CLI_PASSWORD) so it
+ * never blocks on a prompt or dumps tokens into non-interactive output.
+ */
+async function maybePrintCiCdEnv(target: string, refreshToken: string): Promise<void> {
+	if (!process.stdin.isTTY) return;
+	if (!refreshToken) return;
+
+	const { show } = await inquirer.prompt({
+		type: 'confirm',
+		name: 'show',
+		message: 'Print environment variables so CI/CD can deploy without your password?',
+		default: false,
+	});
+	if (!show) return;
+
+	console.log(chalk.cyan('\n# Harper CI/CD credentials'));
+	console.log(
+		chalk.gray(
+			'# Store these as secrets in your CI/CD provider (e.g. GitHub Actions repository secrets)\n' +
+				'# and expose them as environment variables to your `harper deploy` step. The refresh\n' +
+				'# token is long-lived; the CLI mints a fresh operation token from it on each run.'
+		)
+	);
+	console.log(`HARPER_CLI_TARGET=${target}`);
+	console.log(`HARPER_CLI_REFRESH_TOKEN=${refreshToken}`);
+	console.log();
 }
