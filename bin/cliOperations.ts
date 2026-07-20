@@ -459,9 +459,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			const envOperationToken = (
 				process.env.HARPER_CLI_OPERATION_TOKEN || process.env.CLI_TARGET_OPERATION_TOKEN
 			)?.trim();
-			const envRefreshToken = (
-				process.env.HARPER_CLI_REFRESH_TOKEN || process.env.CLI_TARGET_REFRESH_TOKEN
-			)?.trim();
+			const envRefreshToken = (process.env.HARPER_CLI_REFRESH_TOKEN || process.env.CLI_TARGET_REFRESH_TOKEN)?.trim();
 
 			let tokens: { operation_token?: string; refresh_token?: string } | null = null;
 			let persistKey: string | null = null; // non-null => persist a refreshed operation token back to the file
