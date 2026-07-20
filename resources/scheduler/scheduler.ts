@@ -60,7 +60,9 @@ interface SchedulerJobConfig {
  *
  * Handlers should be idempotent: leadership failover (the lease has no
  * compare-and-set) and DST fall-back can occasionally deliver the same logical
- * occurrence twice.
+ * occurrence twice. Conversely, catch-up only makes up the single most recent
+ * missed occurrence of a cron job — a leader down for an extended outage does
+ * not backfill every occurrence it missed.
  */
 export async function handleApplication(scope): Promise<void> {
 	// Validation runs UNCONDITIONALLY — on every worker and on deploy
