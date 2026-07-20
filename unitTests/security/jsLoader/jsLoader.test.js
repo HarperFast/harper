@@ -66,6 +66,12 @@ describe('scopedImport', () => {
 		const result = await scopedImport(join(__dirname, 'fixtures', 'uses-harperdb.cjs'), scope);
 		expect(result.Resource).to.be.a('function');
 		expect(result.tables).to.exist;
+		expect(result.defineTable).to.be.a('function');
+		expect(result.defineResource).to.be.a('function');
+		expect(result.schemaOf).to.be.a('function');
+		expect(result.projectTableFragment).to.be.a('function');
+		expect(result.t).to.exist;
+		expect(result.types).to.exist;
 		// #1325/#1534: the model-backend registration API reaches components through
 		// `require('harperdb').models` (getHarperExports) — methods on the models
 		// singleton, NOT separate top-level exports (those generic globals were

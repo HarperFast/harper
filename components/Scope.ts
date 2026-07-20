@@ -76,6 +76,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	ready: Promise<any[]>;
 	databaseEvents: typeof databaseEventsEmitter;
 	models: Models;
+	// Set by the loader on deploy pre-flight validation loads (collectScopes):
+	// the scope exists to validate a component, not to run it. Plugins with
+	// process-global side effects should validate fully but skip activation.
+	isTransientValidation?: boolean;
 
 	constructor(
 		appName: string,
