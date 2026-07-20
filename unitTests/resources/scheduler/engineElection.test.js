@@ -34,6 +34,7 @@ const {
 	STALE_THRESHOLD_MS,
 } = require('#src/resources/scheduler/engine');
 const { CronExpression } = require('#src/resources/scheduler/CronExpression');
+const { waitFor } = require('../../waitFor.js');
 
 // server.hostname is a non-configurable getter (nodeName.ts), so instead of
 // stubbing the node's identity we read the same expression the engine uses
@@ -162,8 +163,14 @@ describe('scheduler engine election and failover (simulated peer, #1866)', () =>
 
 	it('renews its own lease on heartbeat', async () => {
 		const before = await stateTable.get(LEADER_ROW_ID);
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		await runHeartbeatForTests();
+		// Condition-wait rather than a fixed sleep: on coarse clocks (Windows CI)
+		// two ISO timestamps a few ms apart can be equal, so tick until the
+		// renewal is observable (each iteration IS a real heartbeat)
+		await waitFor(async () => {
+			await runHeartbeatForTests();
+			const current = await stateTable.get(LEADER_ROW_ID);
+			return Date.parse(current.lastHeartbeat) > Date.parse(before.lastHeartbeat);
+		});
 		const after = await stateTable.get(LEADER_ROW_ID);
 		assert.strictEqual(after.leaderNode, SELF);
 		assert.ok(
@@ -227,6 +234,23 @@ describe('scheduler engine election and failover (simulated peer, #1866)', () =>
 		assert.strictEqual(handlerRuns.length, 0, 'the election loser must not run jobs');
 		const lease = await stateTable.get(LEADER_ROW_ID);
 		assert.ok(lease == null, 'the election loser must not claim the lease row');
+	});
+
+	it('a stop during an in-flight election prevents the election from resurrecting the engine', async () => {
+		// Start an election and immediately stop the engine — the election's
+		// state read is still in flight; when it settles it must abandon itself
+		// (epoch guard) instead of assigning a role or arming timers
+		stopSchedulerEngine();
+		await stateTable.delete(LEADER_ROW_ID);
+		global.server.nodes = [{ name: LAST_PEER }]; // SELF would win if allowed
+		registerComponentJobs('election-test', [makeCronJob('nightly')]);
+		startSchedulerEngine();
+		const settled = electionSettledForTests();
+		stopSchedulerEngine(); // stop while electRole is awaiting its read
+		await settled;
+		assert.strictEqual(getEngineRole(), 'inactive', 'a stopped engine must stay inactive after the election settles');
+		const lease = await stateTable.get(LEADER_ROW_ID);
+		assert.ok(lease == null, 'an abandoned election must not claim the lease row');
 	});
 
 	it('replaces the job set on re-registration and forgets it on unregister', async () => {
