@@ -3,8 +3,12 @@ memory_config:
   disabled: false
 code_review:
   disable: false
+  # MEDIUM (the default) kept: LOW drowns reviews in nits; HIGH would drop legitimate medium findings.
+  # Severity honesty is enforced via styleguide.md instead.
   comment_severity_threshold: MEDIUM
-  max_review_comments: -1
+  # Cap total comments per review; measured pattern was the same finding repeated per-hunk (4x in one PR).
+  # A finite cap forces prioritization; styleguide.md additionally requires one comment per distinct finding.
+  max_review_comments: 15
   pull_request_opened:
     help: false
     summary: false
@@ -13,4 +17,4 @@ code_review:
 ignore_patterns:
   - 'package-lock.json'
 
-# Note that you can also include a styleguide.md which provides a system prompt for the AI to follow for the reviews.
+# styleguide.md alongside this file is injected into every review prompt (house style + review discipline).
