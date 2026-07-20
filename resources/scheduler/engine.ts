@@ -74,6 +74,9 @@ let leaderlessSince: number | undefined;
 // When this node became leader — fallback for the lease row's initializedAt
 // when a heartbeat renews after a failed read
 let leaderInitializedAt: string | undefined;
+// The in-flight (or settled) election kicked off by startSchedulerEngine —
+// held so tests can await the role decision instead of polling
+let electionPromise: Promise<void> | undefined;
 const jobsByComponent = new Map<string, Map<string, RegisteredJob>>();
 
 let _stateTable: any;
@@ -277,9 +280,29 @@ export function unregisterComponentJobs(componentName: string): void {
 export function startSchedulerEngine(): void {
 	if (engineStarted) return;
 	engineStarted = true;
-	electRole().catch((error) => {
+	electionPromise = electRole().catch((error) => {
 		schedulerLogger.error?.('Scheduler engine failed to start', error);
 	});
+}
+
+/** @internal — testing only: resolves when the initial election has settled */
+export function electionSettledForTests(): Promise<void> {
+	return electionPromise ?? Promise.resolve();
+}
+
+/**
+ * @internal — testing only: run one heartbeat tick immediately (same body the
+ * interval runs), so tests can drive lease renewal / takeover checks without
+ * waiting out HEARTBEAT_INTERVAL_MS. Same seam pattern as
+ * setCoolingFunctionForTests in transactionLogCooling.
+ */
+export function runHeartbeatForTests(): Promise<void> {
+	return heartbeat();
+}
+
+/** @internal — testing only: run one failover-watcher tick immediately */
+export function runFailoverCheckForTests(): Promise<void> {
+	return failoverCheck();
 }
 
 /** Reset all engine state and timers. Intended for tests. */
@@ -296,6 +319,7 @@ export function stopSchedulerEngine(): void {
 	catchUpRunning = false;
 	leaderlessSince = undefined;
 	leaderInitializedAt = undefined;
+	electionPromise = undefined;
 	_stateTable = undefined;
 }
 
