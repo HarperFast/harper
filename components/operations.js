@@ -690,24 +690,12 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 						emit('phase', { phase: 'revert', status: 'start' });
 						// The origin activated, so revert it.
 						await revertApplication(application);
-						// Revert ONLY the peers that successfully activated. A peer that FAILED to activate never
-						// swapped in the new version (validation/timeout/transport failures fire before
-						// activateApplication runs retainAsPrevious) — its live directory is still the correct
-						// pre-deploy version, and its `.deploy-previous` holds a copy from TWO deploys ago. Reverting
-						// it would roll it back an EXTRA version, splitting the cluster across three versions instead
-						// of reconverging on one. replicateOperation has no subset targeting (it fans to every
-						// server.node), so send point-to-point to the activated peers via sendOperationToNode,
-						// skipping recorder.getFailedPeers() — and skipping THIS node, which was already reverted
-						// directly above and would otherwise be reverted a second time (a bidirectional swap that
-						// flips it back to the just-activated version). server.nodes normally excludes self, but a
-						// not-yet-named node can slip in (knownNodes) and every point-to-point fan-out in the code
-						// base guards self anyway (bin/restart.ts).
+						// Revert ONLY the peers that successfully activated (see selectRevertTargets): every known
+						// node minus the ones that failed to activate (still on the correct version) and minus this
+						// node (already reverted directly above; a second bidirectional revert would flip it back).
+						// replicateOperation has no subset targeting, so send point-to-point via sendOperationToNode.
 						const { getThisNodeName } = require('../server/nodeName.ts');
-						const thisNode = getThisNodeName();
-						const failedNodeNames = new Set(failed.map((peer) => peer.node).filter(Boolean));
-						const activatedPeers = (server.nodes ?? []).filter(
-							(node) => node.name !== thisNode && !failedNodeNames.has(node.name)
-						);
+						const activatedPeers = selectRevertTargets(server.nodes, failed, getThisNodeName());
 						const revertOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT, {
 							restart: req.restart,
 							deploymentId: recorder.deploymentId,
@@ -1183,6 +1171,21 @@ function buildReplicatedSubOp(req, operation, { includePayload = false, restart,
 // Render failed peer outcomes as "node (error)" for an operator-facing error message.
 function describePeers(failedPeers) {
 	return failedPeers.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? 'unknown error'})`).join(', ');
+}
+
+// Choose which peers a revert_on_failure swap-back should target: every known node EXCEPT
+//   - `thisNodeName`: the origin, already reverted directly by the caller — a second (bidirectional)
+//     revert would flip it back to the just-activated version; and
+//   - any node in `failedPeers`: it never activated (its failure fired before activateApplication ran
+//     retainAsPrevious), so its live directory is still the correct pre-deploy version and reverting it
+//     would roll it back an EXTRA version onto a two-deploys-ago copy.
+// Pure and exported so the node-targeting logic (which had two review-caught bugs — the failed-peer
+// skip and the self-skip) is unit-testable without a live cluster. `nodes` is `server.nodes`, which
+// normally already excludes self, but a not-yet-named node can slip in (knownNodes) so self is guarded
+// here regardless — matching every other point-to-point fan-out in the code base (bin/restart.ts).
+function selectRevertTargets(nodes, failedPeers, thisNodeName) {
+	const failedNodeNames = new Set((failedPeers ?? []).map((peer) => peer.node).filter(Boolean));
+	return (nodes ?? []).filter((node) => node?.name !== thisNodeName && !failedNodeNames.has(node?.name));
 }
 
 // Reclaim the payload tarball for large deploys once every peer has installed from the blob. Dropping
@@ -1673,6 +1676,7 @@ exports.deployComponent = deployComponent;
 exports.stageComponent = stageComponent;
 exports.activateComponent = activateComponent;
 exports.revertComponent = revertComponent;
+exports.selectRevertTargets = selectRevertTargets; // exported for unit testing the revert_on_failure node-targeting
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;

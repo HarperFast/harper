@@ -163,4 +163,39 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 	it('revert_component requires a project', async () => {
 		await assert.rejects(() => operations.revertComponent({}), /project/i);
 	});
+
+	// The revert_on_failure fan-out itself needs a live multi-node cluster (harper-pro's replicator) to
+	// run end-to-end, but its node-targeting is a pure function — and the exact spot that had two
+	// review-caught bugs (skip failed peers, skip self). Exercise it directly.
+	describe('selectRevertTargets (revert_on_failure node targeting)', () => {
+		const nodes = [{ name: 'origin' }, { name: 'peerA' }, { name: 'peerB' }, { name: 'peerC' }];
+
+		it('returns activated peers, excluding this node and failed peers', () => {
+			const failed = [{ node: 'peerB', status: 'failed' }];
+			const targets = operations.selectRevertTargets(nodes, failed, 'origin').map((n) => n.name);
+			assert.deepStrictEqual(targets.sort(), ['peerA', 'peerC'], 'peerB (failed) and origin (self) excluded');
+		});
+
+		it('excludes THIS node even when it is present in server.nodes (bidirectional double-revert guard)', () => {
+			const targets = operations.selectRevertTargets(nodes, [], 'origin').map((n) => n.name);
+			assert.ok(!targets.includes('origin'), 'self must never receive a self-directed revert');
+			assert.deepStrictEqual(targets.sort(), ['peerA', 'peerB', 'peerC']);
+		});
+
+		it('excludes every failed peer (they never activated and are on the correct version)', () => {
+			const failed = [
+				{ node: 'peerA', status: 'failed' },
+				{ node: 'peerC', status: 'failed' },
+			];
+			const targets = operations.selectRevertTargets(nodes, failed, 'origin').map((n) => n.name);
+			assert.deepStrictEqual(targets, ['peerB'], 'only the one activated peer is a revert target');
+		});
+
+		it('is safe with empty/undefined nodes and failed lists, and ignores failed entries with no node name', () => {
+			assert.deepStrictEqual(operations.selectRevertTargets(undefined, undefined, 'origin'), []);
+			assert.deepStrictEqual(operations.selectRevertTargets([], [{ node: null }], 'origin'), []);
+			const targets = operations.selectRevertTargets(nodes, [{ node: null }], 'origin').map((n) => n.name);
+			assert.deepStrictEqual(targets.sort(), ['peerA', 'peerB', 'peerC'], 'a null-node failed entry drops nobody');
+		});
+	});
 });
