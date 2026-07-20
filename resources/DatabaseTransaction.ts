@@ -364,7 +364,10 @@ export class DatabaseTransaction implements Transaction {
 							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
 							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
 							// re-arms per attempt, so recording per attempt matches the overload semantics.
-							recordCommitLatency(commitResolution, performance.now());
+							// `commitResolution` is declared with the wider `Promise<number | void> | void`
+							// (the abort() branch below), but in this branch it is the `commit()` promise cast to
+							// `Promise<void>` just above; recordCommitLatency only awaits it for timing.
+							recordCommitLatency(commitResolution as Promise<void>, performance.now());
 						} else {
 							try {
 								commitResolution = transaction.abort();
