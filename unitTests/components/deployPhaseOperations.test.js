@@ -19,8 +19,8 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const operations = require('#src/components/operations');
-const { DEPLOY_STAGING_DIR } = require('#src/components/Application');
-const { resetRestartNeeded } = require('#src/components/requestRestart');
+const { DEPLOY_STAGING_DIR, Application, stageApplication } = require('#src/components/Application');
+const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { getConfigPath } = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
@@ -82,6 +82,11 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		resetRestartNeeded();
 	});
 
+	// Each test below deploys fresh components, and deploying a never-live component flips the
+	// process-wide restart-needed buffer (harper#674). Start every test from a known-clean buffer so the
+	// restartNeeded() assertions below reflect only that test's own deploy, not a prior test's leak.
+	beforeEach(() => resetRestartNeeded());
+
 	it('deploy_component({activate:false}) stages into the hidden dir without going live, and returns a deployment_id', async () => {
 		const name = freshName();
 		const res = await operations.deployComponent({
@@ -116,6 +121,11 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		assert.match(await readIndex(liveDir), /op-activated/);
 		// A restart was not requested, so the message must not claim one.
 		assert.doesNotMatch(res.message, /restart/i);
+		// ...but this component was never live before, so activating it without a restart must mark one
+		// as required (harper#674) — the activate-existing leg of the two-phase restart-required fix. The
+		// message assertion above can't see this: the string never mentions "restart" on the no-restart
+		// path whether or not the marking runs, so assert the flag directly.
+		assert.strictEqual(restartNeeded(), true, 'activating a never-live component without restart marks a restart required');
 	});
 
 	it('deploy_component (two-phase default) stages then activates end-to-end', async () => {
@@ -126,12 +136,51 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		assert.strictEqual(typeof res.deployment_id, 'string');
 		const liveDir = path.join(COMPONENTS_ROOT, name);
 		assert.match(await readIndex(liveDir), /op-deployed/, 'component is live after a two-phase deploy');
+		// New component deployed without a restart → restart required (harper#674), the origin two-phase leg.
+		assert.strictEqual(restartNeeded(), true, 'a fresh two-phase deploy without restart marks a restart required');
 		// The staged copy was consumed by the swap; its per-deploy staging parent is cleaned up.
 		assert.strictEqual(
 			existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, res.deployment_id)),
 			false,
 			'per-deploy staging parent removed after activation'
 		);
+	});
+
+	it('redeploying an already-live component without restart does NOT mark a restart required', async () => {
+		// The negative direction of harper#674/#1806: an existing, already-active component's own watcher
+		// requests any restart a redeploy needs, so deploy_component must stay quiet. Two-phase can't lean
+		// on extractApplication's in-place check (it builds into a fresh staging dir), so this guards that
+		// activateApplication correctly reports isNewComponent:false when a live version already exists.
+		const name = freshName();
+		await operations.deployComponent({ project: name, payload: await makeComponentPayload('redeploy-v1') });
+		resetRestartNeeded(); // clear the flag the first (new-component) deploy legitimately set
+		await operations.deployComponent({ project: name, payload: await makeComponentPayload('redeploy-v2') });
+		assert.strictEqual(restartNeeded(), false, 'a redeploy of an already-live component must not self-request a restart');
+	});
+
+	it('peer _phase:activate takes a locally-staged build live and marks a restart for a new component', async () => {
+		// The peer leg of the fix: a peer applies the fanned-out deploy_component tagged _phase:'activate'
+		// (deployPhaseActivate), swapping its OWN locally-staged build live. It must mark restart-required
+		// per node for a genuinely-new component (harper#674) — otherwise a cluster-wide restart:false
+		// deploy reports restartRequired on the origin only. Stage the build directly (standing in for the
+		// peer's earlier stage phase), then drive the activate phase through the public op with the
+		// internal markers, exactly as the replicated fan-out does.
+		const name = freshName();
+		const deploymentId = `peer-activate-${name}`;
+		const staged = new Application({ name, payload: await makeComponentPayload('peer-activated'), stagingId: deploymentId });
+		await stageApplication(staged);
+
+		const res = await operations.deployComponent({
+			project: name,
+			_phase: 'activate',
+			_deploymentId: deploymentId,
+			restart: false,
+		});
+
+		assert.strictEqual(res.activated, true, 'peer activate reports the component activated');
+		const liveDir = path.join(COMPONENTS_ROOT, name);
+		assert.match(await readIndex(liveDir), /peer-activated/, 'the locally-staged build is now live');
+		assert.strictEqual(restartNeeded(), true, 'peer activate of a never-live component without restart marks a restart required');
 	});
 
 	it('deploy_component with two_phase:false runs the legacy one-shot path', async () => {
