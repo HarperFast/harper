@@ -20,6 +20,7 @@ testUtils.preTestPrep();
 
 const operations = require('#src/components/operations');
 const { DEPLOY_STAGING_DIR } = require('#src/components/Application');
+const { resetRestartNeeded } = require('#src/components/requestRestart');
 const { getConfigPath } = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
@@ -74,6 +75,11 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-previous'), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-aside'), { recursive: true, force: true });
+		// Deploying a genuinely-new component flips the process-wide restart-needed buffer on
+		// (harper#674, via deployComponent's requestRestart() scoping). That buffer is shared across
+		// the whole mocha process, so restore it or a later test asserting a pristine buffer
+		// (e.g. requestRestart.test.js) fails on ordering alone.
+		resetRestartNeeded();
 	});
 
 	it('deploy_component({activate:false}) stages into the hidden dir without going live, and returns a deployment_id', async () => {
