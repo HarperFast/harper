@@ -36,7 +36,12 @@ const {
 	DEPLOY_PREVIOUS_DIR,
 } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
-const { DeploymentRecorder, awaitDeploymentRow, DEFAULT_AWAIT_ROW_TIMEOUT_MS } = require('./deploymentRecorder.ts');
+const {
+	DeploymentRecorder,
+	awaitDeploymentRow,
+	markDeploymentTerminal,
+	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
+} = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
 
 /**
@@ -392,6 +397,14 @@ async function deployComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
+	const isReplicatedExecution = typeof req._deploymentId === 'string';
+
+	// Internal peer-phase execution. The two-phase cluster fan-out rides deploy_component itself, tagged
+	// with an internal `_phase` marker (`stage`/`activate`) rather than separate public operations — so
+	// the wire format is deploy_component + `_phase`, and only deploy_component is publicly exposed.
+	if (isReplicatedExecution && req._phase === 'stage') return deployPhaseStage(req);
+	if (isReplicatedExecution && req._phase === 'activate') return deployPhaseActivate(req);
+
 	// Ingest any provided credential token into the secrets store so the credential lives as
 	// replicated ciphertext (reference, not embed); already-reference entries pass through, and with
 	// no custody a literal token stays as a transient, this-node-only fallback (#1158). Peers
@@ -402,18 +415,18 @@ async function deployComponent(req) {
 	// token is not — it is used only for this node's install, then stripped before replication.
 	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
 
-	// A peer replaying a replicated ONE-SHOT deploy_component arrives with `_deploymentId` set. In
-	// two-phase mode the origin never sends deploy_component to peers (it sends stage_component /
-	// activate_component), so `_deploymentId` here always means "legacy peer".
-	const isReplicatedExecution = typeof req._deploymentId === 'string';
-
 	// Two-phase is the default, but it leans on the system table's replication channel to carry the
 	// payload and correlate the stage/activate steps across the cluster. Fall back to the legacy
-	// one-shot deploy when: the caller opted out (`two_phase: false`); this is a peer replaying a
-	// one-shot deploy; or `system` isn't replicated on this node (a narrow REPLICATION_DATABASES).
+	// one-shot deploy when: the caller opted out (`two_phase: false`); this is a legacy peer replaying a
+	// one-shot deploy (replicated, no `_phase`); or `system` isn't replicated on this node.
 	if (req.two_phase === false || isReplicatedExecution || !isSystemDatabaseReplicated()) {
 		return deployComponentOneShot(req, credentialReferences, isReplicatedExecution);
 	}
+
+	// `deployment_id` with no fresh payload → activate a previously-staged deployment (the second half of
+	// a stage-then-activate-later flow). Otherwise run the full stage+activate (which itself honors
+	// `activate: false` to stop after the cluster-wide staged barrier).
+	if (req.deployment_id) return deployComponentActivateExisting(req, credentialReferences);
 	return deployComponentTwoPhase(req, credentialReferences);
 }
 
@@ -615,7 +628,7 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 		// ===== PHASE 1: STAGE — build on every node; nothing goes live. =====
 		emit('phase', { phase: 'stage', status: 'start' });
 		await stageApplication(application);
-		const stageOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.STAGE_COMPONENT);
+		const stageOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.DEPLOY_COMPONENT, { phase: 'stage' });
 		const stageResp = await server.replication.replicateOperation(stageOp, { onPeerResult: recordPeer });
 		if (stageResp?.replicated) recorder.recordPeers(stageResp.replicated);
 		emit('phase', { phase: 'stage', status: 'done' });
@@ -637,6 +650,20 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 		// Validate the staged build before go-live (loads from the staging dir; see loadValidateComponent).
 		await loadValidateComponent({ dirPath: application.buildDirPath, emit });
 
+		// `activate: false` — stage-and-stop. The build is verified on every node; leave the row in a
+		// `staged` state and return its deployment_id so a later deploy_component({deployment_id}) can
+		// take it live. Nothing has gone live anywhere.
+		if (req.activate === false) {
+			emit('phase', { phase: 'staged', status: 'done' });
+			await recorder.finish('staged');
+			return {
+				message: `Staged component: ${application.name}`,
+				project: application.name,
+				staged: true,
+				deployment_id: recorder.deploymentId,
+			};
+		}
+
 		// ===== PHASE 2: ACTIVATE — atomic swap + restart, now the bits are in place everywhere. =====
 		// Persist root config now (not before staging) so a `package` config never points at a version
 		// that failed to stage.
@@ -646,7 +673,8 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 
 		emit('phase', { phase: 'activate', status: 'start' });
 		await activateApplication(application);
-		const activateOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.ACTIVATE_COMPONENT, {
+		const activateOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.DEPLOY_COMPONENT, {
+			phase: 'activate',
 			restart: req.restart,
 			deploymentId: recorder.deploymentId,
 		});
@@ -739,52 +767,21 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 }
 
 /**
- * stage_component — phase 1 of a two-phase deploy, as a first-class operation. Builds the incoming
- * version into the hidden staging directory on this node (and, when invoked directly rather than via
- * replication, replicates the stage across the cluster). Never writes the live component directory,
- * writes no root config, and never restarts — so it is safe to run cluster-wide and gate on.
- *
- * Reached three ways: directly by an operator (stage now, activate later), by a peer replaying a
- * replicated stage (`_deploymentId` set), and indirectly — deploy_component drives staging itself,
- * so it does not call this handler.
+ * Peer stage phase (internal — NOT a public operation). Runs on a peer when the origin fans out
+ * deploy_component tagged `_phase: 'stage'`: fetch the tarball from the replicated hdb_deployment row,
+ * build + `npm install` into the hidden staging directory, and load-validate — never touching the live
+ * path, writing config, or restarting. A failure here fails this peer's stage, which the origin's
+ * barrier catches. No recorder (the origin owns the row) and no re-replication.
  */
-async function stageComponent(req) {
-	if (req.project) {
-		req.project = path.parse(req.project).name;
-	} else if (req.package) {
-		req.project = getProjectNameFromPackage(req.package);
-	}
-	const validation = validator.stageComponentValidator(req);
-	if (validation) throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
-
-	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
-	req.credentials = await ingestCredentials(req, req.credentials, req.project);
-	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
-	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
-
-	const isReplicatedExecution = typeof req._deploymentId === 'string';
-	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
-	if (emitter && !req.progress) req.progress = emitter;
-	// Standalone stage records so it has a deployment_id + payload row for peers to fetch; a peer
-	// replaying the stage skips recording (the origin owns the row).
-	const recorder = isReplicatedExecution
-		? null
-		: await DeploymentRecorder.create({
-				project: req.project,
-				package_identifier: req.package ?? null,
-				user: req.hdb_user?.username,
-				restart_mode: null,
-				credentials: credentialReferences.length ? credentialReferences : null,
-				emitter,
-			});
-	if (recorder) req._deploymentId = recorder.deploymentId;
-	const emit = (event, data) => emitter?.emit(event, data);
+async function deployPhaseStage(req) {
+	const { resolveCredentials } = require('./secretOperations.ts');
+	const emitter = null; // peers stream nothing back; the origin owns the emitter/recorder
+	const emit = () => {};
 	const installCapture = createInstallCapture();
 	let application;
-
 	try {
-		const extractionPayload = await sourceExtractionPayload({ req, recorder, isReplicatedExecution });
-		const resolvedCredentials = await resolveNodeCredentials({ req, resolveCredentials, isReplicatedExecution });
+		const extractionPayload = await sourceExtractionPayload({ req, recorder: null, isReplicatedExecution: true });
+		const resolvedCredentials = await resolveNodeCredentials({ req, resolveCredentials, isReplicatedExecution: true });
 		application = buildDeployApplication({
 			req,
 			extractionPayload,
@@ -794,123 +791,84 @@ async function stageComponent(req) {
 			emitter,
 			emit,
 		});
-		if (credentialReferences.length) req.credentials = credentialReferences;
-		else delete req.credentials;
-		delete req.progress;
-
-		emit('phase', { phase: 'stage', status: 'start' });
 		await stageApplication(application);
-		// Surface load-time errors on the staged build before it can be activated, matching what
-		// deployComponentTwoPhase does on the origin (and closing the gap where a standalone
-		// stage_component never validated at all). Loads the STAGED dir (application.buildDirPath). This
-		// is a no-op on the main thread — where replicated peer executions run — because app code must
-		// not load there; so load-time faults are gated where the stage runs on a worker (origin op-API
-		// worker, standalone stage), while fetch + install remain gated cluster-wide by the barrier.
+		// Surface load-time errors on the staged build (no-op on the main thread, where replicated peer
+		// executions run — app code must not load there; see loadValidateComponent + DESIGN.md).
 		await loadValidateComponent({ dirPath: application.buildDirPath, emit });
-		emit('phase', { phase: 'stage', status: 'done' });
-
-		const response = { message: `Staged component: ${req.project}`, project: req.project, staged: true };
-		if (recorder) {
-			response.deployment_id = recorder.deploymentId;
-			// Replicate staging to peers so the bits land cluster-wide. Keep the payload in the body only
-			// when the row can't carry it (system not replicated on this node).
-			if (isSystemDatabaseReplicated()) delete req.payload;
-			const stageOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.STAGE_COMPONENT, {
-				includePayload: !isSystemDatabaseReplicated(),
-			});
-			recorder.seal();
-			const rep = await server.replication.replicateOperation(stageOp, {
-				onPeerResult: (result) => {
-					recorder.recordPeer(result);
-					emit('peer', result);
-				},
-			});
-			if (rep?.replicated) recorder.recordPeers(rep.replicated);
-			if (!req.ignore_replication_errors) {
-				const failed = recorder.getFailedPeers();
-				if (failed.length > 0) {
-					throw new ServerError(
-						`Component '${req.project}' failed to stage on ${failed.length} of ` +
-							`${recorder.row.peer_results.length} peer node(s): ${describePeers(failed)}. ` +
-							`See deployment ${recorder.deploymentId} (get_deployment).`
-					);
-				}
-			}
-			// Leave the row in a 'staged' resting state — the build exists cluster-wide but nothing is
-			// live yet; a subsequent activate_component (or the caller) takes it live.
-			emit('phase', { phase: 'staged', status: 'done' });
-			await recorder.finish('staged');
-		}
-		return response;
+		return { message: `Staged component: ${req.project}`, project: req.project, staged: true };
 	} catch (err) {
 		if (application) await discardStagedApplication(application).catch(() => {});
-		throw await finalizeDeployFailure({ err, recorder, installCapture, emit });
+		throw await finalizeDeployFailure({ err, recorder: null, installCapture, emit });
 	}
 }
 
 /**
- * activate_component — phase 2 of a two-phase deploy, as a first-class operation. Atomically swaps a
- * previously-staged build (identified by `deployment_id`) into the live component directory, persists
- * the component's root config for a `package` deploy, and restarts as requested. When invoked
- * directly it also replicates the activation across the cluster.
- *
- * Reached two ways: directly by an operator to take a prior stage live, and by a peer replaying a
- * replicated activate (`_deploymentId` set). deploy_component drives activation itself.
+ * Peer activate phase (internal — NOT a public operation). Runs on a peer when the origin fans out
+ * deploy_component tagged `_phase: 'activate'`: atomically swap the already-staged build (by deployment
+ * id) into the live path, persist root config for a package deploy, and restart if the origin asked
+ * for an immediate restart. No recorder, no re-replication.
  */
-async function activateComponent(req) {
-	if (req.project) req.project = path.parse(req.project).name;
-	const validation = validator.activateComponentValidator(req);
-	if (validation) throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
-
-	const isReplicatedExecution = typeof req._deploymentId === 'string';
-	const stagingId = req._deploymentId ?? req.deployment_id;
-	if (!stagingId) {
-		throw handleHDBError(
-			new Error(),
-			`'deployment_id' is required to activate a staged component`,
-			HTTP_STATUS_CODES.BAD_REQUEST
-		);
-	}
+async function deployPhaseActivate(req) {
 	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
 	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
+	const application = new Application({
+		name: req.project,
+		packageIdentifier: req.package,
+		stagingId: req._deploymentId,
+	});
+	await activateApplication(application);
+	if (req.package) await writeComponentRootConfig(req, credentialReferences);
+	// The origin sets restart=true on the sub-op only for an immediate restart; rolling restarts are
+	// driven separately by the origin via a replicated restart_service job.
+	if (req.restart === true) manageThreads.restartWorkers('http');
+	return { message: `Activated component: ${req.project}`, project: req.project, activated: true };
+}
 
-	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
-	const emit = (event, data) => emitter?.emit(event, data);
+/**
+ * Activate a previously-staged deployment cluster-wide — the second half of a stage-then-activate
+ * flow, reached as `deploy_component({ deployment_id })` with no fresh payload. Swaps the staged build
+ * into the live path on the origin, replicates the activate phase to peers (each activates its own
+ * staged copy of the same deployment id), restarts, and marks the deployment row success.
+ */
+async function deployComponentActivateExisting(req, credentialReferences) {
+	const stagingId = req.deployment_id;
+	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
+	const emitter = req.progress ?? new ProgressEmitter();
+	if (!req.progress) req.progress = emitter;
+	const emit = (event, data) => emitter.emit(event, data);
 	const rollingRestart = req.restart === 'rolling';
-	// Reconstruct the Application against the staged build. Only name + stagingId are needed to locate
-	// and swap it — the staged directory already holds the fully-installed incoming version.
 	const application = new Application({ name: req.project, packageIdentifier: req.package, stagingId });
 
 	emit('phase', { phase: 'activate', status: 'start' });
 	await activateApplication(application);
 	emit('phase', { phase: 'activate', status: 'done' });
-
-	// Persist root config now that the component is live (package deploys, on every node).
+	// Persist root config now that the component is live (package deploys).
 	if (req.package) await writeComponentRootConfig(req, credentialReferences);
 
-	const response = { message: `Activated component: ${req.project}`, project: req.project, activated: true };
+	// Replicate the activate phase to peers (each activates its own staged copy of this deployment id).
+	req._deploymentId = stagingId;
+	delete req.progress;
+	const activateOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.DEPLOY_COMPONENT, {
+		phase: 'activate',
+		restart: rollingRestart ? false : req.restart,
+		deploymentId: stagingId,
+	});
+	const rep = await server.replication.replicateOperation(activateOp, {});
 
-	// Replicate the activation to peers (direct invocation only; a peer replaying an activate must not
-	// re-fan it out).
-	if (!isReplicatedExecution) {
-		delete req.progress;
-		const restartForPeers = rollingRestart ? false : req.restart;
-		const activateOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.ACTIVATE_COMPONENT, {
-			restart: restartForPeers,
-			deploymentId: stagingId,
-		});
-		const rep = await server.replication.replicateOperation(activateOp, {});
-		if (rep?.replicated) response.replicated = rep.replicated;
-	}
+	const response = {
+		message: `Activated component: ${req.project}`,
+		project: req.project,
+		activated: true,
+		deployment_id: stagingId,
+	};
+	if (rep?.replicated) response.replicated = rep.replicated;
 
-	// Restart on this node. A peer replaying an immediate-restart activate restarts locally; the
-	// rolling path is driven only by the direct invoker via a replicated restart_service job.
 	if (req.restart === true) {
 		emit('phase', { phase: 'restart', status: 'start' });
 		manageThreads.restartWorkers('http');
 		emit('phase', { phase: 'restart', status: 'done' });
 		response.message = `Activated component: ${req.project}, restarting Harper`;
-	} else if (rollingRestart && !isReplicatedExecution) {
+	} else if (rollingRestart) {
 		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
 		emit('phase', { phase: 'restart', status: 'start' });
 		const jobResponse = await serverUtilities.executeJob({
@@ -922,6 +880,12 @@ async function activateComponent(req) {
 		response.restartJobId = jobResponse.job_id;
 		response.message = `Activated component: ${req.project}, restarting Harper`;
 	}
+
+	// Best-effort: flip the staged deployment row (left 'staged' by the stage-and-stop) to success now
+	// that it is live. Observability only — a tracking-write failure must not fail the activate.
+	await markDeploymentTerminal(stagingId, 'success').catch((err) =>
+		log.warn('Failed to mark staged deployment as activated', err)
+	);
 	return response;
 }
 
@@ -1156,11 +1120,14 @@ async function loadValidateComponent({ dirPath, emit }) {
 	if (lastError) throw lastError;
 }
 
-// Build a replicated sub-operation body (stage_component / activate_component) from the deploy
-// request. Carries only what a peer needs: project, the deployment id (correlation + payload lookup +
-// staging id), the build/config inputs, and credential REFERENCES (tokens are already stripped).
-function buildReplicatedSubOp(req, operation, { includePayload = false, restart, deploymentId } = {}) {
+// Build a replicated sub-operation body for the peer fan-out. For the two-phase peer phases this is
+// `deploy_component` tagged with an internal `_phase` marker (`stage`/`activate`) — the wire format —
+// so no separate public op is exposed; revert uses operation `revert_component`. Carries only what a
+// peer needs: project, the deployment id (correlation + payload lookup + staging id), the internal
+// `_phase`, the build/config inputs, and credential REFERENCES (tokens are already stripped).
+function buildReplicatedSubOp(req, operation, { includePayload = false, restart, deploymentId, phase } = {}) {
 	const op = { operation, project: req.project, _deploymentId: deploymentId ?? req._deploymentId };
+	if (phase) op._phase = phase;
 	if (req.package) op.package = req.package;
 	if (req.install_command != null) op.install_command = req.install_command;
 	if (req.install_timeout != null) op.install_timeout = req.install_timeout;
@@ -1680,8 +1647,6 @@ exports.addComponent = addComponent;
 exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
-exports.stageComponent = stageComponent;
-exports.activateComponent = activateComponent;
 exports.revertComponent = revertComponent;
 exports.selectRevertTargets = selectRevertTargets; // exported for unit testing the revert_on_failure node-targeting
 exports.getComponents = getComponents;

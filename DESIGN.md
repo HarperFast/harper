@@ -308,25 +308,38 @@ other future cause would still report success silently; that's a deferred, separ
 
 ## Two-phase deploy: stage then activate (`components/Application.ts`, `components/operations.js`)
 
-`deploy_component` splits into two replicated phases so a cluster deploy is all-or-nothing at the
-point of go-live. **Phase 1 (`stage_component`)** builds the incoming version — download/`npm pack`
-(incl. a git clone), extract, `npm install` — into a hidden staging directory on every node.
-**Phase 2 (`activate_component`)** atomically renames the staged copy into the live component path and
-restarts. `deploy_component` orchestrates the two: it stages on the origin, replicates
-`stage_component` to peers, **waits for every node to report a successful stage before any node
-activates** (`ignore_replication_errors` opts out of the barrier), then replicates
-`activate_component`. If a node can't fetch the package or fails `npm install`, it fails during
-staging while the live component is still untouched _on every node_ — where the old one-shot path
-could leave a peer half-installed after other peers had already restarted onto the new code. The
-request/response contract is unchanged; only the SSE phase names differ (`stage`/`activate` vs the
-old `prepare`/`replicate`). `two_phase: false` forces the legacy one-shot path.
+`deploy_component` runs internally as two replicated phases so a cluster deploy is all-or-nothing at
+the point of go-live. **Phase 1 (stage)** builds the incoming version — download/`npm pack` (incl. a
+git clone), extract, `npm install` — into a hidden staging directory on every node. **Phase 2
+(activate)** atomically renames the staged copy into the live component path and restarts. The origin
+stages locally, **waits for every node to report a successful stage before any node activates**
+(`ignore_replication_errors` opts out of the barrier), then activates. If a node can't fetch the
+package or fails `npm install`, it fails during staging while the live component is still untouched _on
+every node_ — where the old one-shot path could leave a peer half-installed after other peers had
+already restarted onto the new code. The request/response contract is unchanged; only the SSE phase
+names differ (`stage`/`activate` vs the old `prepare`/`replicate`). `two_phase: false` forces the
+legacy one-shot path.
+
+**There is only one public operation — `deploy_component`.** The two phases are NOT separate public
+operations; the peer fan-out is `deploy_component` itself tagged with an internal `_phase: 'stage' |
+'activate'` marker (the same `_`-prefixed internal-field convention peers already branch on, alongside
+`_deploymentId`). `deployComponent` dispatches: a replicated execution with `_phase` runs the peer
+stage/activate work (`deployPhaseStage` / `deployPhaseActivate`) and never re-fans; a public call runs
+the origin orchestrator. Two public properties expose the phases when an operator wants them separated
+(e.g. pre-stage the cluster now, flip later — or a CI-stages / approver-activates split): `activate:
+false` stages cluster-wide and stops, returning the `deployment_id` in a `staged` state; passing that
+`deployment_id` back to `deploy_component` (with no new payload) activates the already-staged build.
+This was a deliberate API-surface choice (harper#1849 review): peer fan-out needs a wire format, not
+two extra public ops, and folding the phases into `deploy_component` keeps the surface at one op while
+the convergence properties cover the stage-now/activate-later use case. (`revert_component` stays a
+distinct public op — it is a rollback, not a deploy phase.)
 
 **Scope of the barrier's guarantee: fetch + install, not load.** The cluster-wide "nobody activates
 until everybody staged" guarantee covers the download/`npm pack` and `npm install` steps — the slow,
 failure-prone work. The pre-go-live component _load_ check (`loadValidateComponent`, which surfaces a
 component that installs cleanly but throws at load) runs during stage on the origin and on any node
-whose stage executes on a worker (the op-API worker for a standalone `stage_component`), but it is a
-no-op on the main thread — and replicated peer executions of `stage_component` run on the main thread
+whose stage executes on a worker (e.g. the op-API worker for an `activate: false` stage), but it is a
+no-op on the main thread — and replicated peer stage executions run on the main thread
 (`replicateOperation` → `sendOperationToNode` execute there), where app code deliberately isn't
 loaded. So a load-time-only fault on a peer is not caught by the barrier; it surfaces at
 activate/restart like any other. Gating load-time faults cluster-wide would require dispatching the
@@ -343,9 +356,9 @@ component, and it is **not** the watched base of any component's file watcher (t
 each live component dir, `EntryHandler`/`deriveCommonPatternBase`) — so building here fires no
 restart-on-change events and needs no `deploy:start` watcher suppression. That suppression is now
 scoped to `activateApplication`, the only phase that writes the live path. Staging is deterministic
-from the deployment id precisely so `activate_component` (a separate replicated operation, and on
-peers a separate invocation from `stage_component`) can reconstruct the same path the stage built —
-peers build a fresh `Application` per sub-operation, so there is no shared in-memory handle to rely
+from the deployment id precisely so the activate phase (a separate replicated `deploy_component`
+invocation on peers, tagged `_phase: 'activate'`) can reconstruct the same path the stage built —
+peers build a fresh `Application` per phase invocation, so there is no shared in-memory handle to rely
 on. The deployment id sits ABOVE the component name (`…/<deploymentId>/<name>`, not
 `…/<name>/<deploymentId>`) for two reasons: the leaf directory's basename is then the real component
 name, which the pre-go-live validation load needs (`componentLoader` keys the `ApplicationScope` and
@@ -363,22 +376,22 @@ phases by deployment id. When `system` is excluded from a narrow `REPLICATION_DA
 caller passes `two_phase: false`, or the invocation is a peer replaying a one-shot deploy,
 `deploy_component` falls back to `deployComponentOneShot` (the previous behavior, preserved verbatim).
 Cross-version skew is a non-issue by policy — a cluster stays in lockstep on its Harper version, so
-every node understands `stage_component`/`activate_component` — which is why there is no capability
-negotiation on the fan-out.
+every node understands the `_phase`-tagged `deploy_component` fan-out — which is why there is no
+capability negotiation on it.
 
 **Replicator contract this rides on (`harper-pro/replication/replicator.ts`).**
 `server.replication.replicateOperation(op, {onPeerResult})` fans `op` to every node in `server.nodes`
 in parallel, setting `op.replicated = false` on the copy it sends so a peer never re-fans (the deploy
-handlers instead detect a replicated execution by the presence of `_deploymentId`, which is always set
-on the sub-operations). Per-peer failures never throw — `sendOperationToNode` rejections are caught and
+handlers additionally detect a replicated execution by the presence of `_deploymentId` — always set on
+the sub-operations — and run the peer stage/activate work off the `_phase` marker without re-fanning). Per-peer failures never throw — `sendOperationToNode` rejections are caught and
 surface as `{status:'failed', reason, node}` entries in the returned `replicated[]` array and via
 `onPeerResult`, which is exactly the shape `DeploymentRecorder.normalizePeerResult` consumes. Peers
 authenticate node-to-node by TLS certificate, and the receive side runs the op via
 `server.operation(data, {user}, !isAuthorizedNode)` — for a trusted cluster node the authorize flag is
-`false`, so a replicated super-user op skips the permission gate. That is why `stage_component` /
-`activate_component` / `revert_component` (registered with the same `permission(true, [])` as
-`deploy_component`, dispatched by `operation` name) replicate without an `hdb_user`, identically to the
-long-proven `deploy_component` fan-out.
+`false`, so a replicated super-user op skips the permission gate. That is why the `_phase`-tagged
+`deploy_component` fan-out and `revert_component` (registered with the same `permission(true, [])`,
+dispatched by `operation` name) replicate without an `hdb_user`, identically to the long-proven
+one-shot `deploy_component` fan-out.
 
 **Reversibility: retained previous + `revert_component`.** `activateApplication` no longer discards the
 outgoing live version — it retains it as `.deploy-previous/<name>` (`retainAsPrevious`, evicting the

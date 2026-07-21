@@ -455,6 +455,26 @@ export class DeploymentRecorder {
 	}
 }
 
+/**
+ * Best-effort terminal-status update for an existing deployment row by id, used when a later operation
+ * finishes a deployment the current process didn't record with a live DeploymentRecorder — e.g.
+ * `deploy_component({ deployment_id })` activating a build that an earlier stage-and-stop left in the
+ * `staged` state. No-op when the row (or the table) is absent; observability only, so callers treat a
+ * failure here as non-fatal.
+ */
+export async function markDeploymentTerminal(
+	deploymentId: string,
+	status: 'success' | 'failed' | 'rolled_back' | 'staged'
+): Promise<void> {
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	if (!table) return;
+	const row = await table.get(deploymentId);
+	if (!row) return;
+	row.status = status;
+	row.completed_at = Date.now();
+	await table.put(row);
+}
+
 // Default peer-wait budget for the hdb_deployment row to replicate. A deploy is a rare,
 // heavyweight, user-initiated operation, and the `system`-table replication channel can be
 // backlogged behind unrelated writes when several deploys land in succession, so the row can

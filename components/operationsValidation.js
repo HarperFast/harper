@@ -25,8 +25,6 @@ module.exports = {
 	dropCustomFunctionProjectValidator,
 	packageComponentValidator,
 	deployComponentValidator,
-	stageComponentValidator,
-	activateComponentValidator,
 	revertComponentValidator,
 	setComponentFileValidator,
 	getComponentFileValidator,
@@ -489,8 +487,19 @@ function deployComponentValidator(req) {
 		deployment_timeout: Joi.number().min(0).optional(),
 		force: Joi.boolean().optional(),
 		ignore_replication_errors: Joi.boolean().optional(),
+		// Stop after the incoming version is staged and verified cluster-wide, without going live. Returns
+		// the staged deployment_id; a later deploy_component with that deployment_id activates it. Defaults
+		// to true (full stage + activate).
+		activate: Joi.boolean().optional(),
+		// Activate a previously-staged deployment (from an `activate: false` stage) cluster-wide. Same safe
+		// charset as `project` because it becomes a staging-dir path segment (`.deploy-staging/<id>/<name>`)
+		// — a `../` value would otherwise resolve the staging source outside `.deploy-staging`.
+		deployment_id: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).optional().messages({
+			'string.pattern.base': `'deployment_id' must only contain letters, numbers, dashes, and underscores`,
+		}),
 		// If the activate phase fails on some nodes (leaving the cluster split across versions), swap the
-		// whole cluster back to the retained previous version before reporting the failure. Off by default.
+		// nodes that did activate back to the retained previous version before reporting the failure. Off
+		// by default.
 		revert_on_failure: Joi.boolean().optional(),
 		// Opt out of the two-phase (stage-then-activate) deploy and use the legacy one-shot path instead.
 		// Defaults to two-phase.
@@ -504,74 +513,6 @@ function deployComponentValidator(req) {
 	}).with('urlPath', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);
-}
-
-/**
- * Validate stage_component requests — phase 1 of a two-phase deploy. Accepts the same build-time
- * inputs as deploy_component (package/payload, install options, credentials) but no go-live controls
- * (`restart`), since staging never restarts. `restart` is intentionally absent; a stray one is
- * ignored (operations validate with allowUnknown).
- * @param req
- * @returns {*}
- */
-function stageComponentValidator(req) {
-	const stageSchema = Joi.object({
-		project: Joi.string()
-			.pattern(PROJECT_FILE_NAME_REGEX)
-			.required()
-			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
-		package: Joi.string().optional(),
-		install_command: Joi.string().optional(),
-		install_timeout: Joi.number().optional(),
-		install_allow_scripts: Joi.boolean().optional(),
-		deployment_timeout: Joi.number().min(0).optional(),
-		force: Joi.boolean().optional(),
-		// urlPath is not applied at stage time (config is written at activate), but it is accepted and
-		// carried through so a single request body can flow stage → activate unchanged.
-		urlPath: URL_PATH_SCHEMA,
-		credentials: CREDENTIALS_ARRAY_SCHEMA,
-		registryAuth: FORBIDDEN_REGISTRY_AUTH,
-	}).with('urlPath', 'package');
-
-	return validator.validateBySchema(req, stageSchema);
-}
-
-/**
- * Validate activate_component requests — phase 2 of a two-phase deploy. Swaps an already-staged
- * build (identified by `deployment_id`) into the live path and optionally restarts. Also carries the
- * config-persistence inputs (package/install/credentials/urlPath) so a `package` deploy's root config
- * is written at go-live rather than before the bits are in place.
- * @param req
- * @returns {*}
- */
-function activateComponentValidator(req) {
-	const activateSchema = Joi.object({
-		project: Joi.string()
-			.pattern(PROJECT_FILE_NAME_REGEX)
-			.required()
-			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
-		// Identifies which staged build to activate. Required for a standalone activate; the
-		// deploy_component orchestrator supplies it as the deployment id it staged under. Constrained to
-		// the same safe charset as `project` because it becomes a path segment of the staging directory
-		// (`.deploy-staging/<deployment_id>/<name>`) — without this a `../` value would resolve the staging
-		// source outside `.deploy-staging`. Defense-in-depth (the op is super_user-only).
-		deployment_id: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).optional().messages({
-			'string.pattern.base': `'deployment_id' must only contain letters, numbers, dashes, and underscores`,
-		}),
-		package: Joi.string().optional(),
-		install_command: Joi.string().optional(),
-		install_timeout: Joi.number().optional(),
-		install_allow_scripts: Joi.boolean().optional(),
-		deployment_timeout: Joi.number().min(0).optional(),
-		restart: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('rolling')).optional(),
-		force: Joi.boolean().optional(),
-		ignore_replication_errors: Joi.boolean().optional(),
-		urlPath: URL_PATH_SCHEMA,
-		credentials: CREDENTIALS_ARRAY_SCHEMA,
-		registryAuth: FORBIDDEN_REGISTRY_AUTH,
-	}).with('urlPath', 'package');
-
-	return validator.validateBySchema(req, activateSchema);
 }
 
 /**

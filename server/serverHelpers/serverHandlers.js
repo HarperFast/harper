@@ -33,8 +33,6 @@ const { ProgressEmitter, createSSEResponseStream } = require('./progressEmitter.
 // the client disconnects (the emitter's abort signal), so subscribers see new lines live.
 const SSE_PROGRESS_OPERATIONS = new Set([
 	terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
-	terms.OPERATIONS_ENUM.STAGE_COMPONENT,
-	terms.OPERATIONS_ENUM.ACTIVATE_COMPONENT,
 	terms.OPERATIONS_ENUM.REVERT_COMPONENT,
 	terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
 	terms.OPERATIONS_ENUM.READ_LOG,

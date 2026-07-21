@@ -286,8 +286,6 @@ requiredPermissions.set(functionsOperations.addComponent.name, new (permission a
 requiredPermissions.set(functionsOperations.dropCustomFunctionProject.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.packageComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.deployComponent.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.stageComponent.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.activateComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.revertComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(
 	deploymentOperations.handleListDeployments.name,

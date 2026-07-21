@@ -21,12 +21,17 @@ import { initConfig, getConfigPath } from '../config/configUtils.ts';
 const OP_ALIASES = {
 	deploy: 'deploy_component',
 	package: 'package_component',
-	// Two-phase deploy: `harper stage` packages + uploads the incoming version to a hidden staging
-	// dir cluster-wide (no go-live); `harper activate` swaps a staged deployment live; `harper revert`
-	// swaps the live version back to its retained previous version.
-	stage: 'stage_component',
-	activate: 'activate_component',
 	revert: 'revert_component',
+};
+
+// CLI verbs that are sugar over `deploy_component` with preset properties (the stage/activate phases
+// are folded into deploy_component; there are no separate stage/activate operations). `harper stage`
+// packages + uploads the incoming version to a hidden staging dir cluster-wide and stops before
+// go-live (`activate: false`), printing the staged deployment_id; `harper activate deployment_id=<id>`
+// takes that staged deployment live (no upload).
+const OP_VERB_PROPS: Record<string, Record<string, unknown>> = {
+	stage: { operation: 'deploy_component', activate: false },
+	activate: { operation: 'deploy_component' },
 };
 
 // Shown for any local-instance connection failure (missing pid, missing/stale domain
@@ -40,7 +45,7 @@ const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or
 // deploy completes. Add an operation here only after wiring its server-side
 // SSE_PROGRESS_OPERATIONS entry — otherwise the server returns the buffered JSON path and
 // the SSE parser sees no events.
-const SSE_OPERATIONS = new Set(['deploy_component', 'stage_component', 'activate_component', 'revert_component']);
+const SSE_OPERATIONS = new Set(['deploy_component', 'revert_component']);
 
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
 // They never get serialized into the request body.
@@ -161,11 +166,12 @@ function operationFields(req: any): any {
 
 export { cliOperations, buildRequest };
 
-// Package the current working directory into a multipart tarball upload. Shared by `deploy` and
-// `stage` — both send the incoming component version as a `payload` (unless a `package` identifier is
-// given, in which case the server fetches it and there is nothing to upload).
+// Package the current working directory into a multipart tarball upload for deploy_component. Covers
+// `harper deploy` and `harper stage` (deploy_component with activate:false) — both upload the incoming
+// version. Nothing to package when a `package` identifier is given (the server fetches it) or when
+// activating a previously-staged deployment (`deployment_id`, i.e. `harper activate`).
 const packageCwdForUpload = async (req) => {
-	if (req.package) {
+	if (req.package || req.deployment_id) {
 		return;
 	}
 
@@ -197,10 +203,10 @@ const packageCwdForUpload = async (req) => {
 };
 
 const PREPARE_OPERATION: any = {
+	// deploy_component covers `harper deploy` and `harper stage` (activate:false); packageCwdForUpload
+	// itself skips the upload for a `package` identifier or a `deployment_id` activate. revert takes no
+	// payload, so it needs no prep step.
 	deploy_component: packageCwdForUpload,
-	// `harper stage` uploads the same tarball as `harper deploy`. activate/revert take no payload
-	// (they operate on an already-staged / already-retained version), so they need no prep step.
-	stage_component: packageCwdForUpload,
 };
 
 /**
@@ -211,6 +217,9 @@ function buildRequest(): any {
 	for (const arg of process.argv.slice(2)) {
 		if (OP_ALIASES.hasOwnProperty(arg)) {
 			req.operation = OP_ALIASES[arg];
+		} else if (OP_VERB_PROPS.hasOwnProperty(arg)) {
+			// Sugar verb (stage/activate) → deploy_component + preset props (e.g. activate:false).
+			Object.assign(req, OP_VERB_PROPS[arg]);
 		} else if (arg.includes('=')) {
 			let [first, ...rest] = arg.split('=');
 			let restStr: any = rest.join('=');

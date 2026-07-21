@@ -76,9 +76,13 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-aside'), { recursive: true, force: true });
 	});
 
-	it('stage_component builds the incoming version into staging without going live, and returns a deployment_id', async () => {
+	it('deploy_component({activate:false}) stages into the hidden dir without going live, and returns a deployment_id', async () => {
 		const name = freshName();
-		const res = await operations.stageComponent({ project: name, payload: await makeComponentPayload('op-staged') });
+		const res = await operations.deployComponent({
+			project: name,
+			payload: await makeComponentPayload('op-staged'),
+			activate: false,
+		});
 
 		assert.strictEqual(res.staged, true);
 		assert.strictEqual(res.project, name);
@@ -89,26 +93,23 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		assert.strictEqual(existsSync(path.join(COMPONENTS_ROOT, name)), false, 'staging did not touch the live path');
 	});
 
-	it('activate_component takes a prior stage live', async () => {
+	it('deploy_component({deployment_id}) takes a prior stage live', async () => {
 		const name = freshName();
-		const staged = await operations.stageComponent({
+		const staged = await operations.deployComponent({
 			project: name,
 			payload: await makeComponentPayload('op-activated'),
+			activate: false,
 		});
-		const res = await operations.activateComponent({ project: name, deployment_id: staged.deployment_id });
+		const res = await operations.deployComponent({ project: name, deployment_id: staged.deployment_id });
 
 		assert.strictEqual(res.activated, true);
 		assert.strictEqual(res.project, name);
+		assert.strictEqual(res.deployment_id, staged.deployment_id);
 		const liveDir = path.join(COMPONENTS_ROOT, name);
 		assert.ok(existsSync(liveDir), 'live component dir now exists');
 		assert.match(await readIndex(liveDir), /op-activated/);
 		// A restart was not requested, so the message must not claim one.
 		assert.doesNotMatch(res.message, /restart/i);
-	});
-
-	it('activate_component rejects when no deployment_id is supplied', async () => {
-		const name = freshName();
-		await assert.rejects(() => operations.activateComponent({ project: name }), /deployment_id.*required/i);
 	});
 
 	it('deploy_component (two-phase default) stages then activates end-to-end', async () => {
