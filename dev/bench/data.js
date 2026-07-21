@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784621043601,
+  "lastUpdate": 1784621046194,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -6216,6 +6216,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 51.45,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "jcohen-hdb",
+            "username": "jcohen-hdb",
+            "email": "jacob@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "1e1edc666ad373a0fbfec4df4d3f0e130be13529",
+          "message": "Ignore node_modules symlinked into integration fixtures by dev-mode boots\n\nharper dev <fixture> runs symlinkHarperModule against the component dir,\nplanting node_modules/harper inside integrationTests/fixtures/* — untracked\nand unignored, it has previously slipped into a commit (#1828 required an\namend). Discovered during runtime verification of this branch.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-20T18:56:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/1e1edc666ad373a0fbfec4df4d3f0e130be13529"
+        },
+        "date": 1784621045564,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.7,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.29,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 19.56,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.43,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 23.83,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.62,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 35.2,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.54,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 18.53,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 46.75,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 177.69,
             "unit": "ms"
           }
         ]
