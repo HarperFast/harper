@@ -327,18 +327,25 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 			configuration: { baseURL: `${ctx.harper.httpURL}/v1` },
 		});
 
+		// Assert the fixture's exact vector ([0.1, 0.2, 0.3, 0.4]), not just
+		// "nonempty finite numbers": a regression that returns the JSON float array
+		// while the SDK requested base64 is decoded by the client to [0], which
+		// still passes shape-only checks. Exact values validate the full unmodified
+		// LangChain/OpenAI-SDK base64 round trip end-to-end.
+		const expected = [0.1, 0.2, 0.3, 0.4];
+		const assertFixtureVector = (v, label) => {
+			assert.ok(Array.isArray(v), `${label}: expected an array embedding`);
+			assert.equal(v.length, expected.length, `${label}: expected dimension ${expected.length}, got ${v.length}`);
+			for (let i = 0; i < expected.length; i++) {
+				assert.ok(Math.abs(v[i] - expected[i]) < 1e-6, `${label}: component ${i} = ${v[i]}, expected ~${expected[i]}`);
+			}
+		};
+
 		const vector = await embeddings.embedQuery('hello world');
-		assert.ok(Array.isArray(vector), 'expected an array embedding');
-		assert.ok(vector.length > 0, 'expected non-empty embedding');
-		assert.ok(
-			vector.every((n) => typeof n === 'number' && Number.isFinite(n)),
-			'expected finite numeric embedding values'
-		);
+		assertFixtureVector(vector, 'embedQuery');
 
 		const batch = await embeddings.embedDocuments(['foo', 'bar', 'baz']);
 		assert.equal(batch.length, 3);
-		for (const v of batch) {
-			assert.ok(Array.isArray(v) && v.length > 0);
-		}
+		batch.forEach((v, i) => assertFixtureVector(v, `embedDocuments[${i}]`));
 	});
 });
