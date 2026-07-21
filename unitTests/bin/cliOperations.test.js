@@ -766,3 +766,40 @@ describe('cliOperations', () => {
 		});
 	});
 });
+
+describe('deploy CLI verbs (stage / activate fold into deploy_component)', () => {
+	const { buildRequest, verbRequirementError } = cliOperationsModule;
+	let savedArgv;
+	beforeEach(() => {
+		savedArgv = process.argv;
+	});
+	afterEach(() => {
+		process.argv = savedArgv;
+	});
+
+	it('`stage` maps to deploy_component with activate:false', () => {
+		process.argv = ['node', 'harper', 'stage', 'project=my_app'];
+		const req = buildRequest();
+		assert.strictEqual(req.operation, 'deploy_component');
+		assert.strictEqual(req.activate, false);
+	});
+
+	it('`activate` with a deployment_id maps to deploy_component and passes the verb guard', () => {
+		process.argv = ['node', 'harper', 'activate', 'project=my_app', 'deployment_id=abc-123'];
+		const req = buildRequest();
+		assert.strictEqual(req.operation, 'deploy_component');
+		assert.strictEqual(req.deployment_id, 'abc-123');
+		assert.strictEqual(verbRequirementError(req), null);
+	});
+
+	it('`activate` WITHOUT a deployment_id is rejected (would otherwise become a full deploy from the CWD)', () => {
+		process.argv = ['node', 'harper', 'activate', 'project=my_app'];
+		const req = buildRequest();
+		assert.match(verbRequirementError(req), /deployment_id/);
+	});
+
+	it('verbRequirementError ignores non-activate deploys', () => {
+		assert.strictEqual(verbRequirementError({ operation: 'deploy_component' }), null);
+		assert.strictEqual(verbRequirementError({ operation: 'deploy_component', activate: false }), null);
+	});
+});

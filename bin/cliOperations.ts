@@ -31,8 +31,21 @@ const OP_ALIASES = {
 // takes that staged deployment live (no upload).
 const OP_VERB_PROPS: Record<string, Record<string, unknown>> = {
 	stage: { operation: 'deploy_component', activate: false },
-	activate: { operation: 'deploy_component' },
+	// `_verb` is a CLI-internal marker (stripped before the request) so verbRequirementError can enforce
+	// that `harper activate` carries a deployment_id — without it, deploy_component's generic
+	// "no deployment_id → full deploy" fallback would silently build a brand-new deploy from the CWD.
+	activate: { operation: 'deploy_component', _verb: 'activate' },
 };
+
+// Guard CLI-verb requirements that the operation itself can't enforce (the op has no notion of which
+// verb invoked it). Returns an error message, or null when the request is fine. Pure + exported so it
+// is unit-testable without the network/process-exit machinery in cliOperations.
+function verbRequirementError(req: any): string | null {
+	if (req._verb === 'activate' && !req.deployment_id) {
+		return '`harper activate` requires a deployment_id from a prior `harper stage` — usage: harper activate project=<name> deployment_id=<id>';
+	}
+	return null;
+}
 
 // Shown for any local-instance connection failure (missing pid, missing/stale domain
 // socket, or a refused/ENOENT connect against it) — they're all the same user-facing
@@ -164,7 +177,7 @@ function operationFields(req: any): any {
 	return fields;
 }
 
-export { cliOperations, buildRequest };
+export { cliOperations, buildRequest, verbRequirementError };
 
 // Package the current working directory into a multipart tarball upload for deploy_component. Covers
 // `harper deploy` and `harper stage` (deploy_component with activate:false) — both upload the incoming
@@ -303,6 +316,14 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			process.exit(1);
 		}
 	}
+	// Enforce CLI-verb requirements (e.g. `harper activate` needs a deployment_id) BEFORE packaging so a
+	// mistake fails fast instead of building + uploading a fresh deploy from the CWD.
+	const verbError = verbRequirementError(req);
+	if (verbError) {
+		console.error(verbError);
+		process.exit(1);
+	}
+	delete req._verb; // CLI-internal marker; never send it in the request body
 	await PREPARE_OPERATION[req.operation]?.(req);
 	try {
 		let options = target ?? {
