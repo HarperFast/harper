@@ -924,5 +924,238 @@ describe('cliOperations', () => {
 			assert.doesNotMatch(multipartText, /name="auth_password"/);
 			assert.match(multipartText, /name="operation"/);
 		});
+
+		// The credentials of the user being created/altered must never outrank the caller's own
+		// saved session — otherwise `harper login` + `add_user` authenticates as a user that
+		// doesn't exist yet and 401s.
+		for (const operation of ['add_user', 'alter_user']) {
+			it(`uses the saved login token for ${operation} while its payload username/password stay in the body`, async () => {
+				saveCredentials('https://example.com:9925/', {
+					operation_token: 'admin-token',
+					refresh_token: 'admin-refresh',
+				});
+				tokenAuthModule.isJWTExpired = () => false;
+				const calls = captureRequest();
+
+				await cliOperationsModule.cliOperations(
+					{
+						operation,
+						target: 'example.com',
+						username: 'newuser',
+						password: 'new-user-secret',
+						role: 'cluster_user',
+					},
+					true
+				);
+
+				const { options, body } = calls[0];
+				assert.strictEqual(options.headers.Authorization, 'Bearer admin-token');
+				assert.strictEqual(body.username, 'newuser');
+				assert.strictEqual(body.password, 'new-user-secret');
+			});
+		}
+
+		it('does not treat a lone payload username as auth (drop_user with a saved token)', async () => {
+			saveCredentials('https://example.com:9925/', { operation_token: 'admin-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+			const calls = captureRequest();
+
+			await cliOperationsModule.cliOperations({ operation: 'drop_user', target: 'example.com', username: 'bob' }, true);
+
+			const { options, body } = calls[0];
+			assert.strictEqual(options.headers.Authorization, 'Bearer admin-token');
+			assert.strictEqual(body.username, 'bob');
+		});
+
+		it('authenticates with the legacy CLI_TARGET_USERNAME/CLI_TARGET_PASSWORD pair', async () => {
+			const calls = captureRequest();
+			process.env.CLI_TARGET_USERNAME = 'legacy-admin';
+			process.env.CLI_TARGET_PASSWORD = 'legacy-secret';
+			try {
+				await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			} finally {
+				delete process.env.CLI_TARGET_USERNAME;
+				delete process.env.CLI_TARGET_PASSWORD;
+			}
+
+			assert.strictEqual(
+				calls[0].options.headers.Authorization,
+				`Basic ${Buffer.from('legacy-admin:legacy-secret').toString('base64')}`
+			);
+		});
+
+		describe('incomplete credential sources', () => {
+			let originalExit;
+			let originalConsoleError;
+			let consoleErrors;
+			let exitCode;
+
+			beforeEach(() => {
+				originalExit = process.exit;
+				originalConsoleError = console.error;
+				consoleErrors = [];
+				console.error = (...args) => consoleErrors.push(args.join(' '));
+				exitCode = undefined;
+				process.exit = (code) => {
+					exitCode = code;
+					throw new ProcessExitSignal(code);
+				};
+			});
+
+			afterEach(() => {
+				process.exit = originalExit;
+				console.error = originalConsoleError;
+			});
+
+			// The dangerous shape: without pair validation, `auth_username` would be paired with
+			// the *payload* password and the admin name sent with the new user's secret.
+			it('fails instead of pairing auth_username with a password from another source', async () => {
+				captureRequest();
+
+				await assert.rejects(
+					() =>
+						cliOperationsModule.cliOperations(
+							{
+								operation: 'add_user',
+								target: 'example.com',
+								auth_username: 'admin',
+								username: 'newuser',
+								password: 'new-user-secret',
+							},
+							true
+						),
+					ProcessExitSignal
+				);
+
+				assert.strictEqual(exitCode, 1);
+				assert.ok(consoleErrors.some((line) => line.includes('Incomplete credentials') && line.includes('username')));
+			});
+
+			it('fails on a lone auth_password', async () => {
+				captureRequest();
+
+				await assert.rejects(
+					() =>
+						cliOperationsModule.cliOperations(
+							{ operation: 'test', target: 'example.com', auth_password: 'admin-secret' },
+							true
+						),
+					ProcessExitSignal
+				);
+
+				assert.ok(consoleErrors.some((line) => line.includes('Incomplete credentials') && line.includes('password')));
+			});
+
+			// An empty value is "set but missing", not "unset" — a blank CI variable must not slip
+			// through the way `||` let it.
+			it('treats an empty auth_password as missing rather than absent', async () => {
+				captureRequest();
+
+				await assert.rejects(
+					() =>
+						cliOperationsModule.cliOperations(
+							{ operation: 'test', target: 'example.com', auth_username: 'admin', auth_password: '' },
+							true
+						),
+					ProcessExitSignal
+				);
+
+				assert.ok(consoleErrors.some((line) => line.includes('Incomplete credentials')));
+			});
+
+			// Unlike the args, a lone HARPER_CLI_USERNAME is a legitimate `harper login` idiom
+			// (the password is prompted for), so it must not break every later operation in the
+			// same shell — it is skipped, loudly, and the saved token is used instead.
+			it('warns and falls through to the saved token when only one env var of a pair is set', async () => {
+				saveCredentials('https://example.com:9925/', { operation_token: 'admin-token' });
+				tokenAuthModule.isJWTExpired = () => false;
+				const calls = captureRequest();
+				process.env.HARPER_CLI_USERNAME = 'env-admin';
+				delete process.env.HARPER_CLI_PASSWORD;
+				try {
+					await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+				} finally {
+					delete process.env.HARPER_CLI_USERNAME;
+				}
+
+				assert.strictEqual(calls[0].options.headers.Authorization, 'Bearer admin-token');
+				assert.ok(consoleErrors.some((line) => line.includes('Ignoring incomplete credentials')));
+			});
+
+			// `auth_username=$ADMIN_USER auth_password=$ADMIN_PASS` with both CI variables unset
+			// arrives as two empty strings. Falling through would run the command as whoever the
+			// saved token belongs to instead of failing.
+			it('fails when both dedicated auth args are supplied but empty', async () => {
+				saveCredentials('https://example.com:9925/', { operation_token: 'admin-token' });
+				tokenAuthModule.isJWTExpired = () => false;
+				captureRequest();
+
+				await assert.rejects(
+					() =>
+						cliOperationsModule.cliOperations(
+							{ operation: 'test', target: 'example.com', auth_username: '', auth_password: '' },
+							true
+						),
+					ProcessExitSignal
+				);
+
+				assert.ok(consoleErrors.some((line) => line.includes('Incomplete credentials')));
+			});
+		});
+
+		it('masks a password embedded in the target URL in the connection log', async () => {
+			const originalConsoleError = console.error;
+			const consoleErrors = [];
+			console.error = (...args) => consoleErrors.push(args.join(' '));
+			const calls = captureRequest();
+			try {
+				await cliOperationsModule.cliOperations(
+					{ operation: 'test', target: 'https://admin:url-secret@example.com:9925' },
+					true
+				);
+			} finally {
+				console.error = originalConsoleError;
+			}
+
+			// The credentials still authenticate the request; only the printed form is masked.
+			assert.strictEqual(
+				calls[0].options.headers.Authorization,
+				`Basic ${Buffer.from('admin:url-secret').toString('base64')}`
+			);
+			const connecting = consoleErrors.find((line) => line.startsWith('Connecting to'));
+			assert.ok(!connecting.includes('url-secret'), connecting);
+			assert.ok(connecting.includes('admin:***@example.com'), connecting);
+		});
+	});
+
+	describe('redactCredentials', () => {
+		it('masks secret values while leaving the rest of the parsed request intact', () => {
+			const redacted = cliOperationsModule.redactCredentials({
+				operation: 'add_user',
+				username: 'newuser',
+				password: 'new-user-secret',
+				auth_username: 'admin',
+				auth_password: 'admin-secret',
+			});
+
+			assert.deepStrictEqual(redacted, {
+				operation: 'add_user',
+				username: 'newuser',
+				password: '***',
+				auth_username: 'admin',
+				auth_password: '***',
+			});
+		});
+
+		it('masks userinfo in the target URL and leaves a credential-free target alone', () => {
+			assert.strictEqual(
+				cliOperationsModule.redactCredentials({ target: 'https://admin:url-secret@example.com:9925/' }).target,
+				'https://admin:***@example.com:9925/'
+			);
+			assert.strictEqual(
+				cliOperationsModule.redactCredentials({ target: 'https://example.com:9925/' }).target,
+				'https://example.com:9925/'
+			);
+		});
 	});
 });
