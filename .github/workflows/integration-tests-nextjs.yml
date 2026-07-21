@@ -1,0 +1,148 @@
+name: Next.js Integration Tests (downstream)
+
+# Runs the @harperfast/nextjs adapter's Playwright integration suite against THIS
+# PR's harper build, so a harper change that breaks the Next.js framework-hosting
+# integration (HTTP server, REST, ISR/`use cache` backed by Harper tables) is
+# caught here rather than in the downstream adapter repo.
+#
+# It checks out HarperFast/nextjs explicitly, then checks out + builds harper at this
+# PR's head SHA and resolves that tarball as the `harper` used by the adapter's test
+# harness and fixtures.
+#
+# Advisory, non-blocking: this deliberately tracks nextjs `main`, so a regression on
+# nextjs main against harper surfaces here instead of silently drifting. That means
+# this check's outcome depends on nextjs main's health, not just this PR's diff.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Decide whether this PR touches paths the Next.js adapter exercises. Keep this list
+  # in sync with the code paths the adapter depends on (caching lives under resources/**,
+  # there's no separate top-level cache/ dir). Uses a plain `git diff` against the PR
+  # base so no third-party action is pulled in for the decision.
+  changes:
+    name: Detect adapter-relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Check changed paths
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          echo "Changed files:"
+          echo "$changed"
+          # Effective path list mirrors the paths the trigger used to filter on:
+          #   resources/** server/** dataLayer/** components/** config/**
+          #   package.json package-lock.json
+          if echo "$changed" | grep -Eq '^(resources|server|dataLayer|components|config)/|^package(-lock)?\.json$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "Adapter-relevant paths changed -> integration suite will run."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "No adapter-relevant paths changed -> integration suite will be skipped."
+          fi
+
+  # Heavy path: only when relevant files changed. Runs and reports informationally --
+  # this is not wired to a required gate job, so it never blocks a harper merge.
+  nextjs-integration:
+    name: Next.js adapter integration (against this PR's harper) (Node ${{ matrix.node-version }})
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22, 24]
+    steps:
+      - name: Checkout Next.js adapter
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: HarperFast/nextjs
+          ref: main
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install adapter dependencies
+        run: npm ci
+
+      - name: Checkout harper override
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: HarperFast/harper
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: harper-override
+
+      # The adapter supports Node 20, but current harper and rocksdb-js require
+      # Node 22.18+. Keep the adapter test on Node 20 while building and spawning
+      # its harper child process with a supported runtime.
+      - name: Set up supported Harper runtime
+        if: matrix.node-version == 20
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Pin Harper runtime
+        if: matrix.node-version == 20
+        run: echo "HARPER_RUNTIME=$(command -v node)" >> "$GITHUB_ENV"
+
+      - name: Build and install harper override
+        run: |
+          cd "$GITHUB_WORKSPACE/harper-override"
+          npm ci
+          npm run build
+          TARBALL=$(npm pack --json | jq -r '.[0].filename')
+          mv "$TARBALL" /tmp/harper-override.tgz
+          cd "$GITHUB_WORKSPACE"
+          npm install --save-dev /tmp/harper-override.tgz
+
+      - name: Restore adapter Node.js
+        if: matrix.node-version == 20
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Build adapter
+        run: npm run build
+
+      - name: Install fixture dependencies
+        run: npm run install:fixtures
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run integration tests
+        run: npm run test:integration
+        timeout-minutes: 15
+        env:
+          HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-test-logs
+          FORCE_COLOR: '1'
+
+      - name: Upload Harper logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: harper-logs-node-${{ matrix.node-version }}
+          path: /tmp/harper-test-logs/
+          retention-days: 7
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-traces-node-${{ matrix.node-version }}
+          path: integrationTests/test-results/
+          retention-days: 7

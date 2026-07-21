@@ -168,7 +168,7 @@
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1012.0",
-		"@aws-sdk/lib-storage": "3.1080.0",
+		"@aws-sdk/lib-storage": "3.1086.0",
 		"@endo/static-module-record": "^1.1.2",
 		"@fastify/autoload": "^6.3.1",
 		"@fastify/compress": "^8.3.1",

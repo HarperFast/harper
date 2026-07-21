@@ -102,6 +102,10 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		// @hidden type-level: drop the Resource from the OpenAPI document entirely.
 		// Data remains queryable through Harper's other interfaces under RBAC.
 		if (resource.Resource.hidden === true) continue;
+		// request-contract resources (`defineResource`/`Resource.withSchema`) at a static (non-parameterised)
+		// path are emitted below, alongside their parameterised counterparts, off the declared contract —
+		// not the table-CRUD assumptions this loop makes (primary key, generated schema component, etc).
+		if (resource.Resource.requestContract) continue;
 
 		const { path } = resource;
 		const strippedPath = path.split('/').pop(); // strip any namespace from path
@@ -311,26 +315,15 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		}
 	}
 
-	// Parameterised routes (e.g. `/widget/:id/action/:action`) live outside the resource Map; emit them as templated
-	// paths with `{param}` path parameters so they appear in the OpenAPI document like any other endpoint.
-	for (const route of resources.paramRoutes ?? []) {
-		const entry = route.entry;
-		if (!entry?.path || entry.Resource?.isError) continue;
-		// @hidden: drop the Resource from the OpenAPI document entirely.
-		if (entry.Resource?.hidden === true) continue;
+	// Emit OpenAPI paths for a request-contract resource (`defineResource`/`Resource.withSchema`), whether
+	// declared at a static path (`/OrderIntake`) or a parameterised one (`/widget/:id`) — each verb's
+	// query/body/response is driven off the shared `inputSchemas`/`outputSchemas` the contract compiled,
+	// the same `JsonSchemaFragment` IR that drives runtime validation/coercion, so the spec matches what
+	// the server actually enforces (rather than the table-CRUD generation above).
+	const emitContractRoutes = (url: string, entry: { Resource: any }, pathParams: any[]) => {
+		if (!entry?.Resource) return;
 		const { prototype } = entry.Resource;
-		if (!prototype) continue;
-
-		const { template, params } = routePatternToTemplate(route.segments);
-		const url = `/${template}`;
-		const pathParams = params.map((param) => {
-			const parameter = new Parameter(param.name, 'path', { type: 'string' });
-			parameter.required = true;
-			parameter.description = param.wildcard
-				? 'captures the remaining path segments'
-				: `value bound from the :${param.name} path segment`;
-			return parameter;
-		});
+		if (!prototype) return;
 
 		const tableDoc: string | undefined = entry.Resource.description;
 		const withDoc = (sentence: string) => (tableDoc ? `${tableDoc} ${sentence}` : sentence);
@@ -408,6 +401,38 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				}
 			);
 		}
+	};
+
+	// Request-contract resources declared at a static (non-parameterised) path (e.g. `defineResource({path:
+	// '/OrderIntake', ...})`) — skipped by the table-CRUD loop above, emitted here off the declared contract.
+	for (const [, entry] of resources) {
+		if (!entry) continue;
+		if (!entry.path || !entry.Resource?.requestContract || entry.Resource.isError || entry.Resource.hidden === true)
+			continue;
+		const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
+		emitContractRoutes(path, entry, []);
+	}
+
+	// Parameterised routes (e.g. `/widget/:id/action/:action`) live outside the resource Map; emit them as templated
+	// paths with `{param}` path parameters so they appear in the OpenAPI document like any other endpoint.
+	for (const route of resources.paramRoutes ?? []) {
+		const entry = route.entry;
+		if (!entry?.path || entry.Resource?.isError) continue;
+		// @hidden: drop the Resource from the OpenAPI document entirely.
+		if (entry.Resource?.hidden === true) continue;
+
+		const { template, params } = routePatternToTemplate(route.segments);
+		const url = `/${template}`;
+		const pathParams = params.map((param) => {
+			const parameter = new Parameter(param.name, 'path', { type: 'string' });
+			parameter.required = true;
+			parameter.description = param.wildcard
+				? 'captures the remaining path segments'
+				: `value bound from the :${param.name} path segment`;
+			return parameter;
+		});
+
+		emitContractRoutes(url, entry, pathParams);
 	}
 
 	for (const [, value] of resources.allTypes) {

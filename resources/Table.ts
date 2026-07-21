@@ -1244,7 +1244,7 @@ export function makeTable(options) {
 				// go back to the static search method so it gets a chance to override
 				return constructor.search(target, this.getContext());
 			}
-			if (target && target.id === undefined && !target.toString()) {
+			if (target && target.id == null && !target.toString()) {
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves

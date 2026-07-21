@@ -9,6 +9,8 @@ export const METRIC = {
 	ROCKSDB_STATS: 'rocksdb-stats',
 	ROCKSDB_TXNLOG_STATS: 'rocksdb-txnlog-stats',
 	TRANSACTION_COMMIT_TIME: 'transaction-commit-time',
+	WRITE_TRANSACTION_QUEUE_DEPTH: 'write-transaction-queue-depth',
+	READ_TRANSACTION_QUEUE_DEPTH: 'read-transaction-queue-depth',
 } as const;
 
 export type BuiltInMetricName = (typeof METRIC)[keyof typeof METRIC];

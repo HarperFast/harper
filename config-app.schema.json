@@ -132,6 +132,76 @@
 			},
 			"required": ["files"]
 		},
+		"scheduler": {
+			"type": "object",
+			"description": "Recurring job scheduling. Jobs run once per cluster (leader-elected) and invoke a designated export from this component. Handlers should be idempotent: leadership failover and DST fall-back can occasionally deliver the same occurrence twice.",
+			"additionalProperties": false,
+			"properties": {
+				"jobs": {
+					"type": "array",
+					"description": "The jobs to run on a schedule.",
+					"items": {
+						"type": "object",
+						"additionalProperties": false,
+						"properties": {
+							"name": {
+								"type": "string",
+								"minLength": 1,
+								"description": "Unique (within this component) name for the job."
+							},
+							"cron": {
+								"type": "string",
+								"description": "Five-field cron expression (minute hour day-of-month month day-of-week), e.g. '0 2 * * *'. Supports lists, ranges, steps, month/day names, and @daily-style macros. Always QUOTE the expression: YAML treats a leading '*' as an alias and '@' as reserved. Exactly one of cron or interval is required."
+							},
+							"interval": {
+								"description": "Simple cadence instead of cron: a duration like 90s, 5m, 1h, 1d (or a number of seconds). Between 1 second and 365 days.",
+								"oneOf": [
+									{
+										"type": "string",
+										"pattern": "^\\d+(\\.\\d+)?[smhd]?$"
+									},
+									{
+										"type": "number",
+										"minimum": 1
+									}
+								]
+							},
+							"timezone": {
+								"type": "string",
+								"description": "IANA timezone the cron expression is evaluated in (e.g. America/New_York). Defaults to the server timezone. Only valid with cron."
+							},
+							"handler": {
+								"type": "string",
+								"description": "Module path and named export to invoke, relative to the component directory: './jobs.ts#myExport' (omit '#...' to use the default export). Do not put a space before '#' — YAML would treat the rest as a comment."
+							}
+						},
+						"required": ["name", "handler"],
+						"oneOf": [
+							{
+								"required": ["cron"],
+								"not": {
+									"required": ["interval"]
+								}
+							},
+							{
+								"required": ["interval"],
+								"not": {
+									"anyOf": [
+										{
+											"required": ["cron"]
+										},
+										{
+											"required": ["timezone"]
+										}
+									]
+								}
+							}
+						]
+					}
+				}
+			},
+			"required": ["jobs"]
+		},
 		"package": {
 			"type": "string",
 			"description": "Package identifier for the application (npm-compatible or git URL)."
