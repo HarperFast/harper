@@ -1,6 +1,6 @@
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
-import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
+import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
 import { SKIP } from '@harperfast/extended-iterable';
 import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
@@ -13,6 +13,21 @@ import { RocksDatabase } from '@harperfast/rocksdb-js';
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;
 const STARTS_WITH_ESTIMATE = 0.05;
+
+function getStringPrefixUpperBound(prefix: string): Uint8Array {
+	const maximumEncodedLength = prefix.length * 3 + 1;
+	const encodedPrefix = new Uint8Array((maximumEncodedLength + 7) & ~3);
+	const encodedLength = writeKey(prefix, encodedPrefix, 0);
+	const upperBound = encodedPrefix.subarray(0, encodedLength);
+	// Incrementing the encoded prefix produces the exclusive bound immediately after every key with these bytes.
+	for (let index = upperBound.length - 1; index >= 0; index--) {
+		if (upperBound[index] < 0xff) {
+			upperBound[index]++;
+			return upperBound.subarray(0, index + 1);
+		}
+	}
+	return MAXIMUM_KEY;
+}
 
 // Synthetic Table-like object used to recurse through plain JSON nested-path
 // segments. It has no attributes, indices, or property resolvers, so the
@@ -308,7 +323,7 @@ export function searchByIndex(
 	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
 	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
 	let start;
-	let end, inclusiveEnd, exclusiveStart;
+	let end, inclusiveEnd, exclusiveStart, stringPrefix;
 	if (value instanceof Date) value = value.getTime();
 	if (searchCondition.negated) {
 		// Negated conditions are filter-only in Phase 1: scan the whole index/table
@@ -345,7 +360,10 @@ export function searchByIndex(
 				break;
 			case 'starts_with':
 				start = value.toString();
-				end = value + String.fromCharCode(0xffff);
+				if (start.length === 0) {
+					start = true;
+					needFullScan = true;
+				} else stringPrefix = true;
 				break;
 			case 'between':
 			case 'gele':
@@ -403,6 +421,7 @@ export function searchByIndex(
 		inclusiveEnd = true;
 		filter = filter ?? filterByType(searchCondition, Table, null, filtered, isPrimaryKey);
 	}
+	if (stringPrefix && index && !needFullScan) end = getStringPrefixUpperBound(start);
 	if (reverse) {
 		let newEnd = start;
 		start = end;
