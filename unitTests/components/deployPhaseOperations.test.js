@@ -125,7 +125,11 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		// as required (harper#674) — the activate-existing leg of the two-phase restart-required fix. The
 		// message assertion above can't see this: the string never mentions "restart" on the no-restart
 		// path whether or not the marking runs, so assert the flag directly.
-		assert.strictEqual(restartNeeded(), true, 'activating a never-live component without restart marks a restart required');
+		assert.strictEqual(
+			restartNeeded(),
+			true,
+			'activating a never-live component without restart marks a restart required'
+		);
 	});
 
 	it('deploy_component (two-phase default) stages then activates end-to-end', async () => {
@@ -155,7 +159,11 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		await operations.deployComponent({ project: name, payload: await makeComponentPayload('redeploy-v1') });
 		resetRestartNeeded(); // clear the flag the first (new-component) deploy legitimately set
 		await operations.deployComponent({ project: name, payload: await makeComponentPayload('redeploy-v2') });
-		assert.strictEqual(restartNeeded(), false, 'a redeploy of an already-live component must not self-request a restart');
+		assert.strictEqual(
+			restartNeeded(),
+			false,
+			'a redeploy of an already-live component must not self-request a restart'
+		);
 	});
 
 	it('peer _phase:activate takes a locally-staged build live and marks a restart for a new component', async () => {
@@ -167,7 +175,11 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		// internal markers, exactly as the replicated fan-out does.
 		const name = freshName();
 		const deploymentId = `peer-activate-${name}`;
-		const staged = new Application({ name, payload: await makeComponentPayload('peer-activated'), stagingId: deploymentId });
+		const staged = new Application({
+			name,
+			payload: await makeComponentPayload('peer-activated'),
+			stagingId: deploymentId,
+		});
 		await stageApplication(staged);
 
 		const res = await operations.deployComponent({
@@ -180,7 +192,11 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 		assert.strictEqual(res.activated, true, 'peer activate reports the component activated');
 		const liveDir = path.join(COMPONENTS_ROOT, name);
 		assert.match(await readIndex(liveDir), /peer-activated/, 'the locally-staged build is now live');
-		assert.strictEqual(restartNeeded(), true, 'peer activate of a never-live component without restart marks a restart required');
+		assert.strictEqual(
+			restartNeeded(),
+			true,
+			'peer activate of a never-live component without restart marks a restart required'
+		);
 	});
 
 	it('deploy_component with two_phase:false runs the legacy one-shot path', async () => {
