@@ -1,4 +1,158 @@
 /* oxlint-disable no-undef -- intentionally references the (absent) ClientError sandbox global to characterize D-070 */
+// Merged jsResource fixture for QA-196, QA-162, QA-195 — shared Harper instance
+// (instance-affinity consolidation; see relationship-and-status-contract.test.ts).
+
+// =============================================================================
+// QA-196 — Single-snapshot FK consistency oracle.
+//
+// GET /ConsistencyOracle/<orderId>
+// OR GET /ConsistencyOracle/?orderId=<id>
+//
+// Reads both the FK index entries (search on orderId) AND the base Order record
+// within a single resource call (single snapshot). Returns:
+//   {
+//     orderExists: bool,           // whether Order row with given id exists
+//     indexCount: number,          // count of OrderItem rows with matching orderId via FK index
+//     indexIds: string[],          // sorted ids found in FK index
+//     itemsExist: [{id,exists}],   // for each index entry: does base record actually exist?
+//     phantomIndexEntries: string[], // index entries where base record is missing (dangling)
+//   }
+// =============================================================================
+export class ConsistencyOracle extends Resource {
+	static loadAsInstance = false;
+
+	async get(query) {
+		// Support both /ConsistencyOracle/<id> (path id) and ?orderId=<id> (query param).
+		let orderId = null;
+		if (query && query.get) {
+			orderId = query.get('orderId');
+		} else if (query && query.orderId) {
+			orderId = query.orderId;
+		}
+		// Fallback: use the path-based id if available.
+		if (!orderId && query && query.id != null) {
+			orderId = String(query.id);
+		}
+
+		if (!orderId) {
+			this.getContext().response.status = 400;
+			return { error: 'orderId param required (path or query)' };
+		}
+
+		// Read Order base record.
+		const order = await tables.Order.get(orderId);
+
+		// Read all OrderItems with this orderId via the FK index.
+		// search({ orderId }) uses the @indexed orderId attribute.
+		const indexItems = [];
+		for await (const item of tables.OrderItem.search({ orderId })) {
+			indexItems.push(String(item.id));
+		}
+
+		const indexIds = indexItems.sort();
+
+		// For each index entry, verify the base record actually exists.
+		const itemExistChecks = await Promise.all(
+			indexIds.map(async (id) => {
+				const rec = await tables.OrderItem.get(id);
+				return { id, exists: rec != null };
+			})
+		);
+
+		const phantomIndexEntries = itemExistChecks.filter((c) => !c.exists).map((c) => c.id);
+
+		return {
+			orderExists: order != null,
+			indexCount: indexIds.length,
+			indexIds,
+			itemsExist: itemExistChecks,
+			phantomIndexEntries,
+		};
+	}
+}
+
+// =============================================================================
+// QA-162 — Cross-table transaction + @relationship edge atomicity.
+//
+// Three custom endpoints:
+//
+//   POST /CreateOrderWithItem/
+//     { orderId, itemId, name, price, fail }
+//     Writes Order (parent), then OrderItem (child). If fail=true, throws AFTER writing
+//     Order but BEFORE writing OrderItem. Tests:
+//       - fail=false: both rows committed, edge resolves in both directions.
+//       - fail=true:  Order must roll back (no dangling parent), FK index must be clean.
+//
+//   POST /CreateOrderWithItems/
+//     { orderId, items: [{id,name,price},...] }
+//     Writes one Order + N OrderItems atomically in one request. Success path.
+//
+//   POST /AddOrderItem/
+//     { orderId, itemId, name, price }
+//     Adds ONE child to an existing parent. Used by the concurrent fan-out probe.
+// =============================================================================
+export class CreateOrderWithItem extends Resource {
+	static loadAsInstance = false;
+
+	async post(query, body) {
+		const b = body || query || {};
+		const orderId = b.orderId;
+		const itemId = b.itemId;
+		const name = b.name || 'item';
+		const price = Number(b.price) || 1.0;
+		const shouldFail = b.fail === true || b.fail === 'true';
+
+		// Write parent row.
+		await tables.Order.put({ id: orderId, total: price });
+
+		if (shouldFail) {
+			// Throw AFTER parent write, BEFORE child write.
+			// Atomic => Order must roll back. Relationship index must be empty for orderId.
+			throw new Error(`QA-162 forced throw after Order(${orderId}), before OrderItem`);
+		}
+
+		// Write child row — establishes the @relationship FK edge (orderId).
+		await tables.OrderItem.put({ id: itemId, orderId, name, price });
+
+		return { ok: true, orderId, itemId };
+	}
+}
+
+export class CreateOrderWithItems extends Resource {
+	static loadAsInstance = false;
+
+	async post(query, body) {
+		const b = body || query || {};
+		const orderId = b.orderId;
+		const items = Array.isArray(b.items) ? b.items : [];
+
+		const total = items.reduce((s, it) => s + Number(it.price || 0), 0);
+		await tables.Order.put({ id: orderId, total });
+
+		for (const it of items) {
+			await tables.OrderItem.put({ id: it.id, orderId, name: it.name || 'item', price: Number(it.price) || 1.0 });
+		}
+
+		return { ok: true, orderId, itemCount: items.length };
+	}
+}
+
+export class AddOrderItem extends Resource {
+	static loadAsInstance = false;
+
+	async post(query, body) {
+		const b = body || query || {};
+		const orderId = b.orderId;
+		const itemId = b.itemId;
+		const name = b.name || 'item';
+		const price = Number(b.price) || 1.0;
+
+		await tables.OrderItem.put({ id: itemId, orderId, name, price });
+		return { ok: true, orderId, itemId };
+	}
+}
+
+// =============================================================================
 // QA-195 — Custom-Resource AUTHOR status-code + body contract.
 //
 // Probes the full return/throw matrix that a custom Resource author can produce:
@@ -27,10 +181,8 @@
 //   /StatusViaResponse/?code=N -> return new Response(body, {status:N})
 //   /StatusViaObjStatus/?code=N -> return {status:N, data:{ok:true}}  (obj-status pattern)
 //   /Liveness/                 -> always returns {alive:true, method:'get'}
+// =============================================================================
 
-// ---------------------------------------------------------------------------
-// RETURN MATRIX — ?case=<name>
-// ---------------------------------------------------------------------------
 export class ReturnMatrix extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -60,9 +212,6 @@ export class ReturnMatrix extends Resource {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// THROW MATRIX — ?case=<name>
-// ---------------------------------------------------------------------------
 export class ThrowMatrix extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -136,9 +285,6 @@ export class ThrowMatrix extends Resource {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// POST throw matrix — same cases via body {case:...}
-// ---------------------------------------------------------------------------
 export class ThrowPost extends Resource {
 	static loadAsInstance = false;
 	async post(query, data) {
@@ -168,9 +314,6 @@ export class ThrowPost extends Resource {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// PUT throw matrix — same cases via body {case:...}
-// ---------------------------------------------------------------------------
 export class ThrowPut extends Resource {
 	static loadAsInstance = false;
 	async put(query, data) {
@@ -200,9 +343,6 @@ export class ThrowPut extends Resource {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// STATUS VIA CONTEXT
-// ---------------------------------------------------------------------------
 export class StatusViaContext extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -216,9 +356,6 @@ export class StatusViaContext extends Resource {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// STATUS VIA RETURNED Response
-// ---------------------------------------------------------------------------
 export class StatusViaResponse extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -230,9 +367,6 @@ export class StatusViaResponse extends Resource {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// STATUS VIA {status, data} object shape
-// ---------------------------------------------------------------------------
 export class StatusViaObjStatus extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -243,12 +377,10 @@ export class StatusViaObjStatus extends Resource {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // THROW-RESPONSE-AFTER-WRITE — POST writes Kv(id) then throws a Response.
 // A thrown Response surfaces its status/body, but (like any throw) ABORTS the
 // transaction, so the write must NOT persist. Documents the "throw = rollback"
 // contract for thrown Responses.
-// ---------------------------------------------------------------------------
 export class ThrowResponseAfterWrite extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
@@ -261,9 +393,6 @@ export class ThrowResponseAfterWrite extends Resource {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// LIVENESS
-// ---------------------------------------------------------------------------
 export class Liveness extends Resource {
 	static loadAsInstance = false;
 	async get() {
