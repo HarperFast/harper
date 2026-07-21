@@ -1,0 +1,12 @@
+# QA-616 — aborted UPDATE that migrates an @indexed value (A -> B).
+#
+# Widget: audit:false, category @indexed. Same shape as QA-604/QA-611's Widget, reused so the
+# direct-store IndexDump/IndexRangeAll oracle idiom (index.getRange, no primary join) carries over
+# unchanged. The delete-shaped defect family (F-147/F-149) is already established on this fixture;
+# this file targets the UNTESTED corner: an UPDATE that changes category from A to B, aborted
+# mid-transaction (in-request throw, or driven over storage.maxTransactionOpenTime).
+type Widget @table(audit: false) @export {
+	id: ID! @primaryKey
+	category: String @indexed
+	value: String
+}

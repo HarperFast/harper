@@ -1,0 +1,26 @@
+# F-149 engine-gap closure — does TTL eviction orphan secondary-index entries on LMDB too?
+# Same shape as qa611-eviction-index-reaudit's schema; this fixture is driven with the LMDB
+# storage engine forced via env (see qa611-lmdb-eviction-index.test.ts).
+#
+# ItemF: audit:false, expiration:1s — the eviction-path table under test (audit:false arm).
+# ItemT: audit:true,  expiration:1s — the eviction-path table under test (audit:true arm).
+# Widget: audit:false, NO expiration — used ONLY for the D-232 positive-control mechanism
+#   (F-147 DeleteThenAbort), which injects a KNOWN-dangling raw index entry so the oracle's
+#   "0 dangling" result on the TTL tables is earned, not vacuous.
+type ItemF @table(expiration: 1, audit: false) @export {
+	id: ID! @primaryKey
+	category: String @indexed
+	value: String
+}
+
+type ItemT @table(expiration: 1, audit: true) @export {
+	id: ID! @primaryKey
+	category: String @indexed
+	value: String
+}
+
+type Widget @table(audit: false) @export {
+	id: ID! @primaryKey
+	category: String @indexed
+	value: String
+}
