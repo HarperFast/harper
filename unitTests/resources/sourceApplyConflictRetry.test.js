@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
+const { DatabaseTransaction, TRANSACTION_STATE, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
 // A coordinatedRetry transaction (the source-apply path) signals an optimistic write conflict by
 // resolving commit() with this sentinel instead of rejecting with ERR_BUSY.
 const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
@@ -243,5 +244,68 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 		} finally {
 			restore();
 		}
+	});
+});
+
+// abortChainAfterRetries() gives up on a linked chain of transactions (multi-store commit) after
+// exhausting conflict retries. Its two-pass design (poison every link, then abort/release each) exists
+// specifically so a throw from one link's cleanup can't strand later links holding native handles /
+// read snapshots until GC. Exercised directly against the class rather than through 40 real retries,
+// which would require forcing MAX_RETRIES real conflicts end-to-end.
+describe('abortChainAfterRetries chain cleanup', () => {
+	// A minimal stand-in for a native RocksTransaction: abort() is the only method the wrapper calls.
+	function fakeNative() {
+		return {
+			aborted: false,
+			abort() {
+				this.aborted = true;
+			},
+		};
+	}
+
+	it("still detaches, untracks, and natively aborts later links when an earlier link's wrapper cleanup throws", () => {
+		const head = new DatabaseTransaction();
+		const next = new DatabaseTransaction();
+		head.next = next;
+
+		const headNative = fakeNative();
+		const nextNative = fakeNative();
+		next.transaction = nextNative;
+
+		// The head's write throws from wrapper cleanup (abort() synchronously calls
+		// write.store.getEntry(), which can fail on a closed store or decode error).
+		head.writes = [
+			{
+				savedBlobs: true,
+				key: 'poison',
+				store: {
+					getEntry() {
+						throw new Error('store closed');
+					},
+				},
+			},
+		];
+		next.writes = [];
+
+		const trackedTxns = setTxnExpiration(30000); // grabs the module's live tracking Set, no behavior change
+		trackedTxns.add(head);
+		trackedTxns.add(next);
+
+		// Must not throw: a link's cleanup failure is caught and logged, not propagated (or it would
+		// pre-empt the caller's give-up ServerError at the call site).
+		assert.doesNotThrow(() => head.abortChainAfterRetries(headNative));
+
+		assert.equal(head.open, TRANSACTION_STATE.CLOSED, 'head must be poisoned even though its cleanup threw');
+		assert.equal(next.open, TRANSACTION_STATE.CLOSED, 'later link must be poisoned');
+
+		assert.ok(headNative.aborted, 'head native transaction must still be aborted');
+		assert.ok(
+			nextNative.aborted,
+			"later link's native transaction must be aborted despite the earlier link's cleanup exception"
+		);
+
+		assert.equal(next.transaction, null, 'later link must have its native handle detached');
+		assert.ok(!trackedTxns.has(head), 'head must be untracked');
+		assert.ok(!trackedTxns.has(next), "later link must be untracked despite the earlier link's cleanup exception");
 	});
 });
