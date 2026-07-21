@@ -1,0 +1,26 @@
+# QA-615 — D-232 re-audit of F-041 (retracted by QA-184's single-snapshot JOIN oracle, which
+# D-230 proved structurally blind to a dangling index entry). QA-614 already confirmed the LMDB
+# PERSISTENT end-state is clean; this fixture targets the still-unaudited TRANSIENT window DURING
+# the sweep. Same table shapes as qa611-lmdb-eviction-index for continuity.
+#
+# ItemF: audit:false, expiration:1s — eviction-path table under test (audit:false arm).
+# ItemT: audit:true,  expiration:1s — eviction-path table under test (audit:true arm).
+# Widget: audit:false, NO expiration — D-232 positive-control table (synthetic dangling entry via
+#   RemoveFromPrimaryOnly, the QA-614 mechanism; F-147 DeleteThenAbort does not reproduce on LMDB).
+type ItemF @table(expiration: 1, audit: false) @export {
+	id: ID! @primaryKey
+	category: String @indexed
+	value: String
+}
+
+type ItemT @table(expiration: 1, audit: true) @export {
+	id: ID! @primaryKey
+	category: String @indexed
+	value: String
+}
+
+type Widget @table(audit: false) @export {
+	id: ID! @primaryKey
+	category: String @indexed
+	value: String
+}
