@@ -151,4 +151,64 @@ describe('Test logRotator module', () => {
 		expect(fs.pathExistsSync(oldLog), 'Rotated log older than retention should be deleted').to.be.false;
 		expect(fs.pathExistsSync(newLog), 'Rotated log within retention should be kept').to.be.true;
 	}).timeout(TEST_TIMEOUT);
+
+	it('Keeps both archives when two loggers rotate into a shared directory at the same instant', async () => {
+		// Use a dedicated subdirectory with its own file names, distinct from LOG_FILE_PATH_TEST
+		// ('testLogger/hdb.log') and harper_logger.test.js's 'testLogger/external.log' — those
+		// paths key the module-global `fileLoggers` map, and reusing them would let unrelated
+		// leftover state from other tests bleed into this one.
+		const collisionDir = path.join(LOG_DIR_TEST, 'collisionTest');
+		const mainLogPath = path.join(collisionDir, 'main.log');
+		const externalLogPath = path.join(collisionDir, 'external.log');
+		fs.mkdirpSync(collisionDir);
+		const mainLogger = hdb_logger.createLogger({ stdStreams: false, path: mainLogPath, level: 'error' });
+		const externalLogger = hdb_logger.createLogger({ stdStreams: false, path: externalLogPath, level: 'error' });
+
+		for (let i = 1; i < 21; i++) {
+			mainLogger.error('This log is coming from the main logger. Log number:', i);
+			externalLogger.error('This log is coming from the external logger. Log number:', i);
+		}
+		await hdb_utils.asyncSetTimeout(50);
+
+		// Freeze Date.now so both rotators compute the exact same timestamp for their archive
+		// filename, reproducing the collision window deterministically instead of depending on
+		// real timer alignment (#1880).
+		const realDateNow = Date.now;
+		const frozenNow = realDateNow();
+		Date.now = () => frozenNow;
+		const sharedRotatedDir = path.join(collisionDir, 'rotated');
+		try {
+			const mainRotator = log_rotator({
+				logger: mainLogger,
+				path: sharedRotatedDir,
+				enabled: true,
+				auditInterval: 100,
+				maxSize: '1K',
+			});
+			const externalRotator = log_rotator({
+				logger: externalLogger,
+				path: sharedRotatedDir,
+				enabled: true,
+				auditInterval: 100,
+				maxSize: '1K',
+			});
+			await hdb_utils.asyncSetTimeout(300);
+			mainRotator.end();
+			externalRotator.end();
+		} finally {
+			Date.now = realDateNow;
+		}
+		mainLogger.closeLogFile();
+		externalLogger.closeLogFile();
+
+		const rotatedFiles = fs.readdirSync(sharedRotatedDir);
+		assert.strictEqual(
+			rotatedFiles.length,
+			2,
+			`Expected one surviving archive per source log, found: ${rotatedFiles.join(', ')}`
+		);
+		for (const file of rotatedFiles) {
+			assert(fs.statSync(path.join(sharedRotatedDir, file)).size > 0, `${file} should not be empty`);
+		}
+	}).timeout(TEST_TIMEOUT);
 });

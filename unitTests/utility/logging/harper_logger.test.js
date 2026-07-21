@@ -5,6 +5,7 @@ const { EventEmitter } = require('node:events');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
+const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs-extra');
 const rewire = require('rewire');
@@ -972,7 +973,7 @@ describe('Test harper_logger module', () => {
 			// own, but no rotation block — it must inherit the main rotation, not lose it.
 			updateLogger(externalLogger, { path: externalLogPath });
 
-			expect(externalLogger.rotation).to.deep.equal(mainRotation);
+			assert.deepStrictEqual(externalLogger.rotation, mainRotation);
 
 			for (let i = 0; i < 30; i++) externalLogger.info('x'.repeat(80));
 
@@ -994,7 +995,7 @@ describe('Test harper_logger module', () => {
 			const override = { enabled: false };
 			updateLogger(externalLogger, { path: path.join(ROTATION_TEST_DIR, 'external.log'), rotation: override });
 
-			expect(externalLogger.rotation).to.deep.equal(override);
+			assert.deepStrictEqual(externalLogger.rotation, override);
 		});
 
 		it('still allows clearing the main logger rotation itself (no self-referential lock-in)', () => {
@@ -1003,12 +1004,12 @@ describe('Test harper_logger module', () => {
 			harper_logger.__set__('mainLogger', testMainLogger);
 
 			updateLogger(testMainLogger, { path: mainLogPath, rotation: { enabled: true, maxSize: '1K' } });
-			expect(testMainLogger.rotation).to.deep.equal({ enabled: true, maxSize: '1K' });
+			assert.deepStrictEqual(testMainLogger.rotation, { enabled: true, maxSize: '1K' });
 
 			// A reload with no rotation block at all (logOptions.rotation undefined) must still be
 			// able to clear the main logger's own rotation, not fall back to itself and get stuck.
 			updateLogger(testMainLogger, { path: mainLogPath });
-			expect(testMainLogger.rotation).to.equal(undefined);
+			assert.strictEqual(testMainLogger.rotation, undefined);
 		});
 	});
 

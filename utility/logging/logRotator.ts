@@ -137,9 +137,14 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 
 async function moveLogFile(logPath: string, rotatedLogPath: string, logger?: any) {
 	const compress = envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
+	// Name the archive after its source log (hdb, external, a component name, ...), not a fixed
+	// "HDB" literal — external/component loggers can now inherit rotation from the main logger
+	// (#1877) and default to the same rotated directory as it, so distinct sources rotating in
+	// the same audit tick must not collide on the same timestamp-only filename.
+	const sourceName = path.basename(logPath, path.extname(logPath)) || 'HDB';
 	let fullRotateLogPath = path.join(
 		rotatedLogPath,
-		`HDB-${new Date(Date.now()).toISOString().replaceAll(':', '-')}.log`
+		`${sourceName}-${new Date(Date.now()).toISOString().replaceAll(':', '-')}.log`
 	);
 	// Move log file to rotated log path first (if we crash
 	// during compression, we don't want to restart the compression with a new file)
