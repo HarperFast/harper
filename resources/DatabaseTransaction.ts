@@ -42,7 +42,9 @@ export function setCommitLatencyRecorder(recorder: ((durationMs: number) => void
 // commit nor surface as an unhandled rejection on this floating `.then`. The thenable guard protects
 // against a future caller passing a non-Promise `commitResolution` (today it is always the rocksdb-js
 // async `Transaction.commit()` result, which is guaranteed to be a Promise).
-function recordCommitLatency(commitResolution: Promise<void>, submittedAt: number) {
+// Parameter widened to Promise<unknown> because callers may resolve with RETRY_NOW_VALUE (a number)
+// on coordinated retry, but we only record the timing and never read the resolved value.
+function recordCommitLatency(commitResolution: Promise<unknown>, submittedAt: number) {
 	if (!recordCommitLatencyMs) return;
 	const record = () => {
 		try {
