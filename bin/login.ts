@@ -46,14 +46,21 @@ export async function login(targetArg: string, usernameArg: string): Promise<voi
 
 	target = normalizeTarget(target);
 
+	// Whichever env namespace supplies anything owns both halves: taking a username from
+	// HARPER_CLI_USERNAME and a password from CLI_TARGET_PASSWORD would log in as one identity
+	// using another's secret. A half the chosen namespace doesn't set is prompted for, never
+	// borrowed from the other one.
+	const envPrefix = ['HARPER_CLI', 'CLI_TARGET'].find(
+		(prefix) => process.env[`${prefix}_USERNAME`] || process.env[`${prefix}_PASSWORD`]
+	);
+	const envUsername = envPrefix && process.env[`${envPrefix}_USERNAME`];
+	const envPassword = envPrefix && process.env[`${envPrefix}_PASSWORD`];
+
 	let targetUsername = usernameArg;
 	if (!targetUsername) {
-		if (process.env.CLI_TARGET_USERNAME) {
-			targetUsername = process.env.CLI_TARGET_USERNAME;
-			console.log(chalk.gray(`Using username from CLI_TARGET_USERNAME environment variable: ${targetUsername}`));
-		} else if (process.env.HARPER_CLI_USERNAME) {
-			targetUsername = process.env.HARPER_CLI_USERNAME;
-			console.log(chalk.gray(`Using username from HARPER_CLI_USERNAME environment variable: ${targetUsername}`));
+		if (envUsername) {
+			targetUsername = envUsername;
+			console.log(chalk.gray(`Using username from ${envPrefix}_USERNAME environment variable: ${targetUsername}`));
 		} else {
 			({ username: targetUsername } = await inquirer.prompt({
 				type: 'input',
@@ -63,11 +70,10 @@ export async function login(targetArg: string, usernameArg: string): Promise<voi
 		}
 	}
 
-	let targetPassword = process.env.CLI_TARGET_PASSWORD || process.env.HARPER_CLI_PASSWORD;
+	let targetPassword = envPassword;
 
 	if (targetPassword) {
-		const envVarName = process.env.CLI_TARGET_PASSWORD ? 'CLI_TARGET_PASSWORD' : 'HARPER_CLI_PASSWORD';
-		console.log(chalk.gray(`Using password from ${envVarName} environment variable.`));
+		console.log(chalk.gray(`Using password from ${envPrefix}_PASSWORD environment variable.`));
 	} else {
 		// `type: 'password'` with no `mask` hides input entirely — nothing is echoed until Enter.
 		({ password: targetPassword } = await inquirer.prompt({
@@ -86,6 +92,11 @@ export async function login(targetArg: string, usernameArg: string): Promise<voi
 		operation: 'create_authentication_tokens',
 		username: targetUsername,
 		password: targetPassword,
+		// Also passed as dedicated transport credentials: these ARE the caller's credentials, so
+		// the request must authenticate as them rather than reach for a saved token — which, on a
+		// re-login after expiry, would try (and fail) to refresh the very token being replaced.
+		auth_username: targetUsername,
+		auth_password: targetPassword,
 		target,
 	};
 
