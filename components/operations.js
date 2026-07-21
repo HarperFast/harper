@@ -431,6 +431,24 @@ async function deployComponent(req) {
 }
 
 /**
+ * A genuinely-new (never-loaded) component deployed without an immediate restart can't serve its
+ * routes until Harper restarts, so mark a restart as needed (harper#674). This is the setter only; it
+ * does not itself restart — it makes get_status report restartRequired:true and lets the REST
+ * route-miss path surface the actionable "needs a restart" 404. Scoped to new components (harper#1806):
+ * an existing, already-loaded component's own file watcher independently requests a restart if a
+ * redeploy actually needs one, so a redeploy stays quiet. Runs per node — each node checks its own
+ * isNewComponent, since directory state (new vs. redeploy) can differ across the cluster. The one-shot
+ * path has extractApplication set isNewComponent in place; the two-phase path has activateApplication
+ * set it at swap time (staging is always fresh, so extract never sees the live dir).
+ */
+function markRestartRequiredForNewComponent(application) {
+	if (application.isNewComponent) {
+		const { requestRestart } = require('./requestRestart.ts');
+		requestRestart();
+	}
+}
+
+/**
  * Legacy one-shot deploy: extract + `npm install` in place on the origin, then replicate the whole
  * deploy_component operation to peers, which each do the same. Preserved verbatim (behavior-for-
  * behavior) as the fallback path for `two_phase: false` and for peers replaying a one-shot deploy.
@@ -555,10 +573,7 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 			// genuinely is needed, that component's already-running file watcher (Scope/
 			// EntryHandler, see deployLifecycle.ts) independently detects the post-deploy file
 			// changes and requests the restart itself.
-			if (application.isNewComponent) {
-				const { requestRestart } = require('./requestRestart.ts');
-				requestRestart();
-			}
+			markRestartRequiredForNewComponent(application);
 			response.message = `Successfully deployed: ${application.name}`;
 		}
 
@@ -722,7 +737,12 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 			emit('phase', { phase: 'restart', status: 'done' });
 			response.restartJobId = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-		} else response.message = `Successfully deployed: ${application.name}`;
+		} else {
+			// No restart requested: a genuinely-new component still needs one to serve its routes
+			// (harper#674). activateApplication set isNewComponent from the pre-swap live dir above.
+			markRestartRequiredForNewComponent(application);
+			response.message = `Successfully deployed: ${application.name}`;
+		}
 
 		// ---- Activate gate: rare, but a node can stage OK and then fail the swap. ----
 		if (!req.ignore_replication_errors) {
@@ -841,6 +861,11 @@ async function deployPhaseActivate(req) {
 	// The origin sets restart=true on the sub-op only for an immediate restart; rolling restarts are
 	// driven separately by the origin via a replicated restart_service job.
 	if (req.restart === true) manageThreads.restartWorkers('http');
+	// Not restarting now: mark restart-required per node for a genuinely-new component (harper#674), the
+	// same marking the one-shot peer path does — so a new component deployed cluster-wide with
+	// restart:false reports restartRequired on every node, not just the origin. A rolling restart, which
+	// also arrives here with restart:false, clears the flag when it reaches this node.
+	else markRestartRequiredForNewComponent(application);
 	return { message: `Activated component: ${req.project}`, project: req.project, activated: true };
 }
 
@@ -899,6 +924,10 @@ async function deployComponentActivateExisting(req, credentialReferences) {
 		emit('phase', { phase: 'restart', status: 'done' });
 		response.restartJobId = jobResponse.job_id;
 		response.message = `Activated component: ${req.project}, restarting Harper`;
+	} else {
+		// No restart requested: activating a genuinely-new component still needs one to serve its routes
+		// (harper#674). activateApplication set isNewComponent from the pre-swap live dir above.
+		markRestartRequiredForNewComponent(application);
 	}
 
 	// Best-effort: flip the staged deployment row (left 'staged' by the stage-and-stop) to success now

@@ -1383,6 +1383,19 @@ export async function activateApplication(application: Application): Promise<voi
 	await broadcastDeployStart(application.name);
 	let evictedAside: string | null = null;
 	try {
+		// A live version already existing makes this a redeploy, not a first deploy. This is the two-phase
+		// equivalent of extractApplication's in-place isNewComponent check: in two-phase the build lands in
+		// a fresh staging dir, so extractApplication never sees the live dir — activate (the swap) is where
+		// we learn it. Gates deploy_component's restart-required marking (harper#674/#1806); must be read
+		// BEFORE retainAsPrevious renames the live dir away. lstat, not access: a dangling symlink still
+		// counts as an existing directory (see moveDirAside).
+		try {
+			await lstat(application.dirPath);
+			application.isNewComponent = false;
+		} catch (err) {
+			if (err.code === 'ENOENT') application.isNewComponent = true;
+			else throw err;
+		}
 		// Retain the current live version as the rollback source (.deploy-previous/<name>), then rename
 		// the staged copy into place. Both live under the components root, so the rename is same-fs and
 		// atomic — there is no interval where `dirPath` is a partially populated directory. retainAsPrevious

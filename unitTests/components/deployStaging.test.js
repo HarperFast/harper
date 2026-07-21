@@ -101,6 +101,10 @@ describe('two-phase deploy primitives (stage / activate / discard)', function ()
 		assert.match(await readMarker(app.dirPath), /v1/, 'live dir holds the staged content');
 		assert.strictEqual(existsSync(app.stagingDirPath), false, 'the staged copy was consumed by the swap');
 		assert.strictEqual(app.buildDirPath, app.dirPath, 'build target reset to live after activation');
+		// No live version existed before the swap, so this is a first deploy. deploy_component reads this
+		// to mark restartRequired for a never-loaded component (harper#674); staging is always fresh, so
+		// activate — not extract — is what establishes it on the two-phase path.
+		assert.strictEqual(app.isNewComponent, true, 'a first-ever activate marks the component new');
 
 		await fs.rm(app.dirPath, { recursive: true, force: true });
 	});
@@ -119,6 +123,9 @@ describe('two-phase deploy primitives (stage / activate / discard)', function ()
 
 		assert.match(await readMarker(dirPath), /v2/, 'live dir now holds the new version');
 		assert.strictEqual(existsSync(path.join(dirPath, 'leftover.txt')), false, 'old-version files are gone from live');
+		// A live version existed before the swap, so this is a redeploy, not a first deploy — deploy_component
+		// must NOT self-request a restart here (harper#1806); the existing component's own watcher does.
+		assert.strictEqual(app.isNewComponent, false, 'activating over an existing live version marks it not-new');
 
 		await fs.rm(dirPath, { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
