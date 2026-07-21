@@ -78,8 +78,6 @@ import request from 'supertest';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
-// @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
-import { restartHttpWorkers } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'eviction-index-atomicity-lmdb');
 const WORKERS = Number(process.env.QA611_WORKERS ?? '4');
@@ -108,7 +106,30 @@ suite(
 				env: { HARPER_STORAGE_ENGINE: 'lmdb' },
 			});
 			client = createApiClient(ctx.harper);
-			await restartHttpWorkers(client, '/ItemF/', 120_000);
+
+			// Poll for route readiness (component is pre-installed via config.yaml; no restart
+			// needed). An earlier revision called restartHttpWorkers() here, but that op's HTTP
+			// response resolves as soon as the restart job is *launched* (server/jobs/jobRunner.ts
+			// launchJobThread does not await the job thread's actual work), not once workers have
+			// actually cycled. Against a pre-installed fixture the probe path is already non-404 from
+			// the moment the process boots, so the readiness poll passed trivially before the real
+			// restart (tearing down + respawning all `threads.count` workers) had finished — leaving
+			// it to race the tests that follow and intermittently ECONNREFUSE them (reliably
+			// reproduced under CI's more contended, WORKERS=4 timing). Since nothing here needs the
+			// restart in the first place, just poll for readiness directly, matching the established
+			// pattern in eviction-secondary-index.test.ts's sibling fixture.
+			{
+				const deadline = Date.now() + 120_000;
+				while (Date.now() < deadline) {
+					try {
+						const probe = await request(client.restURL).get('/ItemF/').set(client.headers).timeout(2000);
+						if (probe.status !== 404) break;
+					} catch {
+						/* not ready yet */
+					}
+					await sleep(250);
+				}
+			}
 
 			procOutput += ctx.harper.startupOutput?.stdout ?? '';
 			procOutput += ctx.harper.startupOutput?.stderr ?? '';
