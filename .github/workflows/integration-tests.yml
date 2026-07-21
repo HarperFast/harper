@@ -4,6 +4,8 @@ on:
   push:
     branches: [main, 'v[0-9]+.[0-9]+']
   pull_request:
+  schedule:
+    - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
       node-version:
@@ -31,7 +33,11 @@ jobs:
       - name: Set Node versions
         id: set-node-versions
         run: |
-          if [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            # PR pushes run a single representative Node version to keep the dev loop fast;
+            # the full 22/24/26 matrix runs on push to main/release and on the nightly schedule.
+            echo "node-versions=[24]" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
             echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
           else
             echo "node-versions=[${{ github.event.inputs.node-version }}]" >> $GITHUB_OUTPUT
