@@ -53,8 +53,6 @@ import request from 'supertest';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
-// @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
-import { restartHttpWorkers } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'aborted-update-index-migration');
 const SCHEMA = 'data';
@@ -84,7 +82,28 @@ suite(
 				env: { THREADS_COUNT: '1' },
 			});
 			client = createApiClient(ctx.harper);
-			await restartHttpWorkers(client, '/Widget/', 120_000);
+
+			// Poll for route readiness (component is pre-installed via config.yaml; no restart
+			// needed). See eviction-index-atomicity-lmdb.test.ts for why an explicit restartHttpWorkers()
+			// call here is actively harmful: that op's HTTP response resolves as soon as the restart
+			// job is *launched* (server/jobs/jobRunner.ts launchJobThread does not await the job
+			// thread's actual work), not once the worker has actually cycled. Against a pre-installed
+			// fixture the probe path is already non-404 from the moment the process boots, so the
+			// readiness poll there passed trivially before the real restart (tearing down + respawning
+			// the single http worker) had finished — leaving it to race the tests that follow and
+			// intermittently fail their fetch()es with ECONNREFUSED (reliably reproduced in CI).
+			{
+				const deadline = Date.now() + 120_000;
+				while (Date.now() < deadline) {
+					try {
+						const probe = await request(client.restURL).get('/Widget/').set(client.headers).timeout(2000);
+						if (probe.status !== 404) break;
+					} catch {
+						/* not ready yet */
+					}
+					await sleep(250);
+				}
+			}
 
 			procOutput += ctx.harper.startupOutput?.stdout ?? '';
 			procOutput += ctx.harper.startupOutput?.stderr ?? '';
