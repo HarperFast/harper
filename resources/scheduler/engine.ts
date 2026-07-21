@@ -74,6 +74,13 @@ let leaderlessSince: number | undefined;
 // When this node became leader — fallback for the lease row's initializedAt
 // when a heartbeat renews after a failed read
 let leaderInitializedAt: string | undefined;
+// The in-flight (or settled) election kicked off by startSchedulerEngine —
+// held so tests can await the role decision instead of polling
+let electionPromise: Promise<void> | undefined;
+// Bumped by stopSchedulerEngine: async transitions (electRole, becomeLeader)
+// capture it before their awaits and abandon themselves if it moved — an
+// in-flight election must not resurrect timers after a stop (review finding)
+let engineEpoch = 0;
 const jobsByComponent = new Map<string, Map<string, RegisteredJob>>();
 
 let _stateTable: any;
@@ -277,9 +284,29 @@ export function unregisterComponentJobs(componentName: string): void {
 export function startSchedulerEngine(): void {
 	if (engineStarted) return;
 	engineStarted = true;
-	electRole().catch((error) => {
+	electionPromise = electRole().catch((error) => {
 		schedulerLogger.error?.('Scheduler engine failed to start', error);
 	});
+}
+
+/** @internal — testing only: resolves when the initial election has settled */
+export function electionSettledForTests(): Promise<void> {
+	return electionPromise ?? Promise.resolve();
+}
+
+/**
+ * @internal — testing only: run one heartbeat tick immediately (same body the
+ * interval runs), so tests can drive lease renewal / takeover checks without
+ * waiting out HEARTBEAT_INTERVAL_MS. Same seam pattern as
+ * setCoolingFunctionForTests in transactionLogCooling.
+ */
+export function runHeartbeatForTests(): Promise<void> {
+	return heartbeat();
+}
+
+/** @internal — testing only: run one failover-watcher tick immediately */
+export function runFailoverCheckForTests(): Promise<void> {
+	return failoverCheck();
 }
 
 /** Reset all engine state and timers. Intended for tests. */
@@ -296,6 +323,8 @@ export function stopSchedulerEngine(): void {
 	catchUpRunning = false;
 	leaderlessSince = undefined;
 	leaderInitializedAt = undefined;
+	electionPromise = undefined;
+	engineEpoch++;
 	_stateTable = undefined;
 }
 
@@ -310,10 +339,12 @@ export function getRegisteredJobNames(componentName: string): string[] {
 
 async function electRole(): Promise<void> {
 	const self = currentNodeName();
+	const epoch = engineEpoch;
 	let leaderRow: any;
 	try {
 		leaderRow = await withStateTimeout(getStateTable().get(LEADER_ROW_ID), 'leader state read');
 	} catch (error) {
+		if (epoch !== engineEpoch) return; // stopped while electing
 		// Fail toward followership: electing ourselves while the state table is
 		// unreadable risks a second leader. The failover watcher keeps checking
 		// and promotes once reads succeed and show a leaderless cluster.
@@ -321,6 +352,7 @@ async function electRole(): Promise<void> {
 		becomeFollower();
 		return;
 	}
+	if (epoch !== engineEpoch) return; // stopped while electing
 	// Sticky leadership: a node (re)starting while another node is actively
 	// leading defers to it rather than seizing leadership back
 	if (leaderRow && leaderRow.leaderNode !== self && !isHeartbeatStale(leaderRow.lastHeartbeat)) {
@@ -346,6 +378,7 @@ async function electRole(): Promise<void> {
 
 async function becomeLeader(skipInitialCatchUp = false): Promise<void> {
 	const self = currentNodeName();
+	const epoch = engineEpoch;
 	role = 'leader';
 	if (failoverWatcherTimer) {
 		clearInterval(failoverWatcherTimer);
@@ -370,6 +403,10 @@ async function becomeLeader(skipInitialCatchUp = false): Promise<void> {
 	const now = new Date().toISOString();
 	leaderInitializedAt = now;
 	await putStateRow({ id: LEADER_ROW_ID, leaderNode: self, lastHeartbeat: now, initializedAt: now });
+	// A stop while the lease write was in flight must not resurrect the
+	// heartbeat interval (review finding: in-flight transitions surviving
+	// stopSchedulerEngine)
+	if (epoch !== engineEpoch) return;
 	// The heartbeat interval must be beating BEFORE the promotion catch-up
 	// pass: catch-up runs user handlers serially and can exceed the stale
 	// threshold, and a leader that stops renewing mid-catch-up looks dead —
@@ -449,6 +486,7 @@ async function heartbeat(): Promise<void> {
 async function failoverCheck(): Promise<void> {
 	if (role !== 'follower') return;
 	const self = currentNodeName();
+	const epoch = engineEpoch;
 	let leaderRow: any;
 	try {
 		leaderRow = await withStateTimeout(getStateTable().get(LEADER_ROW_ID), 'leader state read');
@@ -464,9 +502,9 @@ async function failoverCheck(): Promise<void> {
 		return;
 	}
 	// Re-check after the await: a concurrent (stalled) check may have promoted
-	// this node already, and a second becomeLeader would duplicate work
-	// (audit finding)
-	if (role !== 'follower') return;
+	// this node already (audit finding), or the engine may have been stopped
+	// while the read was in flight (review finding) — either way, do not promote
+	if (role !== 'follower' || epoch !== engineEpoch) return;
 	const now = Date.now();
 	leaderlessSince ??= now;
 	const roster = nodeRoster();

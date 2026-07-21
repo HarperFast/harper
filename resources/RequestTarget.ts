@@ -111,16 +111,25 @@ export class RequestTarget extends URLSearchParams {
 		if (path) {
 			// parse for properties and set the id
 			if (path.startsWith('/')) path = path.substring(1);
-		} else {
-			return; // leave this.id undefined
+		} else if (target === undefined) {
+			return; // constructed with no target at all (internal use) — leave id/isCollection unset
 		}
 		if (path) {
 			if (path.endsWith('/')) {
 				this.isCollection = true;
 			}
 			this.id = decodeURIComponent(path);
-		} else {
+		} else if (this.pathname === '/') {
+			// a bare trailing slash is the documented way to address a resource's collection
 			this.isCollection = true;
+			this.id = null;
+		} else {
+			// an exact resource-path match with nothing left to parse and no trailing slash
+			// (e.g. `/redirects` instead of the required `/redirects/`, harper#678): this is
+			// neither a valid collection request nor a specific record, so id/isCollection must
+			// still be well-defined (never left `undefined`) for dispatch to reject it cleanly
+			// instead of letting downstream code assume one of them is always set.
+			this.isCollection = false;
 			this.id = null;
 		}
 	}
