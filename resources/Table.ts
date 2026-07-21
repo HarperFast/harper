@@ -615,10 +615,20 @@ export function makeTable(options) {
 														// Staging failed (encoding, or the store closing under a shutdown race), so
 														// nothing will commit this transaction. Abort it rather than leaking a native
 														// transaction that would pin a snapshot and hold off compaction.
-														seqTransaction.abort();
+														try {
+															seqTransaction.abort();
+														} catch {}
 														throw error;
 													}
-													return seqTransaction.commit();
+													return seqTransaction.commit().catch((error) => {
+														// A rejected commit leaves the handle open too, so release it here as well —
+														// same reason as the staging failure above, and the same shape as the
+														// eviction paths' commit failures (see evict/commitItems below).
+														try {
+															seqTransaction.abort();
+														} catch {}
+														throw error;
+													});
 												}
 												return dbisDb.put(seqKey, seqRecord);
 											};
