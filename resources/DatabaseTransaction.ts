@@ -662,7 +662,14 @@ export class DatabaseTransaction implements Transaction {
 			} catch (abortError) {
 				harperLogger.debug?.('aborting conflicted transaction in chain after exhausting retries', abortError);
 			}
-			txn.abort();
+			try {
+				// abort() synchronously walks savedBlobs and can call write.store.getEntry(), which can throw
+				// (closed store, decode error). Catch and continue so one link's wrapper-cleanup failure can't
+				// strand later links' native handles — they were already detached/aborted above regardless.
+				txn.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('cleaning up conflicted transaction in chain after exhausting retries', abortError);
+			}
 		}
 	}
 	/**
