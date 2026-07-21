@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784535306682,
+  "lastUpdate": 1784621043601,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -2618,6 +2618,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1285.84,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "jcohen-hdb",
+            "username": "jcohen-hdb",
+            "email": "jacob@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "1e1edc666ad373a0fbfec4df4d3f0e130be13529",
+          "message": "Ignore node_modules symlinked into integration fixtures by dev-mode boots\n\nharper dev <fixture> runs symlinkHarperModule against the component dir,\nplanting node_modules/harper inside integrationTests/fixtures/* — untracked\nand unignored, it has previously slipped into a commit (#1828 required an\namend). Discovered during runtime verification of this branch.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-20T18:56:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/1e1edc666ad373a0fbfec4df4d3f0e130be13529"
+        },
+        "date": 1784621042785,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5890.3,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8447.14,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8452.48,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6599.68,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4784.39,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8522.96,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1039.08,
             "unit": "ops/sec"
           }
         ]
