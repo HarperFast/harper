@@ -61,4 +61,18 @@ describe('V1Embeddings.post', () => {
 		const result = await V1Embeddings.post(undefined, 'not an object', {});
 		assert.equal(result.status, 401, 'auth must be checked ahead of body validation');
 	});
+
+	it('accepts a batch at the 2048-item cap', async () => {
+		const body = { input: Array.from({ length: 2048 }, (_, i) => `item ${i}`) };
+		const result = await V1Embeddings.post(undefined, body, { user: SUPER_USER });
+		assert.equal(result.object, 'list');
+		assert.equal(result.data.length, 2048);
+	});
+
+	it('rejects a batch over the 2048-item cap with a 400 OpenAI-shape envelope', async () => {
+		const body = { input: Array.from({ length: 2049 }, (_, i) => `item ${i}`) };
+		const result = await V1Embeddings.post(undefined, body, { user: SUPER_USER });
+		assert.equal(result.status, 400);
+		assert.equal(result.data.error.type, 'invalid_request_error');
+	});
 });

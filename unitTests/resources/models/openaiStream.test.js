@@ -134,4 +134,48 @@ describe('openaiStream', () => {
 		assert.ok(ids[0].startsWith('chatcmpl-'));
 		assert.ok(new Set(ids).size === 1, 'id must be identical across every chunk');
 	});
+
+	// A backend that throws partway through the stream (Models#wrapStream re-throws
+	// mid-stream errors). The loop must convert that into a final data:{error} frame,
+	// not let the throw propagate and tear the connection down.
+	async function* throwingGen() {
+		yield { deltaContent: 'partial' };
+		throw Object.assign(new Error('backend exploded'), { statusCode: 502 });
+	}
+
+	it('emits a formatError-shaped error frame and no [DONE] when the backend throws mid-stream', async () => {
+		const msgs = await collect(
+			openaiStream(throwingGen(), {
+				formatError: (err) => ({ message: err.message, type: 'server_error', code: 'backend_error', param: null }),
+			})
+		);
+		// the partial content chunk streamed before the throw
+		assert.equal(msgs[0].data.choices[0].delta.content, 'partial');
+		const last = msgs[msgs.length - 1].data;
+		assert.ok(last.error, 'expected a terminal error frame');
+		assert.equal(last.error.message, 'backend exploded');
+		assert.equal(last.error.type, 'server_error');
+		assert.equal(last.error.code, 'backend_error');
+		// OpenAI terminates on error — no [DONE] sentinel after the error frame
+		assert.ok(!msgs.some((m) => m.data === '[DONE]'), 'must not emit [DONE] after a mid-stream error');
+	});
+
+	it('falls back to a generic server_error frame when no formatError is supplied', async () => {
+		const msgs = await collect(openaiStream(throwingGen()));
+		const last = msgs[msgs.length - 1].data;
+		assert.equal(last.error.type, 'server_error');
+		assert.equal(last.error.message, 'Internal server error');
+	});
+
+	it('serializes the error frame through the SSE serializer as a data: line', async () => {
+		const msgs = await collect(
+			openaiStream(throwingGen(), {
+				formatError: () => ({ message: 'x', type: 'server_error', code: null, param: null }),
+			})
+		);
+		const errFrame = msgs.find((m) => typeof m.data === 'object' && m.data.error);
+		const wire = sse.serialize(errFrame);
+		assert.ok(wire.startsWith('data: '), `unexpected SSE framing: ${wire}`);
+		assert.ok(wire.includes('"error"'));
+	});
 });

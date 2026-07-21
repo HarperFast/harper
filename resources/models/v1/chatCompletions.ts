@@ -54,7 +54,11 @@ export class V1ChatCompletions extends Resource {
 				// serializeStream wraps the async iterable in a Node Readable so REST.ts
 				// can return it without re-serialising. The `body` presence on the return
 				// value skips REST.ts's own serialize() call (REST.ts:165-193).
-				const readable = sseHandler.serializeStream(openaiStream(tokenStream, { model }));
+				// formatError reuses the non-streaming error mapping so a mid-stream backend
+				// failure reaches the client as an OpenAI-shaped SSE error frame.
+				const readable = sseHandler.serializeStream(
+					openaiStream(tokenStream, { model, formatError: (err) => toOpenAIError(err).data.error })
+				);
 				return {
 					status: 200,
 					headers: {

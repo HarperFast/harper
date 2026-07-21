@@ -10,6 +10,11 @@ import { models } from '../Models.ts';
 import { toOpenAIError, badRequest, authorizeV1Request } from './errors.ts';
 import { toEmbedOpts, toEmbedResponse } from './translation.ts';
 
+// Cap batched input, matching OpenAI's own 2048-item limit. The endpoint is
+// super_user-only and off by default, so this is a sanity bound (avoid an
+// unbounded fan-out to the backend), not a security control.
+const MAX_EMBEDDING_INPUTS = 2048;
+
 // @ts-ignore — Resource base class is not typed for static dispatch; pattern mirrors login.ts
 export class V1Embeddings extends Resource {
 	static async post(_target: unknown, body: Record<string, unknown>, request: unknown) {
@@ -31,6 +36,9 @@ export class V1Embeddings extends Resource {
 		}
 		if (Array.isArray(input) && !input.every((v) => typeof v === 'string')) {
 			return badRequest("'input' array elements must be strings");
+		}
+		if (Array.isArray(input) && input.length > MAX_EMBEDDING_INPUTS) {
+			return badRequest(`'input' array must not exceed ${MAX_EMBEDDING_INPUTS} items`);
 		}
 
 		const model = typeof raw.model === 'string' ? raw.model : 'default';

@@ -21,6 +21,20 @@ export interface OpenAIStreamOptions {
 	model?: string;
 	/** Reuse a caller-supplied completion id across all chunks; one is generated when omitted. */
 	id?: string;
+	/**
+	 * Map a mid-stream backend error to an OpenAI error body for a final `data: {error}`
+	 * SSE frame. Lets the v1 gateway reuse its `toOpenAIError` mapping without this generic
+	 * formatter depending on the v1 layer. When omitted, a generic server_error body is emitted.
+	 */
+	formatError?: (err: unknown) => OpenAIErrorFrameBody;
+}
+
+/** OpenAI streaming error body (`{ message, type, code, param }` under an `error` key). */
+export interface OpenAIErrorFrameBody {
+	message: string;
+	type: string;
+	code: string | null;
+	param: string | null;
 }
 
 interface OpenAIToolCallDelta {
@@ -46,7 +60,7 @@ interface OpenAIChunk {
 
 /** SSE message envelope consumed by Harper's `text/event-stream` serializer. */
 export interface OpenAIStreamMessage {
-	data: OpenAIChunk | string;
+	data: OpenAIChunk | { error: OpenAIErrorFrameBody } | string;
 }
 
 /**
@@ -83,26 +97,39 @@ export async function* openaiStream(
 		},
 	});
 
-	for await (const token of tokens) {
-		if (token.deltaContent !== undefined) {
-			const delta: OpenAIDelta = {};
-			if (!roleSent) {
-				delta.role = 'assistant';
-				roleSent = true;
+	try {
+		for await (const token of tokens) {
+			if (token.deltaContent !== undefined) {
+				const delta: OpenAIDelta = {};
+				if (!roleSent) {
+					delta.role = 'assistant';
+					roleSent = true;
+				}
+				delta.content = token.deltaContent;
+				yield chunk(delta, null);
 			}
-			delta.content = token.deltaContent;
-			yield chunk(delta, null);
-		}
-		if (token.deltaToolCalls) {
-			for (const incoming of token.deltaToolCalls) {
-				if (!incoming.id) continue;
-				const existing = toolAssembly.get(incoming.id) ?? { index: toolAssembly.size, arguments: {} };
-				if (incoming.name) existing.name = incoming.name;
-				if (incoming.arguments) existing.arguments = { ...existing.arguments, ...incoming.arguments };
-				toolAssembly.set(incoming.id, existing);
+			if (token.deltaToolCalls) {
+				for (const incoming of token.deltaToolCalls) {
+					if (!incoming.id) continue;
+					const existing = toolAssembly.get(incoming.id) ?? { index: toolAssembly.size, arguments: {} };
+					if (incoming.name) existing.name = incoming.name;
+					if (incoming.arguments) existing.arguments = { ...existing.arguments, ...incoming.arguments };
+					toolAssembly.set(incoming.id, existing);
+				}
 			}
+			if (token.finishReason) finishReason = token.finishReason;
 		}
-		if (token.finishReason) finishReason = token.finishReason;
+	} catch (err) {
+		// The backend can throw partway through the stream (Models#wrapStream re-throws
+		// mid-stream backend errors). Headers/200 are already flushed, so this can't be an
+		// HTTP error status — emit a final OpenAI-shaped `data: {error}` frame so SDK clients
+		// see a parseable error (matching the non-streaming path) instead of an abrupt socket
+		// close. OpenAI terminates the stream on error and sends no `[DONE]`, so we do the same.
+		const error = opts.formatError
+			? opts.formatError(err)
+			: { message: 'Internal server error', type: 'server_error', code: null, param: null };
+		yield { data: { error } };
+		return;
 	}
 
 	if (toolAssembly.size > 0) {
