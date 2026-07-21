@@ -438,6 +438,73 @@ function previousDirPathFor(liveDirPath: string): string {
 	return join(dirname(liveDirPath), DEPLOY_PREVIOUS_DIR, basename(liveDirPath));
 }
 
+// Max not-yet-activated staged builds kept per component before the oldest are evicted on the next
+// stage. A full deploy consumes its staged build immediately (activate renames it live), so this only
+// bounds `activate: false` stage-and-stops that are never activated. Configurable via
+// deployment_stagingRetention_maxCount.
+export const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
+
+function getStagingRetentionMaxCount(): number {
+	const configured = getConfigValue(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
+	// Only a number or numeric string is a valid count; reject everything else (unset, boolean, array,
+	// blank) and fall back to the default — mirroring getPayloadRetentionMaxSize's defensive coercion.
+	if (typeof configured !== 'number' && typeof configured !== 'string') return DEFAULT_STAGING_RETENTION_MAX_COUNT;
+	if (typeof configured === 'string' && configured.trim() === '') return DEFAULT_STAGING_RETENTION_MAX_COUNT;
+	const parsed = Number(configured);
+	return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : DEFAULT_STAGING_RETENTION_MAX_COUNT;
+}
+
+/**
+ * Prune the oldest not-yet-activated staged builds for a component, keeping at most `maxCount` (newest
+ * by mtime) and ALWAYS retaining the just-built one (`keepStagingId`). Staged builds live at
+ * `.deploy-staging/<stagingId>/<name>`, and each stagingId parent holds exactly one component's build,
+ * so an evicted build's whole parent directory is removed. Entirely best-effort: any error (a racing
+ * concurrent stage, a busy dir) is logged at trace and never fails the stage that triggered it.
+ */
+async function pruneStagedBuilds(componentName: string, keepStagingId: string, maxCount: number): Promise<void> {
+	try {
+		if (!(maxCount >= 1)) return;
+		const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+		if (!componentsRoot) return;
+		const stagingRoot = join(componentsRoot, DEPLOY_STAGING_DIR);
+		let parents: import('node:fs').Dirent[];
+		try {
+			parents = await readdir(stagingRoot, { withFileTypes: true });
+		} catch (err) {
+			if ((err as any).code === 'ENOENT') return; // nothing staged yet
+			throw err;
+		}
+		// Collect this component's staged builds: <stagingRoot>/<stagingId>/<name> that still exist.
+		const builds: Array<{ stagingId: string; parentPath: string; mtime: number }> = [];
+		for (const parent of parents) {
+			if (!parent.isDirectory()) continue;
+			const parentPath = join(stagingRoot, parent.name);
+			try {
+				const st = await stat(join(parentPath, componentName));
+				builds.push({ stagingId: parent.name, parentPath, mtime: st.mtimeMs });
+			} catch (err) {
+				if ((err as any).code !== 'ENOENT') throw err; // parent holds a different component; skip
+			}
+		}
+		// Always keep the build we just made, plus the newest (maxCount - 1) of the OTHERS by mtime; evict
+		// the rest. Computing it as "keep keepStagingId + top-(N-1) others" (rather than "evict everything
+		// past the top N") keeps the count exact even when mtimes tie and the just-built one would
+		// otherwise sort into the eviction window. Await the evictions (best-effort via allSettled) so the
+		// retention count is settled by the time the stage returns.
+		const others = builds.filter((build) => build.stagingId !== keepStagingId).sort((a, b) => b.mtime - a.mtime);
+		const evictions = others
+			.slice(Math.max(0, maxCount - 1))
+			.map((build) =>
+				rm(build.parentPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
+					logger.trace?.(`Deferred prune of staged ${componentName} build ${build.stagingId}: ${err.message}`)
+				)
+			);
+		await Promise.allSettled(evictions);
+	} catch (err) {
+		logger.trace?.(`Staged-build prune for ${componentName} skipped: ${(err as Error).message}`);
+	}
+}
+
 /**
  * Atomically move `targetDirPath` aside into a hidden, per-component staging directory if it
  * exists, returning the aside staging directory (for best-effort cleanup) or null when there was
@@ -1208,6 +1275,10 @@ export async function stageApplication(application: Application): Promise<string
 	} finally {
 		await application.cleanupTransientNpmrc();
 	}
+	// Now that this stage succeeded, evict the oldest not-yet-activated staged builds for this component
+	// beyond the retention count (a full deploy consumes this one on activate; `activate: false`
+	// stage-and-stops are what actually accumulate). Best-effort; never fails the stage.
+	await pruneStagedBuilds(application.name, application.stagingId, getStagingRetentionMaxCount());
 	return application.stagingDirPath;
 }
 

@@ -405,6 +405,20 @@ some nodes live and some not, so the cluster reconverges on one version. The pre
 per-node (each node retains its own outgoing version during its own activate), so a replicated revert
 has a local rollback source on every node.
 
+**Staged-build retention.** A full deploy consumes its staged build immediately (activate renames it
+live), so the only builds that accumulate are `activate: false` stage-and-stops that are never
+activated — each leaves `.deploy-staging/<deploymentId>/<name>` in place so a later
+`deploy_component({deployment_id})` can activate it. `stageApplication` bounds this: after a successful
+stage it evicts the oldest not-yet-activated staged builds for that component beyond
+`deployment_stagingRetention_maxCount` (default 5, `pruneStagedBuilds`), always keeping the just-staged
+one and the newest N−1 by mtime. Eviction is best-effort (`allSettled`, trace-logged) but awaited so
+the count is settled when the stage returns. Retention is deliberately count-only and automatic:
+per the harper#1849 discussion, `hdb_deployment` rows stay as the audit trail (payload blobs already
+self-reclaim by size, `deployment_payloadRetention_maxSize`), and no `delete_deployment` op was added —
+eviction-on-stage keeps the surface at zero new operations. Consequence: activating a `deployment_id`
+that has already aged out of the window fails with "no staged build found" — expected once more than
+`maxCount` newer stages have landed for that component.
+
 ## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
 
 The built-in `scheduler` plugin (#951) runs config-declared jobs "exactly once per cluster." The

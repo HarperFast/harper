@@ -555,6 +555,9 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
+	// Max not-yet-activated staged builds kept per component (`activate: false` stage-and-stops). When a
+	// new stage lands, the oldest beyond this count are evicted. See components/Application.ts.
+	DEPLOYMENT_STAGINGRETENTION_MAXCOUNT: 'deployment_stagingRetention_maxCount',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',

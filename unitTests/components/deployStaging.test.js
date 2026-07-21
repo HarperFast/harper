@@ -284,6 +284,28 @@ describe('two-phase deploy primitives (stage / activate / discard)', function ()
 		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
 	});
 
+	it('evicts the oldest not-yet-activated staged builds beyond the retention count (default 5)', async () => {
+		// Simulate repeated `activate: false` stage-and-stops of the same component (distinct stagingIds,
+		// never activated). Each stage should prune older ones down to the retention count.
+		const name = `stage_test_${process.pid}_${counter++}`;
+		const stagingRoot = path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR);
+		const stagingIds = [];
+		for (let i = 0; i < 7; i++) {
+			const app = new Application({ name, payload: await makeComponentPayload(`v${i}`) });
+			stagingIds.push(app.stagingId);
+			await stageApplication(app);
+		}
+
+		const remaining = stagingIds.filter((id) => existsSync(path.join(stagingRoot, id, name)));
+		// Contract: at most `maxCount` staged builds are retained per component, and the just-staged one is
+		// always kept. (Which older builds are evicted is ordered by mtime — reliable in real use where
+		// stages are time-separated, but this tight loop can create ties, so it isn't asserted here.)
+		assert.strictEqual(remaining.length, 5, `expected 5 staged builds retained, got ${remaining.length}`);
+		assert.ok(existsSync(path.join(stagingRoot, stagingIds[6], name)), 'the most recent stage is always retained');
+
+		await fs.rm(stagingRoot, { recursive: true, force: true });
+	});
+
 	it('only one previous is retained across three deploys (older previous evicted)', async () => {
 		const name = `stage_test_${process.pid}_${counter++}`;
 		await deployVersion(name, 'v1');
