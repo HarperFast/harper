@@ -9,4 +9,9 @@ type Item @table(audit: false) @export {
 	id: ID @primaryKey
 	bucket: String @indexed
 	payload: String
+	# Deliberately kept above the file-storage threshold in tests so it is file-backed —
+	# an inline blob has no file to orphan, so it wouldn't exercise removeEntry's
+	# blob-unlink gate (the second half of the F-147 defect: an aborted removal must not
+	# unlink the blob file either).
+	blob: Blob
 }

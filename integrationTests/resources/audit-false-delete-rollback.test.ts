@@ -14,10 +14,11 @@
  * `audit: false` is required to reach this branch: the `audit: true` path goes through
  * `updateRecord()`, which already threads `{transaction}` and rolls back correctly.
  *
- * P1: DELETE + throw (transaction abort) on an audit:false table — the row and its
- *     secondary-index entry must both survive (no dangling index entry, no data loss).
- * P2: DELETE without a throw (normal commit) — the row and index entry must both be gone
- *     (regression guard: the fix must not break an ordinary committed delete).
+ * P1: DELETE + throw (transaction abort) on an audit:false table — the row, its
+ *     secondary-index entry, and its file-backed blob must all survive (no dangling index
+ *     entry, no data loss, no orphaned blob file).
+ * P2: DELETE without a throw (normal commit) — the row, index entry, and blob must all be
+ *     gone (regression guard: the fix must not break an ordinary committed delete).
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/resources/audit-false-delete-rollback.test.ts"
@@ -33,6 +34,13 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 const FIXTURE_PATH = resolve(import.meta.dirname, 'audit-false-delete-rollback');
 const skipSuite = process.platform === 'win32';
 const ENGINE = process.env.HARPER_STORAGE_ENGINE || 'rocksdb(default)';
+// Above blob.ts's FILE_STORAGE_THRESHOLD (8192) so the blob attribute is file-backed —
+// an inline blob has no file to orphan and wouldn't exercise removeEntry's blob-unlink gate.
+const BLOB_SIZE = 8192 + 200;
+
+function blobText(id: string): string {
+	return `${id}:`.repeat(Math.ceil(BLOB_SIZE / (id.length + 1))).slice(0, BLOB_SIZE);
+}
 
 suite(
 	`F-147/#1854 audit:false delete rollback atomicity [engine=${ENGINE}]`,
@@ -72,6 +80,14 @@ suite(
 			return r.status === 200 ? r.body : null;
 		}
 
+		/** GET /Item/<id>.blob — dot-notation sub-attribute selects the raw blob bytes,
+		 * independent of whether the record itself is otherwise reachable. */
+		async function getBlob(id: string): Promise<{ status: number; text: string | null }> {
+			const r = await fetch(`${httpURL}/Item/${encodeURIComponent(id)}.blob`, { headers: { Authorization: auth } });
+			const text = r.status === 200 ? await r.text() : null;
+			return { status: r.status, text };
+		}
+
 		/** Count Items indexed under `bucket` via the raw secondary-index path (search_by_value). */
 		async function bucketIndexCount(bucket: string): Promise<number> {
 			const r = await op({
@@ -108,53 +124,65 @@ suite(
 			await teardownHarper(ctx);
 		});
 
-		test('P1 aborted delete: row and secondary-index entry both survive', async () => {
+		test('P1 aborted delete: row, secondary-index entry, and blob all survive', async () => {
 			const id = 'p1-abort';
 			const bucket = 'p1-bucket';
+			const blob = blobText(id);
 
-			const putRes = await postJSON('/Item/', { id, bucket, payload: 'x' });
+			const putRes = await postJSON('/Item/', { id, bucket, payload: 'x', blob });
 			ok(putRes.status < 300, `seed put must succeed; got ${putRes.status}`);
 
 			const preItem = await getItem(id);
 			ok(preItem, 'seeded Item must exist before the aborted delete');
 			strictEqual(await bucketIndexCount(bucket), 1, 'seeded Item must be indexed before the aborted delete');
+			const preBlob = await getBlob(id);
+			strictEqual(preBlob.text, blob, 'seeded blob must be readable before the aborted delete');
 
 			const res = await postJSON('/DeleteAndAbort/', { id });
-			await sleep(300); // give any (incorrect) async removal a moment to land
 
 			const postItem = await getItem(id);
 			const indexCount = await bucketIndexCount(bucket);
+			const postBlob = await getBlob(id);
 
 			console.log(
 				`\n[F-147 P1 engine=${ENGINE}] throw status=${res.status} (expect 4xx/5xx)\n` +
 					`  Item present after abort=${!!postItem} (expect true)\n` +
 					`  bucket index count=${indexCount} (expect 1)\n` +
-					`  >>> ${postItem && indexCount === 1 ? 'ATOMIC — delete rolled back, index intact' : 'DEFECT — delete escaped the aborted transaction'}`
+					`  blob intact after abort=${postBlob.text === blob} (expect true)\n` +
+					`  >>> ${postItem && indexCount === 1 && postBlob.text === blob ? 'ATOMIC — delete rolled back, index and blob intact' : 'DEFECT — delete escaped the aborted transaction'}`
 			);
 
 			ok(res.status >= 400, `throwing handler must not return 2xx; got ${res.status}`);
 			ok(postItem, 'Item must still exist after the aborted delete (removal must roll back)');
 			strictEqual(postItem?.bucket, bucket, 'surviving Item must retain its original bucket');
 			strictEqual(indexCount, 1, `bucket index must still list the surviving Item; got count=${indexCount}`);
+			strictEqual(
+				postBlob.text,
+				blob,
+				`blob must survive the aborted delete (removeEntry's blob-unlink gate must not fire); got status=${postBlob.status}`
+			);
 		});
 
-		test('P2 committed delete: row and secondary-index entry are both removed', async () => {
+		test('P2 committed delete: row, secondary-index entry, and blob are all removed', async () => {
 			const id = 'p2-commit';
 			const bucket = 'p2-bucket';
+			const blob = blobText(id);
 
-			const putRes = await postJSON('/Item/', { id, bucket, payload: 'x' });
+			const putRes = await postJSON('/Item/', { id, bucket, payload: 'x', blob });
 			ok(putRes.status < 300, `seed put must succeed; got ${putRes.status}`);
 			strictEqual(await bucketIndexCount(bucket), 1, 'seeded Item must be indexed before delete');
+			strictEqual((await getBlob(id)).text, blob, 'seeded blob must be readable before delete');
 
 			const res = await postJSON('/DeleteAndCommit/', { id });
 			strictEqual(res.status, 200, `DeleteAndCommit must succeed; got ${res.status}`);
-			await sleep(300);
 
 			const postItem = await getItem(id);
 			const indexCount = await bucketIndexCount(bucket);
+			const postBlob = await getBlob(id);
 
 			ok(!postItem, 'Item must be gone after a normal (non-aborted) delete');
 			strictEqual(indexCount, 0, `bucket index must have no entries after a committed delete; got count=${indexCount}`);
+			strictEqual(postBlob.status, 404, `blob must be gone after a committed delete; got status=${postBlob.status}`);
 		});
 	}
 );
