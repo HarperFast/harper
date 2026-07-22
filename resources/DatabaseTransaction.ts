@@ -411,9 +411,9 @@ export class DatabaseTransaction implements Transaction {
 							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
 							// re-arms per attempt, so recording per attempt matches the overload semantics.
 							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
-						// Promise<void> here because the widening union defeats flow analysis on the prior
-						// cast assignment; re-assert it — this branch's commit() result is always a Promise.
-						recordCommitLatency(commitResolution as Promise<void>, performance.now());
+							// Promise<void> here because the widening union defeats flow analysis on the prior
+							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
+							recordCommitLatency(commitResolution as Promise<void>, performance.now());
 							// Count this commit against the write queue depth until the storage engine
 							// resolves it. A transient-conflict retry rejects this promise and issues a
 							// fresh commit() (re-entering here), so the enter/leave stays balanced. leaveWriteQueue

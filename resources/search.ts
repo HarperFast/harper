@@ -15,17 +15,17 @@ const BETWEEN_ESTIMATE = 0.1;
 const STARTS_WITH_ESTIMATE = 0.05;
 
 function getStringPrefixUpperBound(prefix: string): Uint8Array {
-	const maximumEncodedLength = prefix.length * 3 + 1;
-	const encodedPrefix = new Uint8Array((maximumEncodedLength + 7) & ~3);
-	const encodedLength = writeKey(prefix, encodedPrefix, 0);
-	const upperBound = encodedPrefix.subarray(0, encodedLength);
-	// Incrementing the encoded prefix produces the exclusive bound immediately after every key with these bytes.
-	for (let index = upperBound.length - 1; index >= 0; index--) {
-		if (upperBound[index] < 0xff) {
-			upperBound[index]++;
-			return upperBound.subarray(0, index + 1);
-		}
+const maximumEncodedLength = prefix.length * 3 + 3;
+const encodedPrefix = new Uint8Array((maximumEncodedLength + 7) & ~3);
+const encodedLength = writeKey(prefix, encodedPrefix, 0);
+const upperBound = encodedPrefix.subarray(0, encodedLength);
+// Incrementing the encoded prefix produces the exclusive bound immediately after every key with these bytes.
+for (let index = upperBound.length - 1; index >= 0; index--) {
+	if (upperBound[index] < 0xff) {
+		upperBound[index]++;
+		return upperBound.slice(0, index + 1);
 	}
+}
 	return MAXIMUM_KEY;
 }
 
