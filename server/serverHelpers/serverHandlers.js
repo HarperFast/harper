@@ -174,10 +174,18 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 				res.header(name, value);
 			}
 			// fastify-compress has one job. I don't know why it can't do it. So we compress here to
-			// handle the case of returning a stream
-			if (req.headers['accept-encoding']?.includes('gzip')) {
+			// handle the case of returning a stream. Streams marked preCompressed (e.g. a stored
+			// .tar.gz payload) are passed through as-is — recompressing them wastes CPU for zero gain.
+			if (!result.preCompressed && req.headers['accept-encoding']?.includes('gzip')) {
 				res.header('content-encoding', 'gzip');
-				result = result.pipe(createGzip({ level: constants.Z_BEST_SPEED })); // go fast
+				const gzip = createGzip({ level: constants.Z_BEST_SPEED }); // go fast
+				// .pipe() does not forward source errors; without this an async read error on the
+				// source (e.g. get_backup's file stream) fires 'error' with no listener and takes
+				// the whole worker down via uncaughtException. Destroying the gzip stream propagates
+				// the error to Fastify, which aborts just this response. (preCompressed streams skip
+				// this block and get Fastify's own error handling on the raw stream.)
+				result.on('error', (error) => gzip.destroy(error));
+				result = result.pipe(gzip);
 			}
 		}
 		return result;
