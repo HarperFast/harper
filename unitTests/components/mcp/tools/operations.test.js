@@ -513,23 +513,50 @@ describe('mcp/tools/operations — handler dispatch', () => {
 		assert.deepEqual(res.structuredContent, { message: 'success' });
 	});
 
-	it('rejects streaming (Readable) results with isError and destroys the stream', async () => {
-		// get_deployment_payload / get_backup return raw byte streams for the HTTP surface;
-		// over MCP they must fail cleanly instead of JSON.stringify-ing stream internals.
-		const stream = Readable.from([Buffer.from('tarball-bytes')]);
-		_setChooseOperationForTest(() => async () => stream);
+	it('rejects known streaming operations (get_deployment_payload) before ever dispatching them', async () => {
+		// get_backup's LMDB path opens an fd + read transaction before its Readable is even
+		// returned, and destroying that stream unread does not run its cleanup (calling
+		// .return() on a never-started async generator skips its body, including
+		// readTxn.done()). So the fix is to never call the handler for a known streaming op,
+		// not to destroy its result after the fact. Assert chooseOperation is never invoked.
+		let chosen = false;
+		_setChooseOperationForTest(() => {
+			chosen = true;
+			return async () => Readable.from([Buffer.from('tarball-bytes')]);
+		});
 		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
-		envOverrides.mcp_operations_allow = ['get_deployment_payload'];
-		_setOperationFunctionMapForTest(makeOpMap([['get_deployment_payload', null]]));
+		envOverrides.mcp_operations_allow = ['get_deployment_payload', 'get_backup'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['get_deployment_payload', null],
+				['get_backup', null],
+			])
+		);
 		registerOperationsTools();
 
-		const res = await getTool('get_deployment_payload').handler(
-			{},
-			{ user: SUPER, profile: 'operations', sessionId: 's' }
-		);
+		for (const opName of ['get_deployment_payload', 'get_backup']) {
+			chosen = false;
+			const res = await getTool(opName).handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+			assert.equal(res.isError, true);
+			assert.match(res.content[0].text, /byte stream/);
+			assert.equal(chosen, false, `${opName} must not reach chooseOperation/the handler`);
+		}
+	});
+
+	it('backstops an unlisted operation that unexpectedly returns a stream, and destroys it', async () => {
+		// Defense in depth for an op outside STREAMING_OPERATIONS (e.g. added without updating
+		// that set) — best-effort cleanup via destroy(), distinct message from the pre-dispatch
+		// rejection above.
+		const stream = Readable.from([Buffer.from('unexpected-bytes')]);
+		_setChooseOperationForTest(() => async () => stream);
+		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+
+		const res = await getTool('describe_all').handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
 
 		assert.equal(res.isError, true);
-		assert.match(res.content[0].text, /byte stream/);
-		assert.equal(stream.destroyed, true, 'stream must be destroyed so file-backed sources release fds');
+		assert.match(res.content[0].text, /unexpected byte stream/);
+		assert.equal(stream.destroyed, true, 'backstop must still destroy an unconsumed stream');
 	});
 });
