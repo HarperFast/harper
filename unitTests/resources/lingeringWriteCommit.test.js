@@ -74,6 +74,11 @@ describe('commit with open read iterators commits writes immediately on a replay
 		await delay(50); // give a released-handle failure a beat to surface as an unhandledRejection
 		assert.equal(context.transaction.transaction, null, 'the drained iterator must release the native handle');
 		assert.ok(await LingerTable.get('linger-write'), 'releasing the read handle must not disturb the committed write');
+		// audit/txn-log entries batch on the native transaction they were staged into and are only
+		// written by its commit; the replay must re-stage them into ITS transaction — the original
+		// handle's batch dies with the abort above. Exactly one entry: no loss, no duplication.
+		const history = await LingerTable.getHistoryOfRecord('linger-write');
+		assert.equal(history.length, 1, 'the replayed write must carry exactly one audit entry (not zero, not two)');
 		assert.deepEqual(unhandled, [], 'the replay commit must not leak an unhandled rejection');
 	});
 

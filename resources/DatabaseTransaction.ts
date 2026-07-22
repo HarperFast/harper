@@ -190,6 +190,9 @@ export class DatabaseTransaction implements Transaction {
 	retries = 0;
 	declare next: DatabaseTransaction;
 	declare stale: boolean;
+	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
+	// consumed by a commit round; iterator references are consumed only by doneReadTxn().
+	declare baseReadRefConsumed?: boolean;
 	declare startedFrom?: {
 		resourceName: string;
 		method: string;
@@ -234,6 +237,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 
 		this.readTxnsUsed = 1;
+		this.baseReadRefConsumed = false; // fresh handle, fresh base reference for commit() to consume
 		if (DEBUG_LONG_TXNS) {
 			this.stackTraces = [new StartedTransaction()];
 		}
@@ -256,7 +260,8 @@ export class DatabaseTransaction implements Transaction {
 			// The native handle was only being held open for the read iterators: any writes staged
 			// through it were already committed at commit() time by replaying them onto a fresh
 			// transaction (see the outstanding-iterators branch in commit()), so aborting it here
-			// discards nothing — the audit/txn-log entries appended at staging survive the abort.
+			// discards nothing — the replay re-staged the writes AND their audit/txn-log entries
+			// into its own transaction; this handle's never-committed log batch dies with it.
 			trackedTxns.delete(this);
 			this.transaction?.abort();
 			this.transaction = null;
@@ -360,8 +365,9 @@ export class DatabaseTransaction implements Transaction {
 			if (result?.then) this.completions.push(result);
 		}
 		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
-		// Sticky record that THIS write staged with its audit entry appended (log entries are written
-		// at staging and are not part of the transaction, so they survive an abort). isRetry stagings
+		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
+		// native transaction and are durably written by its commit attempt — even a failed one — so
+		// they survive the abort-after-failed-commit of the retry paths). isRetry stagings
 		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
 		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
 		// retries where a recommit round self-skips before a fresh-transaction replay.
@@ -398,11 +404,14 @@ export class DatabaseTransaction implements Transaction {
 				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
 				// coordinatedRetry, or void on a normal commit/abort.
 				let commitResolution: Promise<number | void> | void;
-				// Consume this commit's own read reference — but only on the initial round: retry
-				// recursions and immediate-commit paths re-enter with an explicit options.transaction
-				// after the reference is already consumed, and must not steal one owned by an
+				// Consume this commit's own read reference — exactly once per read handle: retry
+				// recursions, immediate-commit re-entries, and a second top-level commit() (wrapper
+				// commit after an explicit in-handler commit) must not steal a reference owned by an
 				// outstanding iterator (doneReadTxn() would then never release the native handle).
-				if (!options.transaction) this.readTxnsUsed--;
+				if (!this.baseReadRefConsumed) {
+					this.baseReadRefConsumed = true;
+					this.readTxnsUsed--;
+				}
 				if (this.readTxnsUsed > 0) {
 					// Outstanding iterators still stream through this.transaction — their native iterators
 					// live inside it (GetIterator wraps its write batch + snapshot), so committing or
@@ -417,15 +426,18 @@ export class DatabaseTransaction implements Transaction {
 					this.writes = this.writes.filter((write) => write); // filter out removed entries
 					if (this.writes.length > 0) {
 						if (!options.transaction) {
-							const replayTransaction: RocksTransactionWithRetry = new RocksTransaction(
+							// Deliberately NOT marked isRetry and NOT carrying over the original's onCommit:
+							// audit/txn-log entries batch natively on the transaction they were staged into and
+							// are only durably written by that transaction's commit attempt (an abort discards
+							// them — unlike the ERR_TRY_AGAIN replay below, where the original's FAILED commit
+							// attempt already wrote its log batch). The original handle here never attempts a
+							// commit, so the replayed stagings must re-append their entries into the replay
+							// transaction's own batch — which also installs the replay's own commit hook.
+							const replayTransaction = new RocksTransaction(
 								(this.writes[0].store.store ?? this.db.store) as RocksStore,
 								{ coordinatedRetry: true }
 							);
 							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
-							(replayTransaction as any).onCommit = (transaction as any)?.onCommit;
-							// the original stagings appended their audit/txn-log entries (they survive the
-							// original handle's abort); the replay must not re-append them
-							replayTransaction.isRetry = true;
 							this.retries++; // a replay round: commit handlers re-base on the reloaded entries
 							for (const operation of this.writes) {
 								this.save(operation, replayTransaction, true, options);
@@ -531,7 +543,11 @@ export class DatabaseTransaction implements Transaction {
 								harperLogger.warn?.('onCommit handler failed after commit', error);
 							}
 							if (this.next) {
-								completions.push(this.next.commit(options));
+								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
+								// the next store — it must commit its own writes through its own transaction
+								completions.push(
+									this.next.commit(options.transaction ? { ...options, transaction: undefined } : options)
+								);
 							}
 							if (options?.flush) {
 								completions.push(this.writes[0].store.flushed);
@@ -680,7 +696,10 @@ export class DatabaseTransaction implements Transaction {
 				if (this.next) {
 					// now run any other transactions
 					options.timestamp = this.timestamp;
-					const nextResolution = this.next?.commit(options);
+					// as above: the next store must not inherit this store's explicit native transaction
+					const nextResolution = this.next?.commit(
+						options.transaction ? { ...options, transaction: undefined } : options
+					);
 					if ((nextResolution as any)?.then)
 						return (nextResolution as any)?.then((nextResolution) => ({
 							txnTime: this.timestamp,
