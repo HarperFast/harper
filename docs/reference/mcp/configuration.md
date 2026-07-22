@@ -118,7 +118,7 @@ Default: `0` (disabled)
 
 Sustained `tools/call` rate keyed on **client identity** rather than session (5.2.0+). Session-scoped buckets can be evaded by an anonymous client that cycles sessions (`initialize` → call → drop → repeat); the client bucket survives that loop. Identity is the client socket IP by default, or the value derived from [`identityHeader`](#mcpprofileratelimitidentityheader). Denials surface like other rate-limit hits: an `isError` tool result with `kind: 'rate_limited'`, `scope: 'per_client'`.
 
-Like the other buckets, state is in-memory per worker — it does not survive a restart and is not shared across workers. For durable quotas, see [`mcp.<profile>.quota.*`](#mcpprofilequota).
+Like the other buckets, state is in-memory per worker — it does not survive a restart and is not shared across workers. For durable quotas, see the [durable quota handler](#durable-quota-handler).
 
 ### `mcp.<profile>.rateLimit.perClientBurst`
 
@@ -138,56 +138,56 @@ Name of a trusted header whose first (client-most) value supplies client identit
 
 **Only set this when the fronting proxy strips or replaces the header on untrusted traffic.** A client-controlled identity header lets callers mint fresh identities per request and bypass per-client limits entirely; Harper logs a startup warning when this key is configured.
 
-## `mcp.<profile>.quota.*`
+## Durable quota handler
 
-An operator-pluggable **durable** quota hook for `tools/call` (5.2.0+). The in-memory buckets above bound instantaneous rates but reset on restart and are per-worker — insufficient as a cost control for a public, unauthenticated, cost-bearing tool (an LLM-backed `answer`, say). This hook delegates the policy to your code, where it can be backed by a table:
+An operator-pluggable **durable** quota policy for `tools/call` (5.2.0+). The in-memory buckets above bound instantaneous rates but reset on restart and are per-worker — insufficient as a cost control for a public, unauthenticated, cost-bearing tool (an LLM-backed `answer`, say). A component registers the policy as a **function** with `server.setMcpQuotaHandler`, so the policy is never itself an exposed Resource, and it can be backed by an internal table:
 
-```yaml
-mcp:
-  application:
-    quota:
-      resource: McpQuota
+```graphql
+# schema.graphql — an INTERNAL per-identity counter. No @export, so no client can read or reset it.
+type QuotaCounter @table {
+	id: ID @primaryKey
+	used: Int
+}
 ```
 
 ```javascript
 // resources.js
 const DAILY_LIMIT = 100;
-export class McpQuota extends tables.QuotaCounter {
-	static async allowMcpCall({ identity, tool, user, profile, sessionId }) {
-		const id = identity ?? 'unknown';
-		const existing = await McpQuota.get(id);
-		const used = (existing?.used ?? 0) + 1;
-		await McpQuota.put({ id, used });
-		if (used > DAILY_LIMIT) {
-			return { allowed: false, message: 'daily quota reached', retryAfterSeconds: 3600 };
-		}
-		return true;
+
+// The cost-bearing tool clients call (exported — this is the public surface).
+export class Answerer extends Resource {
+	static mcpTools = [{ name: 'answer', description: 'Answer a question', method: 'doAnswer' }];
+	async doAnswer(args) {
+		return { answered: args?.q ?? '' };
 	}
 }
+
+// Register the durable quota policy as a function, backed by the internal counter table.
+server.setMcpQuotaHandler(async ({ identity, tool, user, profile, sessionId }) => {
+	if (profile !== 'application') return true; // gate per profile in code
+	const id = identity ?? 'unknown';
+	const existing = await tables.QuotaCounter.get(id);
+	const used = (existing?.used ?? 0) + 1;
+	await tables.QuotaCounter.put({ id, used });
+	if (used > DAILY_LIMIT) {
+		return { allowed: false, message: 'daily quota reached', retryAfterSeconds: 3600 };
+	}
+	return true;
+});
 ```
 
-### `mcp.<profile>.quota.resource`
+### `server.setMcpQuotaHandler(handler)`
 
-Type: `string`
+Registers the durable quota policy (opt-in — no handler registered means calls are allowed). The handler is called before each admitted `tools/call` with `{ identity, tool, user, profile, sessionId }` (`identity` may be `undefined` when no socket IP or header value is available). Return `true` (or any truthy non-object) to allow, or `{ allowed: false, message?, retryAfterSeconds? }` to deny — denials surface as an `isError` tool result with `kind: 'quota_exceeded'` plus the author-supplied `message`/`retryAfterSeconds`. Pass `undefined` to clear the handler.
 
-Default: unset (no durable quota)
-
-Path of an exported Resource whose static quota method Harper calls before each admitted `tools/call`. Dispatch uses the live registry class, so an exported subclass (and its policy) wins on reload.
-
-### `mcp.<profile>.quota.method`
-
-Type: `string`
-
-Default: `allowMcpCall`
-
-Name of the static method to call. It receives `{ identity, tool, user, profile, sessionId }` (`identity` may be `undefined` when no socket IP or header value is available) and returns `true` to allow or `{ allowed: false, message?, retryAfterSeconds? }` to deny. Denials surface as an `isError` tool result with `kind: 'quota_exceeded'` plus the author-supplied `message`/`retryAfterSeconds`.
+Because the policy is a plain function and not a Resource, it exposes no `update_/delete_` MCP tools or REST/etc. surface — unlike an exported class, whose inherited CRUD would let a permitted client reset its own counter. Keep any table the handler uses for storage unexported (no `@export`), as above, so it stays off every transport. The latest registration wins, so a reloaded component replaces the previous handler; the single handler receives `profile`, so gate the operations and application profiles in code.
 
 Semantics to know:
 
-- The hook runs **after** the in-memory buckets admit the call, so rate-limited clients cannot spam a table-backed hook.
-- **Fail-closed**: a hook that throws — or a configured `resource`/`method` that doesn't resolve — **denies** the call. Cost protection that silently disables itself on a bug is worse than a hard failure. The raw error is written to the server log only; the client sees a sanitized message.
-- Harper calls the hook once per attempted tool call; counting strategy (increment on check vs on success) is the hook's business.
-- **Race-safety is the hook's business too.** The hook can run concurrently for the same identity — within a worker (interleaving across `await` boundaries) and across workers. A naive read-then-write counter like the example above can undercount under concurrency and admit calls past the limit; make the read-modify-write atomic (a transaction that serializes conflicting writers, a compare-and-set retry loop, or a store with native atomic increments) for production use.
+- The handler runs **after** the in-memory buckets admit the call, so rate-limited clients cannot spam a table-backed handler.
+- **Fail-closed**: a handler that throws **denies** the call. Cost protection that silently disables itself on a bug is worse than a hard failure. The raw error is written to the server log only; the client sees a sanitized message.
+- Harper calls the handler once per attempted tool call; counting strategy (increment on check vs on success) is the handler's business.
+- **Race-safety is the handler's business too.** It can run concurrently for the same identity — within a worker (interleaving across `await` boundaries) and across workers. A naive read-then-write counter like the example above can undercount under concurrency and admit calls past the limit; make the read-modify-write atomic (a transaction that serializes conflicting writers, a compare-and-set retry loop, or a store with native atomic increments) for production use.
 
 ## `mcp.session.*`
 
