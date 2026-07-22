@@ -115,11 +115,17 @@ export async function setupTestApp() {
 	createdRecords = [];
 
 	if (serverStarted) {
-		// if already started, clear out any previous records and recreate them
-		tables.VariedProps.clear();
-		tables.FourProp.clear();
-		tables.Related.clear();
-		tables.SubObject.clear();
+		// if already started, clear out any previous records and recreate them. RocksDB's
+		// clear() is an unsynchronized native range-delete (no coordination with in-flight
+		// transaction commits, unlike LMDB's single-writer instruction queue) — awaiting it
+		// here is required so the reseed PUTs below can't race a still-in-flight delete and
+		// have their fresh inserts wiped out from under them.
+		await Promise.all([
+			tables.VariedProps.clear(),
+			tables.FourProp.clear(),
+			tables.Related.clear(),
+			tables.SubObject.clear(),
+		]);
 	} else {
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
