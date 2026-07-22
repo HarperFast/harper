@@ -5,6 +5,12 @@ import axios from 'axios';
 import { setupTestApp, baseUrl, operationsUrl, testHost } from './setupTestApp.mjs';
 import { request } from 'http';
 
+// A bare `assert(data.some(...))` failure reports nothing about what came back, which makes an
+// intermittent failure in CI (where the run can't be re-created locally) close to undiagnosable.
+function preview(response) {
+	return `status ${response.status}, body ${JSON.stringify(response.data)?.slice(0, 2000)}`;
+}
+
 describe('test REST with property updates', function () {
 	before(async function () {
 		await setupTestApp();
@@ -240,7 +246,10 @@ describe('test REST with property updates', function () {
 				search_attribute: 'id',
 				search_value: '*',
 			});
-			assert(response.data.some((record) => record.title === 'title0'));
+			assert(
+				response.data.some((record) => record.title === 'title0'),
+				`search_by_value did not return title0: ${preview(response)}`
+			);
 		});
 		it('search_by_conditions with join', async function () {
 			let response = await axios.post(
@@ -258,7 +267,10 @@ describe('test REST with property updates', function () {
 					},
 				}
 			);
-			assert(response.data.some((record) => record.related.name === 'Related 6'));
+			assert(
+				response.data.some((record) => record.related.name === 'Related 6'),
+				`search_by_conditions with join did not return Related 6: ${preview(response)}`
+			);
 		});
 		it('search_by_conditions with different properties', async function () {
 			let response = await axios.post(
@@ -292,7 +304,10 @@ describe('test REST with property updates', function () {
 					},
 				}
 			);
-			assert(response.data.some((record) => record.relatedId === '6'));
+			assert(
+				response.data.some((record) => record.relatedId === '6'),
+				`search_by_conditions did not return relatedId 6: ${preview(response)}`
+			);
 			assert.equal(response.data[0].id, '34');
 			assert.equal(response.data[1].id, '33');
 		});
@@ -310,8 +325,10 @@ describe('test REST with property updates', function () {
 					},
 				}
 			);
-			if (response.status > 400) console.error(response.data);
-			assert(response.data.some((record) => record.title === 'title0'));
+			assert(
+				response.data.some((record) => record.title === 'title0'),
+				`SELECT * FROM data.FourProp did not return title0: ${preview(response)}`
+			);
 		});
 		it('sql returns all attributes and sub-object of array', async function () {
 			let response = await axios.put(`${baseUrl}/namespace/SubObject/6`, {
@@ -323,7 +340,10 @@ describe('test REST with property updates', function () {
 				operation: 'sql',
 				sql: 'SELECT * FROM data.SubObject',
 			});
-			assert(response.data.some((record) => record.subObject?.name === 'another sub-object'));
+			assert(
+				response.data.some((record) => record.subObject?.name === 'another sub-object'),
+				`SELECT * FROM data.SubObject did not return the sub-object: ${preview(response)}`
+			);
 		});
 		it('describe_table returns all attributes', async function () {
 			let response = await axios.post(operationsUrl, {
