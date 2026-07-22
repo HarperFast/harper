@@ -4,6 +4,7 @@ const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
 const assert = require('assert');
+const { Readable } = require('node:stream');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
@@ -462,6 +463,51 @@ describe('Test serverHandlers.js module ', () => {
 			assert.ok(process_local_trans_stub.calledOnce === true, 'processLocalTransaction was not called');
 			assert.ok(error_log_stub.calledOnce === true, 'Error not logged');
 			assert.ok(error_log_stub.args[0][0] === TEST_ERR, 'Error message not logged');
+		});
+
+		it('Should forward source stream errors through the gzip pipe instead of crashing the worker', async () => {
+			const source = Readable.from(
+				(async function* () {
+					yield Buffer.from('partial');
+					throw new Error('blob read failed');
+				})()
+			);
+			source.headers = new Map([['content-type', 'application/octet-stream']]);
+			process_local_trans_stub.resolves(source);
+			const stream_req = { body: { operation: 'get_deployment_payload' }, headers: { 'accept-encoding': 'gzip' } };
+			const headers_set = {};
+			const stream_res = { header: (name, value) => (headers_set[name] = value) };
+
+			const result = await serverHandlers_rw.handlePostRequest(stream_req, stream_res);
+
+			assert.ok(result !== source, 'gzip path should return the piped stream');
+			assert.strictEqual(headers_set['content-encoding'], 'gzip');
+			// Without the error forwarding, the source error fires with no listener and kills the
+			// process via uncaughtException; with it, the returned stream rejects.
+			await assert.rejects(
+				(async () => {
+					// eslint-disable-next-line no-unused-vars, no-empty
+					for await (const chunk of result) {
+					}
+				})(),
+				/blob read failed/
+			);
+		});
+
+		it('Should pass a preCompressed stream through without recompressing', async () => {
+			const source = Readable.from([Buffer.from('already-gzipped-bytes')]);
+			source.headers = new Map([['content-type', 'application/octet-stream']]);
+			source.preCompressed = true;
+			process_local_trans_stub.resolves(source);
+			const stream_req = { body: { operation: 'get_deployment_payload' }, headers: { 'accept-encoding': 'gzip' } };
+			const headers_set = {};
+			const stream_res = { header: (name, value) => (headers_set[name] = value) };
+
+			const result = await serverHandlers_rw.handlePostRequest(stream_req, stream_res);
+
+			assert.strictEqual(result, source, 'preCompressed stream must pass through untouched');
+			assert.strictEqual(headers_set['content-encoding'], undefined);
+			assert.strictEqual(headers_set['content-type'], 'application/octet-stream');
 		});
 	});
 });

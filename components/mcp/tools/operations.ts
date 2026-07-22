@@ -33,6 +33,7 @@
  * server-side validation errors surface as `isError: true` results without
  * the MCP layer needing to know what each operation expects.
  */
+import { Readable } from 'node:stream';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
@@ -175,6 +176,7 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 	'restart_service',
 	'set_configuration',
 	'remove_node',
+	'delete_deployment_payload',
 ]);
 
 /**
@@ -291,6 +293,21 @@ export function makeOperationToolHandler(operationName: string) {
 			}
 			const operationFn = chooseOperation(body);
 			const data = await processLocalTransaction({ body }, operationFn);
+			if (data instanceof Readable) {
+				// Streaming ops (get_backup, get_deployment_payload) return raw bytes for the HTTP
+				// surface; JSON.stringify would emit stream internals, not the payload. Destroy the
+				// source so file-backed streams release their descriptors.
+				data.destroy();
+				return {
+					isError: true,
+					content: [
+						{
+							type: 'text',
+							text: `operation '${operationName}' returns a byte stream and is only available over the operations HTTP API`,
+						},
+					],
+				};
+			}
 			const text = typeof data === 'string' ? data : JSON.stringify(data ?? null);
 			const result: ToolResult = {
 				content: [{ type: 'text', text }],

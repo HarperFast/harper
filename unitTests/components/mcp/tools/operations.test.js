@@ -1,4 +1,5 @@
 const assert = require('node:assert');
+const { Readable } = require('node:stream');
 const {
 	registerOperationsTools,
 	DEFAULT_ALLOW,
@@ -510,5 +511,25 @@ describe('mcp/tools/operations — handler dispatch', () => {
 
 		assert.equal(res.isError, undefined);
 		assert.deepEqual(res.structuredContent, { message: 'success' });
+	});
+
+	it('rejects streaming (Readable) results with isError and destroys the stream', async () => {
+		// get_deployment_payload / get_backup return raw byte streams for the HTTP surface;
+		// over MCP they must fail cleanly instead of JSON.stringify-ing stream internals.
+		const stream = Readable.from([Buffer.from('tarball-bytes')]);
+		_setChooseOperationForTest(() => async () => stream);
+		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
+		envOverrides.mcp_operations_allow = ['get_deployment_payload'];
+		_setOperationFunctionMapForTest(makeOpMap([['get_deployment_payload', null]]));
+		registerOperationsTools();
+
+		const res = await getTool('get_deployment_payload').handler(
+			{},
+			{ user: SUPER, profile: 'operations', sessionId: 's' }
+		);
+
+		assert.equal(res.isError, true);
+		assert.match(res.content[0].text, /byte stream/);
+		assert.equal(stream.destroyed, true, 'stream must be destroyed so file-backed sources release fds');
 	});
 });

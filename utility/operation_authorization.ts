@@ -294,6 +294,14 @@ requiredPermissions.set(
 	deploymentOperations.handleGetDeployment.name,
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
 );
+requiredPermissions.set(
+	deploymentOperations.handleGetDeploymentPayload.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD)
+);
+requiredPermissions.set(
+	deploymentOperations.handleDeleteDeploymentPayload.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_DEPLOYMENT_PAYLOAD)
+);
 
 // Secrets-store operations. All SU-only; the handlers ALSO enforce super_user directly, so these
 // cannot be delegated through a role's `operations` allowlist (gate-2 bypass below).
