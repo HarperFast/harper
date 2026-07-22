@@ -26,7 +26,13 @@ const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
 const { Application, prepareApplication, ASIDE_STAGING_DIR } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
-const { DeploymentRecorder, awaitDeploymentRow, DEFAULT_AWAIT_ROW_TIMEOUT_MS } = require('./deploymentRecorder.ts');
+const {
+	DeploymentRecorder,
+	awaitDeploymentRow,
+	readPayloadBlobWithRetry,
+	coerceTimeoutMs,
+	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
+} = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
 
 /**
@@ -465,8 +471,21 @@ async function deployComponent(req) {
 			// The wait budget defaults to 120s but is overridable per-deploy via
 			// `deployment_timeout` (ms) for clusters where the system-table channel is
 			// heavily backlogged (harper-pro#402).
-			const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: req.deployment_timeout });
-			extractionPayload = row.payload_blob.stream();
+			const payloadTimeoutMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
+			// One deadline covers both phases (row wait + blob content) so a slow row doesn't
+			// double the peer's total worst-case wait — whatever's left of payloadTimeoutMs after
+			// the row arrives is what the blob retry gets.
+			const payloadDeadline = Date.now() + payloadTimeoutMs;
+			const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: payloadTimeoutMs });
+			// Blob content can stall independently of the row itself arriving (e.g. a
+			// parked/declined blob send on the origin, harper-pro#403) — the header lands but
+			// content bytes don't, and stream() gives up with a retryable 503 after
+			// blobReadTimeout of no progress. Retry with backoff, bounded by the remaining
+			// budget, so a transient stall doesn't fail the whole deploy (harper-pro incident,
+			// 2026-07-16).
+			extractionPayload = readPayloadBlobWithRetry(() => row.payload_blob.stream(), {
+				timeoutMs: Math.max(0, payloadDeadline - Date.now()),
+			});
 		}
 
 		// Resolve credential references into concrete tokens for this node's npm pack/install
@@ -475,8 +494,7 @@ async function deployComponent(req) {
 		// allow a bounded grace period (same budget as the payload-row wait) for it to replicate in.
 		let credentialsWaitMs = 0;
 		if (isReplicatedExecution) {
-			const requested = Number(req.deployment_timeout);
-			credentialsWaitMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+			credentialsWaitMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
 		}
 		const resolvedCredentials = await resolveCredentials(req.credentials, req.project, {
 			waitMs: credentialsWaitMs,

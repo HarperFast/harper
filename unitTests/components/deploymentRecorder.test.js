@@ -14,7 +14,11 @@ const assert = require('node:assert');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { DeploymentRecorder, awaitDeploymentRow } = require('#src/components/deploymentRecorder');
+const {
+	DeploymentRecorder,
+	awaitDeploymentRow,
+	readPayloadBlobWithRetry,
+} = require('#src/components/deploymentRecorder');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 
@@ -417,5 +421,221 @@ describe('awaitDeploymentRow', () => {
 
 	it('polls once then times out when timeoutMs is 0 and the row is absent', async () => {
 		await assert.rejects(() => awaitDeploymentRow('zero-absent', { timeoutMs: 0 }), /Timed out after 0ms/);
+	});
+});
+
+describe('readPayloadBlobWithRetry', () => {
+	// Mirrors what resources/blob.ts's stream() rejects a ReadableStream with: an Error carrying
+	// a `statusCode` (503 = BLOB_UNAVAILABLE_STATUS/retryable, 500 = corrupt/permanent).
+	function statusCodeStream(statusCode, message) {
+		return new ReadableStream({
+			start(controller) {
+				const error = new Error(message ?? `stream failed with ${statusCode}`);
+				error.statusCode = statusCode;
+				controller.error(error);
+			},
+		});
+	}
+
+	function successStream(content) {
+		return new ReadableStream({
+			start(controller) {
+				controller.enqueue(Buffer.from(content));
+				controller.close();
+			},
+		});
+	}
+
+	// A stream that delivers one chunk, then errors on the NEXT pull — used to prove a
+	// mid-stream 503 (bytes already forwarded) is NOT retried, unlike a 503 before any chunk
+	// arrives. Enqueuing and erroring within the same `start()` call doesn't model this: per
+	// the streams spec, controller.error() resets the internal queue, so a chunk enqueued and
+	// then errored in the same synchronous turn is discarded before a reader ever sees it.
+	// Splitting across two `pull()` calls forces the first chunk to actually be read out (and
+	// forwarded) before the stall.
+	function partialThenErrorStream(statusCode, message) {
+		let pulled = false;
+		return new ReadableStream({
+			pull(controller) {
+				if (!pulled) {
+					pulled = true;
+					controller.enqueue(Buffer.from('partial-'));
+					return;
+				}
+				const error = new Error(message ?? `stream failed with ${statusCode}`);
+				error.statusCode = statusCode;
+				controller.error(error);
+			},
+		});
+	}
+
+	async function readAll(stream) {
+		const chunks = [];
+		for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		return Buffer.concat(chunks);
+	}
+
+	it('retries a 503 and resolves with the content once a later attempt succeeds', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return attempts < 3 ? statusCodeStream(503) : successStream('tarball-bytes');
+		};
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
+		const result = await readAll(stream);
+		assert.strictEqual(attempts, 3, 'retried twice before the third attempt succeeded');
+		assert.strictEqual(result.toString(), 'tarball-bytes');
+	});
+
+	it('rejects with the original stall error once the timeout budget is exhausted on repeated 503s', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return statusCodeStream(503, 'Blob read stalled: no further data is arriving');
+		};
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 30, initialBackoffMs: 10, maxBackoffMs: 10 });
+		await assert.rejects(() => readAll(stream), /Blob read stalled: no further data is arriving/);
+		assert.ok(attempts >= 2, 'made at least one retry attempt before the budget ran out');
+	});
+
+	it('does not retry a 500 (permanent/corrupt) error — fails on the first attempt', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return statusCodeStream(500, 'Blob is corrupt');
+		};
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
+		await assert.rejects(() => readAll(stream), /Blob is corrupt/);
+		assert.strictEqual(attempts, 1, 'a non-retryable status must not be retried');
+	});
+
+	it('does not retry an error with no statusCode at all', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return new ReadableStream({
+				start(controller) {
+					controller.error(new Error('unexpected failure'));
+				},
+			});
+		};
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
+		await assert.rejects(() => readAll(stream), /unexpected failure/);
+		assert.strictEqual(attempts, 1);
+	});
+
+	it('does not retry a 503 once a chunk has already reached the consumer — avoids duplicating forwarded bytes', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return partialThenErrorStream(503, 'stalled mid-stream');
+		};
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000, initialBackoffMs: 5, maxBackoffMs: 5 });
+		await assert.rejects(() => readAll(stream), /stalled mid-stream/);
+		assert.strictEqual(attempts, 1, 'a stall after partial content must not be retried');
+	});
+
+	it('succeeds on the first attempt without waiting when the stream is healthy', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return successStream('ok');
+		};
+		const before = Date.now();
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000 });
+		const result = await readAll(stream);
+		assert.strictEqual(attempts, 1);
+		assert.strictEqual(result.toString(), 'ok');
+		assert.ok(Date.now() - before < 500, 'a healthy first read must not incur backoff delay');
+	});
+
+	it('forwards chunks without buffering the whole payload — large payloads stream through', async () => {
+		// Regression guard for a full-buffering design: with a multi-chunk stream, the wrapper
+		// must yield each chunk as it arrives rather than collecting them all before returning
+		// anything.
+		const streamFactory = () =>
+			new ReadableStream({
+				start(controller) {
+					controller.enqueue(Buffer.from('chunk-1-'));
+					controller.enqueue(Buffer.from('chunk-2'));
+					controller.close();
+				},
+			});
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000 });
+		const iterator = stream[Symbol.asyncIterator]();
+		const first = await iterator.next();
+		assert.strictEqual(Buffer.from(first.value).toString(), 'chunk-1-', 'first chunk is forwarded on its own');
+		const second = await iterator.next();
+		assert.strictEqual(Buffer.from(second.value).toString(), 'chunk-2');
+		const done = await iterator.next();
+		assert.strictEqual(done.done, true);
+	});
+
+	it('is pull-based — reading one chunk does not drain a large source ahead of consumer demand', async () => {
+		// Regression guard for the eager-drain bug: a `for await` loop that enqueues into a
+		// Web ReadableStream without checking `desiredSize` keeps pulling from the source as
+		// fast as it can, regardless of whether the consumer has read anything yet — defeating
+		// the whole no-buffering design for a multi-GB payload. Readable.from()'s pull protocol
+		// only resumes the generator when the consumer asks for more, so the source must not be
+		// anywhere near drained after the consumer has read just one chunk.
+		const TOTAL_CHUNKS = 5000;
+		let innerPulls = 0;
+		const streamFactory = () =>
+			new ReadableStream({
+				pull(controller) {
+					innerPulls++;
+					if (innerPulls > TOTAL_CHUNKS) {
+						controller.close();
+						return;
+					}
+					controller.enqueue(Buffer.from(`chunk-${innerPulls}`));
+				},
+			});
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 5000 });
+		const iterator = stream[Symbol.asyncIterator]();
+		const first = await iterator.next();
+		assert.strictEqual(Buffer.from(first.value).toString(), 'chunk-1');
+		assert.ok(
+			innerPulls < TOTAL_CHUNKS / 2,
+			`must not eagerly drain the source before the consumer asks for more (pulled ${innerPulls}/${TOTAL_CHUNKS} after reading just one chunk)`
+		);
+	});
+
+	it('performs a single check (no retry loop) when timeoutMs is 0', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return statusCodeStream(503, 'stalled');
+		};
+		const stream = readPayloadBlobWithRetry(streamFactory, { timeoutMs: 0 });
+		await assert.rejects(() => readAll(stream), /stalled/);
+		assert.strictEqual(attempts, 1, 'a 0 timeout must not retry at all');
+	});
+
+	it('bounds retries after the consumer destroys the stream — does not retry toward the full timeout budget', async () => {
+		let attempts = 0;
+		const streamFactory = () => {
+			attempts++;
+			return statusCodeStream(503);
+		};
+		const stream = readPayloadBlobWithRetry(streamFactory, {
+			timeoutMs: 10_000,
+			initialBackoffMs: 20,
+			maxBackoffMs: 20,
+		});
+		stream.resume(); // start consuming so the generator actually runs
+		await new Promise((resolve) => setTimeout(resolve, 50)); // let the first attempt fail and enter backoff
+		stream.destroy();
+		// destroy() only takes effect at the generator's next suspension point, not
+		// immediately, so some further attempts can still land in a short window — but they
+		// must stabilize well before the full 10s budget, not keep retrying toward it.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		const attemptsAfterGracePeriod = attempts;
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		assert.strictEqual(
+			attempts,
+			attemptsAfterGracePeriod,
+			'retries must stop within a bounded window after destroy(), not continue toward the full timeout budget'
+		);
 	});
 });
