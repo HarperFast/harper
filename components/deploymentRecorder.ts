@@ -470,9 +470,10 @@ export async function markDeploymentTerminal(
 	if (!table) return;
 	const row = await table.get(deploymentId);
 	if (!row) return;
-	row.status = status;
-	row.completed_at = Date.now();
-	await table.put(row);
+	// Patch (partial update) rather than mutating the row: table.get() returns a read-only record, so
+	// `row.status = …` throws "Cannot assign to read only property". A patch also touches only these two
+	// fields, so it can't truncate the rest of the row the way a spread-and-put might.
+	await table.patch(deploymentId, { status, completed_at: Date.now() });
 }
 
 // Default peer-wait budget for the hdb_deployment row to replicate. A deploy is a rare,

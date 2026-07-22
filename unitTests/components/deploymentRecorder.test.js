@@ -18,22 +18,34 @@ const {
 	DeploymentRecorder,
 	awaitDeploymentRow,
 	readPayloadBlobWithRetry,
+	markDeploymentTerminal,
 } = require('#src/components/deploymentRecorder');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 
-// Lightweight mock: keeps a Map of rows, exposes get(id) and put(row).
-function installMockDeploymentTable() {
+// Lightweight mock: keeps a Map of rows, exposes get(id), put(row), and patch(id, partial). With
+// `freezeGet`, get() returns a FROZEN shallow copy to mirror the real table (table.get() yields a
+// read-only record) so a caller that tries to mutate the fetched row — as the pre-fix
+// markDeploymentTerminal did — throws here just as it would in production; the default returns the
+// stored object so awaitDeploymentRow callers keep the real row (and its payload_blob). patch()
+// applies a partial update to the stored row.
+function installMockDeploymentTable({ freezeGet = false } = {}) {
 	const rows = new Map();
 	const mock = {
 		rows,
 		async get(id) {
-			return rows.get(id);
+			const row = rows.get(id);
+			if (!row) return undefined;
+			return freezeGet ? Object.freeze({ ...row }) : row;
 		},
 		async put(row) {
 			rows.set(row.deployment_id, row);
+		},
+		async patch(id, partial) {
+			const existing = rows.get(id);
+			if (existing) rows.set(id, { ...existing, ...partial });
 		},
 	};
 	if (!databases.system) databases.system = {};
@@ -637,5 +649,31 @@ describe('readPayloadBlobWithRetry', () => {
 			attemptsAfterGracePeriod,
 			'retries must stop within a bounded window after destroy(), not continue toward the full timeout budget'
 		);
+	});
+});
+
+describe('markDeploymentTerminal', () => {
+	let installed;
+	beforeEach(() => {
+		// freezeGet mirrors the real table's read-only get() so a regression back to mutating the fetched
+		// row (row.status = …) throws here instead of silently passing against a mutable mock.
+		installed = installMockDeploymentTable({ freezeGet: true });
+	});
+	afterEach(() => installed.restore());
+
+	it('flips an existing row to the terminal status via patch (not a read-only mutation)', async () => {
+		// This is what deploy_component({ deployment_id }) does after taking a stage-and-stop build live.
+		// The row from table.get() is read-only; markDeploymentTerminal must patch rather than assign onto
+		// it (assigning threw "Cannot assign to read only property 'status'" and silently lost the update).
+		installed.mock.rows.set('dep-1', { deployment_id: 'dep-1', status: 'staged', completed_at: null });
+		await markDeploymentTerminal('dep-1', 'success');
+		const row = installed.mock.rows.get('dep-1');
+		assert.strictEqual(row.status, 'success', 'the staged row was flipped to success');
+		assert.strictEqual(typeof row.completed_at, 'number', 'completed_at was stamped');
+	});
+
+	it('is a no-op when the row is absent (best-effort, never throws)', async () => {
+		await markDeploymentTerminal('missing', 'success');
+		assert.strictEqual(installed.mock.rows.has('missing'), false, 'no row is fabricated for an unknown id');
 	});
 });
