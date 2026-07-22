@@ -320,13 +320,21 @@ suite(
 				undefined,
 				`search_by_value(B) must not return a record whose actual category != B: ${verdict}`
 			);
-			if (pr.status === 200) {
-				strictEqual(
-					pr.body?.category,
-					'exp1-catA',
-					`primary record must roll back to its original category: ${verdict}`
-				);
-			}
+			// Unconditional: a regression that deletes the primary row while leaving the old A index
+			// entry dangling (dumpA=true, dumpB=false, wrongResultB=undefined) must not hide behind a
+			// 404 that skips this block -- that is primary data loss plus a dangling index, exactly
+			// what this anchor exists to catch.
+			strictEqual(
+				pr.status,
+				200,
+				`primary record must be point-readable after an aborted migrating update: ${verdict}`
+			);
+			strictEqual(pr.body?.category, 'exp1-catA', `primary record must roll back to its original category: ${verdict}`);
+			strictEqual(
+				pr.body?.value,
+				'orig',
+				`primary record must roll back to its original value, not just category: ${verdict}`
+			);
 		});
 
 		// ==========================================================================================
@@ -345,10 +353,20 @@ suite(
 
 				const fireBefore = overTimeFireCount();
 				const res = await postJSON('/UpdateThenStall/', { id: 'exp2-1', newCategory: 'exp2-catB', stallMs: STALL_MS });
-				const fireAfter = overTimeFireCount();
-				await sleep(600);
 
 				// PROVE the over-time abort path actually fired (D-225: do not infer, grep the log).
+				// Sampling fireAfter exactly once, immediately after the response, is unsound: stdout/
+				// file logging can be buffered past the response returning, so a real timeout event can
+				// still fail this precondition. Poll with a bounded deadline (repo condition-wait
+				// guidance) until the count actually rises, or the deadline proves it never will.
+				let fireAfter = overTimeFireCount();
+				const fireDeadline = Date.now() + 5000;
+				while (fireAfter <= fireBefore && Date.now() < fireDeadline) {
+					await sleep(100);
+					fireAfter = overTimeFireCount();
+				}
+				await sleep(600);
+
 				ok(
 					fireAfter > fireBefore,
 					`PRECONDITION FAILED: over-time monitor never logged "Transaction was open too long" (fireBefore=${fireBefore} fireAfter=${fireAfter}) — increase STALL_MS or lower MAX_TXN_OPEN_MS`
@@ -408,13 +426,22 @@ suite(
 					undefined,
 					`search_by_value(B) must not return a record whose actual category != B: ${verdict}`
 				);
-				if (pr.status === 200) {
-					strictEqual(
-						pr.body?.category,
-						'exp2-catA',
-						`primary record must roll back to its original category: ${verdict}`
-					);
-				}
+				// Unconditional: see EXPERIMENT 1's identical rationale above.
+				strictEqual(
+					pr.status,
+					200,
+					`primary record must be point-readable after an over-time-aborted migrating update: ${verdict}`
+				);
+				strictEqual(
+					pr.body?.category,
+					'exp2-catA',
+					`primary record must roll back to its original category: ${verdict}`
+				);
+				strictEqual(
+					pr.body?.value,
+					'orig',
+					`primary record must roll back to its original value, not just category: ${verdict}`
+				);
 			}
 		);
 
