@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784707324778,
+  "lastUpdate": 1784707328497,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -6350,6 +6350,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 177.69,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2738680a414308b556ab10c19d9dedc5555077c3",
+          "message": "Register the MCP durable quota policy as a function, not a config-referenced Resource (#1809) (#1821)\n\n* Register the MCP durable quota policy as a function, not a config-referenced Resource (#1809)\n\nThe quota hook was configured by `mcp.<profile>.quota.resource` pointing at an\nexported Resource, whose inherited CRUD then surfaced on every transport\n(update_/delete_ MCP tools + REST/SSE/WS/GraphQL/MQTT) — a permitted client\ncould reset its own counter. The docs example worked around it by turning six\nexportTypes flags off, which made the safe path the easy-to-forget one.\n\nReplace it with a registration function: `server.setMcpQuotaHandler(fn)`. The\npolicy is a plain function (never an exposed Resource), enabled by registering\nit (no config). checkDurableQuota invokes the registered handler; no handler =>\nallowed (opt-in), throw => fail-closed deny (unchanged). The handler receives\n`profile` so one handler can gate operations vs application.\n\n- Remove the `mcp.<profile>.quota.resource`/`.method` config params.\n- Wire `server.setMcpQuotaHandler` next to `server.registerOperation`.\n- Migrate the mcp-quota fixture off `tables.QuotaCounter`: an exported tool\n  (Answerer) + an internal (non-@export) counter table + a registered handler,\n  so nothing exposes the counter. Integration test asserts the counter is not\n  REST-reachable.\n\nSupersedes the docs#576 six-`false` example; docs follow-up separately.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_0188G62J9fZQg4J9rVuqLzjy\n\n* Isolate the quota handler from deploy pre-flight validation; allow clearing (review)\n\nCodex review:\n- P1: the quota handler is a process-wide singleton, so a candidate component's\n  top-level server.setMcpQuotaHandler(...) during deploy pre-flight validation\n  would outlive the throwaway load and alter live enforcement on a failed deploy.\n  Snapshot the handler before the validation load and restore it in the finally\n  (added getMcpQuotaHandler()).\n- P2: the Server interface rejected undefined though the setter supports clearing;\n  widen the public type to McpQuotaHandler | undefined.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_0188G62J9fZQg4J9rVuqLzjy\n\n* Test: assert the internal counter exposes no REST route and no MCP CRUD tools (#1809)\n\nCodify the security property the redesign delivers (and that /verify checked by\nhand): the counter table is internal, so GET /QuotaCounter 404s and tools/list\ncarries no QuotaCounter update_/delete_ tools a client could call to reset its\nquota. Tightened the counter-not-exposed assertion from !=200 to ==404.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_0188G62J9fZQg4J9rVuqLzjy\n\n* Extract withMcpQuotaHandlerPreserved and unit-test the deploy-validation isolation (#1809)\n\nThe P1 snapshot/restore was inline in the deploy op and only its get/set primitive\nwas covered. Extract it into withMcpQuotaHandlerPreserved(fn) — operations.js wraps\nthe throwaway validation load in it — and unit-test the isolation directly: a\ncandidate that registers a different handler, one that clears it, and a load that\nthrows all leave the live worker's handler intact.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_0188G62J9fZQg4J9rVuqLzjy\n\n* Simplify quota-handler wiring; note the snapshot-restore tradeoff (review)\n\n/code-review: assign server.setMcpQuotaHandler directly instead of a redundant\nwrapper (also keeps the impl param type in sync with the Server interface's\nMcpQuotaHandler | undefined). Document that withMcpQuotaHandlerPreserved restores\nunconditionally, so a legitimate interleaving registration would be reverted — a\nnarrow window, and the lesser evil vs leaking a candidate policy live.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_0188G62J9fZQg4J9rVuqLzjy\n\n* Generalize deploy-validation isolation to all process-wide server.* registrations (#1809)\n\n/code-review #3: the deploy pre-flight snapshot/restore only isolated the quota\nhandler; a candidate's server.registerOperation during the throwaway validation\nload still mutated the process-wide operation map AND announced to the main thread,\nleaking onto the live worker on a failed deploy.\n\nReplace the quota-specific withMcpQuotaHandlerPreserved with a general guard\n(deployValidationState.ts): server.registerOperation and server.setMcpQuotaHandler\nboth no-op while a validation load is in flight (validation only needs to surface\nload-time errors, not register anything). operations.js wraps the validation load\nin runWithDeployValidationGuard. Skipping is cleaner than snapshot/restore here —\nit also suppresses the cross-thread operation announce, which a local restore can't\nundo. Depth-counted; the narrow interleaving caveat is documented.\n\nTests: registerOperation + setMcpQuotaHandler are skipped during validation and\nresume after (incl. after a thrown load), in serverUtilities.test.js.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_0188G62J9fZQg4J9rVuqLzjy\n\n---------\n\nCo-authored-by: Kyle Bernhardy <kyle.bernhardy@gmail.com>\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-07-22T04:07:08Z",
+          "url": "https://github.com/HarperFast/harper/commit/2738680a414308b556ab10c19d9dedc5555077c3"
+        },
+        "date": 1784707327597,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.55,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 13.87,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 18.19,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 17.05,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 21.69,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 16.15,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 32.46,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 14.59,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 17.76,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 52.26,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 147.09,
             "unit": "ms"
           }
         ]
