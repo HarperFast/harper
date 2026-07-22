@@ -19,7 +19,7 @@
  * oracle against it.
  *
  * This file is the LMDB variant of the QA-611 harness: same fixture shape (ItemF audit:false /
- * ItemT audit:true, both expiration:1s; Widget for the positive control), same direct-store
+ * ItemT audit:true, both expiration:4s; Widget for the positive control), same direct-store
  * oracle (IndexDump/IndexRangeAll/PrimaryIds reading raw DBIs via .getRange(), no join through
  * the primary record -> immune to Table.ts transformToEntries()'s `if (!record) return SKIP`
  * join-skip that makes search_by_value structurally blind to dangling index entries).
@@ -265,19 +265,37 @@ suite(
 			ok(res.status >= 500, `PRECONDITION: DeleteThenAbort must return 5xx (abort path entered), got ${res.status}`);
 			await sleep(300);
 
-			let pr = await pointRead('Widget', 'a2-known');
+			// Record the FULL bounded status series rather than stopping at the first 404: the
+			// background here says LMDB's expected stable outcome is 200 (rolled back), so a loop
+			// that polls toward 404 and exits on the first hit would accept a transient mid-rollback
+			// 404 and mislabel it "settled" / "reproduced", while a genuinely stable 200 would instead
+			// burn the whole window. Require a short run of consecutive identical samples before
+			// calling the state settled; report the raw series either way.
+			const STABLE_STREAK = 3;
+			const statusSeries: number[] = [];
 			const diagStart = Date.now();
-			while (pr.status !== 404 && Date.now() - diagStart < 5000) {
+			let pr = await pointRead('Widget', 'a2-known');
+			statusSeries.push(pr.status);
+			while (Date.now() - diagStart < 5000) {
+				const tail = statusSeries.slice(-STABLE_STREAK);
+				if (tail.length === STABLE_STREAK && tail.every((s) => s === tail[0])) break;
 				await sleep(200);
 				pr = await pointRead('Widget', 'a2-known');
+				statusSeries.push(pr.status);
 			}
 			const settledMs = Date.now() - diagStart;
+			const tail = statusSeries.slice(-STABLE_STREAK);
+			const stableStatus = tail.length === STABLE_STREAK && tail.every((s) => s === tail[0]) ? tail[0] : undefined;
 			const directIds = await indexDump('Widget', 'a2-known-cat');
 			findings.push(
-				`A2 INFORMATIONAL: pointRead settled to status=${pr.status} after ${settledMs}ms; IndexDump(a2-known-cat)=${JSON.stringify(directIds)} — ` +
-					(pr.status === 404
+				`A2 INFORMATIONAL: pointRead status series over ${settledMs}ms = ${JSON.stringify(statusSeries)}` +
+					(stableStatus !== undefined ? ` (stable at ${stableStatus})` : ' (did NOT stabilize within the window)') +
+					`; IndexDump(a2-known-cat)=${JSON.stringify(directIds)} — ` +
+					(stableStatus === 404
 						? 'F-147 DID reproduce on LMDB (primary gone, check index for danglers above).'
-						: 'F-147 did NOT reproduce on LMDB within the window (primary row came back — delete+abort appears symmetric/atomic here, unlike RocksDB). Not used as the D-232 gate; see A3.')
+						: stableStatus === 200
+							? 'F-147 did NOT reproduce on LMDB (primary row settled back to 200 — delete+abort appears symmetric/atomic here, unlike RocksDB). Not used as the D-232 gate; see A3.'
+							: 'status never stabilized within the window — inconclusive. Not used as the D-232 gate; see A3.')
 			);
 			// Cleanup: whichever state we ended up in, remove the row so it doesn't pollute later assertions.
 			await request(client.restURL).delete('/Widget/a2-known').set(client.headers);
@@ -353,9 +371,9 @@ suite(
 				strictEqual(preBase.size, CATEGORIES.length * ROWS_PER_CATEGORY, 'all rows present pre-expiry (base)');
 				strictEqual(preIndex.length, CATEGORIES.length * ROWS_PER_CATEGORY, 'all rows present pre-expiry (index)');
 
-				// Let expiration (1s) elapse and the periodic sweep run several cycles with ZERO
+				// Let expiration (4s) elapse and the periodic sweep run several cycles with ZERO
 				// intervening reads (isolates the periodic-sweep-only eviction path).
-				await sleep(4_000);
+				await sleep(8_000);
 
 				let base = await primaryIds(table);
 				let indexEntries = await indexRangeAll(table);
