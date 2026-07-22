@@ -494,6 +494,21 @@ describe('Test serverHandlers.js module ', () => {
 			);
 		});
 
+		it('Should destroy the source stream when the gzip side is torn down (client disconnect)', async () => {
+			// An endless source, like a large blob mid-stream when the client goes away.
+			const source = new Readable({ read() {} });
+			source.headers = new Map([['content-type', 'application/octet-stream']]);
+			process_local_trans_stub.resolves(source);
+			const stream_req = { body: { operation: 'get_backup' }, headers: { 'accept-encoding': 'gzip' } };
+			const stream_res = { header: () => {} };
+
+			const result = await serverHandlers_rw.handlePostRequest(stream_req, stream_res);
+			result.destroy(); // what Fastify does to the stream it was handed when the client disconnects
+			await new Promise((resolve) => setImmediate(resolve));
+
+			assert.strictEqual(source.destroyed, true, 'source must be destroyed so its fd/blob read releases');
+		});
+
 		it('Should pass a preCompressed stream through without recompressing', async () => {
 			const source = Readable.from([Buffer.from('already-gzipped-bytes')]);
 			source.headers = new Map([['content-type', 'application/octet-stream']]);
