@@ -294,6 +294,10 @@ requiredPermissions.set(
 	deploymentOperations.handleGetDeployment.name,
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
 );
+// get_deployment_payload streams the full tarball (which can embed secrets), unlike
+// get_deployment/list_deployments (metadata only), so it ALSO enforces super_user directly in
+// the handler — it cannot be delegated through a role's `operations` allowlist (gate-2 bypass
+// below), matching the secrets-store ops.
 requiredPermissions.set(
 	deploymentOperations.handleGetDeploymentPayload.name,
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD)

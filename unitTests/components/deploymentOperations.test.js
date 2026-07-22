@@ -19,6 +19,8 @@ const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
+const SUPER_USER = { username: 'admin', role: { permission: { super_user: true } } };
+const NON_SUPER_USER = { username: 'operator', role: { permission: { super_user: false } } };
 
 function installMockDeploymentTable() {
 	const rows = new Map();
@@ -69,12 +71,29 @@ describe('handleGetDeploymentPayload', () => {
 	});
 	afterEach(() => installed.restore());
 
-	it('rejects a missing deployment_id', async () => {
-		await assert.rejects(handleGetDeploymentPayload({}), /'deployment_id' is required/);
+	it('rejects a caller with no hdb_user as forbidden, before any deployment lookup', async () => {
+		await assert.rejects(handleGetDeploymentPayload({ deployment_id: 'd1' }), (err) => {
+			assert.match(err.message, /restricted to super_user/);
+			assert.strictEqual(err.statusCode, 403);
+			return true;
+		});
+	});
+
+	it('rejects a non-super_user role as forbidden — cannot be delegated via a role grant', async () => {
+		installed.mock.rows.set('d1', { deployment_id: 'd1', status: 'success', payload_blob: mockBlob(Buffer.from('x')) });
+		await assert.rejects(handleGetDeploymentPayload({ deployment_id: 'd1', hdb_user: NON_SUPER_USER }), (err) => {
+			assert.match(err.message, /restricted to super_user/);
+			assert.strictEqual(err.statusCode, 403);
+			return true;
+		});
+	});
+
+	it('rejects a missing deployment_id (for a super_user caller)', async () => {
+		await assert.rejects(handleGetDeploymentPayload({ hdb_user: SUPER_USER }), /'deployment_id' is required/);
 	});
 
 	it('404s on an unknown deployment_id', async () => {
-		await assert.rejects(handleGetDeploymentPayload({ deployment_id: 'nope' }), (err) => {
+		await assert.rejects(handleGetDeploymentPayload({ deployment_id: 'nope', hdb_user: SUPER_USER }), (err) => {
 			assert.match(err.message, /No deployment found/);
 			assert.strictEqual(err.statusCode, 404);
 			return true;
@@ -83,7 +102,7 @@ describe('handleGetDeploymentPayload', () => {
 
 	it('404s when the payload has been reclaimed', async () => {
 		installed.mock.rows.set('d1', { deployment_id: 'd1', status: 'success', payload_blob: null });
-		await assert.rejects(handleGetDeploymentPayload({ deployment_id: 'd1' }), (err) => {
+		await assert.rejects(handleGetDeploymentPayload({ deployment_id: 'd1', hdb_user: SUPER_USER }), (err) => {
 			assert.match(err.message, /No payload is stored/);
 			assert.strictEqual(err.statusCode, 404);
 			return true;
@@ -93,7 +112,7 @@ describe('handleGetDeploymentPayload', () => {
 	it('streams the raw payload bytes with download headers', async () => {
 		const bytes = Buffer.from('tarball-bytes-here');
 		installed.mock.rows.set('d1', { deployment_id: 'd1', status: 'success', payload_blob: mockBlob(bytes) });
-		const stream = await handleGetDeploymentPayload({ deployment_id: 'd1' });
+		const stream = await handleGetDeploymentPayload({ deployment_id: 'd1', hdb_user: SUPER_USER });
 		assert.ok(stream instanceof Readable, 'must be a Node Readable so serverHandlers pipes it');
 		assert.strictEqual(stream.headers.get('content-type'), 'application/octet-stream');
 		assert.match(stream.headers.get('content-disposition'), /deployment-d1\.tar\.gz/);
