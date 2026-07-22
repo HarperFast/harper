@@ -6,9 +6,11 @@
 import { Readable } from 'node:stream';
 import { databases } from '../resources/databases.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getActiveEmitter } from './deploymentRecorder.ts';
 import type { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
+
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back']);
@@ -30,7 +32,16 @@ interface GetRequest {
 
 interface PayloadRequest {
 	deployment_id: string;
-	hdb_user?: { username?: string };
+	hdb_user?: { username?: string; role?: { permission?: { super_user?: boolean } } };
+}
+
+function requireSuperUser(req: PayloadRequest, operationName: string): void {
+	if (!req?.hdb_user?.role?.permission?.super_user) {
+		throw new ClientError(
+			`Operation '${operationName}' is restricted to super_user roles`,
+			HTTP_STATUS_CODES.FORBIDDEN
+		);
+	}
 }
 
 function deploymentTable() {
@@ -195,8 +206,15 @@ async function requireDeploymentRow(deploymentId: unknown): Promise<any> {
  * can be hundreds of MB and a base64 round-trip materializes multi-hundred-MB strings (V8's
  * string cap is ~512MiB, so large payloads would hard-fail with ERR_STRING_TOO_LONG).
  * serverHandlers.js pipes any returned Readable that carries a `headers` Map.
+ *
+ * Unlike the other deployment ops, this ALSO enforces super_user directly (matching the
+ * secrets-store ops) rather than relying only on the registered permission, so it cannot be
+ * delegated to a non-SU role via a role's `operations` allowlist (operation_authorization.ts
+ * gate-2). The full tarball can embed secrets — `get_deployment`/`list_deployments` only ever
+ * expose stripped metadata, so this is the one deployment op with that exposure.
  */
 export async function handleGetDeploymentPayload(req: PayloadRequest): Promise<Readable> {
+	requireSuperUser(req, 'get_deployment_payload');
 	const row = await requireDeploymentRow(req?.deployment_id);
 	if (row.payload_blob == null) {
 		throw new ClientError(
