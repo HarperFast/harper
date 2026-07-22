@@ -124,6 +124,9 @@ export const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 /** Restart timeout (milliseconds) */
 export const RESTART_TIMEOUT_MS = 60000;
 
+/** Largest delay Node's setTimeout accepts (2^31 - 1 ms, ~24.8 days); larger values silently coerce to 1ms */
+export const MAX_SET_TIMEOUT_MS = 2147483647;
+
 /** Harper File Permissions Mode */
 export const HDB_FILE_PERMISSIONS = 0o700;
 

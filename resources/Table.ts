@@ -4,7 +4,13 @@
  * table-level interactions, loading records, updating records, querying, and more.
  */
 
-import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.ts';
+import {
+	CONFIG_PARAMS,
+	OPERATIONS_ENUM,
+	SYSTEM_TABLE_NAMES,
+	SYSTEM_SCHEMA_NAME,
+	MAX_SET_TIMEOUT_MS,
+} from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
@@ -2906,8 +2912,10 @@ export function makeTable(options) {
 								} is not a defined attribute`,
 								404
 							);
-						if (attribute.indexed) {
-							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
+						if (attribute.indexed || attribute.isPrimaryKey) {
+							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index.
+							// the primary key has no secondary index, but the primary store is itself keyed in
+							// primary-key order, so scanning it is already aligned with the sort
 							orderAlignedCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
 						} else if (conditions.length === 0 && !target.allowFullScan)
@@ -5797,7 +5805,7 @@ export function makeTable(options) {
 								resolve(undefined);
 								cleanupPriority = 0; // reset the priority
 							})),
-						Math.min(nextScheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
+						Math.min(nextScheduled - Date.now(), MAX_SET_TIMEOUT_MS) // make sure it can fit in 32-bit signed number
 					).unref(); // don't let this prevent closing the thread
 				};
 				startNextTimer(nextScheduled);

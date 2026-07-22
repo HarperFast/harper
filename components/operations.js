@@ -40,6 +40,8 @@ const {
 	DeploymentRecorder,
 	awaitDeploymentRow,
 	markDeploymentTerminal,
+	readPayloadBlobWithRetry,
+	coerceTimeoutMs,
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
 } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
@@ -1089,8 +1091,20 @@ async function sourceExtractionPayload({ req, recorder, isReplicatedExecution })
 	if (isReplicatedExecution && req.payload == null && !req.package) {
 		// Blob.stream() blocks on in-flight BLOB_CHUNK writes until the chunks land. If the row never
 		// arrives within the timeout, the peer records a failure and the origin sees it in peer_results.
-		const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: req.deployment_timeout });
-		return row.payload_blob.stream();
+		// The wait budget defaults to 120s but is overridable per-deploy via `deployment_timeout` (ms)
+		// for clusters where the system-table channel is heavily backlogged (harper-pro#402).
+		const payloadTimeoutMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
+		// One deadline covers both phases (row wait + blob content) so a slow row doesn't double the
+		// peer's worst-case wait — whatever's left after the row arrives is what the blob retry gets.
+		const payloadDeadline = Date.now() + payloadTimeoutMs;
+		const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: payloadTimeoutMs });
+		// Blob content can stall independently of the row arriving (a parked/declined blob send on the
+		// origin, harper-pro#403): the header lands but content bytes don't, and stream() gives up with a
+		// retryable 503 after blobReadTimeout of no progress. Retry with backoff, bounded by the remaining
+		// budget, so a transient stall doesn't fail the whole deploy (harper-pro incident, 2026-07-16).
+		return readPayloadBlobWithRetry(() => row.payload_blob.stream(), {
+			timeoutMs: Math.max(0, payloadDeadline - Date.now()),
+		});
 	}
 	return req.payload;
 }
@@ -1100,8 +1114,8 @@ async function sourceExtractionPayload({ req, recorder, isReplicatedExecution })
 async function resolveNodeCredentials({ req, resolveCredentials, isReplicatedExecution }) {
 	let credentialsWaitMs = 0;
 	if (isReplicatedExecution) {
-		const requested = Number(req.deployment_timeout);
-		credentialsWaitMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+		// Same budget as the payload-row wait, via the shared coercion helper (harper#1838 dedup).
+		credentialsWaitMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
 	}
 	return resolveCredentials(req.credentials, req.project, { waitMs: credentialsWaitMs });
 }
