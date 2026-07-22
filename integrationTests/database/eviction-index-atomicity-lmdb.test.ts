@@ -263,7 +263,6 @@ suite(
 			await seed('Widget', 'a2-known', 'a2-known-cat', 'v');
 			const res = await postJSON('/DeleteThenAbort/', { table: 'Widget', id: 'a2-known' });
 			ok(res.status >= 500, `PRECONDITION: DeleteThenAbort must return 5xx (abort path entered), got ${res.status}`);
-			await sleep(300);
 
 			// Record the FULL bounded status series rather than stopping at the first 404: the
 			// background here says LMDB's expected stable outcome is 200 (rolled back), so a loop

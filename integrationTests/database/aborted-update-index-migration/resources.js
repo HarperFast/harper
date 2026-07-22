@@ -34,7 +34,8 @@ export class UpdateThenStall extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
 		const b = body || query || {};
-		const stallMs = b.stallMs != null ? Number(b.stallMs) : 4000;
+		const parsedStallMs = b.stallMs != null ? Number(b.stallMs) : NaN;
+		const stallMs = Number.isInteger(parsedStallMs) && parsedStallMs > 0 ? parsedStallMs : 4000;
 		await tables.Widget.put({ id: b.id, category: b.newCategory, value: b.value ?? 'migrated-stall' });
 		await new Promise((resolve) => setTimeout(resolve, stallMs));
 		// If the over-time monitor poisoned this transaction during the stall, this second write (or
