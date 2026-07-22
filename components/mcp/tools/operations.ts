@@ -180,6 +180,21 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Operations whose handler returns a raw byte stream (`Readable`) for the operations HTTP API,
+ * not a value MCP can serialize. Checked and rejected BEFORE the handler runs — not after the
+ * handler has already returned a stream — because these producers acquire real resources (an
+ * open fd, an LMDB read transaction) before or independent of the stream being consumed, and
+ * destroying an unconsumed stream does not reliably run their cleanup. Concretely,
+ * `get_backup`'s LMDB path (`lmdbGetBackup.js`) opens its fd and read transaction, then returns
+ * `Readable.from(asyncGenerator)`; per the async-generator spec, calling `.return()` (which
+ * `.destroy()` triggers) on a generator that has never been iterated resolves it to `done` and
+ * skips its body — including the `readTxn.done()` cleanup at the tail of that body — so the fd
+ * and transaction leak on every rejected call. Rejecting before dispatch means the fd/txn are
+ * never opened at all.
+ */
+const STREAMING_OPERATIONS: ReadonlySet<string> = new Set(['get_backup', 'get_deployment_payload']);
+
+/**
  * Read-only operations carry `readOnlyHint: true`. The category is wider
  * than the default allow list (some custom-allowed ops are also read-only
  * — `system_information`, for example). Any op matching one of these
@@ -285,6 +300,19 @@ export function makeOperationToolHandler(operationName: string) {
 			operation: operationName,
 			hdb_user: context.user,
 		};
+		if (STREAMING_OPERATIONS.has(operationName)) {
+			// Reject before the handler runs at all — see STREAMING_OPERATIONS' comment for why
+			// destroying an already-returned stream isn't sufficient cleanup for these producers.
+			return {
+				isError: true,
+				content: [
+					{
+						type: 'text',
+						text: `operation '${operationName}' returns a byte stream and is only available over the operations HTTP API`,
+					},
+				],
+			};
+		}
 		try {
 			const chooseOperation = getChooseOperation();
 			const processLocalTransaction = getProcessLocalTransaction();
@@ -294,16 +322,17 @@ export function makeOperationToolHandler(operationName: string) {
 			const operationFn = chooseOperation(body);
 			const data = await processLocalTransaction({ body }, operationFn);
 			if (data instanceof Readable) {
-				// Streaming ops (get_backup, get_deployment_payload) return raw bytes for the HTTP
-				// surface; JSON.stringify would emit stream internals, not the payload. Destroy the
-				// source so file-backed streams release their descriptors.
+				// Backstop for an operation outside STREAMING_OPERATIONS unexpectedly returning a
+				// stream (e.g. a future op added without updating that set). JSON.stringify would
+				// otherwise emit stream internals, not the payload. Best-effort cleanup only — see
+				// STREAMING_OPERATIONS' comment; the real fix for a known op is adding it there.
 				data.destroy();
 				return {
 					isError: true,
 					content: [
 						{
 							type: 'text',
-							text: `operation '${operationName}' returns a byte stream and is only available over the operations HTTP API`,
+							text: `operation '${operationName}' returned an unexpected byte stream result`,
 						},
 					],
 				};
