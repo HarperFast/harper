@@ -1152,7 +1152,12 @@ async function loadValidateComponent({ dirPath, emit }) {
 	// worker-shutdown auto-close) so we can close them here once validation completes — otherwise each
 	// deploy leaks the Scope's deploy-lifecycle listeners on this worker (#1462).
 	const validationScopes = new Set();
-	const validation = (async () => {
+	// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
+	// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
+	// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
+	// registration methods no-op for the duration of the load.
+	const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
+	const validation = runWithDeployValidationGuard(async () => {
 		try {
 			await componentLoader.loadComponent(dirPath, pseudoResources, undefined, { collectScopes: validationScopes });
 		} finally {
@@ -1161,7 +1166,7 @@ async function loadValidateComponent({ dirPath, emit }) {
 				if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
 			}
 		}
-	})();
+	});
 	// Track the load+close so a concurrent worker shutdown waits for these scopes to finish disposing.
 	trackScopeClose(validation);
 	await validation;
