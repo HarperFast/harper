@@ -190,9 +190,14 @@ suite(
 
 			const res = await postJSON('/RemoveFromPrimaryOnly/', { id: 'pc-1' });
 			strictEqual(res.status, 200, `PRECONDITION: synthetic primary-only removal must succeed, got ${res.status}`);
-			await sleep(400);
 
-			const pr = await pointRead('pc-1');
+			// Condition-wait instead of a fixed sleep: poll for the expected 404 with a bounded deadline.
+			let pr = await pointRead('pc-1');
+			const pcDeadline = Date.now() + 3000;
+			while (pr.status !== 404 && Date.now() < pcDeadline) {
+				await sleep(50);
+				pr = await pointRead('pc-1');
+			}
 			strictEqual(pr.status, 404, 'PRECONDITION: primary row must be gone after the primary-only removal');
 
 			const after1 = await indexDump('pc-catA');
@@ -265,9 +270,16 @@ suite(
 
 			const res = await postJSON('/UpdateThenAbort/', { id: 'exp1-1', newCategory: 'exp1-catB' });
 			ok(res.status >= 500, `PRECONDITION: UpdateThenAbort must enter the abort path (5xx), got ${res.status}`);
-			await sleep(400);
 
-			const pr = await pointRead('exp1-1');
+			// Condition-wait for the expected settled state (200/exp1-catA) instead of a fixed sleep; a
+			// genuine defect that never reaches it just rides out the deadline and is caught by the
+			// unconditional assertions below on whatever the last observed read was.
+			let pr = await pointRead('exp1-1');
+			const exp1Deadline = Date.now() + 3000;
+			while ((pr.status !== 200 || pr.body?.category !== 'exp1-catA') && Date.now() < exp1Deadline) {
+				await sleep(50);
+				pr = await pointRead('exp1-1');
+			}
 			const dumpA = await indexDump('exp1-catA');
 			const dumpB = await indexDump('exp1-catB');
 			const svA = await searchByValue('exp1-catA');
@@ -375,7 +387,13 @@ suite(
 					`EXPERIMENT 2: over-time monitor fired (count ${fireBefore} -> ${fireAfter}); request status=${res.status}`
 				);
 
-				const pr = await pointRead('exp2-1');
+				// Condition-wait for the expected settled state, symmetric with EXPERIMENT 1.
+				let pr = await pointRead('exp2-1');
+				const exp2Deadline = Date.now() + 3000;
+				while ((pr.status !== 200 || pr.body?.category !== 'exp2-catA') && Date.now() < exp2Deadline) {
+					await sleep(50);
+					pr = await pointRead('exp2-1');
+				}
 				const dumpA = await indexDump('exp2-catA');
 				const dumpB = await indexDump('exp2-catB');
 				const svA = await searchByValue('exp2-catA');
