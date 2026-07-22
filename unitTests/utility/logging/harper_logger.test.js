@@ -5,7 +5,6 @@ const { EventEmitter } = require('node:events');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
-const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs-extra');
 const rewire = require('rewire');
@@ -13,7 +12,7 @@ const hook_std = require('intercept-stdout');
 const os = require('os');
 const YAML = require('yaml');
 const harperLoggerModule = require('#src/utility/logging/harper_logger');
-const { createLogger } = harperLoggerModule;
+const { createLogger, updateLogger } = harperLoggerModule;
 const { getHttpOptions, handleApplication, logRequest } = require('#src/server/http');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { waitFor } = require('../../waitFor.js');
@@ -935,43 +934,48 @@ describe('Test harper_logger module', () => {
 
 	describe('Test external/component logger rotation inheritance (#1877)', () => {
 		const ROTATION_TEST_DIR = path.join(__dirname, 'rotationInheritanceTest');
-		let harper_logger, updateLogger;
+		let loggersToCleanup;
 
 		beforeEach(() => {
 			fs.mkdirpSync(ROTATION_TEST_DIR);
-			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			updateLogger = harper_logger.__get__('updateLogger');
+			loggersToCleanup = [];
 		});
 
-		afterEach(() => {
-			// Stop rotator intervals and close file descriptors before removing the directory —
-			// the loggers in these tests get their path reassigned (mainLogPath -> externalLogPath),
-			// which leaves the public logger's own `.closeLogFile` bound to the wrong (stale) file
-			// entry, so close every registered file logger directly via the module's internal map.
-			for (const fileLogger of harper_logger.__get__('fileLoggers').values()) {
-				fileLogger.rotator?.end();
-				fileLogger.closeLogFile?.();
+		afterEach(async () => {
+			// Stop each rotator interval before removing the directory. There's no public handle to
+			// a logger's internal rotator/file-logger entry, but disabling rotation and re-assigning
+			// `.path` (even to its own current value) goes through the same public `.path` setter
+			// production reload uses, which tears down the old rotator interval on a short internal
+			// timer — the same pattern already used to clean up `httpLogger`/`this.externalLogger`
+			// elsewhere in this file. Any still-open file descriptor is closed by the module's own
+			// safety-timeout, unref'd, so it can't hang the test process.
+			for (const logger of loggersToCleanup) {
+				const currentPath = logger.path;
+				logger.rotation = { enabled: false };
+				logger.path = currentPath;
 			}
+			await new Promise((resolve) => setTimeout(resolve, 150));
 			fs.removeSync(ROTATION_TEST_DIR);
 		});
 
 		it('inherits the main rotation config (incl. maxSize) and rotates the external log file when no component rotation is configured', async () => {
 			const mainRotation = { enabled: true, maxSize: '1K', auditInterval: 100 };
 			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
-			const testMainLogger = harper_logger.createLogger({ path: mainLogPath, level: 'info' });
-			// Point the module's private `mainLogger` reference (what updateLogger falls back to) at
-			// our test main logger, mirroring how updateLogSettings() always has a real mainLogger set.
-			harper_logger.__set__('mainLogger', testMainLogger);
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
 			// updateLogSettings() always applies the main logging options (incl. rotation) first,
-			// before ever touching the external logger — reproduce that ordering here.
-			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation });
+			// before ever touching the external logger — reproduce that ordering here, passing
+			// testMainLogger explicitly as the inheritance source instead of reaching into
+			// module-private state.
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
 
 			const externalLogger = testMainLogger.forComponent('external');
+			loggersToCleanup.push(externalLogger);
 			const externalLogPath = path.join(ROTATION_TEST_DIR, 'external.log');
 
 			// This is the same call updateLogSettings() makes for `logging.external`: a path of its
 			// own, but no rotation block — it must inherit the main rotation, not lose it.
-			updateLogger(externalLogger, { path: externalLogPath });
+			updateLogger(externalLogger, { path: externalLogPath }, undefined, testMainLogger);
 
 			assert.deepStrictEqual(externalLogger.rotation, mainRotation);
 
@@ -984,31 +988,61 @@ describe('Test harper_logger module', () => {
 			});
 		});
 
+		it("does not inherit main's rotation path, so a wholesale-inherited rotation archives beside the component's own log instead of risking a cross-device rename (EXDEV)", () => {
+			const mainArchiveDir = path.join(ROTATION_TEST_DIR, 'mainArchive');
+			const mainRotation = { enabled: true, maxSize: '1K', path: mainArchiveDir };
+			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			const externalLogger = testMainLogger.forComponent('external');
+			loggersToCleanup.push(externalLogger);
+			updateLogger(externalLogger, { path: path.join(ROTATION_TEST_DIR, 'external.log') }, undefined, testMainLogger);
+
+			// maxSize inherits; path does not, so this logger's own rotator defaults beside its file.
+			assert.deepStrictEqual(externalLogger.rotation, { enabled: true, maxSize: '1K' });
+			// Main's own rotation config object must not be mutated by another logger's inheritance.
+			assert.strictEqual(testMainLogger.rotation, mainRotation);
+			assert.strictEqual(testMainLogger.rotation.path, mainArchiveDir);
+		});
+
 		it('preserves an explicit component rotation override instead of the inherited main config', () => {
 			const mainRotation = { enabled: true, maxSize: '1K' };
 			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
-			const testMainLogger = harper_logger.createLogger({ path: mainLogPath, level: 'info' });
-			harper_logger.__set__('mainLogger', testMainLogger);
-			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation });
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
 
 			const externalLogger = testMainLogger.forComponent('external');
+			loggersToCleanup.push(externalLogger);
 			const override = { enabled: false };
-			updateLogger(externalLogger, { path: path.join(ROTATION_TEST_DIR, 'external.log'), rotation: override });
+			updateLogger(
+				externalLogger,
+				{ path: path.join(ROTATION_TEST_DIR, 'external.log'), rotation: override },
+				undefined,
+				testMainLogger
+			);
 
 			assert.deepStrictEqual(externalLogger.rotation, override);
 		});
 
 		it('still allows clearing the main logger rotation itself (no self-referential lock-in)', () => {
 			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
-			const testMainLogger = harper_logger.createLogger({ path: mainLogPath, level: 'info' });
-			harper_logger.__set__('mainLogger', testMainLogger);
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
 
-			updateLogger(testMainLogger, { path: mainLogPath, rotation: { enabled: true, maxSize: '1K' } });
+			updateLogger(
+				testMainLogger,
+				{ path: mainLogPath, rotation: { enabled: true, maxSize: '1K' } },
+				undefined,
+				testMainLogger
+			);
 			assert.deepStrictEqual(testMainLogger.rotation, { enabled: true, maxSize: '1K' });
 
 			// A reload with no rotation block at all (logOptions.rotation undefined) must still be
 			// able to clear the main logger's own rotation, not fall back to itself and get stuck.
-			updateLogger(testMainLogger, { path: mainLogPath });
+			updateLogger(testMainLogger, { path: mainLogPath }, undefined, testMainLogger);
 			assert.strictEqual(testMainLogger.rotation, undefined);
 		});
 	});
