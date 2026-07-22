@@ -4810,7 +4810,14 @@ export function makeTable(options) {
 			const index = indices[key];
 			const isIndexing = index.isIndexing;
 			const resolver = propertyResolvers[key];
-			const value = record && (resolver ? resolver(record) : record[key]);
+			// A null/undefined `record` means the record is being removed entirely (delete/eviction pass
+			// record=null), so there are NO values to index — resolve to undefined, not null. `record &&`
+			// yields `null` for record===null, which getIndexedValues() then treats as a genuine null field
+			// value and (for an indexNulls index — the default for @indexed) re-adds a [null, id] entry after
+			// the real [value, id] entry was removed, orphaning it against the now-deleted record. A record
+			// that is present but whose attribute is null is a different case (record is a truthy object) and
+			// still indexes under null. See harper#1894 (F-149).
+			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
 			const existingValue = existingRecord && (resolver ? resolver(existingRecord) : existingRecord[key]);
 			if (value === existingValue && !isIndexing) {
 				continue;
