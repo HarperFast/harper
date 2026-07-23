@@ -1146,6 +1146,35 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 		assert.equal(create.inputSchema.properties.tags.items.type, 'string');
 	});
 
+	it('carries const, nested-object required, and array-of-object into the MCP inputSchema', () => {
+		const Widget = makeProgrammaticResource({
+			path: 'Widget',
+			tableName: 'widget',
+			properties: {
+				id: { type: 'string', primaryKey: true },
+				kind: { type: 'string', const: 'widget' },
+				dims: {
+					type: 'object',
+					required: ['w'],
+					additionalProperties: false,
+					properties: { w: { type: 'integer' }, h: { type: 'integer' } },
+				},
+				rows: { type: 'array', items: { type: 'object', properties: { x: { type: 'integer' } } } },
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Widget', { Resource: Widget.Resource }]]));
+		registerApplicationTools();
+		const create = getTool('create_Widget');
+		assert.ok(create, 'create_Widget registered');
+		assert.equal(create.inputSchema.properties.kind.const, 'widget');
+		assert.deepEqual(create.inputSchema.properties.dims.required, ['w']);
+		assert.equal(create.inputSchema.properties.dims.additionalProperties, false);
+		assert.equal(create.inputSchema.properties.dims.properties.w.type, 'integer');
+		assert.equal(create.inputSchema.properties.rows.type, 'array');
+		assert.equal(create.inputSchema.properties.rows.items.type, 'object');
+		assert.equal(create.inputSchema.properties.rows.items.properties.x.type, 'integer');
+	});
+
 	it('prefixes the verb-tool description with the class docstring / static description', () => {
 		const Widget = makeProgrammaticResource({
 			path: 'Widget',
