@@ -1,0 +1,9 @@
+# QA-642 — restart_service ops-API contract fixture.
+# Plain table hit with a steady REST read/write stream across a restart_service call,
+# so we can classify every response and check for lost writes.
+type Widget @table @export {
+	id: ID @primaryKey
+	value: String
+	client: Int
+	seq: Int
+}

@@ -1,0 +1,5 @@
+# QA-649 — trivial table, used only to give the readiness poll a route to probe.
+type Probe @table @export {
+	id: ID @primaryKey
+	value: String
+}
