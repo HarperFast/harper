@@ -11,6 +11,8 @@
  * doesn't waste tokens on fields it can't write), NOT a security boundary.
  */
 
+import { JSON_SCHEMA_SCALAR_TYPES } from '../../../../resources/jsonSchemaTypes.ts';
+
 export interface HarperAttribute {
 	name: string;
 	type?: string;
@@ -29,6 +31,8 @@ export interface HarperAttribute {
 	enum?: readonly (string | number | boolean | null)[];
 	format?: string;
 	const?: unknown;
+	required?: readonly string[];
+	additionalProperties?: boolean;
 }
 
 export interface AttributePermissionEntry {
@@ -46,6 +50,9 @@ type Mode = 'read' | 'insert' | 'update';
  * than blocking the field entirely; the runtime will validate.
  */
 function harperTypeToJsonSchema(type: string | undefined): { type: string | string[] } | object {
+	// A programmatic Resource's `static properties` already speaks JSON Schema (lowercase types, no
+	// collision with Harper's capitalized GraphQL types); pass those through unchanged.
+	if (type && JSON_SCHEMA_SCALAR_TYPES.has(type)) return { type };
 	switch (type) {
 		case 'Int':
 		case 'Long':
@@ -67,16 +74,6 @@ function harperTypeToJsonSchema(type: string | undefined): { type: string | stri
 		case 'Any':
 		case undefined:
 			return {};
-		case 'string':
-		case 'integer':
-		case 'number':
-		case 'boolean':
-		case 'object':
-		case 'array':
-		case 'null':
-			// A programmatic Resource's `static properties` already speaks JSON Schema (lowercase types,
-			// no collision with Harper's capitalized GraphQL types); pass those through unchanged.
-			return { type };
 		default:
 			return { type: 'string' };
 	}
@@ -93,6 +90,8 @@ function attributeToProperty(attr: HarperAttribute): object {
 			type: 'object',
 			properties: Object.fromEntries(attr.properties.map((p) => [p.name, attributeToProperty(p)])),
 		};
+		if (attr.required) base.required = attr.required;
+		if (attr.additionalProperties !== undefined) base.additionalProperties = attr.additionalProperties;
 	} else if (attr.type === 'array' && attr.elements) {
 		base = {
 			type: 'array',

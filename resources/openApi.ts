@@ -1,14 +1,14 @@
 import { packageJson } from '../utility/packageUtils.js';
 import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
-import { DATA_TYPES, attributeToFragment, projectPropertiesToAttributes } from './jsonSchemaTypes.ts';
+import {
+	DATA_TYPES,
+	JSON_SCHEMA_SCALAR_TYPES,
+	attributeToFragment,
+	projectPropertiesToAttributes,
+} from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
-
-// A programmatic Resource's `static properties` uses JSON Schema types directly (lowercase). Harper's
-// GraphQL attribute types are all capitalized and live in DATA_TYPES, so a lowercase scalar reaching
-// the attribute mapper came from `static properties` and should be emitted as-is.
-const JSON_SCHEMA_SCALARS = new Set(['string', 'integer', 'number', 'boolean', 'object', 'array', 'null']);
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
 const DESCRIPTION_200 = 'successful operation';
@@ -166,16 +166,19 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						// schema (sub-properties recursed); OpenAPI's table path uses $refs instead.
 						props[name] = attributeToFragment(attr);
 					} else if (type === 'array') {
-						if (elements.type === 'Any') {
+						if (elements.properties) {
+							// array of nested objects — project the element to its full object schema
+							props[name] = { type: 'array', items: attributeToFragment(elements) };
+						} else if (elements.type === 'Any') {
 							props[name] = { type: 'array', items: { format: elements.type } };
-						} else if (!DATA_TYPES[elements.type] && JSON_SCHEMA_SCALARS.has(elements.type)) {
+						} else if (!DATA_TYPES[elements.type] && JSON_SCHEMA_SCALAR_TYPES.has(elements.type)) {
 							props[name] = { type: 'array', items: new Type(elements.type) };
 						} else {
 							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
 						}
 					} else if (type === 'Any') {
 						props[name] = { format: type };
-					} else if (!DATA_TYPES[type] && JSON_SCHEMA_SCALARS.has(type)) {
+					} else if (!DATA_TYPES[type] && JSON_SCHEMA_SCALAR_TYPES.has(type)) {
 						props[name] = new Type(type);
 					} else {
 						props[name] = new Type(DATA_TYPES[type], type);
