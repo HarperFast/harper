@@ -326,10 +326,7 @@ describe('test REST with property updates', function () {
 				}
 			);
 			assert(
-			assert(
 				Array.isArray(response.data) && response.data.some((record) => record.title === 'title0'),
-				`SELECT * FROM data.FourProp did not return title0: ${preview(response)}`
-			);
 				`SELECT * FROM data.FourProp did not return title0: ${preview(response)}`
 			);
 		});
