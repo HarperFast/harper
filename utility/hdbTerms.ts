@@ -88,6 +88,22 @@ export const ROLE_TYPES_ENUM = {
 	SUPER_USER: 'super_user',
 } as const;
 
+/**
+ * Named permission flags that live in a role's `permission` object alongside
+ * per-database permission blocks, which are keyed by database name. A database
+ * named after one of these flags collides with it — the role parser cannot tell
+ * a `super_user` flag from a `super_user` database's permissions — producing
+ * undefined behavior, so these are rejected as database/schema identifiers
+ * (harper#1016). Keep in sync with `UserRoleNamedPermissions` in security/user.ts.
+ */
+export const RESERVED_DATABASE_NAMES = [
+	'super_user',
+	'cluster_user',
+	'structure_user',
+	'operations',
+	'_expandedOperations',
+] as const;
+
 /** Email address for support requests */
 export const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
 
