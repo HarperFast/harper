@@ -89,7 +89,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+          client-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
           private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ matrix.app }}
@@ -139,6 +139,7 @@ jobs:
           OPERATIONSAPI_NETWORK_PORT: 9925
           ROOTPATH: ${{ runner.temp }}/harper-${{ matrix.app }}
           TEST_DOMAIN: https://localhost:9926
+          THREADS_COUNT: 1
         run: |
           set -euo pipefail
 
@@ -196,11 +197,17 @@ jobs:
             POST \
             '{"operation":"system_information","attributes":["version"]}'
 
+          deploy_directory="$RUNNER_TEMP/${{ matrix.app }}"
+          mkdir "$deploy_directory"
+          rsync --archive --exclude .git/ --exclude node_modules/ ./ "$deploy_directory/"
+          cd "$deploy_directory"
+
           CLI_TARGET_USERNAME="$HDB_ADMIN_USERNAME" \
           CLI_TARGET_PASSWORD="$HDB_ADMIN_PASSWORD" \
             harper deploy target=http://localhost:9925 replicated=false restart=true
 
           wait_for_http "https://localhost:9926${{ matrix.readiness_path }}"
+          cd "$GITHUB_WORKSPACE/app"
           npm test
 
       - name: Upload Harper logs on failure
