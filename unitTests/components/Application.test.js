@@ -130,6 +130,47 @@ describe('parseGitReference', () => {
 	it('returns null for a file identifier', () => {
 		assert.strictEqual(parseGitReference('file:../local-app'), null);
 	});
+
+	it('returns null for a #path: committish (npm git-url subdirectory extension, unimplemented)', () => {
+		assert.strictEqual(parseGitReference('github:my-org/my-app#path:packages/foo'), null);
+	});
+
+	it('returns null for a malformed hosted shorthand (not a plain owner/repo)', () => {
+		assert.strictEqual(parseGitReference('github:not-owner-slash-repo'), null);
+	});
+
+	it('parses a bare https:// URL to a known git host', () => {
+		assert.deepStrictEqual(parseGitReference('https://github.com/my-org/my-app'), {
+			cloneUrl: 'https://github.com/my-org/my-app',
+			committish: undefined,
+		});
+	});
+
+	// hosted-git-info (which npm's own resolution for `owner:repo` shorthand and bare host URLs is
+	// built on) URL-decodes the whole committish while parsing these two forms specifically.
+	it('decodes a percent-encoded committish for the github: shorthand, matching hosted-git-info', () => {
+		assert.deepStrictEqual(parseGitReference('github:my-org/my-app#feature%2Ffoo'), {
+			cloneUrl: 'https://github.com/my-org/my-app.git',
+			committish: 'feature/foo',
+		});
+	});
+
+	it('decodes a percent-encoded committish for a bare host URL, matching hosted-git-info', () => {
+		assert.deepStrictEqual(parseGitReference('https://github.com/my-org/my-app#feature%2Ffoo'), {
+			cloneUrl: 'https://github.com/my-org/my-app',
+			committish: 'feature/foo',
+		});
+	});
+
+	// An explicit git+ URL form goes through npm-package-arg's own URL.hash extraction instead of
+	// hosted-git-info, which does NOT decode the committish — so this deliberately does not either,
+	// matching real npm rather than "fixing" what would be a divergence from it.
+	it('does NOT decode a percent-encoded committish for an explicit git+https:// URL, matching npm-package-arg', () => {
+		assert.deepStrictEqual(parseGitReference('git+https://example.com/owner/repo.git#feature%2Ffoo'), {
+			cloneUrl: 'https://example.com/owner/repo.git',
+			committish: 'feature%2Ffoo',
+		});
+	});
 });
 
 describe('assertApplicationConfig credentials', () => {

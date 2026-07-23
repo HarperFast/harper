@@ -5411,7 +5411,12 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('select * dev.remarks_blob like w/ special chars pt2', async () => {
+		// pt2 is a prefix LIKE ('literal...%' -> starts_with), which the new SQL engine
+		// serves via an index range scan. On Bun that routes blob string-key decoding
+		// through ordered-binary's new Function reader, which hits the finishUtf8 scope
+		// bug (kriszyp/ordered-binary#8). Passes on all Node versions. The %...% patterns
+		// (pt1/3/4/5) fall back to the legacy engine and are unaffected.
+		test('select * dev.remarks_blob like w/ special chars pt2', { skip: bunSkip }, async () => {
 			await client
 				.req()
 				.send({
@@ -8747,6 +8752,20 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		});
 
 		test('CSV Data Load  upsert to table w/ full perms', { skip: bunSkipNewAttrCsvLoad }, async () => {
+			// 'Alter non-SU bulk_load_role' above grants unrestricted attribute access on
+			// northnwd.suppliers, but alter_role propagates to worker auth-cache via async
+			// ITC — the next request can land on a worker that hasn't cleared its cache yet.
+			// Poll a read of a previously-restricted column (contactname) as bulk_load_user
+			// until the new permissions are visible, then proceed with the CSV load (#1222).
+			const propagated = await waitFor(
+				() =>
+					client.reqAs(headersBulkLoadUser).send({
+						operation: 'sql',
+						sql: 'SELECT contactname FROM northnwd.suppliers LIMIT 1',
+					}),
+				{ until: (r) => r.status === 200, timeoutSeconds: 10 }
+			);
+			assert.equal(propagated.status, 200, propagated.text);
 			await csvDataLoad(
 				headersBulkLoadUser,
 				'upsert',
@@ -11336,29 +11355,30 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		});
 
 		test('Select two table CROSS SCHEMA JOIN as test_user', async () => {
-			await client
-				.reqAs(headersTestUser)
-				.send({
-					operation: 'sql',
-					sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
-				})
-				.expect((r) => {
-					assert.equal(r.body.length, 8, r.text);
-					const expected_attributes = ['id', 'dog_name', 'age', 'adorable', 'id1', 'name'];
-					//Important to test that only the id (returned as id1) and name attributes come back for 'other.owner'
-					// since user only has access to those two attributes
-					r.body.forEach((row) => {
-						expected_attributes.forEach((attr) => {
-							assert.ok(row.hasOwnProperty(attr), r.text);
-						});
-					});
-				})
-				.expect((r) => {
-					assert.equal(r.body[1].name, 'David', r.text);
-					assert.equal(r.body[3].id1, 1, r.text);
-					assert.equal(r.body[4].id1, 2, r.text);
-				})
-				.expect(200);
+			// 'SQL ALTER non SU role' above adds read access for other.owner attributes,
+			// but the permission propagates to worker auth-cache via async ITC — poll
+			// until the join returns the expected row count before asserting structure (#1222).
+			const r = await waitFor(
+				() =>
+					client.reqAs(headersTestUser).send({
+						operation: 'sql',
+						sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
+					}),
+				{ until: (res) => res.status === 200 && Array.isArray(res.body) && res.body.length === 8, timeoutSeconds: 10 }
+			);
+			assert.equal(r.status, 200, r.text);
+			assert.equal(r.body.length, 8, r.text);
+			const expected_attributes = ['id', 'dog_name', 'age', 'adorable', 'id1', 'name'];
+			//Important to test that only the id (returned as id1) and name attributes come back for 'other.owner'
+			// since user only has access to those two attributes
+			r.body.forEach((row) => {
+				expected_attributes.forEach((attr) => {
+					assert.ok(row.hasOwnProperty(attr), r.text);
+				});
+			});
+			assert.equal(r.body[1].name, 'David', r.text);
+			assert.equal(r.body[3].id1, 1, r.text);
+			assert.equal(r.body[4].id1, 2, r.text);
 		});
 
 		test('Select * w/ two table CROSS SCHEMA JOIN as test_user', async () => {
@@ -11515,32 +11535,43 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		});
 
 		test('Select with ALL RESTRICTED complex CROSS 3 SCHEMA JOINS as test_user', async () => {
-			await client
-				.reqAs(headersTestUser)
-				.send({
-					operation: 'sql',
-					sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.country FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
-				})
-				.expect((r) => {
-					assert.equal(
-						r.body.error,
-						'This operation is not authorized due to role restrictions and/or invalid database items',
-						r.text
-					);
-					assert.equal(r.body.unauthorized_access.length, 1, r.text);
-					assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
-					assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'read', r.text);
-					assert.equal(r.body.unauthorized_access[0].schema, 'dev', r.text);
-					assert.equal(r.body.unauthorized_access[0].table, 'dog', r.text);
-					assert.equal(r.body.invalid_schema_items.length, 3, r.text);
-					assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'"), r.text);
-					assert.ok(r.body.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'"), r.text);
-					assert.ok(
-						r.body.invalid_schema_items.includes("Attribute 'country' does not exist on 'another.breed'"),
-						r.text
-					);
-				})
-				.expect(403);
+			// 'SQL ALTER non SU role with multi table join restrictions' above restricts
+			// dev.dog read access, but propagates via async ITC — poll until the
+			// restriction is enforced before asserting the 403 response body (#1222).
+			// A bare `status === 403` is NOT sufficient: a stale/partially-propagated
+			// role can also produce a 403 with a different body (e.g. empty
+			// unauthorized_access and only one invalid_schema_item), so poll until the
+			// full expected shape is visible — 1 unauthorized table + all 3 invalid items.
+			const r = await waitFor(
+				() =>
+					client.reqAs(headersTestUser).send({
+						operation: 'sql',
+						sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.country FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
+					}),
+				{
+					until: (res) =>
+						res.status === 403 &&
+						res.body?.unauthorized_access?.length === 1 &&
+						res.body.unauthorized_access[0]?.table === 'dog' &&
+						res.body?.invalid_schema_items?.length === 3,
+					timeoutSeconds: 10,
+				}
+			);
+			assert.equal(r.status, 403, r.text);
+			assert.equal(
+				r.body.error,
+				'This operation is not authorized due to role restrictions and/or invalid database items',
+				r.text
+			);
+			assert.equal(r.body.unauthorized_access.length, 1, r.text);
+			assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
+			assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'read', r.text);
+			assert.equal(r.body.unauthorized_access[0].schema, 'dev', r.text);
+			assert.equal(r.body.unauthorized_access[0].table, 'dog', r.text);
+			assert.equal(r.body.invalid_schema_items.length, 3, r.text);
+			assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'"), r.text);
+			assert.ok(r.body.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'"), r.text);
+			assert.ok(r.body.invalid_schema_items.includes("Attribute 'country' does not exist on 'another.breed'"), r.text);
 		});
 
 		test('SQL drop test user', async () => {

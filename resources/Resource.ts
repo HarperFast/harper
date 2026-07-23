@@ -689,8 +689,11 @@ function transactional(
 				query = new RequestTarget();
 				query.id = id;
 				if (id == null) {
-					if (options.method === 'get') {
-						throw new Error(`Using an argument with a value of ${id} for ${options.method}, is not allowed`);
+					if (options.method === 'get' || options.method === 'delete') {
+						// For delete, a bare null/undefined id would be coerced into a whole-collection
+						// target and silently delete every record (studio#1199); a deliberate delete-all
+						// must use an explicit query object instead.
+						throw new ClientError(`Using an argument with a value of ${id} for ${options.method}, is not allowed`);
 					}
 					query.isCollection = true;
 				}
@@ -701,6 +704,24 @@ function transactional(
 			query.id = id;
 		}
 		isCollection = query.isCollection;
+		if (
+			options.method === 'post' &&
+			query.id === null &&
+			!isCollection &&
+			this.prototype.post === Resource.prototype.post
+		) {
+			// the matched path had nothing left to resolve into a collection or a specific record —
+			// i.e. it exactly matched a resource's base path without the required trailing slash
+			// (harper#678). This only matters for the base/default post() dispatch: it reads
+			// this.#isCollection (set from this same query) and falls back to missingMethod() for
+			// this state anyway, so rejecting early here just gives a clearer, purpose-built message.
+			// A resource with its own post() override (e.g. a component doing a bulk import via
+			// POST to its collection root, like the redirector template's Redirect.post()) is
+			// trusted to handle a null-id/non-collection target itself — it may not use id/isCollection
+			// at all, and forcing the trailing slash on it would break a currently-supported no-slash
+			// bulk-POST convention. See harper#678's regression on PR #1807.
+			throw new ClientError(`A trailing slash is required to POST to the ${this.name} collection`, 404);
+		}
 		let resourceOptions;
 		if (!context) {
 			// try to get the context from the async context if possible

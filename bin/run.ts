@@ -179,6 +179,16 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		process.exit(1);
 	}
 
+	// A built-in component only activates when its config key is present. Fresh installs get these
+	// keys from defaultConfig.yaml, but an in-place upgrade carries the old config forward without a
+	// key added in a newer release (harper-pro#585). Ensure them on every boot — idempotent and
+	// scoped to genuinely-new built-ins registered in this runtime — so the fix self-heals even when
+	// a version bump ships no upgrade directive or a prior backfill write failed.
+	const backfilledKeys = configUtils.ensureBuiltInComponentConfigKeys();
+	if (backfilledKeys.length > 0) {
+		hdbLogger.info(`Activated built-in component(s) absent from an upgraded config: ${backfilledKeys.join(', ')}`);
+	}
+
 	checkJwtTokens();
 
 	await keys.reviewSelfSignedCert();

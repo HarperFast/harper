@@ -174,7 +174,11 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 		const application = new Application({ name: 'git-clone-unauthenticated', packageIdentifier });
 		await assert.rejects(
 			() => extractApplication(application),
-			/Failed to download package/,
+			// Without install_allow_scripts (the default), install scripts are disallowed regardless of
+			// whether a credential is present (harper#1818/#1819), so this now takes the
+			// clone-and-strip-scripts path (packGitReferenceWithoutScripts) rather than a plain `npm
+			// pack` — its own clone failure is worded differently ("clone" vs "download").
+			/Failed to clone package/,
 			'a private repo must not be cloneable without a credential'
 		);
 		// npm points git at its own `GIT_ASKPASS=echo` when we supply none, so git does attempt an empty
@@ -334,6 +338,7 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 		await application.startGitCredentialSession();
 		await application.cleanupGitCredentialSession();
 
-		await assert.rejects(() => extractApplication(application), /Failed to download package/);
+		// Same clone-and-strip-scripts path as above, so the same wording applies once the socket is gone.
+		await assert.rejects(() => extractApplication(application), /Failed to clone package/);
 	});
 });

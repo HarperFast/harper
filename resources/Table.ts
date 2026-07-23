@@ -4,7 +4,13 @@
  * table-level interactions, loading records, updating records, querying, and more.
  */
 
-import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.ts';
+import {
+	CONFIG_PARAMS,
+	OPERATIONS_ENUM,
+	SYSTEM_TABLE_NAMES,
+	SYSTEM_SCHEMA_NAME,
+	MAX_SET_TIMEOUT_MS,
+} from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
@@ -1244,7 +1250,7 @@ export function makeTable(options) {
 				// go back to the static search method so it gets a chance to override
 				return constructor.search(target, this.getContext());
 			}
-			if (target && target.id === undefined && !target.toString()) {
+			if (target && target.id == null && !target.toString()) {
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
@@ -2081,8 +2087,10 @@ export function makeTable(options) {
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
 					if (options?.residencyId != undefined) residencyId = options.residencyId;
-					const expiresAt: number =
-						options?.expiresAt ?? context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
+					// options/context expiresAt are the most specific overrides; a record @expiresAt field
+					// (resolved below, once recordToStore is merged) overrides the table default in both
+					// directions; the table default is the final fallback. -1 means no expiration.
+					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
 					// and no out-of-order resequencing/dedup (the source of the O(n) keyed-lookup spin in
@@ -2499,6 +2507,35 @@ export function makeTable(options) {
 						}
 						residencyId = getResidencyId(residency);
 					}
+					if (expiresAt == undefined) {
+						// A schema @expiresAt attribute makes the record field authoritative over the table
+						// default, in both directions: stamp it into the stored expiry metadata that governs
+						// read-hiding and the cleanup sweep, not just the separate index-pruning sweep (which
+						// only removes already-past records and so can never extend past the table default).
+						// Read from recordToStore so the metadata matches exactly what the pruning sweep later
+						// reads back. Falls back to the table default when the field is unset or not a timestamp.
+						const fieldExpiresAt = expiresAtProperty ? recordToStore?.[expiresAtProperty.name] : undefined;
+						// Coerce only genuine timestamp shapes: a number/bigint epoch, a Date, or a numeric/ISO
+						// string. Booleans, empty/whitespace strings, and null/undefined fall through to NaN so a
+						// nonsensical field value uses the table default rather than expiring the record at epoch 0.
+						let fieldExpiresAtMs = NaN;
+						if (typeof fieldExpiresAt === 'number' || typeof fieldExpiresAt === 'bigint')
+							fieldExpiresAtMs = Number(fieldExpiresAt);
+						else if (fieldExpiresAt instanceof Date) fieldExpiresAtMs = fieldExpiresAt.getTime();
+						else if (typeof fieldExpiresAt === 'string' && fieldExpiresAt.trim() !== '') {
+							const numeric = Number(fieldExpiresAt);
+							fieldExpiresAtMs = Number.isFinite(numeric) ? numeric : Date.parse(fieldExpiresAt);
+						}
+						// Only a finite, non-negative epoch counts: negatives collide with the -1 "no expiration"
+						// sentinel (the encoder omits HAS_EXPIRATION for <0, but the field sweep would still evict a
+						// negative field value), so treat a negative/NaN field as unset and use the table default.
+						expiresAt =
+							Number.isFinite(fieldExpiresAtMs) && fieldExpiresAtMs >= 0
+								? fieldExpiresAtMs
+								: expirationMs
+									? expirationMs + Date.now()
+									: -1;
+					}
 					if (!fullUpdate) {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
 						auditRecordToStore = recordUpdate;
@@ -2875,8 +2912,10 @@ export function makeTable(options) {
 								} is not a defined attribute`,
 								404
 							);
-						if (attribute.indexed) {
-							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
+						if (attribute.indexed || attribute.isPrimaryKey) {
+							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index.
+							// the primary key has no secondary index, but the primary store is itself keyed in
+							// primary-key order, so scanning it is already aligned with the sort
 							orderAlignedCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
 						} else if (conditions.length === 0 && !target.allowFullScan)
@@ -2989,6 +3028,14 @@ export function makeTable(options) {
 			// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
 			// traversal). vectorFilter and condition filters intentionally keep the local-record
 			// semantics all query filters have on caching tables.
+			//
+			// A row that is past its TTL but not yet swept by the background eviction
+			// scan is still physically present. A write that is about to overwrite it
+			// anyway (e.g. the SQL engine locating UPDATE/DELETE targets) needs to see
+			// it as a match — the same leniency a direct by-id put/patch already gets,
+			// since those never run the ensureLoaded-gated freshness check this transform
+			// otherwise applies unconditionally to every read.
+			const includeExpired = (target as any).includeExpired === true;
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
 				context,
@@ -2996,7 +3043,8 @@ export function makeTable(options) {
 				filtered,
 				ensure_loaded,
 				true,
-				recordGuard
+				recordGuard,
+				includeExpired
 			);
 			let results = TableResource.transformToOrderedSelect(
 				entries,
@@ -3210,9 +3258,20 @@ export function makeTable(options) {
 		 * @param recordGuard record-level read check (#1241) applied to the record actually being
 		 * returned — i.e. AFTER any caching-source revalidation replaces a stale local copy — so an
 		 * authorization verdict can't be made on bytes that differ from what the caller receives.
+		 * @param includeExpired when true, a row past its TTL but not yet swept is treated as a live
+		 * match rather than gone (used by the SQL engine's UPDATE/DELETE row-finder).
 		 * @returns
 		 */
-		static transformEntryForSelect(select, context, readTxn, filtered, ensure_loaded?, canSkip?, recordGuard?) {
+		static transformEntryForSelect(
+			select,
+			context,
+			readTxn,
+			filtered,
+			ensure_loaded?,
+			canSkip?,
+			recordGuard?,
+			includeExpired?
+		) {
 			let checkLoaded;
 			if (
 				ensure_loaded &&
@@ -3260,7 +3319,7 @@ export function makeTable(options) {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
+						(!includeExpired && entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
 					) {
 						// should expiration really apply?
 						if (context.onlyIfCached) {
@@ -5746,7 +5805,7 @@ export function makeTable(options) {
 								resolve(undefined);
 								cleanupPriority = 0; // reset the priority
 							})),
-						Math.min(nextScheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
+						Math.min(nextScheduled - Date.now(), MAX_SET_TIMEOUT_MS) // make sure it can fit in 32-bit signed number
 					).unref(); // don't let this prevent closing the thread
 				};
 				startNextTimer(nextScheduled);

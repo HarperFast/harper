@@ -1,0 +1,31 @@
+# QA-593 (rel-pagination variant) — content-catalog 3-level @relationship graph,
+# instrumented with a monotonic `gen` counter at the Series and Article level so a
+# concurrent-write race can be detected from the READ side (see test file header).
+#
+# Chain: Publisher 1--* Series (Series.publisherId) 1--* Article (Article.seriesId)
+#   Publisher.series = @relationship(to: publisherId)
+#   Series.articles  = @relationship(to: seriesId)
+# All FKs @indexed.
+
+type Publisher @table @export {
+	id: ID @primaryKey
+	name: String
+	series: [Series] @relationship(to: publisherId)
+}
+
+type Series @table @export {
+	id: ID @primaryKey
+	publisherId: ID @indexed
+	name: String
+	gen: Int
+	publisher: Publisher @relationship(from: publisherId)
+	articles: [Article] @relationship(to: seriesId)
+}
+
+type Article @table @export {
+	id: ID @primaryKey
+	seriesId: ID @indexed
+	title: String
+	gen: Int
+	series: Series @relationship(from: seriesId)
+}

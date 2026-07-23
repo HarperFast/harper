@@ -26,7 +26,13 @@ const { packageDirectory } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
 const { Application, prepareApplication, ASIDE_STAGING_DIR } = require('./Application.ts');
 const { server } = require('../server/Server.ts');
-const { DeploymentRecorder, awaitDeploymentRow, DEFAULT_AWAIT_ROW_TIMEOUT_MS } = require('./deploymentRecorder.ts');
+const {
+	DeploymentRecorder,
+	awaitDeploymentRow,
+	readPayloadBlobWithRetry,
+	coerceTimeoutMs,
+	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
+} = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
 
 /**
@@ -465,8 +471,21 @@ async function deployComponent(req) {
 			// The wait budget defaults to 120s but is overridable per-deploy via
 			// `deployment_timeout` (ms) for clusters where the system-table channel is
 			// heavily backlogged (harper-pro#402).
-			const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: req.deployment_timeout });
-			extractionPayload = row.payload_blob.stream();
+			const payloadTimeoutMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
+			// One deadline covers both phases (row wait + blob content) so a slow row doesn't
+			// double the peer's total worst-case wait — whatever's left of payloadTimeoutMs after
+			// the row arrives is what the blob retry gets.
+			const payloadDeadline = Date.now() + payloadTimeoutMs;
+			const row = await awaitDeploymentRow(req._deploymentId, { timeoutMs: payloadTimeoutMs });
+			// Blob content can stall independently of the row itself arriving (e.g. a
+			// parked/declined blob send on the origin, harper-pro#403) — the header lands but
+			// content bytes don't, and stream() gives up with a retryable 503 after
+			// blobReadTimeout of no progress. Retry with backoff, bounded by the remaining
+			// budget, so a transient stall doesn't fail the whole deploy (harper-pro incident,
+			// 2026-07-16).
+			extractionPayload = readPayloadBlobWithRetry(() => row.payload_blob.stream(), {
+				timeoutMs: Math.max(0, payloadDeadline - Date.now()),
+			});
 		}
 
 		// Resolve credential references into concrete tokens for this node's npm pack/install
@@ -475,8 +494,7 @@ async function deployComponent(req) {
 		// allow a bounded grace period (same budget as the payload-row wait) for it to replicate in.
 		let credentialsWaitMs = 0;
 		if (isReplicatedExecution) {
-			const requested = Number(req.deployment_timeout);
-			credentialsWaitMs = Number.isFinite(requested) && requested >= 0 ? requested : DEFAULT_AWAIT_ROW_TIMEOUT_MS;
+			credentialsWaitMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
 		}
 		const resolvedCredentials = await resolveCredentials(req.credentials, req.project, {
 			waitMs: credentialsWaitMs,
@@ -532,7 +550,12 @@ async function deployComponent(req) {
 			// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
 			// (#1462).
 			const validationScopes = new Set();
-			const validation = (async () => {
+			// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
+			// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
+			// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
+			// registration methods no-op for the duration of the load.
+			const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
+			const validation = runWithDeployValidationGuard(async () => {
 				try {
 					await componentLoader.loadComponent(application.dirPath, pseudoResources, undefined, {
 						collectScopes: validationScopes,
@@ -543,7 +566,7 @@ async function deployComponent(req) {
 						if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
 					}
 				}
-			})();
+			});
 			// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
 			// disposing — a plugin may start a native runtime in handleApplication — before realExit.
 			trackScopeClose(validation);
@@ -611,7 +634,27 @@ async function deployComponent(req) {
 
 			response.restartJobId = jobResponse.job_id;
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-		} else response.message = `Successfully deployed: ${application.name}`;
+		} else {
+			// Deployed without restarting: for a component that had no directory before this
+			// deploy — genuinely new, never loaded — its routes cannot be live until Harper
+			// restarts, so mark a restart as needed. This is the setter only; it does not itself
+			// restart. It makes get_status report restartRequired:true and lets the REST
+			// route-miss path surface the actionable "needs a restart" 404 for a freshly deployed,
+			// never-loaded component (harper#674). Runs per-node: a peer applying the replicated
+			// deploy checks its own local isNewComponent, since directory state (and therefore
+			// whether the component was already active) can differ per node.
+			//
+			// An existing, already-active component being redeployed does NOT force a restart
+			// here: some updates (e.g. static files only) may not need one at all, and when one
+			// genuinely is needed, that component's already-running file watcher (Scope/
+			// EntryHandler, see deployLifecycle.ts) independently detects the post-deploy file
+			// changes and requests the restart itself.
+			if (application.isNewComponent) {
+				const { requestRestart } = require('./requestRestart.ts');
+				requestRestart();
+			}
+			response.message = `Successfully deployed: ${application.name}`;
+		}
 
 		// Replication failures don't reject replicateOperation — they surface as 'failed'
 		// entries in peer_results. By default, treat any failed peer as an overall deploy

@@ -143,4 +143,45 @@ describe('extractApplication directory swap', () => {
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
+
+	// harper#1806: deployComponent uses Application#isNewComponent to scope its own
+	// requestRestart() call to components that have never been deployed before, leaving an
+	// existing component's redeploy to the component's own file watcher.
+	it('marks isNewComponent true when the component directory did not exist before extraction', async () => {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-new-'));
+		const sourceDir = await makeFixture({ 'package.json': '{"name":"web","version":"1.0.0"}\n' });
+
+		const app = new Application({
+			name: 'web',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		app.dirPath = path.join(componentsRoot, 'web');
+
+		assert.strictEqual(app.isNewComponent, true, 'defaults to true before extraction runs');
+		await extractApplication(app);
+		assert.strictEqual(app.isNewComponent, true, 'no prior directory existed, so this is a new component');
+
+		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		await fs.rm(sourceDir, { recursive: true, force: true });
+	});
+
+	it('marks isNewComponent false when an existing component directory is replaced', async () => {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-existing-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+
+		const sourceDir = await makeFixture({ 'package.json': '{"name":"web","version":"2.0.0"}\n' });
+		const app = new Application({
+			name: 'web',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		app.dirPath = dirPath;
+
+		await extractApplication(app);
+		assert.strictEqual(app.isNewComponent, false, 'a pre-existing directory was renamed aside, so this is a redeploy');
+
+		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		await fs.rm(sourceDir, { recursive: true, force: true });
+	});
 });

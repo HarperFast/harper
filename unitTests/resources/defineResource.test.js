@@ -164,6 +164,29 @@ describe('defineResource / Resource.withSchema — runtime request contract', ()
 			// first arg is not a URLSearchParams → the wrapper delegates untouched
 			assert.doesNotThrow(() => Widget.post({ notATarget: true }, { anything: 1 }));
 		});
+
+		it('awaits a thenable body (the REST streaming path) before validating, dispatching the resolved value', async () => {
+			const target = targetWith('limit=1', '1');
+			const result = await Widget.post(target, Promise.resolve({ name: 'ok', count: 3 }));
+			assert.deepStrictEqual(result, {});
+			assert.strictEqual(ran, true);
+		});
+
+		it('rejects a bad resolved value on a thenable body with the same per-field issues', async () => {
+			const target = targetWith('limit=1', '1');
+			let error;
+			try {
+				await Widget.post(target, Promise.resolve({ name: 5 }));
+			} catch (e) {
+				error = e;
+			}
+			assert.ok(error, 'should throw');
+			assert.strictEqual(error.name, 'ValidationError');
+			const codes = error.errors.map((i) => `${i.path}:${i.code}`);
+			assert.ok(codes.includes('body.name:type'), codes.join(','));
+			assert.ok(codes.includes('body.count:required'), codes.join(','));
+			assert.strictEqual(ran, false);
+		});
 	});
 
 	describe('nullability — non-nullable by default, .nullable opts in', () => {

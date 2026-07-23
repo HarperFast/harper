@@ -151,7 +151,11 @@ export function createSSEResponseStream(emitter: ProgressEmitter, operation: () 
  * operand so every line is written regardless of the accumulated backpressure flag.
  */
 function writeSSE(stream: PassThrough, event: ProgressEvent): boolean {
-	const data = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
+	// `JSON.stringify(undefined)` returns the `undefined` primitive, not a string, so fall back to
+	// '' via `??` — an event carrying no data still writes a valid (empty-payload) record instead
+	// of throwing a TypeError deep in the write path. An explicit `null` is preserved as the JSON
+	// value `null` for consumers replaying persisted events.
+	const data = typeof event.data === 'string' ? event.data : (JSON.stringify(event.data) ?? '');
 	let canWrite = stream.write(`event: ${event.event}\n`);
 	for (const line of data.split(/\r?\n/)) {
 		canWrite = stream.write(`data: ${line}\n`) && canWrite;

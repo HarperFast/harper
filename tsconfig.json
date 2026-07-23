@@ -10,6 +10,7 @@
 		"resources/**/*",
 		"security/**/*",
 		"server/**/*",
+		"sqlEngine/**/*",
 		"sqlTranslator/**/*",
 		"upgrade/**/*",
 		"utility/**/*",

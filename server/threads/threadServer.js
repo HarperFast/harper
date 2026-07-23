@@ -27,9 +27,9 @@ const {
 } = require('../../components/shutdownDrain.ts');
 const { realExit } = require('./workerProcessGuard.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
-const { createTLSSelector } = require('../../security/keys.ts');
+const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/keys.ts');
 const { startupLog } = require('../../bin/run.ts');
-const { SERVERS, setPortServerMap, portServer } = require('../serverRegistry.ts');
+const { SERVERS, setPortServerMap, portServer, socketOptionDefaults } = require('../serverRegistry.ts');
 const httpComponent = require('../http.ts');
 const globals = require('../../globals.js');
 const { whenScopesClosed } = require('../../components/scopeShutdown.ts');
@@ -570,21 +570,23 @@ function onSocket(listener, options) {
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		const SNICallback = createTLSSelector('server', options.mtls);
-		const tlsConfig = env.get('tls');
+		// OpenSSL takes the cipher list (and its @SECLEVEL) from the context the server was created with;
+		// a context swapped in by the SNI callback doesn't carry its own cipher list onto the connection.
+		// The listener-level string is therefore the only one honored — resolve it from every configured
+		// source (see resolveEffectiveTlsCiphers in keys.ts).
+		const effectiveCiphers = getEffectiveTlsCiphers('server', options.mtls);
 		socketServer = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
-				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
-				keepAlive: true,
-				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
-				// For some reason ciphers doesn't work from the secure context, despite node docs claiming it would. Lost
-				// count of how many node TLS bugs that makes
-				ciphers: tlsConfig.ciphers ?? tlsConfig[0]?.ciphers,
+				...socketOptionDefaults,
+				ciphers: effectiveCiphers,
 				SNICallback,
 			},
 			listener
 		);
+		socketServer.appliedCiphers = effectiveCiphers ?? null;
+		socketServer.verifiesClientCerts = Boolean(options.mtls);
 		SNICallback.initialize(socketServer);
 		// Only opt out of reusePort on macOS, which doesn't reliably support SO_REUSEPORT on all
 		// socket types (ENOTSUP). Everywhere else, sharing the port lets every worker accept
@@ -607,11 +609,7 @@ function onSocket(listener, options) {
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
-			const udsServer = createSocketServer(listener, {
-				noDelay: true,
-				keepAlive: true,
-				keepAliveInitialDelay: 600,
-			});
+			const udsServer = createSocketServer({ ...socketOptionDefaults }, listener);
 
 			udsServer.isPerThreadSocket = true;
 			// Strip the PROXY v1 header a fronting proxy (e.g. symphony) prepends, same as the
@@ -628,11 +626,7 @@ function onSocket(listener, options) {
 	}
 	if (options.port) {
 		setPortServerMap(options.port, { protocol_name: 'TCP', name: getComponentName() });
-		socketServer = createSocketServer(listener, {
-			noDelay: true,
-			keepAlive: true,
-			keepAliveInitialDelay: 600,
-		});
+		socketServer = createSocketServer({ ...socketOptionDefaults }, listener);
 		// See the securePort path above: opt out of reusePort only on macOS so every worker can
 		// accept connections for this listener elsewhere, and mark it worker-owned.
 		if (process.platform === 'darwin') socketServer.noReusePort = true;

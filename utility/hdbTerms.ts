@@ -124,6 +124,9 @@ export const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 /** Restart timeout (milliseconds) */
 export const RESTART_TIMEOUT_MS = 60000;
 
+/** Largest delay Node's setTimeout accepts (2^31 - 1 ms, ~24.8 days); larger values silently coerce to 1ms */
+export const MAX_SET_TIMEOUT_MS = 2147483647;
+
 /** Harper File Permissions Mode */
 export const HDB_FILE_PERMISSIONS = 0o700;
 
@@ -569,8 +572,6 @@ export const CONFIG_PARAMS = {
 	MCP_OPERATIONS_RATELIMIT_PERCLIENTPERSECOND: 'mcp_operations_rateLimit_perClientPerSecond',
 	MCP_OPERATIONS_RATELIMIT_PERCLIENTBURST: 'mcp_operations_rateLimit_perClientBurst',
 	MCP_OPERATIONS_RATELIMIT_IDENTITYHEADER: 'mcp_operations_rateLimit_identityHeader',
-	MCP_OPERATIONS_QUOTA_RESOURCE: 'mcp_operations_quota_resource',
-	MCP_OPERATIONS_QUOTA_METHOD: 'mcp_operations_quota_method',
 	MCP_APPLICATION_MOUNTPATH: 'mcp_application_mountPath',
 	MCP_APPLICATION_ALLOW: 'mcp_application_allow',
 	MCP_APPLICATION_DENY: 'mcp_application_deny',
@@ -583,8 +584,6 @@ export const CONFIG_PARAMS = {
 	MCP_APPLICATION_RATELIMIT_PERCLIENTPERSECOND: 'mcp_application_rateLimit_perClientPerSecond',
 	MCP_APPLICATION_RATELIMIT_PERCLIENTBURST: 'mcp_application_rateLimit_perClientBurst',
 	MCP_APPLICATION_RATELIMIT_IDENTITYHEADER: 'mcp_application_rateLimit_identityHeader',
-	MCP_APPLICATION_QUOTA_RESOURCE: 'mcp_application_quota_resource',
-	MCP_APPLICATION_QUOTA_METHOD: 'mcp_application_quota_method',
 	MCP_SESSION_IDLETIMEOUTSECONDS: 'mcp_session_idleTimeoutSeconds',
 	MCP_SESSION_ALLOWCLIENTDELETE: 'mcp_session_allowClientDelete',
 	AGENT_ENABLED: 'agent_enabled',

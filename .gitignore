@@ -55,3 +55,10 @@ cache/
 # YCSB benchmark results (generated)
 benchmarks/ycsb/results/
 benchmarks/ycsb/bench-out/
+
+# northwind export_local test artifact
+test_export.json.json
+
+# dev-mode boots (harper dev <fixture>) symlink node_modules/harper into the
+# fixture component dir; keep those out of commits
+integrationTests/fixtures/*/node_modules/

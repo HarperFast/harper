@@ -9,11 +9,12 @@ import { dirname, join } from 'path';
 import { open } from 'fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
 import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.ts';
-import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
+import { getTransactionQueueDepths, setCommitLatencyRecorder } from '../DatabaseTransaction.ts';
 import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js';
 
 const log = forComponent('analytics').conditional;
@@ -130,6 +131,9 @@ export function recordAction(value: Value, metric: string, path?: string, method
 
 server.recordAnalytics = recordAction;
 
+// Let the storage layer emit write-commit latency without statically depending on this module.
+setCommitLatencyRecorder((durationMs) => recordAction(durationMs, METRIC.TRANSACTION_COMMIT_TIME));
+
 export function recordActionBinary(value, metric, path?, method?, type?) {
 	recordAction(Boolean(value), metric, path, method, type);
 }
@@ -212,6 +216,25 @@ function sendAnalytics() {
 			threadId,
 			byThread: true,
 			...memoryUsage,
+		});
+		// Transaction queue depth gauges. `depth` is the instantaneous depth at emit time; `maxDepth` is
+		// the high-water mark over this sampling window (the queue can fill and drain within a single
+		// period, so the instantaneous sample alone would miss short spikes). Reported per-thread and
+		// summed across threads by the aggregator, mirroring the `memory` gauge above.
+		const queueDepths = getTransactionQueueDepths();
+		metrics.push({
+			metric: METRIC.WRITE_TRANSACTION_QUEUE_DEPTH,
+			threadId,
+			byThread: true,
+			depth: queueDepths.writeDepth,
+			maxDepth: queueDepths.writeMaxDepth,
+		});
+		metrics.push({
+			metric: METRIC.READ_TRANSACTION_QUEUE_DEPTH,
+			threadId,
+			byThread: true,
+			depth: queueDepths.readDepth,
+			maxDepth: queueDepths.readMaxDepth,
 		});
 		for (const listener of analyticsListeners) {
 			listener(metrics);
@@ -1118,7 +1141,7 @@ function startScheduledTasks() {
 	scheduledTasksRunning = true;
 	nodeStorageInterval = envGet(CONFIG_PARAMS.ANALYTICS_STORAGEINTERVAL) ?? DEFAULT_STORAGE_INTERVAL;
 	const AGGREGATE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
-	if (AGGREGATE_PERIOD) {
+	if (AGGREGATE_PERIOD > 0) {
 		// Clamp raw retention to at least one full aggregation period so raw records
 		// are never deleted before they can be rolled up.
 		const rawRetentionMs = Math.max(envGet(CONFIG_PARAMS.ANALYTICS_RAWRETENTIONMS) ?? RAW_EXPIRATION, AGGREGATE_PERIOD);
@@ -1130,7 +1153,7 @@ function startScheduledTasks() {
 				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
 				if (aggregateRetentionMs) await cleanup(getAnalyticsTable(), aggregateRetentionMs);
 			},
-			Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)
+			Math.max(0, Math.min(AGGREGATE_PERIOD / 2, MAX_SET_TIMEOUT_MS))
 		).unref();
 	}
 }

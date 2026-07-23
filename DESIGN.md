@@ -108,6 +108,13 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 Future agents touching `components/deploymentRecorder.ts` for Slice B's streaming variant should pick one of the latter two patterns.
 
+## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
+
+`readPayloadBlobWithRetry` (`components/deploymentRecorder.ts`) wraps the peer's read of a replicated `hdb_deployment` row's `payload_blob` so a transient 503 `BlobReadError` (`BLOB_UNAVAILABLE_STATUS`, `resources/blob.ts`) — content bytes not arriving within `blobReadTimeout`, e.g. a parked blob send on the origin — retries instead of failing the whole deploy. Two non-obvious constraints shaped the design:
+
+- **Retry is only safe before any byte has reached the consumer.** Once a chunk is handed downstream, re-opening `Blob.stream()` from byte 0 would duplicate it (there's no cheap way to resume from an arbitrary offset across a fresh stream without also plumbing `Blob.slice()`, which was out of scope for this fix). So the helper retries only while the current attempt has yielded nothing yet; a stall after partial content fails immediately, same as before this existed.
+- **Backpressure and cancellation are two different problems, and both are easy to get wrong with a hand-rolled `ReadableStream`.** An early version wrapped the retry loop in `new ReadableStream({ async start(controller) { for await (...) controller.enqueue(chunk) } })` — this eagerly drains `streamFactory()` regardless of `controller.desiredSize`, defeating the whole point of not buffering a multi-GB payload in memory. Switching to an `async function*` consumed via `Readable.from()` restores real backpressure (the generator only resumes when the consumer wants more, matching how the un-wrapped `Blob.stream()` behaved pre-fix). But `Readable.from()`'s `return()`-on-destroy cancellation only takes effect at the generator's _next_ `yield` — while the loop is stuck retrying (no `yield` reached yet), destroying the `Readable` does nothing until the loop naturally exits, verified empirically (a generator that never yields kept retrying long after `.destroy()`). The fix: thread the constructed `Readable` back into the generator via a mutable cell (`readable` doesn't exist until after `Readable.from()` returns, so it can't be closed over directly) and check `.destroyed` explicitly at each loop iteration and after each backoff sleep.
+
 ## System table bootstrap: `systemSchema.json` + upgrade directive
 
 Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three changes:
@@ -362,3 +369,82 @@ Three non-obvious mechanics keep that safe:
 
 Known limitation: the flock is process-owned; if the restore job's worker _thread_ dies without
 the process exiting, the lock stays held (restores 409) until Harper restarts.
+
+## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
+
+The built-in `scheduler` plugin (#951) runs config-declared jobs "exactly once per cluster." The
+non-obvious part is what Harper's substrate does and does not offer for that:
+
+- **There is no election, consensus, or cross-node CAS anywhere in harper/harper-pro.** Replication
+  converges concurrent writes by record version (LWW). A lease acquired with a plain `put` therefore
+  cannot be race-free by construction — two nodes writing the lease both succeed locally and
+  converge later. The engine's design accepts this: sticky leadership (a starter defers to a fresh
+  heartbeat), a heartbeat takeover check (a leader seeing a fresher foreign heartbeat steps down),
+  and documented handler idempotency are the mechanisms that ride out transient dual-leadership.
+  Do not "fix" the race with a conditional write — the primitive does not exist.
+- The lease + per-job run state live in the replicating system table `hdb_scheduler_state`
+  (`audit: true` because system-table replication requires auditing; name chosen because `hdb_job`
+  is taken by the legacy jobs subsystem). On constrained/directional replication topologies the
+  lease may not reach every node; that limitation is inherent.
+- The alphabetical node-name tie-break deliberately mirrors replication's deterministic failover
+  convention (sorted node names in `subscriptionManager.ts`); the escalation ladder
+  (`promotionWaitMs`) exists because a dead alphabetically-first node must not deadlock a
+  leaderless cluster (each successive node waits one more `2 × watcher interval` rung).
+- Thread-once vs cluster-once are separate layers: `getWorkerIndex() === 0` gates to one worker per
+  node (correct in every threading mode incl. `threads: 0`); the lease gates across nodes.
+  `handleApplication` holds a cross-thread load lock with a 30s timeout, so the plugin only
+  registers there — election, scheduling, and catch-up run async after.
+- Catch-up fires at most ONE missed occurrence per cron job, and a new job's `firstSeenAt` baseline
+  prevents firing immediately on first deploy. Interval jobs are excluded from the sweep — they
+  self-correct by anchoring to their persisted last run in `scheduleNextRun`.
+- Timer firing is a deliberately thin `setTimeout` layer so the durable timer service (#754) can
+  replace it without touching the config surface, election, or catch-up. Timing thresholds are
+  env-overridable (`HARPER_SCHEDULER_*`) so multi-node tests can exercise failover in seconds.
+
+## `universalHeaders` (`http.securityHeaders`): ownership, precedence, and per-thread scope
+
+`server/http.ts` exports `universalHeaders: [string, string][]`, applied to responses in the
+Node, Bun, and uWS (`#914`, `HARPER_UWS_HTTP`) request handlers alike. `http.securityHeaders`
+config populates it via `applySecurityHeaders()`, called from `handleApplication()` on load and
+on `scope.options.on('change', ...)`. Three invariants to preserve:
+
+- **Ownership tracking.** Other components may push entries onto the same shared array, so a
+  hot-reload can't clear-and-rebuild it. `applySecurityHeaders` tracks the exact `[name, value]`
+  tuples it previously pushed in a module-level `ownedSecurityHeaders` array and splices only
+  those out (by reference, via `indexOf`) before re-adding the new set. Any future feature that
+  pushes into `universalHeaders` from a hot-reloadable source should follow the same "track what
+  I added, only remove what I added" pattern.
+- **Root scope owns the config.** `'http'` is a `TRUSTED_RESOURCE_PLUGINS` key, so an application
+  `config.yaml` with an `http:` block re-invokes `handleApplication`. A module-level guard makes
+  only the _first_ invocation (the root config, which loads before applications) own
+  `applySecurityHeaders` and its change listener; later invocations still refresh `httpOptions`
+  but cannot wipe root-configured headers.
+- **App wins on conflicts.** Universal headers are _defaults_: `applyUniversalHeaders()` (a shared
+  helper used by all three transports) only sets a header when `has(name)` is false, and the
+  direct-to-`nodeResponse` paths (handlesHeaders, error) check `hasHeader` first. A route that sets
+  `X-Frame-Options: DENY` is never loosened by a configured `SAMEORIGIN`. Response paths covered:
+  normal writeHead, `handlesHeaders` streams (e.g. the static component's `send()`, which writes
+  its own headers directly — universal headers are pre-set on `nodeResponse` / the Bun
+  `responseHeaders` shim so the stream can still override its own names), the thrown-error path,
+  and the `status === -1` cascade — on Node via the Fastify `'unhandled'` event bridge, on Bun/uWS
+  via `injectToFastify` (or the bare-404 fallback when no Fastify instance is registered for the
+  port). Each `status === -1` branch builds a **fresh** `Headers` object from the fallback
+  response rather than reusing the request's original `headers`, so `applyUniversalHeaders()` must
+  be called again on whichever object actually gets returned — applying it only once, before the
+  `status === -1` branch, is a trap that silently drops universal headers on every unhandled/404
+  response. CI first caught this on the uWS shard (the integration suite's only unauthenticated
+  404 case landed there); the same bug existed unnoticed on Bun's parallel `status === -1`
+  branches (`getBunHTTPServer`'s bare-404 return and `bunDelegateToNodeServer`'s two `Response`s)
+  and is fixed alongside it in `harper-1568-fix2`.
+
+**Why the operations API doesn't get these headers in normal mode**: ops requests _do_ flow
+through the Harper-native `requestHandler` (`httpServer()` calls `getServer()` for every
+registration, including Fastify's non-function listener) and cascade to Fastify via the
+`status === -1` branch, which copies `response.headers` onto `nodeResponse`. But the ops API runs
+on the **main thread**, and the main thread loads components with `resources.isWorker = false`
+(`server/loadRootComponents.js`), so the componentLoader's `resources.isWorker &&
+extensionModule.handleApplication` gate (`components/componentLoader.ts`) means http's
+`handleApplication` never runs there — the main thread's `universalHeaders` array stays empty.
+`universalHeaders` is per-thread module state, populated only where the http component loads.
+Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
+so ops responses **will** carry the headers there (benign).

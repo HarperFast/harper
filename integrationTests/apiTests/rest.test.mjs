@@ -193,4 +193,55 @@ suite('REST query syntax', { skip: skipSuite }, (ctx) => {
 		const bigProperty = Array(1000000).fill('this is a test');
 		return request(client.restURL).post('/Related/').set(client.headers).send({ bigProperty }).expect(413);
 	});
+
+	/**
+	 * Sorting by the primary key with no other condition used to fail with
+	 * `404 "id is not indexed and not combined with any other conditions"`: the
+	 * sort-alignment check in Table.search only accepted attributes carrying a
+	 * secondary index, and the primary key has none. The primary store is itself
+	 * keyed in primary-key order, so the scan is already aligned — a sort on it
+	 * must be served, not rejected.
+	 *
+	 * This is also what makes the SQL engine's no-WHERE `ORDER BY <pk> LIMIT n`
+	 * O(window) instead of a full scan + in-memory sort (D-219).
+	 */
+	test('[rest] Sort by primary key ascending', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(3)')
+			.expect((r) =>
+				assert.deepEqual(
+					r.body.map((x) => x.id),
+					['1', '2', '3'],
+					r.text
+				)
+			)
+			.expect(200);
+	});
+
+	test('[rest] Sort by primary key descending', () => {
+		return client
+			.reqRest('/Related/?sort(-id)&limit(3)')
+			.expect((r) =>
+				assert.deepEqual(
+					r.body.map((x) => x.id),
+					['5', '4', '3'],
+					r.text
+				)
+			)
+			.expect(200);
+	});
+
+	// limit(a,b) is a range, not (offset, count): offset=a, limit=b-a.
+	test('[rest] Sort by primary key with offset', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(1,3)')
+			.expect((r) =>
+				assert.deepEqual(
+					r.body.map((x) => x.id),
+					['2', '3'],
+					r.text
+				)
+			)
+			.expect(200);
+	});
 });

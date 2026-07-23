@@ -27,6 +27,80 @@ const MAX_RETRIES = 40;
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
 let outstandingCommit, outstandingCommitStart;
+
+// The analytics module registers a recorder here at load (dependency inversion, mirroring
+// `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
+// modules. Unset until analytics loads, and when analytics is disabled the recorder call is cheap.
+let recordCommitLatencyMs: ((durationMs: number) => void) | undefined;
+export function setCommitLatencyRecorder(recorder: ((durationMs: number) => void) | undefined) {
+	recordCommitLatencyMs = recorder;
+}
+
+// Emit the submit→settle duration of a write commit as the `transaction-commit-time` distribution
+// metric. Recorded on both fulfilment and rejection since a slow-then-failed commit still consumed
+// queue time. The recorder is wrapped so it can never throw — a metrics failure must neither break the
+// commit nor surface as an unhandled rejection on this floating `.then`. The thenable guard protects
+// against a future caller passing a non-Promise `commitResolution` (today it is always the rocksdb-js
+// async `Transaction.commit()` result, which is guaranteed to be a Promise).
+function recordCommitLatency(commitResolution: Promise<unknown> | void, submittedAt: number) {
+	if (!recordCommitLatencyMs) return;
+	const record = () => {
+		try {
+			recordCommitLatencyMs(performance.now() - submittedAt);
+		} catch {
+			// analytics recording is best-effort and must never disturb the commit path
+		}
+	};
+	if (commitResolution && typeof (commitResolution as any).then === 'function') {
+		commitResolution.then(record, record);
+	}
+}
+
+// Queue-depth gauges surfaced through the analytics pipeline (write-transaction-queue-depth /
+// read-transaction-queue-depth). Per-thread state; the analytics aggregator sums across threads.
+// `writeTxnQueueDepth` counts write commits handed to the storage engine but not yet resolved —
+// this is the backlog that, when it drains too slowly, produces the "Outstanding write transactions
+// have too long of queue" overload error. Read depth is derived from the live `trackedTxns` set
+// (every tracked transaction holds an open read snapshot). We also retain a high-water mark per
+// sampling window because the queue can fill and drain within a single (~1s) analytics period, so an
+// instantaneous sample taken at emit time would routinely miss the spike operators need to see.
+// RocksDB-write-path only: LMDB routes through the separate LMDBTransaction.commit()/getReadTxn()
+// overrides (resources/LMDBTransaction.ts), which maintain their own unrelated `trackedTxns` set and
+// do not call into this accounting.
+let writeTxnQueueDepth = 0;
+let writeTxnQueueDepthHighWater = 0;
+let readTxnQueueDepthHighWater = 0;
+
+function enterWriteQueue() {
+	if (++writeTxnQueueDepth > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+}
+function leaveWriteQueue() {
+	// Floor at zero: accounting is balanced by construction (every enterWriteQueue has exactly one
+	// matching settlement), but the guard is cheap insurance against a future call-site imbalance
+	// producing a negative depth that would corrupt every subsequent sample.
+	if (writeTxnQueueDepth > 0) writeTxnQueueDepth--;
+}
+
+/**
+ * Returns the current write/read transaction queue depths for this thread along with the high-water
+ * mark observed since the previous call, then resets the high-water marks to the current depth so the
+ * next sampling window starts fresh. Consumed by the analytics writer (see analytics/write.ts).
+ */
+export function getTransactionQueueDepths() {
+	// `readTxnQueueDepthHighWater` is maintained at the single trackedTxns growth site, so it already
+	// dominates the current size here — no need to reconcile against `readDepth` before reporting.
+	const readDepth = trackedTxns.size;
+	const depths = {
+		writeDepth: writeTxnQueueDepth,
+		writeMaxDepth: writeTxnQueueDepthHighWater,
+		readDepth,
+		readMaxDepth: readTxnQueueDepthHighWater,
+	};
+	writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+	readTxnQueueDepthHighWater = readDepth;
+	return depths;
+}
+
 let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
@@ -161,6 +235,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 		trackedTxns.add(this);
+		if (trackedTxns.size > readTxnQueueDepthHighWater) readTxnQueueDepthHighWater = trackedTxns.size;
 		return this.transaction;
 	}
 
@@ -324,11 +399,33 @@ export class DatabaseTransaction implements Transaction {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
 							// The transaction was created with coordinatedRetry:true (see
-							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE.
-							// That sentinel is handled in the resolve callback below and the
-							// cast to Promise<void> is safe — the sentinel never propagates
-							// past that branch.
-							commitResolution = transaction.commit() as Promise<void>;
+							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
+							// sentinel is handled in the resolve callback below and never
+							// propagates past that branch.
+							commitResolution = transaction.commit();
+							// Record how long this commit stays outstanding (submit → settle) as a distribution
+							// metric. This is the same clock the overload check uses (outstandingCommitStart is
+							// stamped at submit), so a rising p99/p999 is the leading indicator for the
+							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
+							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
+							// re-arms per attempt, so recording per attempt matches the overload semantics.
+							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
+							// Promise<void> here because the widening union defeats flow analysis on the prior
+							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
+							recordCommitLatency(commitResolution as Promise<void>, performance.now());
+							// Count this commit against the write queue depth until the storage engine
+							// resolves it. A transient-conflict retry rejects this promise and issues a
+							// fresh commit() (re-entering here), so the enter/leave stays balanced. leaveWriteQueue
+							// never throws, so the settled promise resolves and needs no rejection handling of its own.
+							// The thenable guard protects against a future caller passing a non-Promise
+							// `commitResolution` (today it is always rocksdb-js's async Transaction.commit()
+							// result, guaranteed to be a Promise).
+							enterWriteQueue();
+							if (commitResolution && typeof (commitResolution as any).then === 'function') {
+								commitResolution.then(leaveWriteQueue, leaveWriteQueue);
+							} else {
+								leaveWriteQueue();
+							}
 						} else {
 							try {
 								commitResolution = transaction.abort();

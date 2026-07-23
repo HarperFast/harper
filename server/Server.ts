@@ -2,6 +2,7 @@ import { Socket } from 'net';
 import { _assignPackageExport } from '../globals.js';
 import type { Value } from '../resources/analytics/write.ts';
 import type { Resources } from '../resources/Resources.ts';
+import type { McpQuotaHandler } from '../components/mcp/quota.ts';
 import { OperationDefinition } from './serverHelpers/serverUtilities.ts';
 import { Duplex } from 'stream';
 import { Request } from './serverHelpers/Request.ts';
@@ -32,6 +33,8 @@ export interface Server {
 	authenticateUser(username: string, password: string, request: Request): any;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
 	registerOperation(operationDefinition: OperationDefinition): void;
+	/** Register the durable MCP quota policy (opt-in). The latest registration wins; pass `undefined` to clear. */
+	setMcpQuotaHandler(handler: McpQuotaHandler | undefined): void;
 	recordAnalytics(value: Value, metric: string, path?: string, method?: string, type?: string): void;
 	nodes: Node[];
 	shards: Map<number, string[]>;
@@ -87,6 +90,12 @@ export interface HttpOptions extends ServerOptions {
 		headers?: boolean;
 	};
 	lastModified?: boolean;
+	/**
+	 * Header name -> value, applied as defaults to HTTP responses on app ports (e.g.
+	 * X-Frame-Options, X-Content-Type-Options). A header the application/route already set
+	 * on a response always takes precedence over the configured value.
+	 */
+	securityHeaders?: Record<string, string | number | boolean>;
 }
 export interface ContentTypeHandler {
 	serialize(data: any): Buffer | string;

@@ -1,0 +1,9 @@
+# Fixture for http.securityHeaders integration tests: a REST resource (200 path), a
+# resource that sets its own X-Frame-Options (app-wins precedence), a resource that throws
+# (error path), and static files (handlesHeaders path).
+rest: true
+jsResource:
+  files: resources.js
+static:
+  root: web
+  files: web/**
