@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const schema = require('#src/dataLayer/schema');
 const { table } = require('#src/resources/databases');
 
