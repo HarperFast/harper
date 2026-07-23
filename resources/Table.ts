@@ -185,6 +185,25 @@ type ResidencyDefinition = number | string[] | void;
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
  * @param options
  */
+// Shallow-clone each condition entry (recursing into nested `and`/`or` groups) so
+// query planning never writes through to the caller's objects (harper#1572).
+// Array-form entries (`[attribute, value]`) and primitives pass through as-is;
+// `chainedConditions` sub-entries are intentionally left shared: planning only
+// reads them (collapsing into the parent's value/comparator), never writes them.
+// Module-scoped (stateless) so it isn't re-created on every search().
+function cloneConditions(conditions: any[]): any[] {
+	return conditions.map((condition) => {
+		if (condition == null || typeof condition !== 'object') return condition;
+		if (Array.isArray(condition)) {
+			// array-form entry (`[attribute, value]`) may also carry named props
+			// (comparator, estimated_count); preserve both.
+			return Object.assign(condition.slice(), condition);
+		}
+		const copy = { ...condition };
+		if (copy.conditions) copy.conditions = cloneConditions(copy.conditions);
+		return copy;
+	});
+}
 // #section: setup-and-factory
 export function makeTable(options) {
 	const {
@@ -2612,24 +2631,6 @@ export function makeTable(options) {
 						value: id,
 					},
 				].concat(conditions);
-			}
-			// Shallow-clone each condition entry (recursing into nested `and`/`or`
-			// groups) so query planning never writes through to the caller's objects.
-			// Array-form entries (`[attribute, value]`) and primitives pass through as-is.
-			// `chainedConditions` sub-entries are intentionally left shared: planning only
-			// reads them (collapsing into the parent's value/comparator), never writes them.
-			function cloneConditions(conditions: any[]): any[] {
-				return conditions.map((condition) => {
-					if (condition == null || typeof condition !== 'object') return condition;
-					if (Array.isArray(condition)) {
-						// array-form entry (`[attribute, value]`) may also carry named
-						// props (comparator, estimated_count); preserve both.
-						return Object.assign(condition.slice(), condition);
-					}
-					const copy = { ...condition };
-					if (copy.conditions) copy.conditions = cloneConditions(copy.conditions);
-					return copy;
-				});
 			}
 			// Never mutate the caller's conditions in place. Query planning annotates
 			// and restructures conditions as it runs — it pushes a `{ comparator: 'sort' }`
