@@ -558,6 +558,14 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
 		new OperationFunctionObject(deploymentOperations.handleGetDeployment)
 	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD,
+		new OperationFunctionObject(deploymentOperations.handleGetDeploymentPayload)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.DELETE_DEPLOYMENT_PAYLOAD,
+		new OperationFunctionObject(deploymentOperations.handleDeleteDeploymentPayload)
+	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.SET_SECRET, new OperationFunctionObject(secretOperations.setSecret));
 	opFuncMap.set(terms.OPERATIONS_ENUM.GRANT_SECRET, new OperationFunctionObject(secretOperations.grantSecret));
 	opFuncMap.set(terms.OPERATIONS_ENUM.REVOKE_SECRET, new OperationFunctionObject(secretOperations.revokeSecret));

@@ -176,10 +176,26 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 			// fastify-compress has one job. I don't know why it can't do it. So we compress here to
 			// handle the case of returning a stream. Streams marked `noCompression` opt out (e.g.
 			// RocksDB get_backup tars: the binding gzips when requested; compressing here would
-			// mislabel a gzip:false tar or double-compress a gzip:true one).
-			if (req.headers['accept-encoding']?.includes('gzip') && !result.noCompression) {
+			// mislabel a gzip:false tar or double-compress a gzip:true one). Streams marked
+			// `preCompressed` (e.g. a stored .tar.gz payload) are passed through as-is —
+			// recompressing them wastes CPU for zero gain.
+			if (req.headers['accept-encoding']?.includes('gzip') && !result.noCompression && !result.preCompressed) {
 				res.header('content-encoding', 'gzip');
-				result = result.pipe(createGzip({ level: constants.Z_BEST_SPEED })); // go fast
+				const gzip = createGzip({ level: constants.Z_BEST_SPEED }); // go fast
+				// .pipe() does not tear down across the pipe in either direction, so wire both:
+				// - source error → destroy gzip: an async read error on the source (e.g. get_backup's
+				//   file stream) would otherwise fire 'error' with no listener and take the whole
+				//   worker down via uncaughtException; destroying the gzip stream propagates the
+				//   error to Fastify, which aborts just this response.
+				// - gzip close → destroy source: when the client disconnects mid-download Fastify
+				//   destroys only the stream it was handed (gzip); destroy the source too so its
+				//   underlying file/blob read stops and descriptors release. (No-op after a normal
+				//   end. noCompression/preCompressed streams skip this block; Fastify handles them
+				//   directly.)
+				const source = result;
+				source.on('error', (error) => gzip.destroy(error));
+				gzip.on('close', () => source.destroy());
+				result = source.pipe(gzip);
 			}
 		}
 		return result;

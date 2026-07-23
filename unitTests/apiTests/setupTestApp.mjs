@@ -115,11 +115,16 @@ export async function setupTestApp() {
 	createdRecords = [];
 
 	if (serverStarted) {
-		// if already started, clear out any previous records and recreate them
-		tables.VariedProps.clear();
-		tables.FourProp.clear();
-		tables.Related.clear();
-		tables.SubObject.clear();
+		// if already started, clear out any previous records and recreate them. Table.clear() resolves
+		// asynchronously, so it must be awaited — otherwise a clear can land after the records below have
+		// been written and silently wipe them, which shows up much later as an unrelated-looking empty
+		// result in whichever suite reads the table next.
+		await Promise.all([
+			tables.VariedProps.clear(),
+			tables.FourProp.clear(),
+			tables.Related.clear(),
+			tables.SubObject.clear(),
+		]);
 	} else {
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
