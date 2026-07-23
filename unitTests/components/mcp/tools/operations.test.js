@@ -349,6 +349,27 @@ describe('mcp/tools/operations — registration', () => {
 		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
 		assert.equal(tools.length, 0);
 	});
+
+	it('does not emit idempotentHint on the actual non-idempotent tools (add_user, add_role)', () => {
+		// add_user / add_role / create_* are NOT idempotent under MCP semantics — a second call
+		// returns an "already exists" error, so annotating them idempotent nudges LLMs into retry
+		// loops. IDEMPOTENT_OPERATIONS ships empty; verify that against the EMITTED tool annotations,
+		// not just the descriptions map (which would pass trivially).
+		envOverrides.mcp_operations_allow = ['add_user', 'add_role', 'describe_all'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['add_user', null],
+				['add_role', null],
+				['describe_all', null],
+			])
+		);
+		registerOperationsTools();
+		for (const name of ['add_user', 'add_role', 'describe_all']) {
+			const tool = getTool(name);
+			assert.ok(tool, `${name} registered`);
+			assert.notEqual(tool.annotations?.idempotentHint, true, `${name} must not be annotated idempotentHint:true`);
+		}
+	});
 });
 
 describe('mcp/tools/operations — catalog coverage lint', () => {
@@ -384,12 +405,10 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 		assert.deepEqual(missing, [], `Operations on DEFAULT_ALLOW without a description: ${missing.join(', ')}`);
 	});
 
-	it('OPERATION_DESCRIPTIONS does not annotate non-idempotent operations as idempotent (sanity)', () => {
-		// add_user / create_* are NOT idempotent under MCP semantics — second call returns
-		// an "already exists" error. Annotating them as idempotent nudges LLMs into
-		// retry loops with confusing failures. Catch via description-text sniff plus
-		// the IDEMPOTENT_OPERATIONS set check below.
-		assert.ok(!('idempotentHint' in OPERATION_DESCRIPTIONS), 'descriptions are strings, not objects');
+	it('OPERATION_DESCRIPTIONS entries are strings (annotations are emitted at registration, tested there)', () => {
+		// idempotentHint / readOnlyHint etc. are emitted onto the registered tool, not stored here.
+		// The emitted-annotation behavior for non-idempotent ops is asserted in the registration suite.
+		assert.ok(Object.values(OPERATION_DESCRIPTIONS).every((d) => typeof d === 'string'));
 	});
 
 	it('all description entries cite the source handler in a preceding comment', () => {
