@@ -249,6 +249,31 @@ describe('Test role_validation module ', () => {
 			expect(test_result).to.equal(null);
 		});
 
+		it('NOMINAL - should return null for valid cluster_user = true ADD_ROLE object', () => {
+			const test_role_json = TEST_ADD_ROLE_OBJECT();
+			test_role_json.permission = { cluster_user: true };
+			const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+			expect(test_result).to.equal(null);
+		});
+
+		// harper#1016: cluster_user is a boolean role flag, not a database name. A
+		// non-boolean value must report the boolean-type error, not a misleading
+		// "database 'cluster_user' does not exist".
+		it('should return the boolean error (not SCHEMA_NOT_FOUND) for non-boolean cluster_user', () => {
+			const test_role_json = TEST_ADD_ROLE_OBJECT();
+			test_role_json.permission = { cluster_user: 'wut' };
+			const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+			expect(test_result.statusCode).to.equal(400);
+			expect(test_result.http_resp_msg.main_permissions).to.include(
+				TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_BOOLEAN_ERROR('cluster_user')
+			);
+			expect(test_result.http_resp_msg.main_permissions).to.not.include(
+				TEST_SCHEMA_OP_ERROR.SCHEMA_NOT_FOUND('cluster_user')
+			);
+		});
+
 		it('NOMINAL - should return null for valid ALTER_ROLE object', () => {
 			const test_result = customValidate_rw(TEST_ALTER_ROLE_OBJECT(), getAlterRoleConstraints());
 			expect(test_result).to.equal(null);
