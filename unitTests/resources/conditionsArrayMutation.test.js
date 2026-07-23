@@ -1,5 +1,5 @@
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
@@ -48,7 +48,7 @@ describe('#1572 query does not mutate the caller conditions array', () => {
 			const conditions = [{ attribute: 'category', comparator: 'equals', value: 'common' }];
 			await drain(T.search({ conditions, sort: { attribute: 'ts', descending: true } }));
 
-			assert.equal(conditions.length, 1, 'conditions array grew (sort pseudo-condition leaked)');
+			assert.strictEqual(conditions.length, 1, 'conditions array grew (sort pseudo-condition leaked)');
 			assert.ok(
 				!conditions.some((c) => c.comparator === 'sort'),
 				'a sort pseudo-condition leaked into the caller array'
@@ -63,7 +63,7 @@ describe('#1572 query does not mutate the caller conditions array', () => {
 			await drain(T.search({ conditions, sort: { attribute: 'ts', descending: true } }));
 			// query 2 — reuse the same array; a leaked pseudo-condition throws here
 			const count = await drain(T.search({ conditions }));
-			assert.equal(count, 20);
+			assert.strictEqual(count, 20);
 		});
 	});
 
@@ -75,8 +75,12 @@ describe('#1572 query does not mutate the caller conditions array', () => {
 			// caller's entry object.
 			const conditions = [{ attribute: 'ts', comparator: 'greater_than', value: '2023-11-14T22:13:20.000Z' }];
 			await drain(T.search(conditions));
-			assert.equal(conditions.length, 1, 'array-form target array was mutated');
-			assert.equal(conditions[0].value, '2023-11-14T22:13:20.000Z', 'caller condition value was coerced in place');
+			assert.strictEqual(conditions.length, 1, 'array-form target array was mutated');
+			assert.strictEqual(
+				conditions[0].value,
+				'2023-11-14T22:13:20.000Z',
+				'caller condition value was coerced in place'
+			);
 			assert.ok(!('estimated_count' in conditions[0]), 'estimated_count leaked onto the caller condition');
 		});
 	});
@@ -94,7 +98,7 @@ describe('#1572 query does not mutate the caller conditions array', () => {
 			const seen = [];
 			for await (const r of await T.search({ conditions: [condition] })) seen.push(r.ts.getTime());
 			const ascending = [...seen].sort((a, b) => a - b);
-			assert.deepEqual(seen, ascending, 'reused query scanned in reverse from a leaked descending flag');
+			assert.deepStrictEqual(seen, ascending, 'reused query scanned in reverse from a leaked descending flag');
 		});
 	});
 });
