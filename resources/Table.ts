@@ -3268,8 +3268,8 @@ export function makeTable(options) {
 		async subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>> {
 			if (!request) request = {} as any;
 			const context: any = this.getContext();
-			if (request.checkPermission && !(await this.allowRead(context.user, request, context))) {
-				throw new AccessViolation(context.user);
+			if (request.checkPermission && !(await this.allowRead(context?.user, request, context))) {
+				throw new AccessViolation(context?.user);
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
 			if (!audit) {

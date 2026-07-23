@@ -140,7 +140,7 @@ describe('Permissions through Resource API', () => {
 				return this;
 			},
 		};
-		assert.equal(SubscriptionTable.audit, false);
+		assert.strictEqual(SubscriptionTable.audit, false);
 		await assert.rejects(
 			DeniedTable.subscribe(
 				{
@@ -152,9 +152,9 @@ describe('Permissions through Resource API', () => {
 			),
 			(error) => error instanceof AccessViolation
 		);
-		assert.equal(allowReadCalls, 1);
-		assert.equal(listenerCalled, false);
-		assert.equal(SubscriptionTable.audit, false);
+		assert.strictEqual(allowReadCalls, 1);
+		assert.strictEqual(listenerCalled, false);
+		assert.strictEqual(SubscriptionTable.audit, false);
 	});
 	it('Can subscribe with permission', async function () {
 		let allowReadCalls = 0;
@@ -172,7 +172,7 @@ describe('Permissions through Resource API', () => {
 			},
 		};
 		const subscription = await AllowedTable.subscribe({ omitCurrent: true }, context);
-		assert.equal(allowReadCalls, 1);
+		assert.strictEqual(allowReadCalls, 1);
 		subscription.return?.();
 	});
 	it('Awaits asynchronous subscription authorization', async function () {
@@ -202,7 +202,7 @@ describe('Permissions through Resource API', () => {
 			}
 		}
 		const subscription = await InternalTable.subscribe({ omitCurrent: true });
-		assert.equal(allowReadCalls, 0);
+		assert.strictEqual(allowReadCalls, 0);
 		subscription.return?.();
 	});
 	it('Can not get without permission', async function () {
