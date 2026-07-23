@@ -163,6 +163,7 @@
 		"typescript": "^5.8.2",
 		"typescript-eslint": "^8.45.0",
 		"undici": "^7.24.4",
+		"uWebSockets.js": "https://github.com/uNetworking/uWebSockets.js/archive/624987739d4da0acb628aaf2a10fc43e7ce27c5c.tar.gz",
 		"why-is-node-still-running": "^1.0.0"
 	},
 	"dependencies": {
@@ -257,14 +258,17 @@
 	"optionalDependencies": {
 		"bufferutil": "^4.0.9",
 		"segfault-handler": "^1.3.0",
-		"utf-8-validate": "^5.0.10",
-		"uWebSockets.js": "https://github.com/uNetworking/uWebSockets.js/archive/624987739d4da0acb628aaf2a10fc43e7ce27c5c.tar.gz"
+		"utf-8-validate": "^5.0.10"
 	},
 	"peerDependencies": {
-		"@aws-sdk/client-bedrock-runtime": "^3.0.0"
+		"@aws-sdk/client-bedrock-runtime": "^3.0.0",
+		"uWebSockets.js": "20.68.0"
 	},
 	"peerDependenciesMeta": {
 		"@aws-sdk/client-bedrock-runtime": {
+			"optional": true
+		},
+		"uWebSockets.js": {
 			"optional": true
 		}
 	}
