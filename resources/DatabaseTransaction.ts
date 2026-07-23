@@ -42,7 +42,7 @@ export function setCommitLatencyRecorder(recorder: ((durationMs: number) => void
 // commit nor surface as an unhandled rejection on this floating `.then`. The thenable guard protects
 // against a future caller passing a non-Promise `commitResolution` (today it is always the rocksdb-js
 // async `Transaction.commit()` result, which is guaranteed to be a Promise).
-function recordCommitLatency(commitResolution: Promise<void>, submittedAt: number) {
+function recordCommitLatency(commitResolution: Promise<unknown> | void, submittedAt: number) {
 	if (!recordCommitLatencyMs) return;
 	const record = () => {
 		try {
@@ -399,20 +399,19 @@ export class DatabaseTransaction implements Transaction {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
 							// The transaction was created with coordinatedRetry:true (see
-							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE.
-							// That sentinel is handled in the resolve callback below and the
-							// cast to Promise<void> is safe — the sentinel never propagates
-							// past that branch.
-							commitResolution = transaction.commit() as Promise<void>;
+							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
+							// sentinel is handled in the resolve callback below and never
+							// propagates past that branch.
+							commitResolution = transaction.commit();
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (outstandingCommitStart is
 							// stamped at submit), so a rising p99/p999 is the leading indicator for the
 							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
 							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
 							// re-arms per attempt, so recording per attempt matches the overload semantics.
-							// `commitResolution` is declared with the wider `Promise<number | void> | void`
-							// (the abort() branch below), but in this branch it is the `commit()` promise cast to
-							// `Promise<void>` just above; recordCommitLatency only awaits it for timing.
+							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
+							// Promise<void> here because the widening union defeats flow analysis on the prior
+							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
 							recordCommitLatency(commitResolution as Promise<void>, performance.now());
 							// Count this commit against the write queue depth until the storage engine
 							// resolves it. A transient-conflict retry rejects this promise and issues a

@@ -14,7 +14,7 @@
  */
 
 const assert = require('node:assert/strict');
-const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const { addTool, setProfileToolProvider, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const { composeRegistryTools, _resetRegistryToolsForTests } = require('#src/agent/registryTools');
 const { composeToolset } = require('#src/agent/toolset');
 
@@ -69,6 +69,32 @@ describe('agent/registryTools composeRegistryTools', () => {
 		addTool(opTool({ name: 'app_op', profile: 'application' }));
 		const names = composeRegistryTools(SUPER_USER, identity(SUPER_USER)).map((t) => t.def.name);
 		assert.deepEqual(names, ['ops_op']);
+	});
+
+	// Regression: the real Operations profile registers via a *lazy provider*
+	// (setProfileToolProvider), not static addTool. Draining it with the
+	// static-only snapshot returned nothing, so the agent had zero operation
+	// tools. composeRegistryTools must see provider-supplied tools.
+	it('drains operations tools registered via a lazy provider, not just static addTool', () => {
+		setProfileToolProvider('operations', {
+			list: () => [opTool({ name: 'restart_service' }), opTool({ name: 'sql' })],
+			get: (name) => (name === 'restart_service' || name === 'sql' ? opTool({ name }) : undefined),
+		});
+		const names = composeRegistryTools(SUPER_USER, identity(SUPER_USER))
+			.map((t) => t.def.name)
+			.sort();
+		assert.deepEqual(names, ['restart_service', 'sql']);
+	});
+
+	it('merges provider and static operations tools, static winning on a name collision', () => {
+		setProfileToolProvider('operations', {
+			list: () => [opTool({ name: 'sql', description: 'from provider' })],
+			get: (name) => (name === 'sql' ? opTool({ name, description: 'from provider' }) : undefined),
+		});
+		addTool(opTool({ name: 'sql', description: 'from static' }));
+		const byName = new Map(composeRegistryTools(SUPER_USER, identity(SUPER_USER)).map((t) => [t.def.name, t]));
+		assert.equal(byName.size, 1);
+		assert.equal(byName.get('sql').def.description, 'from static');
 	});
 
 	it('marks a tool destructive when annotations.destructiveHint is set', () => {
