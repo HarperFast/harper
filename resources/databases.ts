@@ -1098,6 +1098,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	// is also created by schema authoring — a `schema.graphql` `@table(database:)`
 	// or a programmatic `table()` call — which bypasses the create_schema
 	// validation. A reserved name collides with a role permission flag (harper#1016).
+	// Deliberately on this authoring path only, NOT in `database()`/`makeTable`: those
+	// are also the load and drop paths, so a reserved-name database created before this
+	// fix still loads (data stays accessible) and can be dropped to remediate.
 	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
 	}
