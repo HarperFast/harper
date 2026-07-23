@@ -32,7 +32,7 @@
  *   HARPER_STORAGE_ENGINE=lmdb npm run test:integration -- "integrationTests/database/eviction-index-orphan-removal-paths.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -215,15 +215,43 @@ suite(`QA-661 F-149 fix probe [${ENGINE}] [threads=${WORKERS}]`, { skip: skipSui
 			);
 
 			strictEqual(bucketConsistency.baseCount, HEARTBEAT_IDS.length, 'only heartbeat rows survive the sweep');
-			strictEqual(bucketConsistency.dangling.length, 0, `bucket index dangling entries: ${JSON.stringify(bucketConsistency.dangling.slice(0, 10))}`);
-			strictEqual(bucketConsistency.stale.length, 0, `bucket index stale entries: ${JSON.stringify(bucketConsistency.stale.slice(0, 10))}`);
-			strictEqual(bucketConsistency.missing.length, 0, `bucket index missing entries: ${JSON.stringify(bucketConsistency.missing.slice(0, 10))}`);
-			strictEqual(tagsConsistency.dangling.length, 0, `tags index dangling entries: ${JSON.stringify(tagsConsistency.dangling.slice(0, 10))}`);
-			strictEqual(tagsConsistency.stale.length, 0, `tags index stale entries: ${JSON.stringify(tagsConsistency.stale.slice(0, 10))}`);
-			strictEqual(tagsConsistency.missing.length, 0, `tags index missing entries: ${JSON.stringify(tagsConsistency.missing.slice(0, 10))}`);
+			strictEqual(
+				bucketConsistency.dangling.length,
+				0,
+				`bucket index dangling entries: ${JSON.stringify(bucketConsistency.dangling.slice(0, 10))}`
+			);
+			strictEqual(
+				bucketConsistency.stale.length,
+				0,
+				`bucket index stale entries: ${JSON.stringify(bucketConsistency.stale.slice(0, 10))}`
+			);
+			strictEqual(
+				bucketConsistency.missing.length,
+				0,
+				`bucket index missing entries: ${JSON.stringify(bucketConsistency.missing.slice(0, 10))}`
+			);
+			strictEqual(
+				tagsConsistency.dangling.length,
+				0,
+				`tags index dangling entries: ${JSON.stringify(tagsConsistency.dangling.slice(0, 10))}`
+			);
+			strictEqual(
+				tagsConsistency.stale.length,
+				0,
+				`tags index stale entries: ${JSON.stringify(tagsConsistency.stale.slice(0, 10))}`
+			);
+			strictEqual(
+				tagsConsistency.missing.length,
+				0,
+				`tags index missing entries: ${JSON.stringify(tagsConsistency.missing.slice(0, 10))}`
+			);
 			// Bloat bound: bucket index should have exactly HEARTBEAT_IDS.length entries (one live
 			// value each), NOT total-ever-written (150 evicted + N heartbeat rounds) if the fix holds.
-			strictEqual(bucketConsistency.indexCount, HEARTBEAT_IDS.length, 'bucket index bounded to live rows (no accumulation)');
+			strictEqual(
+				bucketConsistency.indexCount,
+				HEARTBEAT_IDS.length,
+				'bucket index bounded to live rows (no accumulation)'
+			);
 		}
 	);
 
@@ -250,9 +278,21 @@ suite(`QA-661 F-149 fix probe [${ENGINE}] [threads=${WORKERS}]`, { skip: skipSui
 			`${TAG} Arm2 delete() immediate: base(raw incl. tombstones)=${immediate.baseCount} index=${immediate.indexCount} ` +
 				`dangling=${immediate.dangling.length} stale=${immediate.stale.length} missing=${immediate.missing.length}`
 		);
-		strictEqual(immediate.dangling.length, 0, `delete() immediate dangling entries: ${JSON.stringify(immediate.dangling.slice(0, 10))}`);
-		strictEqual(immediate.stale.length, 0, `delete() immediate stale entries: ${JSON.stringify(immediate.stale.slice(0, 10))}`);
-		strictEqual(immediate.missing.length, 0, `delete() immediate missing entries: ${JSON.stringify(immediate.missing.slice(0, 10))}`);
+		strictEqual(
+			immediate.dangling.length,
+			0,
+			`delete() immediate dangling entries: ${JSON.stringify(immediate.dangling.slice(0, 10))}`
+		);
+		strictEqual(
+			immediate.stale.length,
+			0,
+			`delete() immediate stale entries: ${JSON.stringify(immediate.stale.slice(0, 10))}`
+		);
+		strictEqual(
+			immediate.missing.length,
+			0,
+			`delete() immediate missing entries: ${JSON.stringify(immediate.missing.slice(0, 10))}`
+		);
 
 		// NOTE: scheduleCleanup()'s physical tombstone removal is a no-op here — `cleanupInterval` is
 		// only armed by @table(expiration:...); Perm has no TTL, so audit tombstones are reclaimed on
@@ -266,9 +306,21 @@ suite(`QA-661 F-149 fix probe [${ENGINE}] [threads=${WORKERS}]`, { skip: skipSui
 			`${TAG} Arm2 delete() +2s: base(raw incl. tombstones)=${consistency.baseCount} index=${consistency.indexCount} ` +
 				`dangling=${consistency.dangling.length} stale=${consistency.stale.length} missing=${consistency.missing.length}`
 		);
-		strictEqual(consistency.dangling.length, 0, `delete() +2s dangling entries: ${JSON.stringify(consistency.dangling.slice(0, 10))}`);
-		strictEqual(consistency.stale.length, 0, `delete() +2s stale entries: ${JSON.stringify(consistency.stale.slice(0, 10))}`);
-		strictEqual(consistency.missing.length, 0, `delete() +2s missing entries: ${JSON.stringify(consistency.missing.slice(0, 10))}`);
+		strictEqual(
+			consistency.dangling.length,
+			0,
+			`delete() +2s dangling entries: ${JSON.stringify(consistency.dangling.slice(0, 10))}`
+		);
+		strictEqual(
+			consistency.stale.length,
+			0,
+			`delete() +2s stale entries: ${JSON.stringify(consistency.stale.slice(0, 10))}`
+		);
+		strictEqual(
+			consistency.missing.length,
+			0,
+			`delete() +2s missing entries: ${JSON.stringify(consistency.missing.slice(0, 10))}`
+		);
 	});
 
 	// ---- Arm 3: explicit evict() path ----
@@ -294,8 +346,20 @@ suite(`QA-661 F-149 fix probe [${ENGINE}] [threads=${WORKERS}]`, { skip: skipSui
 			`${TAG} Arm3 evict() base=${consistency.baseCount} index=${consistency.indexCount} ` +
 				`dangling=${consistency.dangling.length} stale=${consistency.stale.length} missing=${consistency.missing.length}`
 		);
-		strictEqual(consistency.dangling.length, 0, `evict() dangling entries: ${JSON.stringify(consistency.dangling.slice(0, 10))}`);
-		strictEqual(consistency.stale.length, 0, `evict() stale entries: ${JSON.stringify(consistency.stale.slice(0, 10))}`);
-		strictEqual(consistency.missing.length, 0, `evict() missing entries: ${JSON.stringify(consistency.missing.slice(0, 10))}`);
+		strictEqual(
+			consistency.dangling.length,
+			0,
+			`evict() dangling entries: ${JSON.stringify(consistency.dangling.slice(0, 10))}`
+		);
+		strictEqual(
+			consistency.stale.length,
+			0,
+			`evict() stale entries: ${JSON.stringify(consistency.stale.slice(0, 10))}`
+		);
+		strictEqual(
+			consistency.missing.length,
+			0,
+			`evict() missing entries: ${JSON.stringify(consistency.missing.slice(0, 10))}`
+		);
 	});
 });

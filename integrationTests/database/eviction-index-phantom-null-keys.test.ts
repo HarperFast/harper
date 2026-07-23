@@ -120,7 +120,10 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 	});
 
 	async function getJSON(path: string): Promise<any> {
-		const r = await fetch(`${httpURL}${path}`, { headers: { Authorization: auth }, signal: AbortSignal.timeout(30_000) });
+		const r = await fetch(`${httpURL}${path}`, {
+			headers: { Authorization: auth },
+			signal: AbortSignal.timeout(30_000),
+		});
 		if (r.status !== 200) {
 			const text = await r.text().catch(() => '');
 			throw new Error(`${path} should return 200, got ${r.status}: ${text}`);
@@ -130,7 +133,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 	async function post(path: string, body: unknown, timeoutMs = 30_000): Promise<any> {
 		const r = await fetch(`${httpURL}${path}`, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json', Authorization: auth },
+			headers: { 'Content-Type': 'application/json', 'Authorization': auth },
 			body: JSON.stringify(body),
 			signal: AbortSignal.timeout(timeoutMs),
 		});
@@ -201,24 +204,40 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		const m = await measure('DelTable', new Set(delIds));
 		report('Q0 explicit-delete', m, true);
 		strictEqual(m.baseCount, 0, 'all deleted rows gone from base store');
-		strictEqual(m.nullKeyedCount, 0, `explicit delete() must leave no null-keyed (phantom) index entry, got ${m.nullKeyedCount}`);
-		strictEqual(m.danglingNonNullCount, 0, `explicit delete() must leave no dangling index entry, got ${m.danglingNonNullCount}`);
-		strictEqual(m.phantomForRemovedCount, 0, `no removed id may retain a phantom index entry, got ${m.phantomForRemovedCount}/${N}`);
+		strictEqual(
+			m.nullKeyedCount,
+			0,
+			`explicit delete() must leave no null-keyed (phantom) index entry, got ${m.nullKeyedCount}`
+		);
+		strictEqual(
+			m.danglingNonNullCount,
+			0,
+			`explicit delete() must leave no dangling index entry, got ${m.danglingNonNullCount}`
+		);
+		strictEqual(
+			m.phantomForRemovedCount,
+			0,
+			`no removed id may retain a phantom index entry, got ${m.phantomForRemovedCount}/${N}`
+		);
 	});
 
 	// ---- Q3: update-in-place control (fast, no removal — must show zero phantoms) ---------------
-	test('Q3 ControlTable: update-in-place, zero phantoms expected (oracle sanity control)', { timeout: 30_000 }, async () => {
-		const ctrlIds = ids('ctrl', N);
-		await post('/Load/', { table: 'ControlTable', ids: ctrlIds, bucket: 'ORIG' });
-		await post('/UpdateInPlace/', { table: 'ControlTable', ids: ctrlIds, bucket: 'UPDATED' });
-		await sleep(300);
+	test(
+		'Q3 ControlTable: update-in-place, zero phantoms expected (oracle sanity control)',
+		{ timeout: 30_000 },
+		async () => {
+			const ctrlIds = ids('ctrl', N);
+			await post('/Load/', { table: 'ControlTable', ids: ctrlIds, bucket: 'ORIG' });
+			await post('/UpdateInPlace/', { table: 'ControlTable', ids: ctrlIds, bucket: 'UPDATED' });
+			await sleep(300);
 
-		const m = await measure('ControlTable', new Set()); // nothing removed
-		report('Q3 update-in-place-control', m, false);
-		strictEqual(m.baseCount, N, 'all control rows still present (never deleted)');
-		strictEqual(m.nullKeyedCount, 0, 'update-in-place must NOT produce any null-keyed index entry');
-		strictEqual(m.danglingNonNullCount, 0, 'update-in-place must NOT produce any dangling index entry');
-	});
+			const m = await measure('ControlTable', new Set()); // nothing removed
+			report('Q3 update-in-place-control', m, false);
+			strictEqual(m.baseCount, N, 'all control rows still present (never deleted)');
+			strictEqual(m.nullKeyedCount, 0, 'update-in-place must NOT produce any null-keyed index entry');
+			strictEqual(m.danglingNonNullCount, 0, 'update-in-place must NOT produce any dangling index entry');
+		}
+	);
 
 	// ---- Q2: read-triggered LAZY eviction (TableResource.evict() called directly from a GET, ------
 	// isolated from the background sweep by a huge scanInterval) --------------------------------
@@ -232,7 +251,10 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		// (ensureLoadedFromSource -> TableResource.evict()), NOT the background sweep (scanInterval:300s).
 		await sleep(2_500);
 		for (const id of evictIds) {
-			await fetch(`${httpURL}/EvictTable/${id}`, { headers: { Authorization: auth }, signal: AbortSignal.timeout(5_000) });
+			await fetch(`${httpURL}/EvictTable/${id}`, {
+				headers: { Authorization: auth },
+				signal: AbortSignal.timeout(5_000),
+			});
 		}
 		// give the fire-and-forget evict() commits a moment to land
 		const deadline = Date.now() + 15_000;
@@ -246,9 +268,21 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		const m = await measure('EvictTable', new Set(evictIds));
 		report('Q2 lazy-evict()', m, true);
 		strictEqual(m.baseCount, 0, `all lazily-evicted rows should be gone from base, got ${m.baseCount}`);
-		strictEqual(m.nullKeyedCount, 0, `lazy evict() must leave no null-keyed (phantom) index entry, got ${m.nullKeyedCount}`);
-		strictEqual(m.danglingNonNullCount, 0, `lazy evict() must leave no dangling index entry, got ${m.danglingNonNullCount}`);
-		strictEqual(m.phantomForRemovedCount, 0, `no evicted id may retain a phantom index entry, got ${m.phantomForRemovedCount}/${N}`);
+		strictEqual(
+			m.nullKeyedCount,
+			0,
+			`lazy evict() must leave no null-keyed (phantom) index entry, got ${m.nullKeyedCount}`
+		);
+		strictEqual(
+			m.danglingNonNullCount,
+			0,
+			`lazy evict() must leave no dangling index entry, got ${m.danglingNonNullCount}`
+		);
+		strictEqual(
+			m.phantomForRemovedCount,
+			0,
+			`no evicted id may retain a phantom index entry, got ${m.phantomForRemovedCount}/${N}`
+		);
 	});
 
 	// ---- Q1: background TTL/expiration SWEEP (scheduleCleanup(); RocksDB batcher path or LMDB ----
@@ -272,9 +306,21 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		const m = await measure('SweepTable', new Set(sweepIds));
 		report('Q1 background-sweep', m, true);
 		strictEqual(m.baseCount, 0, `all swept rows should be gone from base, got ${m.baseCount}`);
-		strictEqual(m.nullKeyedCount, 0, `background sweep must leave no null-keyed (phantom) index entry, got ${m.nullKeyedCount}`);
-		strictEqual(m.danglingNonNullCount, 0, `background sweep must leave no dangling index entry, got ${m.danglingNonNullCount}`);
-		strictEqual(m.phantomForRemovedCount, 0, `no swept id may retain a phantom index entry, got ${m.phantomForRemovedCount}/${N}`);
+		strictEqual(
+			m.nullKeyedCount,
+			0,
+			`background sweep must leave no null-keyed (phantom) index entry, got ${m.nullKeyedCount}`
+		);
+		strictEqual(
+			m.danglingNonNullCount,
+			0,
+			`background sweep must leave no dangling index entry, got ${m.danglingNonNullCount}`
+		);
+		strictEqual(
+			m.phantomForRemovedCount,
+			0,
+			`no swept id may retain a phantom index entry, got ${m.phantomForRemovedCount}/${N}`
+		);
 	});
 
 	test('ZZ print matrix', { timeout: 5_000 }, async () => {
