@@ -83,9 +83,16 @@ export const LAUNCH_SERVICE_SCRIPTS = {
 	MAIN: 'dist/bin/harper.js',
 } as const;
 
-/** Specifies user role types */
+/**
+ * Special boolean role flags validated as role types (not database permissions).
+ * `cluster_user` belongs here alongside `super_user`: role validation checks both
+ * are booleans (SU_CU_ROLE_BOOLEAN_ERROR), and without it a non-boolean
+ * `cluster_user` falls through to database validation and reports a misleading
+ * "database 'cluster_user' does not exist" error (harper#1016).
+ */
 export const ROLE_TYPES_ENUM = {
 	SUPER_USER: 'super_user',
+	CLUSTER_USER: 'cluster_user',
 } as const;
 
 /**
