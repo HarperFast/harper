@@ -154,4 +154,37 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 			assert.ok(tables.ShapeCheck.properties.title);
 		});
 	});
+
+	// #1920: a programmatic Resource may declare `static properties` (the Record form) without an
+	// `attributes` Array; `projectPropertiesToAttributes` rebuilds the Array so the schema-derivation
+	// paths (MCP, OpenAPI) can consume it. It must be the structural inverse of the forward projection.
+	describe('projectPropertiesToAttributes (#1920)', () => {
+		const { projectPropertiesToAttributes, projectAttributesToProperties } = require('#src/resources/jsonSchemaTypes');
+
+		it('projects each property into a named attribute carrying type + description + flags', () => {
+			const attrs = projectPropertiesToAttributes({
+				id: { type: 'string', primaryKey: true },
+				label: { type: 'string', description: 'Human-readable label' },
+				size: { type: 'integer', description: 'Width in pixels', nullable: true },
+			});
+			const byName = Object.fromEntries(attrs.map((a) => [a.name, a]));
+			assert.strictEqual(byName.id.isPrimaryKey, true);
+			assert.strictEqual(byName.label.type, 'string');
+			assert.strictEqual(byName.label.description, 'Human-readable label');
+			assert.strictEqual(byName.size.type, 'integer');
+			assert.strictEqual(byName.size.nullable, true);
+		});
+
+		it('round-trips with projectAttributesToProperties (properties -> attributes -> properties)', () => {
+			// Includes JSON-only hints (enum, format) and nested/array shapes to prove nothing is dropped.
+			const properties = {
+				sku: { type: 'string', description: 'Stock keeping unit', primaryKey: true },
+				status: { type: 'string', enum: ['active', 'archived'], format: 'x-status' },
+				tags: { type: 'array', items: { type: 'string' } },
+				dims: { type: 'object', properties: { w: { type: 'integer' }, h: { type: 'integer' } } },
+			};
+			const roundTripped = projectAttributesToProperties(projectPropertiesToAttributes(properties));
+			assert.deepStrictEqual(roundTripped, properties);
+		});
+	});
 });
