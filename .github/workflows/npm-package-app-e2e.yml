@@ -5,10 +5,11 @@ name: NPM Package Application E2E
 #
 # redirector and early-hints intentionally track downstream main. This makes the
 # workflow sensitive to compatibility drift in either direction, so failures can
-# reflect a downstream change rather than the Harper PR itself.
+# reflect a downstream change rather than a Harper regression.
 
 on:
-  pull_request:
+  schedule:
+    - cron: '17 8 * * *' # 08:17 UTC nightly, offset from other nightly suites
   workflow_dispatch:
 
 concurrency:
@@ -67,9 +68,6 @@ jobs:
   downstream-apps:
     name: ${{ matrix.app }} against npm package
     needs: build-package
-    # Org secrets cannot be exposed to pull requests from forks, and both apps
-    # are internal repositories. The package build still runs for fork PRs.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
