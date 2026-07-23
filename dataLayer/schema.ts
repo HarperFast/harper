@@ -23,7 +23,11 @@ const DB_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
 	.max(commonValidators.schema_length.maximum)
 	.pattern(schemaRegex)
-	.messages({ 'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message });
+	.invalid(...hdbTerms.RESERVED_DATABASE_NAMES)
+	.messages({
+		'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message,
+		'any.invalid': "'{#value}' is a reserved name and cannot be used as a database name",
+	});
 
 const TABLE_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
