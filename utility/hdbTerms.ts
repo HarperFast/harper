@@ -102,6 +102,8 @@ export const ROLE_TYPES_ENUM = {
  * a `super_user` flag from a `super_user` database's permissions — producing
  * undefined behavior, so these are rejected as database/schema identifiers
  * (harper#1016). Keep in sync with `UserRoleNamedPermissions` in security/user.ts.
+ * `access` is deliberately NOT here: roles.ts strips it out of `permission`
+ * before persistence (scoped-delegation), so it never collides at runtime.
  */
 export const RESERVED_DATABASE_NAMES = [
 	'super_user',
