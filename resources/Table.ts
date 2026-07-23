@@ -3236,11 +3236,15 @@ export function makeTable(options) {
 
 		// #section: pub-sub
 		async subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>> {
+			if (!request) request = {} as any;
+			const context: any = this.getContext();
+			if (request.checkPermission && !(await this.allowRead(context.user, request, context))) {
+				throw new AccessViolation(context.user);
+			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
 			if (!audit) {
 				table({ table: tableName, database: databaseName, schemaDefined, attributes, audit: true });
 			}
-			if (!request) request = {} as any;
 			const getFullRecord = !request.rawEvents;
 			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
 			// messages from the listener accumulate here and are drained at the end of the IIFE so they

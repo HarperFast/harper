@@ -4,9 +4,10 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { AccessViolation } = require('#src/utility/errors/hdbError');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Permissions through Resource API', () => {
-	let TestTable, restricted_user, authorized_role, attribute_authorized_role;
+	let TestTable, SubscriptionTable, restricted_user, authorized_role, attribute_authorized_role;
 	before(async function () {
 		setupTestDBPath();
 		setMainIsWorker(true); // TODO: Should be default until changed
@@ -29,6 +30,13 @@ describe('Permissions through Resource API', () => {
 				{ name: 'related', relationship: { from: 'relatedId' }, definition: { tableClass: RelatedTable } },
 			],
 		});
+		SubscriptionTable = table({
+			table: 'SubscriptionTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			audit: false,
+		});
+		SubscriptionTable.loadAsInstance = false;
 		for (let i = 0; i < 10; i++) {
 			await RelatedTable.put({ id: 'related-id-' + i, name: 'related name-' + i });
 			await TestTable.put({
@@ -115,6 +123,87 @@ describe('Permissions through Resource API', () => {
 				},
 			},
 		};
+	});
+	it('Can not subscribe without permission or activate auditing', async function () {
+		let allowReadCalls = 0;
+		let listenerCalled = false;
+		class DeniedTable extends SubscriptionTable {
+			allowRead() {
+				allowReadCalls++;
+				return false;
+			}
+		}
+		const context = {
+			user: restricted_user,
+			authorize: true,
+			getContext() {
+				return this;
+			},
+		};
+		assert.equal(SubscriptionTable.audit, false);
+		await assert.rejects(
+			DeniedTable.subscribe(
+				{
+					listener() {
+						listenerCalled = true;
+					},
+				},
+				context
+			),
+			(error) => error instanceof AccessViolation
+		);
+		assert.equal(allowReadCalls, 1);
+		assert.equal(listenerCalled, false);
+		assert.equal(SubscriptionTable.audit, false);
+	});
+	it('Can subscribe with permission', async function () {
+		let allowReadCalls = 0;
+		class AllowedTable extends SubscriptionTable {
+			allowRead() {
+				allowReadCalls++;
+				return true;
+			}
+		}
+		const context = {
+			user: authorized_role,
+			authorize: true,
+			getContext() {
+				return this;
+			},
+		};
+		const subscription = await AllowedTable.subscribe({ omitCurrent: true }, context);
+		assert.equal(allowReadCalls, 1);
+		subscription.return?.();
+	});
+	it('Awaits asynchronous subscription authorization', async function () {
+		class AsyncDeniedTable extends SubscriptionTable {
+			async allowRead() {
+				return false;
+			}
+		}
+		const context = {
+			user: authorized_role,
+			authorize: true,
+			getContext() {
+				return this;
+			},
+		};
+		await assert.rejects(
+			AsyncDeniedTable.subscribe({ omitCurrent: true }, context),
+			(error) => error instanceof AccessViolation
+		);
+	});
+	it('Does not authorize unchecked internal subscriptions', async function () {
+		let allowReadCalls = 0;
+		class InternalTable extends SubscriptionTable {
+			allowRead() {
+				allowReadCalls++;
+				return false;
+			}
+		}
+		const subscription = await InternalTable.subscribe({ omitCurrent: true });
+		assert.equal(allowReadCalls, 0);
+		subscription.return?.();
 	});
 	it('Can not get without permission', async function () {
 		let caught_error;
