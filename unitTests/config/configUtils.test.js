@@ -750,6 +750,35 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.args[4][1]).to.equal('path/for/rotated/logs');
 		});
 
+		it('Test a domainSocket exceeding the Unix socket path limit logs a warning but does not throw', () => {
+			const fake_validation = {
+				value: {
+					rootPath: '/' + 'a'.repeat(120),
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: 'operations-server' } },
+				},
+			};
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
+			const logger_warn_stub = sandbox.stub(logger, 'warn');
+
+			const fake_config_doc = { toJSON: () => ({}), setIn: () => {} };
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+			expect(logger_warn_stub.calledOnce).to.be.true;
+			expect(logger_warn_stub.firstCall.args[0]).to.include('Unix domain socket path limit');
+			logger_warn_stub.restore();
+		});
+
 		it('Test error is thrown if operationsApi securePort collides with http securePort', () => {
 			const fake_config_doc = {
 				toJSON: () => ({

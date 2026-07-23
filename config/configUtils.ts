@@ -1,7 +1,7 @@
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import { configValidator } from '../validation/configValidator.ts';
+import { configValidator, getDomainSocketPathLengthWarning } from '../validation/configValidator.ts';
 import fs from 'fs-extra';
 import YAML from 'yaml';
 import path from 'path';
@@ -662,7 +662,10 @@ function validateConfig(configDoc, skipFsValidation = false) {
 	configDoc.setIn(['logging', 'root'], validation.value.logging.root);
 	configDoc.setIn(['storage', 'path'], validation.value.storage.path);
 	configDoc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
-	configDoc.setIn(['operationsApi', 'network', 'domainSocket'], validation.value?.operationsApi?.network?.domainSocket);
+	const domainSocket = validation.value?.operationsApi?.network?.domainSocket;
+	configDoc.setIn(['operationsApi', 'network', 'domainSocket'], domainSocket);
+	const domainSocketWarning = getDomainSocketPathLengthWarning(validation.value.rootPath, domainSocket);
+	if (domainSocketWarning) logger.warn(domainSocketWarning);
 }
 
 /**

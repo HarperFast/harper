@@ -198,6 +198,48 @@ describe('Test configValidator module', () => {
 		});
 	});
 
+	describe('getDomainSocketPathLengthWarning', () => {
+		const { getDomainSocketPathLengthWarning, UDS_PATH_MAX_BYTES } = config_val;
+
+		it('warns when a relative domainSocket resolves past the platform Unix socket path limit', () => {
+			// The real-world trigger: domainSocket left at its default relative name, with only
+			// rootPath being long (e.g. a nested `.claude/worktrees/<name>` checkout).
+			const longRoot = path.join(HDB_ROOT, 'a'.repeat(120));
+			const warning = getDomainSocketPathLengthWarning(longRoot, 'operations-server');
+
+			expect(warning).to.include('operationsApi.network.domainSocket');
+			expect(warning).to.include('exceeds the');
+			expect(warning).to.include('Unix domain socket path limit');
+		});
+
+		it('warns when an absolute domainSocket itself exceeds the limit', () => {
+			const longAbsolute = '/' + 'a'.repeat(120);
+			const warning = getDomainSocketPathLengthWarning('/hdb', longAbsolute);
+
+			expect(warning).to.include('Unix domain socket path limit');
+		});
+
+		it('returns null when the resolved path is within the platform limit', () => {
+			expect(getDomainSocketPathLengthWarning('/hdb', 'operations-server')).to.equal(null);
+		});
+
+		it('returns null when domainSocket is disabled (false)', () => {
+			const longRoot = path.join(HDB_ROOT, 'a'.repeat(120));
+			expect(getDomainSocketPathLengthWarning(longRoot, false)).to.equal(null);
+		});
+
+		it('resolves a path right at the limit as OK and one byte over as a warning', () => {
+			// 5-char root + '/' + N-char socket name must equal UDS_PATH_MAX_BYTES exactly at the
+			// boundary; asserting on both sides guards against an off-by-one in the comparison.
+			const root = '/root'; // 5 bytes
+			const atLimit = 'a'.repeat(UDS_PATH_MAX_BYTES - root.length - 1); // -1 for the joining '/'
+			const overLimit = atLimit + 'a';
+
+			expect(getDomainSocketPathLengthWarning(root, atLimit)).to.equal(null);
+			expect(getDomainSocketPathLengthWarning(root, overLimit)).to.include('Unix domain socket path limit');
+		});
+	});
+
 	describe('Directory-path pattern is a linear-time denylist (ReDoS regression, #1779)', () => {
 		const directoryPathPattern = config_val.__get__('DIRECTORY_PATH_PATTERN');
 

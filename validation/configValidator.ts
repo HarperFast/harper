@@ -413,6 +413,38 @@ function validatePath(value, helpers) {
 	}
 }
 
+// A Unix domain socket path is stored in a fixed-size `sockaddr_un.sun_path` buffer that must
+// also fit a trailing NUL — 108 bytes on Linux (107 usable), 104 on macOS (103 usable). A path
+// at or beyond that limit fails at listen() time with a bare EINVAL (see listenOnPorts() in
+// server/threads/threadServer.js, which now fails soft on that error rather than aborting
+// startup). This is a *warning*, not a schema error: a long rootPath is common (nested worktree
+// checkouts, deep install paths) and losing the domain socket costs nothing but a convenience
+// mirror of the TCP operations-API port — it must not block config validation / startup the way
+// a real schema error does (validateConfig in configUtils.ts throws on any Joi error).
+export const UDS_PATH_MAX_BYTES = process.platform === 'darwin' ? 103 : 107;
+
+/**
+ * Returns a warning message if `domainSocket` (resolved against `hdbRootPath`) would exceed the
+ * platform's Unix domain socket path limit, or null if it fits (or domainSocket is falsy/non-string,
+ * i.e. disabled). Called from configUtils.ts's validateConfig, after the Joi schema (which resolves
+ * the default) has already run — non-blocking, so it's a plain function rather than a Joi custom rule.
+ */
+export function getDomainSocketPathLengthWarning(hdbRootPath, domainSocket) {
+	if (!domainSocket || typeof domainSocket !== 'string') return null;
+
+	let resolvedValue;
+	if (domainSocket.startsWith('~/')) {
+		resolvedValue = path.join(os.homedir(), domainSocket.slice(1));
+	} else if (path.isAbsolute(domainSocket)) {
+		resolvedValue = domainSocket;
+	} else {
+		resolvedValue = path.join(hdbRootPath, domainSocket);
+	}
+	const byteLength = Buffer.byteLength(resolvedValue);
+	if (byteLength <= UDS_PATH_MAX_BYTES) return null;
+	return `operationsApi.network.domainSocket resolves to "${resolvedValue}" (${byteLength} bytes), which exceeds the ${UDS_PATH_MAX_BYTES}-byte Unix domain socket path limit on ${process.platform}. The operations API will start without its domain socket (the TCP port is unaffected) — use a shorter rootPath, set operationsApi.network.domainSocket to a short absolute path outside rootPath, or set it to false to silence this warning.`;
+}
+
 function validateRotationMaxSize(value, helpers) {
 	const unit = value.slice(-1);
 	if (unit !== 'G' && unit !== 'M' && unit !== 'K') {
