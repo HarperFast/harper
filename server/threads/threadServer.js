@@ -265,13 +265,26 @@ function listenOnPorts() {
 		if (port.includes?.('/')) {
 			if (existsSync(port)) unlinkSync(port);
 			listening.push(
-				new Promise((resolve, reject) => {
+				new Promise((resolve) => {
 					server
 						.listen({ path: port }, () => {
 							resolve({ port, name: server.name, protocol_name: server.protocol_name });
 							harperLogger.info('Domain socket listening on ' + port);
 						})
-						.on('error', reject);
+						.on('error', (err) => {
+							// A domain socket is a convenience mirror of the same-named TCP/other
+							// listeners in this Promise.all batch (e.g. the operations API's UDS
+							// alongside its TCP port) — rejecting here used to fail the whole batch,
+							// which aborted startup (process.exit in bin/run.ts's main()) over one
+							// socket, most commonly EINVAL from a rootPath-derived path exceeding the
+							// platform's ~107-byte sun_path limit. Fail soft: log and keep going so the
+							// TCP listener (and everything else) still comes up.
+							harperLogger.error(
+								`Failed to bind domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: ${err.message}. Continuing without this domain socket.`,
+								err
+							);
+							resolve({ port, failed: true });
+						});
 				})
 			);
 			continue;
@@ -512,13 +525,21 @@ async function listenOnPortsBun() {
 			if (port.includes?.('/')) {
 				if (existsSync(port)) unlinkSync(port);
 				listening.push(
-					new Promise((resolve, reject) => {
+					new Promise((resolve) => {
 						server
 							.listen({ path: port }, () => {
 								resolve({ port });
 								harperLogger.info('Domain socket listening on ' + port);
 							})
-							.on('error', reject);
+							.on('error', (err) => {
+								// See the same fail-soft handling in listenOnPorts() above: a domain
+								// socket bind failure must not abort the rest of this Promise.all batch.
+								harperLogger.error(
+									`Failed to bind domain socket listener at ${port}: ${err.message}. Continuing without this domain socket.`,
+									err
+								);
+								resolve({ port, failed: true });
+							});
 					})
 				);
 			} else {
