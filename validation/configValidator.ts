@@ -421,28 +421,36 @@ function validatePath(value, helpers) {
 // checkouts, deep install paths) and losing the domain socket costs nothing but a convenience
 // mirror of the TCP operations-API port — it must not block config validation / startup the way
 // a real schema error does (validateConfig in configUtils.ts throws on any Joi error).
-export const UDS_PATH_MAX_BYTES = process.platform === 'darwin' ? 103 : 107;
+function udsPathMaxBytes(platform) {
+	return platform === 'darwin' ? 103 : 107;
+}
+
+export const UDS_PATH_MAX_BYTES = udsPathMaxBytes(process.platform);
 
 /**
  * Returns a warning message if `domainSocket` (resolved against `hdbRootPath`) would exceed the
  * platform's Unix domain socket path limit, or null if it fits (or domainSocket is falsy/non-string,
  * i.e. disabled). Called from configUtils.ts's validateConfig, after the Joi schema (which resolves
  * the default) has already run — non-blocking, so it's a plain function rather than a Joi custom rule.
+ * `platform` defaults to `process.platform` but is accepted as a parameter so the path-resolution
+ * logic for every platform can be unit tested from any CI host.
  */
-export function getDomainSocketPathLengthWarning(hdbRootPath, domainSocket) {
+export function getDomainSocketPathLengthWarning(hdbRootPath, domainSocket, platform = process.platform) {
 	if (!domainSocket || typeof domainSocket !== 'string') return null;
 
+	const platformPath = platform === 'win32' ? path.win32 : path.posix;
 	let resolvedValue;
 	if (domainSocket.startsWith('~/')) {
-		resolvedValue = path.join(os.homedir(), domainSocket.slice(1));
-	} else if (path.isAbsolute(domainSocket)) {
+		resolvedValue = platformPath.join(os.homedir(), domainSocket.slice(1));
+	} else if (platformPath.isAbsolute(domainSocket)) {
 		resolvedValue = domainSocket;
 	} else {
-		resolvedValue = path.join(hdbRootPath, domainSocket);
+		resolvedValue = platformPath.join(hdbRootPath, domainSocket);
 	}
 	const byteLength = Buffer.byteLength(resolvedValue);
-	if (byteLength <= UDS_PATH_MAX_BYTES) return null;
-	return `operationsApi.network.domainSocket resolves to "${resolvedValue}" (${byteLength} bytes), which exceeds the ${UDS_PATH_MAX_BYTES}-byte Unix domain socket path limit on ${process.platform}. The operations API will start without its domain socket (the TCP port is unaffected) — use a shorter rootPath, set operationsApi.network.domainSocket to a short absolute path outside rootPath, or set it to false to silence this warning.`;
+	const limit = udsPathMaxBytes(platform);
+	if (byteLength <= limit) return null;
+	return `operationsApi.network.domainSocket resolves to "${resolvedValue}" (${byteLength} bytes), which exceeds the ${limit}-byte Unix domain socket path limit on ${platform}. The operations API will start without its domain socket (the TCP port is unaffected) — use a shorter rootPath, set operationsApi.network.domainSocket to a short absolute path outside rootPath, or set it to false to silence this warning.`;
 }
 
 function validateRotationMaxSize(value, helpers) {

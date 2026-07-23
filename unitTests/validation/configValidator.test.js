@@ -238,6 +238,24 @@ describe('Test configValidator module', () => {
 			expect(getDomainSocketPathLengthWarning(root, atLimit)).to.equal(null);
 			expect(getDomainSocketPathLengthWarning(root, overLimit)).to.include('Unix domain socket path limit');
 		});
+
+		it('applies the 103-byte darwin limit regardless of the host platform running the test', () => {
+			const root = '/root';
+			const overDarwinLimit = 'a'.repeat(103 - root.length - 1 + 1);
+
+			expect(getDomainSocketPathLengthWarning(root, overDarwinLimit, 'darwin')).to.include(
+				'Unix domain socket path limit on darwin'
+			);
+			expect(getDomainSocketPathLengthWarning(root, overDarwinLimit, 'linux')).to.equal(null);
+		});
+
+		it('resolves win32 paths with backslash join semantics regardless of the host platform running the test', () => {
+			const warning = getDomainSocketPathLengthWarning('C:\\hdb', 'a'.repeat(120), 'win32');
+
+			expect(warning).to.include('C:\\hdb\\' + 'a'.repeat(120));
+			expect(warning).to.include('Unix domain socket path limit on win32');
+			expect(getDomainSocketPathLengthWarning('C:\\hdb', 'C:\\short', 'win32')).to.equal(null);
+		});
 	});
 
 	describe('Directory-path pattern is a linear-time denylist (ReDoS regression, #1779)', () => {
