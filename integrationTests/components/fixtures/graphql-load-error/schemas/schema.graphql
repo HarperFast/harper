@@ -1,0 +1,6 @@
+# Intentionally malformed: the closing brace is missing, so parsing this schema throws a
+# GraphQLError during the graphqlSchema component's initial load. The component must fail fast
+# with that error surfaced, not hang until the load watchdog times out.
+type Broken @table(database: "graphql_load_error_db") @export {
+  id: ID @primaryKey
+  name: String

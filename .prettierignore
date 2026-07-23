@@ -2,3 +2,6 @@
 # Only list additional files and directories that aren't already in `.gitignore`
 
 unitTests/security/jsLoader/fixtures
+
+# intentionally malformed schema — the graphqlSchema load-error test depends on the parse failure
+integrationTests/components/fixtures/graphql-load-error/schemas

@@ -4,7 +4,6 @@ import { table } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
-import { once } from 'node:events';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -63,6 +62,12 @@ server.knownGraphQLDirectives.push(
  */
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	let initialLoadComplete = false;
+	let resolveInitialLoad!: () => void;
+	let rejectInitialLoad!: (error: unknown) => void;
+	const initialLoadPromise = new Promise<void>((resolve, reject) => {
+		resolveInitialLoad = resolve;
+		rejectInitialLoad = reject;
+	});
 	const entryHandler = scope.handleEntry(async (entry) => {
 		if (initialLoadComplete) {
 			scope.requestRestart();
@@ -75,11 +80,25 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			return;
 		}
 
-		await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
+		try {
+			await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
+		} catch (error) {
+			// Fail the initial load fast with the real cause (bad directive, reserved database name,
+			// malformed schema) instead of letting handleApplication hang until the component-load
+			// watchdog times out 30s later with a message that names none of the actual problem.
+			// Rejecting the returned promise fails the component through the loader's normal path; we
+			// don't rethrow, so the entry handler settles cleanly and the load-tracking machinery
+			// doesn't surface the same error a second time as an unhandled rejection.
+			if (!initialLoadComplete) {
+				rejectInitialLoad(error);
+				return;
+			}
+			throw error;
+		}
 	});
-	const initialLoadPromise = once(entryHandler, 'initialLoadComplete');
-	initialLoadPromise.then(() => {
+	entryHandler.once('initialLoadComplete', () => {
 		initialLoadComplete = true;
+		resolveInitialLoad();
 	});
 	return initialLoadPromise;
 }
