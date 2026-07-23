@@ -176,11 +176,12 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 		});
 
 		it('round-trips with projectAttributesToProperties (properties -> attributes -> properties)', () => {
-			// Includes JSON-only hints (enum, format), nested/array shapes, and nested object-level
-			// constraints (required/additionalProperties) to prove nothing is dropped.
+			// The `.properties` projection is front-end-neutral: type, description, primaryKey,
+			// nested/array shapes, and nested object-level constraints (required/additionalProperties)
+			// survive. enum/format/const deliberately do NOT (they'd break code-first ⇔ GraphQL parity
+			// for `types.enum`; the MCP/OpenAPI schema paths surface those instead — see below).
 			const properties = {
 				sku: { type: 'string', description: 'Stock keeping unit', primaryKey: true },
-				status: { type: 'string', enum: ['active', 'archived'], format: 'x-status' },
 				tags: { type: 'array', items: { type: 'string' } },
 				dims: {
 					type: 'object',

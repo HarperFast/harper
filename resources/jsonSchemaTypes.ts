@@ -118,9 +118,10 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 	if (attr.assignUpdatedTime) fragment.assignUpdatedTime = true;
 	if (attr.hidden) fragment.hidden = true;
 	if (attr.nullable) fragment.nullable = true;
-	if (attr.enum) fragment.enum = attr.enum;
-	if (attr.format) fragment.format = attr.format;
-	if (attr.const !== undefined) fragment.const = attr.const;
+	// NOTE: enum/format/const are deliberately NOT emitted here. This projector feeds the canonical,
+	// front-end-neutral `Table.properties` Record, where a code-first `types.enum` column must stay
+	// identical to its GraphQL `String` equivalent (types.enum is advisory — see defineTable.ts). The
+	// MCP/OpenAPI schema paths (derive.ts / openApi.ts) surface those hints for programmatic Resources.
 	return fragment;
 }
 
