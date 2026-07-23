@@ -363,7 +363,7 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
  * Built-in components introduced in a recent release whose config key must be backfilled onto
  * in-place-upgraded instances. Fresh installs get these from defaultConfig.yaml, but an upgrade
  * carries the old config forward without them, leaving the component dormant (harper-pro#585:
- * secretCustody added in 5.2).
+ * secretCustody and WAF added in 5.2).
  *
  * Deliberately scoped to genuinely-new built-ins — NOT every registered built-in. Component
  * activation is presence-gated (componentLoader iterates the config's keys), so re-adding a
@@ -381,7 +381,7 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
  * but document the falsy-disable convention wherever the key is exposed to operators.
  * Add a key here only when shipping a new built-in that must activate on already-upgraded instances.
  */
-const UPGRADE_BACKFILL_BUILTIN_KEYS = ['secretCustody'];
+const UPGRADE_BACKFILL_BUILTIN_KEYS = ['secretCustody', 'waf'];
 
 /**
  * Ensure the config keys for recently-introduced built-in components exist, so a component added in
