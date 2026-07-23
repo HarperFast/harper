@@ -166,7 +166,10 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						// schema (sub-properties recursed); OpenAPI's table path uses $refs instead.
 						props[name] = attributeToFragment(attr);
 					} else if (type === 'array') {
-						if (elements.properties) {
+						if (!elements) {
+							// `{ type: 'array' }` with no items — valid JSON Schema (array of anything).
+							props[name] = { type: 'array' };
+						} else if (elements.properties) {
 							// array of nested objects — project the element to its full object schema
 							props[name] = { type: 'array', items: attributeToFragment(elements) };
 						} else if (elements.type === 'Any') {
