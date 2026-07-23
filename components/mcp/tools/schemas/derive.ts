@@ -25,6 +25,10 @@ export interface HarperAttribute {
 	assignCreatedTime?: boolean;
 	assignUpdatedTime?: boolean;
 	expiresAt?: boolean;
+	// JSON-Schema hints a programmatic Resource may carry via `static properties`.
+	enum?: readonly (string | number | boolean | null)[];
+	format?: string;
+	const?: unknown;
 }
 
 export interface AttributePermissionEntry {
@@ -63,6 +67,16 @@ function harperTypeToJsonSchema(type: string | undefined): { type: string | stri
 		case 'Any':
 		case undefined:
 			return {};
+		case 'string':
+		case 'integer':
+		case 'number':
+		case 'boolean':
+		case 'object':
+		case 'array':
+		case 'null':
+			// A programmatic Resource's `static properties` already speaks JSON Schema (lowercase types,
+			// no collision with Harper's capitalized GraphQL types); pass those through unchanged.
+			return { type };
 		default:
 			return { type: 'string' };
 	}
@@ -97,6 +111,9 @@ function attributeToProperty(attr: HarperAttribute): object {
 	if (attr.description && !base.description) {
 		base.description = attr.description;
 	}
+	if (attr.enum && !('enum' in base)) base.enum = attr.enum;
+	if (attr.format && !('format' in base)) base.format = attr.format;
+	if (attr.const !== undefined && !('const' in base)) base.const = attr.const;
 	return base;
 }
 

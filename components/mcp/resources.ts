@@ -38,6 +38,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import { SERVER_CAPABILITIES, SERVER_INFO, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
 import { encodeCursor } from './pagination.ts';
+import { resolveAttributes } from '../../resources/jsonSchemaTypes.ts';
 import {
 	customResourceCompletionValues,
 	listCustomResources,
@@ -820,7 +821,9 @@ function readTableSchema(db: string, table: string, user: AuthedUser, href: stri
 		}
 	}
 	if (!resource) return { ok: false, reason: `table not found: ${db}.${table}` };
-	const attributes = resource.attributes ?? [];
+	// Fall back to a programmatic Resource's `static properties` when it declares no attributes Array,
+	// so schema introspection matches the tool/OpenAPI surfaces.
+	const attributes = resolveAttributes(resource);
 	const filteredAttributes = filterAttributesByPermissions(attributes, perm?.attribute_permissions);
 	const body = {
 		database: db,

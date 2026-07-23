@@ -49,6 +49,7 @@ import {
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
+import { resolveAttributes } from '../../../resources/jsonSchemaTypes.ts';
 import {
 	type AttributePermissionEntry,
 	type HarperAttribute,
@@ -1356,7 +1357,9 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		const tableName = ResourceClass?.tableName;
 		const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
 		claimedSuffixes.add(suffix);
-		const attributes = (ResourceClass?.attributes ?? []) as HarperAttribute[];
+		// A programmatic Resource may declare `static properties` without an `attributes` Array; resolve
+		// the effective attributes so its verb tools get a rich inputSchema instead of a skeletal one.
+		const attributes = resolveAttributes(ResourceClass) as HarperAttribute[];
 		if (hasVerbs) {
 			toolsRegistered += registerVerbTools({
 				path,

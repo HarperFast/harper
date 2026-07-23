@@ -59,6 +59,11 @@ export interface AttributeLike {
 	elements?: AttributeLike;
 	/** Sub-attributes of a nested object field (the same array form `Table.validate` iterates). */
 	properties?: AttributeLike[];
+	// JSON-Schema-only hints an author may declare on `static properties`; carried through the
+	// projection so they survive the properties <-> attributes round-trip.
+	enum?: readonly (string | number | boolean | null)[];
+	format?: string;
+	const?: unknown;
 }
 
 /**
@@ -93,6 +98,9 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 	if (attr.assignUpdatedTime) fragment.assignUpdatedTime = true;
 	if (attr.hidden) fragment.hidden = true;
 	if (attr.nullable) fragment.nullable = true;
+	if (attr.enum) fragment.enum = attr.enum;
+	if (attr.format) fragment.format = attr.format;
+	if (attr.const !== undefined) fragment.const = attr.const;
 	return fragment;
 }
 
@@ -107,4 +115,55 @@ export function projectAttributesToProperties(attributes: AttributeLike[]): Reco
 		result[attr.name] = attributeToFragment(attr);
 	}
 	return result;
+}
+
+/**
+ * Structural inverse of `attributeToFragment`: rebuild an attribute from a JSON Schema fragment.
+ * A programmatic Resource may declare `static properties` (the Record form) without populating the
+ * `attributes` Array; the schema-derivation paths (MCP `derive.ts`, OpenAPI) read attributes, so a
+ * bare declaration would otherwise yield a skeletal schema. Projecting the fragments back into
+ * attributes lets those paths produce the same rich schema they build for table-backed resources.
+ */
+function fragmentToAttribute(name: string, fragment: JsonSchemaFragment): AttributeLike {
+	const attr: AttributeLike = { name };
+	if (fragment.properties) {
+		attr.properties = Object.entries(fragment.properties).map(([subName, sub]) => fragmentToAttribute(subName, sub));
+	} else if (fragment.type === 'array' && fragment.items) {
+		attr.type = 'array';
+		attr.elements = fragmentToAttribute(name, fragment.items);
+	} else if (fragment.type != null) {
+		attr.type = Array.isArray(fragment.type) ? fragment.type[0] : fragment.type;
+	}
+	if (fragment.description) attr.description = fragment.description;
+	if (fragment.primaryKey) attr.isPrimaryKey = true;
+	if (fragment.assignCreatedTime) attr.assignCreatedTime = true;
+	if (fragment.assignUpdatedTime) attr.assignUpdatedTime = true;
+	if (fragment.hidden) attr.hidden = true;
+	if (fragment.nullable) attr.nullable = true;
+	if (fragment.enum) attr.enum = fragment.enum;
+	if (fragment.format) attr.format = fragment.format;
+	if (fragment.const !== undefined) attr.const = fragment.const;
+	return attr;
+}
+
+/**
+ * Project a `Record<string, JsonSchemaFragment>` (the `static properties` form) back into the
+ * `Attribute[]` Array the schema-derivation paths consume. Inverse of `projectAttributesToProperties`.
+ */
+export function projectPropertiesToAttributes(properties: Record<string, JsonSchemaFragment>): AttributeLike[] {
+	return Object.entries(properties).map(([name, fragment]) => fragmentToAttribute(name, fragment));
+}
+
+/**
+ * The effective attribute Array for a Resource/Table class: its declared `attributes` when present,
+ * otherwise the projection of a bare `static properties` declaration. Keeps MCP and OpenAPI schema
+ * derivation identical for table-backed and programmatic Resources.
+ */
+export function resolveAttributes(source?: {
+	attributes?: AttributeLike[];
+	properties?: Record<string, JsonSchemaFragment>;
+}): AttributeLike[] {
+	if (source?.attributes?.length) return source.attributes;
+	if (source?.properties) return projectPropertiesToAttributes(source.properties);
+	return [];
 }

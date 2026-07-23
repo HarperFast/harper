@@ -1087,3 +1087,127 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 		assert.equal(matchCustomResource('application', 'docs:///index'), undefined);
 	});
 });
+
+describe('mcp/tools/application — #1920 programmatic `static properties` + docstrings', () => {
+	beforeEach(() => {
+		_resetRegistryForTest();
+		_setRequestTargetForTest(FakeRequestTarget);
+	});
+
+	afterEach(() => {
+		_resetRegistryForTest();
+		_setResourcesForTest(undefined);
+		_setRequestTargetForTest(undefined);
+		_resetApplicationToolsRegisteredForTest();
+	});
+
+	// A programmatic Resource: declares `static properties` (Record) and NO `attributes` Array.
+	function makeProgrammaticResource({ path, tableName, description, properties }) {
+		class Cls {}
+		Cls.databaseName = 'data';
+		Cls.tableName = tableName;
+		Cls.primaryKey = 'id';
+		if (description) Cls.description = description;
+		if (properties) Cls.properties = properties;
+		for (const v of ['get', 'put', 'patch', 'delete', 'search', 'post']) Cls.prototype[v] = function () {};
+		Cls.get = async (t) => ({ id: t.id });
+		Cls.put = async () => ({ ok: true });
+		Cls.patch = async () => ({ ok: true });
+		Cls.post = async (_t, d) => ({ created: true, ...d });
+		Cls.delete = async () => ({ deleted: true });
+		Cls.search = async () => [];
+		return { path, Resource: Cls };
+	}
+
+	it('derives a rich inputSchema from `static properties` when no attributes are declared', () => {
+		const Widget = makeProgrammaticResource({
+			path: 'Widget',
+			tableName: 'widget',
+			properties: {
+				id: { type: 'string', primaryKey: true },
+				label: { type: 'string', description: 'Human-readable label' },
+				size: { type: 'integer', description: 'Width in pixels' },
+				status: { type: 'string', enum: ['active', 'archived'] },
+				tags: { type: 'array', items: { type: 'string' } },
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Widget', { Resource: Widget.Resource }]]));
+		registerApplicationTools();
+		const create = getTool('create_Widget');
+		assert.ok(create, 'create_Widget registered');
+		// Non-skeletal: each declared property surfaces with its type AND description.
+		assert.equal(create.inputSchema.properties.label.type, 'string');
+		assert.equal(create.inputSchema.properties.label.description, 'Human-readable label');
+		assert.equal(create.inputSchema.properties.size.type, 'integer');
+		assert.equal(create.inputSchema.properties.size.description, 'Width in pixels');
+		// enum and array shapes survive too (per cross-model review).
+		assert.deepEqual(create.inputSchema.properties.status.enum, ['active', 'archived']);
+		assert.equal(create.inputSchema.properties.tags.type, 'array');
+		assert.equal(create.inputSchema.properties.tags.items.type, 'string');
+	});
+
+	it('prefixes the verb-tool description with the class docstring / static description', () => {
+		const Widget = makeProgrammaticResource({
+			path: 'Widget',
+			tableName: 'widget',
+			description: 'A widget in the catalog.',
+			properties: { id: { type: 'string', primaryKey: true }, label: { type: 'string', description: 'The label' } },
+		});
+		_setResourcesForTest(makeRegistry([['Widget', { Resource: Widget.Resource }]]));
+		registerApplicationTools();
+		const get = getTool('get_Widget');
+		assert.ok(get, 'get_Widget registered');
+		assert.ok(
+			get.description.includes('A widget in the catalog.'),
+			`expected the docstring prefix on the tool description, got: ${get.description}`
+		);
+	});
+
+	it('carries per-attribute descriptions from a table-backed Resource into the tool inputSchema', () => {
+		// The table-backed path (real attributes carrying descriptions, as the GraphQL parser emits).
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true, type: 'String' },
+				{ name: 'sku', type: 'String', description: 'Stock keeping unit' },
+			],
+		});
+		Product.description = 'A product record.';
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const create = getTool('create_Product');
+		assert.ok(create, 'create_Product registered');
+		assert.equal(create.inputSchema.properties.sku.description, 'Stock keeping unit');
+		const get = getTool('get_Product');
+		assert.ok(get.description.includes('A product record.'), `expected docstring prefix, got: ${get.description}`);
+	});
+
+	it('inherits `static properties` through class extension', () => {
+		class Base {}
+		Base.databaseName = 'data';
+		Base.primaryKey = 'id';
+		Base.properties = {
+			id: { type: 'string', primaryKey: true },
+			label: { type: 'string', description: 'inherited label' },
+		};
+		class Special extends Base {}
+		Special.tableName = 'special';
+		for (const v of ['get', 'put', 'patch', 'delete', 'search', 'post']) Special.prototype[v] = function () {};
+		Special.get = async (t) => ({ id: t.id });
+		Special.put = async () => ({});
+		Special.patch = async () => ({});
+		Special.post = async (_t, d) => d;
+		Special.delete = async () => ({});
+		Special.search = async () => [];
+		_setResourcesForTest(makeRegistry([['Special', { Resource: Special }]]));
+		registerApplicationTools();
+		const create = getTool('create_Special');
+		assert.ok(create, 'create_Special registered');
+		assert.equal(
+			create.inputSchema.properties.label.description,
+			'inherited label',
+			'child should derive its schema from the inherited static properties'
+		);
+	});
+});

@@ -254,4 +254,58 @@ describe('test openApi module', () => {
 			expect(api.paths).not.to.have.property('/secret/{id}');
 		});
 	});
+
+	describe('#1920 programmatic `static properties`', () => {
+		function programmaticResources() {
+			const r = new Map();
+			r.set('Widget', {
+				path: 'Widget',
+				Resource: {
+					prototype: { get: () => [], put: () => [], patch: () => [], delete: () => [], post: () => [] },
+					description: 'A widget in the catalog.',
+					// Record form only — no `attributes` Array.
+					properties: {
+						id: { type: 'string', primaryKey: true },
+						label: { type: 'string', description: 'Human-readable label' },
+						size: { type: 'integer', description: 'Width in pixels' },
+					},
+				},
+			});
+			r.allTypes = new Map();
+			return r;
+		}
+
+		it('emits per-property schemas (type + description) from a bare static-properties declaration', () => {
+			const api = generateJsonApi(programmaticResources(), serverURL);
+			const schema = api.components.schemas.Widget;
+			expect(schema).to.have.property('description', 'A widget in the catalog.');
+			expect(schema.properties.label).to.include({ type: 'string', description: 'Human-readable label' });
+			expect(schema.properties.size).to.include({ type: 'integer', description: 'Width in pixels' });
+		});
+
+		it('emits array items, enum, and nested-object shapes (not undefined/skeletal)', () => {
+			const r = new Map();
+			r.set('Gadget', {
+				path: 'Gadget',
+				Resource: {
+					prototype: { get: () => [], put: () => [] },
+					properties: {
+						id: { type: 'string', primaryKey: true },
+						tags: { type: 'array', items: { type: 'string' } },
+						status: { type: 'string', enum: ['active', 'archived'] },
+						dims: { type: 'object', properties: { w: { type: 'integer' }, h: { type: 'integer' } } },
+					},
+				},
+			});
+			r.allTypes = new Map();
+			const schema = generateJsonApi(r, serverURL).components.schemas.Gadget;
+			// array-of-scalar: items carry the JSON type, not `undefined`
+			expect(schema.properties.tags).to.deep.include({ type: 'array', items: { type: 'string' } });
+			// enum surfaces the allowed values
+			expect(schema.properties.status.enum).to.deep.equal(['active', 'archived']);
+			// nested object is recursed, not emitted as a bare/undefined object
+			expect(schema.properties.dims.type).to.equal('object');
+			expect(schema.properties.dims.properties.w).to.include({ type: 'integer' });
+		});
+	});
 });

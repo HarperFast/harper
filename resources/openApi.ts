@@ -1,9 +1,14 @@
 import { packageJson } from '../utility/packageUtils.js';
 import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
-import { DATA_TYPES } from './jsonSchemaTypes.ts';
+import { DATA_TYPES, attributeToFragment, projectPropertiesToAttributes } from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
+
+// A programmatic Resource's `static properties` uses JSON Schema types directly (lowercase). Harper's
+// GraphQL attribute types are all capitalized and live in DATA_TYPES, so a lowercase scalar reaching
+// the attribute mapper came from `static properties` and should be emitted as-is.
+const JSON_SCHEMA_SCALARS = new Set(['string', 'integer', 'number', 'boolean', 'object', 'array', 'null']);
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
 const DESCRIPTION_200 = 'successful operation';
@@ -115,10 +120,15 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		// Used as both the schema-level `description` (in components.schemas) and as a prefix
 		// on each path-level operation description.
 		const tableDoc: string | undefined = resource.Resource.description;
-		if (!attributes && resources.allTypes.has(resource.path)) {
+		// A programmatic Resource may declare `static properties` (Record) without an `attributes`
+		// Array; project it so per-property schemas are emitted instead of a skeletal object.
+		if (!attributes?.length && resource.Resource.properties) {
+			attributes = projectPropertiesToAttributes(resource.Resource.properties);
+		}
+		if (!attributes?.length && resources.allTypes.has(resource.path)) {
 			const possibleType = resources.allTypes.get(resource.path);
 			sealed = possibleType.sealed;
-			attributes = possibleType.attributes ?? possibleType.properties;
+			attributes = possibleType.attributes ?? projectPropertiesToAttributes(possibleType.properties ?? {});
 		}
 		if (!primaryKey) continue;
 		const props = {};
@@ -151,21 +161,34 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						} else {
 							props[name] = { $ref: SCHEMA_COMP_REF + def.type };
 						}
+					} else if (attr.properties) {
+						// Nested object from `static properties` — the shared projector emits the full object
+						// schema (sub-properties recursed); OpenAPI's table path uses $refs instead.
+						props[name] = attributeToFragment(attr);
 					} else if (type === 'array') {
 						if (elements.type === 'Any') {
 							props[name] = { type: 'array', items: { format: elements.type } };
+						} else if (!DATA_TYPES[elements.type] && JSON_SCHEMA_SCALARS.has(elements.type)) {
+							props[name] = { type: 'array', items: new Type(elements.type) };
 						} else {
 							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
 						}
 					} else if (type === 'Any') {
 						props[name] = { format: type };
+					} else if (!DATA_TYPES[type] && JSON_SCHEMA_SCALARS.has(type)) {
+						props[name] = new Type(type);
 					} else {
 						props[name] = new Type(DATA_TYPES[type], type);
 					}
 				}
-				// Attach per-property description so it surfaces in Swagger UI / Redoc.
-				if (description && props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
-					(props[name] as { description?: string }).description = description;
+				// Attach per-property JSON-Schema hints (description/enum/format/const) so they surface in
+				// Swagger UI / Redoc; enum in particular tells clients the allowed values.
+				if (props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
+					const prop = props[name] as { description?: string; enum?: unknown; format?: string; const?: unknown };
+					if (description) prop.description = description;
+					if (attr.enum && prop.enum === undefined) prop.enum = attr.enum;
+					if (attr.format && prop.format === undefined) prop.format = attr.format;
+					if (attr.const !== undefined && prop.const === undefined) prop.const = attr.const;
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
@@ -542,10 +565,10 @@ function ResourceSchema(properties, additionalProperties?: boolean, required?: s
 	if (description) this.description = description;
 }
 
-function Type(type, format) {
+function Type(type, format?) {
 	this.type = type;
 	if (type === 'string' || type === 'number' || type === 'integer') {
-		if (format !== 'String') {
+		if (format !== undefined && format !== 'String') {
 			this.format = format;
 		}
 	}
