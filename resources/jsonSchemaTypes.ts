@@ -30,6 +30,21 @@ export interface JsonSchemaFragment {
 	const?: unknown;
 }
 
+/**
+ * The JSON-Schema scalar/structural type names. A programmatic Resource's `static properties` speaks
+ * JSON Schema directly (lowercase), so the MCP and OpenAPI type mappers pass these through unchanged
+ * rather than treating them as unknown Harper types. Shared so the two mappers can't drift apart.
+ */
+export const JSON_SCHEMA_SCALAR_TYPES: ReadonlySet<string> = new Set([
+	'string',
+	'integer',
+	'number',
+	'boolean',
+	'object',
+	'array',
+	'null',
+]);
+
 export const DATA_TYPES: Record<string, JsonSchemaType> = {
 	Int: 'integer',
 	Float: 'number',
@@ -64,6 +79,9 @@ export interface AttributeLike {
 	enum?: readonly (string | number | boolean | null)[];
 	format?: string;
 	const?: unknown;
+	/** Object-level constraints for a nested object field, carried through the round-trip. */
+	required?: readonly string[];
+	additionalProperties?: boolean;
 }
 
 /**
@@ -84,6 +102,8 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 		fragment.type = 'object';
 		fragment.properties = {};
 		for (const sub of attr.properties) fragment.properties[sub.name] = attributeToFragment(sub);
+		if (attr.required) fragment.required = attr.required;
+		if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
 	} else if (attr.type === 'array' && attr.elements) {
 		fragment.type = 'array';
 		fragment.items = attributeToFragment(attr.elements);
@@ -128,11 +148,22 @@ function fragmentToAttribute(name: string, fragment: JsonSchemaFragment): Attrib
 	const attr: AttributeLike = { name };
 	if (fragment.properties) {
 		attr.properties = Object.entries(fragment.properties).map(([subName, sub]) => fragmentToAttribute(subName, sub));
+		if (fragment.required) attr.required = fragment.required;
+		if (fragment.additionalProperties !== undefined) attr.additionalProperties = fragment.additionalProperties;
 	} else if (fragment.type === 'array' && fragment.items) {
 		attr.type = 'array';
-		attr.elements = fragmentToAttribute(name, fragment.items);
+		// The element attribute's name is unused (attributeToFragment ignores it); keep it empty rather
+		// than misleadingly reusing the array field's own name.
+		attr.elements = fragmentToAttribute('', fragment.items);
+	} else if (Array.isArray(fragment.type)) {
+		// JSON-Schema union type. Fold a `'null'` member into `nullable` (the OpenAPI-expressible form)
+		// and keep the remaining member. A single non-null member is the common `['T','null']` case; a
+		// genuine multi-type union isn't expressible on an attribute, so the first member is kept.
+		const members = fragment.type.filter((t) => t !== 'null');
+		if (members.length !== fragment.type.length) attr.nullable = true;
+		if (members.length > 0) attr.type = members[0];
 	} else if (fragment.type != null) {
-		attr.type = Array.isArray(fragment.type) ? fragment.type[0] : fragment.type;
+		attr.type = fragment.type;
 	}
 	if (fragment.description) attr.description = fragment.description;
 	if (fragment.primaryKey) attr.isPrimaryKey = true;

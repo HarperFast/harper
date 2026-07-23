@@ -176,15 +176,27 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 		});
 
 		it('round-trips with projectAttributesToProperties (properties -> attributes -> properties)', () => {
-			// Includes JSON-only hints (enum, format) and nested/array shapes to prove nothing is dropped.
+			// Includes JSON-only hints (enum, format), nested/array shapes, and nested object-level
+			// constraints (required/additionalProperties) to prove nothing is dropped.
 			const properties = {
 				sku: { type: 'string', description: 'Stock keeping unit', primaryKey: true },
 				status: { type: 'string', enum: ['active', 'archived'], format: 'x-status' },
 				tags: { type: 'array', items: { type: 'string' } },
-				dims: { type: 'object', properties: { w: { type: 'integer' }, h: { type: 'integer' } } },
+				dims: {
+					type: 'object',
+					required: ['w'],
+					additionalProperties: false,
+					properties: { w: { type: 'integer' }, h: { type: 'integer' } },
+				},
 			};
 			const roundTripped = projectAttributesToProperties(projectPropertiesToAttributes(properties));
 			assert.deepStrictEqual(roundTripped, properties);
+		});
+
+		it('folds a JSON-Schema union `["T","null"]` into nullable (not truncated to the first member)', () => {
+			const [note] = projectPropertiesToAttributes({ note: { type: ['string', 'null'] } });
+			assert.strictEqual(note.type, 'string');
+			assert.strictEqual(note.nullable, true, 'the null member must become nullable, not be dropped');
 		});
 	});
 });

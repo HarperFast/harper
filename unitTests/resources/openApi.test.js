@@ -293,7 +293,12 @@ describe('test openApi module', () => {
 						id: { type: 'string', primaryKey: true },
 						tags: { type: 'array', items: { type: 'string' } },
 						status: { type: 'string', enum: ['active', 'archived'] },
-						dims: { type: 'object', properties: { w: { type: 'integer' }, h: { type: 'integer' } } },
+						dims: {
+							type: 'object',
+							required: ['w'],
+							properties: { w: { type: 'integer' }, h: { type: 'integer' } },
+						},
+						rows: { type: 'array', items: { type: 'object', properties: { x: { type: 'integer' } } } },
 					},
 				},
 			});
@@ -303,9 +308,14 @@ describe('test openApi module', () => {
 			expect(schema.properties.tags).to.deep.include({ type: 'array', items: { type: 'string' } });
 			// enum surfaces the allowed values
 			expect(schema.properties.status.enum).to.deep.equal(['active', 'archived']);
-			// nested object is recursed, not emitted as a bare/undefined object
+			// nested object is recursed, with its object-level constraints preserved
 			expect(schema.properties.dims.type).to.equal('object');
 			expect(schema.properties.dims.properties.w).to.include({ type: 'integer' });
+			expect(schema.properties.dims.required).to.deep.equal(['w']);
+			// array-of-object: items are the recursed object shape, not an undefined-typed blob
+			expect(schema.properties.rows.type).to.equal('array');
+			expect(schema.properties.rows.items.type).to.equal('object');
+			expect(schema.properties.rows.items.properties.x).to.include({ type: 'integer' });
 		});
 	});
 });
