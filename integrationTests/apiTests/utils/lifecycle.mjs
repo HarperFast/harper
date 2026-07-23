@@ -76,6 +76,6 @@ export async function restartHttpWorkers(client, probePath, timeoutMs = DEFAULT_
 	try {
 		await waitForRouteReady(client, probePath, timeoutMs);
 	} catch (err) {
-		throw new Error(`${err.message} after restart_service`);
+		throw new Error(err.message + ' after restart_service', { cause: err });
 	}
 }
