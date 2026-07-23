@@ -1,13 +1,16 @@
 'use strict';
 
-// Read-side operations against system.hdb_deployment.
-// Write-side lives in deploymentRecorder.ts; this module only reads.
+// Operations against system.hdb_deployment: reads (list/get/payload download) plus the
+// one targeted write, delete_deployment_payload. Deploy-time writes live in deploymentRecorder.ts.
 
+import { Readable } from 'node:stream';
 import { databases } from '../resources/databases.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getActiveEmitter } from './deploymentRecorder.ts';
 import type { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
+
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back']);
@@ -25,6 +28,20 @@ interface GetRequest {
 	deployment_id: string;
 	// Set by serverHandlers.js when the client asks for `Accept: text/event-stream`.
 	progress?: ProgressEmitter;
+}
+
+interface PayloadRequest {
+	deployment_id: string;
+	hdb_user?: { username?: string; role?: { permission?: { super_user?: boolean } } };
+}
+
+function requireSuperUser(req: PayloadRequest, operationName: string): void {
+	if (!req?.hdb_user?.role?.permission?.super_user) {
+		throw new ClientError(
+			`Operation '${operationName}' is restricted to super_user roles`,
+			HTTP_STATUS_CODES.FORBIDDEN
+		);
+	}
 }
 
 function deploymentTable() {
@@ -170,4 +187,97 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 	}
 
 	return stripBlob(row);
+}
+
+async function requireDeploymentRow(deploymentId: unknown): Promise<any> {
+	if (typeof deploymentId !== 'string' || !deploymentId) {
+		throw new ClientError(`'deployment_id' is required`);
+	}
+	const table = deploymentTable();
+	const row = await table.get(deploymentId);
+	if (!row) {
+		throw new ClientError(`No deployment found with id '${deploymentId}'`, 404);
+	}
+	return row;
+}
+
+/**
+ * Stream the stored payload tarball back to the caller as raw bytes. Never base64 — payloads
+ * can be hundreds of MB and a base64 round-trip materializes multi-hundred-MB strings (V8's
+ * string cap is ~512MiB, so large payloads would hard-fail with ERR_STRING_TOO_LONG).
+ * serverHandlers.js pipes any returned Readable that carries a `headers` Map.
+ *
+ * Unlike the other deployment ops, this ALSO enforces super_user directly (matching the
+ * secrets-store ops) rather than relying only on the registered permission, so it cannot be
+ * delegated to a non-SU role via a role's `operations` allowlist (operation_authorization.ts
+ * gate-2). The full tarball can embed secrets — `get_deployment`/`list_deployments` only ever
+ * expose stripped metadata, so this is the one deployment op with that exposure.
+ */
+export async function handleGetDeploymentPayload(req: PayloadRequest): Promise<Readable> {
+	requireSuperUser(req, 'get_deployment_payload');
+	const row = await requireDeploymentRow(req?.deployment_id);
+	if (row.payload_blob == null) {
+		throw new ClientError(
+			`No payload is stored for deployment '${req.deployment_id}' (it may have been reclaimed by ` +
+				`payload retention or delete_deployment_payload)`,
+			404
+		);
+	}
+	// Blob.stream() blocks on incomplete chunk writes, so serving a still-replicating row is
+	// safe — the response streams as the bytes land.
+	const stream = Readable.fromWeb(row.payload_blob.stream() as any);
+	const headers = new Map<string, string>();
+	headers.set('content-type', 'application/octet-stream');
+	// Sourced from the stored row, not the request, so header content is never client-chosen.
+	headers.set('content-disposition', `attachment; filename="deployment-${row.deployment_id}.tar.gz"`);
+	(stream as any).headers = headers;
+	// The payload is already a gzipped tar; tell serverHandlers not to recompress it.
+	(stream as any).preCompressed = true;
+	return stream;
+}
+
+/**
+ * Drop a deployment's stored payload tarball, retaining the row (metadata, event_log) as the
+ * audit trail. Committing the row with payload_blob nulled unlinks the blob file locally via
+ * RecordEncoder's retained-blob check AND replicates the null so peers drop their copies too —
+ * one call reclaims the space cluster-wide (same mechanism as the automatic post-deploy
+ * retention drop in operations.js).
+ */
+export async function handleDeleteDeploymentPayload(
+	req: PayloadRequest
+): Promise<{ message: string; deployment_id: string; freed_bytes: number }> {
+	const row = await requireDeploymentRow(req?.deployment_id);
+	if (!TERMINAL_STATUSES.has(row.status)) {
+		// A non-terminal deployment's blob may still be the replication channel peers are
+		// installing from; yanking it mid-flight would wedge them.
+		throw new ClientError(
+			`Deployment '${req.deployment_id}' is not in a terminal state (status '${row.status}'); ` +
+				`its payload may still be in use. Wait for the deployment to finish before deleting the payload.`,
+			409
+		);
+	}
+	if (row.payload_blob == null) {
+		// Idempotent: deleting an already-reclaimed payload succeeds without a write.
+		return {
+			message: `No payload stored for deployment '${req.deployment_id}'`,
+			deployment_id: req.deployment_id,
+			freed_bytes: 0,
+		};
+	}
+	const freedBytes = typeof row.payload_size === 'number' ? row.payload_size : 0;
+	// Copy before mutating — the row from get() may be a shared/cached record.
+	const updated: any = { ...row, payload_blob: null };
+	updated.event_log = Array.isArray(row.event_log) ? [...row.event_log] : [];
+	// Mirror the recorder's event_log entry shape and the automatic drop's event name.
+	updated.event_log.push({
+		t: Date.now(),
+		event: 'payload_dropped',
+		data: { payload_size: freedBytes, deleted_by: req.hdb_user?.username ?? null },
+	});
+	await deploymentTable().put(updated);
+	return {
+		message: `Deleted payload for deployment '${req.deployment_id}'`,
+		deployment_id: req.deployment_id,
+		freed_bytes: freedBytes,
+	};
 }

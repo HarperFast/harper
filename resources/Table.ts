@@ -554,7 +554,7 @@ export function makeTable(options) {
 									// still need to reference it afterward.
 									const committingTxn = txnInProgress;
 									committingTxn?.resolve();
-									let updateRecordedSequenceId: () => void;
+									let updateRecordedSequenceId: () => MaybePromise<void>;
 									if (event.localTime && lastSequenceId !== event.localTime) {
 										if (event.remoteNodeIds?.length > 0) {
 											updateRecordedSequenceId = () => {
@@ -597,10 +597,40 @@ export function makeTable(options) {
 													new Date(event.localTime),
 													event.remoteNodeIds
 												);
-												dbisDb.put(seqKey, {
-													seqId,
-													nodes: nodeStates,
-												});
+												const seqRecord = { seqId, nodes: nodeStates };
+												// On RocksDB `put` is aliased to `putSync` (see openRocksDatabase), so writing
+												// the cursor directly absorbs RocksDB write-stall back-pressure on the event
+												// loop — during bulk catch-up a single call has been measured blocking for
+												// 101s, which also stops this worker's keep-alives and gets the subscription
+												// torn down by the sender's receive watchdog (harper-pro#603). Staging into a
+												// transaction and committing it is the natively-async write path: the stage is
+												// an in-memory WriteBatch append and the stall is absorbed off-thread by the
+												// commit. Awaiting it keeps the same ordering as the blocking call did, and
+												// back-pressures the apply loop instead of freezing it.
+												if (isRocksDB) {
+													const seqTransaction = new RocksTransaction((dbisDb as any).store);
+													try {
+														(dbisDb as any).putSync(seqKey, seqRecord, { transaction: seqTransaction });
+													} catch (error) {
+														// Staging failed (encoding, or the store closing under a shutdown race), so
+														// nothing will commit this transaction. Abort it rather than leaking a native
+														// transaction that would pin a snapshot and hold off compaction.
+														try {
+															seqTransaction.abort();
+														} catch {}
+														throw error;
+													}
+													return seqTransaction.commit().catch((error) => {
+														// A rejected commit leaves the handle open too, so release it here as well —
+														// same reason as the staging failure above, and the same shape as the
+														// eviction paths' commit failures (see evict/commitItems below).
+														try {
+															seqTransaction.abort();
+														} catch {}
+														throw error;
+													});
+												}
+												return dbisDb.put(seqKey, seqRecord);
 											};
 											lastSequenceId = event.localTime;
 										}
@@ -626,7 +656,7 @@ export function makeTable(options) {
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
-									if (updateRecordedSequenceId) updateRecordedSequenceId();
+									if (updateRecordedSequenceId) await updateRecordedSequenceId();
 									continue;
 								}
 								if (txnInProgress) {
@@ -4780,7 +4810,14 @@ export function makeTable(options) {
 			const index = indices[key];
 			const isIndexing = index.isIndexing;
 			const resolver = propertyResolvers[key];
-			const value = record && (resolver ? resolver(record) : record[key]);
+			// A null/undefined `record` means the record is being removed entirely (delete/eviction pass
+			// record=null), so there are NO values to index — resolve to undefined, not null. `record &&`
+			// yields `null` for record===null, which getIndexedValues() then treats as a genuine null field
+			// value and (for an indexNulls index — the default for @indexed) re-adds a [null, id] entry after
+			// the real [value, id] entry was removed, orphaning it against the now-deleted record. A record
+			// that is present but whose attribute is null is a different case (record is a truthy object) and
+			// still indexes under null. See harper#1894 (F-149).
+			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
 			const existingValue = existingRecord && (resolver ? resolver(existingRecord) : existingRecord[key]);
 			if (value === existingValue && !isIndexing) {
 				continue;

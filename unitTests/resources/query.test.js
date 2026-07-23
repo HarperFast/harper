@@ -1736,6 +1736,82 @@ describe('Querying through Resource API', () => {
 		});
 	});
 
+	describe('starts_with index ranges', () => {
+		const prefix = 'starts-with-astral-';
+		const records = [
+			{ id: 'starts-with-ascii', value: prefix + 'ascii' },
+			{ id: 'starts-with-bmp', value: prefix + '\uffff' },
+			{ id: 'starts-with-astral', value: prefix + '\u{1f600}' },
+			{ id: 'starts-with-non-match', value: 'not-' + prefix },
+		];
+
+		before(async () => {
+			for (const { id, value } of records) {
+				await QueryTable.put(id, { name: value, notIndexed: value });
+			}
+		});
+
+		after(async () => {
+			for (const { id } of records) {
+				await QueryTable.delete(id);
+			}
+		});
+
+		it('matches a full scan when an indexed value continues with an astral-plane character', async () => {
+			async function searchIds(attribute) {
+				const ids = [];
+				for await (const record of QueryTable.search({
+					conditions: [{ attribute, comparator: 'starts_with', value: prefix }],
+				})) {
+					ids.push(record.id);
+				}
+				return ids.sort();
+			}
+
+			const indexedIds = await searchIds('name');
+			const scannedIds = await searchIds('notIndexed');
+			assert.deepEqual(indexedIds, scannedIds);
+			assert.deepEqual(
+				indexedIds,
+				records
+					.slice(0, 3)
+					.map(({ id }) => id)
+					.sort()
+			);
+		});
+
+		it('treats an empty starts_with prefix as a full scan', async () => {
+			const ids = new Set();
+			for await (const record of QueryTable.search({
+				conditions: [{ attribute: 'name', comparator: 'starts_with', value: '' }],
+			})) {
+				ids.add(record.id);
+			}
+			// an empty prefix matches every string value in the table, including unrelated
+			// records from other tests, so just confirm all of ours are present.
+			for (const { id } of records) {
+				assert(ids.has(id), `expected ${id} to be included in an empty-prefix scan`);
+			}
+		});
+
+		it('rejects an empty starts_with prefix when full scans are disallowed', async () => {
+			const results = [];
+			let caughtError;
+			try {
+				for await (const record of QueryTable.search({
+					allowFullScan: false,
+					conditions: [{ attribute: 'name', comparator: 'starts_with', value: '' }],
+				})) {
+					results.push(record);
+				}
+			} catch (error) {
+				caughtError = error;
+			}
+			assert(caughtError);
+			assert.equal(caughtError.statusCode, 403);
+		});
+	});
+
 	describe('Setting conditions on dynamic attributes', () => {
 		const records = [
 			{
