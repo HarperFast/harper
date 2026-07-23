@@ -2815,6 +2815,8 @@ export function makeTable(options) {
 			// Shallow-clone each condition entry (recursing into nested `and`/`or`
 			// groups) so query planning never writes through to the caller's objects.
 			// Array-form entries (`[attribute, value]`) and primitives pass through as-is.
+			// `chainedConditions` sub-entries are intentionally left shared: planning only
+			// reads them (collapsing into the parent's value/comparator), never writes them.
 			function cloneConditions(conditions: any[]): any[] {
 				return conditions.map((condition) => {
 					if (condition == null || typeof condition !== 'object') return condition;
