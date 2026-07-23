@@ -1,0 +1,264 @@
+name: NPM Package Application E2E
+
+# Build the same tarball used by the release workflow, install it as an npm
+# consumer would, and exercise representative applications against that install.
+#
+# redirector and early-hints intentionally track downstream main. This makes the
+# workflow sensitive to compatibility drift in either direction, so failures can
+# reflect a downstream change rather than the Harper PR itself.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-package:
+    name: Build release npm package
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Harper
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: '.node-version'
+          package-manager-cache: false
+
+      - name: Build release package
+        run: npm run package
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(harper-*.tgz)
+          if [[ ${#packages[@]} -ne 1 ]]; then
+            echo "Expected exactly one harper-*.tgz package, found ${#packages[@]}" >&2
+            exit 1
+          fi
+
+          tar -tzf "${packages[0]}" > package-contents.txt
+          grep -qx 'package/dist/bin/harper.js' package-contents.txt
+          grep -qx 'package/dist/index.js' package-contents.txt
+          grep -qx 'package/npm-shrinkwrap.json' package-contents.txt
+          grep -qx 'package/studio/web/index.html' package-contents.txt
+
+          mkdir package-artifact
+          cp "${packages[0]}" package-artifact/harper.tgz
+
+      - name: Upload release package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harper-npm-package
+          path: package-artifact/harper.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  downstream-apps:
+    name: ${{ matrix.app }} against npm package
+    needs: build-package
+    # Org secrets cannot be exposed to pull requests from forks, and both apps
+    # are internal repositories. The package build still runs for fork PRs.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: redirector
+            repository: HarperFast/redirector
+            build: false
+            readiness_path: /Rule/
+          - app: early-hints
+            repository: HarperFast/early-hints
+            build: true
+            readiness_path: /site-images/
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+          private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.app }}
+          permission-contents: read
+
+      - name: Checkout ${{ matrix.repository }} main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ matrix.repository }}
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          path: app
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+
+      - name: Download Harper package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: harper-npm-package
+          path: package
+
+      - name: Install application dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build application
+        if: matrix.build
+        working-directory: app
+        run: npm run build
+
+      - name: Install packaged Harper
+        run: |
+          npm install --global "$GITHUB_WORKSPACE/package/harper.tgz"
+          harper version
+
+      - name: Deploy application and run its integration tests
+        working-directory: app
+        env:
+          DEFAULTS_MODE: prod
+          HDB_ADMIN_USERNAME: admin
+          HDB_ADMIN_PASSWORD: password
+          OPERATIONSAPI_NETWORK_PORT: 9925
+          ROOTPATH: ${{ runner.temp }}/harper-${{ matrix.app }}
+          TEST_DOMAIN: https://localhost:9926
+        run: |
+          set -euo pipefail
+
+          cleanup() {
+            harper stop || true
+          }
+          trap cleanup EXIT
+
+          wait_for_http() {
+            local url=$1
+            local method=${2:-GET}
+            local data=${3:-}
+            local attempt
+            for attempt in {1..120}; do
+              if [[ -n "$data" ]]; then
+                if curl --fail --silent --show-error \
+                  --insecure \
+                  --user "$HDB_ADMIN_USERNAME:$HDB_ADMIN_PASSWORD" \
+                  --header 'Content-Type: application/json' \
+                  --request "$method" \
+                  --data "$data" \
+                  "$url" >/dev/null 2>&1; then
+                  return 0
+                fi
+              elif curl --fail --silent --show-error \
+                --insecure \
+                --user "$HDB_ADMIN_USERNAME:$HDB_ADMIN_PASSWORD" \
+                --request "$method" \
+                "$url" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "Timed out waiting for $url" >&2
+            if [[ -n "$data" ]]; then
+              curl --insecure \
+                --user "$HDB_ADMIN_USERNAME:$HDB_ADMIN_PASSWORD" \
+                --header 'Content-Type: application/json' \
+                --request "$method" \
+                --data "$data" \
+                "$url" || true
+            else
+              curl --insecure \
+                --user "$HDB_ADMIN_USERNAME:$HDB_ADMIN_PASSWORD" \
+                --request "$method" \
+                "$url" || true
+            fi
+            return 1
+          }
+
+          harper install
+          harper start
+          wait_for_http \
+            'http://localhost:9925' \
+            POST \
+            '{"operation":"system_information","attributes":["version"]}'
+
+          CLI_TARGET_USERNAME="$HDB_ADMIN_USERNAME" \
+          CLI_TARGET_PASSWORD="$HDB_ADMIN_PASSWORD" \
+            harper deploy target=http://localhost:9925 replicated=false restart=true
+
+          wait_for_http "https://localhost:9926${{ matrix.readiness_path }}"
+          npm test
+
+      - name: Upload Harper logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harper-${{ matrix.app }}-logs
+          path: ${{ runner.temp }}/harper-${{ matrix.app }}/log/
+          if-no-files-found: warn
+          retention-days: 7
+
+  acl-connect:
+    name: acl-connect against npm package
+    needs: build-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # acl-connect currently has unit tests but no downstream integration suite.
+      # Harper's integration test deploys its published 1.0.10 package and covers
+      # MQTT authentication, ACL enforcement, wildcards, and $SYS events.
+      - name: Checkout Harper
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: '.node-version'
+          package-manager-cache: false
+
+      - name: Install test dependencies
+        run: npm ci
+
+      - name: Download Harper package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: harper-npm-package
+          path: package
+
+      - name: Install packaged Harper
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "$GITHUB_WORKSPACE/package/harper.tgz"
+          harper_script="$(npm root --global)/harper/dist/bin/harper.js"
+          test -f "$harper_script"
+          echo "HARPER_INTEGRATION_TEST_INSTALL_SCRIPT=$harper_script" >> "$GITHUB_ENV"
+          harper version
+
+      - name: Run acl-connect integration test
+        env:
+          HARPER_INTEGRATION_TEST_LOG_DIR: ${{ runner.temp }}/harper-acl-connect-logs
+        run: npm run test:integration -- --isolation=none "integrationTests/components/acl-connect.test.ts"
+
+      - name: Upload Harper logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harper-acl-connect-logs
+          path: ${{ runner.temp }}/harper-acl-connect-logs/
+          if-no-files-found: warn
+          retention-days: 7
