@@ -67,13 +67,17 @@ describe('#1572 query does not mutate the caller conditions array', () => {
 		});
 	});
 
-	it('does not mutate a conditions array passed as the target directly', async () => {
+	it('does not mutate a conditions array (or its entries) passed as the target directly', async () => {
 		await transaction(async () => {
-			// array-form target: search(conditions) rather than search({ conditions })
-			const conditions = [{ attribute: 'category', comparator: 'equals', value: 'common' }];
+			// array-form target: search(conditions) rather than search({ conditions }).
+			// `ts` is Date-typed, so planning coerces the string bound to a Date — that
+			// coercion (and any estimate annotation) must land on our copy, not the
+			// caller's entry object.
+			const conditions = [{ attribute: 'ts', comparator: 'greater_than', value: '2023-11-14T22:13:20.000Z' }];
 			await drain(T.search(conditions));
 			assert.equal(conditions.length, 1, 'array-form target array was mutated');
-			assert.ok(!conditions.some((c) => c.comparator === 'sort'));
+			assert.equal(conditions[0].value, '2023-11-14T22:13:20.000Z', 'caller condition value was coerced in place');
+			assert.ok(!('estimated_count' in conditions[0]), 'estimated_count leaked onto the caller condition');
 		});
 	});
 
