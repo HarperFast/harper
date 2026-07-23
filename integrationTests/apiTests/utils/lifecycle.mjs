@@ -6,6 +6,39 @@ const DEFAULT_READINESS_TIMEOUT_MS = 60000;
 const READINESS_POLL_INTERVAL_MS = 250;
 
 /**
+ * Poll `probePath` until it stops returning 404, i.e. until the route is registered and
+ * being served. Any response in [200, 499] excluding 404 is treated as ready; 4xx
+ * auth/validation responses are fine.
+ *
+ * Use this directly (without `restartHttpWorkers`) when the component/route is already
+ * installed and only async post-boot route registration needs to be awaited — no worker
+ * restart involved.
+ *
+ * @param {ReturnType<import('./client.mjs').createApiClient>} client
+ * @param {string} probePath REST path that should be served by the component
+ * @param {number} [timeoutMs] overall readiness budget (default 60s)
+ */
+export async function waitForRouteReady(client, probePath, timeoutMs = DEFAULT_READINESS_TIMEOUT_MS) {
+	const deadline = Date.now() + timeoutMs;
+	let lastStatus;
+	let lastError;
+	while (Date.now() < deadline) {
+		try {
+			const response = await client.reqRest(probePath).timeout(2000);
+			lastStatus = response.status;
+			if (response.status !== 404) return;
+		} catch (err) {
+			lastError = err;
+		}
+		await setTimeout(READINESS_POLL_INTERVAL_MS);
+	}
+	throw new Error(
+		`Probe ${probePath} did not become ready within ${timeoutMs}ms ` +
+			`(last status=${lastStatus ?? 'none'}, last error=${lastError?.message ?? 'none'})`
+	);
+}
+
+/**
  * Trigger `restart_service http_workers` and wait for the restart to actually complete and
  * the REST workers (and any newly-registered component routes) to be serving traffic again.
  *
@@ -40,21 +73,9 @@ export async function restartHttpWorkers(client, probePath, timeoutMs = DEFAULT_
 	assert.ok(body.job_id, `restart_service returned no job_id: ${JSON.stringify(body)}`);
 	await awaitJobCompleted(client, body.job_id, { timeoutSeconds: Math.ceil(timeoutMs / 1000) });
 
-	const deadline = Date.now() + timeoutMs;
-	let lastStatus;
-	let lastError;
-	while (Date.now() < deadline) {
-		try {
-			const response = await client.reqRest(probePath).timeout(2000);
-			lastStatus = response.status;
-			if (response.status !== 404) return;
-		} catch (err) {
-			lastError = err;
-		}
-		await setTimeout(READINESS_POLL_INTERVAL_MS);
+	try {
+		await waitForRouteReady(client, probePath, timeoutMs);
+	} catch (err) {
+		throw new Error(`${err.message} after restart_service`);
 	}
-	throw new Error(
-		`Probe ${probePath} did not become ready within ${timeoutMs}ms after restart_service ` +
-			`(last status=${lastStatus ?? 'none'}, last error=${lastError?.message ?? 'none'})`
-	);
 }
