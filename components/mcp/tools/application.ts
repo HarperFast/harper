@@ -708,11 +708,12 @@ function makeVisibleTo(
 	return function visibleTo(user: AuthedUser): boolean {
 		// Super-user sees everything.
 		if (user?.role?.permission?.super_user === true) return true;
-		// Non-table Resources have no static permission gate — runtime allow*
-		// predicates enforce. Conservative default: don't list them for
-		// non-super users; they can still call via tools/call if they know
-		// the tool name (pass-through is documented behavior).
-		if (!databaseName || !tableName) return false;
+		// A Resource with no backing table has no static permission gate to consult, so listing is
+		// open to any authenticated caller and the Resource's own `allow*` predicates enforce at call
+		// time. This matches custom `mcpTools`, which have never had a listing filter beyond
+		// authentication — and hiding these while still accepting `tools/call` on them bought no
+		// security, only undiscoverable tools (#1940).
+		if (!databaseName || !tableName) return true;
 		const perm = getUserTablePermissions(user, databaseName, tableName);
 		if (!perm) return false;
 		if (mode === 'read') return perm.read === true || perm.describe === true;

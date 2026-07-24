@@ -331,6 +331,33 @@ describe('mcp/tools/application — registration', () => {
 		assert.equal(update.visibleTo(ALICE_WRITE), true);
 	});
 
+	it('lists verb tools for a table-less Resource to any authenticated user (#1940)', () => {
+		// No databaseName/tableName means no static permission gate to consult, so listing is open and
+		// the Resource's own allow* predicates enforce at call time — the same contract custom
+		// `mcpTools` have always had. Hiding these while still accepting tools/call bought no security.
+		const Inventory = makeTableResource({
+			primaryKey: 'sku',
+			attributes: [{ name: 'sku', type: 'String', isPrimaryKey: true }],
+		});
+		_setResourcesForTest(makeRegistry([['Inventory', { Resource: Inventory }]]));
+		registerApplicationTools();
+		for (const name of ['get_Inventory', 'search_Inventory', 'create_Inventory', 'delete_Inventory']) {
+			const tool = getTool(name);
+			assert.ok(tool, `${name} registered`);
+			assert.equal(tool.visibleTo(NOBODY), true, `${name} is listed for a user with no table grants`);
+			assert.equal(tool.visibleTo(SUPER), true, `${name} is listed for super_user`);
+		}
+	});
+
+	it('still gates a table-backed Resource by table permissions after #1940', () => {
+		// Guards against the #1940 change leaking into the table-backed path.
+		const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		assert.equal(getTool('get_Product').visibleTo(NOBODY), false);
+		assert.equal(getTool('delete_Product').visibleTo(ALICE_READ), false);
+	});
+
 	it('flags delete_ tools as destructive and get_/search_ as readOnly', () => {
 		const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
 		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
