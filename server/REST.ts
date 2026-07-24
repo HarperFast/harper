@@ -399,29 +399,15 @@ let addedMetrics;
 let connectionCount = 0;
 
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
-	httpOptions = scope.options.getAll() ?? {};
+	httpOptions = scope.options.getAll();
 	if ((httpOptions as any).includeExpensiveRecordCountEstimates) {
 		// If they really want to enable expensive record count estimates
 		(Request.prototype as any).includeExpensiveRecordCountEstimates = true;
 	}
-	ensureStarted(scope);
-}
-
-/**
- * Idempotently register REST's HTTP/WS handlers on the middleware chain. The component
- * loader calls this after all root plugins have loaded, so core-registered REST resources
- * (e.g. the /v1 models gateway, #631) are servable on instances whose config has no
- * `rest`/`REST` section. When one exists, its `handleApplication` has already run with the
- * user's options and this is a no-op — activation is independent of config key order.
- */
-export function ensureStarted({
-	server,
-	resources: scopeResources,
-}: Pick<import('../components/Scope.ts').Scope, 'server' | 'resources'>) {
-	resources = scopeResources;
+	resources = scope.resources;
 	if (started) return;
 	started = true;
-	server.http(
+	scope.server.http(
 		async (request: any, nextHandler) => {
 			if (request.isWebSocket) return;
 			return http(request, nextHandler);
@@ -429,7 +415,7 @@ export function ensureStarted({
 		{ after: 'authentication', ...(httpOptions as any) }
 	);
 	if ((httpOptions as any).webSocket === false) return;
-	server.ws(
+	scope.server.ws(
 		async (ws, request: any, chainCompletion) => {
 			connectionCount++;
 			const incomingMessages = new IterableEventQueue();

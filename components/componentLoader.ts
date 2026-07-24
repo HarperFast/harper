@@ -20,7 +20,6 @@ import * as graphqlQueryHandler from '../server/graphqlQuerying.ts';
 import * as roles from '../resources/roles.ts';
 import * as jsHandler from '../resources/jsResource.ts';
 import * as login from '../resources/login.ts';
-import * as modelsGateway from '../resources/models/v1/index.ts';
 import * as REST from '../server/REST.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
@@ -114,7 +113,13 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 		return require('../server/fastifyRoutes');
 	},
 	login,
-	modelsGateway,
+	// Lazy: the gateway is opt-in and off by default, so an install that never enables it
+	// pays no module-load cost for the gateway's graph in the main process or any worker.
+	get modelsGateway() {
+		// Extensionless, like the other require()s here: this path is resolved at runtime
+		// against dist/, where the emitted file is .js (TypeScript does not rewrite require).
+		return require('../resources/models/v1/index');
+	},
 	static: staticFiles,
 	customFunctions: {},
 	http: httpComponent,
@@ -673,16 +678,6 @@ export async function loadComponent(
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
 				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 			}
-		}
-
-		// The /v1 models gateway registers REST-served resources (#631), but REST's chain
-		// only activates via a `rest`/`REST` config section, and a bare instance (no apps)
-		// has none — leaving the gateway's resources registered but unservable. Activate
-		// REST with default options here, after every root plugin has loaded: if any
-		// `rest`/`REST` section exists — whatever its key order — its handleApplication
-		// already ran with the user's options and this is a no-op.
-		if (isRoot && resources.isWorker && (config as any).modelsGateway?.enabled) {
-			REST.ensureStarted({ server, resources });
 		}
 
 		compName = parentCompName;

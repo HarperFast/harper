@@ -49,6 +49,12 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx, {
 			config: {
+				// The gateway's resources are served by REST's middleware chain, and the
+				// gateway does not force REST to start (see resources/models/v1/index.ts).
+				// defaultConfig.yaml ships no `rest` section, so a bare instance needs one
+				// declared here — exactly as a real deployment would. `webSocket` is a leaf
+				// value because a plain empty object is dropped by flattenObject().
+				rest: { webSocket: true },
 				// Gateway is off by default (enabled: false in defaultConfig.yaml). Pass
 				// enabled: true explicitly to activate it for these tests. A plain empty
 				// object would be silently dropped by flattenObject() in harperConfigEnvVars.ts
