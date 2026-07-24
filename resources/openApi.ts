@@ -3,7 +3,6 @@ import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
 import {
 	DATA_TYPES,
-	JSON_SCHEMA_SCALAR_TYPES,
 	type AttributeLike,
 	type JsonSchemaFragment,
 	attributeToSchema,
@@ -22,15 +21,20 @@ const OPENAPI_VERSION = '3.0.3';
 function attributeToOpenApiSchema(attr: AttributeLike): JsonSchemaFragment | undefined {
 	return attributeToSchema(attr, {
 		dialect: 'openapi-3.0.3',
-		mapPrimitive: (type) => {
-			if (type === 'Any' || type === undefined) return {};
-			const resolved = resolveDeclaredType(type, `OpenAPI property "${attr.name}"`);
-			if (!resolved) return {};
-			// Preserve the Harper type name as `format` for the types where it adds information, matching
-			// the top-level `Type()` emitter.
-			return DATA_TYPES[type] ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
-		},
+		// `mapped` is the attribute the recursion actually reached, not the one it started from — a bad
+		// type on `profile.creditScore` has to name that, not `profile`.
+		mapPrimitive: (type, mapped) => openApiPrimitive(type, mapped.name || attr.name),
 	});
+}
+
+/** Shared by the nested emitter and the top-level attribute loop so both warn on an unknown type. */
+function openApiPrimitive(type: string | undefined, attributeName: string | undefined): JsonSchemaFragment {
+	if (type === 'Any' || type === undefined) return {};
+	const resolved = resolveDeclaredType(type, `OpenAPI property "${attributeName || '<unnamed>'}"`);
+	if (!resolved) return {};
+	// Preserve the Harper type name as `format` for the types where it adds information, matching the
+	// top-level `Type()` emitter.
+	return Object.hasOwn(DATA_TYPES, type) ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
 }
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
@@ -161,60 +165,25 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		if (attributes) {
 			for (const attr of attributes) {
 				const { type, name, elements, relationship, definition, nullable, description, hidden } = attr;
-				const union = unionMembers(attr);
-				// @hidden field-level: suppress the attribute from props, query params, and required.
 				if (hidden) continue;
 				const def = definition ?? elements?.definition;
-				if (def) {
-					includeDefinitionInSchema(def);
-				}
-
-				if (nullable === false) {
-					resourceRequired.push(name);
-				}
+				if (def) includeDefinitionInSchema(def);
+				if (nullable === false) resourceRequired.push(name);
 				if (relationship) {
-					if (type === 'array') {
-						props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + elements.type } };
-					} else {
-						props[name] = { $ref: SCHEMA_COMP_REF + type };
-					}
-				} else {
-					if (def) {
-						if (type === 'array') {
-							props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } };
-						} else {
-						props[name] = { $ref: SCHEMA_COMP_REF + def.type };
-					}
-				} else if (attr.properties) {
-					// Nested object from `static properties` — emit the full object schema through the
-					// shared emitter (sub-properties recursed, @hidden suppressed at every level, hints
-					// carried); OpenAPI's table path uses $refs instead.
-					props[name] = attributeToOpenApiSchema(attr) ?? {};
-				} else if (type === 'array') {
-					if (!elements) {
-						// `{ type: 'array' }` with no items — valid JSON Schema (array of anything).
-						props[name] = { type: 'array' };
-					} else if (elements.type === 'Any') {
-						props[name] = { type: 'array', items: { format: elements.type } };
-					} else {
-						// Object and primitive elements alike go through the shared emitter, so an item's
-						// enum/format/const/description survives instead of being flattened to its type.
-						props[name] = { type: 'array', items: attributeToOpenApiSchema(elements) ?? {} };
-					}
+					props[name] =
+						type === 'array'
+							? { type: 'array', items: { $ref: SCHEMA_COMP_REF + elements.type } }
+							: { $ref: SCHEMA_COMP_REF + type };
+				} else if (def) {
+					props[name] =
+						type === 'array'
+							? { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } }
+							: { $ref: SCHEMA_COMP_REF + def.type };
 				} else if (type === 'Any') {
 					props[name] = { format: type };
-				} else if (!DATA_TYPES[type] && JSON_SCHEMA_SCALAR_TYPES.has(type)) {
-					// OpenAPI 3.0.3 has no `'null'` type. A bare `nullable` on an untyped schema says
-					// nothing, so express "only null" the one way the dialect can: a null-only `enum`.
-					props[name] = type === 'null' ? { nullable: true, enum: [null] } : new Type(type);
 				} else {
-					props[name] = new Type(DATA_TYPES[type], type);
+					props[name] = attributeToOpenApiSchema(attr) ?? {};
 				}
-				// Attach per-property JSON-Schema hints (description/enum/format/const) so they surface in
-				// Swagger UI / Redoc; enum in particular tells clients the allowed values. `nullable` is
-				// OpenAPI 3.0.3's expression of a nullable property — it was previously computed only to
-				// derive `required` and never emitted, so a nullable property was advertised as
-				// non-nullable while a nested one (via the shared emitter) was not (#1942).
 				if (props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
 					const prop = props[name] as {
 						description?: string;
