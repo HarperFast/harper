@@ -135,7 +135,11 @@ export async function* openaiStream(
 						if (toolAssembly.size >= MAX_TOOL_CALLS_PER_STREAM) {
 							throw new ToolAssemblyOverflowError(`stream exceeded ${MAX_TOOL_CALLS_PER_STREAM} tool calls`);
 						}
-						existing = { index: toolAssembly.size, arguments: {} };
+						// Null-prototype: arguments come from JSON.parse, so a field literally
+						// named `__proto__` is an own property. Object.assign uses [[Set]], which
+						// on an ordinary object would hit Object.prototype's inherited `__proto__`
+						// setter and silently drop the field (the previous spread did not).
+						existing = { index: toolAssembly.size, arguments: Object.create(null) };
 						toolAssembly.set(incoming.id, existing);
 					}
 					if (incoming.name) existing.name = incoming.name;

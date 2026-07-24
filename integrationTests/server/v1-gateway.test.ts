@@ -230,9 +230,24 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		});
 		assert.notEqual(res.status, 405, 'explicit SSE Accept must not be method-not-allowed');
 		assert.equal(res.status, 200, `expected 200, got ${res.status}`);
+		assert.equal(res.headers.get('content-type'), 'text/event-stream');
 		const text = await res.text();
 		assert.ok(text.includes('data:'), `expected SSE data frames, got: ${text.slice(0, 200)}`);
-		assert.ok(text.includes('[echo stream]'), 'expected the fixture stream content');
+
+		// Reassemble the deltas the way a client does: the fixture streams word by word, so
+		// the content is split ACROSS frames and never appears contiguously in the raw text.
+		const content = text
+			.split('\n')
+			.filter((line) => line.startsWith('data: ') && !line.includes('[DONE]'))
+			.map((line) => {
+				try {
+					return JSON.parse(line.slice(6))?.choices?.[0]?.delta?.content ?? '';
+				} catch {
+					return '';
+				}
+			})
+			.join('');
+		assert.ok(content.includes('[echo stream]'), `unexpected reassembled content: ${content}`);
 	});
 
 	// -----------------------------------------------------------------------

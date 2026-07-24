@@ -135,6 +135,35 @@ describe('openaiStream', () => {
 		assert.ok(new Set(ids).size === 1, 'id must be identical across every chunk');
 	});
 
+	it('accumulates tool arguments across partial deltas without re-copying', async () => {
+		const msgs = await collect(
+			openaiStream(
+				gen(
+					{ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: { a: 1 } }] },
+					{ deltaToolCalls: [{ id: 'c1', arguments: { b: 2 } }] },
+					{ deltaToolCalls: [{ id: 'c1', arguments: { a: 3 } }] }
+				)
+			)
+		);
+		const toolChunk = msgs.map((m) => m.data).find((d) => typeof d === 'object' && d.choices?.[0]?.delta?.tool_calls);
+		const args = JSON.parse(toolChunk.choices[0].delta.tool_calls[0].function.arguments);
+		assert.deepEqual(args, { a: 3, b: 2 }, 'later deltas must win, earlier fields preserved');
+	});
+
+	it('stores a tool argument literally named __proto__ instead of hitting the prototype setter', async () => {
+		// Arguments arrive from JSON.parse, where `__proto__` is an own property. Object.assign
+		// uses [[Set]], so an ordinary accumulator would invoke Object.prototype's inherited
+		// setter and silently drop the field.
+		const incoming = JSON.parse('{"__proto__": {"polluted": true}, "safe": 1}');
+		const msgs = await collect(openaiStream(gen({ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: incoming }] })));
+		const toolChunk = msgs.map((m) => m.data).find((d) => typeof d === 'object' && d.choices?.[0]?.delta?.tool_calls);
+		const raw = toolChunk.choices[0].delta.tool_calls[0].function.arguments;
+		const args = JSON.parse(raw);
+		assert.equal(args.safe, 1);
+		assert.ok(raw.includes('__proto__'), `__proto__ field must survive serialization, got: ${raw}`);
+		assert.equal({}.polluted, undefined, 'must not pollute Object.prototype');
+	});
+
 	// A backend that throws partway through the stream (Models#wrapStream re-throws
 	// mid-stream errors). The loop must convert that into a final data:{error} frame,
 	// not let the throw propagate and tear the connection down.
