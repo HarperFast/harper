@@ -4,88 +4,33 @@ import { Resource } from './Resource.ts';
 import {
 	DATA_TYPES,
 	JSON_SCHEMA_SCALAR_TYPES,
-	attributeToFragment,
-	projectPropertiesToAttributes,
+	type AttributeLike,
 	type JsonSchemaFragment,
+	attributeToSchema,
+	projectPropertiesToAttributes,
+	resolveDeclaredType,
 } from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
 
 /**
- * Convert a canonical `Table.properties` fragment into one this document's declared dialect accepts.
- *
- * `attributeToFragment` produces the front-end-neutral projection: it speaks current JSON Schema and
- * carries Harper's own directives, neither of which belongs in an emitted 3.0.3 document. Rather than
- * bend that projector (its output is also `Table.properties`, which must stay neutral), translate on
- * the way out — recursively, since nested objects and array items are the paths that leak.
+ * Emit an attribute as an OpenAPI 3.0.3 property schema. Shares its traversal with the MCP deriver so
+ * the two can't describe the same nested fragment differently; the primitive mapping stays
+ * OpenAPI-specific (`format` carries the Harper type name, which MCP has no equivalent for).
+ * Returns `undefined` for a `@hidden` attribute — callers skip it.
  */
-function toOpenApiDialect(fragment: JsonSchemaFragment): JsonSchemaFragment {
-	// `hidden` / `primaryKey` / the timestamp flags are Harper behavior, not schema vocabulary.
-	const {
-		hidden: _hidden,
-		primaryKey: _primaryKey,
-		assignCreatedTime: _assignCreatedTime,
-		assignUpdatedTime: _assignUpdatedTime,
-		const: constValue,
-		...rest
-	} = fragment;
-	const out: JsonSchemaFragment = rest;
-	// 3.0 has no `'null'` type and no type unions: nullability is the `nullable` keyword, and a genuine
-	// multi-type union is `oneOf`. Keeping only the first member would silently narrow the contract.
-	if (Array.isArray(out.type)) {
-		const members = out.type.filter((t) => t !== 'null');
-		if (members.length !== out.type.length) out.nullable = true;
-		if (members.length > 1) {
-			delete out.type;
-			out.oneOf = members.map((member) => ({ type: member }));
-		} else if (members.length === 1) out.type = members[0];
-		else delete out.type;
-	} else if (out.type === 'null') {
-		// A null-only declaration. 3.0 has no `'null'` type, and a bare `nullable` on an untyped schema
-		// constrains nothing — a null-only `enum` is the form the dialect can actually express.
-		delete out.type;
-		out.nullable = true;
-		if (out.enum === undefined) out.enum = [null];
-	}
-	// `const` is draft-06; emit the equivalent single-value `enum`, intersecting when both are declared.
-	if (constValue !== undefined) {
-		out.enum = Array.isArray(out.enum) ? out.enum.filter((v) => v === constValue) : [constValue as never];
-	}
-	// 3.0's `nullable` does not widen an `enum` — without `null` in the list a validator rejects it.
-	if (out.nullable && Array.isArray(out.enum) && !out.enum.includes(null)) out.enum = [...out.enum, null];
-	if (out.properties) {
-		const translated: Record<string, JsonSchemaFragment> = {};
-		for (const [key, sub] of Object.entries(out.properties)) {
-			if (sub.hidden) continue; // a hidden sub-property must not surface, and `required` follows below
-			translated[key] = toOpenApiDialect(sub);
-		}
-		out.properties = translated;
-		if (out.required) {
-			const visible = out.required.filter((key) => Object.hasOwn(translated, key));
-			if (visible.length > 0) out.required = visible;
-			else delete out.required;
-		}
-	}
-	if (out.items) out.items = toOpenApiDialect(out.items);
-	return out;
-}
-
-/**
- * The non-null members of an attribute's declared type union, but only when there is more than one —
- * `['string','null']` is nullability, not a union, and the existing single-type path already handles
- * it. Returns undefined when the attribute has no union to translate.
- */
-function unionMembers(attr: { types?: readonly string[] }): string[] | undefined {
-	if (!attr.types) return undefined;
-	const members = attr.types.filter((member) => member !== 'null');
-	return members.length > 1 ? members : undefined;
-}
-
-/** A single union member as a 3.0 Schema Object, using the same type mapping as the scalar path. */
-function openApiUnionMember(member: string) {
-	return !DATA_TYPES[member] && JSON_SCHEMA_SCALAR_TYPES.has(member)
-		? new Type(member)
-		: new Type(DATA_TYPES[member], member);
+function attributeToOpenApiSchema(attr: AttributeLike): JsonSchemaFragment | undefined {
+	return attributeToSchema(attr, {
+		dialect: 'openapi-3.0.3',
+		mapPrimitive: (type) => {
+			if (type === 'Any' || type === undefined) return {};
+			const resolved = resolveDeclaredType(type, `OpenAPI property "${attr.name}"`);
+			if (!resolved) return {};
+			// Preserve the Harper type name as `format` for the types where it adds information, matching
+			// the top-level `Type()` emitter.
+			return DATA_TYPES[type] ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
+		},
+	});
 }
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
@@ -238,71 +183,51 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						if (type === 'array') {
 							props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } };
 						} else {
-							props[name] = { $ref: SCHEMA_COMP_REF + def.type };
-						}
-					} else if (attr.properties) {
-						// Nested object from `static properties` — the shared projector emits the full object
-						// schema (sub-properties recursed); OpenAPI's table path uses $refs instead.
-						props[name] = toOpenApiDialect(attributeToFragment(attr));
-					} else if (union) {
-						// A genuine multi-type union (`['string','number']`). 3.0 has no type arrays, so the
-						// equivalent is `oneOf`; `attr.type` alone would drop every member but the first.
-						props[name] = { oneOf: union.map(openApiUnionMember) };
-					} else if (type === 'array') {
-						if (!elements) {
-							// `{ type: 'array' }` with no items — valid JSON Schema (array of anything).
-							props[name] = { type: 'array' };
-						} else if (elements.properties) {
-							// array of nested objects — project the element to its full object schema
-							props[name] = { type: 'array', items: toOpenApiDialect(attributeToFragment(elements)) };
-						} else if (elements.type === 'Any') {
-							props[name] = { type: 'array', items: { format: elements.type } };
-						} else if (!DATA_TYPES[elements.type] && JSON_SCHEMA_SCALAR_TYPES.has(elements.type)) {
-							props[name] =
-								elements.type === 'null'
-									? { type: 'array', items: { nullable: true, enum: [null] } }
-									: { type: 'array', items: new Type(elements.type) };
-						} else {
-							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
-						}
-					} else if (type === 'Any') {
-						props[name] = { format: type };
-					} else if (!DATA_TYPES[type] && JSON_SCHEMA_SCALAR_TYPES.has(type)) {
-						// OpenAPI 3.0.3 has no `'null'` type. A bare `nullable` on an untyped schema says
-						// nothing, so express "only null" the one way the dialect can: a null-only `enum`.
-						props[name] = type === 'null' ? { nullable: true, enum: [null] } : new Type(type);
-					} else {
-						props[name] = new Type(DATA_TYPES[type], type);
+						props[name] = { $ref: SCHEMA_COMP_REF + def.type };
 					}
+				} else if (attr.properties) {
+					// Nested object from `static properties` — emit the full object schema through the
+					// shared emitter (sub-properties recursed, @hidden suppressed at every level, hints
+					// carried); OpenAPI's table path uses $refs instead.
+					props[name] = attributeToOpenApiSchema(attr) ?? {};
+				} else if (type === 'array') {
+					if (!elements) {
+						// `{ type: 'array' }` with no items — valid JSON Schema (array of anything).
+						props[name] = { type: 'array' };
+					} else if (elements.type === 'Any') {
+						props[name] = { type: 'array', items: { format: elements.type } };
+					} else {
+						// Object and primitive elements alike go through the shared emitter, so an item's
+						// enum/format/const/description survives instead of being flattened to its type.
+						props[name] = { type: 'array', items: attributeToOpenApiSchema(elements) ?? {} };
+					}
+				} else if (type === 'Any') {
+					props[name] = { format: type };
+				} else if (!DATA_TYPES[type] && JSON_SCHEMA_SCALAR_TYPES.has(type)) {
+					// OpenAPI 3.0.3 has no `'null'` type. A bare `nullable` on an untyped schema says
+					// nothing, so express "only null" the one way the dialect can: a null-only `enum`.
+					props[name] = type === 'null' ? { nullable: true, enum: [null] } : new Type(type);
+				} else {
+					props[name] = new Type(DATA_TYPES[type], type);
 				}
-				// Attach per-property JSON-Schema hints (description/enum/format) so they surface in
-				// Swagger UI / Redoc; enum in particular tells clients the allowed values.
-				//
-				// This document declares OpenAPI 3.0.3, whose Schema Object is the JSON Schema draft-04
-				// subset: `const` only arrived in draft-06, so it is not a keyword here. Emit the
-				// equivalent single-value `enum` instead of a keyword the declared dialect doesn't define.
+				// Attach per-property JSON-Schema hints (description/enum/format/const) so they surface in
+				// Swagger UI / Redoc; enum in particular tells clients the allowed values. `nullable` is
+				// OpenAPI 3.0.3's expression of a nullable property — it was previously computed only to
+				// derive `required` and never emitted, so a nullable property was advertised as
+				// non-nullable while a nested one (via the shared emitter) was not (#1942).
 				if (props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
 					const prop = props[name] as {
 						description?: string;
-						enum?: unknown[];
+						enum?: unknown;
 						format?: string;
+						const?: unknown;
 						nullable?: boolean;
 					};
 					if (description) prop.description = description;
 					if (attr.enum && prop.enum === undefined) prop.enum = attr.enum;
-					// An author-declared `format` outranks the Harper type name `Type()` stamps on.
-					if (attr.format) prop.format = attr.format;
-					// Intersect rather than defer: `const` narrows an `enum` declared alongside it.
-					if (attr.const !== undefined) {
-						prop.enum = Array.isArray(prop.enum) ? prop.enum.filter((value) => value === attr.const) : [attr.const];
-					}
-					// `type: ['string', 'null']` folds to `type: 'string'` + `nullable` upstream; without this the
-					// scalar path emits the type alone and the document claims the field rejects null.
-					if (nullable) prop.nullable = true;
-					// 3.0's `nullable` does not widen an `enum` — without `null` in the list a validator rejects it.
-					if (prop.nullable && Array.isArray(prop.enum) && !prop.enum.includes(null)) {
-						prop.enum = [...prop.enum, null];
-					}
+					if (attr.format && prop.format === undefined) prop.format = attr.format;
+					if (attr.const !== undefined && prop.const === undefined) prop.const = attr.const;
+					if (nullable && prop.nullable === undefined) prop.nullable = true;
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
