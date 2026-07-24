@@ -16,10 +16,10 @@
  * NOTE: `modelsGateway: { enabled: true }` is passed explicitly because the
  * gateway is off by default (`enabled: false` in defaultConfig.yaml). The test
  * harness plumbs this via HARPER_SET_CONFIG. This suite runs against a bare
- * instance (no deployed apps), so no component config contains a `rest` key —
- * componentLoader activates REST (REST.ensureStarted, after root plugin
- * loading) when the gateway is enabled so its chain serves these endpoints.
- * That activation path is part of what this suite covers.
+ * instance (no deployed apps), so it also declares an explicit `rest` section
+ * below: the gateway deliberately does NOT force REST to start (see
+ * resources/models/v1/index.ts), so a real deployment must configure `rest`
+ * itself, and this suite mirrors that requirement.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
