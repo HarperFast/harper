@@ -1,0 +1,12 @@
+# #1735 — the natural #1609 use case: a custom MCP content resource that wraps
+# real, row-level-allowRead-gated table data. `Order` rows carry `customerId`;
+# `resources.js` denies a row to any authenticated user whose username doesn't
+# match it (super_user always passes). @export keeps the table on the normal
+# REST path for the anchor check.
+
+type Order @table @export {
+	id: ID @primaryKey
+	customerId: String
+	item: String
+	total: Float
+}

@@ -1,0 +1,9 @@
+# #1735 — MCP custom mcpResources (#1609) must enforce row-level allowRead.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true
+graphql: true
+databases:
+  - name: data

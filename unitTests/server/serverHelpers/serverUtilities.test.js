@@ -8,6 +8,8 @@ const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const { TEST_JSON_SUPER_USER, TEST_JSON_NON_SU } = require('../../test_data');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
+const { runWithDeployValidationGuard } = require('#src/server/serverHelpers/deployValidationState');
+const quota = require('#src/components/mcp/quota');
 const operation_function_caller = require('#src/utility/OperationFunctionCaller');
 const logger = require('#src/utility/logging/harper_logger');
 const { contextStorage } = require('#src/resources/transaction');
@@ -657,6 +659,53 @@ describe('Test serverUtilities.js module ', () => {
 
 		it('allows a non-super_user whose role grants the op via the operations allowlist (SU-bypass)', function () {
 			assert.equal(op_auth.verifyPerms(nonSuRequest(SU_OP, [SU_OP]), SU_OP), null);
+		});
+	});
+
+	// #1809 — process-wide server.* registrations must not leak from a throwaway deploy-validation load.
+	describe('deploy-validation guard: registrations no-op while validating', () => {
+		const CAND_OP = 'validation_candidate_op';
+		const QUOTA_INFO = { tool: 'answer', user: { username: 'u' }, profile: 'application', sessionId: 's' };
+
+		afterEach(() => {
+			serverUtilities.OPERATION_FUNCTION_MAP.delete(CAND_OP);
+			quota.setMcpQuotaHandler(undefined);
+		});
+
+		it('skips server.registerOperation during validation, then resumes after', async () => {
+			await runWithDeployValidationGuard(async () => {
+				server.registerOperation({ name: CAND_OP, execute: async () => ({}) });
+				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.has(CAND_OP), false, 'not registered during validation');
+			});
+			server.registerOperation({ name: CAND_OP, execute: async () => ({}) });
+			assert.equal(
+				serverUtilities.OPERATION_FUNCTION_MAP.has(CAND_OP),
+				true,
+				'registers normally after the guard lowers'
+			);
+		});
+
+		it('skips server.setMcpQuotaHandler during validation, keeping the live policy', async () => {
+			server.setMcpQuotaHandler(() => ({ allowed: false, message: 'live policy' }));
+			await runWithDeployValidationGuard(async () => {
+				server.setMcpQuotaHandler(() => true); // a candidate trying to disable the live policy
+			});
+			assert.deepEqual(await quota.checkDurableQuota(QUOTA_INFO), { allowed: false, message: 'live policy' });
+		});
+
+		it('lowers the guard even when the validation load throws', async () => {
+			await assert.rejects(
+				runWithDeployValidationGuard(async () => {
+					throw new Error('load failed');
+				}),
+				/load failed/
+			);
+			server.registerOperation({ name: CAND_OP, execute: async () => ({}) });
+			assert.equal(
+				serverUtilities.OPERATION_FUNCTION_MAP.has(CAND_OP),
+				true,
+				'registration works again after a failure'
+			);
 		});
 	});
 });

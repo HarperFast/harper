@@ -4,7 +4,13 @@
  * table-level interactions, loading records, updating records, querying, and more.
  */
 
-import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.ts';
+import {
+	CONFIG_PARAMS,
+	OPERATIONS_ENUM,
+	SYSTEM_TABLE_NAMES,
+	SYSTEM_SCHEMA_NAME,
+	MAX_SET_TIMEOUT_MS,
+} from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
@@ -247,6 +253,25 @@ type ResidencyDefinition = number | string[] | void;
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
  * @param options
  */
+// Shallow-clone each condition entry (recursing into nested `and`/`or` groups) so
+// query planning never writes through to the caller's objects (harper#1572).
+// Array-form entries (`[attribute, value]`) and primitives pass through as-is;
+// `chainedConditions` sub-entries are intentionally left shared: planning only
+// reads them (collapsing into the parent's value/comparator), never writes them.
+// Module-scoped (stateless) so it isn't re-created on every search().
+function cloneConditions(conditions: any[]): any[] {
+	return conditions.map((condition) => {
+		if (condition == null || typeof condition !== 'object') return condition;
+		if (Array.isArray(condition)) {
+			// array-form entry (`[attribute, value]`) may also carry named props
+			// (comparator, estimated_count); preserve both.
+			return Object.assign(condition.slice(), condition);
+		}
+		const copy = { ...condition };
+		if (copy.conditions) copy.conditions = cloneConditions(copy.conditions);
+		return copy;
+	});
+}
 // #section: setup-and-factory
 export function makeTable(options) {
 	const {
@@ -548,7 +573,7 @@ export function makeTable(options) {
 									// still need to reference it afterward.
 									const committingTxn = txnInProgress;
 									committingTxn?.resolve();
-									let updateRecordedSequenceId: () => void;
+									let updateRecordedSequenceId: () => MaybePromise<void>;
 									if (event.localTime && lastSequenceId !== event.localTime) {
 										if (event.remoteNodeIds?.length > 0) {
 											updateRecordedSequenceId = () => {
@@ -591,10 +616,40 @@ export function makeTable(options) {
 													new Date(event.localTime),
 													event.remoteNodeIds
 												);
-												dbisDb.put(seqKey, {
-													seqId,
-													nodes: nodeStates,
-												});
+												const seqRecord = { seqId, nodes: nodeStates };
+												// On RocksDB `put` is aliased to `putSync` (see openRocksDatabase), so writing
+												// the cursor directly absorbs RocksDB write-stall back-pressure on the event
+												// loop — during bulk catch-up a single call has been measured blocking for
+												// 101s, which also stops this worker's keep-alives and gets the subscription
+												// torn down by the sender's receive watchdog (harper-pro#603). Staging into a
+												// transaction and committing it is the natively-async write path: the stage is
+												// an in-memory WriteBatch append and the stall is absorbed off-thread by the
+												// commit. Awaiting it keeps the same ordering as the blocking call did, and
+												// back-pressures the apply loop instead of freezing it.
+												if (isRocksDB) {
+													const seqTransaction = new RocksTransaction((dbisDb as any).store);
+													try {
+														(dbisDb as any).putSync(seqKey, seqRecord, { transaction: seqTransaction });
+													} catch (error) {
+														// Staging failed (encoding, or the store closing under a shutdown race), so
+														// nothing will commit this transaction. Abort it rather than leaking a native
+														// transaction that would pin a snapshot and hold off compaction.
+														try {
+															seqTransaction.abort();
+														} catch {}
+														throw error;
+													}
+													return seqTransaction.commit().catch((error) => {
+														// A rejected commit leaves the handle open too, so release it here as well —
+														// same reason as the staging failure above, and the same shape as the
+														// eviction paths' commit failures (see evict/commitItems below).
+														try {
+															seqTransaction.abort();
+														} catch {}
+														throw error;
+													});
+												}
+												return dbisDb.put(seqKey, seqRecord);
 											};
 											lastSequenceId = event.localTime;
 										}
@@ -620,7 +675,7 @@ export function makeTable(options) {
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
-									if (updateRecordedSequenceId) updateRecordedSequenceId();
+									if (updateRecordedSequenceId) await updateRecordedSequenceId();
 									continue;
 								}
 								if (txnInProgress) {
@@ -2081,8 +2136,10 @@ export function makeTable(options) {
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
 					if (options?.residencyId != undefined) residencyId = options.residencyId;
-					const expiresAt: number =
-						options?.expiresAt ?? context?.expiresAt ?? (expirationMs ? expirationMs + Date.now() : -1);
+					// options/context expiresAt are the most specific overrides; a record @expiresAt field
+					// (resolved below, once recordToStore is merged) overrides the table default in both
+					// directions; the table default is the final fallback. -1 means no expiration.
+					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
 					const additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 					// Bulk base-copy snapshot apply: store current-state directly with no audit/transaction-log entry
 					// and no out-of-order resequencing/dedup (the source of the O(n) keyed-lookup spin in
@@ -2499,6 +2556,35 @@ export function makeTable(options) {
 						}
 						residencyId = getResidencyId(residency);
 					}
+					if (expiresAt == undefined) {
+						// A schema @expiresAt attribute makes the record field authoritative over the table
+						// default, in both directions: stamp it into the stored expiry metadata that governs
+						// read-hiding and the cleanup sweep, not just the separate index-pruning sweep (which
+						// only removes already-past records and so can never extend past the table default).
+						// Read from recordToStore so the metadata matches exactly what the pruning sweep later
+						// reads back. Falls back to the table default when the field is unset or not a timestamp.
+						const fieldExpiresAt = expiresAtProperty ? recordToStore?.[expiresAtProperty.name] : undefined;
+						// Coerce only genuine timestamp shapes: a number/bigint epoch, a Date, or a numeric/ISO
+						// string. Booleans, empty/whitespace strings, and null/undefined fall through to NaN so a
+						// nonsensical field value uses the table default rather than expiring the record at epoch 0.
+						let fieldExpiresAtMs = NaN;
+						if (typeof fieldExpiresAt === 'number' || typeof fieldExpiresAt === 'bigint')
+							fieldExpiresAtMs = Number(fieldExpiresAt);
+						else if (fieldExpiresAt instanceof Date) fieldExpiresAtMs = fieldExpiresAt.getTime();
+						else if (typeof fieldExpiresAt === 'string' && fieldExpiresAt.trim() !== '') {
+							const numeric = Number(fieldExpiresAt);
+							fieldExpiresAtMs = Number.isFinite(numeric) ? numeric : Date.parse(fieldExpiresAt);
+						}
+						// Only a finite, non-negative epoch counts: negatives collide with the -1 "no expiration"
+						// sentinel (the encoder omits HAS_EXPIRATION for <0, but the field sweep would still evict a
+						// negative field value), so treat a negative/NaN field as unset and use the table default.
+						expiresAt =
+							Number.isFinite(fieldExpiresAtMs) && fieldExpiresAtMs >= 0
+								? fieldExpiresAtMs
+								: expirationMs
+									? expirationMs + Date.now()
+									: -1;
+					}
 					if (!fullUpdate) {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
 						auditRecordToStore = recordUpdate;
@@ -2745,6 +2831,17 @@ export function makeTable(options) {
 					},
 				].concat(conditions);
 			}
+			// Never mutate the caller's conditions in place. Query planning annotates
+			// and restructures conditions as it runs — it pushes a `{ comparator: 'sort' }`
+			// pseudo-condition for index-order alignment, sets `descending`, caches
+			// `estimated_count`, collapses chained conditions, and coerces values — all
+			// on the entry objects. When the caller reuses the same array/objects across
+			// queries those annotations leak: a leaked pseudo-condition throws a coercion
+			// error, a stale `descending` reverses a scan, a cached `estimated_count`
+			// misplans (harper#1572). Copy the array and every entry (recursing into
+			// nested `and`/`or` groups) up front so all downstream mutation is on our own
+			// objects. Entries are small and shallow; the clone is cheap next to the query.
+			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
 			const filtered = {};
 
@@ -2875,8 +2972,10 @@ export function makeTable(options) {
 								} is not a defined attribute`,
 								404
 							);
-						if (attribute.indexed) {
-							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
+						if (attribute.indexed || attribute.isPrimaryKey) {
+							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index.
+							// the primary key has no secondary index, but the primary store is itself keyed in
+							// primary-key order, so scanning it is already aligned with the sort
 							orderAlignedCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
 						} else if (conditions.length === 0 && !target.allowFullScan)
@@ -4741,7 +4840,14 @@ export function makeTable(options) {
 			const index = indices[key];
 			const isIndexing = index.isIndexing;
 			const resolver = propertyResolvers[key];
-			const value = record && (resolver ? resolver(record) : record[key]);
+			// A null/undefined `record` means the record is being removed entirely (delete/eviction pass
+			// record=null), so there are NO values to index — resolve to undefined, not null. `record &&`
+			// yields `null` for record===null, which getIndexedValues() then treats as a genuine null field
+			// value and (for an indexNulls index — the default for @indexed) re-adds a [null, id] entry after
+			// the real [value, id] entry was removed, orphaning it against the now-deleted record. A record
+			// that is present but whose attribute is null is a different case (record is a truthy object) and
+			// still indexes under null. See harper#1894 (F-149).
+			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
 			const existingValue = existingRecord && (resolver ? resolver(existingRecord) : existingRecord[key]);
 			if (value === existingValue && !isIndexing) {
 				continue;
@@ -5766,7 +5872,7 @@ export function makeTable(options) {
 								resolve(undefined);
 								cleanupPriority = 0; // reset the priority
 							})),
-						Math.min(nextScheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
+						Math.min(nextScheduled - Date.now(), MAX_SET_TIMEOUT_MS) // make sure it can fit in 32-bit signed number
 					).unref(); // don't let this prevent closing the thread
 				};
 				startNextTimer(nextScheduled);

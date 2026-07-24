@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
@@ -8,6 +10,10 @@ import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
 import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.ts';
 import { generateJsonApi } from '../resources/openApi.ts';
+import { getConfigPath } from '../config/configUtils.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { ASIDE_STAGING_DIR } from '../components/Application.ts';
+import { restartNeeded } from '../components/requestRestart.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -71,6 +77,45 @@ function finalizeResponse(responseData, headers, status, request) {
 	return responseData;
 }
 
+/**
+ * A component deployed to disk (via `deploy_component`) but not yet loaded into this
+ * server's live router — because Harper hasn't restarted since — produces a route miss
+ * indistinguishable from a URL that never existed. If the URL's first segment names a
+ * components-root directory, surface that distinction instead of a generic 404 (harper#674).
+ * `name` is decoded and checked for path-traversal characters before being joined into a
+ * filesystem path. Uses `stat`/`isDirectory` (not `access`) so a stray non-directory file
+ * directly under the components root (e.g. `README.md`, `.DS_Store`) can't be mistaken for
+ * a deployed component.
+ */
+async function findInactiveComponent(url: string): Promise<string | undefined> {
+	const firstSegment = url.split(/[/?]/, 1)[0];
+	if (!firstSegment) return undefined;
+	let name: string;
+	try {
+		name = decodeURIComponent(firstSegment);
+	} catch {
+		return undefined;
+	}
+	if (
+		!name ||
+		name === '.' ||
+		name === '..' ||
+		name === 'node_modules' ||
+		name === ASIDE_STAGING_DIR ||
+		name.includes('/') ||
+		name.includes('\\')
+	)
+		return undefined;
+	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	if (!componentsRoot || typeof componentsRoot !== 'string') return undefined;
+	try {
+		const stats = await stat(join(componentsRoot, name));
+		return stats.isDirectory() ? name : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 async function http(request: Request, nextHandler) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
@@ -88,7 +133,31 @@ async function http(request: Request, nextHandler) {
 		let resource: typeof Resource;
 		if (url !== OPENAPI_DOMAIN) {
 			const entry = resources.getMatch(url, isSse ? 'sse' : 'rest');
-			if (!entry) return nextHandler(request); // no resource handler found
+			if (!entry) {
+				// Only surface the actionable "needs a restart" 404 when a restart is genuinely
+				// pending — i.e. a component was deployed (restart:false) since this server last
+				// loaded its routes, so restartNeeded() is set. Without a pending restart, a
+				// directory under componentsRoot is either an already-active component (which would
+				// have matched a route above) or not a live component at all, so fall back to the
+				// generic 404 rather than claiming a restart would activate it. (harper#674)
+				//
+				// Also gated on an authenticated super_user: this check runs before any resource is
+				// matched, so no auth gate has run yet for this request. Only reveal the actionable
+				// message to a super_user — otherwise a caller could use the response difference
+				// (actionable vs. generic 404) as an oracle to probe which component directories
+				// exist on disk. `getComponents` (utility/operation_authorization.ts) already treats
+				// "which components are deployed" as super_user-only information; match that here.
+				if (restartNeeded() && request?.user?.role?.permission?.super_user) {
+					const inactiveComponent = await findInactiveComponent(url);
+					if (inactiveComponent) {
+						throw new ClientError(
+							`Component '${inactiveComponent}' is deployed but Harper may need to be restarted before its routes are active.`,
+							404
+						);
+					}
+				}
+				return nextHandler(request); // no resource handler found
+			}
 			request.handlerPath = entry.path;
 			target = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
 			if (entry.params) Object.assign(target, entry.params); // bind parameterised path segments (e.g. :id, *rest)

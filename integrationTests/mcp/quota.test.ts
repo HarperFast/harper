@@ -1,9 +1,10 @@
 /**
- * #1610 — per-client-identity rate limiting + the durable quota hook.
+ * #1610/#1809 — per-client-identity rate limiting + the durable quota handler.
  *
  * The instance configures identityHeader: x-test-client (so the test controls
- * identity per call), a per-client bucket of burst 6 with negligible refill,
- * and quota.resource: McpQuota (persisted per-identity counter, limit 3).
+ * identity per call) and a per-client bucket of burst 6 with negligible refill.
+ * The fixture registers the durable quota policy via server.setMcpQuotaHandler
+ * (limit 3), backed by an internal per-identity counter table.
  * Every tools/call opens a FRESH session — the session-cycling abuse loop the
  * issue describes — so anything that throttles here is client-scoped, not
  * session-scoped. Expected ladder for one identity:
@@ -90,7 +91,6 @@ suite('MCP per-client rate limit + durable quota (#1610)', (ctx: ContextWithHarp
 							perClientPerSecond: 0.001,
 							perClientBurst: 6,
 						},
-						quota: { resource: 'McpQuota' },
 					},
 				},
 			},
@@ -133,15 +133,47 @@ suite('MCP per-client rate limit + durable quota (#1610)', (ctx: ContextWithHarp
 		strictEqual(payload.retryAfterSeconds, 3600);
 	});
 
-	test('a different client identity is unaffected and the counter persists per identity', async () => {
+	test('a different client identity is unaffected; the internal counter is not client-reachable', async () => {
+		// A fresh identity starts with a clean quota (per-identity isolation; persistence
+		// per identity is covered by the ok,ok,ok→quota_exceeded sequence above).
 		const body = await callAnswerFreshSession('client-c');
 		strictEqual(body.result?.isError ?? false, false, `fresh identity admitted: ${JSON.stringify(body)}`);
-		// The durable counter is a real table row, visible over REST.
+		// The counter table is internal (not @export), so — unlike the old exported-Resource
+		// approach — no client can read or reset it over REST. The route should not resolve.
 		const res = await fetch(new URL('/QuotaCounter/client-c', ctx.harper.httpURL), {
 			headers: { authorization: auth },
 		});
-		strictEqual(res.status, 200);
-		const record = await res.json();
-		strictEqual(record.used, 1);
+		strictEqual(res.status, 404, `internal counter must not be REST-exposed (got ${res.status})`);
+	});
+
+	test('the internal counter exposes no MCP CRUD tools (no way to reset a quota)', async () => {
+		const baseHeaders = {
+			'content-type': 'application/json',
+			'accept': 'application/json, text/event-stream',
+			'authorization': auth,
+		};
+		const initRes = await fetch(new URL('/mcp', ctx.harper.httpURL), {
+			method: 'POST',
+			headers: baseHeaders,
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: ++rpcId,
+				method: 'initialize',
+				params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'quota-it', version: '0' } },
+			}),
+		});
+		const sessionId = initRes.headers.get('mcp-session-id');
+		const listRes = await fetch(new URL('/mcp', ctx.harper.httpURL), {
+			method: 'POST',
+			headers: { ...baseHeaders, 'mcp-session-id': sessionId as string, 'mcp-protocol-version': '2025-06-18' },
+			body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'tools/list', params: {} }),
+		});
+		const body = JSON.parse(await listRes.text());
+		const names: string[] = (body.result?.tools ?? []).map((t: { name: string }) => t.name);
+		ok(names.includes('answer'), `the cost-bearing tool is exposed: ${names.join(', ')}`);
+		// Under the old exported-Resource design the counter surfaced update_/delete_ tools a client
+		// could call to reset its quota; the internal table must expose none.
+		const counterCrud = names.filter((n) => /quotacounter/i.test(n));
+		strictEqual(counterCrud.length, 0, `no QuotaCounter CRUD tools should exist, found: ${counterCrud.join(', ')}`);
 	});
 });

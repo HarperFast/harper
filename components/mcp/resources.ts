@@ -35,6 +35,7 @@
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import { SERVER_CAPABILITIES, SERVER_INFO, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
 import { encodeCursor } from './pagination.ts';
 import {
@@ -548,7 +549,21 @@ async function readCustomResource(
 ): Promise<ReadResourceOk | ReadResourceFail> {
 	const { def, params } = custom;
 	try {
-		const result = await def.read(params, { user, profile });
+		// Run the author's `read` inside a transaction that carries the calling
+		// user, so a row-level-guarded fetch the author performs against the
+		// exported (routing) Resource — e.g. `Order.get(target)` with a
+		// `checkPermission`-bearing RequestTarget — runs that Resource's
+		// `allowRead` against the real MCP session user, the same gate REST
+		// enforces (#1735). We deliberately do NOT set `authorize` here: that
+		// would force-authorize the author's *first* internal read (Resource.ts
+		// consumes `context.authorize` once), breaking trusted internal lookups.
+		// Per-record enforcement is opt-in via the author's `checkPermission`.
+		// Merge onto any ambient store (usually none on the MCP HTTP path) so an
+		// inherited transaction/cache is preserved rather than clobbered; `user`
+		// binds last. Same idiom as processLocalTransaction's `{ ...currentStore, user }`.
+		// Lazy-require the server-layer machinery (see file-top note on eager init).
+		const { transaction, contextStorage } = require('../../resources/transaction');
+		const result = await transaction({ ...contextStorage.getStore(), user }, () => def.read(params, { user, profile }));
 		if (typeof result === 'string') {
 			return { ok: true, contents: [{ uri, mimeType: def.mimeType ?? 'text/plain', text: result }] };
 		}
@@ -583,6 +598,15 @@ async function readCustomResource(
 		}
 		return { ok: false, reason: `custom resource '${def.name}' returned no content for: ${uri}` };
 	} catch (err) {
+		// An AccessViolation raised by the underlying Resource's `allow*` predicate
+		// is a permission error, not a read failure — surface it as such (without
+		// leaking the row) so the client sees the same denial REST returns, rather
+		// than a generic "failed to read" (#1735). Match the class, not a status
+		// code, so an unrelated author error that happens to carry 401/403 (e.g. an
+		// upstream fetch) still surfaces as a read failure and stays in the log.
+		if (err instanceof AccessViolation) {
+			return { ok: false, reason: `permission denied: ${uri}` };
+		}
 		// Author read errors surface as read failures (JSON-RPC error at the
 		// transport), with the raw error only in the server log — same
 		// sanitization posture as custom tools.
