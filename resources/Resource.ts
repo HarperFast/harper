@@ -389,7 +389,14 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				// handle path.json, path.cbor, etc. for requesting a specific content type using just the URL
 				context.requestedContentType = requestedContentType;
 				path = path.slice(0, dotIndex); // remove the property from the path
-			} else if ((this as any).attributes?.find((attribute) => attribute.name === property)) {
+			} else if (
+				(this as any).attributes?.find((attribute) => attribute.name === property) ||
+				// A programmatic Resource may declare `static properties` (a Record keyed by attribute
+				// name) without an `attributes` Array. Use an OWN-key check (not `properties[property]`,
+				// which would match inherited Object.prototype members like `constructor`/`toString`) —
+				// O(1), so no per-request projection on this path.
+				((this as any).properties != null && Object.hasOwn((this as any).properties, property))
+			) {
 				// handle path.attribute for requesting a specific attribute using just the URL
 				path = path.slice(0, dotIndex); // remove the property from the path
 				if (query) query.property = property;
