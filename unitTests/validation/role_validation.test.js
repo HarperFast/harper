@@ -274,6 +274,28 @@ describe('Test role_validation module ', () => {
 			);
 		});
 
+		// harper#1016 (review): the boolean check must gate on key presence, not truthiness — a falsey
+		// non-boolean (0, '', null) must still be rejected rather than silently skipping both the check
+		// and the database-permission loop. Covers cluster_user and the latent super_user variant.
+		[
+			{ role: 'cluster_user', value: 0 },
+			{ role: 'cluster_user', value: null },
+			{ role: 'cluster_user', value: '' },
+			{ role: 'super_user', value: 0 },
+			{ role: 'super_user', value: null },
+		].forEach(({ role, value }) => {
+			it(`should reject a falsey non-boolean ${role} = ${JSON.stringify(value)} as a boolean error`, () => {
+				const test_role_json = TEST_ADD_ROLE_OBJECT();
+				test_role_json.permission = { [role]: value };
+				const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+				expect(test_result.statusCode).to.equal(400);
+				expect(test_result.http_resp_msg.main_permissions).to.include(
+					TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_BOOLEAN_ERROR(role)
+				);
+			});
+		});
+
 		it('NOMINAL - should return null for valid ALTER_ROLE object', () => {
 			const test_result = customValidate_rw(TEST_ALTER_ROLE_OBJECT(), getAlterRoleConstraints());
 			expect(test_result).to.equal(null);

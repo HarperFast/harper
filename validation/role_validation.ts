@@ -100,7 +100,11 @@ function customValidate(object, constraints) {
 		}
 		//check if cu or su values, if included, are booleans
 		ROLE_TYPES.forEach((role) => {
-			if (object.permission[role as any] && !validate.isBoolean(object.permission[role as any])) {
+			// Gate on key presence, not truthiness: a falsey non-boolean (0, '', null) must still be
+			// rejected as a non-boolean. A truthiness gate would let those skip both this check AND the
+			// database-permission loop below (the key is a role type, so that loop excludes it), so an
+			// add/alter role would silently accept a value that violates the boolean contract.
+			if (role in object.permission && !validate.isBoolean(object.permission[role as any])) {
 				addPermError(HDB_ERROR_MSGS.SU_CU_ROLE_BOOLEAN_ERROR(role as any), validationErrors, undefined, undefined);
 			}
 		});
