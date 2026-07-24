@@ -55,7 +55,10 @@ type Mode = 'read' | 'insert' | 'update';
  * types when nullable). Falls back to "string" for unknown types — better
  * than blocking the field entirely; the runtime will validate.
  */
-function harperTypeToJsonSchema(type: string | undefined): { type: string | string[] } | object {
+function harperTypeToJsonSchema(
+	type: string | undefined,
+	attributeName?: string
+): { type: string | string[] } | object {
 	// A programmatic Resource's `static properties` already speaks JSON Schema (lowercase types, no
 	// collision with Harper's capitalized GraphQL types); pass those through unchanged.
 	if (type && JSON_SCHEMA_SCALAR_TYPES.has(type)) return { type };
@@ -84,7 +87,7 @@ function harperTypeToJsonSchema(type: string | undefined): { type: string | stri
 			// Neither a Harper type nor a JSON Schema type. This used to coerce to `string` while OpenAPI
 			// emitted `{}` — two different wrong answers from one typo. Warn (once per name) and emit
 			// untyped, matching OpenAPI (#1942).
-			const resolved = resolveDeclaredType(type, 'an MCP tool schema');
+			const resolved = resolveDeclaredType(type, `MCP tool schema property "${attributeName ?? '<unnamed>'}"`);
 			return resolved ? { type: resolved } : {};
 		}
 	}
@@ -100,8 +103,24 @@ function harperTypeToJsonSchema(type: string | undefined): { type: string | stri
 function attributeToProperty(attr: HarperAttribute): object | undefined {
 	return attributeToSchema(attr as AttributeLike, {
 		dialect: 'json-schema',
-		mapPrimitive: (type) => harperTypeToJsonSchema(type) as JsonSchemaFragment,
+		mapPrimitive: (type, a) => harperTypeToJsonSchema(type, a.name) as JsonSchemaFragment,
 	});
+}
+
+/**
+ * The `id` argument's schema. Verb tools surface the primary key as the record's address, not as one
+ * of its fields, so a `@hidden` primary key still has to be typed here — otherwise the tool advertises
+ * a required argument with no type at all. Falls back only when there is no primary key to describe.
+ */
+function primaryKeySchema(pk: HarperAttribute | undefined): object {
+	if (!pk) return { type: 'string' };
+	return (
+		attributeToSchema(pk as AttributeLike, {
+			dialect: 'json-schema',
+			mapPrimitive: (type, a) => harperTypeToJsonSchema(type, a.name) as JsonSchemaFragment,
+			ignoreHidden: true,
+		}) ?? { type: 'string' }
+	);
 }
 
 /**
@@ -174,7 +193,7 @@ export function deriveGetSchema(
 	_permissions: AttributePermissionEntry[] | undefined
 ): object {
 	const pk = findPrimaryKey(attributes);
-	const pkSchema = (pk && attributeToProperty(pk)) ?? { type: 'string' };
+	const pkSchema = primaryKeySchema(pk);
 	return {
 		type: 'object',
 		properties: {
@@ -262,7 +281,7 @@ export function deriveUpdateSchema(
 		type: 'object',
 		properties: {
 			id: pk
-				? { ...attributeToProperty(pk), description: `Primary key (${pk.name}). Required.` }
+				? { ...primaryKeySchema(pk), description: `Primary key (${pk.name}). Required.` }
 				: { type: 'string', description: 'Primary key. Required.' },
 			...properties,
 		},
@@ -279,7 +298,7 @@ export function deriveDeleteSchema(
 		type: 'object',
 		properties: {
 			id: pk
-				? { ...attributeToProperty(pk), description: `Primary key (${pk.name}).` }
+				? { ...primaryKeySchema(pk), description: `Primary key (${pk.name}).` }
 				: { type: 'string', description: 'Primary key.' },
 		},
 		required: ['id'],
@@ -361,7 +380,7 @@ export function deriveCreateOutputSchema(
 	_permissions: AttributePermissionEntry[] | undefined
 ): object {
 	const pk = findPrimaryKey(attributes);
-	const idSchema = (pk && attributeToProperty(pk)) ?? { type: 'string' };
+	const idSchema = primaryKeySchema(pk);
 	return {
 		type: 'object',
 		properties: {

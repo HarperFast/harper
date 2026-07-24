@@ -199,3 +199,58 @@ describe('mcp/tools/schemas/derive', () => {
 		});
 	});
 });
+
+// #1941/#1942 follow-ups found in review of the shared-emitter refactor.
+describe('mcp/derive — hidden attributes and unrecognized types', () => {
+	const hiddenPk = [{ name: 'id', type: 'Int', isPrimaryKey: true, hidden: true }];
+
+	it('keeps the primary key typed on every verb even when it is @hidden', () => {
+		// The `id` argument addresses the record; it is not one of the record's fields, so @hidden must
+		// not strip it. Suppressing it produced a REQUIRED tool argument with no type at all, and the
+		// four derive sites disagreed with each other.
+		const get = deriveGetSchema(hiddenPk, undefined).properties.id;
+		const update = deriveUpdateSchema(hiddenPk, undefined).properties.id;
+		const del = deriveDeleteSchema(hiddenPk, undefined).properties.id;
+		for (const [verb, schema] of [
+			['get', get],
+			['update', update],
+			['delete', del],
+		]) {
+			assert.equal(schema.type, 'integer', `${verb} keeps the declared PK type`);
+		}
+		assert.equal(get.type, update.type, 'all verbs agree on the id type');
+		assert.equal(get.type, del.type);
+	});
+
+	it('still suppresses a hidden non-key attribute from the same schemas', () => {
+		// Guards the fix above from over-reaching: only the PK is exempt.
+		const attrs = [
+			{ name: 'id', type: 'String', isPrimaryKey: true },
+			{ name: 'secret', type: 'String', hidden: true },
+		];
+		assert.equal(deriveCreateSchema(attrs, undefined).properties.secret, undefined);
+		assert.equal(deriveGetOutputSchema(attrs, undefined).properties.secret, undefined);
+	});
+
+	it('does not warn for Harper primitives that carry no DATA_TYPES entry (Blob, Any)', () => {
+		// `Blob` and `Any` are in graphql.ts's PRIMITIVE_TYPES but absent from DATA_TYPES, so a naive
+		// lookup reported them as typos on every process start.
+		const logger = require('#src/utility/logging/harper_logger');
+		const warnings = [];
+		const original = logger.warn;
+		logger.warn = (m) => warnings.push(String(m));
+		try {
+			deriveGetOutputSchema(
+				[
+					{ name: 'id', type: 'String', isPrimaryKey: true },
+					{ name: 'payload', type: 'Blob' },
+					{ name: 'anything', type: 'Any' },
+				],
+				undefined
+			);
+		} finally {
+			logger.warn = original;
+		}
+		assert.deepEqual(warnings, [], `Blob/Any must not warn: ${JSON.stringify(warnings)}`);
+	});
+});

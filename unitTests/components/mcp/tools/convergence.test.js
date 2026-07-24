@@ -223,3 +223,79 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 		assert.equal(openapi.b.type, 'integer');
 	});
 });
+
+// Emitter-level behaviors that are cheaper to assert directly than through both surfaces.
+describe('attributeToSchema — emitter edge cases (#1941, #1942)', () => {
+	const {
+		attributeToSchema,
+		resolveDeclaredType,
+		_resetUnknownTypeWarningsForTest: resetWarnings,
+	} = require('#src/resources/jsonSchemaTypes');
+	const emit = (attr, dialect = 'openapi-3.0.3') =>
+		attributeToSchema(attr, { dialect, mapPrimitive: (type) => (type ? { type } : {}) });
+
+	beforeEach(() => resetWarnings());
+
+	it('omits `required` entirely when every required sub-property is suppressed', () => {
+		// JSON Schema draft-04 (which OpenAPI 3.0.3 inherits) requires at least one element, so
+		// `required: []` fails validators — and this list was synthesized from a non-empty one.
+		const out = emit({
+			name: 'profile',
+			properties: [{ name: 'secret', type: 'string', hidden: true }],
+			required: ['secret'],
+		});
+		assert.equal('required' in out, false, `required must be omitted, got ${JSON.stringify(out)}`);
+	});
+
+	it('does not resolve Object.prototype members as type names', () => {
+		// `DATA_TYPES` is an object literal, so a bare index put a function (or Object.prototype) into
+		// the emitted schema and suppressed the warning for a genuinely bogus name.
+		for (const bogus of ['constructor', '__proto__', 'toString']) {
+			assert.equal(resolveDeclaredType(bogus), undefined, `${bogus} must not resolve`);
+		}
+	});
+
+	it('drops nullability when the type never resolved', () => {
+		// A bare `nullable: true` with no `type` is meaningless in OpenAPI 3.0.3 — it modifies `type`.
+		const out = attributeToSchema(
+			{ name: 'x', type: 'Nonsense', nullable: true },
+			{ dialect: 'openapi-3.0.3', mapPrimitive: () => ({}) }
+		);
+		assert.equal(out.nullable, undefined, `got ${JSON.stringify(out)}`);
+	});
+
+	it('warns once per unrecognized type name, and names the property', () => {
+		const logger = require('#src/utility/logging/harper_logger');
+		const warnings = [];
+		const original = logger.warn;
+		logger.warn = (m) => warnings.push(String(m));
+		try {
+			resolveDeclaredType('Nonsense', 'OpenAPI property "widget"');
+			resolveDeclaredType('Nonsense', 'OpenAPI property "widget"');
+		} finally {
+			logger.warn = original;
+		}
+		assert.equal(warnings.length, 1, 'warn-once per name');
+		assert.ok(warnings[0].includes('"Nonsense"'), warnings[0]);
+		assert.ok(warnings[0].includes('widget'), `warning should name the property: ${warnings[0]}`);
+		assert.ok(warnings[0].includes('Blob'), `Harper type list should be complete: ${warnings[0]}`);
+	});
+
+	it('keeps a hidden sub-property suppressed even under ignoreHidden', () => {
+		// ignoreHidden exists for the primary-key addressing argument; it must not cascade into fields.
+		const out = attributeToSchema(
+			{
+				name: 'pk',
+				hidden: true,
+				properties: [
+					{ name: 'visible', type: 'string' },
+					{ name: 'secret', type: 'string', hidden: true },
+				],
+			},
+			{ dialect: 'json-schema', mapPrimitive: (type) => ({ type }), ignoreHidden: true }
+		);
+		assert.ok(out, 'the hidden attribute itself is emitted');
+		assert.ok(out.properties.visible);
+		assert.equal(out.properties.secret, undefined, 'hidden sub-property stays suppressed');
+	});
+});

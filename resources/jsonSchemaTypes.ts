@@ -201,10 +201,24 @@ export interface SchemaEmitOptions {
 	 * Maps a leaf attribute's declared type to its base schema. Each surface keeps its own primitive
 	 * mapping — MCP widens `Date` to `['string','number']` and tags `Bytes` with `contentEncoding`,
 	 * OpenAPI emits a `format`. Those differences are deliberate, so they stay with the caller; only
-	 * the traversal around them is shared.
+	 * the traversal around them is shared. The attribute is passed so a diagnostic can name the
+	 * property the type was declared on, rather than whatever the recursion started from.
 	 */
-	mapPrimitive: (type: string | undefined) => JsonSchemaFragment;
+	mapPrimitive: (type: string | undefined, attr: AttributeLike) => JsonSchemaFragment;
+	/**
+	 * Emit the attribute even when it is `hidden`. Only for the primary key, which verb tools surface
+	 * as the `id` addressing argument rather than as a field — `@hidden` suppresses a field from the
+	 * schema, but the key you address a record by is still required to call the tool.
+	 */
+	ignoreHidden?: boolean;
 }
+
+/**
+ * Harper primitive type names that carry no `DATA_TYPES` entry. `Any` is deliberately untyped (it
+ * accepts anything); `Blob` is a first-class column type that serializes as a string. Both are in
+ * `graphql.ts`'s `PRIMITIVE_TYPES`, so neither is a typo and neither should warn.
+ */
+const UNMAPPED_HARPER_TYPES: Record<string, JsonSchemaType | undefined> = { Any: undefined, Blob: 'string' };
 
 const warnedUnknownTypes = new Set<string>();
 
@@ -219,13 +233,17 @@ const warnedUnknownTypes = new Set<string>();
  */
 export function resolveDeclaredType(type: string | undefined, context?: string): JsonSchemaType | undefined {
 	if (!type) return undefined;
-	const mapped = DATA_TYPES[type];
-	if (mapped) return mapped;
+	// `Object.hasOwn`, not a bare index: `DATA_TYPES` is an object literal, so `type: 'constructor'`
+	// or `'__proto__'` would otherwise resolve to a prototype member and put a function (or
+	// `Object.prototype`) into an emitted schema.
+	if (Object.hasOwn(DATA_TYPES, type)) return DATA_TYPES[type];
+	if (Object.hasOwn(UNMAPPED_HARPER_TYPES, type)) return UNMAPPED_HARPER_TYPES[type];
 	if (JSON_SCHEMA_SCALAR_TYPES.has(type)) return type as JsonSchemaType;
 	if (!warnedUnknownTypes.has(type)) {
 		warnedUnknownTypes.add(type);
+		const harperTypes = [...Object.keys(DATA_TYPES), ...Object.keys(UNMAPPED_HARPER_TYPES)].join(', ');
 		logger.warn(
-			`Unrecognized schema type "${type}"${context ? ` on ${context}` : ''}: not a Harper type (${Object.keys(DATA_TYPES).join(', ')}) nor a JSON Schema type (${[...JSON_SCHEMA_SCALAR_TYPES].join(', ')}). The property will be emitted without a type.`
+			`Unrecognized schema type "${type}"${context ? ` on ${context}` : ''}: not a Harper type (${harperTypes}) nor a JSON Schema type (${[...JSON_SCHEMA_SCALAR_TYPES].join(', ')}). The property will be emitted without a type.`
 		);
 	}
 	return undefined;
@@ -251,32 +269,40 @@ export function _resetUnknownTypeWarningsForTest(): void {
  * fragment differently (#1942).
  */
 export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOptions): JsonSchemaFragment | undefined {
-	if (attr.hidden) return undefined;
+	if (attr.hidden && !options.ignoreHidden) return undefined;
 	const fragment: JsonSchemaFragment = {};
+	// `ignoreHidden` applies to this attribute only — a hidden sub-property of a surfaced primary key
+	// is still a hidden field and stays suppressed.
+	const childOptions = options.ignoreHidden ? { ...options, ignoreHidden: false } : options;
 
 	if (attr.properties) {
 		fragment.type = 'object';
 		fragment.properties = {};
 		const visibleNames = new Set<string>();
 		for (const sub of attr.properties) {
-			const subSchema = attributeToSchema(sub, options);
+			const subSchema = attributeToSchema(sub, childOptions);
 			if (!subSchema) continue;
 			fragment.properties[sub.name] = subSchema;
 			visibleNames.add(sub.name);
 		}
 		// Drop suppressed sub-properties from `required` too — advertising a required property the
-		// schema does not define makes the object unsatisfiable for any client that validates.
-		if (attr.required) fragment.required = attr.required.filter((name) => visibleNames.has(name));
+		// schema does not define makes the object unsatisfiable for any client that validates. Omit the
+		// key entirely when nothing survives: JSON Schema draft-04 (which OpenAPI 3.0.3 inherits)
+		// requires `required` to have at least one element, so `required: []` fails validators.
+		if (attr.required) {
+			const visibleRequired = attr.required.filter((name) => visibleNames.has(name));
+			if (visibleRequired.length > 0) fragment.required = visibleRequired;
+		}
 		if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
 	} else if (attr.type === 'array') {
 		fragment.type = 'array';
 		// `{ type: 'array' }` with no element schema is valid — an array of anything.
 		if (attr.elements) {
-			const items = attributeToSchema(attr.elements, options);
+			const items = attributeToSchema(attr.elements, childOptions);
 			if (items) fragment.items = items;
 		}
 	} else {
-		Object.assign(fragment, options.mapPrimitive(attr.type));
+		Object.assign(fragment, options.mapPrimitive(attr.type, attr));
 	}
 
 	if (attr.nullable) applyNullability(fragment, options.dialect);
@@ -290,12 +316,14 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 }
 
 function applyNullability(fragment: JsonSchemaFragment, dialect: SchemaDialect): void {
+	// Both dialects express nullability as a modification of `type`, so neither has anything to say
+	// about a fragment that never resolved one.
+	if (!('type' in fragment) || fragment.type === undefined) return;
 	if (dialect === 'openapi-3.0.3') {
 		// OpenAPI 3.0.3 has no union types; `nullable` is the spec-provided expression.
 		fragment.nullable = true;
 		return;
 	}
-	if (!('type' in fragment) || fragment.type === undefined) return;
 	const types = Array.isArray(fragment.type) ? fragment.type : [fragment.type];
 	if (!types.includes('null')) fragment.type = [...types, 'null'] as JsonSchemaType[];
 }

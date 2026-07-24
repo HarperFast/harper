@@ -3,7 +3,6 @@ import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
 import {
 	DATA_TYPES,
-	JSON_SCHEMA_SCALAR_TYPES,
 	type AttributeLike,
 	type JsonSchemaFragment,
 	attributeToSchema,
@@ -22,15 +21,20 @@ const OPENAPI_VERSION = '3.0.3';
 function attributeToOpenApiSchema(attr: AttributeLike): JsonSchemaFragment | undefined {
 	return attributeToSchema(attr, {
 		dialect: 'openapi-3.0.3',
-		mapPrimitive: (type) => {
-			if (type === 'Any' || type === undefined) return {};
-			const resolved = resolveDeclaredType(type, `OpenAPI property "${attr.name}"`);
-			if (!resolved) return {};
-			// Preserve the Harper type name as `format` for the types where it adds information, matching
-			// the top-level `Type()` emitter.
-			return DATA_TYPES[type] ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
-		},
+		// `mapped` is the attribute the recursion actually reached, not the one it started from — a bad
+		// type on `profile.creditScore` has to name that, not `profile`.
+		mapPrimitive: (type, mapped) => openApiPrimitive(type, mapped.name || attr.name),
 	});
+}
+
+/** Shared by the nested emitter and the top-level attribute loop so both warn on an unknown type. */
+function openApiPrimitive(type: string | undefined, attributeName: string | undefined): JsonSchemaFragment {
+	if (type === 'Any' || type === undefined) return {};
+	const resolved = resolveDeclaredType(type, `OpenAPI property "${attributeName || '<unnamed>'}"`);
+	if (!resolved) return {};
+	// Preserve the Harper type name as `format` for the types where it adds information, matching the
+	// top-level `Type()` emitter.
+	return Object.hasOwn(DATA_TYPES, type) ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
 }
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
@@ -201,11 +205,13 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 							props[name] = { type: 'array', items: attributeToOpenApiSchema(elements) ?? {} };
 						}
 					} else if (type === 'Any') {
+						// `format: 'Any'` with no `type` — preserved from the original emitter.
 						props[name] = { format: type };
-					} else if (!DATA_TYPES[type] && JSON_SCHEMA_SCALAR_TYPES.has(type)) {
-						props[name] = new Type(type);
 					} else {
-						props[name] = new Type(DATA_TYPES[type], type);
+						// Through the shared primitive mapper so an unrecognized type name warns here too.
+						// Previously only the MCP deriver warned, so a typo went unreported whenever the MCP
+						// component was disabled — the exact silence #1942 set out to remove.
+						props[name] = openApiPrimitive(type, name);
 					}
 				}
 				// Attach per-property JSON-Schema hints (description/enum/format/const) so they surface in
