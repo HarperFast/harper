@@ -69,9 +69,14 @@ export interface OAIChatRequest {
  */
 export function translateMessages(oaiMessages: OAIMessageIn[]): Message[] {
 	return oaiMessages.map((m): Message => {
+		// Content parts are flattened to the text Harper's Message.content expects; shapes
+		// that cannot be flattened are rejected up front by validateChatRequest.
+		const content = Array.isArray(m.content)
+			? (m.content as Array<{ text: string }>).map((part) => part.text).join('')
+			: (m.content ?? '');
 		const base: Message = {
 			role: m.role as Message['role'],
-			content: m.content ?? '',
+			content,
 		};
 		if (m.tool_calls?.length) {
 			base.toolCalls = m.tool_calls.map((tc): ToolCall => {
@@ -130,6 +135,19 @@ export function validateChatRequest(body: OAIChatRequest): string | null {
 		const m = req.messages[i];
 		if (!m || typeof m !== 'object' || Array.isArray(m)) return `'messages[${i}]' must be an object`;
 		if (typeof m.role !== 'string') return `'messages[${i}].role' must be a string`;
+		// OpenAI allows content parts: [{ type: 'text', text: '...' }, ...]. Harper's
+		// Message.content is a string, so those are flattened in translateMessages; reject
+		// shapes we cannot flatten rather than passing a non-string downstream.
+		if (m.content !== undefined && m.content !== null && typeof m.content !== 'string') {
+			if (!Array.isArray(m.content)) return `'messages[${i}].content' must be a string, array of parts, or null`;
+			for (let p = 0; p < m.content.length; p++) {
+				const part = m.content[p];
+				if (!part || typeof part !== 'object') return `'messages[${i}].content[${p}]' must be an object`;
+				if (part.type !== 'text' || typeof part.text !== 'string') {
+					return `'messages[${i}].content[${p}]' must be a text part ({ type: 'text', text: string }); other part types are not supported yet`;
+				}
+			}
+		}
 		if (m.tool_calls !== undefined) {
 			if (!Array.isArray(m.tool_calls)) return `'messages[${i}].tool_calls' must be an array`;
 			for (let j = 0; j < m.tool_calls.length; j++) {

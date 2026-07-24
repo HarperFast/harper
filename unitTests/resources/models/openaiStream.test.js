@@ -150,6 +150,46 @@ describe('openaiStream', () => {
 		assert.deepEqual(args, { a: 3, b: 2 }, 'later deltas must win, earlier fields preserved');
 	});
 
+	it('terminates with an error frame when a stream exceeds the tool-call cap', async () => {
+		// 257 distinct call ids — one over MAX_TOOL_CALLS_PER_STREAM (256)
+		const deltas = Array.from({ length: 257 }, (_, i) => ({
+			deltaToolCalls: [{ id: `c${i}`, name: 'fn', arguments: { a: 1 } }],
+		}));
+		const msgs = await collect(openaiStream(gen(...deltas)));
+		const last = msgs[msgs.length - 1].data;
+		assert.ok(last.error, 'expected a terminal error frame');
+		assert.ok(!msgs.some((m) => m.data === '[DONE]'), 'must not emit [DONE] after overflow');
+	});
+
+	it('accepts a stream exactly at the tool-call cap (off-by-one guard)', async () => {
+		const deltas = Array.from({ length: 256 }, (_, i) => ({
+			deltaToolCalls: [{ id: `c${i}`, name: 'fn', arguments: { a: 1 } }],
+		}));
+		const msgs = await collect(openaiStream(gen(...deltas)));
+		assert.ok(
+			msgs.some((m) => m.data === '[DONE]'),
+			'exactly at the cap must still complete'
+		);
+	});
+
+	it('terminates with an error frame when one call accumulates too many argument fields', async () => {
+		const wide = {};
+		for (let i = 0; i <= 1024; i++) wide[`k${i}`] = i; // 1025 fields > MAX_TOOL_ARGUMENT_KEYS
+		const msgs = await collect(openaiStream(gen({ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: wide }] })));
+		const last = msgs[msgs.length - 1].data;
+		assert.ok(last.error, 'expected a terminal error frame');
+	});
+
+	it('ignores a contract-violating string arguments value rather than counting characters', async () => {
+		const msgs = await collect(
+			openaiStream(gen({ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: 'x'.repeat(5000) }] }))
+		);
+		assert.ok(
+			msgs.some((m) => m.data === '[DONE]'),
+			'a string arguments value must not blow the field cap'
+		);
+	});
+
 	it('stores a tool argument literally named __proto__ instead of hitting the prototype setter', async () => {
 		// Arguments arrive from JSON.parse, where `__proto__` is an own property. Object.assign
 		// uses [[Set]], so an ordinary accumulator would invoke Object.prototype's inherited

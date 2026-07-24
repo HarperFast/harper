@@ -23,8 +23,13 @@ export class V1Embeddings extends Resource {
 
 		// REST.ts passes `request.data` directly, which is the (unawaited) streaming
 		// JSON deserializer's Promise — awaiting here is a no-op for callers (e.g.
-		// unit tests) that already pass a plain object.
-		body = await body;
+		// unit tests) that already pass a plain object. A malformed JSON body rejects
+		// this promise, which is a client error, not a 500 (matches chatCompletions).
+		try {
+			body = await body;
+		} catch (err) {
+			return badRequest(`Could not parse request body: ${err instanceof Error ? err.message : 'invalid JSON'}`);
+		}
 		if (!body || typeof body !== 'object' || Array.isArray(body))
 			return badRequest('Request body must be a JSON object');
 		const raw = body as Record<string, unknown>;

@@ -113,13 +113,12 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 		return require('../server/fastifyRoutes');
 	},
 	login,
-	// Lazy: the gateway is opt-in and off by default, so an install that never enables it
-	// pays no module-load cost for the gateway's graph in the main process or any worker.
-	get modelsGateway() {
-		// Extensionless, like the other require()s here: this path is resolved at runtime
-		// against dist/, where the emitted file is .js (TypeScript does not rewrite require).
-		return require('../resources/models/v1/index');
-	},
+	// String entry: the loader `await import()`s these lazily when the component is actually
+	// processed, so the gateway's module graph is not pulled into componentLoader's own
+	// evaluation. `#src/*` is used rather than a relative path because it resolves under both
+	// conditions (source under --conditions=typestrip, dist otherwise); a relative extensionless
+	// require would only resolve against dist.
+	modelsGateway: '#src/resources/models/v1/index',
 	static: staticFiles,
 	customFunctions: {},
 	http: httpComponent,

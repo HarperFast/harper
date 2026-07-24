@@ -40,10 +40,14 @@ class ToolAssemblyOverflowError extends Error {
 	statusCode = 502;
 }
 
-function countKeys(obj: object): number {
-	let n = 0;
-	for (const _ in obj) n++;
-	return n;
+/** Count only the keys `source` adds to `target`, so accumulation stays O(delta), not O(total). */
+function assignCountingNewKeys(target: object, source: object): number {
+	let added = 0;
+	for (const key in source) {
+		if (!(key in target)) added++;
+		(target as Record<string, unknown>)[key] = (source as Record<string, unknown>)[key];
+	}
+	return added;
 }
 
 /** OpenAI streaming error body (`{ message, type, code, param }` under an `error` key). */
@@ -102,7 +106,7 @@ export async function* openaiStream(
 	// Emitting incremental fragments would corrupt the OpenAI client's concatenation
 	// (`{"a":1}` + `{"b":2}` → invalid JSON) — Harper's already-buffered upstream model
 	// means we cannot faithfully reproduce per-token argument fragments anyway.
-	const toolAssembly = new Map<string, { index: number; name?: string; arguments: object }>();
+	const toolAssembly = new Map<string, { index: number; name?: string; arguments: object; argumentCount: number }>();
 
 	const chunk = (delta: OpenAIDelta, finish: OpenAIFinishReason | null): OpenAIStreamMessage => ({
 		data: {
@@ -139,15 +143,18 @@ export async function* openaiStream(
 						// named `__proto__` is an own property. Object.assign uses [[Set]], which
 						// on an ordinary object would hit Object.prototype's inherited `__proto__`
 						// setter and silently drop the field (the previous spread did not).
-						existing = { index: toolAssembly.size, arguments: Object.create(null) };
+						existing = { index: toolAssembly.size, arguments: Object.create(null), argumentCount: 0 };
 						toolAssembly.set(incoming.id, existing);
 					}
 					if (incoming.name) existing.name = incoming.name;
-					if (incoming.arguments) {
-						// Mutate rather than re-spread: spreading copied every previously
-						// accumulated property on each partial delta (O(n²) as fields grow).
-						Object.assign(existing.arguments, incoming.arguments);
-						if (countKeys(existing.arguments) > MAX_TOOL_ARGUMENT_KEYS) {
+					// Guard the contract (`ToolCall.arguments` is an object): a string would be
+					// assigned index-wise, inflating the field count from characters.
+					if (incoming.arguments && typeof incoming.arguments === 'object') {
+						// Mutate rather than re-spread — spreading copied every previously
+						// accumulated property on each partial delta (O(n²) as fields grow) — and
+						// count only newly-introduced keys so the bound check stays O(delta) too.
+						existing.argumentCount += assignCountingNewKeys(existing.arguments, incoming.arguments);
+						if (existing.argumentCount > MAX_TOOL_ARGUMENT_KEYS) {
 							throw new ToolAssemblyOverflowError(`tool call arguments exceeded ${MAX_TOOL_ARGUMENT_KEYS} fields`);
 						}
 					}

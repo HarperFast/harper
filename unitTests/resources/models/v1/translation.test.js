@@ -76,6 +76,20 @@ describe('translateMessages', () => {
 		const result = translateMessages([{ role: 'tool', content: '42', tool_call_id: 'call_1' }]);
 		assert.equal(result[0].toolCallId, 'call_1');
 	});
+
+	it('flattens OpenAI content parts to the string Message.content expects', () => {
+		const result = translateMessages([
+			{
+				role: 'user',
+				content: [
+					{ type: 'text', text: 'hello ' },
+					{ type: 'text', text: 'world' },
+				],
+			},
+		]);
+		assert.equal(result[0].content, 'hello world');
+		assert.equal(typeof result[0].content, 'string', 'must not pass an array downstream');
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -232,6 +246,17 @@ describe('validateChatRequest', () => {
 			validateChatRequest({ ...ok, tool_choice: { type: 'function', function: { name: 'f' } } }),
 			/tool_choice/
 		);
+	});
+
+	it('accepts OpenAI text content parts', () => {
+		assert.equal(validateChatRequest({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] }), null);
+	});
+
+	it('rejects content part types the gateway cannot flatten, rather than passing a non-string downstream', () => {
+		const msg = validateChatRequest({
+			messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'http://x' } }] }],
+		});
+		assert.match(msg, /content\[0\]/);
 	});
 
 	it('rejects a json_schema response_format missing the inner schema', () => {

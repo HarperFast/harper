@@ -96,15 +96,28 @@ export class V1ChatCompletions extends Resource {
 
 	/**
 	 * A client that sends an explicit `Accept: text/event-stream` with its POST is
-	 * dispatched by REST as CONNECT (REST.ts), not POST — so without this the request
-	 * would get method-not-allowed. The OpenAI SDK happens to send
+	 * dispatched by REST as CONNECT (REST.ts), not POST. The OpenAI SDK happens to send
 	 * `Accept: application/json` even when streaming, but other valid SSE clients do not.
+	 *
+	 * Without this override the request reached `Resource`'s default `connect`, whose
+	 * instance path returns `subscribe()` — an empty `IterableEventQueue` — so the client
+	 * got a 200 SSE response that stayed open forever emitting nothing, rather than an
+	 * error it could act on.
 	 *
 	 * REST passes `null` as the CONNECT body (`resource.connect(target, null, request)`),
 	 * so the parsed body is taken off the request and handed to the same `post()`
 	 * implementation — one code path, identical validation and error shaping.
+	 *
+	 * `connect` is also reachable from the WebSocket handler with a different signature
+	 * (`resourceRequest, incomingMessages, request`), where there is no `request.data`;
+	 * that case is rejected as a client error rather than returning an envelope the WS
+	 * path would fail to iterate.
 	 */
 	static async connect(target: unknown, _data: unknown, request: unknown) {
-		return this.post(target, (request as { data?: unknown })?.data, request);
+		const data = (request as { data?: unknown })?.data;
+		if (data === undefined) {
+			return badRequest('This endpoint requires a JSON request body; WebSocket connections are not supported');
+		}
+		return this.post(target, data, request);
 	}
 }
