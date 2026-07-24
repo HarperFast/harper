@@ -395,7 +395,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				// name) without an `attributes` Array. Use an OWN-key check (not `properties[property]`,
 				// which would match inherited Object.prototype members like `constructor`/`toString`) —
 				// O(1), so no per-request projection on this path.
-				((this as any).properties != null && Object.hasOwn((this as any).properties, property))
+				(this.properties != null && Object.hasOwn(this.properties, property))
 			) {
 				// handle path.attribute for requesting a specific attribute using just the URL
 				path = path.slice(0, dotIndex); // remove the property from the path
