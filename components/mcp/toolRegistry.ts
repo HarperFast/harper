@@ -363,6 +363,16 @@ export function isSuperUser(user: AuthedUser | undefined): boolean {
 }
 
 /**
+ * True if the request carries an authenticated principal. Anonymous MCP sessions are a supported
+ * deployment (the public-docs case, #1609) — the adapter hands them through as `{ username: '' }`
+ * rather than rejecting them — so a listing filter that means "any real user" has to test for this
+ * explicitly. `user?.role` is not a proxy: an authenticated user may legitimately carry no role.
+ */
+export function isAuthenticated(user: AuthedUser | undefined): boolean {
+	return typeof user?.username === 'string' && user.username.length > 0;
+}
+
+/**
  * Class-level verb introspection. Mirrors `resources/openApi.ts:149-153` so
  * a class is considered to "have" a verb only if its prototype overrides the
  * base Resource implementation. Note that `post`'s default in Harper's

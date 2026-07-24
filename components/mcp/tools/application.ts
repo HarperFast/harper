@@ -27,6 +27,7 @@ import harperLogger from '../../../utility/logging/harper_logger.ts';
 import {
 	addTool,
 	clearProfileTools,
+	isAuthenticated,
 	snapshotProfileTools,
 	type AuthedUser,
 	type ToolCallContext,
@@ -710,10 +711,15 @@ function makeVisibleTo(
 		if (user?.role?.permission?.super_user === true) return true;
 		// A Resource with no backing table has no static permission gate to consult, so listing is
 		// open to any authenticated caller and the Resource's own `allow*` predicates enforce at call
-		// time. This matches custom `mcpTools`, which have never had a listing filter beyond
-		// authentication — and hiding these while still accepting `tools/call` on them bought no
-		// security, only undiscoverable tools (#1940).
-		if (!databaseName || !tableName) return true;
+		// time — hiding these while still accepting `tools/call` on them bought no security, only
+		// undiscoverable tools (#1940).
+		//
+		// Anonymous sessions stay excluded. They are a supported deployment (#1609) and reach here as
+		// `{ username: '' }`, so this must be tested explicitly. Custom `mcpTools` DO list to them, but
+		// that is an author opt-in — declaring `static mcpTools` is a deliberate act of publishing.
+		// Verb tools are generated for every exported Resource with no author action, so publishing an
+		// app's field names and docstrings to unauthenticated callers by default is not equivalent.
+		if (!databaseName || !tableName) return isAuthenticated(user);
 		const perm = getUserTablePermissions(user, databaseName, tableName);
 		if (!perm) return false;
 		if (mode === 'read') return perm.read === true || perm.describe === true;

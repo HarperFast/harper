@@ -333,9 +333,11 @@ describe('mcp/tools/application — registration', () => {
 
 	it('lists verb tools for a table-less Resource to any authenticated user (#1940)', () => {
 		// No databaseName/tableName means no static permission gate to consult, so listing is open and
-		// the Resource's own allow* predicates enforce at call time — the same contract custom
-		// `mcpTools` have always had. Hiding these while still accepting tools/call bought no security.
+		// the Resource's own allow* predicates enforce at call time. Hiding these while still accepting
+		// tools/call bought no security — visibleTo is not consulted at call time.
 		const Inventory = makeTableResource({
+			databaseName: undefined,
+			tableName: undefined,
 			primaryKey: 'sku',
 			attributes: [{ name: 'sku', type: 'String', isPrimaryKey: true }],
 		});
@@ -347,6 +349,20 @@ describe('mcp/tools/application — registration', () => {
 			assert.equal(tool.visibleTo(NOBODY), true, `${name} is listed for a user with no table grants`);
 			assert.equal(tool.visibleTo(SUPER), true, `${name} is listed for super_user`);
 		}
+	});
+
+	it('does NOT list a table-less Resource to an anonymous session (#1940)', () => {
+		// Anonymous MCP sessions are supported (#1609) and reach visibleTo as `{ username: '' }` —
+		// `user?.role?...` optional-chains straight past the super-user check, so without an explicit
+		// test the table-less branch would publish every app Resource's field names and docstrings to
+		// unauthenticated callers on the application port.
+		const Inventory = makeTableResource({ databaseName: undefined, tableName: undefined, primaryKey: 'sku' });
+		_setResourcesForTest(makeRegistry([['Inventory', { Resource: Inventory }]]));
+		registerApplicationTools();
+		const tool = getTool('get_Inventory');
+		assert.equal(tool.visibleTo({ username: '' }), false, 'anonymous session (empty username)');
+		assert.equal(tool.visibleTo(undefined), false, 'no user object at all');
+		assert.equal(tool.visibleTo({}), false, 'user object with no username');
 	});
 
 	it('still gates a table-backed Resource by table permissions after #1940', () => {
