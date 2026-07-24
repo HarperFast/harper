@@ -33,7 +33,23 @@ jobs:
     # Note: the `claude-review` label name is matched there too —
     # `_claude-review.yml`'s authorize `if:`, not in this caller.
     if: ${{ vars.CLAUDE_ALWAYS_ON == 'true' || github.event.action == 'labeled' }}
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-review.yml@9cf49d23cb046ecd6c87f3bba86dc3338d6998fb # main 2026-06-29 (#70 week-of-06-22 calibration + #71 prompt-ref tracking; on 1bbc562 = #67 + #69)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-review.yml@82c9484f6f2560be4a37032858311e429bccd56c # main 2026-07-21 (#73 severity-deflation + fail-closed calibration, #74 caller hygiene; on 9cf49d2 = #70 + #71)
+    # Caller-side permissions at the calling-job level (NOT workflow-
+    # level — that placement caps the reusable's per-job grants below
+    # what they need and breaks the workflow at startup; see
+    # ai-review-prompts#39/#40). Union of what the reusable's authorize
+    # (`contents: read`) and review (`contents: read` + `pull-requests:
+    # write` + `id-token: write`) jobs declare. Without this block the
+    # grants are inherited from the repo's default-workflow-permissions
+    # setting instead (GitHub intersects the reusable's requests with
+    # the caller's ceiling — un-grantable scopes are silently dropped,
+    # and `pull-requests: write` survives only while the repo default
+    # is "write"). Explicit grants keep the caller independent of that
+    # setting, and match gemini-review.yml in this repo.
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
     with:
       # Same SHA as the `uses:` ref above. The reusable uses this to
       # check out HarperFast/ai-review-prompts (layer files + bash
@@ -44,7 +60,7 @@ jobs:
       # introspect their own ref (`github.workflow_ref` resolves to the
       # CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
       # is parsed literally so we can't interpolate a variable.
-      ai-review-prompts-ref: 9cf49d23cb046ecd6c87f3bba86dc3338d6998fb
+      ai-review-prompts-ref: 82c9484f6f2560be4a37032858311e429bccd56c
       # CANARY (2026-07-11): run this repo's Claude reviews on Sonnet 5
       # while the fleet default stays claude-sonnet-4-6. Every ai-review-log
       # entry records `Model:`, so calibration can compare sonnet-5 vs

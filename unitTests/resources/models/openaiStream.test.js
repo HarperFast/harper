@@ -134,4 +134,117 @@ describe('openaiStream', () => {
 		assert.ok(ids[0].startsWith('chatcmpl-'));
 		assert.ok(new Set(ids).size === 1, 'id must be identical across every chunk');
 	});
+
+	it('accumulates tool arguments across partial deltas without re-copying', async () => {
+		const msgs = await collect(
+			openaiStream(
+				gen(
+					{ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: { a: 1 } }] },
+					{ deltaToolCalls: [{ id: 'c1', arguments: { b: 2 } }] },
+					{ deltaToolCalls: [{ id: 'c1', arguments: { a: 3 } }] }
+				)
+			)
+		);
+		const toolChunk = msgs.map((m) => m.data).find((d) => typeof d === 'object' && d.choices?.[0]?.delta?.tool_calls);
+		const args = JSON.parse(toolChunk.choices[0].delta.tool_calls[0].function.arguments);
+		assert.deepEqual(args, { a: 3, b: 2 }, 'later deltas must win, earlier fields preserved');
+	});
+
+	it('terminates with an error frame when a stream exceeds the tool-call cap', async () => {
+		// 257 distinct call ids — one over MAX_TOOL_CALLS_PER_STREAM (256)
+		const deltas = Array.from({ length: 257 }, (_, i) => ({
+			deltaToolCalls: [{ id: `c${i}`, name: 'fn', arguments: { a: 1 } }],
+		}));
+		const msgs = await collect(openaiStream(gen(...deltas)));
+		const last = msgs[msgs.length - 1].data;
+		assert.ok(last.error, 'expected a terminal error frame');
+		assert.ok(!msgs.some((m) => m.data === '[DONE]'), 'must not emit [DONE] after overflow');
+	});
+
+	it('accepts a stream exactly at the tool-call cap (off-by-one guard)', async () => {
+		const deltas = Array.from({ length: 256 }, (_, i) => ({
+			deltaToolCalls: [{ id: `c${i}`, name: 'fn', arguments: { a: 1 } }],
+		}));
+		const msgs = await collect(openaiStream(gen(...deltas)));
+		assert.ok(
+			msgs.some((m) => m.data === '[DONE]'),
+			'exactly at the cap must still complete'
+		);
+	});
+
+	it('terminates with an error frame when one call accumulates too many argument fields', async () => {
+		const wide = {};
+		for (let i = 0; i <= 1024; i++) wide[`k${i}`] = i; // 1025 fields > MAX_TOOL_ARGUMENT_KEYS
+		const msgs = await collect(openaiStream(gen({ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: wide }] })));
+		const last = msgs[msgs.length - 1].data;
+		assert.ok(last.error, 'expected a terminal error frame');
+	});
+
+	it('ignores a contract-violating string arguments value rather than counting characters', async () => {
+		const msgs = await collect(
+			openaiStream(gen({ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: 'x'.repeat(5000) }] }))
+		);
+		assert.ok(
+			msgs.some((m) => m.data === '[DONE]'),
+			'a string arguments value must not blow the field cap'
+		);
+	});
+
+	it('stores a tool argument literally named __proto__ instead of hitting the prototype setter', async () => {
+		// Arguments arrive from JSON.parse, where `__proto__` is an own property. Object.assign
+		// uses [[Set]], so an ordinary accumulator would invoke Object.prototype's inherited
+		// setter and silently drop the field.
+		const incoming = JSON.parse('{"__proto__": {"polluted": true}, "safe": 1}');
+		const msgs = await collect(openaiStream(gen({ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: incoming }] })));
+		const toolChunk = msgs.map((m) => m.data).find((d) => typeof d === 'object' && d.choices?.[0]?.delta?.tool_calls);
+		const raw = toolChunk.choices[0].delta.tool_calls[0].function.arguments;
+		const args = JSON.parse(raw);
+		assert.equal(args.safe, 1);
+		assert.ok(raw.includes('__proto__'), `__proto__ field must survive serialization, got: ${raw}`);
+		assert.equal({}.polluted, undefined, 'must not pollute Object.prototype');
+	});
+
+	// A backend that throws partway through the stream (Models#wrapStream re-throws
+	// mid-stream errors). The loop must convert that into a final data:{error} frame,
+	// not let the throw propagate and tear the connection down.
+	async function* throwingGen() {
+		yield { deltaContent: 'partial' };
+		throw Object.assign(new Error('backend exploded'), { statusCode: 502 });
+	}
+
+	it('emits a formatError-shaped error frame and no [DONE] when the backend throws mid-stream', async () => {
+		const msgs = await collect(
+			openaiStream(throwingGen(), {
+				formatError: (err) => ({ message: err.message, type: 'server_error', code: 'backend_error', param: null }),
+			})
+		);
+		// the partial content chunk streamed before the throw
+		assert.equal(msgs[0].data.choices[0].delta.content, 'partial');
+		const last = msgs[msgs.length - 1].data;
+		assert.ok(last.error, 'expected a terminal error frame');
+		assert.equal(last.error.message, 'backend exploded');
+		assert.equal(last.error.type, 'server_error');
+		assert.equal(last.error.code, 'backend_error');
+		// OpenAI terminates on error — no [DONE] sentinel after the error frame
+		assert.ok(!msgs.some((m) => m.data === '[DONE]'), 'must not emit [DONE] after a mid-stream error');
+	});
+
+	it('falls back to a generic server_error frame when no formatError is supplied', async () => {
+		const msgs = await collect(openaiStream(throwingGen()));
+		const last = msgs[msgs.length - 1].data;
+		assert.equal(last.error.type, 'server_error');
+		assert.equal(last.error.message, 'Internal server error');
+	});
+
+	it('serializes the error frame through the SSE serializer as a data: line', async () => {
+		const msgs = await collect(
+			openaiStream(throwingGen(), {
+				formatError: () => ({ message: 'x', type: 'server_error', code: null, param: null }),
+			})
+		);
+		const errFrame = msgs.find((m) => typeof m.data === 'object' && m.data.error);
+		const wire = sse.serialize(errFrame);
+		assert.ok(wire.startsWith('data: '), `unexpected SSE framing: ${wire}`);
+		assert.ok(wire.includes('"error"'));
+	});
 });

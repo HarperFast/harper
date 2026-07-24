@@ -27,9 +27,9 @@ on:
 
 jobs:
   validate:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@6463b3da6326f0ca4646fb6b5139c2ecf92130f6 # main 2026-05-06 (post #11/#12/#14)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@82c9484f6f2560be4a37032858311e429bccd56c # main 2026-07-21 (#74: validator now covers gemini-*.{yml,yaml} callers too)
     with:
       # Same SHA as the `uses:` ref above — the reusable uses this
       # to check out the validator script at the matching version.
       # Same SHA-twice pattern as the other caller workflows.
-      ai-review-prompts-ref: 6463b3da6326f0ca4646fb6b5139c2ecf92130f6
+      ai-review-prompts-ref: 82c9484f6f2560be4a37032858311e429bccd56c

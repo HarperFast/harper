@@ -56,6 +56,34 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 const STREAMING_DEPLOY_MIN_MAJOR = 5;
 const STREAMING_DEPLOY_MIN_MINOR = 1;
 
+// Idle-socket timeout for CLI Op-API requests: no traffic (in either direction) for this long
+// means the target is unreachable or wedged. Resets on any activity, so a slow-but-active
+// upload/deploy is unaffected — only a fully silent connection trips it. Overridable for
+// operations against known-slow targets.
+//
+// SSE-based operations (see SSE_OPERATIONS above) get a much longer default: a long-running
+// deploy_component can go quiet between phase events (e.g. a slow replicate/load step) for well
+// over a minute even though the connection is perfectly healthy, so the generic 60s default is
+// too tight for this one. HARPER_CLI_TIMEOUT_MS/CLI_TIMEOUT_MS, when set, overrides BOTH
+// defaults uniformly — it's a single "I know what timeout I want" escape hatch rather than two
+// separate env vars to keep in sync.
+const DEFAULT_CLI_OPERATION_TIMEOUT_MS = 60000;
+const DEFAULT_SSE_OPERATION_TIMEOUT_MS = 600000; // 10 minutes
+// Largest delay Node's setTimeout accepts; a larger value is silently coerced and fires in
+// ~1ms instead of the intended delay, so out-of-range input is treated the same as any other
+// invalid input below (falls back to DEFAULT_CLI_OPERATION_TIMEOUT_MS) rather than passed through.
+const MAX_CLI_OPERATION_TIMEOUT_MS = 2147483647; // 2^31 - 1
+const RAW_CLI_OPERATION_TIMEOUT = (process.env.HARPER_CLI_TIMEOUT_MS || process.env.CLI_TIMEOUT_MS)?.trim();
+const PARSED_CLI_OPERATION_TIMEOUT = RAW_CLI_OPERATION_TIMEOUT ? Number(RAW_CLI_OPERATION_TIMEOUT) : NaN;
+const CLI_OPERATION_TIMEOUT_OVERRIDE_MS =
+	Number.isInteger(PARSED_CLI_OPERATION_TIMEOUT) &&
+	PARSED_CLI_OPERATION_TIMEOUT >= 0 &&
+	PARSED_CLI_OPERATION_TIMEOUT <= MAX_CLI_OPERATION_TIMEOUT_MS
+		? PARSED_CLI_OPERATION_TIMEOUT
+		: undefined;
+const CLI_OPERATION_TIMEOUT_MS = CLI_OPERATION_TIMEOUT_OVERRIDE_MS ?? DEFAULT_CLI_OPERATION_TIMEOUT_MS;
+const SSE_OPERATION_TIMEOUT_MS = CLI_OPERATION_TIMEOUT_OVERRIDE_MS ?? DEFAULT_SSE_OPERATION_TIMEOUT_MS;
+
 /**
  * Parses a Harper version string (e.g. "5.0.31", "5.1.0-beta.2") and reports whether the
  * server is new enough to accept the multipart + SSE streaming deploy. Unparseable input
@@ -80,7 +108,11 @@ function versionSupportsStreamingDeploy(version: unknown): boolean {
  */
 async function targetSupportsStreamingDeploy(options: any): Promise<boolean> {
 	try {
-		const probeOptions = { ...options, headers: { ...options.headers, Accept: 'application/json' } };
+		const probeOptions = {
+			...options,
+			headers: { ...options.headers, Accept: 'application/json' },
+			timeout: CLI_OPERATION_TIMEOUT_MS,
+		};
 		delete probeOptions.streamResponse;
 		const response = await httpRequest(probeOptions, { operation: 'registration_info' });
 		if (response.statusCode !== 200 || !response.body) return true;
@@ -252,6 +284,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		};
 		options.method = 'POST';
 		options.headers = { 'Content-Type': 'application/json' };
+		options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
 		if (target?.username) {
 			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
 		} else if (allCredentials) {
@@ -266,7 +299,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				if (tokens.refresh_token && isJWTExpired(tokens.operation_token)) {
 					console.error('Operation token expired, attempting to refresh...');
 					try {
-						const refreshOptions = { ...options };
+						const refreshOptions = { ...options, timeout: CLI_OPERATION_TIMEOUT_MS };
 						refreshOptions.headers = { ...options.headers, Authorization: `Bearer ${tokens.refresh_token}` };
 						const refreshResponse = await httpRequest(refreshOptions, {
 							operation: 'refresh_operation_token',

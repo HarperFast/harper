@@ -7,6 +7,8 @@ import readAuditLog from '../../dataLayer/readAuditLog.ts';
 import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
 import customFunctionOperations from '../../components/operations.js';
+import { setMcpQuotaHandler } from '../../components/mcp/quota.ts';
+import { isDeployValidating } from './deployValidationState.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
@@ -170,6 +172,8 @@ export type OperationDefinition = {
  * @param operationDefinition
  */
 server.registerOperation = (operationDefinition: OperationDefinition) => {
+	// A throwaway deploy-validation load must not register (or announce) operations onto the live worker.
+	if (isDeployValidating()) return;
 	const { name, execute, requiresSuperUser } = operationDefinition;
 	let handler = execute;
 	if (requiresSuperUser !== undefined) {
@@ -188,6 +192,14 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
 	// so the main thread can forward calls to this worker (#1736).
 	if (!isMainThread) announceRegisteredOperation(name);
+};
+
+// Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
+// like the tool dispatch that consults it, so no cross-thread announcement is needed. Skipped during
+// deploy validation so a throwaway candidate load can't replace the live worker's policy.
+server.setMcpQuotaHandler = (handler) => {
+	if (isDeployValidating()) return;
+	setMcpQuotaHandler(handler);
 };
 
 export function chooseOperation(json: OperationRequestBody) {
@@ -541,6 +553,14 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
 		new OperationFunctionObject(deploymentOperations.handleGetDeployment)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD,
+		new OperationFunctionObject(deploymentOperations.handleGetDeploymentPayload)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.DELETE_DEPLOYMENT_PAYLOAD,
+		new OperationFunctionObject(deploymentOperations.handleDeleteDeploymentPayload)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.SET_SECRET, new OperationFunctionObject(secretOperations.setSecret));
 	opFuncMap.set(terms.OPERATIONS_ENUM.GRANT_SECRET, new OperationFunctionObject(secretOperations.grantSecret));

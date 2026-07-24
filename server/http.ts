@@ -25,7 +25,7 @@ import { Readable, Writable, pipeline } from 'node:stream';
 import { mkdirSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
-import { setPortServerMap, SERVERS } from './serverRegistry.ts';
+import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains } from './middlewareChain.ts';
@@ -464,9 +464,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			// we set this higher (2x times the default in v22, 8x times the default in v20) because it can help with
 			// performance
 			highWaterMark: 128 * 1024,
-			noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
-			keepAlive: true,
-			keepAliveInitialDelay: 600, // lower the initial delay to 10 minutes, we want to be proactive about closing unused connections
+			...socketOptionDefaults,
 			maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 		};
 		const mtls = env.get(serverPrefix + '_mtls');
@@ -732,9 +730,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 						headersTimeout,
 						requestTimeout,
 						highWaterMark: 128 * 1024,
-						noDelay: true,
-						keepAlive: true,
-						keepAliveInitialDelay: 600,
+						...socketOptionDefaults,
 						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 					},
 					(nodeRequest: IncomingMessage, nodeResponse: any) => {

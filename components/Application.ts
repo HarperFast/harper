@@ -186,8 +186,10 @@ export function isSSHAuthFailure(stderr: string): boolean {
 
 // Git-reference package identifier forms recognized below for the credentialed-clone path: the
 // npm git-url spec forms this repo's own derivePackageIdentifier can produce for a git host
-// credential. An identifier that doesn't match falls back to `npm pack --ignore-scripts` (best
-// effort, same as before this fix — not a regression for a form this can't safely reclone).
+// credential, plus the raw forms a caller may pass directly (any identifier containing ':' is
+// passed through as-is by derivePackageIdentifier). A form parseGitReference doesn't recognize but
+// looksLikeGitReference does is treated as "recognized as git, but not safely handleable" (see
+// extractApplication) rather than silently falling back to `npm pack --ignore-scripts`.
 const GIT_URL_PREFIX = /^git\+(ssh|https?|file):\/\//i;
 const GIT_PROTOCOL_PREFIX = /^git:\/\//i;
 
@@ -204,35 +206,87 @@ const HOSTED_GIT_HOSTS: Record<string, string> = {
 };
 const HOSTED_GIT_PREFIX = /^(github|gitlab|bitbucket|gist):(.+)$/i;
 
+// A bare `https://`/`http://` URL to one of the hosts above is *also* a git-reference install, not a
+// plain download: hosted-git-info (which npm's own git-arg resolution is built on) lists plain
+// http/https in every host's `protocols` array, so `npm pack https://github.com/owner/repo` clones
+// the repo exactly like the `git+https://` form does — it just doesn't carry the `git+` prefix that
+// would otherwise mark it as one.
+const BARE_GIT_HOST_URL_PREFIX = new RegExp(
+	`^https?://(${Object.values(HOSTED_GIT_HOSTS)
+		.map((host) => host.replace(/\./g, '\\.'))
+		.join('|')})/`,
+	'i'
+);
+
 interface GitReference {
 	cloneUrl: string;
 	committish?: string;
 }
 
+// True for a packageIdentifier that names a git source in some form parseGitReference recognizes OR
+// doesn't (a malformed hosted shorthand, or a `#path:` committish naming npm's monorepo-subdirectory
+// extension, which neither this nor the semver-committish resolution below implements). Lets
+// extractApplication distinguish "not git at all" (safe to fall back to plain `npm pack
+// --ignore-scripts`) from "git, but a form we can't safely reclone" (must fail loudly instead).
+function looksLikeGitReference(packageIdentifier: string): boolean {
+	return (
+		GIT_URL_PREFIX.test(packageIdentifier) ||
+		GIT_PROTOCOL_PREFIX.test(packageIdentifier) ||
+		HOSTED_GIT_PREFIX.test(packageIdentifier) ||
+		BARE_GIT_HOST_URL_PREFIX.test(packageIdentifier)
+	);
+}
+
 /**
- * Parses a `git+ssh://…`/`git+https://…`/`git+http://…`/`git+file://…`/`git://…`, or hosted-git
- * shorthand (`github:owner/repo`, `gitlab:owner/repo`, `bitbucket:owner/repo`, `gist:id`) package
- * identifier into a plain clone URL and optional committish, without depending on npm's own git-spec
- * parser (npm-package-arg/hosted-git-info aren't dependencies of this repo). Returns null for any
- * other form.
+ * Parses a `git+ssh://…`/`git+https://…`/`git+http://…`/`git+file://…`/`git://…`, a bare
+ * `https://`/`http://` URL to a known git host, or hosted-git shorthand (`github:owner/repo`,
+ * `gitlab:owner/repo`, `bitbucket:owner/repo`, `gist:[owner/]id`) package identifier into a plain
+ * clone URL and optional committish, without depending on npm's own git-spec parser
+ * (npm-package-arg/hosted-git-info aren't dependencies of this repo).
+ *
+ * Returns null for a `#path:` committish (npm's git-url monorepo-subdirectory extension, which this
+ * doesn't implement — a `#semver:` committish IS handled, downstream, by packGitReferenceWithoutScripts's
+ * resolveCommittish) or for a hosted shorthand that isn't a plain `owner/repo` (or `gist:[owner/]id`)
+ * — callers should treat that as "recognized as git, but not safely handleable" (see
+ * looksLikeGitReference) rather than silently falling back.
  */
 export function parseGitReference(packageIdentifier: string): GitReference | null {
 	const hashIndex = packageIdentifier.indexOf('#');
 	const committish = hashIndex === -1 ? undefined : packageIdentifier.slice(hashIndex + 1);
+	if (committish?.startsWith('path:')) return null;
 	const spec = hashIndex === -1 ? packageIdentifier : packageIdentifier.slice(0, hashIndex);
 	if (GIT_URL_PREFIX.test(spec)) return { cloneUrl: spec.slice('git+'.length), committish };
 	if (GIT_PROTOCOL_PREFIX.test(spec)) return { cloneUrl: spec, committish };
+	// Both of these forms are ones npm resolves via hosted-git-info, which — unlike the explicit
+	// `git+`/`git:` URL forms above — URL-decodes the whole committish while parsing it (e.g. a
+	// branch name containing `/` arriving as `%2F`-escaped resolves correctly either way, but a
+	// committish using other reserved characters needs this to match a real ref name).
+	const decodedCommittish = committish === undefined ? undefined : decodeURIComponentOrRaw(committish);
+	if (BARE_GIT_HOST_URL_PREFIX.test(spec)) return { cloneUrl: spec, committish: decodedCommittish };
 	const hostedMatch = HOSTED_GIT_PREFIX.exec(spec);
 	if (hostedMatch) {
 		const [, prefix, path] = hostedMatch;
 		const host = HOSTED_GIT_HOSTS[prefix.toLowerCase()];
-		// A gist clone URL is keyed by id alone; an optional `owner/` in the shorthand (npm accepts
-		// `gist:[owner/]id`) has no place in the URL and is dropped.
-		const urlPath =
-			prefix.toLowerCase() === 'gist' && path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
-		return { cloneUrl: `https://${host}/${urlPath}.git`, committish };
+		if (prefix.toLowerCase() === 'gist') {
+			// A gist clone URL is keyed by id alone; an optional `owner/` in the shorthand (npm
+			// accepts `gist:[owner/]id`) has no place in the URL and is dropped.
+			const id = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
+			if (!/^[^/#:]+$/.test(id)) return null;
+			return { cloneUrl: `https://${host}/${id}.git`, committish: decodedCommittish };
+		}
+		if (!/^[^/#:]+\/[^/#:]+$/.test(path)) return null;
+		return { cloneUrl: `https://${host}/${path}.git`, committish: decodedCommittish };
 	}
 	return null;
+}
+
+/** decodeURIComponent, falling back to the raw input on a malformed escape rather than throwing. */
+function decodeURIComponentOrRaw(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
 }
 
 const NEUTRALIZED_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepack', 'prepare'];
@@ -266,13 +320,8 @@ async function resolveCommittish(application: Application, committish: string, c
 	if (!SEMVER_COMMITTISH_PREFIX.test(committish)) return committish;
 	// npm's own package-arg parser URL-decodes the value after `semver:` (a range containing `^`/`~`
 	// can arrive percent-encoded, e.g. `#semver:%5E1.0.0`); do the same rather than evaluating it raw.
-	const rawRange = committish.slice('semver:'.length);
-	let range: string;
-	try {
-		range = decodeURIComponent(rawRange);
-	} catch {
-		range = rawRange;
-	}
+	// (A harmless no-op if parseGitReference already decoded the whole committish upstream.)
+	const range = decodeURIComponentOrRaw(committish.slice('semver:'.length));
 
 	// `git tag --list` rather than `for-each-ref --format=...`: nonInteractiveSpawn runs through a
 	// shell, and a `%(...)` format string is unsafe to pass through one.
@@ -371,33 +420,55 @@ async function packGitReferenceWithoutScripts(
 			await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 		}
 
-		const { stdout, code, stderr } = await nonInteractiveSpawn(
-			application.name,
-			'npm',
-			['pack', '--json', '--ignore-scripts', cloneDir],
-			parentDirPath,
-			undefined,
-			undefined,
-			application.npmUserconfigPath
-		);
-		if (code !== 0) {
-			throw new Error(`Failed to pack package ${application.packageIdentifier}: ${stderr}`);
-		}
-		let packResult: Array<{ filename: string }>;
-		try {
-			packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
-		} catch (err) {
-			throw new Error(
-				`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
-			);
-		}
-		if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
-			throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
-		}
-		return join(parentDirPath, packResult[0].filename);
+		return await runNpmPack(application, ['pack', '--json', '--ignore-scripts', cloneDir], parentDirPath);
 	} finally {
 		await rm(cloneDir, { recursive: true, force: true });
 	}
+}
+
+/**
+ * Runs `npm pack` with the given args and returns the resulting tarball's path under `cwd`. Shared
+ * between the git-reference reclone path above and the plain identifier path in extractApplication.
+ */
+async function runNpmPack(
+	application: Application,
+	packArgs: string[],
+	cwd: string,
+	gitCredentialEnv?: Record<string, string>
+): Promise<string> {
+	const { stdout, code, stderr } = await nonInteractiveSpawn(
+		application.name,
+		'npm',
+		packArgs,
+		cwd,
+		undefined,
+		undefined,
+		application.npmUserconfigPath,
+		gitCredentialEnv
+	);
+	if (code !== 0) {
+		if (isSSHAuthFailure(stderr)) {
+			throw new Error(
+				`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
+				{ cause: new Error(stderr) }
+			);
+		}
+		throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
+	}
+
+	let packResult: Array<{ filename: string }>;
+	try {
+		packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
+	} catch (err) {
+		throw new Error(
+			`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+		);
+	}
+	if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
+		throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+	}
+
+	return join(cwd, packResult[0].filename);
 }
 
 // Hidden directory under the components root holding component versions renamed aside
@@ -488,24 +559,37 @@ export async function extractApplication(application: Application) {
 			//
 			// Packing a git reference is not just a download: npm clones the repo and, if its manifest
 			// has a prepare/build/install script, runs `npm install` inside the clone and then that
-			// script — so the repo's own code AND its dependencies' install scripts execute on this node,
-			// inheriting this spawn's environment. With a credential session live, that is exactly the
-			// reach the credential must not have (a transitive dependency's postinstall could ask the
-			// socket for a token granted for the top-level repository), so scripts are off for a
-			// credentialed clone unless the deploy explicitly opted into them.
-			const scriptsDisallowed = application.gitCredentialEnv && !application.install?.allowInstallScripts;
+			// script — so the repository's (and its dependencies') install scripts can execute on this
+			// node during the pack step alone, independent of the later `npm install`.
+			// `install_allow_scripts` is the operator-facing switch for whether component code is
+			// allowed to run scripts on this node at all — with a credential session live, an
+			// unreviewed script also reaching the socket (a transitive dependency's postinstall asking
+			// for a token granted to the top-level repository) is exactly the reach the credential must
+			// not have, so this gates the pack step regardless of whether a credential happens to be in
+			// play.
+			const allowScripts = !!application.install?.allowInstallScripts;
 			// `--ignore-scripts` alone isn't a reliable way to enforce that: pacote's DirFetcher runs a
 			// git source's `prepare` unconditionally on npm versions before 11.0.0 (see
 			// packGitReferenceWithoutScripts), which is exactly what Node 22's bundled npm ships. For a
 			// recognized git-reference identifier, clone and pack it ourselves with scripts stripped
 			// instead, sidestepping that npm code path entirely.
-			const gitRef = scriptsDisallowed ? parseGitReference(application.packageIdentifier) : null;
+			const gitRef = allowScripts ? null : parseGitReference(application.packageIdentifier);
+
+			if (!allowScripts && !gitRef && looksLikeGitReference(application.packageIdentifier)) {
+				// Recognized as git, but a form the reclone-and-strip-scripts path above can't safely
+				// handle (a `#path:` committish, or a hosted shorthand other than a plain `owner/repo`) —
+				// fail loudly rather than silently falling through to the unreliable `npm pack
+				// --ignore-scripts` below.
+				throw new Error(
+					`Cannot deploy git-reference package '${application.packageIdentifier}' with install scripts disallowed: this identifier's form (e.g. a '#path:' committish, or a hosted shorthand other than a plain 'owner/repo') isn't one this repo's script-suppression handling supports. Set install.allowInstallScripts to true, or use a plain git URL with a branch/tag/commit committish instead.`
+				);
+			}
 
 			if (gitRef) {
 				tarballPath = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath);
 			} else {
 				const packArgs = ['pack', '--json', application.packageIdentifier];
-				if (scriptsDisallowed) {
+				if (!allowScripts) {
 					packArgs.push('--ignore-scripts');
 				} else if (application.gitCredentialEnv) {
 					application.logger.warn(
@@ -514,39 +598,7 @@ export async function extractApplication(application: Application) {
 							`can read the git credential. Unset install_allow_scripts to keep the credential out of their reach.`
 					);
 				}
-				const { stdout, code, stderr } = await nonInteractiveSpawn(
-					application.name,
-					'npm',
-					packArgs,
-					parentDirPath,
-					undefined,
-					undefined,
-					application.npmUserconfigPath,
-					application.gitCredentialEnv
-				);
-				if (code !== 0) {
-					if (isSSHAuthFailure(stderr)) {
-						throw new Error(
-							`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
-							{ cause: new Error(stderr) }
-						);
-					}
-					throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
-				}
-
-				let packResult: Array<{ filename: string }>;
-				try {
-					packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
-				} catch (err) {
-					throw new Error(
-						`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
-					);
-				}
-				if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
-					throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
-				}
-
-				tarballPath = join(parentDirPath, packResult[0].filename);
+				tarballPath = await runNpmPack(application, packArgs, parentDirPath, application.gitCredentialEnv);
 			}
 			shouldDeleteTarball = true;
 			tarball = createReadStream(tarballPath);
@@ -582,6 +634,9 @@ export async function extractApplication(application: Application) {
 			throw err;
 		}
 	}
+	// A directory existed for this component name prior to this deploy, so this is a redeploy of
+	// an already-active component rather than a first-time deploy. See `isNewComponent` above.
+	if (didRenameAside) application.isNewComponent = false;
 	// Finally, create the application directory fresh
 	await mkdir(application.dirPath, { recursive: true });
 
@@ -848,6 +903,14 @@ export class Application {
 	npmUserconfigPath?: string;
 	#npmrcTempDir?: string;
 	#gitCredentialSession?: GitCredentialSession;
+	// Whether this component's directory did not already exist when extractApplication ran —
+	// i.e. this deploy is the component's first, as opposed to a redeploy of something already
+	// active. Defaults true and is flipped to false by extractApplication when it finds (and
+	// renames aside) a pre-existing directory for this component name. Used by deployComponent to
+	// scope its unconditional requestRestart() call to genuinely new components (harper#1806):
+	// an existing, already-loaded component already has a live file watcher (Scope/EntryHandler)
+	// that independently requests a restart if the redeploy actually needs one.
+	isNewComponent: boolean = true;
 
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;

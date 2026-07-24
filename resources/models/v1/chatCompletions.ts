@@ -17,7 +17,14 @@ import { Resource } from '../../Resource.ts';
 import { models } from '../Models.ts';
 import { openaiStream } from '../openaiStream.ts';
 import { toOpenAIError, badRequest, authorizeV1Request } from './errors.ts';
-import { translateMessages, translateTools, toGenerateInput, toGenerateOpts, toChatCompletion } from './translation.ts';
+import {
+	translateMessages,
+	translateTools,
+	toGenerateInput,
+	toGenerateOpts,
+	toChatCompletion,
+	validateChatRequest,
+} from './translation.ts';
 import type { OAIChatRequest } from './translation.ts';
 
 type SseHandler = { serializeStream: (iterable: AsyncIterable<unknown>) => Readable };
@@ -31,30 +38,44 @@ export class V1ChatCompletions extends Resource {
 
 		// REST.ts passes `request.data` directly, which is the (unawaited) streaming
 		// JSON deserializer's Promise — awaiting here is a no-op for callers (e.g.
-		// unit tests) that already pass a plain object.
-		body = await body;
+		// unit tests) that already pass a plain object. A malformed JSON body rejects
+		// this promise, which is a client error, not a 500.
+		try {
+			body = await body;
+		} catch (err) {
+			return badRequest(`Could not parse request body: ${err instanceof Error ? err.message : 'invalid JSON'}`);
+		}
 		if (!body || typeof body !== 'object' || Array.isArray(body)) {
 			return badRequest('Request body must be a JSON object');
 		}
 		const req = body as OAIChatRequest;
 
-		if (!Array.isArray(req.messages) || req.messages.length === 0) {
-			return badRequest("'messages' must be a non-empty array");
-		}
+		// Validate the nested wire shapes before mapping: the mappers assume well-formed
+		// input, so an unvalidated `messages:[null]` / `tools:[{}]` would throw a TypeError
+		// and surface as an RFC 9457 500 instead of an OpenAI 400.
+		const invalid = validateChatRequest(req);
+		if (invalid) return badRequest(invalid);
 
 		const model = typeof req.model === 'string' ? req.model : 'default';
-		const messages = translateMessages(req.messages);
-		const tools = req.tools?.length ? translateTools(req.tools) : undefined;
-		const input = toGenerateInput(messages, tools);
-		const opts = toGenerateOpts(req);
 
 		try {
+			const messages = translateMessages(req.messages);
+			// tool_choice: 'none' means "do not call tools" — the only faithful way to honor
+			// that against a returns-tool-calls backend is to not offer the tools at all.
+			// 'required'/named selection are rejected in validateChatRequest.
+			const tools = req.tool_choice === 'none' || !req.tools?.length ? undefined : translateTools(req.tools);
+			const input = toGenerateInput(messages, tools);
+			const opts = toGenerateOpts(req);
 			if (req.stream) {
 				const tokenStream = models.generateStream(input, opts);
 				// serializeStream wraps the async iterable in a Node Readable so REST.ts
 				// can return it without re-serialising. The `body` presence on the return
 				// value skips REST.ts's own serialize() call (REST.ts:165-193).
-				const readable = sseHandler.serializeStream(openaiStream(tokenStream, { model }));
+				// formatError reuses the non-streaming error mapping so a mid-stream backend
+				// failure reaches the client as an OpenAI-shaped SSE error frame.
+				const readable = sseHandler.serializeStream(
+					openaiStream(tokenStream, { model, formatError: (err) => toOpenAIError(err).data.error })
+				);
 				return {
 					status: 200,
 					headers: {
@@ -71,5 +92,32 @@ export class V1ChatCompletions extends Resource {
 		} catch (err) {
 			return toOpenAIError(err);
 		}
+	}
+
+	/**
+	 * A client that sends an explicit `Accept: text/event-stream` with its POST is
+	 * dispatched by REST as CONNECT (REST.ts), not POST. The OpenAI SDK happens to send
+	 * `Accept: application/json` even when streaming, but other valid SSE clients do not.
+	 *
+	 * Without this override the request reached `Resource`'s default `connect`, whose
+	 * instance path returns `subscribe()` — an empty `IterableEventQueue` — so the client
+	 * got a 200 SSE response that stayed open forever emitting nothing, rather than an
+	 * error it could act on.
+	 *
+	 * REST passes `null` as the CONNECT body (`resource.connect(target, null, request)`),
+	 * so the parsed body is taken off the request and handed to the same `post()`
+	 * implementation — one code path, identical validation and error shaping.
+	 *
+	 * `connect` is also reachable from the WebSocket handler with a different signature
+	 * (`resourceRequest, incomingMessages, request`), where there is no `request.data`;
+	 * that case is rejected as a client error rather than returning an envelope the WS
+	 * path would fail to iterate.
+	 */
+	static async connect(target: unknown, _data: unknown, request: unknown) {
+		const data = (request as { data?: unknown })?.data;
+		if (data === undefined) {
+			return badRequest('This endpoint requires a JSON request body; WebSocket connections are not supported');
+		}
+		return this.post(target, data, request);
 	}
 }

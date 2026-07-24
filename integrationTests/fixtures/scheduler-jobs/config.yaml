@@ -1,0 +1,12 @@
+graphqlSchema:
+  files: '*.graphql'
+rest: true
+scheduler:
+  jobs:
+    - name: tick
+      interval: 1s
+      handler: ./jobs.js#recordTick
+    - name: nightly
+      cron: '0 2 * * *'
+      timezone: UTC
+      handler: ./jobs.js#recordTick

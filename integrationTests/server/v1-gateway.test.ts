@@ -20,9 +20,10 @@
  * NOTE: `modelsGateway: { enabled: true }` is passed explicitly because the
  * gateway is off by default (`enabled: false` in defaultConfig.yaml). The test
  * harness plumbs this via HARPER_SET_CONFIG. This suite runs against a bare
- * instance (no deployed apps), so no component config contains a `rest` key —
- * the gateway itself must activate REST serving (REST.ensureStarted) for these
- * endpoints to be reachable. That activation is part of what this suite covers.
+ * instance (no deployed apps), so it also declares an explicit `rest` section
+ * below: the gateway deliberately does NOT force REST to start (see
+ * resources/models/v1/index.ts), so a real deployment must configure `rest`
+ * itself, and this suite mirrors that requirement.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -76,6 +77,12 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx, {
 			config: {
+				// The gateway's resources are served by REST's middleware chain, and the
+				// gateway does not force REST to start (see resources/models/v1/index.ts).
+				// defaultConfig.yaml ships no `rest` section, so a bare instance needs one
+				// declared here — exactly as a real deployment would. `webSocket` is a leaf
+				// value because a plain empty object is dropped by flattenObject().
+				rest: { webSocket: true },
 				// Gateway is off by default (enabled: false in defaultConfig.yaml). Pass
 				// enabled: true explicitly to activate it for these tests. A plain empty
 				// object would be silently dropped by flattenObject() in harperConfigEnvVars.ts
@@ -237,6 +244,68 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		assert.equal(res.status, 400);
 		const body = (await res.json()) as { error: { type: string } };
 		assert.equal(body.error.type, 'invalid_request_error');
+	});
+
+	test('POST /v1/chat/completions returns 400 (not 500) for malformed nested wire shapes', async () => {
+		// Each of these used to throw a TypeError inside the mappers, surfacing as an
+		// RFC 9457 500 rather than an OpenAI 400.
+		const malformed: Array<[string, unknown]> = [
+			['null message element', { model: 'default', messages: [null] }],
+			[
+				'tool_calls entry with no function',
+				{ model: 'default', messages: [{ role: 'assistant', content: null, tool_calls: [{}] }] },
+			],
+			['tools entry with no function', { model: 'default', messages: [{ role: 'user', content: 'hi' }], tools: [{}] }],
+		];
+		for (const [label, payload] of malformed) {
+			const res = await harperFetch(ctx, restUrl(ctx, '/v1/chat/completions'), {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify(payload),
+			});
+			assert.equal(res.status, 400, `${label}: expected 400, got ${res.status}`);
+			const body = (await res.json()) as { error: { type: string } };
+			assert.equal(body.error.type, 'invalid_request_error', `${label}: wrong error type`);
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Explicit SSE Accept header — dispatched as CONNECT by REST, not POST
+	// -----------------------------------------------------------------------
+
+	test('an SSE client sending exact Accept: text/event-stream is served, not method-not-allowed', async () => {
+		// REST rewrites POST + `Accept: text/event-stream` to CONNECT. The OpenAI SDK dodges
+		// this by always sending application/json, but other valid SSE clients do not — this
+		// exercises the connect() delegation.
+		const res = await harperFetch(ctx, restUrl(ctx, '/v1/chat/completions'), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+			body: JSON.stringify({
+				model: 'default',
+				messages: [{ role: 'user', content: 'tell me something' }],
+				stream: true,
+			}),
+		});
+		assert.notEqual(res.status, 405, 'explicit SSE Accept must not be method-not-allowed');
+		assert.equal(res.status, 200, `expected 200, got ${res.status}`);
+		assert.equal(res.headers.get('content-type'), 'text/event-stream');
+		const text = await res.text();
+		assert.ok(text.includes('data:'), `expected SSE data frames, got: ${text.slice(0, 200)}`);
+
+		// Reassemble the deltas the way a client does: the fixture streams word by word, so
+		// the content is split ACROSS frames and never appears contiguously in the raw text.
+		const content = text
+			.split('\n')
+			.filter((line) => line.startsWith('data: ') && !line.includes('[DONE]'))
+			.map((line) => {
+				try {
+					return JSON.parse(line.slice(6))?.choices?.[0]?.delta?.content ?? '';
+				} catch {
+					return '';
+				}
+			})
+			.join('');
+		assert.ok(content.includes('[echo stream]'), `unexpected reassembled content: ${content}`);
 	});
 
 	// -----------------------------------------------------------------------

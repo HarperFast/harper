@@ -41,8 +41,10 @@ export function setCommitLatencyRecorder(recorder: ((durationMs: number) => void
 // queue time. The recorder is wrapped so it can never throw — a metrics failure must neither break the
 // commit nor surface as an unhandled rejection on this floating `.then`. The thenable guard protects
 // against a future caller passing a non-Promise `commitResolution` (today it is always the rocksdb-js
-// async `Transaction.commit()` result, which is guaranteed to be a Promise).
-function recordCommitLatency(commitResolution: Promise<void>, submittedAt: number) {
+// async `Transaction.commit()` result, which is guaranteed to be a Promise). The parameter matches
+// `commit()`'s honest `Promise<number | void>` result (the coordinated-retry sentinel); the resolved
+// value is intentionally ignored — only the settle timing is recorded.
+function recordCommitLatency(commitResolution: Promise<number | void>, submittedAt: number) {
 	if (!recordCommitLatencyMs) return;
 	const record = () => {
 		try {
@@ -54,6 +56,51 @@ function recordCommitLatency(commitResolution: Promise<void>, submittedAt: numbe
 	if (commitResolution && typeof (commitResolution as any).then === 'function') {
 		commitResolution.then(record, record);
 	}
+}
+
+// Queue-depth gauges surfaced through the analytics pipeline (write-transaction-queue-depth /
+// read-transaction-queue-depth). Per-thread state; the analytics aggregator sums across threads.
+// `writeTxnQueueDepth` counts write commits handed to the storage engine but not yet resolved —
+// this is the backlog that, when it drains too slowly, produces the "Outstanding write transactions
+// have too long of queue" overload error. Read depth is derived from the live `trackedTxns` set
+// (every tracked transaction holds an open read snapshot). We also retain a high-water mark per
+// sampling window because the queue can fill and drain within a single (~1s) analytics period, so an
+// instantaneous sample taken at emit time would routinely miss the spike operators need to see.
+// RocksDB-write-path only: LMDB routes through the separate LMDBTransaction.commit()/getReadTxn()
+// overrides (resources/LMDBTransaction.ts), which maintain their own unrelated `trackedTxns` set and
+// do not call into this accounting.
+let writeTxnQueueDepth = 0;
+let writeTxnQueueDepthHighWater = 0;
+let readTxnQueueDepthHighWater = 0;
+
+function enterWriteQueue() {
+	if (++writeTxnQueueDepth > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+}
+function leaveWriteQueue() {
+	// Floor at zero: accounting is balanced by construction (every enterWriteQueue has exactly one
+	// matching settlement), but the guard is cheap insurance against a future call-site imbalance
+	// producing a negative depth that would corrupt every subsequent sample.
+	if (writeTxnQueueDepth > 0) writeTxnQueueDepth--;
+}
+
+/**
+ * Returns the current write/read transaction queue depths for this thread along with the high-water
+ * mark observed since the previous call, then resets the high-water marks to the current depth so the
+ * next sampling window starts fresh. Consumed by the analytics writer (see analytics/write.ts).
+ */
+export function getTransactionQueueDepths() {
+	// `readTxnQueueDepthHighWater` is maintained at the single trackedTxns growth site, so it already
+	// dominates the current size here — no need to reconcile against `readDepth` before reporting.
+	const readDepth = trackedTxns.size;
+	const depths = {
+		writeDepth: writeTxnQueueDepth,
+		writeMaxDepth: writeTxnQueueDepthHighWater,
+		readDepth,
+		readMaxDepth: readTxnQueueDepthHighWater,
+	};
+	writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+	readTxnQueueDepthHighWater = readDepth;
+	return depths;
 }
 
 let confirmReplication;
@@ -190,6 +237,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 		trackedTxns.add(this);
+		if (trackedTxns.size > readTxnQueueDepthHighWater) readTxnQueueDepthHighWater = trackedTxns.size;
 		return this.transaction;
 	}
 
@@ -308,7 +356,7 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		if (this.timedOut) throw transactionOpenTooLongError();
-		let transaction = options.transaction ?? this.transaction; // we need to preserve this transaction as we might to resurrect it if we have to retry
+		const transaction = options.transaction ?? this.transaction; // reused across retries; the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain
 		for (let i = 0; i < this.writes.length; i++) {
 			let operation = this.writes[i];
 			if (!operation || (this.retries === 0 && operation.saved)) continue;
@@ -353,18 +401,33 @@ export class DatabaseTransaction implements Transaction {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
 							// The transaction was created with coordinatedRetry:true (see
-							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE.
-							// That sentinel is handled in the resolve callback below and the
-							// cast to Promise<void> is safe — the sentinel never propagates
-							// past that branch.
-							commitResolution = transaction.commit() as Promise<void>;
+							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
+							// sentinel (a number) is why commitResolution is typed
+							// Promise<number | void>; it is handled in the resolve callback below.
+							commitResolution = transaction.commit();
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (outstandingCommitStart is
 							// stamped at submit), so a rising p99/p999 is the leading indicator for the
 							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
 							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
 							// re-arms per attempt, so recording per attempt matches the overload semantics.
-							recordCommitLatency(commitResolution, performance.now());
+							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
+							// Promise<void> here because the widening union defeats flow analysis on the prior
+							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
+							recordCommitLatency(commitResolution as Promise<void>, performance.now());
+							// Count this commit against the write queue depth until the storage engine
+							// resolves it. A transient-conflict retry rejects this promise and issues a
+							// fresh commit() (re-entering here), so the enter/leave stays balanced. leaveWriteQueue
+							// never throws, so the settled promise resolves and needs no rejection handling of its own.
+							// The thenable guard protects against a future caller passing a non-Promise
+							// `commitResolution` (today it is always rocksdb-js's async Transaction.commit()
+							// result, guaranteed to be a Promise).
+							enterWriteQueue();
+							if (commitResolution && typeof (commitResolution as any).then === 'function') {
+								commitResolution.then(leaveWriteQueue, leaveWriteQueue);
+							} else {
+								leaveWriteQueue();
+							}
 						} else {
 							try {
 								commitResolution = transaction.abort();
@@ -404,6 +467,9 @@ export class DatabaseTransaction implements Transaction {
 								// at MAX_RETRIES; sourceApply transactions keep retrying with periodic warn.
 								if (this.retries > MAX_RETRIES) {
 									if (!this.sourceApply) {
+										// giving up: poison and abort the whole linked chain so no link leaks its native
+										// handle / read snapshot — or any unpublished transaction-log position — until GC.
+										this.abortChainAfterRetries(transaction);
 										throw new ServerError(
 											`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 										);
@@ -485,35 +551,18 @@ export class DatabaseTransaction implements Transaction {
 								// for future transactions
 								this.retries++;
 								harperLogger.debug?.('retrying', transaction.id, this.retries);
-								if (error.code === 'ERR_TRY_AGAIN') {
-									// ERR_BUSY recovers on recommit: the save loop re-writes each key, re-tracking it at
-									// the current sequence, so validation passes once the contention clears. ERR_TRY_AGAIN
-									// never does: the memtable history validation needs is gone (flushed during a
-									// bulk-ingest burst), and recommitting re-checks the same stranded snapshot, so it
-									// fails forever even on an idle database. A source-apply transaction's uncapped retry
-									// then spins for good and wedges the replication apply loop at its commit await,
-									// freezing every leg of that database on the node. Replay onto a fresh transaction
-									// instead: the save loop reloads each entry through it and re-resolves against
-									// current state. Carry over the commit hook the transaction-log store attached
-									// (aftercommit emit / structure watermarks; it reads its state off the original
-									// transaction object, which abort() leaves intact); the retry-site isRetry stamp
-									// below keeps the log entries themselves from being re-added.
-									const retryTransaction: RocksTransactionWithRetry = new RocksTransaction(
-										(this.writes.find((write) => write)?.store.store ?? this.db.store) as RocksStore
-									);
-									if (this.timestamp) retryTransaction.setTimestamp(this.timestamp);
-									(retryTransaction as any).onCommit = (transaction as any).onCommit;
-									try {
-										transaction.abort();
-									} catch (abortError) {
-										// usually already released by the failed commit; log for the unexpected case
-										harperLogger.debug?.('aborting stranded transaction after failed commit', abortError);
-									}
-									transaction = retryTransaction;
-								}
+								// ERR_BUSY and ERR_TRY_AGAIN are both retried by recommitting the SAME native
+								// transaction. ERR_BUSY recovers because the save loop re-writes each key, re-tracking
+								// it at the current sequence. ERR_TRY_AGAIN — a snapshot stranded outside the memtable
+								// conflict-check window after a bulk-ingest flush — used to fail forever on recommit
+								// because the native layer left the stranded snapshot in place; rocksdb-js now resets
+								// the transaction onto a fresh snapshot on the failed TryAgain commit, exactly as it
+								// always did for IsBusy, so the re-run's save loop re-resolves against current state and
+								// converges. Keeping the same transaction means its committedPosition survives the reset
+								// (WAL write-once, rocksdb-js#668) and its onCommit hook stays attached, so the
+								// already-staged change-feed entry publishes only when the retry really commits — no
+								// premature publish, and no fresh-transaction replay that would drop the entry.
 								// Mark the native transaction as a retry so RocksTransactionLogStore skips re-staging entries.
-								// Stamp AFTER the possible ERR_TRY_AGAIN swap above so the fresh replay transaction is
-								// marked too; otherwise it would re-stage audit/change-feed log entries on recommit.
 								(transaction as RocksTransactionWithRetry).isRetry = true;
 								if (this.retries > 2) {
 									// Transactions applying data from a canonical source of truth (replication peer or
@@ -525,13 +574,9 @@ export class DatabaseTransaction implements Transaction {
 									const neverDropOnConflict = this.sourceApply;
 									if (this.retries > MAX_RETRIES) {
 										if (!neverDropOnConflict) {
-											// giving up: release the current transaction (original or the fresh replay above)
-											// so the throw does not leak its native handle
-											try {
-												transaction.abort();
-											} catch (abortError) {
-												harperLogger.debug?.('aborting conflicted transaction after exhausting retries', abortError);
-											}
+											// giving up: poison and abort the whole linked chain so no link leaks its native
+											// handle / read snapshot until GC.
+											this.abortChainAfterRetries(transaction);
 											throw new ServerError(
 												`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
 											);
@@ -592,6 +637,42 @@ export class DatabaseTransaction implements Transaction {
 		// reset the transaction
 		this.writes = [];
 		if (this.#context?.resourceCache) this.#context.resourceCache = null;
+	}
+	/**
+	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
+	 * first, then abort each link's native transaction and release its DatabaseTransaction-level
+	 * resources. Two passes (mirroring abortDueToTimeout) so a throw while aborting one link can't leave
+	 * later links (this.next) holding native handles / read snapshots until GC. `headTransaction` is the
+	 * head link's native transaction, which commit() detached to a local before this point
+	 * (this.transaction is already null), so it is aborted directly; every other link still owns its
+	 * native transaction on `txn.transaction`.
+	 */
+	abortChainAfterRetries(headTransaction: RocksTransaction): void {
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			txn.open = TRANSACTION_STATE.CLOSED;
+		}
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			const nativeTxn = txn === this ? headTransaction : txn.transaction;
+			// Clear the native handle and read-snapshot bookkeeping so the abort() below only performs
+			// non-native cleanup (blobs, writes) and can't double-abort (RocksTransaction.abort() throws
+			// on an already-aborted handle) or spin abort()'s doneReadTxn loop on a nulled handle.
+			txn.transaction = null;
+			txn.readTxnsUsed = 0;
+			trackedTxns.delete(txn);
+			try {
+				nativeTxn?.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('aborting conflicted transaction in chain after exhausting retries', abortError);
+			}
+			try {
+				// abort() synchronously walks savedBlobs and can call write.store.getEntry(), which can throw
+				// (closed store, decode error). Catch and continue so one link's wrapper-cleanup failure can't
+				// strand later links' native handles — they were already detached/aborted above regardless.
+				txn.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('cleaning up conflicted transaction in chain after exhausting retries', abortError);
+			}
+		}
 	}
 	/**
 	 * True if this transaction — or any database in its multi-store `next` chain — has writes accumulated

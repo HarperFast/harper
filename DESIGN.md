@@ -108,6 +108,13 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 Future agents touching `components/deploymentRecorder.ts` for Slice B's streaming variant should pick one of the latter two patterns.
 
+## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
+
+`readPayloadBlobWithRetry` (`components/deploymentRecorder.ts`) wraps the peer's read of a replicated `hdb_deployment` row's `payload_blob` so a transient 503 `BlobReadError` (`BLOB_UNAVAILABLE_STATUS`, `resources/blob.ts`) — content bytes not arriving within `blobReadTimeout`, e.g. a parked blob send on the origin — retries instead of failing the whole deploy. Two non-obvious constraints shaped the design:
+
+- **Retry is only safe before any byte has reached the consumer.** Once a chunk is handed downstream, re-opening `Blob.stream()` from byte 0 would duplicate it (there's no cheap way to resume from an arbitrary offset across a fresh stream without also plumbing `Blob.slice()`, which was out of scope for this fix). So the helper retries only while the current attempt has yielded nothing yet; a stall after partial content fails immediately, same as before this existed.
+- **Backpressure and cancellation are two different problems, and both are easy to get wrong with a hand-rolled `ReadableStream`.** An early version wrapped the retry loop in `new ReadableStream({ async start(controller) { for await (...) controller.enqueue(chunk) } })` — this eagerly drains `streamFactory()` regardless of `controller.desiredSize`, defeating the whole point of not buffering a multi-GB payload in memory. Switching to an `async function*` consumed via `Readable.from()` restores real backpressure (the generator only resumes when the consumer wants more, matching how the un-wrapped `Blob.stream()` behaved pre-fix). But `Readable.from()`'s `return()`-on-destroy cancellation only takes effect at the generator's _next_ `yield` — while the loop is stuck retrying (no `yield` reached yet), destroying the `Readable` does nothing until the loop naturally exits, verified empirically (a generator that never yields kept retrying long after `.destroy()`). The fix: thread the constructed `Readable` back into the generator via a mutable cell (`readable` doesn't exist until after `Readable.from()` returns, so it can't be closed over directly) and check `.destroyed` explicitly at each loop iteration and after each backoff sleep.
+
 ## System table bootstrap: `systemSchema.json` + upgrade directive
 
 Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three changes:
@@ -305,6 +312,37 @@ guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existin
 this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
 declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
 other future cause would still report success silently; that's a deferred, separate fix.
+
+## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
+
+The built-in `scheduler` plugin (#951) runs config-declared jobs "exactly once per cluster." The
+non-obvious part is what Harper's substrate does and does not offer for that:
+
+- **There is no election, consensus, or cross-node CAS anywhere in harper/harper-pro.** Replication
+  converges concurrent writes by record version (LWW). A lease acquired with a plain `put` therefore
+  cannot be race-free by construction — two nodes writing the lease both succeed locally and
+  converge later. The engine's design accepts this: sticky leadership (a starter defers to a fresh
+  heartbeat), a heartbeat takeover check (a leader seeing a fresher foreign heartbeat steps down),
+  and documented handler idempotency are the mechanisms that ride out transient dual-leadership.
+  Do not "fix" the race with a conditional write — the primitive does not exist.
+- The lease + per-job run state live in the replicating system table `hdb_scheduler_state`
+  (`audit: true` because system-table replication requires auditing; name chosen because `hdb_job`
+  is taken by the legacy jobs subsystem). On constrained/directional replication topologies the
+  lease may not reach every node; that limitation is inherent.
+- The alphabetical node-name tie-break deliberately mirrors replication's deterministic failover
+  convention (sorted node names in `subscriptionManager.ts`); the escalation ladder
+  (`promotionWaitMs`) exists because a dead alphabetically-first node must not deadlock a
+  leaderless cluster (each successive node waits one more `2 × watcher interval` rung).
+- Thread-once vs cluster-once are separate layers: `getWorkerIndex() === 0` gates to one worker per
+  node (correct in every threading mode incl. `threads: 0`); the lease gates across nodes.
+  `handleApplication` holds a cross-thread load lock with a 30s timeout, so the plugin only
+  registers there — election, scheduling, and catch-up run async after.
+- Catch-up fires at most ONE missed occurrence per cron job, and a new job's `firstSeenAt` baseline
+  prevents firing immediately on first deploy. Interval jobs are excluded from the sweep — they
+  self-correct by anchoring to their persisted last run in `scheduleNextRun`.
+- Timer firing is a deliberately thin `setTimeout` layer so the durable timer service (#754) can
+  replace it without touching the config surface, election, or catch-up. Timing thresholds are
+  env-overridable (`HARPER_SCHEDULER_*`) so multi-node tests can exercise failover in seconds.
 
 ## `universalHeaders` (`http.securityHeaders`): ownership, precedence, and per-thread scope
 

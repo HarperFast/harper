@@ -20,12 +20,12 @@ import * as graphqlQueryHandler from '../server/graphqlQuerying.ts';
 import * as roles from '../resources/roles.ts';
 import * as jsHandler from '../resources/jsResource.ts';
 import * as login from '../resources/login.ts';
-import * as modelsGateway from '../resources/models/v1/index.ts';
 import * as REST from '../server/REST.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import * as dataLoader from '../resources/dataLoader.ts';
+import * as scheduler from '../resources/scheduler/scheduler.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
@@ -113,7 +113,12 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 		return require('../server/fastifyRoutes');
 	},
 	login,
-	modelsGateway,
+	// String entry: the loader `await import()`s these lazily when the component is actually
+	// processed, so the gateway's module graph is not pulled into componentLoader's own
+	// evaluation. `#src/*` is used rather than a relative path because it resolves under both
+	// conditions (source under --conditions=typestrip, dist otherwise); a relative extensionless
+	// require would only resolve against dist.
+	modelsGateway: '#src/resources/models/v1/index',
 	static: staticFiles,
 	customFunctions: {},
 	http: httpComponent,
@@ -123,6 +128,7 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	logging: harperLogger,
 	dataLoader,
 	mcp: mcpComponent,
+	scheduler,
 	/*
 	static: ...
 	login: ...
@@ -562,6 +568,11 @@ export async function loadComponent(
 						// load is validated (see operations.js deploy pre-flight). Skip the worker-shutdown
 						// auto-close so their deploy-lifecycle listeners — and this SHUTDOWN handler — don't
 						// accumulate across deploys (#1462).
+						// Mark it so plugins with process-global side effects (e.g. the scheduler
+						// registering jobs into its engine) can validate without activating —
+						// validation scopes may reuse a live component's identity, so activating
+						// from one can displace the real component's registrations.
+						scope.isTransientValidation = true;
 						options.collectScopes.add(scope);
 					} else {
 						// Track the close so the worker's shutdown path waits for it (and thus for any async

@@ -1,5 +1,7 @@
-# Persisted per-identity counter behind the durable quota hook (#1610).
-type QuotaCounter @table @export {
+# Internal per-identity counter behind the durable quota handler (#1610/#1809).
+# NOT @export — the handler reaches it via tables.QuotaCounter, and no client can
+# read or reset it over any transport.
+type QuotaCounter @table {
 	id: ID @primaryKey
 	used: Int
 }

@@ -1,0 +1,73 @@
+# QA-596 — is a sourcedFrom resolver's snapshot read-scoping CONTRACTUAL or incidental?
+#
+# QA-595 proved reads LOOK snapshot-scoped but never forced a genuinely async gap (a real
+# event-loop yield, e.g. a timer) mid-fill, across a concurrent commit. This fixture forces
+# that gap in two shapes:
+#
+#   1. Single-store (Cell): both rows a resolver reads live in the SAME table/store. Tests
+#      whether the read-transaction reuse mechanism (resources/Table.ts getFromSource ->
+#      transaction() -> AsyncLocalStorage-propagated context -> reused DatabaseTransaction)
+#      survives a real timer await between the two reads.
+#   2. Cross-DATABASE (RowA in the default db / RowB in db "qa596b"): resources/databases.ts
+#      opens one shared RocksDB root store PER DATABASE (all tables in the same database are
+#      column families of the SAME rootStore, keyed by rootStore.path) — so two tables in the
+#      SAME database are, for txnForContext's chaining check (resources/Table.ts:5026-5069,
+#      `transaction.db?.path === primaryStore.path`), the SAME store and share ONE reused
+#      RocksTransaction/snapshot no differently than two rows in one table. A genuine
+#      cross-STORE test needs two different databases: each gets its own chained
+#      DatabaseTransaction (`transaction.next`), and each chained link's underlying
+#      RocksTransaction is opened LAZILY on ITS OWN first touch, independent of the other. So a
+#      real async gap between reading db-A's table and db-B's table gives a concurrent writer
+#      to db-B's table a window to land BEFORE db-B's snapshot is pinned, while db-A's snapshot
+#      (already pinned) does not see it. Tests whether that produces a genuinely torn
+#      (mixed-vintage) cross-database view.
+#   3. Cross-TABLE, SAME database (RowA / RowC, both default db): isolates whether the seam in
+#      (2) is really "two tables" or specifically "two databases" -- RowA and RowC are two
+#      distinct tables (distinct primaryStore/column-family) but share one rootStore.path, so
+#      txnForContext's chaining check treats them as the same store. Predicts the same
+#      guarantee as (1): consistent despite the real gap.
+
+type Cell @table @export {
+	id: ID @primaryKey
+	entityId: String @indexed
+	slot: String
+	gen: Int
+}
+
+type RowA @table @export {
+	id: ID @primaryKey
+	gen: Int
+}
+
+type RowB @table(database: "qa596b") @export {
+	id: ID @primaryKey
+	gen: Int
+}
+
+type RowC @table @export {
+	id: ID @primaryKey
+	gen: Int
+}
+
+type SingleTableSnap @table(expiration: 3) @export {
+	id: ID @primaryKey
+	gens: Any
+	fillSeq: Int
+	assembledAt: Long
+}
+
+type CrossTableSnap @table(expiration: 3) @export {
+	id: ID @primaryKey
+	genA: Int
+	genB: Int
+	fillSeq: Int
+	assembledAt: Long
+}
+
+type TwoTableSameDbSnap @table(expiration: 3) @export {
+	id: ID @primaryKey
+	genA: Int
+	genC: Int
+	fillSeq: Int
+	assembledAt: Long
+}

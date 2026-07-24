@@ -29,7 +29,7 @@ const { realExit } = require('./workerProcessGuard.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
 const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/keys.ts');
 const { startupLog } = require('../../bin/run.ts');
-const { SERVERS, setPortServerMap, portServer } = require('../serverRegistry.ts');
+const { SERVERS, setPortServerMap, portServer, socketOptionDefaults } = require('../serverRegistry.ts');
 const httpComponent = require('../http.ts');
 const globals = require('../../globals.js');
 const { whenScopesClosed } = require('../../components/scopeShutdown.ts');
@@ -579,9 +579,7 @@ function onSocket(listener, options) {
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
-				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
-				keepAlive: true,
-				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
+				...socketOptionDefaults,
 				ciphers: effectiveCiphers,
 				SNICallback,
 			},
@@ -611,11 +609,7 @@ function onSocket(listener, options) {
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
-			const udsServer = createSocketServer(listener, {
-				noDelay: true,
-				keepAlive: true,
-				keepAliveInitialDelay: 600,
-			});
+			const udsServer = createSocketServer({ ...socketOptionDefaults }, listener);
 
 			udsServer.isPerThreadSocket = true;
 			// Strip the PROXY v1 header a fronting proxy (e.g. symphony) prepends, same as the
@@ -632,11 +626,7 @@ function onSocket(listener, options) {
 	}
 	if (options.port) {
 		setPortServerMap(options.port, { protocol_name: 'TCP', name: getComponentName() });
-		socketServer = createSocketServer(listener, {
-			noDelay: true,
-			keepAlive: true,
-			keepAliveInitialDelay: 600,
-		});
+		socketServer = createSocketServer({ ...socketOptionDefaults }, listener);
 		// See the securePort path above: opt out of reusePort only on macOS so every worker can
 		// accept connections for this listener elsewhere, and mark it worker-owned.
 		if (process.platform === 'darwin') socketServer.noReusePort = true;

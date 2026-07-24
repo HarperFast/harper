@@ -550,12 +550,25 @@ function applyContractMetadata(carrier: any, contract: Contract): void {
  */
 function wrapStaticVerb(original: Function, compiled: CompiledVerb): Function {
 	const { queryFragment, bodyFragment, hasBody } = compiled;
+	function validateAndDispatch(this: any, target: any, rest: any[], body: any) {
+		const issues: ValidationIssue[] = [];
+		if (queryFragment) coerceAndValidateQuery(queryFragment, target, issues);
+		if (hasBody && bodyFragment) rest[0] = validateBody(bodyFragment, body, issues);
+		if (issues.length) throw new ValidationError(issues);
+		return original.call(this, target, ...rest);
+	}
 	return function (this: any, target: any, ...rest: any[]) {
 		if (target instanceof URLSearchParams) {
-			const issues: ValidationIssue[] = [];
-			if (queryFragment) coerceAndValidateQuery(queryFragment, target, issues);
-			if (hasBody && bodyFragment) rest[0] = validateBody(bodyFragment, rest[0], issues);
-			if (issues.length) throw new ValidationError(issues);
+			const body = rest[0];
+			// REST.ts's streaming deserializer hands the body over as a still-pending promise
+			// (`request.data`); await it before validating, or it reads as an empty object and every
+			// declared-required field is (incorrectly) reported missing. A plain value (as passed by a
+			// programmatic call or a unit test) validates synchronously, preserving the synchronous-throw
+			// contract those callers rely on.
+			if (hasBody && bodyFragment && body && typeof body.then === 'function') {
+				return body.then((resolvedBody: any) => validateAndDispatch.call(this, target, rest, resolvedBody));
+			}
+			return validateAndDispatch.call(this, target, rest, body);
 		}
 		return original.call(this, target, ...rest);
 	};

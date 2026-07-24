@@ -585,4 +585,96 @@ describe('Test common_utils module', () => {
 			expect(Number.isNaN(cu.convertToMS('abc'))).to.equal(true);
 		});
 	});
+
+	describe('Test httpRequest timeout', () => {
+		const http = require('node:http');
+		let server, port;
+
+		before((done) => {
+			// Never responds, so the client-side idle timeout is the only thing that can end the request.
+			server = http.createServer(() => {});
+			server.listen(0, '127.0.0.1', () => {
+				port = server.address().port;
+				done();
+			});
+		});
+
+		after((done) => {
+			server.close(done);
+		});
+
+		it('rejects with a clear ETIMEDOUT error when the server never responds', async () => {
+			await assert.rejects(
+				cu.httpRequest(
+					{
+						protocol: 'http:',
+						hostname: '127.0.0.1',
+						port,
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						timeout: 50,
+					},
+					{}
+				),
+				(err) => {
+					assert.strictEqual(err.code, 'ETIMEDOUT');
+					assert.match(err.message, /timed out/i);
+					return true;
+				}
+			);
+		});
+	});
+
+	describe('Test httpRequest timeout mid-stream (SSE-style streamResponse)', () => {
+		const http = require('node:http');
+		let server, port;
+
+		before((done) => {
+			// Sends headers plus one event, then goes silent forever — mirrors a wedged
+			// deploy_component whose server stops emitting SSE phase events mid-stream.
+			server = http.createServer((req, res) => {
+				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+				res.write('event: phase\ndata: {"phase":"prepare"}\n\n');
+			});
+			server.listen(0, '127.0.0.1', () => {
+				port = server.address().port;
+				done();
+			});
+		});
+
+		after((done) => {
+			server.close(done);
+		});
+
+		it('surfaces the same clear "timed out" message on the response stream, not a bare "aborted"', async () => {
+			const response = await cu.httpRequest(
+				{
+					protocol: 'http:',
+					hostname: '127.0.0.1',
+					port,
+					// The CLI always POSTs Op-API requests (see cliOperations.ts); matching that
+					// here matters because a GET request whose body httpRequest still writes
+					// causes an unrelated, immediate ECONNRESET from Node's http server.
+					method: 'POST',
+					headers: { Accept: 'text/event-stream' },
+					timeout: 50,
+					streamResponse: true,
+				},
+				{}
+			);
+
+			const chunks = [];
+			let caught;
+			try {
+				for await (const chunk of response) chunks.push(chunk);
+			} catch (err) {
+				caught = err;
+			}
+
+			assert.ok(caught, 'expected the response stream to error once the idle timeout fires');
+			assert.strictEqual(caught.code, 'ETIMEDOUT');
+			assert.match(caught.message, /timed out after \d+ms/i);
+			assert.doesNotMatch(caught.message, /^aborted$/i);
+		});
+	});
 });

@@ -16,6 +16,36 @@
  * sessions where the deployment allows them (the public-docs case #1609 is
  * built around) — and the author's method enforces any access control it
  * needs at read time.
+ *
+ * When a custom resource wraps *row-level-guarded* table data, the author MUST
+ * fetch it through the exported (routing) Resource — the subclass that carries
+ * the row-level `allow*` predicates — with a `checkPermission`-bearing
+ * RequestTarget, so those predicates run against the calling MCP user. The MCP
+ * layer runs the read inside a transaction that carries that user
+ * (`readCustomResource` in `resources.ts`), so the read authorizes correctly:
+ *
+ *     import { RequestTarget } from 'harper';
+ *     export class Order extends tables.Order {
+ *       allowRead(user) { return user?.username != null && this.customerId === user.username; }
+ *     }
+ *     export class OrderDocs extends Resource {
+ *       async readOrder(params, context) {
+ *         const target = new RequestTarget();
+ *         target.id = params.orderId;
+ *         target.checkPermission = context.user?.role?.permission ?? true;
+ *         return { text: JSON.stringify(await Order.get(target)) }; // enforces allowRead
+ *       }
+ *     }
+ *     OrderDocs.mcpResources = [{ uriTemplate: 'orders:///{+orderId}', method: 'readOrder' }];
+ *
+ * Fetching the same row via the *base* table (`tables.Order.get(id)`) would
+ * dispatch on the base class, whose `allowRead` is a table-level grant only —
+ * it does NOT run the per-record override and leaks another user's row (#1735).
+ *
+ * Call the guarded fetch single-arg (`Order.get(target)`) so it runs under the
+ * user-carrying ambient transaction — do NOT forward the resource's own context
+ * (`Order.get(target, this.getContext())`), which starts an independent
+ * transaction and drops that shared, isolated snapshot.
  */
 import type { McpProfile } from './transport.ts';
 import type { AuthedUser } from './toolRegistry.ts';

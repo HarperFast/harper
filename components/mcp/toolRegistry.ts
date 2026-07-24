@@ -228,6 +228,27 @@ export function snapshotProfileTools(profile: McpProfile): ToolDef[] {
 }
 
 /**
+ * Every tool a profile currently exposes: its dynamic provider's tools merged
+ * with its statically-registered tools, deduped by name (static wins, matching
+ * `getTool`/`buildToolListPage`). Unlike `snapshotProfileTools` — which reads
+ * only the static registry for atomic-rebuild restore — this includes lazy
+ * providers, so the built-in agent (which drains the `operations` profile, a
+ * pure lazy provider) sees the operation tools at all.
+ */
+export function listProfileTools(profile: McpProfile): ToolDef[] {
+	const byName = new Map<string, ToolDef>();
+	const provider = profileProviders.get(profile);
+	const providerTools = provider?.list?.();
+	if (providerTools) {
+		for (const def of providerTools) byName.set(def.name, def);
+	}
+	for (const def of registry.values()) {
+		if (def.profile === profile) byName.set(def.name, def);
+	}
+	return [...byName.values()];
+}
+
+/**
  * Remove every tool registered for a profile. Used to rebuild the
  * application-profile tool set when schemas change (a table may have been
  * added/removed after the initial registration); see `refreshApplicationTools`.
@@ -317,19 +338,8 @@ export function listTools(args: ListToolsArgs): ListToolsResult {
 }
 
 function computeFilteredList(user: AuthedUser, profile: McpProfile): ToolDescriptor[] {
-	// Merge the profile's dynamic provider (if any) with its statically-registered
-	// tools, deduping by name. Provider entries are inserted first so a static
-	// registration of the same name overrides them (curated wins — see getTool).
-	const byName = new Map<string, ToolDef>();
-	const provider = profileProviders.get(profile);
-	if (provider) {
-		for (const def of provider.list()) byName.set(def.name, def);
-	}
-	for (const def of registry.values()) {
-		if (def.profile === profile) byName.set(def.name, def);
-	}
 	const out: ToolDescriptor[] = [];
-	for (const def of byName.values()) {
+	for (const def of listProfileTools(profile)) {
 		if (!def.visibleTo(user)) continue;
 		out.push({
 			name: def.name,

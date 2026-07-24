@@ -1147,6 +1147,45 @@ describe('test MQTT connections and commands', function () {
 		}
 	});
 
+	it('socket listeners actually apply noDelay/keepAlive socket options', function () {
+		// net.createServer(listener, options) silently ignores the options object — options must be
+		// the first argument. Assert the servers onSocket creates carry the socket options, so an
+		// arg-order regression fails here. Node stores keepAliveInitialDelay in whole seconds
+		// (~~(ms / 1000)), so the configured 600_000 ms surfaces as 600; the old value of 600 ms
+		// floored to 0 and never yielded the intended 10-minute delay.
+		const preexistingServers = { ...SERVERS };
+		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
+		const preexistingUds = env_get('tls_unixDomainSockets');
+		// Enable the UDS mirror so the securePort call exercises that third createSocketServer site too
+		setProperty('tls_unixDomainSockets', true);
+		try {
+			const assertSocketOptions = (server, label) => {
+				assert.equal(server.noDelay, true, `${label} should disable Nagle`);
+				assert.equal(server.keepAlive, true, `${label} should enable TCP keep-alive`);
+				assert.equal(server.keepAliveInitialDelay, 600, `${label} keep-alive initial delay should be 10 minutes`);
+			};
+			assertSocketOptions(
+				global.server.socket(() => {}, { port: 21885 }),
+				'TCP listener'
+			);
+			assertSocketOptions(
+				global.server.socket(() => {}, { securePort: 28885 }),
+				'TLS listener'
+			);
+			const udsMirrorKey = Object.keys(SERVERS).find((key) => key.endsWith('.sock') && !preexistingServers[key]);
+			assert.ok(udsMirrorKey, 'securePort listener should create a UDS mirror when tls_unixDomainSockets is on');
+			assertSocketOptions(SERVERS[udsMirrorKey], 'UDS mirror listener');
+		} finally {
+			setProperty('tls_unixDomainSockets', preexistingUds);
+			// These listeners were never bound (no listen()); restore both registries to their exact
+			// pre-test state so nothing leaks into other tests.
+			for (const key of Object.keys(SERVERS)) delete SERVERS[key];
+			Object.assign(SERVERS, preexistingServers);
+			portServer.clear();
+			for (const [key, servers] of preexistingPortServer) portServer.set(key, servers);
+		}
+	});
+
 	after(() => {
 		clientV4?.end();
 		clientV5?.end();
