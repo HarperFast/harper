@@ -4,11 +4,34 @@ import { Resource } from './Resource.ts';
 import {
 	DATA_TYPES,
 	JSON_SCHEMA_SCALAR_TYPES,
-	attributeToFragment,
+	type AttributeLike,
+	type JsonSchemaFragment,
+	attributeToSchema,
 	projectPropertiesToAttributes,
+	resolveDeclaredType,
 } from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
+
+/**
+ * Emit an attribute as an OpenAPI 3.0.3 property schema. Shares its traversal with the MCP deriver so
+ * the two can't describe the same nested fragment differently; the primitive mapping stays
+ * OpenAPI-specific (`format` carries the Harper type name, which MCP has no equivalent for).
+ * Returns `undefined` for a `@hidden` attribute — callers skip it.
+ */
+function attributeToOpenApiSchema(attr: AttributeLike): JsonSchemaFragment | undefined {
+	return attributeToSchema(attr, {
+		dialect: 'openapi-3.0.3',
+		mapPrimitive: (type) => {
+			if (type === 'Any' || type === undefined) return {};
+			const resolved = resolveDeclaredType(type, `OpenAPI property "${attr.name}"`);
+			if (!resolved) return {};
+			// Preserve the Harper type name as `format` for the types where it adds information, matching
+			// the top-level `Type()` emitter.
+			return DATA_TYPES[type] ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
+		},
+	});
+}
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
 const DESCRIPTION_200 = 'successful operation';
@@ -162,22 +185,20 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 							props[name] = { $ref: SCHEMA_COMP_REF + def.type };
 						}
 					} else if (attr.properties) {
-						// Nested object from `static properties` — the shared projector emits the full object
-						// schema (sub-properties recursed); OpenAPI's table path uses $refs instead.
-						props[name] = attributeToFragment(attr);
+						// Nested object from `static properties` — emit the full object schema through the
+						// shared emitter (sub-properties recursed, @hidden suppressed at every level, hints
+						// carried); OpenAPI's table path uses $refs instead.
+						props[name] = attributeToOpenApiSchema(attr) ?? {};
 					} else if (type === 'array') {
 						if (!elements) {
 							// `{ type: 'array' }` with no items — valid JSON Schema (array of anything).
 							props[name] = { type: 'array' };
-						} else if (elements.properties) {
-							// array of nested objects — project the element to its full object schema
-							props[name] = { type: 'array', items: attributeToFragment(elements) };
 						} else if (elements.type === 'Any') {
 							props[name] = { type: 'array', items: { format: elements.type } };
-						} else if (!DATA_TYPES[elements.type] && JSON_SCHEMA_SCALAR_TYPES.has(elements.type)) {
-							props[name] = { type: 'array', items: new Type(elements.type) };
 						} else {
-							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
+							// Object and primitive elements alike go through the shared emitter, so an item's
+							// enum/format/const/description survives instead of being flattened to its type.
+							props[name] = { type: 'array', items: attributeToOpenApiSchema(elements) ?? {} };
 						}
 					} else if (type === 'Any') {
 						props[name] = { format: type };
@@ -188,13 +209,23 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					}
 				}
 				// Attach per-property JSON-Schema hints (description/enum/format/const) so they surface in
-				// Swagger UI / Redoc; enum in particular tells clients the allowed values.
+				// Swagger UI / Redoc; enum in particular tells clients the allowed values. `nullable` is
+				// OpenAPI 3.0.3's expression of a nullable property — it was previously computed only to
+				// derive `required` and never emitted, so a nullable property was advertised as
+				// non-nullable while a nested one (via the shared emitter) was not (#1942).
 				if (props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
-					const prop = props[name] as { description?: string; enum?: unknown; format?: string; const?: unknown };
+					const prop = props[name] as {
+						description?: string;
+						enum?: unknown;
+						format?: string;
+						const?: unknown;
+						nullable?: boolean;
+					};
 					if (description) prop.description = description;
 					if (attr.enum && prop.enum === undefined) prop.enum = attr.enum;
 					if (attr.format && prop.format === undefined) prop.format = attr.format;
 					if (attr.const !== undefined && prop.const === undefined) prop.const = attr.const;
+					if (nullable && prop.nullable === undefined) prop.nullable = true;
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}

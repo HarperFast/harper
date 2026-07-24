@@ -11,6 +11,8 @@
  * type emission in lockstep.
  */
 
+import logger from '../utility/logging/harper_logger.ts';
+
 export type JsonSchemaType = 'string' | 'integer' | 'number' | 'boolean' | 'object' | 'array' | 'null';
 
 export interface JsonSchemaFragment {
@@ -184,6 +186,118 @@ function fragmentToAttribute(name: string, fragment: JsonSchemaFragment): Attrib
  */
 export function projectPropertiesToAttributes(properties: Record<string, JsonSchemaFragment>): AttributeLike[] {
 	return Object.entries(properties).map(([name, fragment]) => fragmentToAttribute(name, fragment));
+}
+
+/**
+ * The schema dialect a consumer surface emits. The two differ in exactly one respect that matters
+ * here: JSON Schema expresses nullability as a `'null'` member of a type union, while OpenAPI 3.0.3
+ * has no union types and uses the `nullable` keyword.
+ */
+export type SchemaDialect = 'json-schema' | 'openapi-3.0.3';
+
+export interface SchemaEmitOptions {
+	dialect: SchemaDialect;
+	/**
+	 * Maps a leaf attribute's declared type to its base schema. Each surface keeps its own primitive
+	 * mapping — MCP widens `Date` to `['string','number']` and tags `Bytes` with `contentEncoding`,
+	 * OpenAPI emits a `format`. Those differences are deliberate, so they stay with the caller; only
+	 * the traversal around them is shared.
+	 */
+	mapPrimitive: (type: string | undefined) => JsonSchemaFragment;
+}
+
+const warnedUnknownTypes = new Set<string>();
+
+/**
+ * Resolve a declared type name to its JSON Schema equivalent, or `undefined` when the name belongs to
+ * neither vocabulary. Harper recognizes both the capitalized GraphQL names (`String`, `Int`) and the
+ * lowercase JSON Schema names a `static properties` fragment uses.
+ *
+ * An unrecognized name used to resolve differently per surface — MCP coerced it to `'string'`, OpenAPI
+ * emitted an untyped `{}` — with no signal to the author. Warn once per name so a typo is visible
+ * instead of silently producing two different wrong schemas (#1942).
+ */
+export function resolveDeclaredType(type: string | undefined, context?: string): JsonSchemaType | undefined {
+	if (!type) return undefined;
+	const mapped = DATA_TYPES[type];
+	if (mapped) return mapped;
+	if (JSON_SCHEMA_SCALAR_TYPES.has(type)) return type as JsonSchemaType;
+	if (!warnedUnknownTypes.has(type)) {
+		warnedUnknownTypes.add(type);
+		logger.warn(
+			`Unrecognized schema type "${type}"${context ? ` on ${context}` : ''}: not a Harper type (${Object.keys(DATA_TYPES).join(', ')}) nor a JSON Schema type (${[...JSON_SCHEMA_SCALAR_TYPES].join(', ')}). The property will be emitted without a type.`
+		);
+	}
+	return undefined;
+}
+
+/** Test hook: the unknown-type warning is once-per-process, which would leak across test cases. */
+export function _resetUnknownTypeWarningsForTest(): void {
+	warnedUnknownTypes.clear();
+}
+
+/**
+ * Emit an attribute as a schema fragment for a *consumer* surface (MCP tool descriptors, the OpenAPI
+ * document), as opposed to `attributeToFragment`, which produces the canonical, front-end-neutral
+ * `Table.properties` Record.
+ *
+ * Returns `undefined` for a `hidden` attribute so callers skip it — at every nesting level, not just
+ * the top one. Suppression used to be implemented in each surface's top-level loop, so a hidden
+ * sub-property of a nested object was emitted anyway, and OpenAPI additionally leaked `hidden: true`
+ * into the public document as a schema key (#1941).
+ *
+ * Per-property hints (`description`, `enum`, `format`, `const`) propagate at every level too; OpenAPI
+ * previously attached them only to top-level properties, so the two surfaces described the same nested
+ * fragment differently (#1942).
+ */
+export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOptions): JsonSchemaFragment | undefined {
+	if (attr.hidden) return undefined;
+	const fragment: JsonSchemaFragment = {};
+
+	if (attr.properties) {
+		fragment.type = 'object';
+		fragment.properties = {};
+		const visibleNames = new Set<string>();
+		for (const sub of attr.properties) {
+			const subSchema = attributeToSchema(sub, options);
+			if (!subSchema) continue;
+			fragment.properties[sub.name] = subSchema;
+			visibleNames.add(sub.name);
+		}
+		// Drop suppressed sub-properties from `required` too — advertising a required property the
+		// schema does not define makes the object unsatisfiable for any client that validates.
+		if (attr.required) fragment.required = attr.required.filter((name) => visibleNames.has(name));
+		if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
+	} else if (attr.type === 'array') {
+		fragment.type = 'array';
+		// `{ type: 'array' }` with no element schema is valid — an array of anything.
+		if (attr.elements) {
+			const items = attributeToSchema(attr.elements, options);
+			if (items) fragment.items = items;
+		}
+	} else {
+		Object.assign(fragment, options.mapPrimitive(attr.type));
+	}
+
+	if (attr.nullable) applyNullability(fragment, options.dialect);
+	if (attr.description && fragment.description === undefined) fragment.description = attr.description;
+	if (attr.enum && fragment.enum === undefined) fragment.enum = attr.enum;
+	if (attr.format && fragment.format === undefined) fragment.format = attr.format;
+	if (attr.const !== undefined && fragment.const === undefined) fragment.const = attr.const;
+	// `hidden` / `primaryKey` / `assignCreatedTime` / `assignUpdatedTime` are Harper directives, not
+	// schema vocabulary — they never belong in an emitted document.
+	return fragment;
+}
+
+function applyNullability(fragment: JsonSchemaFragment, dialect: SchemaDialect): void {
+	if (dialect === 'openapi-3.0.3') {
+		// OpenAPI 3.0.3 has no union types; `nullable` is the spec-provided expression.
+		fragment.nullable = true;
+		return;
+	}
+	if (!('type' in fragment) || fragment.type === undefined) return;
+	const types = Array.isArray(fragment.type) ? fragment.type : [fragment.type];
+	if (!types.includes('null')) fragment.type = [...types, 'null'] as JsonSchemaType[];
 }
 
 /**

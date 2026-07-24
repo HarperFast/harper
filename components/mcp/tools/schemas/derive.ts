@@ -11,7 +11,13 @@
  * doesn't waste tokens on fields it can't write), NOT a security boundary.
  */
 
-import { JSON_SCHEMA_SCALAR_TYPES } from '../../../../resources/jsonSchemaTypes.ts';
+import {
+	JSON_SCHEMA_SCALAR_TYPES,
+	attributeToSchema,
+	resolveDeclaredType,
+	type AttributeLike,
+	type JsonSchemaFragment,
+} from '../../../../resources/jsonSchemaTypes.ts';
 
 export interface HarperAttribute {
 	name: string;
@@ -74,46 +80,28 @@ function harperTypeToJsonSchema(type: string | undefined): { type: string | stri
 		case 'Any':
 		case undefined:
 			return {};
-		default:
-			return { type: 'string' };
+		default: {
+			// Neither a Harper type nor a JSON Schema type. This used to coerce to `string` while OpenAPI
+			// emitted `{}` — two different wrong answers from one typo. Warn (once per name) and emit
+			// untyped, matching OpenAPI (#1942).
+			const resolved = resolveDeclaredType(type, 'an MCP tool schema');
+			return resolved ? { type: resolved } : {};
+		}
 	}
 }
 
-function attributeToProperty(attr: HarperAttribute): object {
-	let base: { type?: string | string[]; description?: string; [key: string]: unknown };
-	// The GraphQL parser emits nested objects via `.properties` (not a capitalized `'Object'` type) and
-	// list types as lowercase `type: 'array'` with `.elements` — the prior `'Object'`/`'Array'` literal
-	// checks never matched, so nested shapes fell through to a bare `{ type: 'string' }`. Detect them the
-	// way the parser actually emits, matching the shared `attributeToFragment` projector.
-	if (attr.properties) {
-		base = {
-			type: 'object',
-			properties: Object.fromEntries(attr.properties.map((p) => [p.name, attributeToProperty(p)])),
-		};
-		if (attr.required) base.required = attr.required;
-		if (attr.additionalProperties !== undefined) base.additionalProperties = attr.additionalProperties;
-	} else if (attr.type === 'array' && attr.elements) {
-		base = {
-			type: 'array',
-			items: attributeToProperty(attr.elements),
-		};
-	} else {
-		base = harperTypeToJsonSchema(attr.type) as typeof base;
-	}
-	if (attr.nullable && 'type' in base) {
-		const t = base.type;
-		const types = Array.isArray(t) ? t : [t as string];
-		if (!types.includes('null')) {
-			base.type = [...types, 'null'];
-		}
-	}
-	if (attr.description && !base.description) {
-		base.description = attr.description;
-	}
-	if (attr.enum && !('enum' in base)) base.enum = attr.enum;
-	if (attr.format && !('format' in base)) base.format = attr.format;
-	if (attr.const !== undefined && !('const' in base)) base.const = attr.const;
-	return base;
+/**
+ * Emit an attribute as an MCP property schema. The traversal (nesting, arrays, `hidden` suppression,
+ * hint propagation, nullability) is shared with the OpenAPI generator so the two can't describe the
+ * same fragment differently; only the Harper-primitive mapping below is MCP-specific.
+ *
+ * Returns `undefined` for a `hidden` attribute — callers skip it.
+ */
+function attributeToProperty(attr: HarperAttribute): object | undefined {
+	return attributeToSchema(attr as AttributeLike, {
+		dialect: 'json-schema',
+		mapPrimitive: (type) => harperTypeToJsonSchema(type) as JsonSchemaFragment,
+	});
 }
 
 /**
@@ -167,7 +155,9 @@ function buildPropertiesObject(
 		// Skip auto-managed columns from write inputs — Harper assigns them.
 		if (mode !== 'read' && (attr.assignCreatedTime || attr.assignUpdatedTime || attr.expiresAt)) continue;
 		if (mode !== 'read' && (attr.computed !== undefined || attr.computedFromExpression !== undefined)) continue;
-		properties[attr.name] = attributeToProperty(attr);
+		const schema = attributeToProperty(attr);
+		if (!schema) continue;
+		properties[attr.name] = schema;
 		if (mode === 'insert' && !attr.nullable && !attr.isPrimaryKey) {
 			required.push(attr.name);
 		}
@@ -184,7 +174,7 @@ export function deriveGetSchema(
 	_permissions: AttributePermissionEntry[] | undefined
 ): object {
 	const pk = findPrimaryKey(attributes);
-	const pkSchema = pk ? attributeToProperty(pk) : { type: 'string' };
+	const pkSchema = (pk && attributeToProperty(pk)) ?? { type: 'string' };
 	return {
 		type: 'object',
 		properties: {
@@ -317,7 +307,9 @@ function deriveRecordSchema(
 	const required: string[] = [];
 	for (const attr of attributes) {
 		if (!attributeVisible(attr, permissions, 'read')) continue;
-		properties[attr.name] = attributeToProperty(attr);
+		const schema = attributeToProperty(attr);
+		if (!schema) continue;
+		properties[attr.name] = schema;
 		const requiredOnOutput =
 			attr.nullable === false || attr.assignCreatedTime || attr.assignUpdatedTime || attr.isPrimaryKey;
 		if (requiredOnOutput) required.push(attr.name);
@@ -369,7 +361,7 @@ export function deriveCreateOutputSchema(
 	_permissions: AttributePermissionEntry[] | undefined
 ): object {
 	const pk = findPrimaryKey(attributes);
-	const idSchema = pk ? attributeToProperty(pk) : { type: 'string' };
+	const idSchema = (pk && attributeToProperty(pk)) ?? { type: 'string' };
 	return {
 		type: 'object',
 		properties: {
