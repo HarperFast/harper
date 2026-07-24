@@ -110,13 +110,76 @@ export function toGenerateInput(messages: Message[], tools: ToolDef[] | undefine
 	return messages;
 }
 
+/** `tool_choice` values the internal contract can faithfully represent. */
+function isRepresentableToolChoice(choice: unknown): boolean {
+	return choice === undefined || choice === null || choice === 'auto' || choice === 'none';
+}
+
+/**
+ * Validate the OpenAI wire shapes this gateway maps, returning a client-facing
+ * message for a 400 or `null` when the request is well-formed.
+ *
+ * Kept separate from the mappers so malformed nested input (`messages: [null]`,
+ * `tool_calls: [{}]`, `tools: [{}]`) becomes an OpenAI-shaped 400 instead of a
+ * TypeError escaping the handler as an RFC 9457 500.
+ */
+export function validateChatRequest(body: OAIChatRequest): string | null {
+	const req = body as any;
+	if (!Array.isArray(req.messages) || req.messages.length === 0) return "'messages' must be a non-empty array";
+	for (let i = 0; i < req.messages.length; i++) {
+		const m = req.messages[i];
+		if (!m || typeof m !== 'object' || Array.isArray(m)) return `'messages[${i}]' must be an object`;
+		if (typeof m.role !== 'string') return `'messages[${i}].role' must be a string`;
+		if (m.tool_calls !== undefined) {
+			if (!Array.isArray(m.tool_calls)) return `'messages[${i}].tool_calls' must be an array`;
+			for (let j = 0; j < m.tool_calls.length; j++) {
+				const tc = m.tool_calls[j];
+				const at = `'messages[${i}].tool_calls[${j}]`;
+				if (!tc || typeof tc !== 'object') return `${at}' must be an object`;
+				if (!tc.function || typeof tc.function !== 'object') return `${at}.function' is required`;
+				if (typeof tc.function.name !== 'string') return `${at}.function.name' must be a string`;
+				if (typeof tc.function.arguments !== 'string') return `${at}.function.arguments' must be a JSON string`;
+			}
+		}
+	}
+	if (req.tools !== undefined) {
+		if (!Array.isArray(req.tools)) return "'tools' must be an array";
+		for (let i = 0; i < req.tools.length; i++) {
+			const t = req.tools[i];
+			if (!t || typeof t !== 'object') return `'tools[${i}]' must be an object`;
+			if (!t.function || typeof t.function !== 'object') return `'tools[${i}].function' is required`;
+			if (typeof t.function.name !== 'string') return `'tools[${i}].function.name' must be a string`;
+		}
+	}
+	if (!isRepresentableToolChoice(req.tool_choice)) {
+		// Better a clear 400 than silently downgrading 'required'/named selection to 'auto'.
+		return "'tool_choice' supports 'auto' and 'none'; 'required' and named function selection are not supported yet";
+	}
+	if (req.response_format !== undefined) {
+		const rf = req.response_format;
+		if (!rf || typeof rf !== 'object' || Array.isArray(rf)) return "'response_format' must be an object";
+		if (rf.type === 'json_schema') {
+			const wrapper = rf.json_schema;
+			if (!wrapper || typeof wrapper !== 'object') {
+				return "'response_format.json_schema' is required when type is 'json_schema'";
+			}
+			if (!wrapper.schema || typeof wrapper.schema !== 'object') {
+				return "'response_format.json_schema.schema' must be a JSON Schema object";
+			}
+		}
+	}
+	return null;
+}
+
 /**
  * Map an OpenAI chat-completion request body to `GenerateOpts`.
  *
- * `tool_choice: 'auto' | 'required'` both map to `toolMode: 'return'` —
- * full in-process tool-call orchestration is tracked in #612 (out of scope
- * for #631). The caller still receives `finish_reason: 'tool_calls'` and
- * may invoke tools itself.
+ * `tool_choice` is honored by the caller, not here: `'none'` omits tools from the
+ * generate input entirely, and unrepresentable choices are rejected up front by
+ * `validateChatRequest`. Full in-process tool-call orchestration is #612 (out of
+ * scope for #631), so tool calls are always returned to the caller to invoke.
+ *
+ * Assumes `validateChatRequest` has already passed.
  */
 export function toGenerateOpts(body: OAIChatRequest): GenerateOpts {
 	const opts: GenerateOpts = { toolMode: 'return' };
@@ -128,8 +191,11 @@ export function toGenerateOpts(body: OAIChatRequest): GenerateOpts {
 		const rf = body.response_format;
 		if (rf.type === 'json_object') {
 			opts.responseFormat = 'json';
-		} else if (rf.type === 'json_schema' && rf.json_schema) {
-			opts.responseFormat = { schema: rf.json_schema as object };
+		} else if (rf.type === 'json_schema') {
+			// The wire value is a wrapper ({ name, strict, schema }); Harper's contract wants
+			// the JSON Schema itself. Passing the wrapper makes the backend wrap it again and
+			// send metadata where the provider expects the schema.
+			opts.responseFormat = { schema: (rf.json_schema as { schema: object }).schema };
 		} else {
 			opts.responseFormat = 'text';
 		}

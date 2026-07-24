@@ -188,6 +188,53 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		assert.equal(body.error.type, 'invalid_request_error');
 	});
 
+	test('POST /v1/chat/completions returns 400 (not 500) for malformed nested wire shapes', async () => {
+		// Each of these used to throw a TypeError inside the mappers, surfacing as an
+		// RFC 9457 500 rather than an OpenAI 400.
+		const malformed: Array<[string, unknown]> = [
+			['null message element', { model: 'default', messages: [null] }],
+			[
+				'tool_calls entry with no function',
+				{ model: 'default', messages: [{ role: 'assistant', content: null, tool_calls: [{}] }] },
+			],
+			['tools entry with no function', { model: 'default', messages: [{ role: 'user', content: 'hi' }], tools: [{}] }],
+		];
+		for (const [label, payload] of malformed) {
+			const res = await harperFetch(ctx, restUrl(ctx, '/v1/chat/completions'), {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify(payload),
+			});
+			assert.equal(res.status, 400, `${label}: expected 400, got ${res.status}`);
+			const body = (await res.json()) as { error: { type: string } };
+			assert.equal(body.error.type, 'invalid_request_error', `${label}: wrong error type`);
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Explicit SSE Accept header — dispatched as CONNECT by REST, not POST
+	// -----------------------------------------------------------------------
+
+	test('an SSE client sending exact Accept: text/event-stream is served, not method-not-allowed', async () => {
+		// REST rewrites POST + `Accept: text/event-stream` to CONNECT. The OpenAI SDK dodges
+		// this by always sending application/json, but other valid SSE clients do not — this
+		// exercises the connect() delegation.
+		const res = await harperFetch(ctx, restUrl(ctx, '/v1/chat/completions'), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+			body: JSON.stringify({
+				model: 'default',
+				messages: [{ role: 'user', content: 'tell me something' }],
+				stream: true,
+			}),
+		});
+		assert.notEqual(res.status, 405, 'explicit SSE Accept must not be method-not-allowed');
+		assert.equal(res.status, 200, `expected 200, got ${res.status}`);
+		const text = await res.text();
+		assert.ok(text.includes('data:'), `expected SSE data frames, got: ${text.slice(0, 200)}`);
+		assert.ok(text.includes('[echo stream]'), 'expected the fixture stream content');
+	});
+
 	// -----------------------------------------------------------------------
 	// POST /v1/chat/completions — streaming via real OpenAI SDK
 	// -----------------------------------------------------------------------

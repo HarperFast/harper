@@ -29,6 +29,23 @@ export interface OpenAIStreamOptions {
 	formatError?: (err: unknown) => OpenAIErrorFrameBody;
 }
 
+// Bounds on per-stream tool-call assembly. The backend supplies both the call ids and the
+// argument fields, and this runs on a public HTTP path, so neither can be unbounded. Overflow
+// terminates the stream through the same sanitized error-frame path as any backend failure.
+const MAX_TOOL_CALLS_PER_STREAM = 256;
+const MAX_TOOL_ARGUMENT_KEYS = 1024;
+
+/** Signals that a stream exceeded the tool-assembly bounds; surfaced as an SSE error frame. */
+class ToolAssemblyOverflowError extends Error {
+	statusCode = 502;
+}
+
+function countKeys(obj: object): number {
+	let n = 0;
+	for (const _ in obj) n++;
+	return n;
+}
+
 /** OpenAI streaming error body (`{ message, type, code, param }` under an `error` key). */
 export interface OpenAIErrorFrameBody {
 	message: string;
@@ -111,10 +128,25 @@ export async function* openaiStream(
 			if (token.deltaToolCalls) {
 				for (const incoming of token.deltaToolCalls) {
 					if (!incoming.id) continue;
-					const existing = toolAssembly.get(incoming.id) ?? { index: toolAssembly.size, arguments: {} };
+					let existing = toolAssembly.get(incoming.id);
+					if (!existing) {
+						// Cap distinct calls per stream: ids come from the backend, and an
+						// unbounded map on a public HTTP path is a memory risk.
+						if (toolAssembly.size >= MAX_TOOL_CALLS_PER_STREAM) {
+							throw new ToolAssemblyOverflowError(`stream exceeded ${MAX_TOOL_CALLS_PER_STREAM} tool calls`);
+						}
+						existing = { index: toolAssembly.size, arguments: {} };
+						toolAssembly.set(incoming.id, existing);
+					}
 					if (incoming.name) existing.name = incoming.name;
-					if (incoming.arguments) existing.arguments = { ...existing.arguments, ...incoming.arguments };
-					toolAssembly.set(incoming.id, existing);
+					if (incoming.arguments) {
+						// Mutate rather than re-spread: spreading copied every previously
+						// accumulated property on each partial delta (O(n²) as fields grow).
+						Object.assign(existing.arguments, incoming.arguments);
+						if (countKeys(existing.arguments) > MAX_TOOL_ARGUMENT_KEYS) {
+							throw new ToolAssemblyOverflowError(`tool call arguments exceeded ${MAX_TOOL_ARGUMENT_KEYS} fields`);
+						}
+					}
 				}
 			}
 			if (token.finishReason) finishReason = token.finishReason;

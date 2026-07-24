@@ -12,6 +12,7 @@ const {
 	translateTools,
 	toGenerateInput,
 	toGenerateOpts,
+	validateChatRequest,
 	toEmbedOpts,
 	toChatCompletion,
 	toEmbedResponse,
@@ -154,13 +155,17 @@ describe('toGenerateOpts', () => {
 		assert.equal(opts.responseFormat, 'json');
 	});
 
-	it('maps response_format json_schema to { schema }', () => {
+	it('extracts the inner schema from the real OpenAI json_schema wrapper', () => {
+		// The wire value is { name, strict, schema } — passing the whole wrapper through
+		// would make the backend wrap it again and send metadata where the provider
+		// expects the JSON Schema itself.
 		const schema = { type: 'object', properties: {} };
 		const opts = toGenerateOpts({
-			response_format: { type: 'json_schema', json_schema: schema },
+			response_format: { type: 'json_schema', json_schema: { name: 'my_schema', strict: true, schema } },
 			messages: [],
 		});
 		assert.deepEqual(opts.responseFormat, { schema });
+		assert.equal(opts.responseFormat.schema.name, undefined, 'must not carry wrapper metadata');
 	});
 
 	it('maps response_format text to text', () => {
@@ -171,6 +176,70 @@ describe('toGenerateOpts', () => {
 	it('always sets toolMode to return', () => {
 		const opts = toGenerateOpts({ messages: [] });
 		assert.equal(opts.toolMode, 'return');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// validateChatRequest — malformed wire shapes must become 400s, not TypeErrors
+// ---------------------------------------------------------------------------
+
+describe('validateChatRequest', () => {
+	const ok = { messages: [{ role: 'user', content: 'hi' }] };
+
+	it('accepts a well-formed request', () => {
+		assert.equal(validateChatRequest(ok), null);
+	});
+
+	it('rejects a missing or empty messages array', () => {
+		assert.ok(validateChatRequest({}));
+		assert.ok(validateChatRequest({ messages: [] }));
+		assert.ok(validateChatRequest({ messages: 'nope' }));
+	});
+
+	// Each of these previously threw a TypeError inside the mappers → RFC 9457 500
+	it('rejects a null message element instead of throwing', () => {
+		const msg = validateChatRequest({ messages: [null] });
+		assert.match(msg, /messages\[0\]/);
+	});
+
+	it('rejects a tool_calls entry with no function', () => {
+		const msg = validateChatRequest({ messages: [{ role: 'assistant', content: null, tool_calls: [{}] }] });
+		assert.match(msg, /tool_calls\[0\]\.function/);
+	});
+
+	it('rejects non-string tool_calls arguments (mapper assumes a JSON string)', () => {
+		const msg = validateChatRequest({
+			messages: [
+				{ role: 'assistant', content: null, tool_calls: [{ id: 'a', function: { name: 'f', arguments: {} } }] },
+			],
+		});
+		assert.match(msg, /arguments/);
+	});
+
+	it('rejects a non-array tools and a tools entry with no function', () => {
+		assert.match(validateChatRequest({ ...ok, tools: 'nope' }), /'tools'/);
+		assert.match(validateChatRequest({ ...ok, tools: [{}] }), /tools\[0\]\.function/);
+	});
+
+	it("accepts tool_choice 'auto' and 'none'", () => {
+		assert.equal(validateChatRequest({ ...ok, tool_choice: 'auto' }), null);
+		assert.equal(validateChatRequest({ ...ok, tool_choice: 'none' }), null);
+	});
+
+	it("rejects tool_choice values the internal contract can't represent, rather than silently downgrading", () => {
+		assert.match(validateChatRequest({ ...ok, tool_choice: 'required' }), /tool_choice/);
+		assert.match(
+			validateChatRequest({ ...ok, tool_choice: { type: 'function', function: { name: 'f' } } }),
+			/tool_choice/
+		);
+	});
+
+	it('rejects a json_schema response_format missing the inner schema', () => {
+		assert.match(validateChatRequest({ ...ok, response_format: { type: 'json_schema' } }), /json_schema/);
+		assert.match(
+			validateChatRequest({ ...ok, response_format: { type: 'json_schema', json_schema: { name: 'x' } } }),
+			/json_schema\.schema/
+		);
 	});
 });
 
