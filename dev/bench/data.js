@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784880136296,
+  "lastUpdate": 1784965932148,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -2846,6 +2846,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1194.81,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d112560b6244cf5c914d047a8178942f841d5c6e",
+          "message": "chore(ci): bump mention + issue-to-pr pins to 54d9e61 (Opus 5) (#1938)\n\nCompletes the Opus 5 rollout for this repo: the @claude mention\n'deep' path and the claude-fix:bug/:test escalation now run\nclaude-opus-5 (ai-review-prompts#79). Reusable interface unchanged\nacross the jump — the i2p reusable's only delta since the old pin is\nthe model swap itself; mention's delta is the model bumps plus a\nnet-reverted permissions pair (#39/#40).\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-24T23:34:11Z",
+          "url": "https://github.com/HarperFast/harper/commit/d112560b6244cf5c914d047a8178942f841d5c6e"
+        },
+        "date": 1784965931707,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 7033.55,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 9221.94,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 9644.92,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 7266.63,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 5394.8,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 9467.15,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1280.61,
             "unit": "ops/sec"
           }
         ]
