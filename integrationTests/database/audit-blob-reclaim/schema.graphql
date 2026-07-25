@@ -1,0 +1,34 @@
+# QA-726 — audit/time-travel reads of a superseded record whose Blob file has been reclaimed.
+#
+# Document-versioning app concept: editors store rendered PDFs as blobs and want to read
+# "the version as of last Tuesday" via the audit log / getRecordAtTime. Four isolated
+# databases (blob files partition per-DATABASE, not per-table) so arms cannot contaminate
+# each other's blob-file counts:
+#   qa726a — overwrite arm (v1 blobA -> v2 blobB -> v3 blobC), time-travel onto v1/v2.
+#   qa726b — leak-check arm: N sequential overwrites of one record, blob file count over time.
+#   qa726c — delete-then-reinsert arm.
+#   qa726d — threads:{count:4} arm (separate Harper instance; own fixture db for clarity).
+
+type Document @table(database: "qa726a", audit: true) @export {
+	id: ID! @primaryKey
+	title: String
+	content: Blob
+}
+
+type DocumentLeak @table(database: "qa726b", audit: true) @export {
+	id: ID! @primaryKey
+	title: String
+	content: Blob
+}
+
+type DocumentDel @table(database: "qa726c", audit: true) @export {
+	id: ID! @primaryKey
+	title: String
+	content: Blob
+}
+
+type DocumentT4 @table(database: "qa726d", audit: true) @export {
+	id: ID! @primaryKey
+	title: String
+	content: Blob
+}

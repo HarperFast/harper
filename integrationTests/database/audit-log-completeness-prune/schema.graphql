@@ -1,0 +1,9 @@
+# QA-725 (source:gh:1939) — probes the invariants behind the flaky unitTests/resources/
+# auditLog.test.js "check log after writes and prune" assertion: every update produces
+# exactly one audit entry, entries are ordered, none are lost, and prune never removes a
+# live/in-window entry.
+type Item @table(audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	val: String
+}
