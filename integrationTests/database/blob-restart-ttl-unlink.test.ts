@@ -412,7 +412,25 @@ suite(
 						`[normal-0 rawPresent=${normal0.body.rawPresent} already-0 rawPresent=${already0.body.rawPresent}]`
 					);
 
-					if (normal0.body.rawPresent === false && already0.body.rawPresent === false) break;
+					// The sample clearing is only a cue to check for full convergence, not proof of it:
+					// the sweep evicts each id via an unawaited fire-and-forget commit (Table.ts
+					// runRecordExpirationEviction), so sibling ids from the same sweep batch can still be
+					// mid-flight the instant normal-0/already-0 resolve. Confirm ALL normal-N/already-N
+					// before breaking, otherwise keep polling — a straggler gets caught on this or a later
+					// pass instead of being judged from a partially-settled snapshot.
+					if (normal0.body.rawPresent === false && already0.body.rawPresent === false) {
+						const allNormal = await Promise.all(
+							Array.from({ length: NORMAL_COUNT }, (_, i) => op({ action: 'raw', id: `normal-${i}` }).expect(200))
+						);
+						const allAlready = await Promise.all(
+							Array.from({ length: ALREADY_COUNT }, (_, i) => op({ action: 'raw', id: `already-${i}` }).expect(200))
+						);
+						if (
+							allNormal.every((r) => r.body.rawPresent === false) &&
+							allAlready.every((r) => r.body.rawPresent === false)
+						)
+							break;
+					}
 					await sleep(SWEEP_POLL_INTERVAL_MS);
 				}
 				findings.push(
