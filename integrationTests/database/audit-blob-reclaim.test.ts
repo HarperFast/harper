@@ -20,16 +20,12 @@
  *
  * Harper SHA: b8c843a24
  * Reproduction:
- *   cd /home/kzyp/dev/harper
- *   timeout 900 npm run test:integration -- "integrationTests/qa-scratch/qa726-audit-blob.test.ts" \
- *     > /home/kzyp/dev/tmp/qa726.log 2>&1; tail -120 /home/kzyp/dev/tmp/qa726.log
- * Results: /home/kzyp/dev/tmp/qa726-results.txt
+ *   npm run test:integration -- "integrationTests/database/audit-blob-reclaim.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, notStrictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readdir } from 'node:fs/promises';
-import { writeFileSync, mkdirSync } from 'node:fs';
 import { createHash, createHmac } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';
@@ -38,20 +34,13 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'audit-blob-reclaim');
-const RESULTS_FILE = '/home/kzyp/dev/tmp/qa726-results.txt';
 const HARPER_SHA = 'b8c843a24';
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
-// ── Results log ──────────────────────────────────────────────────────────────
-const findings: string[] = [];
+// ── Diagnostic log ───────────────────────────────────────────────────────────
 function log(line: string) {
 	process.stdout.write(line + '\n');
-	findings.push(line);
-}
-function flushResults() {
-	mkdirSync('/home/kzyp/dev/tmp', { recursive: true });
-	writeFileSync(RESULTS_FILE, findings.join('\n') + '\n');
 }
 
 // ── Shared helpers (mirrors resources.js's byte pattern so the pre-flight oracle check below
@@ -168,7 +157,6 @@ suite(
 		});
 
 		after(async () => {
-			flushResults();
 			await teardownHarper(ctx);
 		});
 
@@ -421,7 +409,6 @@ suite(
 		});
 
 		after(async () => {
-			flushResults();
 			await teardownHarper(ctx);
 		});
 
