@@ -322,3 +322,19 @@ describe('test openApi module', () => {
 		});
 	});
 });
+
+// #1942 follow-up: `required: []` is invalid under JSON Schema draft-04, which OpenAPI 3.0.3
+// inherits — a resource whose attributes are all nullable produced exactly that.
+describe('openApi — empty required omission', () => {
+	it('omits the top-level `required` key when no attribute is non-nullable', () => {
+		class AllOptional {}
+		AllOptional.primaryKey = 'id';
+		AllOptional.properties = { id: { type: 'string', primaryKey: true }, label: { type: 'string' } };
+		AllOptional.prototype.get = function () {};
+		const resources = new Map();
+		resources.set('AllOptional', { path: 'AllOptional', Resource: AllOptional, hasSubPaths: false, relativeURL: '' });
+		resources.allTypes = new Map();
+		const schema = generateJsonApi(resources, 'https://harper.fast').components.schemas.AllOptional;
+		expect(schema).to.not.have.property('required');
+	});
+});

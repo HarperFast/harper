@@ -604,7 +604,10 @@ function ResourceSchema(properties, additionalProperties?: boolean, required?: s
 	this.type = 'object';
 	this.properties = properties;
 	this.additionalProperties = additionalProperties;
-	this.required = required;
+	// Omit an empty list rather than emitting `required: []`. JSON Schema draft-04, which OpenAPI
+	// 3.0.3 inherits, requires at least one element, so `[]` fails strict validators — and a schema
+	// whose attributes are all nullable produces exactly that.
+	if (required?.length) this.required = required;
 	if (description) this.description = description;
 }
 
