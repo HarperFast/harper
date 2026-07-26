@@ -159,7 +159,7 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 ## Conventions
 
 - **Never** remove `transactional()` from a static method on `Resource` — it owns transaction context lifetime.
-- New `Resource` subclasses should override **instance** methods (`get`, `put`, ...) for behavior; static methods are the protocol entry points and stay generic.
+- New `Resource` subclasses should override **instance** methods (`get`, `put`, ...) for behavior; static methods are the protocol entry points and stay generic. A subclass that still assigns its own `static post`/`put`/`patch` (an established but discouraged pattern — `login.ts`, template bulk-import overrides) **shadows** the `transactional()` wrapper entirely, including its `data`-await and `allowCreate`/`allowUpdate` gate. Callers that dispatch by property lookup (`server/REST.ts`, `components/mcp/tools/application.ts`) detect this (`resource.post !== Resource.post`, etc.) and call `Resource.authorizeStaticOverride(query, context, data, type)` explicitly before invoking the override — any new dispatch surface that can reach a component's static `post`/`put`/`patch` must do the same check or it reintroduces the F-224/F-223 body-loss/authz-bypass bug.
 - When adding a new early-return path inside a commit handler in `_writeUpdate`, follow the blob-cleanup protocol documented in `../DESIGN.md` ("Blob orphan cleanup").
 - If you add a new top-level section to `Table.ts`, drop a `// #section: <name>` marker at its start and add a row to the section map above.
 - Tests for this layer live in `../unitTests/resources/`.
