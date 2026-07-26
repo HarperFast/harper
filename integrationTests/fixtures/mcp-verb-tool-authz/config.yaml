@@ -1,0 +1,12 @@
+# QA-735 (#1940) MCP verb-tool listing-vs-authorization divergence and QA-736
+# (#1945) manufactured-verb call-time contract, sharing one Harper instance.
+# `login: true` is required for QA-736 arm 4 (the built-in `login` resource's
+# manufactured create_login tool).
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true
+login: true
+databases:
+  - name: data

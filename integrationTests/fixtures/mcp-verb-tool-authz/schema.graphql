@@ -1,0 +1,19 @@
+# QA-735 (#1940) — table-backed control for the MCP verb-tool visibility-vs-
+# invocability matrix. No row-level allow* override: only table-level RBAC
+# gates it, the same as REST. Prefixed Qa735* so this spec's table can't
+# collide with QA-736's in the shared instance.
+type Qa735Order @table @export {
+	id: ID @primaryKey
+	customerId: String
+	item: String
+	total: Float
+}
+
+# QA-736 (#1945) — table-backed CONTROL resource. A real Table genuinely
+# implements every CRUD verb, so its manufactured create_Qa736Widget tool is
+# not "manufactured" in the #1945 sense — it's a correct listing. Must-succeed
+# positive control (arm 1).
+type Qa736Widget @table @export {
+	id: ID @primaryKey
+	label: String
+}
