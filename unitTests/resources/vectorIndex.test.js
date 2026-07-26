@@ -2,9 +2,11 @@ const assert = require('node:assert');
 const { Worker } = require('worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { waitFor } = require('../waitFor');
 
 describe('HierarchicalNavigableSmallWorld indexing', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // don't try to test lmdb
@@ -1481,43 +1483,46 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		);
 	});
 
-	it('record-scoped allowRead override restricts a vector search to records the user may see', async () => {
-		// Unified model (#1422/#1241): overriding allowRead makes it a record-scoped check — evaluated
-		// once per record with `this` = the record during query execution, including HNSW traversal.
-		class Restricted extends T {
-			allowRead(user) {
-				return this.ownerId === user.id;
-			}
-		}
+	it('rowFilter returns the nearest records accepted by the application predicate', async () => {
+		const context = { user: { id: 1 } };
 		const results = await fromAsync(
-			Restricted.search(
+			T.search(
 				{
 					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
 					select: ['id', 'ownerId'],
 					limit: 5,
-					checkPermission: true,
+					rowFilter: (record, requestContext) => record.ownerId === requestContext.user.id,
 				},
-				{ user: { id: 1 } }
+				context
 			)
 		);
-		assert(
-			results.every((r) => r.ownerId === 1),
-			'a restricted user only sees their own records'
-		);
-		// ownerId === 1 for ids 1,4,7,10,13,… — the k nearest VISIBLE, not k-minus-redacted.
+		assert(results.every((r) => r.ownerId === 1));
 		assert.deepStrictEqual(
 			results.map((r) => r.id),
 			[1, 4, 7, 10, 13]
 		);
 	});
 
-	it('non-overridden allowRead keeps the entry check (no per-record deferral)', async () => {
-		// The framework default is a this-free table/RBAC check marked isDefaultAllowRead; with
-		// checkPermission and a non-super user it must still deny at entry, not defer to per-record.
+	it('allowRead remains a one-shot operation gate before row filtering', async () => {
+		let allowReadCalls = 0;
+		let rowFilterCalls = 0;
+		class Denied extends T {
+			allowRead() {
+				allowReadCalls++;
+				return false;
+			}
+			search(target) {
+				target.rowFilter = () => {
+					rowFilterCalls++;
+					return true;
+				};
+				return super.search(target);
+			}
+		}
 		await assert.rejects(
 			async () =>
 				fromAsync(
-					T.search(
+					Denied.search(
 						{
 							sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
 							limit: 5,
@@ -1528,30 +1533,65 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 				),
 			(err) => /unauthorized/i.test(err.message) || err.statusCode === 403
 		);
+		assert.strictEqual(allowReadCalls, 1);
+		assert.strictEqual(rowFilterCalls, 0, 'no query candidate is loaded before the operation gate');
 	});
 
-	it('a throwing record-scoped allowRead fails closed (denies that record)', async () => {
-		class Throwy extends T {
-			allowRead(user) {
-				if (this.ownerId === 0) throw new Error('boom'); // ownerId 0 rows must be DENIED, not leaked
-				return this.ownerId === user.id;
-			}
-		}
+	it('a throwing rowFilter aborts the query instead of returning partial results', async () => {
+		await assert.rejects(
+			async () =>
+				fromAsync(
+					T.search(
+						{
+							sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+							rowFilter() {
+								throw new Error('policy bug');
+							},
+							limit: 5,
+						},
+						{}
+					)
+				),
+			/policy bug/
+		);
+	});
+
+	it('a promise-returning rowFilter aborts instead of passing on promise truthiness', async () => {
+		await assert.rejects(
+			async () =>
+				fromAsync(
+					T.search(
+						{
+							conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }],
+							rowFilter: () => Promise.resolve(false),
+						},
+						{}
+					)
+				),
+			/rowFilter must be synchronous/
+		);
+	});
+
+	it('rowFilter applies to OR unions', async () => {
 		const results = await fromAsync(
-			Throwy.search(
+			T.search(
 				{
-					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					conditions: [
+						{ attribute: 'active', comparator: 'equals', value: true },
+						{ attribute: 'active', comparator: 'equals', value: false },
+					],
+					operator: 'or',
 					select: ['id', 'ownerId'],
-					limit: 5,
-					checkPermission: true,
+					rowFilter: (record) => record.ownerId === 2,
 				},
-				{ user: { id: 0 } }
+				{}
 			)
 		);
-		assert.strictEqual(results.length, 0, 'every candidate either threw (denied) or belonged to another user');
+		assert(results.length > 0);
+		assert(results.every((record) => record.ownerId === 2));
 	});
 
-	it('re-checks a record-scoped allowRead on the source-revalidated record, not the stale cached copy', async () => {
+	it('re-checks rowFilter on the source-revalidated record, not the stale cached copy', async () => {
 		// A caching table: the query filters evaluate the LOCAL (possibly stale) copy, but the
 		// returned record may be revalidated from source. The authorization verdict must hold on
 		// the record actually returned (transformEntryForSelect recordGuard), or ownership changes
@@ -1567,11 +1607,6 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 				return sourceRecords.get(id);
 			},
 		});
-		class RestrictedC extends C {
-			allowRead(user) {
-				return this.ownerId === user.id;
-			}
-		}
 		try {
 			sourceRecords.set(1, { kind: 'doc', ownerId: 1 });
 			C.setTTLExpiration(0.01); // 10ms — expiry retains the stale value (unlike invalidate), which is the vulnerable path
@@ -1582,8 +1617,11 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 			sourceRecords.set(1, { kind: 'doc', ownerId: 2 });
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			const results = await fromAsync(
-				RestrictedC.search(
-					{ conditions: [{ attribute: 'kind', value: 'doc' }], checkPermission: true },
+				C.search(
+					{
+						conditions: [{ attribute: 'kind', value: 'doc' }],
+						rowFilter: (record, requestContext) => record.ownerId === requestContext.user.id,
+					},
 					{ user: { id: 1 } }
 				)
 			);
@@ -1593,55 +1631,25 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		}
 	});
 
-	it('enforces a record-scoped allowRead on OR queries (no RBAC bypass)', async () => {
-		class Restricted extends T {
-			allowRead(user) {
-				return this.ownerId === user.id;
-			}
-		}
-		// active=true OR active=false spans every record; the record guard must still filter the union.
-		const results = await fromAsync(
-			Restricted.search(
-				{
-					conditions: [
-						{ attribute: 'active', comparator: 'equals', value: true },
-						{ attribute: 'active', comparator: 'equals', value: false },
-					],
-					operator: 'or',
-					select: ['id', 'ownerId'],
-					checkPermission: true,
-				},
-				{ user: { id: 2 } }
-			)
-		);
-		assert(results.length > 0, 'expected some visible records');
-		assert(
-			results.every((r) => r.ownerId === 2),
-			'an OR union must still be filtered by the record-scoped allowRead'
-		);
-	});
-
-	it('id-prefix search with a record-scoped override still filters per record (no entry-verdict gating)', async () => {
-		// A present `id` on search/query is a starts_with/prefix SEED (multi-record scan), not a
-		// single record — so it must defer to per-record enforcement like any collection scan. An
-		// entry verdict here would evaluate the override against a bare resource (fields undefined),
-		// spuriously denying the scan or, for a permissive-default override, leaking every row.
+	it('id-prefix search applies rowFilter to every match', async () => {
 		const P = table({
 			table: 'PrefixAuth',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'ownerId' }],
 		});
-		class Restricted extends P {
-			allowRead(user) {
-				return this.ownerId === user.id;
-			}
-		}
 		try {
 			await P.put('doc-1', { ownerId: 1 });
 			await P.put('doc-2', { ownerId: 2 });
 			await P.put('doc-3', { ownerId: 1 });
 			const results = await fromAsync(
-				Restricted.search({ id: 'doc-', checkPermission: true, select: ['id', 'ownerId'] }, { user: { id: 1 } })
+				P.search(
+					{
+						id: 'doc-',
+						select: ['id', 'ownerId'],
+						rowFilter: (record, requestContext) => record.ownerId === requestContext.user.id,
+					},
+					{ user: { id: 1 } }
+				)
 			);
 			assert.deepStrictEqual(
 				results.map((r) => r.id).sort(),
@@ -1653,10 +1661,7 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		}
 	});
 
-	it('async allowRead override is evaluated at entry only (no per-record filtering), fail-closed on deny', async () => {
-		// Async overrides can't participate in sync per-record filtering — they run ONLY the awaited
-		// entry check (a table/connection-level decision, preserving the #1422 async fail-closed
-		// contract). A denying async override therefore denies the whole read.
+	it('async allowRead remains an awaited one-shot operation gate', async () => {
 		class AsyncDenies extends T {
 			async allowRead() {
 				return false; // collection-scope deny
@@ -1674,35 +1679,7 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		);
 	});
 
-	it('sync allowRead override returning a promise denies records (fail closed), not fail-open truthiness', async () => {
-		class SneakyAsync extends T {
-			allowRead(user) {
-				return Promise.resolve(this.ownerId === user.id); // sync-declared, returns a thenable
-			}
-		}
-		const results = await fromAsync(
-			SneakyAsync.search(
-				{
-					conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }],
-					select: ['id'],
-					checkPermission: true,
-				},
-				{ user: { id: 1 } }
-			)
-		);
-		assert.strictEqual(results.length, 0, 'a thenable verdict must deny (fail closed), never grant on truthiness');
-	});
-
-	it('composes attribute_permissions column narrowing with a record-scoped allowRead override', async () => {
-		// Role-level column RBAC (attribute_permissions) is enforced by the DEFAULT table allowRead
-		// narrowing target.select at entry. An overridden (record-scoped) allowRead must not void it:
-		// search() runs the default for its narrowing side effect before deferring row access to the
-		// per-record override.
-		class Restricted extends T {
-			allowRead(user) {
-				return this.ownerId === user.id;
-			}
-		}
+	it('composes the operation-level column gate with an explicit rowFilter', async () => {
 		const user = {
 			id: 1,
 			role: {
@@ -1723,38 +1700,35 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 			},
 		};
 		const results = await fromAsync(
-			Restricted.search(
+			T.search(
 				{
 					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
 					select: ['id', 'group', 'ownerId'],
 					limit: 3,
 					checkPermission: true,
+					rowFilter: (record, requestContext) => record.ownerId === requestContext.user.id,
 				},
 				{ user }
 			)
 		);
 		assert(results.length > 0, 'row-filtered results expected');
 		for (const r of results) {
-			assert.strictEqual(r.ownerId, 1, 'row-level override still applies');
+			assert.strictEqual(r.ownerId, 1, 'explicit row filter applies');
 			assert.notStrictEqual(r.id, undefined, 'permitted column returned');
 			assert.strictEqual(r.group, undefined, 'column denied by attribute_permissions must be stripped');
 		}
 	});
 
-	it('subscription delivery filters events through a record-scoped allowRead (#1419)', async () => {
-		// The subscribe entry check grants the connection (collection scope → permissive here, the
-		// documented contract that lets a whole-table subscription open); delivery then filters each
-		// event per record, so the subscriber receives only the row changes they may read (instead of
-		// every row, pre-#1419).
+	it('subscription delivery applies an explicit rowFilter', async () => {
 		class Restricted extends T {
-			allowRead(user) {
-				if (this?.ownerId == null) return true; // collection scope: open the subscription
-				return this.ownerId === user?.id; // per-record on delivery
+			subscribe(request) {
+				request.rowFilter = (record, requestContext) => record.ownerId === requestContext.user.id;
+				return super.subscribe(request);
 			}
 		}
 		// subscribe's arg normalization only recognizes a context carrying transaction/getContext
 		const subscription = await Restricted.subscribe(
-			{ checkPermission: true, omitCurrent: true },
+			{ omitCurrent: true },
 			{
 				user: { id: 1, username: 'u1', role: { permission: {} } },
 				getContext() {
@@ -1785,7 +1759,7 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		}
 	});
 
-	it('subscription delivery re-evaluates against the LIVE user (reflects #1414 in-place re-auth)', async () => {
+	it('subscription rowFilter receives the live context', async () => {
 		// The override keys on a MUTABLE claim (tier), not a stable record field, so a re-auth that
 		// swaps context.user mid-stream must change the verdict. A snapshot regression would keep
 		// delivering with the pre-downgrade user and this test would catch it.
@@ -1796,12 +1770,12 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 			},
 		};
 		class TierGated extends T {
-			allowRead(user) {
-				if (this?.ownerId == null) return true; // collection scope: open
-				return user?.tier === 'gold'; // gate on a mutable claim
+			subscribe(request) {
+				request.rowFilter = (_record, requestContext) => requestContext.user.tier === 'gold';
+				return super.subscribe(request);
 			}
 		}
-		const subscription = await TierGated.subscribe({ checkPermission: true, omitCurrent: true }, context);
+		const subscription = await TierGated.subscribe({ omitCurrent: true }, context);
 		const received = [];
 		const collector = (async () => {
 			for await (const event of subscription) {
@@ -1828,11 +1802,11 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		}
 	});
 
-	it('subscribe entry check still guards the connection grant (protects connection-level allowRead)', async () => {
-		// subscribe is NOT deferred: the entry check runs the override as the connection grant, so a
-		// connection-level override (e.g. an MQTT topic ACL) that denies is honored at subscribe time.
+	it('subscribe still runs allowRead once as the connection grant', async () => {
+		let calls = 0;
 		class DeniesConnection extends T {
 			allowRead() {
+				calls++;
 				return false; // deny at the connection/collection grant
 			}
 		}
@@ -1849,16 +1823,17 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 				),
 			(err) => err.name === 'AccessViolation' || /unauthorized/i.test(err.message) || err.statusCode === 403
 		);
+		assert.strictEqual(calls, 1);
 	});
 
-	it('QUERY verb enforces record-scoped allowRead (checkPermission reaches the search target)', async () => {
-		// The QUERY verb calls resource.search(data, query) — search's target is `data` (the body),
-		// while checkPermission was set on the URL `query`. The query action threads it across so
-		// Table.search arms the per-record guard; without it a QUERY returned the full unfiltered set.
+	it('an operation override can attach rowFilter to a QUERY body before delegating', async () => {
 		class Restricted extends T {
-			allowRead(user) {
-				if (this?.ownerId == null) return true; // collection scope: defer to per-record
-				return this.ownerId === user?.id;
+			allowRead() {
+				return true;
+			}
+			search(target) {
+				target.rowFilter = (record, requestContext) => record.ownerId === requestContext.user.id;
+				return super.search(target);
 			}
 		}
 		const results = await fromAsync(
@@ -1871,21 +1846,23 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		assert(results.length > 0, 'expected some visible rows');
 		assert(
 			results.every((r) => r.ownerId === 1),
-			'QUERY results must be row-filtered by the record-scoped allowRead'
+			'QUERY results must be filtered by the application operation override'
 		);
 	});
 
-	it('subscription delivery freezes the record before the override sees it', async () => {
+	it('subscription delivery freezes the record before rowFilter sees it', async () => {
 		let sawFrozen;
 		class FreezeProbe extends T {
-			allowRead(user) {
-				if (this?.ownerId == null) return true;
-				sawFrozen = Object.isFrozen(this); // capture whether delivery froze the record
-				return this.ownerId === user?.id;
+			subscribe(request) {
+				request.rowFilter = (record) => {
+					sawFrozen = Object.isFrozen(record);
+					return true;
+				};
+				return super.subscribe(request);
 			}
 		}
 		const subscription = await FreezeProbe.subscribe(
-			{ checkPermission: true, omitCurrent: true },
+			{ omitCurrent: true },
 			{
 				user: { id: 1, username: 'u1', role: { permission: {} } },
 				getContext() {
@@ -1900,24 +1877,210 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		})();
 		try {
 			await T.put(130, { group: 'blue', ownerId: 1, active: true, vector: [130, 0] });
-			await new Promise((resolve) => setTimeout(resolve, 150));
-			assert.strictEqual(sawFrozen, true, 'the record handed to allowRead during delivery must be frozen');
+			await waitFor(() => sawFrozen);
+			assert.strictEqual(sawFrozen, true, 'the record handed to rowFilter during delivery must be frozen');
 		} finally {
 			subscription.return?.();
 			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
 		}
 	});
 
-	it('records expose allowRead directly (RecordObject delegate, non-enumerable)', async () => {
-		const results = await fromAsync(
-			T.search({ conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }], limit: 1 }, {})
+	it('a promise-returning subscription filter closes the stream without continuing replay', async () => {
+		class InvalidFilter extends T {
+			subscribe(request) {
+				request.rowFilter = () => Promise.reject(new Error('async policy failure'));
+				return super.subscribe(request);
+			}
+		}
+		const subscription = await InvalidFilter.subscribe(
+			{ isCollection: true },
+			{
+				user: { id: 1 },
+				getContext() {
+					return this;
+				},
+			}
 		);
-		const record = results[0];
-		assert.strictEqual(typeof record.allowRead, 'function', 'records carry an allowRead delegate');
-		// Delegates to the table default (this-free RBAC check): super user allowed, plain user not.
-		assert(record.allowRead({ role: { permission: { super_user: true } } }));
-		assert(!record.allowRead({ role: { permission: {} } }));
-		assert(!JSON.stringify(record).includes('allowRead'), 'delegate must not serialize');
+		assert.strictEqual(subscription.closed, true, 'invalid predicate is a terminal stream failure');
+		assert.strictEqual(subscription.subscriptions, null, 'failed stream is removed from transaction broadcast');
+		const iterator = subscription[Symbol.asyncIterator]();
+		const terminal = await iterator.next();
+		assert.match(terminal.value.message, /rowFilter must be synchronous/);
+		assert.deepStrictEqual(await iterator.next(), { value: undefined, done: true });
+	});
+
+	it('eventFilter can explicitly route a delete tombstone', async () => {
+		class FilteredSubscription extends T {
+			subscribe(request) {
+				request.rowFilter = (record, context) => record.ownerId === context.user.id;
+				request.eventFilter = (event) => event.id === 160;
+				return super.subscribe(request);
+			}
+		}
+		const subscription = await FilteredSubscription.subscribe(
+			{ omitCurrent: true },
+			{
+				user: { id: 1 },
+				getContext() {
+					return this;
+				},
+			}
+		);
+		const received = [];
+		const collector = (async () => {
+			for await (const event of subscription) {
+				if (event.type !== 'end_txn') received.push(event);
+			}
+		})();
+		try {
+			await T.put(160, { group: 'blue', ownerId: 1, active: true, vector: [160, 0] });
+			await waitFor(() => received.some((event) => event.id === 160 && event.type === 'put'));
+			await T.delete(160);
+			await waitFor(() => received.some((event) => event.id === 160 && event.type === 'delete'));
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
+	});
+
+	it('loadAsInstance=false search authorizes once on the collection receiver', async () => {
+		let allowReadCalls = 0;
+		class CollectionSearch extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				allowReadCalls++;
+				return true;
+			}
+		}
+		const results = await fromAsync(
+			await CollectionSearch.search(new RequestTarget('?group=blue'), {
+				user: { id: 1, role: { permission: {} } },
+				authorize: true,
+			})
+		);
+		assert(results.length > 1);
+		assert.strictEqual(allowReadCalls, 1);
+	});
+
+	it('loadAsInstance=false search awaits and fails closed on Promise<false> before row filtering', async () => {
+		let allowReadCalls = 0;
+		let rowFilterCalls = 0;
+		class DeniedCollectionSearch extends T {
+			static loadAsInstance = false;
+			allowRead() {
+				allowReadCalls++;
+				return Promise.resolve(false);
+			}
+		}
+		const target = new RequestTarget('?group=blue');
+		target.rowFilter = () => {
+			rowFilterCalls++;
+			return true;
+		};
+		await assert.rejects(
+			async () =>
+				fromAsync(
+					await DeniedCollectionSearch.search(target, {
+						user: { id: 1, role: { permission: {} } },
+						authorize: true,
+					})
+				),
+			(err) => err.name === 'AccessViolation' || err.statusCode === 403
+		);
+		assert.strictEqual(allowReadCalls, 1);
+		assert.strictEqual(rowFilterCalls, 0);
+	});
+
+	it('loadAsInstance=false subscriptions authorize once without per-event checks', async () => {
+		let allowReadCalls = 0;
+		class CollectionSubscription extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				allowReadCalls++;
+				return true;
+			}
+		}
+		const subscription = await CollectionSubscription.subscribe(
+			{ omitCurrent: true },
+			{
+				user: { id: 1, username: 'u1', role: { permission: {} } },
+				authorize: true,
+				getContext() {
+					return this;
+				},
+			}
+		);
+		const received = [];
+		const collector = (async () => {
+			for await (const event of subscription) {
+				if (event.type !== 'end_txn') received.push(event);
+			}
+		})();
+		try {
+			await T.put(161, { group: 'blue', ownerId: 2, active: true, vector: [161, 0] });
+			await waitFor(() => received.some((event) => event.id === 161));
+			assert.strictEqual(allowReadCalls, 1);
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
+	});
+
+	it('loadAsInstance=false subscribe denies before audit setup', async () => {
+		let allowReadCalls = 0;
+		const NoAudit = table({
+			table: 'DeniedSubscriptionBeforeAudit',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			audit: false,
+		});
+		class DeniedCollectionSubscription extends NoAudit {
+			static loadAsInstance = false;
+			async allowRead() {
+				allowReadCalls++;
+				return false;
+			}
+		}
+		try {
+			await assert.rejects(
+				() =>
+					DeniedCollectionSubscription.subscribe(
+						{ omitCurrent: true },
+						{
+							user: { id: 1, role: { permission: {} } },
+							authorize: true,
+							getContext() {
+								return this;
+							},
+						}
+					),
+				(err) => err.name === 'AccessViolation' || err.statusCode === 403
+			);
+			assert.strictEqual(allowReadCalls, 1);
+		} finally {
+			NoAudit.dropTable();
+		}
+	});
+
+	it('custom loadAsInstance=false handlers retain ownership of authorization', async () => {
+		let allowReadCalls = 0;
+		const sentinel = {};
+		class CustomGet extends T {
+			static loadAsInstance = false;
+			allowRead() {
+				allowReadCalls++;
+				return false;
+			}
+			get() {
+				return sentinel;
+			}
+		}
+		const result = await CustomGet.get(0, {
+			user: { id: 1, role: { permission: {} } },
+			authorize: true,
+		});
+		assert.strictEqual(result, sentinel);
+		assert.strictEqual(allowReadCalls, 0);
 	});
 
 	it('honors a companion AND condition during the vector query', async () => {

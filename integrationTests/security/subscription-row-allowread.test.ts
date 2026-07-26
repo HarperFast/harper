@@ -1,13 +1,8 @@
 /**
- * #1419 — Row-level `allowRead` must filter subscription delivery.
+ * Explicit row filters must apply consistently to direct reads and subscription delivery.
  *
- * Before the fix, `Table.subscribe` evaluated `allowRead` once at connect time with `this`
- * bound to the collection (no loaded record), so a row-level override always passed and every
- * row's change events were delivered to any collection subscriber. The fix re-evaluates
- * `allowRead` per record-bearing event, binding a resource instance to that row's record.
- *
- * Fixture: a `Vault` table whose `allowRead` allows the collection subscription to open but
- * permits per-row reads only for the row's owner (see fixtures/subscription-row-allowread).
+ * Fixture: a `Vault` table whose operation overrides perform admission and attach a `rowFilter`
+ * that permits rows owned by the current user (see fixtures/subscription-row-allowread).
  * Alice and Bob are non-admin users owning different rows.
  *
  *   CONTROL  — Alice's REST GET of Bob's row is denied (proves allowRead is real and the
@@ -120,7 +115,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 8000, intervalMs = 
 	return predicate();
 }
 
-suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+suite('explicit rowFilter filters subscription delivery', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let client: ReturnType<typeof createApiClient>;
 	let restURL = '';
 	let aliceBearer = '';
@@ -128,6 +123,15 @@ suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSui
 	const openStreams = new Set<SseStream>();
 
 	const adminPut = (id: string, body: object) => request(restURL).put(`/Vault/${id}`).set(client.headers).send(body);
+	const adminPutEventually = async (id: string, body: object) => {
+		const deadline = Date.now() + 8000;
+		let response = await adminPut(id, body);
+		while (response.status === 404 && Date.now() < deadline) {
+			await sleep(100);
+			response = await adminPut(id, body);
+		}
+		ok(response.status === 204, `PUT /Vault/${id} failed with ${response.status}: ${response.text}`);
+	};
 
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
@@ -146,8 +150,7 @@ suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSui
 			await sleep(250);
 		}
 
-		// Non-super role with full table-level READ/WRITE on Vault → the allowRead override is the
-		// only remaining read gate.
+		// Non-super role with table-level READ/WRITE; application operation overrides add ownership.
 		await client
 			.req()
 			.send({
@@ -229,12 +232,15 @@ suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSui
 		await teardownHarper(ctx);
 	});
 
-	test('CONTROL: row-level allowRead is enforced on REST (Alice denied Bob row, allowed own)', async () => {
+	test('CONTROL: the operation override denies Bob row and allows Alice row', async () => {
 		const ownGet = await request(restURL).get(`/Vault/${ALICE_ROWS[0]}`).set({ Authorization: aliceBearer });
 		ok(ownGet.status === 200, `Alice must read her own row, got ${ownGet.status}: ${ownGet.text}`);
 
 		const bobGet = await request(restURL).get(`/Vault/${BOB_ROWS[0]}`).set({ Authorization: aliceBearer });
-		ok([401, 403, 404].includes(bobGet.status), `Alice GET Bob row should be denied, got ${bobGet.status}`);
+		ok(
+			[401, 403, 404].includes(bobGet.status),
+			`Alice GET Bob row should be denied, got ${bobGet.status}: ${bobGet.text}`
+		);
 
 		// Wrong password must not auto-authorize (would indicate an AUTHORIZELOCAL escape).
 		const badGet = await request(restURL)
@@ -287,12 +293,10 @@ suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSui
 		);
 	});
 
-	test('REVOCATION (#1414 × override): alter_role removing read terminates a record-scoped subscription', async () => {
-		// The #1414 re-auth recheck re-runs the SAME override that granted the connection, against the
-		// fresh user. Because this override composes the base RBAC grant via `super.allowRead`, revoking
-		// the role's table-read makes the override deny at collection scope → the subscription is torn
-		// down. alter_role (not drop_user) keeps the user present — findAndValidateUser still returns a
-		// role — so termination can only come from the override re-evaluating the (now-denied) RBAC grant.
+	test('REVOCATION (#1414): alter_role removing read terminates a filtered subscription', async () => {
+		// Reauthorization reruns the operation-level table/RBAC allowRead grant against the fresh user.
+		// alter_role (not drop_user) keeps the user present, so revoking table read must tear down the
+		// subscription through that same one-shot gate.
 		const carolToken = await client
 			.req()
 			.send({ operation: 'create_authentication_tokens', username: CAROL.username, password: CAROL.password });
@@ -327,12 +331,17 @@ suite('#1419 row-level allowRead filters subscription delivery', { skip: skipSui
 		await sleep(2000); // let the user-change broadcast / re-auth land under CI load
 
 		const eventsAfterRevoke = stream.events.length;
-		await adminPut(CAROL_ROW, { id: CAROL_ROW, owner: CAROL.username, secret: 'carol-secret', v: 2 }).expect(204);
+		await adminPutEventually(CAROL_ROW, {
+			id: CAROL_ROW,
+			owner: CAROL.username,
+			secret: 'carol-secret',
+			v: 2,
+		});
 		await sleep(1500);
 
 		ok(
 			stream.events.length === eventsAfterRevoke,
-			`role lost read but subscription kept receiving ${stream.events.length - eventsAfterRevoke} event(s) — re-auth default-fallback did not terminate the record-scoped subscription`
+			`role lost read but subscription kept receiving ${stream.events.length - eventsAfterRevoke} event(s)`
 		);
 	});
 });

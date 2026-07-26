@@ -1,4 +1,4 @@
-// #1786 review (heskew): the record-scoped allowRead guard must see a read-only view of a
+// An explicit rowFilter must see a read-only view of a
 // record on the caching-table source-revalidation path, WITHOUT freezing the actual object —
 // that object is the SAME one the deferred commit still mutates (createdAt/updatedAt) and
 // persists, so freezing it directly would break that write.
@@ -6,7 +6,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { frozenRecordView } = require('#src/resources/Table');
 
-describe('frozenRecordView (#1786 source-revalidation guard view)', () => {
+describe('frozenRecordView source-revalidation filter view', () => {
 	it('returns an already-frozen record unchanged (the common, already-safe local-read path)', () => {
 		const record = Object.freeze({ id: 1, secret: 'x' });
 		assert.strictEqual(frozenRecordView(record), record);

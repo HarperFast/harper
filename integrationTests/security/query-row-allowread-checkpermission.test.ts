@@ -1,16 +1,11 @@
 /**
- * #1786 review (heskew) — QUERY's body must not be able to disable the row-level `allowRead`
- * guard.
+ * A client-controlled QUERY body must not be able to disable an application-supplied row filter.
  *
- * `Resource.query` threads `checkPermission` from the framework-controlled URL `query` onto the
- * client-controlled request `data` (the QUERY body) so `Table.search` sees the flag and enforces
- * the record-scoped `allowRead` override (#1422 gap 2). Before the fix, that thread-through only
- * filled `data.checkPermission` when it was nullish — a client sending `checkPermission: false`
- * in the QUERY body survived untouched and disabled the row-level guard entirely, returning the
- * full unfiltered set.
+ * The Vault operation override replaces any client field with its own function-valued rowFilter
+ * before delegating to Table.search. REST parsing never evaluates a client-supplied predicate.
  *
- * Fixture: reuses the `Vault` table from `subscription-row-allowread` (owner-scoped allowRead,
- * composes the base RBAC grant via `super.allowRead`).
+ * Fixture: reuses the `Vault` table from `subscription-row-allowread`, whose operation overrides
+ * attach an owner-scoped rowFilter before delegating to the built-in table search.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/security/query-row-allowread-checkpermission.test.ts"
@@ -49,84 +44,103 @@ async function queryVault(restURL: string, headers: Record<string, string>, body
 	return Array.isArray(data) ? data : [];
 }
 
-suite(
-	'#1786 QUERY body checkPermission cannot bypass row-level allowRead',
-	{ skip: skipSuite },
-	(ctx: ContextWithHarper) => {
-		let client: ReturnType<typeof createApiClient>;
-		let restURL = '';
-		let aliceHeaders: Record<string, string>;
+suite('QUERY body cannot bypass an application rowFilter', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+	let client: ReturnType<typeof createApiClient>;
+	let restURL = '';
+	let aliceHeaders: Record<string, string>;
 
-		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
-			client = createApiClient(ctx.harper);
-			restURL = ctx.harper.httpURL;
+	before(async () => {
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
+		client = createApiClient(ctx.harper);
+		restURL = ctx.harper.httpURL;
 
-			const deadline = Date.now() + 30_000;
-			while (Date.now() < deadline) {
-				try {
-					const probe = await client.reqRest('/Vault/').timeout(3000);
-					if (probe.status !== 404) break;
-				} catch {
-					/* not ready */
-				}
-				await new Promise((r) => setTimeout(r, 250));
+		const deadline = Date.now() + 30_000;
+		while (Date.now() < deadline) {
+			try {
+				const probe = await client.reqRest('/Vault/').timeout(3000);
+				if (probe.status !== 404) break;
+			} catch {
+				/* not ready */
 			}
+			await new Promise((r) => setTimeout(r, 250));
+		}
 
-			await client
-				.req()
-				.send({
-					operation: 'add_role',
-					role: ROLE,
-					permission: {
-						super_user: false,
-						data: {
-							tables: {
-								Vault: { read: true, insert: true, update: true, delete: true, attribute_permissions: [] },
+		await client
+			.req()
+			.send({
+				operation: 'add_role',
+				role: ROLE,
+				permission: {
+					super_user: false,
+					data: {
+						tables: {
+							Vault: {
+								read: true,
+								insert: false,
+								update: false,
+								delete: false,
+								attribute_permissions: [
+									{ attribute_name: 'id', read: true, insert: false, update: false },
+									{ attribute_name: 'owner', read: true, insert: false, update: false },
+									{ attribute_name: 'secret', read: false, insert: false, update: false },
+								],
 							},
 						},
 					},
-				})
+				},
+			})
+			.expect(200);
+
+		for (const u of [ALICE, BOB]) {
+			await client
+				.req()
+				.send({ operation: 'add_user', role: ROLE, username: u.username, password: u.password, active: true })
 				.expect(200);
+		}
 
-			for (const u of [ALICE, BOB]) {
-				await client
-					.req()
-					.send({ operation: 'add_user', role: ROLE, username: u.username, password: u.password, active: true })
-					.expect(200);
-			}
+		const records = [
+			...ALICE_ROWS.map((id) => ({ id, owner: ALICE.username, secret: `alice-secret-${id}` })),
+			...BOB_ROWS.map((id) => ({ id, owner: BOB.username, secret: `bob-secret-${id}` })),
+		];
+		await client.req().send({ operation: 'insert', schema: 'data', table: 'Vault', records }).expect(200);
 
-			const records = [
-				...ALICE_ROWS.map((id) => ({ id, owner: ALICE.username, secret: `alice-secret-${id}` })),
-				...BOB_ROWS.map((id) => ({ id, owner: BOB.username, secret: `bob-secret-${id}` })),
-			];
-			await client.req().send({ operation: 'insert', schema: 'data', table: 'Vault', records }).expect(200);
+		aliceHeaders = createHeaders(ALICE.username, ALICE.password);
+	});
 
-			aliceHeaders = createHeaders(ALICE.username, ALICE.password);
-		});
+	after(async () => {
+		await teardownHarper(ctx);
+	});
 
-		after(async () => {
-			await teardownHarper(ctx);
-		});
+	test('CONTROL: a plain QUERY only returns the requesting user’s own rows', async () => {
+		const results = await queryVault(restURL, aliceHeaders, {});
+		const ids = results.map((r: any) => r.id).sort();
+		deepStrictEqual(ids, [...ALICE_ROWS].sort(), 'rowFilter should scope a QUERY to the caller’s own rows');
+		ok(
+			results.every((record: any) => record.secret === undefined),
+			'attribute permissions must narrow QUERY output'
+		);
+	});
 
-		test('CONTROL: a plain QUERY only returns the requesting user’s own rows', async () => {
-			const results = await queryVault(restURL, aliceHeaders, {});
-			const ids = results.map((r: any) => r.id).sort();
-			deepStrictEqual(ids, [...ALICE_ROWS].sort(), 'row-level allowRead should scope a QUERY to the caller’s own rows');
-		});
+	test('QUERY body select cannot restore an attribute removed by the URL-target permission gate', async () => {
+		const results = await queryVault(restURL, aliceHeaders, { select: ['id', 'secret'] });
+		deepStrictEqual(
+			results.map((record: any) => Object.keys(record).sort()),
+			ALICE_ROWS.map(() => ['id']),
+			'framework-narrowed select must replace the independently parsed QUERY body select'
+		);
+	});
 
-		test('BYPASS ATTEMPT: checkPermission: false in the QUERY body must not disable the guard', async () => {
-			const results = await queryVault(restURL, aliceHeaders, { checkPermission: false });
-			const ids = results.map((r: any) => r.id).sort();
-			ok(
-				!BOB_ROWS.some((id) => ids.includes(id)),
-				`QUERY-VERB BYPASS (#1786): client-supplied checkPermission:false leaked Bob's rows: ${JSON.stringify(ids)}`
-			);
-			deepStrictEqual(
-				ids,
-				[...ALICE_ROWS].sort(),
-				'a client-supplied checkPermission:false must not widen the QUERY result beyond the caller’s own rows'
-			);
-		});
-	}
-);
+	test('BYPASS ATTEMPT: checkPermission: false in the QUERY body must not disable the guard', async () => {
+		const results = await queryVault(restURL, aliceHeaders, { checkPermission: false });
+		const ids = results.map((r: any) => r.id).sort();
+		ok(
+			!BOB_ROWS.some((id) => ids.includes(id)),
+			`client-supplied checkPermission:false leaked Bob's rows: ${JSON.stringify(ids)}`
+		);
+		deepStrictEqual(
+			ids,
+			[...ALICE_ROWS].sort(),
+			'a client-supplied checkPermission:false must not widen the QUERY result beyond the caller’s own rows'
+		);
+	});
+});

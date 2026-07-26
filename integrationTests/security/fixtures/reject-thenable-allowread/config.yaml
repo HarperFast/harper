@@ -1,7 +1,0 @@
-# Regression fixture for #1786 — a sync-declared allowRead that returns a rejected thenable
-# during per-record evaluation must not leak an unhandledRejection.
-graphqlSchema:
-  files: '*.graphql'
-jsResource:
-  files: resources.js
-rest: true

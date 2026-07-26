@@ -165,7 +165,7 @@ export function freezeRecord(value: any): void {
 	if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer))
 		Object.freeze(value);
 }
-// Returns a read-only VIEW of `record` for evaluation (e.g. a record-scoped allowRead guard)
+// Returns a read-only VIEW of `record` for application predicate evaluation
 // without mutating the original. Locally-loaded records are already frozen by loadLocalRecord, so
 // this is a no-op there; the source-revalidation path hands back the SAME object its deferred
 // commit still writes to (createdAt/updatedAt) and persists, so that object can't be frozen
@@ -214,11 +214,12 @@ const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records du
 // until the worker OOMs (issue #1114). Beyond this depth we fall back to a bounded reconciliation.
 const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 // Cap on audit records inspected while backfilling a subscription's `previousCount` history,
-// independent of `count` (the number of AUTHORIZED events collected). `count` only decrements on
-// records that pass the row-level allowRead filter, so an all-deny override would otherwise force
-// a full walk of the retained audit log (#1786) — this bounds that walk regardless of how many
+// independent of `count` (the number of accepted events collected). `count` only decrements on
+// records that pass a rowFilter, so an all-deny predicate would otherwise force
+// a full walk of the retained audit log — this bounds that walk regardless of how many
 // records the filter accepts.
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
+const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -1404,6 +1405,7 @@ export function makeTable(options) {
 		// #section: authz-hooks
 		/**
 		 * Determine if the user is allowed to get/read data from the current resource
+		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
 		allowRead(user: User, target: RequestTarget, context: Context): boolean {
 			const tablePermission = getTablePermissions(user, target);
@@ -1444,6 +1446,7 @@ export function makeTable(options) {
 							.filter((attribute) => attribute.read && !propertyResolvers[attribute.attribute_name])
 							.map((attribute) => attribute.attribute_name);
 					}
+					(target as any)[AUTHORIZATION_SELECT] = true;
 					return true;
 				} else {
 					return true;
@@ -1453,6 +1456,7 @@ export function makeTable(options) {
 
 		/**
 		 * Determine if the user is allowed to update data from the current resource
+		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
 		// @ts-expect-error Tables only allow synchronous allowUpdate checks.
 		// eslint-disable-next-line no-unused-vars
@@ -1481,6 +1485,7 @@ export function makeTable(options) {
 
 		/**
 		 * Determine if the user is allowed to create new data in the current resource
+		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
 		// @ts-expect-error Tables only allow synchronous allowCreate checks.
 		allowCreate(user: User, newData: Record, context: Context): boolean {
@@ -1509,6 +1514,7 @@ export function makeTable(options) {
 
 		/**
 		 * Determine if the user is allowed to delete from the current resource
+		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
 		allowDelete(user: User, target: RequestTarget, context: Context): boolean {
 			const tablePermission = getTablePermissions(user, target);
@@ -2776,43 +2782,37 @@ export function makeTable(options) {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
-			// An application-overridden allowRead is a RECORD-scoped check (#1422 gap 2 / #1241): it is
-			// evaluated once per record during query execution with `this` = the record, instead of once
-			// at entry where `this` is a collection resource with nothing loaded. The framework defaults
-			// (marked isDefaultAllowRead) are this-free table/RBAC checks and keep the entry evaluation.
-			// Record-scoping is SYNC-only: async-declared overrides keep entry-check semantics (the
-			// authorize wrapper awaits them and fails closed) rather than entering the sync traversal.
-			const recordScopedAllowRead =
-				target.checkPermission &&
-				!(this.allowRead as any)?.isDefaultAllowRead &&
-				(this.allowRead as any)?.constructor?.name !== 'AsyncFunction'
-					? this.allowRead
-					: undefined;
 			if (target.checkPermission) {
-				if (recordScopedAllowRead) {
-					// Compose with role-level column RBAC: the DEFAULT table allowRead is also the
-					// enforcement point for attribute_permissions (it narrows target.select). Run it here
-					// for that side effect — before `select` is captured below — with its verdict
-					// superseded by the per-record override. A per-record super.allowRead call could NOT
-					// restore this: the select-driven output transform is built before iteration starts.
-					try {
-						TableResource.prototype.allowRead.call(this, (context as any).user, target, context);
-					} catch {
-						// narrowing is best-effort under an override; access is governed per record
-					}
-				} else {
-					// requesting authorization verification
-					let allowed;
-					try {
-						allowed = this.allowRead((context as any).user, target, context);
-					} catch {
-						// allow* threw — fail closed rather than letting the request proceed
-						throw new AccessViolation((context as any).user);
-					}
-					if (!allowed) {
-						throw new AccessViolation((context as any).user);
-					}
+				// Direct instance callers may request the same one-shot operation gate used by the
+				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
+				let allowed;
+				try {
+					allowed = this.allowRead((context as any).user, target, context);
+				} catch {
+					throw new AccessViolation((context as any).user);
 				}
+				if (allowed != null && typeof (allowed as any).then === 'function') {
+					const self = this;
+					return (async function* () {
+						let resolved;
+						try {
+							resolved = await allowed;
+						} catch {
+							throw new AccessViolation((context as any).user);
+						}
+						if (!resolved) throw new AccessViolation((context as any).user);
+						target.checkPermission = false;
+						yield* self.search(target);
+					})();
+				}
+				if (!allowed) {
+					throw new AccessViolation((context as any).user);
+				}
+				target.checkPermission = false;
+			}
+			const rowFilter = typeof target.rowFilter === 'function' ? target.rowFilter : undefined;
+			if (rowFilter?.constructor?.name === 'AsyncFunction') {
+				throw new ClientError('rowFilter must be synchronous');
 			}
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 
@@ -3028,46 +3028,23 @@ export function makeTable(options) {
 			// scans), the read transaction reads against the latest committed data without pinning a
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
-			// Record-level allowRead guard (#1241/#1422): an application-overridden allowRead runs once
-			// per record with `this` = the (frozen) record, participating in query execution — pushed
-			// into HNSW traversal for vector sorts, applied as a post-filter otherwise. It must be
-			// synchronous, side-effect free, and fast; a throw denies that record (fail closed, #1422
-			// gap 1 parity). Dispatched via the method resolved from the resource — never via a
-			// `record.allowRead` property lookup, so a record attribute named allowRead can't shadow it.
-			let recordGuard: ((record: any) => boolean) | undefined;
-			if (recordScopedAllowRead) {
-				const user = (context as any)?.user;
-				let warnedAsync = false;
-				recordGuard = (record: any) => {
-					let allowed;
-					try {
-						allowed = recordScopedAllowRead.call(record, user, target, context);
-					} catch {
-						return false; // fail closed on a throwing check
-					}
-					if (typeof allowed?.then === 'function') {
-						// A sync-declared override that returns a thenable can't be awaited mid-traversal:
-						// deny the record (fail closed, #1422 gap 1 semantics) rather than fail open on
-						// promise truthiness or abort the whole query. Declared-async overrides never get
-						// here — they keep the awaited entry check. We're not observing this rejection, so
-						// attach a no-op handler — otherwise a rejected thenable reaches the global
-						// unhandledRejection logger once per denied candidate. Use `.then(undefined, ...)`,
-						// not `.catch` — a thenable is only guaranteed to have `.then`.
-						allowed.then(undefined, () => {});
-						if (!warnedAsync) {
-							warnedAsync = true;
-							logger.warn?.(
-								`allowRead on ${tableName} returned a promise during per-record evaluation; records are denied (record-scoped allowRead must be synchronous)`
-							);
+			// The explicit row filter participates in query execution: it is pushed into HNSW
+			// traversal for vector sorts, applied after conditions otherwise, and checked again after
+			// cache/source materialization below. A policy error aborts the query instead of silently
+			// returning a partial result set.
+			const boundRowFilter = rowFilter
+				? (record: any) => {
+						const result = rowFilter(record, context as Context);
+						if (typeof (result as any)?.then === 'function') {
+							(result as any).then(undefined, () => {});
+							throw new ClientError('rowFilter must be synchronous');
 						}
-						return false;
+						return Boolean(result);
 					}
-					return Boolean(allowed);
-				};
-			}
+				: undefined;
 			const recordAccess =
-				recordGuard || typeof target.vectorFilter === 'function'
-					? { recordGuard, vectorFilter: target.vectorFilter }
+				boundRowFilter || typeof target.vectorFilter === 'function'
+					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
 			const entries = executeConditions(
 				conditions,
@@ -3081,10 +3058,10 @@ export function makeTable(options) {
 				recordAccess
 			);
 			const ensure_loaded = (target as any).ensureLoaded !== false;
-			// Authoritative enforcement point (#1241): the guards inside executeConditions evaluate the
+			// The guards inside executeConditions evaluate the
 			// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
-			// expired/invalidated row from source and return a DIFFERENT record. An authorization check
-			// must hold on the record actually returned, so the record-scoped allowRead is re-checked
+			// expired/invalidated row from source and return a DIFFERENT record. The explicit row filter
+			// must hold on the record actually returned, so it is re-checked
 			// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
 			// traversal). vectorFilter and condition filters intentionally keep the local-record
 			// semantics all query filters have on caching tables.
@@ -3103,7 +3080,7 @@ export function makeTable(options) {
 				filtered,
 				ensure_loaded,
 				true,
-				recordGuard,
+				boundRowFilter,
 				includeExpired
 			);
 			let results = TableResource.transformToOrderedSelect(
@@ -3315,7 +3292,7 @@ export function makeTable(options) {
 		 * @param filtered
 		 * @param ensure_loaded
 		 * @param canSkip
-		 * @param recordGuard record-level read check (#1241) applied to the record actually being
+		 * @param rowFilter explicit row predicate applied to the record actually being
 		 * returned — i.e. AFTER any caching-source revalidation replaces a stale local copy — so an
 		 * authorization verdict can't be made on bytes that differ from what the caller receives.
 		 * @param includeExpired when true, a row past its TTL but not yet swept is treated as a live
@@ -3329,7 +3306,7 @@ export function makeTable(options) {
 			filtered,
 			ensure_loaded?,
 			canSkip?,
-			recordGuard?,
+			rowFilter?,
 			includeExpired?
 		) {
 			let checkLoaded;
@@ -3411,12 +3388,11 @@ export function makeTable(options) {
 					}
 				}
 				if (record == null) return canSkip ? SKIP : record;
-				// Record-level RBAC (#1241): enforced here because `record` is now the final, materialized
+				// Recheck the explicit predicate here because `record` is now the final, materialized
 				// record — a caching table's source revalidation (above) may have replaced the local copy the
-				// query filters evaluated. Fail closed on the record actually being returned. The guard sees a
-				// frozen view (frozenRecordView) so an allowRead override that writes through `this` can't
+				// query filters evaluated. The predicate sees a frozen view so application code can't
 				// mutate a record the source-revalidation path's deferred commit still needs to write and encode.
-				if (recordGuard && !recordGuard(frozenRecordView(record))) return canSkip ? SKIP : undefined;
+				if (rowFilter && !rowFilter(frozenRecordView(record))) return canSkip ? SKIP : undefined;
 				if (select && !(select[0] === '*' && select.length === 1)) {
 					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
@@ -3566,11 +3542,23 @@ export function makeTable(options) {
 
 		// #section: pub-sub
 		async subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>> {
+			if (!request) request = {} as any;
+			const loadAsInstance = (this.constructor as any).loadAsInstance;
+			if (loadAsInstance === false && (request as any).checkPermission) {
+				const context = this.getContext() as any;
+				let allowed;
+				try {
+					allowed = await this.allowRead(context?.user, request as any, context);
+				} catch {
+					throw new AccessViolation(context?.user);
+				}
+				(request as any).checkPermission = false;
+				if (!allowed) throw new AccessViolation(context?.user);
+			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
 			if (!audit) {
 				table({ table: tableName, database: databaseName, schemaDefined, attributes, audit: true });
 			}
-			if (!request) request = {} as any;
 			const getFullRecord = !request.rawEvents;
 			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
 			// messages from the listener accumulate here and are drained at the end of the IIFE so they
@@ -3585,57 +3573,41 @@ export function makeTable(options) {
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
-			// Record-scoped allowRead on subscription delivery (#1419, reviving #1524 on the unified
-			// model): the subscribe entry check already granted the connection (topic ACL / collection
-			// scope); here we ADDITIONALLY re-evaluate a sync application-overridden allowRead per
-			// record-bearing event with `this` = the event's record, the delivery-path analog of the
-			// per-record query guard. Gated to (1) an overridden allowRead (the default is
-			// record-independent and already enforced at connect, so the common case stays zero-overhead)
-			// and (2) an authorization-checked subscription — the entry check clears checkPermission
-			// before we get here and an anonymous-but-checked subscription has no user to key on, so the
-			// wrapper stamps a durable `rowLevelAuthChecked` flag; internal subscribers (replication,
-			// system watchers) never set it and keep full delivery.
-			// Fails closed: a throwing or thenable-returning override drops the event rather than leaks it.
-			//
-			// Known limitation (as in #1524): only put/invalidate events carry the authoritative full
-			// record. delete (tombstone, null value), message payloads, and rawEvents partial values may
-			// mis-decide an override keyed on row fields; closing the primary leak (record updates) is
-			// the goal here — authorizing non-record-bearing event types against the full row is deferred.
 			const subContext = this.getContext() as any;
-			const subAllowRead = this.allowRead;
-			const filterRowReads = (request as any)?.rowLevelAuthChecked && !(subAllowRead as any)?.isDefaultAllowRead;
-			let warnedAsyncEvent = false;
-			const allowsEvent = filterRowReads
-				? (event: any): boolean => {
-						if (event.type === 'end_txn' || event.type === 'reload') return true; // control markers, no record
-						// Freeze the record before the override sees it, mirroring the query path — event.value
-						// is the shared primaryStore object, so an override that writes to `this` would otherwise
-						// mutate the cache for every reader on the node.
-						if (event.value) freezeRecord(event.value);
-						let decision;
-						try {
-							// Evaluate against the LIVE context user, not a subscribe-time snapshot: #1414 re-auth
-							// updates subContext.user in place, so a role/claims change must be reflected per event.
-							decision = subAllowRead.call(event.value ?? null, subContext.user, request, subContext);
-						} catch {
-							return false; // fail closed: a throwing override drops the event
-						}
-						if (decision != null && typeof decision.then === 'function') {
-							// Not observing this rejection — attach a no-op handler so it doesn't reach the
-							// global unhandledRejection logger once per dropped event. Use `.then(undefined,
-							// ...)`, not `.catch` — a thenable is only guaranteed to have `.then`.
-							decision.then(undefined, () => {});
-							if (!warnedAsyncEvent) {
-								warnedAsyncEvent = true;
-								logger.warn?.(
-									`allowRead on ${tableName} returned a promise during subscription event evaluation; events are dropped (record-scoped allowRead must be synchronous)`
-								);
-							}
-							return false;
-						}
-						return Boolean(decision);
+			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
+			const eventFilter = typeof request.eventFilter === 'function' ? request.eventFilter : undefined;
+			if (rowFilter?.constructor?.name === 'AsyncFunction') {
+				throw new ClientError('rowFilter must be synchronous');
+			}
+			if (eventFilter?.constructor?.name === 'AsyncFunction') {
+				throw new ClientError('eventFilter must be synchronous');
+			}
+			const evaluateFilter = (filter: Function, value: any, name: string): boolean => {
+				try {
+					const decision = filter(value, subContext);
+					if (decision != null && typeof decision.then === 'function') {
+						decision.then(undefined, () => {});
+						throw new ClientError(`${name} must be synchronous`);
 					}
-				: null;
+					return Boolean(decision);
+				} catch (error) {
+					failSubscription(error);
+					return false;
+				}
+			};
+			const allowsEvent =
+				rowFilter || eventFilter
+					? (event: any): boolean => {
+							if (event.type === 'end_txn' || event.type === 'reload') return true;
+							if (event.value != null) freezeRecord(event.value);
+							if (eventFilter && !evaluateFilter(eventFilter, frozenRecordView(event), 'eventFilter')) return false;
+							const hasAuthoritativeRow =
+								!request.rawEvents && (event.type === 'put' || event.type === 'invalidate') && event.value != null;
+							if (!rowFilter) return true;
+							if (!hasAuthoritativeRow) return Boolean(eventFilter);
+							return evaluateFilter(rowFilter, event.value, 'rowFilter');
+						}
+					: null;
 			const subscription = addSubscription(
 				TableResource,
 				thisId,
@@ -3694,6 +3666,7 @@ export function makeTable(options) {
 				request.startTime || 0,
 				request
 			);
+			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
 			// Attach the request.listener BEFORE invoking the IIFE so that sync sends from the
 			// IIFE's prologue go directly to the listener via emit('data') instead of accumulating
 			// in subscription.queue. Without this, the IIFE can fill the queue past
@@ -3730,19 +3703,23 @@ export function makeTable(options) {
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
+									if (!isActive()) return;
 								}
 								if (auditRecord.tableId !== tableId) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
-									send({
-										id,
-										localTime: auditRecord.localTime,
-										value,
-										version: auditRecord.version,
-										type: auditRecord.type,
-										size: auditRecord.size,
-									});
+									if (
+										!send({
+											id,
+											localTime: auditRecord.localTime,
+											value,
+											version: auditRecord.version,
+											type: auditRecord.type,
+											size: auditRecord.size,
+										})
+									)
+										return;
 									if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 										// if we have too many messages, we need to pause and let the client catch up
 										if ((await subscription.waitForDrain()) === false) return;
@@ -3762,23 +3739,21 @@ export function makeTable(options) {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
 								await rest();
-								// Subscription.end() nulls `subscriptions` on close; stop backfilling a dead
-								// subscriber rather than continuing to walk the retained audit log.
-								if (!subscription.subscriptions) break;
+								if (!isActive()) return;
 							}
 							try {
 								if (auditRecord.tableId !== tableId) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
-									// AUTHORIZED) — an all-deny allowRead override must not force a full walk of
-									// the retained audit log (#1786), even though it returns fewer than `count`
-									// authorized events. Counted only once a record is known to be in scope (right
+									// ACCEPTED) — an all-deny rowFilter must not force a full walk of the retained
+									// audit log, even though it returns fewer than `count` accepted events. Counted
+									// only once a record is known to be in scope (right
 									// table, right id) so unrelated cross-table/cross-scope audit traffic in a busy
 									// shared log can't spuriously cut a backfill short.
 									if (++inspected > MAX_PREVIOUS_COUNT_SCAN) {
 										logger.warn?.(
-											`previousCount backfill on ${tableName} stopped after inspecting ${MAX_PREVIOUS_COUNT_SCAN} in-scope audit records without collecting ${request.previousCount} authorized event(s); returning ${history.length} instead`
+											`previousCount backfill on ${tableName} stopped after inspecting ${MAX_PREVIOUS_COUNT_SCAN} in-scope audit records without collecting ${request.previousCount} accepted event(s); returning ${history.length} instead`
 										);
 										break;
 									}
@@ -3790,9 +3765,11 @@ export function makeTable(options) {
 										version: auditRecord.version,
 										type: auditRecord.type,
 									};
-									// Filter denied rows BEFORE they consume a previousCount slot, so an authorized
-									// subscriber still receives up to `count` readable events (#1419).
-									if (allowsEvent && !allowsEvent(historyEntry)) continue;
+									// Filter rows before they consume a previousCount slot.
+									if (allowsEvent && !allowsEvent(historyEntry)) {
+										if (!isActive()) return;
+										continue;
+									}
 									history.push(historyEntry);
 									if (--count <= 0) break;
 								}
@@ -3801,7 +3778,7 @@ export function makeTable(options) {
 							}
 						}
 						for (let i = history.length; i > 0;) {
-							send(history[--i]);
+							if (!send(history[--i], true)) return;
 						}
 						// Use the latest record cursor saw (history[0] = most recent due to reverse
 						// iteration) as the gate. This is in the audit log's own time domain (works for
@@ -3839,13 +3816,14 @@ export function makeTable(options) {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
 								await rest();
+								if (!isActive()) return;
 							}
 							// Update cursorMaxTime BEFORE the !value check so deletion tombstones
 							// (which have null value but a real localTime/version) still raise the gate.
 							const t = localTime ?? version;
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
-							send({ id, localTime, value, version, type: 'put', size });
+							if (!send({ id, localTime, value, version, type: 'put', size })) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
@@ -3884,63 +3862,76 @@ export function makeTable(options) {
 						// duplicate of the entry send.
 						subscription!.startTime = localTime ?? entry?.version;
 						const history = [];
+						let inspected = 0;
 						let nextTime = localTime;
 						let nodeId = entry?.nodeId;
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
 								await rest();
+								if (!isActive()) return;
 							}
+							if (++inspected > MAX_PREVIOUS_COUNT_SCAN) break;
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
 							if (auditRecord) {
 								if (startTime < nextTime) {
-									request.omitCurrent = true; // we are sending the current version from history, so don't double send
 									const value = auditRecord.getValue(primaryStore, getFullRecord, nextTime);
 									if (getFullRecord) auditRecord.type = 'put';
-									history.push({
+									const historyEntry = {
 										id: thisId,
 										value,
 										localTime: nextTime,
 										...auditRecord,
-									});
+									};
+									if (!allowsEvent || allowsEvent(historyEntry)) {
+										request.omitCurrent = true;
+										history.push(historyEntry);
+										if (count) count--;
+									} else if (!isActive()) return;
 								}
 								nextTime = auditRecord.previousVersion;
 								nodeId = auditRecord.previousNodeId;
 							} else break;
-							if (count) count--;
 						} while (nextTime > startTime && count !== 0);
 						for (let i = history.length; i > 0;) {
-							send(history[--i]);
+							if (!send(history[--i], true)) return;
 						}
 					}
 					if (!request.omitCurrent && entry?.value) {
 						// if retain and it exists, send the current value first
-						send({
-							id: thisId,
-							...entry,
-							type: 'put',
-						});
+						if (
+							!send({
+								id: thisId,
+								...entry,
+								type: 'put',
+							})
+						)
+							return;
 					}
 				}
 				// now send any queued messages
 				if (pendingRealTimeQueue) {
 					for (const event of pendingRealTimeQueue) {
-						send(event);
+						if (!send(event)) return;
 					}
 					pendingRealTimeQueue = null;
 				}
 			})();
-			result.catch((error) => {
+			result.catch(failSubscription);
+			function failSubscription(error: any) {
+				if (subscription.closed) return;
 				harperLogger.error?.('Error in real-time subscription:', error);
-				subscription.send(error);
-			});
-			function send(event: any) {
+				subscription.close(error);
+			}
+			function send(event: any, alreadyFiltered = false) {
+				if (!isActive()) return false;
 				// Covers the pendingRealTimeQueue drain and the reload re-snapshot (#495) delivery.
-				if (allowsEvent && !allowsEvent(event)) return;
+				if (!alreadyFiltered && allowsEvent && !allowsEvent(event)) return isActive();
+				if (!isActive()) return false;
 				if (databaseName !== 'system') {
 					recordAction(event.size ?? 1, 'db-message', tableName, null);
 				}
-				subscription.send(event);
+				return subscription.send(event);
 			}
 			// #region reload re-snapshot (harper-pro#495)
 			// A copyApply base copy back-fills rows as snapshots with NO per-row audit entries, so the live
@@ -3966,6 +3957,7 @@ export function makeTable(options) {
 						if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
 							sinceYield = 0;
 							await rest();
+							if (!isActive()) return;
 						}
 						if (!value) continue; // skip tombstones
 						yield { id, localTime, value, version, type: 'put', size };
@@ -3993,7 +3985,7 @@ export function makeTable(options) {
 						if (!subscription.subscriptions) return;
 						for await (const record of currentScopeRecords()) {
 							if (!subscription.subscriptions) return;
-							send(record);
+							if (!send(record)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								if ((await subscription.waitForDrain()) === false) return;
 							}
@@ -4806,26 +4798,6 @@ export function makeTable(options) {
 		}
 	);
 
-	// Mark the table-level allowRead as a framework default (it is a this-free table/RBAC check):
-	// only an APPLICATION override is record-scoped and evaluated per record during query execution
-	// (#1422 gap 2 / #1241). supportsRowLevelAllowRead tells the authorization wrapper in
-	// Resource.ts that this class has the per-record machinery to defer collection reads to.
-	(TableResource.prototype.allowRead as any).isDefaultAllowRead = true;
-	(TableResource as any).supportsRowLevelAllowRead = true;
-	// Records can be asked directly (`record.allowRead(user, target, context)`), delegating to the
-	// table's allowRead with `this` = the record. Non-enumerable so it never serializes; defined on
-	// the per-table record prototype alongside computed properties. Engine-level enforcement does
-	// NOT route through this (it resolves the active resource class's allowRead, which honors
-	// endpoint subclass overrides and can't be shadowed by a record attribute of the same name).
-	if (primaryStore?.encoder?.structPrototype) {
-		Object.defineProperty(primaryStore.encoder.structPrototype, 'allowRead', {
-			value: function (user: User, target: RequestTarget, context: Context) {
-				return TableResource.prototype.allowRead.call(this, user, target, context);
-			},
-			configurable: true,
-			writable: true,
-		});
-	}
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
 	if (expiresAtProperty) runRecordExpirationEviction();
