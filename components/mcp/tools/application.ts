@@ -24,7 +24,6 @@ import { createHash } from 'node:crypto';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
-import { Resource } from '../../../resources/Resource.ts';
 import {
 	addTool,
 	clearProfileTools,
@@ -602,14 +601,11 @@ function makeCreateHandler(toolName: string, path: string, capturedClass: Resour
 			// because a record-scoped resource has no insert path (#1317).
 			target.isCollection = true;
 			applyContractInputs(target, ResourceClass, a, 'post');
-			const ctx = buildContext(context.user);
-			let body = contractBody(a, ResourceClass, 'post');
-			if ((ResourceClass.post as unknown) !== (Resource.post as unknown)) {
-				// subclass static override shadows Resource.post's transactional() wrapper — apply the
-				// same allowCreate gate explicitly before invoking the override (Resource.authorizeStaticOverride)
-				body = await (Resource as any).authorizeStaticOverride(target, ctx, body, 'create');
-			}
-			const data = await ResourceClass.post!(target, body, ctx);
+			const data = await ResourceClass.post!(
+				target,
+				contractBody(a, ResourceClass, 'post'),
+				buildContext(context.user)
+			);
 			// Standard table create resolves to the new record's primary key (a
 			// scalar). Wrap it as `{ id }` so the result carries `structuredContent`
 			// matching `deriveCreateOutputSchema`; strict SDK clients reject a bare
@@ -638,14 +634,7 @@ function makeUpdateHandler(toolName: string, path: string, capturedClass: Resour
 			const ctx = buildContext(context.user);
 			// For a contract resource, strip path/query keys from the body (they're bound onto the target
 			// above); otherwise keep the historical `id`-stripped rest.
-			let body = ResourceClass.requestContract ? contractBody(a, ResourceClass, verb) : rest;
-			const staticMethod: unknown = verb === 'put' ? ResourceClass.put : ResourceClass.patch;
-			const baseStaticMethod: unknown = verb === 'put' ? Resource.put : Resource.patch;
-			if (staticMethod !== baseStaticMethod) {
-				// subclass static override shadows Resource.put/patch's transactional() wrapper — apply the
-				// same allowUpdate gate explicitly before invoking the override (Resource.authorizeStaticOverride)
-				body = await (Resource as any).authorizeStaticOverride(target, ctx, body, 'update');
-			}
+			const body = ResourceClass.requestContract ? contractBody(a, ResourceClass, verb) : rest;
 			const data = await (verb === 'put'
 				? ResourceClass.put!(target, body, ctx)
 				: ResourceClass.patch!(target, body, ctx));

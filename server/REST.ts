@@ -240,33 +240,13 @@ async function http(request: Request, nextHandler) {
 				case 'HEAD':
 					return resource.get ? resource.get(target, request) : missingMethod(resource, 'get');
 				case 'POST':
-					if (!resource.post) return missingMethod(resource, 'post');
-					if (resource.post !== Resource.post) {
-						// subclass static override shadows Resource.post's transactional() wrapper (see
-						// Resource.authorizeStaticOverride) — resolve request.data and gate it explicitly
-						return Resource.authorizeStaticOverride(target, request, request.data, 'create').then((data) =>
-							resource.post(target, data, request)
-						);
-					}
-					return resource.post(target, request.data, request);
+					return resource.post ? resource.post(target, request.data, request) : missingMethod(resource, 'post');
 				case 'PUT':
-					if (!resource.put) return missingMethod(resource, 'put');
-					if (resource.put !== Resource.put) {
-						return Resource.authorizeStaticOverride(target, request, request.data, 'update').then((data) =>
-							resource.put(target, data, request)
-						);
-					}
-					return resource.put(target, request.data, request);
+					return resource.put ? resource.put(target, request.data, request) : missingMethod(resource, 'put');
 				case 'DELETE':
 					return resource.delete ? resource.delete(target, request) : missingMethod(resource, 'delete');
 				case 'PATCH':
-					if (!resource.patch) return missingMethod(resource, 'patch');
-					if (resource.patch !== Resource.patch) {
-						return Resource.authorizeStaticOverride(target, request, request.data, 'update').then((data) =>
-							resource.patch(target, data, request)
-						);
-					}
-					return resource.patch(target, request.data, request);
+					return resource.patch ? resource.patch(target, request.data, request) : missingMethod(resource, 'patch');
 				case 'OPTIONS': // used primarily for CORS
 					headers.setIfNone(
 						'Allow',
