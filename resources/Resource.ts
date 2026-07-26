@@ -182,6 +182,46 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	);
 
 	/**
+	 * A subclass that assigns its own `static post`/`put`/`patch` shadows `Resource.post`/`put`/
+	 * `patch` (the `transactional()`-wrapped statics above) as a plain property lookup — none of
+	 * `transactional()`'s machinery runs for that override, including the `when(data, ...)` that
+	 * awaits the pending `data` promise and the `allowCreate`/`allowUpdate` gate. Callers that
+	 * dispatch by property lookup (REST, MCP) must detect the shadowing (`resource.post !==
+	 * Resource.post`) and call this explicitly before invoking the override, so the override
+	 * always receives resolved data and is still subject to the same authorization check as the
+	 * built-in dispatch.
+	 */
+	static async authorizeStaticOverride(
+		this: typeof Resource,
+		query: RequestTarget,
+		context: Context,
+		data: any,
+		type: 'create' | 'update'
+	): Promise<any> {
+		data = await data;
+		if (!query.checkPermission && !context.authorize) return data;
+		if ((this as any).loadAsInstance === false) return data;
+		const resourceOrPromise = this.getResource(query, context, { isCollection: query.isCollection });
+		const resource: any = (resourceOrPromise as any)?.then ? await resourceOrPromise : resourceOrPromise;
+		let allowed;
+		try {
+			allowed =
+				type === 'update'
+					? resource.doesExist?.() === false
+						? resource.allowCreate(context.user, data, context)
+						: resource.allowUpdate(context.user, data, context)
+					: resource.allowCreate(context.user, data, context);
+		} catch {
+			throw new AccessViolation(context.user);
+		}
+		if (allowed?.then) allowed = await allowed;
+		context.authorize = false;
+		query.checkPermission = false;
+		if (!allowed) throw new AccessViolation(context.user);
+		return data;
+	}
+
+	/**
 	 * Generate a new primary key for a resource; by default we use UUIDs (for now).
 	 */
 	static getNewId() {
