@@ -646,7 +646,9 @@ function makeUpdateHandler(toolName: string, path: string, capturedClass: Resour
 				// same allowUpdate gate explicitly before invoking the override (Resource.authorizeStaticOverride)
 				body = await (Resource as any).authorizeStaticOverride(target, ctx, body, 'update');
 			}
-			const data = await (verb === 'put' ? ResourceClass.put!(target, body, ctx) : ResourceClass.patch!(target, body, ctx));
+			const data = await (verb === 'put'
+				? ResourceClass.put!(target, body, ctx)
+				: ResourceClass.patch!(target, body, ctx));
 			// Table.put/patch resolve to undefined; surface a `{ ok: true }`
 			// acknowledgement so the result has structuredContent matching
 			// derive{Update,Patch}OutputSchema. A custom Resource that returns a
