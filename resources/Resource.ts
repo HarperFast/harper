@@ -22,6 +22,7 @@ import { logger } from '../utility/logging/logger.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
+import { markStaticResourceTarget, unmarkStaticResourceTarget } from './staticResourceTarget.ts';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -148,7 +149,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const elementResource = resourceClass.getResource(target, request, {
 						async: true,
 					});
-					if (elementResource.then) results.push(elementResource.then((resource) => resource.put(element, request)));
+					if (typeof elementResource.then === 'function')
+						results.push(elementResource.then((resource) => resource.put(element, query)));
 					else results.push(elementResource.put(element, query));
 				}
 				return Promise.all(results);
@@ -702,6 +704,7 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
+			if (isCollection && options.method === 'put' && Array.isArray(data)) query.isCollection = true;
 		}
 		isCollection = query.isCollection;
 		if (
@@ -789,7 +792,29 @@ function transactional(
 			// both resolve to the same subscription iterable.
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
 			const runAction = (data: any) => {
-				const result = action(resource, query, context, data);
+				const markedStaticTarget =
+					loadAsInstance === false && options.method === 'publish' && query && typeof query === 'object';
+				if (markedStaticTarget) markStaticResourceTarget(query);
+				let result;
+				try {
+					result = action(resource, query, context, data);
+				} catch (error) {
+					if (markedStaticTarget) unmarkStaticResourceTarget(query);
+					throw error;
+				}
+				if (markedStaticTarget) {
+					result = when(
+						result,
+						(value) => {
+							unmarkStaticResourceTarget(query);
+							return value;
+						},
+						(error) => {
+							unmarkStaticResourceTarget(query);
+							throw error;
+						}
+					);
+				}
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) => {
 					registerLiveSubscriptionForContext(subscription, resource, query, context);

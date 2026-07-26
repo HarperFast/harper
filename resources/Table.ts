@@ -55,6 +55,7 @@ import {
 	resolveComparator,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
+import { isStaticResourceTarget } from './staticResourceTarget.ts';
 import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
@@ -2693,6 +2694,19 @@ export function makeTable(options) {
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
 			if (isSearchTarget(target)) {
+				if ((target as any).checkPermission && (this.constructor as any).loadAsInstance === false) {
+					// False mode keeps model hooks at request scope. Authorize the destructive operation
+					// once before its scan, then prevent search() from substituting allowRead.
+					const context = this.getContext() as any;
+					let allowed;
+					try {
+						allowed = await this.allowDelete(context?.user, target as any, context);
+					} catch {
+						throw new AccessViolation(context?.user);
+					}
+					if (!allowed) throw new AccessViolation(context?.user);
+					(target as any).checkPermission = false;
+				}
 				target.select = ['$id']; // just get the primary key of each record so we can delete them
 				for await (const entry of this.search(target)) {
 					this._writeDelete((entry as any).$id);
@@ -4037,7 +4051,8 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		publish(target: RequestTarget, message: Record, options?: any) {
-			if (message === undefined || message instanceof URLSearchParams) {
+			const falseModeTarget = (this.constructor as any).loadAsInstance === false && isStaticResourceTarget(target);
+			if (!falseModeTarget && (message === undefined || message instanceof URLSearchParams)) {
 				// legacy arg format, shift the args
 				this._writePublish(this.getId(), target, message);
 			} else {
@@ -4045,15 +4060,25 @@ export function makeTable(options) {
 				const context = this.getContext();
 				if ((target as any)?.checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowDelete((context as any).user, target as any, context);
-				}
-				return when(allowed, (allowed: boolean) => {
-					if (!allowed) {
+					try {
+						allowed = this.allowCreate((context as any).user, message, context);
+					} catch {
 						throw new AccessViolation((context as any).user);
 					}
-					const id = requestTargetToId(target);
-					this._writePublish(id, message, options);
-				});
+				}
+				return when(
+					allowed,
+					(allowed: boolean) => {
+						if (!allowed) {
+							throw new AccessViolation((context as any).user);
+						}
+						const id = requestTargetToId(target);
+						this._writePublish(id, message, options);
+					},
+					() => {
+						throw new AccessViolation((context as any).user);
+					}
+				);
 			}
 		}
 		_writePublish(id: Id, message, options?: any) {
