@@ -142,8 +142,47 @@ describe('GHSA-5c29-q62v-jrwf — unqualified SQL table resolution', () => {
 			]);
 		});
 
+		// A SELECT INTO target is always opaque, never a named reference. As a named reference it
+		// would satisfy the membership test against the entry the FROM collector created, so
+		// `SELECT * INTO data.customers FROM data.customers` would authorize a write on a read.
 		it("reports a SELECT's INTO target, which the affected-attribute map does not model", () => {
-			assert.deepStrictEqual(unauthorized('SELECT 1 AS id INTO customers'), ['data.customers']);
+			assert.deepStrictEqual(unauthorized('SELECT 1 AS id INTO customers'), ['SELECT INTO target']);
+		});
+
+		it('reports a SELECT INTO target that matches the FROM table', () => {
+			assert.deepStrictEqual(unauthorized('SELECT * INTO data.customers FROM data.customers'), ['SELECT INTO target']);
+		});
+
+		// The attribute collectors never descend into these, so a table reachable only from one of
+		// them is invisible to permission checking and must be refused.
+		it('reports a WHERE subquery', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM data.customers WHERE id IN (SELECT id FROM shared)'), [
+				'nested query in "queries"',
+			]);
+		});
+
+		it('reports an EXISTS subquery', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM data.customers WHERE EXISTS (SELECT id FROM shared)'), [
+				'nested query in "exists"',
+			]);
+		});
+
+		it('reports a UNION branch', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM data.customers UNION SELECT id FROM shared'), [
+				'nested query in "union"',
+			]);
+		});
+
+		it('reports a UNION ALL branch', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM data.customers UNION ALL SELECT id FROM shared'), [
+				'nested query in "unionall"',
+			]);
+		});
+
+		it("reports an INSERT's source query, whose FROM table is never recorded", () => {
+			assert.deepStrictEqual(unauthorized('INSERT INTO data.customers SELECT id FROM shared'), [
+				'nested query in "select"',
+			]);
 		});
 
 		it('does not treat an Object.prototype member as a table', () => {

@@ -227,9 +227,22 @@ interface TableTargets {
 }
 
 /**
+ * AlaSQL fields that carry a nested or compound query: a WHERE subquery (`queries`), an EXISTS
+ * subquery (`exists`), a UNION branch (`union`/`unionall`), and an INSERT's source SELECT
+ * (`select`). The attribute collectors below don't descend into any of them, so a table
+ * referenced only from one of these is invisible to permission checking.
+ */
+const NESTED_QUERY_FIELDS = ['queries', 'exists', 'union', 'unionall', 'select'];
+
+/**
  * Every table the statement would touch. Mirrors the set of references the engine's binder
- * resolves — FROM entries and JOIN targets for a SELECT, or the single target of a write —
- * plus a SELECT's `INTO` target, which authorization does not model.
+ * resolves — FROM entries and JOIN targets for a SELECT, or the single target of a write.
+ *
+ * Anything the collectors do not model is reported as opaque rather than ignored, so the
+ * authorization check refuses it. That covers derived tables, nested and compound queries, and a
+ * SELECT's INTO target. Opaque is deliberately preferred over recursing into these constructs:
+ * a nested reference would still never be recorded in the affected-attribute map, so descending
+ * to name it would not make it checkable — only refusable, which is what opaque already does.
  */
 function getTableTargets(ast: any): TableTargets {
 	const named: any[] = [];
@@ -242,6 +255,14 @@ function getTableTargets(ast: any): TableTargets {
 		else opaque.push(description);
 	};
 
+	const addNestedQueries = () => {
+		for (const field of NESTED_QUERY_FIELDS) {
+			const value = ast[field];
+			if (!value) continue;
+			if (Array.isArray(value) ? value.length > 0 : true) opaque.push(`nested query in "${field}"`);
+		}
+	};
+
 	if (ast instanceof (alasql as any).yy.Select) {
 		if (Array.isArray(ast.from)) {
 			ast.from.forEach((from, index) => addRef(from, `subquery in FROM position ${index + 1}`));
@@ -249,13 +270,18 @@ function getTableTargets(ast: any): TableTargets {
 		if (Array.isArray(ast.joins)) {
 			ast.joins.forEach((join, index) => join?.table && addRef(join.table, `subquery in JOIN position ${index + 1}`));
 		}
-		// SELECT ... INTO is not implemented as a write today, but the target is invisible to the
-		// affected-attribute map, so leave it here to be refused rather than silently authorized.
-		if (ast.into) addRef(ast.into, 'SELECT INTO target');
+		// Always opaque, never a named ref: SELECT INTO is a write whose permission is not modeled,
+		// and treating it as named would let it satisfy the affected-attribute check on an entry the
+		// FROM collector created — `SELECT * INTO data.t FROM data.t` would authorize a write on the
+		// strength of a read.
+		if (ast.into) opaque.push('SELECT INTO target');
+		addNestedQueries();
 	} else if (ast instanceof (alasql as any).yy.Insert) {
 		addRef(ast.into, 'INSERT target');
+		addNestedQueries();
 	} else if (ast instanceof (alasql as any).yy.Update || ast instanceof (alasql as any).yy.Delete) {
 		addRef(ast.table, 'write target');
+		addNestedQueries();
 	}
 	return { named, opaque };
 }
@@ -371,6 +397,22 @@ function getRecordAttributesAST(
  * @param affectedAttributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
  * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
+/**
+ * The database a column's table belongs to.
+ *
+ * `tableToSchemaLookup` is keyed by alias and by base table name, so it is the only mapping that
+ * resolves an unaliased table in a cross-database statement. Falling back to the FROM table's
+ * database (as the code did before schema-unqualified names could resolve to different databases)
+ * silently attributes a joined table's columns to the wrong database, and they then get dropped
+ * without an attribute-level permission check.
+ */
+function resolveColumnSchema(tableName: any, schemaLookup: any, tableToSchemaLookup: any, fallbackSchema: any) {
+	if (!tableName) return fallbackSchema;
+	if (tableToSchemaLookup?.has(tableName)) return tableToSchemaLookup.get(tableName);
+	if (schemaLookup?.has(tableName)) return schemaLookup.get(tableName);
+	return fallbackSchema;
+}
+
 function getSelectAttributes(
 	ast: any,
 	affectedAttributes: any,
@@ -408,7 +450,11 @@ function getSelectAttributes(
 	for (let { node } of iterator) {
 		if (node && node.columnid) {
 			let tableName = node.tableid;
-			const columnSchema = schemaLookup.has(tableName) ? schemaLookup.get(tableName) : schema;
+			// tableToSchemaLookup is keyed by alias AND by base table name, so it resolves
+			// `SELECT vault.Secret.ssn FROM data.Public JOIN vault.Secret` where schemaLookup — which
+			// only ever holds aliases — would fall back to the FROM table's database and drop the
+			// column, skipping its attribute-level permission check.
+			const columnSchema = resolveColumnSchema(tableName, schemaLookup, tableToSchemaLookup, schema);
 
 			if (!tableName) {
 				tableName = ast.from[0].tableid;
@@ -447,7 +493,8 @@ function getSelectAttributes(
 			if (node && node.columnid) {
 				let table = node.tableid ? node.tableid : fromTable;
 
-				const schemaTables = affectedAttributes.get(schema);
+				const whereSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
+				const schemaTables = affectedAttributes.get(whereSchema);
 				if (!schemaTables) {
 					harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
 					continue;
