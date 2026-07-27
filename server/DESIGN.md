@@ -69,6 +69,11 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.      |
 
 > Workers receive `workerData.noServerStart = true` — never start the server inside a worker.
+>
+> `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's
+> `sockaddr_un.sun_path` byte limit (some Node versions reject it; others silently truncate it).
+> Every actual `listen()` error rejects startup, and the temporary bind-error listener is removed
+> once the socket is listening.
 
 ### Where periodic maintenance runs (main thread vs last worker)
 

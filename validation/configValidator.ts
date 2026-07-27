@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
+import { getDomainSocketPathMaxBytes } from '../utility/domainSocket.ts';
 import * as validator from './validationWrapper.ts';
 
 const DEFAULT_LOG_FOLDER = 'log';
@@ -415,17 +416,10 @@ function validatePath(value, helpers) {
 
 // A Unix domain socket path is stored in a fixed-size `sockaddr_un.sun_path` buffer that must
 // also fit a trailing NUL — 108 bytes on Linux (107 usable), 104 on macOS (103 usable). A path
-// at or beyond that limit fails at listen() time with a bare EINVAL (see listenOnPorts() in
-// server/threads/threadServer.js, which now fails soft on that error rather than aborting
-// startup). This is a *warning*, not a schema error: a long rootPath is common (nested worktree
-// checkouts, deep install paths) and losing the domain socket costs nothing but a convenience
-// mirror of the TCP operations-API port — it must not block config validation / startup the way
-// a real schema error does (validateConfig in configUtils.ts throws on any Joi error).
-function udsPathMaxBytes(platform) {
-	return platform === 'darwin' ? 103 : 107;
-}
-
-export const UDS_PATH_MAX_BYTES = udsPathMaxBytes(process.platform);
+// beyond that limit can fail at listen() time or be silently truncated, depending on the supported
+// Node version. threadServer.js therefore skips only this known-overlong listener before calling
+// listen(). This remains a warning rather than a schema error so configured TCP endpoints can start.
+export const UDS_PATH_MAX_BYTES = getDomainSocketPathMaxBytes();
 
 /**
  * Returns a warning message if `domainSocket` (resolved against `hdbRootPath`) would exceed the
@@ -452,9 +446,9 @@ export function getDomainSocketPathLengthWarning(hdbRootPath, domainSocket, plat
 		resolvedValue = platformPath.resolve(hdbRootPath, domainSocket);
 	}
 	const byteLength = Buffer.byteLength(resolvedValue);
-	const limit = udsPathMaxBytes(platform);
+	const limit = getDomainSocketPathMaxBytes(platform);
 	if (byteLength <= limit) return null;
-	return `operationsApi.network.domainSocket resolves to "${resolvedValue}" (${byteLength} bytes), which exceeds the ${limit}-byte Unix domain socket path limit on ${platform}. The operations API will start without its domain socket (the TCP port is unaffected) — use a shorter rootPath, set operationsApi.network.domainSocket to a short absolute path outside rootPath, or set it to false to silence this warning.`;
+	return `operationsApi.network.domainSocket resolves to "${resolvedValue}" (${byteLength} bytes), which exceeds the ${limit}-byte Unix domain socket path limit on ${platform}. The domain socket may be unavailable or truncated; any configured TCP endpoint is unaffected — use a shorter rootPath, set operationsApi.network.domainSocket to a short absolute path outside rootPath, or set it to false to silence this warning.`;
 }
 
 function validateRotationMaxSize(value, helpers) {

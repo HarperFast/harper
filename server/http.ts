@@ -737,10 +737,6 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.isSecure = true;
 		}
 		registerServer(server, port);
-		// Lets threadServer.js identify the operations API's own listeners (TCP and its domain
-		// socket) so it can tell a lost convenience mirror apart from a domain-socket bind failure
-		// that leaves the operations API with no listener at all.
-		server.isOperationsServer = isOperationsServer;
 		// macOS doesn't support SO_REUSEPORT on all socket types; operations API also doesn't need it
 		if (isOperationsServer || process.platform === 'darwin') server.noReusePort = true;
 

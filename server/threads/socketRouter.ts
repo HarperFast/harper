@@ -39,7 +39,11 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			const { loadRootComponents } = require('../loadRootComponents.js');
 			if (threadCount === 0) {
 				setMainIsWorker(true);
-				await require('./threadServer.js').startServers();
+				const threadServer = require('./threadServer.js');
+				await threadServer.startServers();
+				// startServers() schedules listener startup after loading components; await its cached
+				// batch so a bind failure reaches bin/run.ts and exits non-zero in single-thread mode too.
+				await threadServer.listenOnPorts();
 				return Promise.resolve([]);
 			}
 			await loadRootComponents();
