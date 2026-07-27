@@ -39,15 +39,17 @@ describe('#1016 reserved database names', () => {
 		});
 	}
 
-	it('does not reject a non-reserved database name as reserved', async () => {
-		// A normal name must pass the reserved-name check. It may still fail later
-		// (no schema metadata / bridge in this unit context) — just not as reserved.
-		let err;
-		try {
-			await schema.createSchemaStructure({ operation: 'create_schema', schema: 'my_normal_db' });
-		} catch (e) {
-			err = e;
+	// Validation-only control (review): calling `createSchemaStructure` with a nonexistent normal name
+	// takes the successful creation path, so it created `my_normal_db` on whatever root the environment
+	// was configured with and signalled a schema change — a unit test with a side effect on a developer
+	// checkout. `validateDatabaseName` runs the same constraint the create paths run, without the IO.
+	it('does not reject a non-reserved database name as reserved', () => {
+		assert.strictEqual(schema.validateDatabaseName('my_normal_db'), undefined);
+	});
+
+	it('rejects a reserved name through the same validation, so the control above is meaningful', () => {
+		for (const name of RESERVED) {
+			assert.match(schema.validateDatabaseName(name).message, /reserved name/);
 		}
-		if (err) assert.doesNotMatch(err.message, /reserved name/);
 	});
 });

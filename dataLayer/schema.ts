@@ -49,6 +49,16 @@ const PRIMARY_KEY_CONSTRAINTS = Joi.string()
 
 /** EXPORTED FUNCTIONS **/
 
+/**
+ * Validate a database name on its own — reserved names, length, format — without touching storage.
+ * The create paths below run the same constraint as part of their request validation; exposing it
+ * separately lets the name rule (harper#1016) be exercised without creating a database as a
+ * side effect.
+ */
+export function validateDatabaseName(databaseName: string) {
+	return validateBySchema({ schema: databaseName }, Joi.object({ schema: DB_NAME_CONSTRAINTS }));
+}
+
 export async function createSchema(schemaCreateObject: any) {
 	let schemaStructure = await createSchemaStructure(schemaCreateObject);
 	// Await cross-worker propagation so the new schema is visible on every worker before

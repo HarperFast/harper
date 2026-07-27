@@ -296,14 +296,27 @@ describe('Test role_validation module ', () => {
 			});
 		});
 
-		// harper#1016 (review): a malformed `permission` primitive must stay a 400, not a 500. `permission`
-		// is only presence-constrained, so these reach the role-flag loop; `in` throws on a primitive.
-		[{ p: 'x' }, { p: 1 }, { p: true }].forEach(({ p }) => {
-			it(`should not throw on a malformed permission primitive ${JSON.stringify(p)}`, () => {
-				const test_role_json = TEST_ADD_ROLE_OBJECT();
-				test_role_json.permission = p;
-				expect(() => customValidate_rw(test_role_json, getAddRoleConstraints())).to.not.throw();
-			});
+		// harper#1016 (review): `permission` is only presence-constrained, so any type reaches validation.
+		// A non-object carries no role flags and no database entries, so every downstream check is a no-op
+		// on it — without an explicit shape check the role validates clean and gets persisted, since
+		// `hdb_role.permission` has no storage type constraint either. Assert the 400, not merely that
+		// nothing throws: a silent pass is the actual bug here, and no-throw does not distinguish them.
+		[{ p: 'x' }, { p: 1 }, { p: true }, { p: [] }, { p: [{ super_user: true }] }, { p: 0 }, { p: '' }].forEach(
+			({ p }) => {
+				it(`should reject a non-object permission ${JSON.stringify(p)} with a 400`, () => {
+					const test_role_json = TEST_ADD_ROLE_OBJECT();
+					test_role_json.permission = p;
+					const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+					expect(test_result, 'a non-object permission must not validate clean').to.not.equal(null);
+					expect(test_result.statusCode).to.equal(400);
+				});
+			}
+		);
+
+		it('should still accept a well-formed object permission', () => {
+			const test_role_json = TEST_ADD_ROLE_OBJECT();
+			test_role_json.permission = { super_user: true };
+			expect(customValidate_rw(test_role_json, getAddRoleConstraints())).to.equal(null);
 		});
 
 		// harper#1016 (review): cluster_user is exclusive like super_user. Before CU joined ROLE_TYPES the
