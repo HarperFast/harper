@@ -215,6 +215,16 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
+// How many times the schema load will try to finish a tombstoned drop before
+// giving up for the rest of this process's lifetime. A drop that fails once
+// almost always fails identically forever - the usual cause is a RocksDB
+// environment that latched a background error and now rejects every write it
+// receives - and the schema load re-runs on every resetDatabases(), so an
+// unbounded retry turns one broken table into a per-reload log flood in every
+// worker thread.
+const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
+// `database.table` -> consecutive failed completion attempts in this thread.
+const interruptedDropAttempts = new Map<string, number>();
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -537,16 +547,31 @@ function initStores(
 	// partway, the tombstone survives alongside the catalog rows. Without this
 	// reconcile, those rows would silently resurrect the table below
 	// (recreating any missing column families as empty stores).
+	// The attempt budget is deliberately scoped to this reconcile: the create path
+	// calls completeInterruptedDrop under the exclusive lock and must never skip
+	// it, because creating over a half-dropped table would resurrect its catalog
+	// rows. There a failure propagates to the caller as its own single error.
 	for (const [tableName, tableDef] of tablesToLoad) {
 		if (!tableDef.primary?.dropping) continue;
-		try {
-			completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
-			definedTables?.delete(tableName);
-		} catch (error) {
-			logger.error(
-				`Failed to complete interrupted drop of table ${databaseName}.${tableName}; will retry on next start`,
-				error
-			);
+		const dropKey = `${databaseName}.${tableName}`;
+		const failedAttempts = interruptedDropAttempts.get(dropKey) ?? 0;
+		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
+			try {
+				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				interruptedDropAttempts.delete(dropKey);
+				definedTables?.delete(tableName);
+			} catch (error) {
+				const attempt = failedAttempts + 1;
+				interruptedDropAttempts.set(dropKey, attempt);
+				if (attempt < MAX_INTERRUPTED_DROP_ATTEMPTS) {
+					logger.debug(`Failed to complete interrupted drop of table ${dropKey}, attempt ${attempt}`, error);
+				} else {
+					logger.error(
+						`Unable to complete the interrupted drop of table ${dropKey} after ${attempt} attempts; giving up until this node restarts. ${tableName} stays unloaded, with its catalog rows and column families left in place. An "Invalid column family specified in write batch" cause means the storage environment for ${databaseName} has latched a background error and will reject every write to every table in it until this node restarts.`,
+						error
+					);
+				}
+			}
 		}
 		// whether or not cleanup succeeded, never load a table that was being dropped
 		tablesToLoad.delete(tableName);
