@@ -132,23 +132,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 					const method = Reflect.get(target, prop, receiver);
 					if (typeof method === 'function') {
 						return (listener: any, options?: any) => {
-							const scopeConfig = (scopeRef.options?.getAll() as any) ?? {};
-							// An explicit call option wins over config, but either way the value is
-							// resolved here rather than passed through: plugins that spread their whole
-							// config section into these options (e.g. REST) would otherwise hand the
-							// router a raw, unresolved `urlPath` — './' became the literal route '/.'.
-							const rawUrlPath = options?.urlPath ?? scopeConfig.urlPath;
-							// resolve to the same base the entry pipeline uses ('assets' -> '/assets/',
-							// './x' -> '/<name>/x/') so route matching sees a real pathname prefix (#1583),
-							// then prefix the application's mount. The mount is applied ONLY here, at the
-							// routing boundary: the router strips it before the handler runs, so entry URL
-							// paths and the resource paths derived from them stay mount-relative.
-							const pluginUrlPath = rawUrlPath ? resolveBaseURLPath(pluginName, rawUrlPath) : undefined;
 							return method.call(target, listener, {
 								name: pluginName,
 								...options,
-								urlPath: composeMountedUrlPath(mount?.urlPath, pluginName, pluginUrlPath) || undefined,
-								host: mount?.host || options?.host || scopeConfig.host || undefined,
+								...scopeRef.routeFor(options),
 							});
 						};
 					}
@@ -216,6 +203,31 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	 */
 	externalBasePath(baseURLPath: string): string {
 		return this.mount?.urlPath ? `${this.mount.urlPath}${baseURLPath}` : baseURLPath;
+	}
+
+	/**
+	 * The route a handler registered through `scope.server` with these options will answer on — the
+	 * single place the application mount is applied. `scope.server` uses it, and a plugin that must
+	 * identify its own route (e.g. REST deduplicating registration per mount) calls it rather than
+	 * recomposing the parts, so there is one definition of "which route is this".
+	 *
+	 * An explicit call option wins over config, but either way `urlPath` is *resolved* rather than
+	 * passed through: plugins that spread their whole config section into these options (REST does)
+	 * would otherwise hand the router a raw value — './' became the literal, unmatchable route '/.'.
+	 */
+	routeFor(options?: { urlPath?: string; host?: string }): { host?: string; urlPath?: string } {
+		const scopeConfig = (this.options?.getAll() as any) ?? {};
+		const rawUrlPath = options?.urlPath ?? scopeConfig.urlPath;
+		// resolve to the same base the entry pipeline uses ('assets' -> '/assets/', './x' ->
+		// '/<name>/x/') so route matching sees a real pathname prefix (#1583), then prefix the
+		// application's mount. The mount is applied ONLY here, at the routing boundary: the router
+		// strips it before the handler runs, so entry URL paths — and the resource paths
+		// graphqlSchema/jsResource derive from them — stay mount-relative.
+		const pluginUrlPath = rawUrlPath ? resolveBaseURLPath(this.#pluginName, rawUrlPath) : undefined;
+		return {
+			host: this.mount?.host || options?.host || scopeConfig.host || undefined,
+			urlPath: composeMountedUrlPath(this.mount?.urlPath, this.#pluginName, pluginUrlPath) || undefined,
+		};
 	}
 
 	get directory(): string {
