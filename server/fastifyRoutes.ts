@@ -1,6 +1,7 @@
 import { dirname, basename } from 'path';
 import { existsSync } from 'fs';
 import { deriveRoutePrefix } from './fastifyRoutes/helpers/deriveRoutePrefix.ts';
+import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
@@ -38,6 +39,17 @@ const routeFolders = new Set();
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
 	const isHttps = (scope.options.getAll() as { securePort?: number }).securePort > 0;
+	// Fastify is registered as a global fallback below (`server.http(built.server)` on the bare
+	// server, not the scoped one), so it never joins a routed middleware chain. A `urlPath` mount
+	// still works — it becomes the fastify route prefix, which is matched against the full external
+	// path — but a `host` mount cannot constrain it, and these routes stay reachable under every
+	// Host header. Warn rather than imply isolation the fallback doesn't provide.
+	const mountedHost = scope.mount?.host ?? (scope.options.getAll() as { host?: string })?.host;
+	if (mountedHost) {
+		harperLogger.warn(
+			`Application '${basename(scope.appName)}' is mounted on host '${mountedHost}', but its fastifyRoutes are served on every host: legacy fastify routes are registered as a global fallback and cannot be constrained by host. Port them to server.http() to get host routing.`
+		);
+	}
 	scope.handleEntry(async (entry) => {
 		if (entry.eventType !== 'add') {
 			scope.requestRestart();
@@ -62,7 +74,12 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		// ignores the deprecated `path` alias, so it can't express the app-name namespace.
 		// `appName` may be an absolute path (loaded via RUN_HDB_APP), hence basename().
 		const config = (scope.options.getAll() as { urlPath?: string; path?: string }) ?? {};
-		const prefix = deriveRoutePrefix(basename(scope.appName), config.urlPath ?? config.path);
+		// Fastify is registered on the bare server, so nothing strips the application's mount before
+		// it matches — unlike a routed chain, its prefix must be the full external path.
+		const prefix = deriveRoutePrefix(
+			basename(scope.appName),
+			scope.externalBasePath(resolveBaseURLPath(basename(scope.appName), config.urlPath ?? config.path))
+		);
 		if (!routeFolders.has(routeFolder)) {
 			routeFolders.add(routeFolder);
 			try {

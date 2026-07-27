@@ -457,14 +457,34 @@ function deployComponentValidator(req) {
 			.min(1)
 			.custom((value, helpers) => {
 				if (value.includes('..')) return helpers.error('any.invalid');
+				// A component mount has no relative base and WHATWG clients strip '.' segments before
+				// sending the request, so a dot-segment mount would simply be unreachable.
+				if (value.split('/').includes('.')) return helpers.error('string.dotSegment');
 				return value;
 			})
 			.optional()
-			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
+			.messages({
+				'any.invalid': 'urlPath must not contain ".."',
+				'string.dotSegment': 'urlPath must not contain "." path segments',
+			}),
 		// Virtual hostname the component is served on. Like `urlPath`, this is deployment routing and
 		// belongs on the root-config entry, not in the component's own config.yaml. `hostname()`
 		// rejects a value carrying a port or path, which would never match the router's host compare.
-		host: Joi.string().hostname().optional(),
+		// IPv6 literals are accepted in their bare form only — the router unwraps the brackets it
+		// finds in a Host header, so a bracketed value here would never match.
+		host: Joi.string()
+			.custom((value, helpers) => {
+				if (value.startsWith('[') || value.endsWith(']')) return helpers.error('string.bracketedHost');
+				return value;
+			})
+			.custom((value, helpers) => {
+				const asHostname = Joi.string().hostname().validate(value);
+				if (!asHostname.error) return value;
+				// Accept a bare IPv6 literal, which `hostname()` rejects but the router can match.
+				return Joi.string().ip({ version: 'ipv6' }).validate(value).error ? helpers.error('string.hostname') : value;
+			})
+			.optional()
+			.messages({ 'string.bracketedHost': 'host must not be bracketed; use the bare IPv6 literal' }),
 		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
 		// identifying key rather than a separate discriminator field, so a new kind is added as
 		// another item alternative here without reshaping the field. Today: npm registry auth

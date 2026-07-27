@@ -620,5 +620,60 @@ describe('Scope', () => {
 			});
 			assert.equal(injected.host, 'api.example.com');
 		});
+
+		// The mount is applied ONLY at the routing boundary. The router strips it before a handler
+		// runs, so entry URL paths — and the resource paths graphqlSchema/jsResource derive from
+		// them — must stay mount-relative or REST would look up a path nothing registered.
+		it('does not leak the mount into the config the entry pipeline reads', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js', urlPath: 'assets' } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				{ urlPath: '/v1' }
+			);
+			await scope.ready;
+			assert.equal(scope.options.getAll().urlPath, 'assets', 'plugin config stays as authored');
+			await scope.close();
+		});
+	});
+
+	describe('externalBasePath', () => {
+		const scopeWithMount = async (mount) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			return scope;
+		};
+
+		it('prefixes the mount so a client-facing path points inside the mount', async () => {
+			const scope = await scopeWithMount({ urlPath: '/v1' });
+			assert.equal(scope.externalBasePath('/assets/'), '/v1/assets/');
+			assert.equal(scope.externalBasePath('/'), '/v1/');
+			await scope.close();
+		});
+
+		it('is identity when the application has no path mount', async () => {
+			const scope = await scopeWithMount(undefined);
+			assert.equal(scope.externalBasePath('/assets/'), '/assets/');
+			await scope.close();
+
+			const hostOnly = await scopeWithMount({ host: 'api.example.com' });
+			assert.equal(hostOnly.externalBasePath('/assets/'), '/assets/');
+			await hostOnly.close();
+		});
 	});
 });

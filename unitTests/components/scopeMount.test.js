@@ -1,9 +1,11 @@
 const assert = require('node:assert');
 const {
 	normalizeMountPath,
+	normalizeMountHost,
 	toScopeMount,
 	composeMountedUrlPath,
-	applyScopeMount,
+	nestScopeMount,
+	InvalidMountPathError,
 } = require('#src/components/scopeMount');
 const { InvalidBaseURLPathError } = require('#src/components/resolveBaseURLPath');
 
@@ -27,6 +29,63 @@ describe('scopeMount', () => {
 		it('rejects path traversal', () => {
 			assert.throws(() => normalizeMountPath('../etc'), InvalidBaseURLPathError);
 			assert.throws(() => normalizeMountPath('/v1/../..'), InvalidBaseURLPathError);
+		});
+
+		it('rejects dot-segment mounts — clients strip them, so the route would be unreachable', () => {
+			assert.throws(() => normalizeMountPath('.'), InvalidMountPathError);
+			assert.throws(() => normalizeMountPath('./'), InvalidMountPathError);
+			assert.throws(() => normalizeMountPath('./v1'), InvalidMountPathError);
+			assert.throws(() => normalizeMountPath('/v1/./x'), InvalidMountPathError);
+		});
+
+		it('does not reject a leading dot inside a segment name', () => {
+			assert.equal(normalizeMountPath('/.well-known'), '/.well-known');
+		});
+	});
+
+	describe('normalizeMountHost', () => {
+		it('lowercases — hostnames are case-insensitive and clients send them lowercased', () => {
+			assert.equal(normalizeMountHost('API.Example.COM'), 'api.example.com');
+		});
+
+		it('unwraps a bracketed IPv6 literal to match what the router extracts', () => {
+			assert.equal(normalizeMountHost('[::1]'), '::1');
+			assert.equal(normalizeMountHost('[FE80::1]'), 'fe80::1');
+		});
+
+		it('passes through undefined and empty', () => {
+			assert.equal(normalizeMountHost(undefined), undefined);
+			assert.equal(normalizeMountHost(''), undefined);
+		});
+	});
+
+	describe('nestScopeMount', () => {
+		it('returns whichever side is defined when only one is', () => {
+			const child = { host: undefined, urlPath: '/child' };
+			assert.equal(nestScopeMount(undefined, child), child);
+			const parent = { host: 'api.example.com', urlPath: '/v1' };
+			assert.equal(nestScopeMount(parent, undefined), parent);
+		});
+
+		it('nests the child path inside the parent path', () => {
+			assert.deepEqual(nestScopeMount({ urlPath: '/v1' }, { urlPath: '/child' }), {
+				host: undefined,
+				urlPath: '/v1/child',
+			});
+		});
+
+		it('keeps parent hostname authority — a child cannot escape its host', () => {
+			assert.deepEqual(nestScopeMount({ host: 'parent.example.com' }, { host: 'child.example.com' }), {
+				host: 'parent.example.com',
+				urlPath: undefined,
+			});
+		});
+
+		it('carries the parent path when the child declares only a host', () => {
+			assert.deepEqual(nestScopeMount({ urlPath: '/v1' }, { host: 'child.example.com' }), {
+				host: 'child.example.com',
+				urlPath: '/v1',
+			});
 		});
 	});
 
@@ -85,48 +144,6 @@ describe('scopeMount', () => {
 
 		it('rejects path traversal in the plugin path', () => {
 			assert.throws(() => composeMountedUrlPath('/v1', 'static', '../secrets'), InvalidBaseURLPathError);
-		});
-	});
-
-	describe('applyScopeMount', () => {
-		it('returns the section unchanged, by reference, when there is no mount', () => {
-			const section = { files: 'web/**', urlPath: 'assets' };
-			assert.equal(applyScopeMount(section, 'static', undefined), section);
-		});
-
-		it('leaves nullish sections alone', () => {
-			assert.equal(applyScopeMount(undefined, 'static', { urlPath: '/v1' }), undefined);
-			assert.equal(applyScopeMount(null, 'static', { urlPath: '/v1' }), null);
-		});
-
-		it('composes urlPath and preserves the rest of the section', () => {
-			const mounted = applyScopeMount({ files: 'web/**', urlPath: 'assets' }, 'static', { urlPath: '/v1' });
-			assert.deepEqual(mounted, { files: 'web/**', urlPath: '/v1/assets/' });
-		});
-
-		it('does not mutate the input section', () => {
-			const section = { files: 'web/**', urlPath: 'assets' };
-			applyScopeMount(section, 'static', { urlPath: '/v1', host: 'api.example.com' });
-			assert.deepEqual(section, { files: 'web/**', urlPath: 'assets' });
-		});
-
-		it('replaces host outright — the operator wins over a value the app shipped', () => {
-			const mounted = applyScopeMount({ files: 'web/**', host: 'www.shipped.example' }, 'static', {
-				host: 'api.example.com',
-			});
-			assert.equal(mounted.host, 'api.example.com');
-		});
-
-		it('promotes a bare `true` plugin so the mount is not dropped', () => {
-			assert.deepEqual(applyScopeMount(true, 'rest', { host: 'api.example.com', urlPath: '/v1' }), {
-				host: 'api.example.com',
-				urlPath: '/v1/',
-			});
-		});
-
-		it('applies a host-only mount without inventing a urlPath', () => {
-			const mounted = applyScopeMount({ files: 'web/**' }, 'static', { host: 'api.example.com' });
-			assert.deepEqual(mounted, { files: 'web/**', host: 'api.example.com' });
 		});
 	});
 });

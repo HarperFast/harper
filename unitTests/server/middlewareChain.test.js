@@ -291,6 +291,19 @@ describe('matchesRoute', () => {
 		assert.strictEqual(matchesRoute(req('/', 'other.com'), { host: 'example.com' }), false);
 	});
 
+	// Hostnames are case-insensitive (RFC 4343). Clients send them lowercased, so a case-sensitive
+	// compare made a configured 'API.example.com' unmatchable by any real request.
+	it('matches host case-insensitively in both directions', () => {
+		assert.strictEqual(matchesRoute(req('/', 'API.Example.com'), { host: 'api.example.com' }), true);
+		assert.strictEqual(matchesRoute(req('/', 'api.example.com'), { host: 'API.Example.com' }), true);
+	});
+
+	it('matches a bare IPv6 host against the bracketed Host header form', () => {
+		assert.strictEqual(matchesRoute(req('/', '[::1]:9926'), { host: '::1' }), true);
+		assert.strictEqual(matchesRoute(req('/', '[::1]'), { host: '::1' }), true);
+		assert.strictEqual(matchesRoute(req('/', '[fe80::1]:9926'), { host: '::1' }), false);
+	});
+
 	it('requires both host and urlPath to match', () => {
 		const route = { host: 'example.com', urlPath: '/api' };
 		assert.strictEqual(matchesRoute(req('/api', 'example.com'), route), true);
