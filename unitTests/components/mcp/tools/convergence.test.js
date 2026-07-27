@@ -185,10 +185,15 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 			assert.deepEqual(props.order.properties.status.enum, ['open', 'closed'], `${surface}: nested enum`);
 			assert.equal(props.order.properties.status.description, 'Fulfillment state.', `${surface}: nested description`);
 			assert.equal(props.order.properties.placedAt.format, 'date-time', `${surface}: nested format`);
-			assert.equal(props.order.properties.kind.const, 'order', `${surface}: nested const`);
 			assert.deepEqual(props.tags.items.enum, ['a', 'b'], `${surface}: array item enum`);
 			assert.equal(props.tags.items.description, 'Tag value.', `${surface}: array item description`);
 		}
+		// `const` is the one hint whose *form* differs: it is draft-06, so the 3.0.3 document emits the
+		// equivalent single-value `enum` while MCP takes `const` directly. The constraint reaches both.
+		assert.equal(mcp.order.properties.kind.const, 'order', 'mcp keeps const');
+		assert.equal(mcp.order.properties.kind.enum, undefined, 'mcp does not also emit enum');
+		assert.deepEqual(openapi.order.properties.kind.enum, ['order'], 'openapi translates const to enum');
+		assert.equal(openapi.order.properties.kind.const, undefined, 'openapi emits no const keyword');
 	});
 
 	it('expresses nullability per dialect, consistently at top level and nested', () => {

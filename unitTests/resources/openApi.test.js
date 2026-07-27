@@ -338,3 +338,69 @@ describe('openApi — empty required omission', () => {
 		expect(schema).to.not.have.property('required');
 	});
 });
+
+// The document declares OpenAPI 3.0.3, whose Schema Object is the JSON Schema draft-04 subset.
+// Keywords from later drafts (`const`, added in draft-06) and JSON Schema's `'null'` type are not
+// part of that dialect, so emitting them produces a document strict validators reject. This walks
+// the whole generated document rather than checking one property, so any future emit path that
+// reaches for a newer keyword is caught here instead of in a consumer's tooling.
+describe('openApi — declared dialect compliance (3.0.3)', () => {
+	// Keywords absent from the draft-04 subset OpenAPI 3.0.x is built on.
+	const POST_DRAFT4_KEYWORDS = ['const', 'contentEncoding', 'contentMediaType', 'if', 'then', 'else', '$defs'];
+
+	function walk(node, visit, path = '$') {
+		if (node === null || typeof node !== 'object') return;
+		if (Array.isArray(node)) {
+			node.forEach((item, i) => walk(item, visit, `${path}[${i}]`));
+			return;
+		}
+		visit(node, path);
+		for (const [key, value] of Object.entries(node)) walk(value, visit, `${path}.${key}`);
+	}
+
+	function buildDocument() {
+		class Widget {}
+		Widget.primaryKey = 'id';
+		Widget.properties = {
+			id: { type: 'string', primaryKey: true },
+			kind: { type: 'string', const: 'widget' },
+			nothing: { type: 'null' },
+			maybe: { type: ['string', 'null'] },
+			nested: { type: 'object', properties: { inner: { type: 'string', const: 'x' } } },
+			list: { type: 'array', items: { type: 'string', const: 'y' } },
+		};
+		Widget.prototype.get = function () {};
+		const resources = new Map();
+		resources.set('Widget', { path: 'Widget', Resource: Widget, hasSubPaths: false, relativeURL: '' });
+		resources.allTypes = new Map();
+		return generateJsonApi(resources, 'https://harper.fast');
+	}
+
+	it('declares 3.0.x', () => {
+		expect(buildDocument().openapi).to.match(/^3\.0\./);
+	});
+
+	it('emits no post-draft-04 keywords anywhere in the document', () => {
+		const offenders = [];
+		walk(buildDocument(), (node, path) => {
+			for (const keyword of POST_DRAFT4_KEYWORDS) {
+				if (Object.hasOwn(node, keyword)) offenders.push(`${path}.${keyword}`);
+			}
+		});
+		expect(offenders, `post-draft-04 keywords in a 3.0.3 document: ${offenders.join(', ')}`).to.deep.equal([]);
+	});
+
+	it('never emits `type: "null"`, which 3.0.x does not define', () => {
+		const offenders = [];
+		walk(buildDocument(), (node, path) => {
+			const t = node.type;
+			if (t === 'null' || (Array.isArray(t) && t.includes('null'))) offenders.push(`${path}.type`);
+		});
+		expect(offenders, `\`null\` types in a 3.0.3 document: ${offenders.join(', ')}`).to.deep.equal([]);
+	});
+
+	it('translates `const` to a single-value `enum`', () => {
+		const schema = buildDocument().components.schemas.Widget;
+		expect(schema.properties.kind.enum).to.deep.equal(['widget']);
+	});
+});

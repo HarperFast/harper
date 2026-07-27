@@ -309,7 +309,16 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 	if (attr.description && fragment.description === undefined) fragment.description = attr.description;
 	if (attr.enum && fragment.enum === undefined) fragment.enum = attr.enum;
 	if (attr.format && fragment.format === undefined) fragment.format = attr.format;
-	if (attr.const !== undefined && fragment.const === undefined) fragment.const = attr.const;
+	if (attr.const !== undefined) {
+		// `const` is JSON Schema draft-06. OpenAPI 3.0.3's Schema Object is the draft-04 subset, so it
+		// has no such keyword — emit the equivalent single-value `enum` for that dialect. MCP speaks
+		// current JSON Schema and takes `const` directly.
+		if (options.dialect === 'openapi-3.0.3') {
+			if (fragment.enum === undefined) fragment.enum = [attr.const as never];
+		} else if (fragment.const === undefined) {
+			fragment.const = attr.const;
+		}
+	}
 	// `hidden` / `primaryKey` / `assignCreatedTime` / `assignUpdatedTime` are Harper directives, not
 	// schema vocabulary — they never belong in an emitted document.
 	return fragment;

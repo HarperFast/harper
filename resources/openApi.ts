@@ -32,6 +32,9 @@ function openApiPrimitive(type: string | undefined, attributeName: string | unde
 	if (type === 'Any' || type === undefined) return {};
 	const resolved = resolveDeclaredType(type, `OpenAPI property "${attributeName || '<unnamed>'}"`);
 	if (!resolved) return {};
+	// 3.0.x has no `'null'` type — nullability is the `nullable` keyword, so a bare `type: 'null'`
+	// becomes an untyped nullable schema rather than a type the dialect can't express.
+	if (resolved === 'null') return { nullable: true };
 	// Preserve the Harper type name as `format` for the types where it adds information, matching the
 	// top-level `Type()` emitter.
 	return Object.hasOwn(DATA_TYPES, type) ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
@@ -230,7 +233,9 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					if (description) prop.description = description;
 					if (attr.enum && prop.enum === undefined) prop.enum = attr.enum;
 					if (attr.format && prop.format === undefined) prop.format = attr.format;
-					if (attr.const !== undefined && prop.const === undefined) prop.const = attr.const;
+					// `const` is draft-06; this document declares 3.0.3 (the draft-04 subset), so emit the
+					// equivalent single-value `enum` rather than a keyword the dialect doesn't define.
+					if (attr.const !== undefined && prop.enum === undefined) prop.enum = [attr.const];
 					if (nullable && prop.nullable === undefined) prop.nullable = true;
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
