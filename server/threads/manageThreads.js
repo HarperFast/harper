@@ -137,6 +137,7 @@ module.exports = {
 	shutdownWorkers,
 	shutdownWorkersNow,
 	workers,
+	connectedPorts,
 	setMonitorListener,
 	onMessageFromWorkers,
 	onMessageByType,
@@ -144,6 +145,7 @@ module.exports = {
 	broadcastWithAcknowledgement,
 	getWorkerIndex,
 	getWorkerCount,
+	getEligibleBroadcastRecipientCount,
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
@@ -191,6 +193,20 @@ function getWorkerIndex() {
 }
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
+}
+// The exact number of other live threads a broadcastWithAcknowledgement() call from THIS
+// thread will reach: `connectedPorts` is a full mesh (every thread holds a direct port to
+// every other live thread, wired up in startWorker()/ADDED_PORT), and job workers are
+// excluded because broadcastWithAcknowledgement() skips isJobWorker ports entirely. Unlike
+// getWorkerCount() (which only knows the calling thread's own same-type pool, or 1 for the
+// non-worker main thread), this is accurate from any thread and correctly returns 0 when
+// there are no eligible recipients.
+function getEligibleBroadcastRecipientCount() {
+	let count = 0;
+	for (const port of connectedPorts) {
+		if (!port.isJobWorker) count++;
+	}
+	return count;
 }
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
