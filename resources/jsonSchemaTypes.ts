@@ -30,6 +30,8 @@ export interface JsonSchemaFragment {
 	additionalProperties?: boolean;
 	format?: string;
 	const?: unknown;
+	/** Binary encoding of a string-typed value. Emitted on the MCP surface only — not a 3.0.3 keyword. */
+	contentEncoding?: string;
 }
 
 /**
@@ -302,7 +304,14 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 			if (items) fragment.items = items;
 		}
 	} else {
-		Object.assign(fragment, options.mapPrimitive(attr.type, attr));
+		// Copy the mapper's result field by field rather than merging it wholesale: the set of keys a
+		// surface may contribute to a leaf schema is fixed, and spreading an arbitrary object here would
+		// let a mapper put anything into an emitted document.
+		const primitive = options.mapPrimitive(attr.type, attr);
+		if (primitive.type !== undefined) fragment.type = primitive.type;
+		if (primitive.description !== undefined) fragment.description = primitive.description;
+		if (primitive.format !== undefined) fragment.format = primitive.format;
+		if (primitive.contentEncoding !== undefined) fragment.contentEncoding = primitive.contentEncoding;
 	}
 
 	if (attr.nullable) applyNullability(fragment, options.dialect);
