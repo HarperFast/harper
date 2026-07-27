@@ -14,6 +14,9 @@ npm shrinkwrap
 echo -e "\n📦 Pruning devDependencies from shrinkwrap"
 node build-tools/prune-shrinkwrap-dev.mjs npm-shrinkwrap.json
 
+echo -e "\n📦 Pruning react-native tree from shrinkwrap"
+node build-tools/prune-shrinkwrap-react-native.mjs npm-shrinkwrap.json
+
 ./build-tools/build-studio.sh
 
 echo -e "\n📦 Building package"
