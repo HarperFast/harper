@@ -3,6 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, database, databases, getDatabases, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const harperLogger = require('#src/utility/logging/harper_logger');
 
 const TEST_DB = 'test';
 
@@ -166,5 +167,78 @@ describe('dropTable ghost regression', () => {
 		const survived = dbisDb.getSync('GhostDropRaceCreate/');
 		assert.ok(survived, 'a same-name table created during the drop must keep its catalog row');
 		assert.ok(!survived.dropping, 'the surviving row must be the fresh (non-tombstoned) create');
+	});
+
+	it('bounds the retries of a drop that can never complete', async function () {
+		this.timeout(20000);
+		const Stuck = defineTable('GhostRetryBound');
+		await Stuck.put({ id: 1, str: 'data' });
+		const dbisDb = getDbisDb();
+		const meta = dbisDb.getSync('GhostRetryBound/');
+		meta.dropping = true;
+		await dbisDb.put('GhostRetryBound/', meta);
+		delete databases[TEST_DB].GhostRetryBound;
+
+		// completeInterruptedDrop finishes by removing the table's catalog rows.
+		// Fail that the way a storage environment that can no longer accept writes
+		// does, so every completion attempt fails identically and forever.
+		const originalRemove = dbisDb.remove;
+		let attempts = 0;
+		dbisDb.remove = function (key, ...rest) {
+			if (typeof key === 'string' && key.startsWith('GhostRetryBound/')) {
+				attempts++;
+				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
+			}
+			return originalRemove.call(this, key, ...rest);
+		};
+		const storageLogger = harperLogger.forComponent('storage');
+		const originalLogError = storageLogger.error;
+		const errorLogs = [];
+		storageLogger.error = (message, ...rest) => {
+			errorLogs.push(message);
+			return originalLogError.call(storageLogger, message, ...rest);
+		};
+
+		const reload = () => {
+			resetDatabases();
+			getDatabases();
+		};
+		let attemptsWhenExhausted = 0;
+		try {
+			for (let i = 0; i < 5; i++) reload();
+			attemptsWhenExhausted = attempts;
+			for (let i = 0; i < 5; i++) reload();
+		} finally {
+			storageLogger.error = originalLogError;
+			dbisDb.remove = originalRemove;
+		}
+
+		assert.ok(attemptsWhenExhausted > 0, 'the interrupted drop must be attempted at least once');
+		assert.equal(
+			attempts,
+			attemptsWhenExhausted,
+			`completion attempts must stop, not repeat on every schema reload (${attempts - attemptsWhenExhausted} more over 5 further reloads)`
+		);
+
+		// the tombstone is mirrored into every database that shares this store, so
+		// each stuck table gets its own give-up error - and only one
+		const giveUpLogs = errorLogs.filter((message) => String(message).includes('GhostRetryBound'));
+		const loggedTables = giveUpLogs.map((message) => String(message).match(/table (\S+)/)[1]);
+		assert.ok(loggedTables.includes(`${TEST_DB}.GhostRetryBound`), 'the stuck table must be named in the error');
+		assert.equal(
+			new Set(loggedTables).size,
+			loggedTables.length,
+			`each stuck table must log exactly one actionable error, got ${loggedTables.join(', ')}`
+		);
+		assert.match(giveUpLogs[0], /giving up until this node restarts/);
+		// the table must stay unloaded regardless
+		assert.equal(getDatabases()[TEST_DB]?.GhostRetryBound, undefined, 'a tombstoned table must never load');
+
+		// the budget is exhausted for this process, so clean the tombstoned rows up
+		// by hand rather than leaving a stuck table behind for later tests
+		for (const key of [...dbisDb.getKeys({ start: 'GhostRetryBound/', end: 'GhostRetryBound0' })]) {
+			dbisDb.remove(key);
+		}
+		await dbisDb.committed;
 	});
 });
