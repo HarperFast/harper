@@ -5,16 +5,22 @@ const { handleApplication } = require('#src/server/static');
 
 // A minimal Scope stand-in: captures the http registration and warning log so tests can
 // assert on the middleware ordering options the plugin passes to the server.
-function fakeScope(options = {}) {
+function fakeScope(options = {}, mount = undefined) {
 	const state = {
 		httpOptions: undefined,
 		warnings: [],
 		changeListeners: [],
 		restartRequests: 0,
+		mount,
 	};
 	const scope = {
 		directory: '/fake/app',
+		appName: 'fake-app',
 		pluginName: 'static',
+		// Mirrors Scope: the application mount an operator declared in the root config, and the
+		// helper that turns a mount-relative base path into the absolute path a client sees.
+		mount: state.mount,
+		externalBasePath: (baseURLPath) => (state.mount?.urlPath ? `${state.mount.urlPath}${baseURLPath}` : baseURLPath),
 		options: {
 			get: (key) => options[key[0]],
 			getAll: () => options,
