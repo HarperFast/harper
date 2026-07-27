@@ -27,6 +27,7 @@ const {
 } = require('../../components/shutdownDrain.ts');
 const { realExit } = require('./workerProcessGuard.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
+const { getDomainSocketPathMaxBytes, isDomainSocketPathTooLong } = require('../../utility/domainSocket.ts');
 const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/keys.ts');
 const { startupLog } = require('../../bin/run.ts');
 const { SERVERS, setPortServerMap, portServer, socketOptionDefaults } = require('../serverRegistry.ts');
@@ -95,6 +96,7 @@ process.on('unhandledRejection', (reason) => {
 });
 env.initSync();
 exports.globals = globals;
+exports.listenOnDomainSocket = listenOnDomainSocket;
 exports.listenOnPorts = listenOnPorts;
 exports.startServers = startServers;
 exports.closeServers = closeServers;
@@ -253,39 +255,37 @@ function startServers() {
 	});
 	return loaded;
 }
-/** True if some other TCP (non-UDS) listener registered by the operations API exists in SERVERS. */
-function hasOperationsTcpEndpoint() {
-	for (const key in SERVERS) {
-		if (!key.includes?.('/') && SERVERS[key]?.isOperationsServer) return true;
-	}
-	return false;
-}
-
 /**
- * Handle a failed Unix domain socket bind: this fails soft (see listenOnPorts()'s UDS branch) for
- * every path-keyed listener in SERVERS, not just the operations API's — a domain socket is a
- * convenience mirror of its same-named TCP listener, and rejecting here used to abort the whole
- * startup batch (process.exit in bin/run.ts's main()) over one socket, most commonly EINVAL from a
- * rootPath-derived path exceeding the platform's ~107-byte sun_path limit.
- *
- * A lost mirror is routine when a TCP/other listener for the same server is still coming up
- * alongside it, but the operations API can also be configured with only a domain socket (no
- * port/securePort) — in that case this failure leaves it with no listener at all, which is worth a
- * louder log than "lost a convenience mirror". Either way, also suppress/remove any TLS-mirror
- * metadata already advertised for this socket (see markUdsBindFailed()) so a fronting proxy doesn't
- * keep routing to a socket nothing is listening on.
+ * An overlong path is the only condition that can skip a domain-socket listener. Check before
+ * listen() because supported Node versions differ: some reject the path while others truncate and
+ * bind it somewhere clients cannot reach using the configured path.
  */
-function handleDomainSocketBindFailure(port, server, err) {
-	httpComponent.markUdsBindFailed(port);
-	const message = `Failed to bind domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: ${err.message}. Continuing without this domain socket.`;
-	if (server.isOperationsServer && !hasOperationsTcpEndpoint()) {
-		harperLogger.fatal(
-			`${message} No other operations API endpoint (port/securePort) is configured — the operations API has no listener.`,
-			err
+function listenOnDomainSocket(port, server) {
+	if (isDomainSocketPathTooLong(port)) {
+		httpComponent.markUdsBindFailed(port);
+		harperLogger.error(
+			`Not binding domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: the ${Buffer.byteLength(port)}-byte path exceeds the platform limit of ${getDomainSocketPathMaxBytes()} bytes. Continuing without this domain socket.`
 		);
-	} else {
-		harperLogger.error(message, err);
+		return Promise.resolve({ port, failed: true });
 	}
+	if (existsSync(port)) unlinkSync(port);
+	return new Promise((resolve, reject) => {
+		function onError(error) {
+			reject(error);
+		}
+		function onListening() {
+			server.removeListener('error', onError);
+			harperLogger.info('Domain socket listening on ' + port);
+			resolve({ port, name: server.name, protocol_name: server.protocol_name });
+		}
+		try {
+			server.once('error', onError);
+			server.listen({ path: port }, onListening);
+		} catch (error) {
+			server.removeListener('error', onError);
+			reject(error);
+		}
+	});
 }
 
 let listening;
@@ -298,20 +298,7 @@ function listenOnPorts() {
 
 		// If server is unix domain socket
 		if (port.includes?.('/')) {
-			if (existsSync(port)) unlinkSync(port);
-			listening.push(
-				new Promise((resolve) => {
-					server
-						.listen({ path: port }, () => {
-							resolve({ port, name: server.name, protocol_name: server.protocol_name });
-							harperLogger.info('Domain socket listening on ' + port);
-						})
-						.on('error', (err) => {
-							handleDomainSocketBindFailure(port, server, err);
-							resolve({ port, failed: true });
-						});
-				})
-			);
+			listening.push(listenOnDomainSocket(port, server));
 			continue;
 		}
 		let listen_on;
@@ -548,22 +535,7 @@ async function listenOnPortsBun() {
 		if (server?.stop || bunServeConfigs[port]) continue;
 		if (server?.listen) {
 			if (port.includes?.('/')) {
-				if (existsSync(port)) unlinkSync(port);
-				listening.push(
-					new Promise((resolve) => {
-						server
-							.listen({ path: port }, () => {
-								resolve({ port });
-								harperLogger.info('Domain socket listening on ' + port);
-							})
-							.on('error', (err) => {
-								// See handleDomainSocketBindFailure()/listenOnPorts() above: a domain
-								// socket bind failure must not abort the rest of this Promise.all batch.
-								handleDomainSocketBindFailure(port, server, err);
-								resolve({ port, failed: true });
-							});
-					})
-				);
+				listening.push(listenOnDomainSocket(port, server));
 			} else {
 				const lastColon = String(port).lastIndexOf(':');
 				const rawHostname = lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : null;
