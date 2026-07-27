@@ -287,7 +287,11 @@ export function handleApplication(scope: Scope) {
 					// redirect the no-slash form so relative links on the index page resolve under
 					// the mount (#1583). Query string is preserved across both redirects; compute it
 					// lazily inside each branch so the common (non-redirect) index serve stays allocation-free.
-					if (staticFile && req.pathname === '/' && baseURLPath !== '/') {
+					// Gated on the EXTERNAL base path, not the plugin-local one: a root-level static
+					// plugin (baseURLPath === '/') still needs this redirect when the application
+					// itself carries a host/urlPath mount, since the client-visible mount root is then
+					// externalBaseURLPath, not '/' (review finding).
+					if (staticFile && req.pathname === '/' && externalBaseURLPath !== '/') {
 						const originalPathname: string | undefined = (req as any).originalPathname;
 						if (originalPathname && !originalPathname.endsWith('/')) {
 							const queryIndex = (req.url as string).indexOf('?');

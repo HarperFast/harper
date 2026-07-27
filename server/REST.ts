@@ -23,7 +23,6 @@ import { entryMap } from '../resources/RecordEncoder.ts';
 const { errorToString, errorForLog } = harperLogger;
 const etagBytes = new Uint8Array(8);
 const etagFloat = new Float64Array(etagBytes.buffer, 0, 1);
-let httpOptions = {};
 
 const OPENAPI_DOMAIN = 'openapi';
 
@@ -118,7 +117,7 @@ async function findInactiveComponent(url: string): Promise<string | undefined> {
 	}
 }
 
-async function http(request: Request, nextHandler) {
+async function http(request: Request, nextHandler, resources: Resources, httpOptions: any) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
 	const method = isSse ? 'CONNECT' : request.method;
@@ -399,17 +398,25 @@ async function http(request: Request, nextHandler) {
 // enable `rest` under different root-config mounts each need their own chain — a single global
 // `started` flag registered only the first, silently 404ing the other application's REST API.
 const startedMounts = new Set<string>();
-let resources: Resources;
 let addedMetrics;
 let connectionCount = 0;
 
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
-	httpOptions = scope.options.getAll();
+	// A deploy pre-flight validation scope exists only to validate config, and may share a live
+	// component's identity — registering real HTTP/WS handlers from it would splice a validation
+	// run into the live request path, and permanently marking its mount as started below would
+	// leave the REAL scope's later registration silently skipped (review finding).
+	if (scope.isTransientValidation) return;
+
+	const httpOptions = scope.options.getAll();
 	if ((httpOptions as any).includeExpensiveRecordCountEstimates) {
 		// If they really want to enable expensive record count estimates
 		(Request.prototype as any).includeExpensiveRecordCountEstimates = true;
 	}
-	resources = scope.resources;
+	// Captured per-mount in this closure — not a shared module-level variable — so each mount's
+	// registered handler always reads ITS OWN resources/options, not whichever mount happened to
+	// register last (review finding: two mounts sharing mutable module globals).
+	const resources = scope.resources;
 	// Key on the route this registration will actually answer on, not on the parts it is composed
 	// from: two configurations that resolve to the same route are the same chain and must dedupe,
 	// while two that resolve to different routes must not collide. Concatenating the mount and the
@@ -421,7 +428,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	scope.server.http(
 		async (request: any, nextHandler) => {
 			if (request.isWebSocket) return;
-			return http(request, nextHandler);
+			return http(request, nextHandler, resources, httpOptions);
 		},
 		{ after: 'authentication', ...(httpOptions as any) }
 	);
