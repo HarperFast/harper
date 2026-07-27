@@ -446,6 +446,14 @@ class BlogSource extends Resource {
 Post.sourcedFrom(BlogSource);
 ```
 
+#### Read consistency across databases
+
+A resolver's reads are snapshot-consistent as long as every table it reads lives in the same [database](../database/overview.md#databases) — Harper pins a single transaction snapshot per database, so multiple `get()` calls into tables in that database always see the same point-in-time view, no matter how the resolver interleaves them.
+
+That snapshot is scoped per database. If a resolver reads from one database, `await`s something (an upstream fetch, another async call), and then reads from a second database, the second read is not guaranteed to reflect the same point in time as the first — it can observe writes that landed on the second database during the `await`.
+
+> **Note:** If a `sourcedFrom` resolver must assemble a self-consistent view from multiple tables, keep all of those tables in a single database. If it must span multiple databases, do not assume the combined result is atomic — design for skew between the sources instead.
+
 ---
 
 ### `getUpdatedTime(): number`
