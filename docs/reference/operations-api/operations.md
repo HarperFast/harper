@@ -746,9 +746,13 @@ Returns the raw tarball for a deployment. Useful for inspecting or re-deploying 
 }
 ```
 
+The response is the raw tarball bytes (`Content-Type: application/octet-stream`, with a `Content-Disposition` download filename) - not JSON and not base64-encoded, so payloads of any size stream without inflation. Returns `404` if the deployment does not exist or its payload has already been reclaimed (by payload retention or `delete_deployment_payload`).
+
+Unlike most other `super_user` operations, this check is enforced directly in the handler and cannot be satisfied by granting the operation through a role's `operations` allowlist - only an actual `super_user` role can call it.
+
 ### `delete_deployment_payload`
 
-Removes the tarball blob from a deployment record. The deployment record itself is retained; only the binary payload is deleted. Use this to reclaim storage after confirming a deployment is stable.
+Removes the tarball blob from a deployment record. The deployment record itself is retained; only the binary payload is deleted. Use this to reclaim storage after confirming a deployment is stable. The deletion replicates, so one call frees the payload's storage on every node in the cluster.
 
 ```json
 {
@@ -756,6 +760,18 @@ Removes the tarball blob from a deployment record. The deployment record itself 
 	"deployment_id": "a3f8c2d1..."
 }
 ```
+
+Response:
+
+```json
+{
+	"message": "Deleted payload for deployment 'a3f8c2d1...'",
+	"deployment_id": "a3f8c2d1...",
+	"freed_bytes": 52428800
+}
+```
+
+The deployment must be in a terminal status (`success`, `failed`, or `rolled_back`); deleting the payload of an in-progress deployment fails with `409`, since its payload may still be replicating to peers. Deleting an already-reclaimed payload succeeds with `freed_bytes: 0` (the operation is idempotent). A `payload_dropped` entry recording the deleting user is appended to the deployment's `event_log`.
 
 ### `add_ssh_key`
 
