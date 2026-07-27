@@ -152,16 +152,30 @@ export function normalizeUrlPath(urlPath: string | undefined): string | undefine
 }
 
 /**
+ * Extracts the hostname from a Host header value: the port is dropped and an IPv6 literal is
+ * unwrapped from its brackets ('[::1]:9926' -> '::1'), so a bracket-less configured host can
+ * match. Lowercased because hostnames are case-insensitive (RFC 4343) — a configured
+ * 'API.example.com' must match the 'api.example.com' a client actually sends.
+ */
+export function hostnameFromHeader(hostHeader: string): string {
+	if (hostHeader.startsWith('[')) {
+		const end = hostHeader.indexOf(']');
+		if (end !== -1) return hostHeader.slice(1, end).toLowerCase();
+	}
+	const colon = hostHeader.indexOf(':');
+	return (colon === -1 ? hostHeader : hostHeader.slice(0, colon)).toLowerCase();
+}
+
+/**
  * Returns true when `request` satisfies the route's host and urlPath constraints.
  * urlPath matching is prefix-based and segment-boundary-aware:
  *   '/api' matches '/api' and '/api/foo' but NOT '/api2'.
- * Trailing slashes on `route.urlPath` are ignored.
+ * Trailing slashes on `route.urlPath` are ignored. Host matching ignores the port and case.
  */
 export function matchesRoute(request: any, route: { host?: string; urlPath?: string }): boolean {
 	if (route.host) {
 		const hostHeader: string = request.headers?.asObject?.host ?? '';
-		const requestHost = hostHeader.split(':')[0];
-		if (requestHost !== route.host) return false;
+		if (hostnameFromHeader(hostHeader) !== route.host.toLowerCase()) return false;
 	}
 	const urlPath = normalizeUrlPath(route.urlPath);
 	if (urlPath) {

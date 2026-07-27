@@ -395,7 +395,10 @@ async function http(request: Request, nextHandler) {
 	}
 }
 
-let started = false;
+// One registration per distinct route mount, not one per process. Two applications that both
+// enable `rest` under different root-config mounts each need their own chain — a single global
+// `started` flag registered only the first, silently 404ing the other application's REST API.
+const startedMounts = new Set<string>();
 let resources: Resources;
 let addedMetrics;
 let connectionCount = 0;
@@ -407,8 +410,9 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		(Request.prototype as any).includeExpensiveRecordCountEstimates = true;
 	}
 	resources = scope.resources;
-	if (started) return;
-	started = true;
+	const mountKey = `${scope.mount?.host ?? (httpOptions as any)?.host ?? ''}|${scope.mount?.urlPath ?? ''}${(httpOptions as any)?.urlPath ?? ''}`;
+	if (startedMounts.has(mountKey)) return;
+	startedMounts.add(mountKey);
 	scope.server.http(
 		async (request: any, nextHandler) => {
 			if (request.isWebSocket) return;

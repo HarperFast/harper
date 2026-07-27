@@ -152,6 +152,10 @@ export function handleApplication(scope: Scope) {
 	// cannot be re-registered at runtime. Capture the matching base once so map keys always agree
 	// with the registered route (#1583).
 	const baseURLPath = resolveBaseURLPath(scope.pluginName, (scope.options.getAll() as any)?.urlPath);
+	// The same base as the client sees. `baseURLPath` is mount-relative — it must stay that way to
+	// keep agreeing with the entry URL paths the file map is keyed by — but a redirect Location has
+	// to carry the application's mount too, or it would point outside the mount (#1583).
+	const externalBaseURLPath = scope.externalBasePath(baseURLPath);
 
 	// A bare `before:` / `after:` key in YAML parses as null — treat it as unset, like before this
 	// option was validated.
@@ -291,7 +295,7 @@ export function handleApplication(scope: Scope) {
 							return {
 								status: 301,
 								headers: {
-									Location: baseURLPath + query,
+									Location: externalBaseURLPath + query,
 								},
 							};
 						}
@@ -300,7 +304,8 @@ export function handleApplication(scope: Scope) {
 					// If `null`, redirect to trailing slash. req.pathname arrives with the mount
 					// prefix stripped, so rebuild the external path for the Location header (#1583)
 					if (staticFile === null) {
-						const externalPath = baseURLPath === '/' ? req.pathname : baseURLPath.slice(0, -1) + req.pathname;
+						const externalPath =
+							externalBaseURLPath === '/' ? req.pathname : externalBaseURLPath.slice(0, -1) + req.pathname;
 						const queryIndex = (req.url as string).indexOf('?');
 						const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
 						return {

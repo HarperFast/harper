@@ -93,6 +93,27 @@ suite('application mounted by urlPath in the root config', (ctx: ContextWithHarp
 		strictEqual(res.status, 301);
 		strictEqual(res.headers.get('location'), '/v1/assets/');
 	});
+
+	// Resource paths are derived from entry URL paths, and the router strips the mount before REST
+	// resolves them — so those paths must stay mount-relative. Composing the mount into the entry
+	// pipeline instead registered the table at '/v1/MountedThing' while REST looked up
+	// 'MountedThing', 404ing every mounted REST route.
+	test('a table exported by a mounted application is served under the mount', async () => {
+		const res = await fetch(new URL('/v1/MountedThing', ctx.harper.httpURL));
+		strictEqual(res.status, 200, `expected /v1/MountedThing to serve: ${res.status} ${await res.text()}`);
+	});
+
+	test('the mounted REST route round-trips a record', async () => {
+		const put = await fetch(new URL('/v1/MountedThing/abc', ctx.harper.httpURL), {
+			method: 'PUT',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ name: 'mounted' }),
+		});
+		ok(put.status < 300, `expected the write to succeed: ${put.status} ${await put.text()}`);
+		const get = await fetch(new URL('/v1/MountedThing/abc', ctx.harper.httpURL));
+		strictEqual(get.status, 200);
+		strictEqual(((await get.json()) as { name?: string }).name, 'mounted');
+	});
 });
 
 suite('application mounted by host in the root config', (ctx: ContextWithHarper) => {

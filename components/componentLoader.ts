@@ -29,7 +29,7 @@ import * as scheduler from '../resources/scheduler/scheduler.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
-import { toScopeMount, type ScopeMount } from './scopeMount.ts';
+import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
@@ -527,9 +527,10 @@ export async function loadComponent(
 								// `host`/`urlPath` on this entry route the component being loaded. For an
 								// application (no plugin module of its own) that entry is the only place an
 								// operator can say where the app is served — its own config.yaml declares the
-								// plugins, not the deployment. An inherited mount wins so a nested component
-								// can't escape the mount its parent application was given.
-								mount: mount ?? toScopeMount(componentConfig),
+								// plugins, not the deployment. A nested component's own mount nests inside
+								// the parent's rather than replacing it, and the parent keeps hostname
+								// authority, so a child can't escape the host it is served on.
+								mount: nestScopeMount(mount, toScopeMount(componentConfig)),
 							});
 							componentFunctionality[componentName] = true;
 						}
