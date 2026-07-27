@@ -17,6 +17,7 @@ import * as terms from '../utility/hdbTerms.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import * as sqlEngineRouter from '../sqlEngine/router.ts';
+import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 
 //here we call to define and import custom functions to alasql
 alasqlFunctionImporter(alasql);
@@ -129,7 +130,11 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 	try {
 		let sqlFunction = nullFunction;
 
-		if (!jsonMessage.bypass_auth && !parsedSqlObject.permissions_checked) {
+		// Trusted bypass is dispatch/async-context state (set by chooseOperation's caller via
+		// runWithOperationAuthorizationBypass), never body state — jsonMessage.bypass_auth is
+		// caller-controlled and is stripped before operation code sees it (see
+		// server/serverHelpers/serverHandlers.js and components/mcp/tools/operations.ts).
+		if (!isOperationAuthorizationBypassed() && !parsedSqlObject.permissions_checked) {
 			let permissionsCheck = checkASTPermissions(jsonMessage, parsedSqlObject);
 			if (permissionsCheck && permissionsCheck.length > 0) {
 				return callback(UNAUTHORIZED_RESPONSE, permissionsCheck);

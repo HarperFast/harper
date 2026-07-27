@@ -18,6 +18,7 @@ import { findAndValidateUser, type User } from './user.ts';
 import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
 import * as signalling from '../utility/signalling.ts';
+import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 import { UserEventMsg } from '../server/threads/itc.js';
 import * as env from '../utility/environment/environmentManager.ts';
 env.initSync();
@@ -52,7 +53,6 @@ interface AuthObject {
 	password?: string;
 	role?: string;
 	expires_in?: string | number;
-	bypass_auth?: boolean;
 	hdb_user?: User;
 	// 'login' mints a single short-lived, login-scoped token instead of an operation/refresh pair —
 	// see TOKEN_TYPE.LOGIN.
@@ -135,8 +135,11 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 
 	let user: any;
 	try {
-		// bypassAuth will be set to true if this is called from a component
-		let validatePassword: boolean = authObj.bypass_auth !== true;
+		// Trusted bypass is dispatch/async-context state (set by a component calling
+		// server.operation(..., false)), never a body field — authObj.bypass_auth is
+		// caller-controlled and would let anyone mint tokens for an arbitrary username
+		// without a password (see operationAuthorizationState.ts).
+		let validatePassword: boolean = !isOperationAuthorizationBypassed();
 		if (!authObj.username && !authObj.password) {
 			// if the username and password are not provided, use the hdb_user making the request.
 			authObj.username = authObj.hdb_user?.username;
