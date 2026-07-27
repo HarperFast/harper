@@ -320,7 +320,8 @@ async function processFieldNode(
 	const results = [];
 	// @ts-expect-error: `authorize` is a custom property on the request object.
 	request.authorize = true;
-	for await (const result of resource.search(query, request)) {
+	const searchResults = await resource.search(query, request);
+	for await (const result of searchResults) {
 		results.push(result);
 	}
 	return [fieldNode.name.value, results];

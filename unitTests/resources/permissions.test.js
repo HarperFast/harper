@@ -206,6 +206,33 @@ describe('Permissions through Resource API', () => {
 		assert.equal(results[0].related.id, 'related-id-2');
 		assert.equal(results[0].related.name, undefined);
 	});
+	it('QUERY body permission controls cannot authorize a related-table select', async function () {
+		let receivedCheckPermission;
+		let receivedNestedCheckPermission;
+		class SafeQueryTable extends TestTable {
+			search(target) {
+				receivedCheckPermission = target.checkPermission;
+				receivedNestedCheckPermission = target.select?.[0]?.checkPermission;
+				return super.search(target);
+			}
+		}
+		const target = new RequestTarget();
+		target.isCollection = true;
+		const body = {
+			conditions: [{ attribute: 'id', comparator: 'equals', value: 'id-2' }],
+			select: [{ name: 'related', select: ['id', 'name'], checkPermission: { super_user: true } }],
+		};
+		const iterable = await SafeQueryTable.query(target, Promise.resolve(body), {
+			user: authorized_role,
+			authorize: true,
+		});
+		const results = [];
+		for await (const result of iterable) results.push(result);
+		assert.equal(receivedCheckPermission, undefined);
+		assert.equal(receivedNestedCheckPermission, undefined);
+		assert.equal(results.length, 1);
+		assert.equal(results[0].related, undefined);
+	});
 	it('Can write with permission', async function () {
 		await TestTable.put(
 			'id-2',

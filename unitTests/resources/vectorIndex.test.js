@@ -1952,14 +1952,38 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 				return true;
 			}
 		}
-		const results = await fromAsync(
-			await CollectionSearch.search(new RequestTarget('?group=blue'), {
-				user: { id: 1, role: { permission: {} } },
-				authorize: true,
-			})
-		);
+		const iterable = await CollectionSearch.search(new RequestTarget('?group=blue&select(id,ownerId)'), {
+			user: { id: 1, role: { permission: {} } },
+			authorize: true,
+		});
+		assert.strictEqual(typeof iterable.map, 'function');
+		assert.strictEqual(typeof iterable.slice, 'function');
+		assert.strictEqual(iterable.selectApplied, true);
+		assert.deepStrictEqual(iterable.getColumns(), ['id', 'ownerId']);
+		const results = await fromAsync(iterable.map((record) => record));
 		assert(results.length > 1);
 		assert.strictEqual(allowReadCalls, 1);
+	});
+
+	it('loadAsInstance=false async authorization reserves the read snapshot before returning', async () => {
+		class SnapshotSearch extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				return true;
+			}
+		}
+		await T.delete(162);
+		const iterable = await SnapshotSearch.search(new RequestTarget('?group=blue&select(id)'), {
+			user: { id: 1, role: { permission: {} } },
+			authorize: true,
+		});
+		await T.put(162, { group: 'blue', ownerId: 1, active: true, vector: [162, 0] });
+		try {
+			const results = await fromAsync(iterable);
+			assert(!results.some((record) => record.id === 162));
+		} finally {
+			await T.delete(162);
+		}
 	});
 
 	it('loadAsInstance=false search awaits and fails closed on Promise<false> before row filtering', async () => {
@@ -1978,17 +2002,45 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 			return true;
 		};
 		await assert.rejects(
-			async () =>
-				fromAsync(
-					await DeniedCollectionSearch.search(target, {
-						user: { id: 1, role: { permission: {} } },
-						authorize: true,
-					})
-				),
+			DeniedCollectionSearch.search(target, {
+				user: { id: 1, role: { permission: {} } },
+				authorize: true,
+			}),
 			(err) => err.name === 'AccessViolation' || err.statusCode === 403
 		);
 		assert.strictEqual(allowReadCalls, 1);
 		assert.strictEqual(rowFilterCalls, 0);
+	});
+
+	it('loadAsInstance=false denial stays pre-response through async and mapped overrides', async () => {
+		class AsyncDelegatingSearch extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				return false;
+			}
+			async search(target) {
+				return super.search(target);
+			}
+		}
+		class MappingSearch extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				return false;
+			}
+			search(target) {
+				return super.search(target).map((record) => record);
+			}
+		}
+		for (const TableClass of [AsyncDelegatingSearch, MappingSearch]) {
+			const target = new RequestTarget('?group=blue');
+			await assert.rejects(
+				TableClass.search(target, {
+					user: { id: 1, role: { permission: {} } },
+					authorize: true,
+				}),
+				(error) => error.name === 'AccessViolation' || error.statusCode === 403
+			);
+		}
 	});
 
 	it('loadAsInstance=false subscriptions authorize once without per-event checks', async () => {

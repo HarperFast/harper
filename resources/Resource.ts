@@ -23,6 +23,7 @@ import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -294,18 +295,22 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static search = transactional(
 		function (resource: any, query: Query, request: Context) {
 			const result = resource.search ? resource.search(query) : missingMethod(resource, 'search');
-			const select = (request as any).select;
-			if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
-				const transform = transformForSelect(select, resource.constructor);
-				return result.map(transform);
-			}
-			return result;
+			return when(result, (result: any) =>
+				when(authorizeSearchResult(result, request?.user), (result: any) => {
+					const select = (request as any).select;
+					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
+						const transform = transformForSelect(select, resource.constructor);
+						return result.map(transform);
+					}
+					return result;
+				})
+			);
 		},
 		{ type: 'read', method: 'search', hasContent: false, syncAllowed: true }
 	);
 
 	static query = transactional(
-		function (resource: any, query: RequestTarget, _request: Context, data: any) {
+		function (resource: any, query: RequestTarget, request: Context, data: any) {
 			// Table.allowRead applies attribute permissions to the URL target. QUERY executes the
 			// separately parsed body target, so carry the framework-narrowed projection across after
 			// authorization. Never copy permission-control fields from the client body.
@@ -331,11 +336,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					data.select = query.select;
 				}
 			}
-			return resource.search
+			const result = resource.search
 				? resource.constructor.loadAsInstance === false
 					? resource.search(query, data)
 					: resource.search(data, query)
 				: missingMethod(resource, 'search');
+			return when(result, (result: any) => authorizeSearchResult(result, request?.user));
 		},
 		{ hasContent: true, type: 'read', method: 'query' }
 	);
@@ -634,6 +640,16 @@ function transactional(
 				data = dataOrContext;
 			}
 		}
+		if (options.method === 'query' && typeof (data as any)?.then === 'function') {
+			// HTTP request bodies are resolved asynchronously. QUERY projection and permission-control
+			// sanitization must happen before resource resolution and allowRead, not later in runAction.
+			const dataWasFirstArgument = data === idOrQuery;
+			return (data as Promise<any>).then((resolvedData) =>
+				dataWasFirstArgument
+					? applyContext.call(this, resolvedData, context)
+					: applyContext.call(this, idOrQuery, resolvedData, context)
+			);
+		}
 		if (id === undefined) {
 			if (typeof idOrQuery === 'object' && idOrQuery) {
 				// it is a query
@@ -699,6 +715,13 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
+		}
+		if (options.method === 'query' && data && typeof data === 'object') {
+			// QUERY executes the independently parsed body target. Make its requested projection part of
+			// the operation admission target, but remove framework-owned permission controls before either
+			// target reaches application or table code.
+			if (hasPermissionControl(data)) data = cloneRequestTarget(data);
+			if (Object.prototype.hasOwnProperty.call(data, 'select')) query.select = data.select;
 		}
 		isCollection = query.isCollection;
 		if (
@@ -855,6 +878,20 @@ function transactional(
 		}
 	}
 }
+
+function authorizeSearchResult(result: any, user: any) {
+	const authorization = result?.[SEARCH_AUTHORIZATION];
+	return authorization
+		? when(authorization, (state: any) => {
+				if (state && typeof state === 'object') {
+					if (state.error) throw state.error;
+					if (!state.allowed) throw new AccessViolation(user);
+				} else if (!state) throw new AccessViolation(user);
+				return result;
+			})
+		: result;
+}
+
 function cloneRequestTarget(source: any): RequestTarget {
 	const clone = new RequestTarget(source instanceof URLSearchParams ? source.toString() : undefined);
 	const seen = new WeakMap<object, any>();
@@ -864,14 +901,18 @@ function cloneRequestTarget(source: any): RequestTarget {
 		if (Array.isArray(value)) {
 			const copy: any[] = [];
 			seen.set(value, copy);
-			for (const key of Object.keys(value)) copy[key] = cloneValue(value[key]);
+			for (const key of Object.keys(value)) {
+				if (key !== 'checkPermission') copy[key] = cloneValue(value[key]);
+			}
 			return copy;
 		}
 		const prototype = Object.getPrototypeOf(value);
 		if (prototype !== Object.prototype && prototype !== null) return value;
 		const copy = Object.create(prototype);
 		seen.set(value, copy);
-		for (const key of Object.keys(value)) copy[key] = cloneValue(value[key]);
+		for (const key of Object.keys(value)) {
+			if (key !== 'checkPermission') copy[key] = cloneValue(value[key]);
+		}
 		return copy;
 	};
 	seen.set(source, clone);
@@ -879,6 +920,16 @@ function cloneRequestTarget(source: any): RequestTarget {
 		if (key !== 'checkPermission') (clone as any)[key] = cloneValue(source[key]);
 	}
 	return clone;
+}
+
+function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean {
+	if (value == null || typeof value !== 'object' || seen.has(value)) return false;
+	seen.add(value);
+	if (Object.prototype.hasOwnProperty.call(value, 'checkPermission')) return true;
+	for (const key of Object.keys(value)) {
+		if (hasPermissionControl(value[key], seen)) return true;
+	}
+	return false;
 }
 
 function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {

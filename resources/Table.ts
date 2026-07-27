@@ -29,7 +29,7 @@ import type {
 } from './ResourceInterface.ts';
 import type { User } from '../security/user.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, transformForSelect } from './Resource.ts';
+import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import { DatabaseTransaction, ImmediateTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -220,6 +220,30 @@ const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 // records the filter accepts.
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
+const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
+
+function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
+	if (!iterable || typeof iterable !== 'object') return iterable;
+	iterable[SEARCH_AUTHORIZATION] = authorization;
+	if (source) {
+		if (source.selectApplied) iterable.selectApplied = true;
+		if (source.getColumns && !iterable.getColumns) iterable.getColumns = source.getColumns;
+	}
+	if (iterable[SEARCH_AUTHORIZATION_TRANSFORMS]) return iterable;
+	Object.defineProperty(iterable, SEARCH_AUTHORIZATION_TRANSFORMS, { value: true });
+	for (const methodName of AUTHORIZATION_TRANSFORM_METHODS) {
+		const transform = iterable[methodName];
+		if (typeof transform !== 'function') continue;
+		Object.defineProperty(iterable, methodName, {
+			configurable: true,
+			value: function (...args: any[]) {
+				return propagateSearchAuthorization(transform.apply(this, args), authorization, this);
+			},
+		});
+	}
+	return iterable;
+}
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -2782,6 +2806,20 @@ export function makeTable(options) {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			const getColumns = () => {
+				const select = target.select;
+				if (select) {
+					const columns = [];
+					for (const column of select) {
+						if (column === '*') columns.push(...attributes.map((attribute) => attribute.name));
+						else columns.push((column as any).name || column);
+					}
+					return columns;
+				}
+				return attributes
+					.filter((attribute) => !attribute.computed && !attribute.relationship)
+					.map((attribute) => attribute.name);
+			};
 			if (target.checkPermission) {
 				// Direct instance callers may request the same one-shot operation gate used by the
 				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
@@ -2793,17 +2831,89 @@ export function makeTable(options) {
 				}
 				if (allowed != null && typeof (allowed as any).then === 'function') {
 					const self = this;
-					return (async function* () {
-						let resolved;
-						try {
-							resolved = await allowed;
-						} catch {
-							throw new AccessViolation((context as any).user);
-						}
-						if (!resolved) throw new AccessViolation((context as any).user);
-						target.checkPermission = false;
-						yield* self.search(target);
-					})();
+					const gatedResults: any = new ExtendedIterable();
+					const authorization = Promise.resolve(allowed).then(
+						async (resolved) => {
+							if (!resolved) return { allowed: false };
+							target.checkPermission = false;
+							try {
+								// Initialize the real search before the static transaction settles so it reserves
+								// the same stable read snapshot as a synchronously-authorized search.
+								return { allowed: true, results: await self.search(target) };
+							} catch (error) {
+								return { allowed: true, error };
+							}
+						},
+						() => ({ allowed: false })
+					);
+					gatedResults.selectApplied = true;
+					gatedResults.getColumns = getColumns;
+					gatedResults.iterate = (options: any = {}) => {
+						const asynchronous = options === true || options?.async;
+						const iterationOptions = options === true ? { async: true } : { ...options, async: true };
+						let returned = false;
+						let completed = false;
+						let iteratorPromise: Promise<AsyncIterator<any>>;
+						const finish = () => {
+							if (completed) return;
+							completed = true;
+							gatedResults.onDone?.();
+						};
+						const getIterator = () =>
+							(iteratorPromise ||= authorization.then((state: any) => {
+								if (state.error) throw state.error;
+								if (!state.allowed) throw new AccessViolation((context as any).user);
+								const results = state.results;
+								return results.iterate
+									? results.iterate(iterationOptions)
+									: results[Symbol.asyncIterator](iterationOptions);
+							}));
+						return {
+							next(value?: any) {
+								if (!asynchronous) {
+									throw new Error('Can not synchronously iterate while allowRead is asynchronous');
+								}
+								if (returned) return Promise.resolve({ value: undefined, done: true });
+								return getIterator().then(
+									(iterator) =>
+										Promise.resolve(iterator.next(value)).then(
+											(result) => {
+												if (result.done) finish();
+												return result;
+											},
+											(error) => {
+												finish();
+												throw error;
+											}
+										),
+									(error) => {
+										finish();
+										throw error;
+									}
+								);
+							},
+							return(value?: any) {
+								returned = true;
+								finish();
+								return getIterator().then(
+									(iterator) => iterator.return?.(value) ?? { value, done: true },
+									() => ({ value, done: true })
+								);
+							},
+							throw(error: any) {
+								returned = true;
+								finish();
+								return getIterator().then(
+									(iterator) => {
+										if (iterator.throw) return iterator.throw(error);
+										throw error;
+									},
+									() => Promise.reject(error)
+								);
+							},
+						};
+					};
+					return propagateSearchAuthorization(gatedResults, authorization);
 				}
 				if (!allowed) {
 					throw new AccessViolation((context as any).user);
@@ -3102,19 +3212,7 @@ export function makeTable(options) {
 				txn.doneReadTxn();
 			};
 			results.selectApplied = true;
-			results.getColumns = () => {
-				if (select) {
-					const columns = [];
-					for (const column of select) {
-						if (column === '*') columns.push(...attributes.map((attribute) => attribute.name));
-						else columns.push((column as any).name || column);
-					}
-					return columns;
-				}
-				return attributes
-					.filter((attribute) => !attribute.computed && !attribute.relationship)
-					.map((attribute) => attribute.name);
-			};
+			results.getColumns = getColumns;
 			return results;
 		}
 		/**
