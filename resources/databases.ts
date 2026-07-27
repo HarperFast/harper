@@ -223,8 +223,11 @@ const NEXT_TABLE_ID = Symbol.for('next-table-id');
 // unbounded retry turns one broken table into a per-reload log flood in every
 // worker thread.
 const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
-// `database.table` -> consecutive failed completion attempts in this thread.
+// database + table -> consecutive failed completion attempts in this thread.
+// Keyed with a NUL separator rather than a dot so that database "a.b" table "c"
+// and database "a" table "b.c" cannot share a budget.
 const interruptedDropAttempts = new Map<string, number>();
+const interruptedDropKey = (databaseName: string, tableName: string) => `${databaseName}\0${tableName}`;
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -552,8 +555,16 @@ function initStores(
 	// it, because creating over a half-dropped table would resurrect its catalog
 	// rows. There a failure propagates to the caller as its own single error.
 	for (const [tableName, tableDef] of tablesToLoad) {
-		if (!tableDef.primary?.dropping) continue;
-		const dropKey = `${databaseName}.${tableName}`;
+		const dropKey = interruptedDropKey(databaseName, tableName);
+		if (!tableDef.primary?.dropping) {
+			// No tombstone, so any budget this table spent belongs to a drop that
+			// has since been resolved - by the create path, which completes
+			// interrupted drops itself and never passes through here. Leaving the
+			// budget spent would permanently skip cleanup for the table's NEXT
+			// interrupted drop.
+			interruptedDropAttempts.delete(dropKey);
+			continue;
+		}
 		const failedAttempts = interruptedDropAttempts.get(dropKey) ?? 0;
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
@@ -563,11 +574,12 @@ function initStores(
 			} catch (error) {
 				const attempt = failedAttempts + 1;
 				interruptedDropAttempts.set(dropKey, attempt);
+				const dropLabel = `${databaseName}.${tableName}`;
 				if (attempt < MAX_INTERRUPTED_DROP_ATTEMPTS) {
-					logger.debug(`Failed to complete interrupted drop of table ${dropKey}, attempt ${attempt}`, error);
+					logger.debug(`Failed to complete interrupted drop of table ${dropLabel}, attempt ${attempt}`, error);
 				} else {
 					logger.error(
-						`Unable to complete the interrupted drop of table ${dropKey} after ${attempt} attempts; giving up until this node restarts. ${tableName} stays unloaded, with its catalog rows and column families left in place. An "Invalid column family specified in write batch" cause means the storage environment for ${databaseName} has latched a background error and will reject every write to every table in it until this node restarts.`,
+						`Unable to complete the interrupted drop of table ${dropLabel} after ${attempt} attempts; giving up until this node restarts. ${tableName} stays unloaded, with its catalog rows and column families left in place. An "Invalid column family specified in write batch" cause means the storage environment for ${databaseName} has latched a background error and will reject every write to every table in it until this node restarts.`,
 						error
 					);
 				}
