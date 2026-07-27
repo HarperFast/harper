@@ -445,7 +445,11 @@ export function getDomainSocketPathLengthWarning(hdbRootPath, domainSocket, plat
 	} else if (platformPath.isAbsolute(domainSocket)) {
 		resolvedValue = domainSocket;
 	} else {
-		resolvedValue = platformPath.join(hdbRootPath, domainSocket);
+		// getConfigPath() (configUtils.ts) resolves this same value at runtime with
+		// `path.resolve(rootPath, value)`, not `.join()` — when rootPath is itself relative (the
+		// `rootPath` config value has no absolute-path requirement), resolve() folds in the process's
+		// cwd while join() would leave the result relative, undercounting its real byte length.
+		resolvedValue = platformPath.resolve(hdbRootPath, domainSocket);
 	}
 	const byteLength = Buffer.byteLength(resolvedValue);
 	const limit = udsPathMaxBytes(platform);

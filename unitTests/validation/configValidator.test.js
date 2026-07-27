@@ -256,6 +256,21 @@ describe('Test configValidator module', () => {
 			expect(warning).to.include('Unix domain socket path limit on win32');
 			expect(getDomainSocketPathLengthWarning('C:\\hdb', 'C:\\short', 'win32')).to.equal(null);
 		});
+
+		it('resolves a relative rootPath against process.cwd() the same way getConfigPath() does, matching runtime EINVAL', () => {
+			// getConfigPath() (configUtils.ts) resolves the config-file value with
+			// `path.resolve(rootPath, value)`; from a deeply nested cwd, a short-looking relative
+			// rootPath can still resolve past the byte limit at runtime, so this must warn too.
+			const relativeRoot = path.join('a'.repeat(120), 'b'.repeat(120));
+			const warning = getDomainSocketPathLengthWarning(relativeRoot, 'operations-server');
+
+			expect(warning).to.include(path.resolve(relativeRoot, 'operations-server'));
+			expect(warning).to.include('Unix domain socket path limit');
+		});
+
+		it('does not warn when a relative rootPath resolves within the limit', () => {
+			expect(getDomainSocketPathLengthWarning('relative/root', 'operations-server')).to.equal(null);
+		});
 	});
 
 	describe('Directory-path pattern is a linear-time denylist (ReDoS regression, #1779)', () => {
