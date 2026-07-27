@@ -91,8 +91,16 @@ function customValidate(object, constraints) {
 		});
 	}
 
-	//need this check to avoid unexpected errors if someone doesn't have permissions key included in request
-	if (object.permission) {
+	// `permission` is only presence-constrained, so any type reaches here. Anything that is not a plain
+	// object carries no role flags and no database entries, so every check below is a no-op on it and the
+	// role would validate clean and be persisted — `hdb_role.permission` has no storage type constraint
+	// to catch it later. Reject the shape itself, and skip the per-key checks that assume an object.
+	const permissionIsObject =
+		typeof object.permission === 'object' && object.permission !== null && !Array.isArray(object.permission);
+	if (object.permission !== undefined && !permissionIsObject) {
+		addPermError(HDB_ERROR_MSGS.PERMISSION_NOT_OBJECT, validationErrors, undefined, undefined);
+	}
+	if (permissionIsObject) {
 		//check if role is SU or CU and has perms included
 		const suPermsError = validateNoSUPerms(object);
 		if (suPermsError) {
@@ -104,9 +112,6 @@ function customValidate(object, constraints) {
 			// rejected as a non-boolean. A truthiness gate would let those skip both this check AND the
 			// database-permission loop below (the key is a role type, so that loop excludes it), so an
 			// add/alter role would silently accept a value that violates the boolean contract.
-			// `Object.hasOwn`, not `in`: `permission` is only presence-constrained, so a malformed payload
-			// (`permission: 'x'` / `1` / `true`) reaches here, and `in` throws on a primitive — turning a
-			// validation failure into a 500. `hasOwn` coerces and returns false instead.
 			if (Object.hasOwn(object.permission, role) && !validate.isBoolean(object.permission[role as any])) {
 				addPermError(HDB_ERROR_MSGS.SU_CU_ROLE_BOOLEAN_ERROR(role as any), validationErrors, undefined, undefined);
 			}
