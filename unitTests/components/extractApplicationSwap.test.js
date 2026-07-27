@@ -180,6 +180,33 @@ describe('extractApplication directory swap', () => {
 
 		await extractApplication(app);
 		assert.strictEqual(app.isNewComponent, false, 'a pre-existing directory was renamed aside, so this is a redeploy');
+		assert.strictEqual(app.packageMetadataChanged, true, 'changed package metadata requires a restart');
+
+		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		await fs.rm(sourceDir, { recursive: true, force: true });
+	});
+
+	it('does not mark byte-identical package metadata as changed', async () => {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-identical-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const packageJSON = '{"name":"web","version":"1.0.0"}\n';
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), packageJSON);
+		await fs.writeFile(path.join(dirPath, 'package-lock.json'), '{"lockfileVersion":3}\n');
+
+		const sourceDir = await makeFixture({
+			'package.json': packageJSON,
+			'package-lock.json': '{"lockfileVersion":3}\n',
+		});
+		const app = new Application({
+			name: 'web',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		app.dirPath = dirPath;
+
+		await extractApplication(app);
+		assert.strictEqual(app.isNewComponent, false);
+		assert.strictEqual(app.packageMetadataChanged, false, 'identical manifests and lockfiles stay restart-free');
 
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		await fs.rm(sourceDir, { recursive: true, force: true });

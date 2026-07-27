@@ -609,3 +609,28 @@ runs pre-handshake there (auth is unaffected — it runs in the WS connection ch
 matching Node's upgrade-then-authorize order). No core component registers custom upgrade
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
+## Deploy watcher generations preserve logical entry events
+
+Component deploys pause each scope's `EntryHandler` while the component directory is replaced. A
+new chokidar instance then performs a cold-style initial scan, which reports every surviving path
+as `add`/`addDir` and cannot report paths that disappeared. Exposing those raw scan events changed
+the public `scope.handleEntry()` contract in #1806: consumers could no longer distinguish an
+unchanged file from a changed one, and deletions vanished entirely.
+
+`EntryHandler` therefore owns the deploy boundary. It retains a compact snapshot of matching paths
+(entry kind, URL path, and a SHA-256 content digest for files), assigns each watcher a monotonically
+increasing generation, and compares the resumed generation's scan with the pre-pause snapshot. The
+comparison emits only logical `add`, `change`, `unlink`, `addDir`, and `unlinkDir` events; unchanged
+entries remain silent. File contents are still read once for the event payload and are not retained
+in the snapshot. Reads and readiness are generation-scoped, and a per-path sequence prevents a slow
+read from an obsolete event from overwriting a newer state. Missing paths are synthesized as unlink
+events only after the resumed scan and all of its reads complete.
+
+Every watcher recreation uses the same comparison. The first generation compares against an empty
+snapshot and therefore retains its cold-load `add` behavior; deploy resume, configuration updates,
+and polling recovery compare against the last completed generation. This keeps file identity intact
+when watcher recovery could otherwise replay stale modules as new and ensures an update racing a
+deploy scan cannot discard its removals. New component deploys still use `Application#isNewComponent`
+to mark a restart as required for #674; package metadata changes outside consumer globs are tracked by
+the deploy operation, and other existing-component redeploys request a restart only when their logical
+entry or configuration changes require one.

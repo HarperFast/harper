@@ -1,5 +1,6 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
+import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
 import { Component, FileAndURLPathConfig } from './Component.ts';
@@ -74,25 +75,42 @@ export type EntryHandlerEventMap = {
 	unlinkDir: [entry: UnlinkDirectoryEvent];
 };
 
+type EntrySnapshot =
+	{ entryType: 'file'; urlPath: string; digest: Buffer } | { entryType: 'directory'; urlPath: string };
+
+type RedeployScan = {
+	generation: number;
+	previousEntries: Map<string, EntrySnapshot>;
+	currentEntries: Map<string, EntrySnapshot>;
+	removalsEmitted: Set<string>;
+};
+
 export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	#component: Component;
 	#watcher?: FSWatcher;
 	#logger: Logger;
 	#pendingFileReads: Set<Promise<void>>;
+	#pendingFileReadsByGeneration: Map<number, Set<Promise<void>>>;
 	#isInitialScanComplete: boolean;
+	#readyGeneration = 0;
+	#watchGeneration = 0;
+	#eventSequence = 0;
+	#latestPathSequence = new Map<string, number>();
+	#entries = new Map<string, EntrySnapshot>();
+	#redeployScan?: RedeployScan;
 	// When true, #watch() short-circuits without creating a chokidar watcher.
 	// pause() sets it, resume() clears it. Lets a deploy quiesce the watcher
 	// without losing the EntryHandler instance (and therefore listener
 	// attachments registered by plugins via scope.handleEntry(handler)).
-	#paused: boolean = false;
+	#paused = false;
 	// Tracks the in-flight close() promise from pause() so resume() can await
 	// the old watcher's inotify handles releasing before installing a fresh
 	// chokidar instance — otherwise a rapid pause→resume can overlap teardown
 	// and setup, which under inotify pressure can produce spurious EMFILE.
 	#pausedClose?: Promise<void>;
-	#usingPolling: boolean = false;
-	#closed: boolean = false;
-	#openCount: number = 0;
+	#usingPolling = false;
+	#closed = false;
+	#openCount = 0;
 	ready: Promise<any[]>;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: Logger) {
@@ -101,6 +119,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		this.#component = new Component(name, directory, castConfig(config));
 		this.#logger = logger || loggerWithTag(name);
 		this.#pendingFileReads = new Set();
+		this.#pendingFileReadsByGeneration = new Map();
 		this.#isInitialScanComplete = false;
 		this.ready = once(this, 'ready');
 		this.#watch();
@@ -114,7 +133,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		return this.#component.directory;
 	}
 
-	#handleAll(...[event, path, stats]: FSWatcherEventMap['all']): void {
+	#handleAll(generation: number, ...[event, path, stats]: FSWatcherEventMap['all']): void {
+		if (generation !== this.#watchGeneration) return;
 		if (path === '') path = '/';
 
 		if (!isMatch(path, this.#component.globOptions.source, { ignore: this.#component.globOptions.ignore })) return;
@@ -124,26 +144,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		switch (event) {
 			case 'add':
 			case 'change': {
-				const urlPath = deriveURLPath(this.#component, path, 'file');
-				const fileReadPromise = readFile(absolutePath)
-					.then((contents) => {
-						const entry: AddFileEvent | ChangeFileEvent = {
-							eventType: event,
-							entryType: 'file' as const,
-							contents,
-							stats,
-							absolutePath,
-							urlPath,
-						};
-						this.emit('all', entry);
-						this.emit(event, entry as any);
-					})
-					.finally(() => {
-						this.#pendingFileReads.delete(fileReadPromise);
-						this.#checkIfAllComplete();
-					});
-
-				this.#pendingFileReads.add(fileReadPromise);
+				this.#queueFileRead(generation, event, path, absolutePath, stats, readFile(absolutePath));
 				break;
 			}
 			case 'unlink': {
@@ -155,24 +156,183 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 					absolutePath,
 					urlPath,
 				};
-				this.emit('all', entry);
-				this.emit(event, entry);
+				this.#handleRemovedEntry(generation, entry);
 				break;
 			}
 			case 'addDir':
 			case 'unlinkDir': {
 				const urlPath = deriveURLPath(this.#component, path, 'directory');
-				const entry: DirectoryEntryEvent = {
-					eventType: event,
-					entryType: 'directory' as const,
-					stats,
-					absolutePath,
-					urlPath,
-				};
-				this.emit('all', entry);
-				this.emit(event, entry as any);
+				if (event === 'addDir') {
+					const entry: AddDirectoryEvent = {
+						eventType: event,
+						entryType: 'directory',
+						stats,
+						absolutePath,
+						urlPath,
+					};
+					this.#handleAddedEntry(generation, entry, this.#snapshot(entry));
+				} else {
+					const entry: UnlinkDirectoryEvent = {
+						eventType: event,
+						entryType: 'directory',
+						stats,
+						absolutePath,
+						urlPath,
+					};
+					this.#handleRemovedEntry(generation, entry);
+				}
 				break;
 			}
+		}
+	}
+
+	#queueFileRead(
+		generation: number,
+		event: 'add' | 'change',
+		path: string,
+		absolutePath: string,
+		stats: Stats | undefined,
+		contentsPromise: Promise<Buffer>
+	): Promise<void> {
+		const sequence = ++this.#eventSequence;
+		this.#latestPathSequence.set(absolutePath, sequence);
+
+		const fileReadPromise = contentsPromise
+			.then((contents) => {
+				if (generation !== this.#watchGeneration || this.#latestPathSequence.get(absolutePath) !== sequence) return;
+				const entry: AddFileEvent | ChangeFileEvent = {
+					eventType: event,
+					entryType: 'file',
+					contents,
+					stats,
+					absolutePath,
+					urlPath: deriveURLPath(this.#component, path, 'file'),
+				};
+				this.#handleAddedEntry(generation, entry, this.#snapshot(entry));
+			})
+			.catch((error) => {
+				if (
+					generation !== this.#watchGeneration ||
+					(error as NodeJS.ErrnoException | null | undefined)?.code === 'ENOENT'
+				)
+					return;
+				this.#handleError(error);
+			})
+			.finally(() => {
+				if (this.#latestPathSequence.get(absolutePath) === sequence) this.#latestPathSequence.delete(absolutePath);
+				this.#pendingFileReads.delete(fileReadPromise);
+				const generationReads = this.#pendingFileReadsByGeneration.get(generation);
+				generationReads?.delete(fileReadPromise);
+				if (generationReads?.size === 0) this.#pendingFileReadsByGeneration.delete(generation);
+				this.#checkIfAllComplete(generation);
+			});
+
+		this.#pendingFileReads.add(fileReadPromise);
+		let generationReads = this.#pendingFileReadsByGeneration.get(generation);
+		if (!generationReads) this.#pendingFileReadsByGeneration.set(generation, (generationReads = new Set()));
+		generationReads.add(fileReadPromise);
+		return fileReadPromise;
+	}
+
+	#snapshot(entry: AddFileEvent | ChangeFileEvent | AddDirectoryEvent): EntrySnapshot {
+		if (entry.entryType === 'file')
+			return {
+				entryType: entry.entryType,
+				urlPath: entry.urlPath,
+				digest: createHash('sha256').update(entry.contents).digest(),
+			};
+		return { entryType: entry.entryType, urlPath: entry.urlPath };
+	}
+
+	#handleAddedEntry(
+		generation: number,
+		entry: AddFileEvent | ChangeFileEvent | AddDirectoryEvent,
+		snapshot: EntrySnapshot
+	): void {
+		if (generation !== this.#watchGeneration) return;
+		const scan = this.#redeployScan?.generation === generation ? this.#redeployScan : undefined;
+		if (!scan) {
+			const wasKnown = this.#entries.has(entry.absolutePath);
+			this.#entries.set(entry.absolutePath, snapshot);
+			// A newer change read can supersede an initial add read for the same path. The consumer still
+			// needs its first event to be an add so it can load the entry before handling later changes.
+			if (entry.entryType === 'file' && entry.eventType === 'change' && !wasKnown)
+				this.#emitEntry({ ...entry, eventType: 'add' });
+			else this.#emitEntry(entry);
+			return;
+		}
+
+		const wasRemovedDuringScan = scan.removalsEmitted.delete(entry.absolutePath);
+		const currentEntry = scan.currentEntries.get(entry.absolutePath);
+		const previousEntry = wasRemovedDuringScan
+			? undefined
+			: (currentEntry ?? scan.previousEntries.get(entry.absolutePath));
+		scan.currentEntries.set(entry.absolutePath, snapshot);
+
+		if (!previousEntry) {
+			this.#emitAddition(entry);
+			return;
+		}
+		if (previousEntry.entryType !== snapshot.entryType || previousEntry.urlPath !== snapshot.urlPath) {
+			this.#emitRemoval(previousEntry, entry.absolutePath);
+			this.#emitAddition(entry);
+			return;
+		}
+		if (
+			snapshot.entryType === 'file' &&
+			previousEntry.entryType === 'file' &&
+			!previousEntry.digest.equals(snapshot.digest)
+		) {
+			this.#emitEntry({ ...entry, eventType: 'change' } as ChangeFileEvent);
+		}
+	}
+
+	#emitAddition(entry: AddFileEvent | ChangeFileEvent | AddDirectoryEvent): void {
+		if (entry.entryType === 'file') this.#emitEntry({ ...entry, eventType: 'add' });
+		else this.#emitEntry({ ...entry, eventType: 'addDir' });
+	}
+
+	#handleRemovedEntry(generation: number, entry: UnlinkFileEvent | UnlinkDirectoryEvent): void {
+		if (generation !== this.#watchGeneration) return;
+		// Absence invalidates any pending read sequence for this path without retaining every path ever seen.
+		this.#latestPathSequence.delete(entry.absolutePath);
+		const scan = this.#redeployScan?.generation === generation ? this.#redeployScan : undefined;
+		if (!scan) {
+			this.#entries.delete(entry.absolutePath);
+			this.#emitEntry(entry);
+			return;
+		}
+
+		const knownEntry = scan.currentEntries.get(entry.absolutePath) ?? scan.previousEntries.get(entry.absolutePath);
+		scan.currentEntries.delete(entry.absolutePath);
+		if (!knownEntry || scan.removalsEmitted.has(entry.absolutePath)) return;
+		this.#emitRemoval(knownEntry, entry.absolutePath);
+		scan.removalsEmitted.add(entry.absolutePath);
+	}
+
+	#emitRemoval(snapshot: EntrySnapshot, absolutePath: string): void {
+		if (snapshot.entryType === 'file')
+			this.#emitEntry({ eventType: 'unlink', entryType: 'file', absolutePath, urlPath: snapshot.urlPath });
+		else this.#emitEntry({ eventType: 'unlinkDir', entryType: 'directory', absolutePath, urlPath: snapshot.urlPath });
+	}
+
+	#emitEntry(entry: FileEntryEvent | DirectoryEntryEvent): void {
+		this.emit('all', entry);
+		switch (entry.eventType) {
+			case 'add':
+				this.emit('add', entry);
+				break;
+			case 'change':
+				this.emit('change', entry);
+				break;
+			case 'unlink':
+				this.emit('unlink', entry);
+				break;
+			case 'addDir':
+				this.emit('addDir', entry);
+				break;
+			case 'unlinkDir':
+				this.emit('unlinkDir', entry);
 		}
 	}
 
@@ -199,21 +359,66 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		this.emit('error', error);
 	}
 
-	#handleReady(): void {
+	#handleReady(generation: number): void {
+		if (generation !== this.#watchGeneration) return;
 		this.#isInitialScanComplete = true;
-		if (this.#pendingFileReads.size > 0) {
-			this.#logger.debug?.(
-				`Initial scan complete, still waiting for ${this.#pendingFileReads.size} pending file reads`
-			);
+		const pendingReads = this.#pendingFileReadsByGeneration.get(generation)?.size ?? 0;
+		if (pendingReads > 0) {
+			this.#logger.debug?.(`Initial scan complete, still waiting for ${pendingReads} pending file reads`);
 		}
-		this.#checkIfAllComplete();
+		this.#checkIfAllComplete(generation);
 	}
 
-	#checkIfAllComplete(): void {
+	#checkIfAllComplete(generation: number): void {
 		// Only emit 'ready' once the initial scan is complete AND all file reads are done
-		if (this.#isInitialScanComplete && this.#pendingFileReads.size === 0) {
+		if (
+			generation === this.#watchGeneration &&
+			this.#readyGeneration !== generation &&
+			this.#isInitialScanComplete &&
+			!this.#pendingFileReadsByGeneration.has(generation)
+		) {
+			this.#readyGeneration = generation;
+			const listenerErrors = this.#finishRedeployScan(generation);
 			this.emit('ready');
+			// `events.once(this, 'ready')` rejects if `error` is emitted first. Surface consumer failures only
+			// after resolving the generation's ready latch so one bad removal listener cannot strand startup.
+			for (const error of listenerErrors) this.#handleError(error);
 		}
+	}
+
+	#finishRedeployScan(generation: number): unknown[] {
+		const scan = this.#redeployScan;
+		if (!scan || scan.generation !== generation) return [];
+		const listenerErrors: unknown[] = [];
+		const missingEntries = [...scan.previousEntries].filter(
+			([absolutePath]) => !scan.currentEntries.has(absolutePath) && !scan.removalsEmitted.has(absolutePath)
+		);
+		// Match watcher deletion semantics: descendants disappear before the directory that contained them.
+		missingEntries.sort(([a], [b]) => b.length - a.length);
+		// Commit the generation before invoking consumer code. A synchronously throwing removal listener must
+		// not leave the old snapshot installed or keep the readiness latch permanently unresolved.
+		this.#entries = scan.currentEntries;
+		this.#redeployScan = undefined;
+		for (const [absolutePath, snapshot] of missingEntries) {
+			try {
+				this.#emitRemoval(snapshot, absolutePath);
+			} catch (error) {
+				listenerErrors.push(error);
+			}
+		}
+		return listenerErrors;
+	}
+
+	#observedEntries(): Map<string, EntrySnapshot> {
+		const scan = this.#redeployScan;
+		if (!scan) return this.#entries;
+		// A generation can be replaced before `ready`, after some events have already reached consumers.
+		// Carry exactly that observed state forward: retain previously known paths that this partial scan
+		// has not reached, apply additions/changes it emitted, and remove paths whose unlink was emitted.
+		const observedEntries = new Map(scan.previousEntries);
+		for (const absolutePath of scan.removalsEmitted) observedEntries.delete(absolutePath);
+		for (const [absolutePath, snapshot] of scan.currentEntries) observedEntries.set(absolutePath, snapshot);
+		return observedEntries;
 	}
 
 	async #watch() {
@@ -225,7 +430,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			this.#pausedClose = undefined;
 		}
 
-		await this.#watcher?.close();
+		if (this.#watcher) await this.#watcher.close();
 		this.#watcher = undefined;
 
 		// If close() landed while a previous close()/recreate was awaiting, don't
@@ -235,11 +440,22 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		// pause() may have landed in the gap before our async close resolved.
 		// If so, do not install a replacement watcher — resume() will.
 		if (this.#paused) return this.ready;
+		const generation = ++this.#watchGeneration;
 
-		// When a fresh watcher is installed (after pause+resume, or update), the
-		// initial scan emits add events anew, so reset the readiness latch so
-		// `ready` resolves after the new scan completes.
+		// Every watcher generation gets its own readiness latch and compares its
+		// initial scan with the last completed generation. The first generation
+		// compares against an empty snapshot, preserving its cold-load add events;
+		// pause/resume, config updates, and polling recovery all preserve logical
+		// identity instead of replaying surviving entries as fresh adds.
 		this.#isInitialScanComplete = false;
+		const previousEntries = this.#observedEntries();
+		this.#entries = previousEntries;
+		this.#redeployScan = {
+			generation,
+			previousEntries,
+			currentEntries: new Map(),
+			removalsEmitted: new Set(),
+		};
 
 		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
 
@@ -280,9 +496,9 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 					);
 				},
 			})
-			.on('all', this.#handleAll.bind(this))
+			.on('all', (...args) => this.#handleAll(generation, ...args))
 			.on('error', this.#handleError.bind(this))
-			.on('ready', this.#handleReady.bind(this));
+			.on('ready', () => this.#handleReady(generation));
 
 		return this.ready;
 	}
@@ -292,6 +508,12 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	// real ENOSPC/EMFILE on the host.
 	_simulateWatcherErrorForTests(error: unknown): void {
 		this.#handleError(error);
+	}
+
+	// Test-only: enqueue a controllable file read through the same generation checks as chokidar events.
+	_simulateFileReadForTests(event: 'add' | 'change', path: string, contents: Promise<Buffer>): Promise<void> {
+		const absolutePath = join(this.directory, path);
+		return this.#queueFileRead(this.#watchGeneration, event, path, absolutePath, undefined, contents);
 	}
 
 	// Test-only: whether the watcher has fallen back to polling.
@@ -307,6 +529,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	close(): Promise<this> {
+		this.#watchGeneration++;
 		this.#closed = true;
 		const pendingReads = [...this.#pendingFileReads];
 		const watcherClose = this.#watcher ? Promise.resolve(this.#watcher.close()).catch(() => {}) : Promise.resolve();
@@ -332,6 +555,10 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	 * Idempotent. Awaiting `ready` while paused will not resolve until resume().
 	 */
 	pause(): void {
+		if (this.#paused) return;
+		// Invalidate callbacks and reads already queued by the watcher being paused. They belong to the
+		// pre-deploy tree and must not be mistaken for events from the resumed generation.
+		this.#watchGeneration++;
 		this.#paused = true;
 		// Reset `ready` to a fresh pending promise so the documented "awaiting
 		// ready while paused will not resolve until resume()" contract holds even
@@ -350,10 +577,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 
 	/**
 	 * Reinstate the watcher previously stopped by pause(). The fresh chokidar
-	 * instance does an initial scan and emits add events for every file
-	 * currently matching the configured globs — by design, since the typical
-	 * caller (Scope, on deploy:end) wants plugins to see the post-deploy tree
-	 * as if loading cold.
+	 * instance scans the post-pause tree, compares it with the retained snapshot,
+	 * and emits only the logical add, change, unlink, addDir, and unlinkDir events.
 	 *
 	 * No-op if not currently paused.
 	 */

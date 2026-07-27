@@ -9,11 +9,11 @@
 //
 // This module solves that by broadcasting a structured "deploy:start" /
 // "deploy:end" signal to every Harper thread. Each thread's deploy emitter
-// fires locally so Scopes (and any plugin subscribers) can react: Scopes close
-// their EntryHandlers on start, recreate them on end. The result is that
+// fires locally so Scopes (and any plugin subscribers) can react: Scopes pause
+// their EntryHandlers on start and resume them on end. The result is that
 // during a deploy, no watcher fires events for the deployed component, and
-// after the deploy the recreated watcher emits one fresh add per current file
-// — collapsed by the existing restart debounce into a single restart.
+// after the deploy the watcher compares the new tree with its retained snapshot
+// and emits the same logical add/change/unlink events consumers saw before #1806.
 //
 // State sharing across threads is intentionally narrow: the local Set of
 // in-flight component names is rebuilt from the broadcast stream. Plugins that

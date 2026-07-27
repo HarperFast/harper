@@ -646,12 +646,10 @@ async function deployComponent(req) {
 			// deploy checks its own local isNewComponent, since directory state (and therefore
 			// whether the component was already active) can differ per node.
 			//
-			// An existing, already-active component being redeployed does NOT force a restart
-			// here: some updates (e.g. static files only) may not need one at all, and when one
-			// genuinely is needed, that component's already-running file watcher (Scope/
-			// EntryHandler, see deployLifecycle.ts) independently detects the post-deploy file
-			// changes and requests the restart itself.
-			if (application.isNewComponent) {
+			// An existing component's watched files are handled by Scope/EntryHandler. Package
+			// metadata is deliberately outside most plugin globs, so compare it across the atomic
+			// swap as well: a dependency or module-entry change also invalidates loaded code.
+			if (application.isNewComponent || application.packageMetadataChanged) {
 				const { requestRestart } = require('./requestRestart.ts');
 				requestRestart();
 			}
