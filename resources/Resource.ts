@@ -359,8 +359,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				return newRecord?.[(this.constructor as any).primaryKey as keyof typeof newRecord] as any;
 			}
 		} else {
-			// no id is the collection form; posting a record to it creates it (the v4 super.post contract)
-			if (this.#isCollection || this.#id == null) {
+			// a null id is the bare collection path; posting a record to it creates it (the v4 super.post
+			// contract). An undefined id (argless RequestTarget) is unconfigured and still rejects.
+			if (this.#isCollection || this.#id === null) {
 				const resource = await (this.constructor as any).create(this.#id, target, this.#context);
 				return resource.#id;
 			}

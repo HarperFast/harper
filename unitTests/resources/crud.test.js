@@ -377,6 +377,13 @@ describe('v4-style instance post on a collection target', () => {
 		assert.strictEqual(record.stamped, true, 'instance override should have run');
 	});
 
+	it('an argless RequestTarget (unconfigured, undefined id) still rejects post', async function () {
+		await assert.rejects(
+			async () => PostSub.post(new RequestTarget(), { title: 'nope' }),
+			/does not have a post method/
+		);
+	});
+
 	it('instance post on an identified resource still 405s', async function () {
 		await PostSub.put('existing-1', { title: 'x' });
 		await assert.rejects(
