@@ -419,6 +419,22 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 		expect(props.kind).to.not.have.property('const');
 	});
 
+	it('carries nullability onto the emitted scalar schema', () => {
+		// The walk assertions above only prove `type: 'null'` and unions are gone; they would pass just as
+		// happily if nullability were dropped instead of translated.
+		const props = buildDocument().components.schemas.Widget.properties;
+		expect(props.maybe).to.deep.equal({ type: 'string', nullable: true });
+		expect(props.nothing.nullable).to.equal(true);
+	});
+
+	it('widens a nullable `enum` with `null` (3.0 `nullable` does not do it)', () => {
+		const props = buildDocument().components.schemas.Widget.properties;
+		expect(props.nullableEnum.nullable).to.equal(true);
+		expect(props.nullableEnum.enum).to.deep.equal(['a', 'b', null]);
+		// `const` + `nullable`: the single-value enum still has to admit null.
+		expect(props.nullableConst.enum).to.deep.equal(['fixed', null]);
+	});
+
 	it('emits the properties under test (guards the walk assertions against an empty document)', () => {
 		const props = buildDocument().components.schemas.Widget.properties;
 		for (const key of ['kind', 'nothing', 'maybe', 'nested', 'list', 'nullableEnum', 'nullableConst', 'when']) {

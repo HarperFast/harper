@@ -251,12 +251,27 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				// subset: `const` only arrived in draft-06, so it is not a keyword here. Emit the
 				// equivalent single-value `enum` instead of a keyword the declared dialect doesn't define.
 				if (props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
-					const prop = props[name] as { description?: string; enum?: unknown; format?: string };
+					const prop = props[name] as {
+						description?: string;
+						enum?: unknown[];
+						format?: string;
+						nullable?: boolean;
+					};
 					if (description) prop.description = description;
 					if (attr.enum && prop.enum === undefined) prop.enum = attr.enum;
 					// An author-declared `format` outranks the Harper type name `Type()` stamps on.
 					if (attr.format) prop.format = attr.format;
-					if (attr.const !== undefined && prop.enum === undefined) prop.enum = [attr.const];
+					// Intersect rather than defer: `const` narrows an `enum` declared alongside it.
+					if (attr.const !== undefined) {
+						prop.enum = Array.isArray(prop.enum) ? prop.enum.filter((value) => value === attr.const) : [attr.const];
+					}
+					// `type: ['string', 'null']` folds to `type: 'string'` + `nullable` upstream; without this the
+					// scalar path emits the type alone and the document claims the field rejects null.
+					if (nullable) prop.nullable = true;
+					// 3.0's `nullable` does not widen an `enum` — without `null` in the list a validator rejects it.
+					if (prop.nullable && Array.isArray(prop.enum) && !prop.enum.includes(null)) {
+						prop.enum = [...prop.enum, null];
+					}
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
