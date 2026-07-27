@@ -108,6 +108,9 @@ export const AUDIT_STORE_OPTIONS = {
 
 export let auditRetention = convertToMS(envGet(CONFIG_PARAMS.LOGGING_AUDITRETENTION)) || 86400 * 1000;
 const MAX_DELETES_PER_CLEANUP = 1000;
+// setTimeout silently falls back to 1ms for delays past this, which would turn the backoff into the
+// hot loop it is meant to avoid — a `logging.auditRetention` over ~248 days reaches it via retention/10
+const MAX_CLEANUP_DELAY = 2 ** 31 - 1;
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
@@ -165,10 +168,12 @@ export function openAuditStore(rootStore) {
 		}
 	});
 	/**
-	 * Schedules a pass of the audit cleanup loop. The returned promise settles once the pass that
-	 * serves this call has committed its deletions, so callers (notably tests) can await completion
-	 * instead of guessing a delay. A pass removes at most MAX_DELETES_PER_CLEANUP entries before
-	 * rescheduling itself, so settling means "that pass finished", not "the audit log is fully pruned".
+	 * Schedules a pass of the audit cleanup loop. The returned promise fulfills once the pass that
+	 * serves this call has finished, so callers (notably tests) can await completion instead of
+	 * guessing a delay. Two things it does not promise: a pass removes at most
+	 * MAX_DELETES_PER_CLEANUP entries before rescheduling itself, so fulfillment means "that pass
+	 * finished", not "the audit log is fully pruned"; and a pass that failed logs and fulfills rather
+	 * than rejecting, since this promise doubles as the loop's serialization barrier.
 	 */
 	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
 		// Skip audit cleanup/purge in read-only mode
@@ -223,18 +228,22 @@ export function openAuditStore(rootStore) {
 						}
 					}
 					await committed;
+				} catch (error) {
+					// the timer callback is detached, so anything escaping here lands as an unhandled
+					// rejection instead of a log line — and skips the reschedule below with it
+					harperLogger.warn('Error during audit log cleanup', error);
 				} finally {
 					if (deleted === 0) {
 						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
-						// the retention time). `<<` would coerce to int32 here, and a sub-millisecond retention (used by
-						// tests) collapses the delay to 0 permanently — 0 << 1 is 0 — turning the backoff into a loop
-						// that reschedules every event turn for the life of the process.
-						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10));
+						// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
+						// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
+						// retention over ~248 days grows it past 2^31 where halving it wraps negative.
+						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY));
 					} else {
 						// if we did delete something, update our updates since timestamp
 						updateLastRemoved(auditStore, lastKey);
 						// and do updates faster
-						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay >> 1;
+						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
 					}
 					resolve();
 					scheduleAuditCleanup();
