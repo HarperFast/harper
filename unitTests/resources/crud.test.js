@@ -347,7 +347,7 @@ describe('transactional argument normalization with RequestTarget', () => {
 	});
 });
 
-describe('v4-style instance post on a collection target', () => {
+describe('instance post on a collection target', () => {
 	let PostBase, PostSub;
 	before(async function () {
 		setupTestDBPath();
@@ -357,8 +357,7 @@ describe('v4-style instance post on a collection target', () => {
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }, { name: 'stamped' }],
 		});
-		// Subclass with a v4-style instance post override that calls super.post(record),
-		// the form that previously fell through to missingMethod on a bare collection target.
+		// Subclass that overrides instance post and delegates to super.post(record)
 		PostSub = class extends PostBase {
 			async post(data) {
 				data.stamped = true;
