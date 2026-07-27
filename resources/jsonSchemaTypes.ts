@@ -28,6 +28,8 @@ export interface JsonSchemaFragment {
 	additionalProperties?: boolean;
 	format?: string;
 	const?: unknown;
+	/** Emitted by the OpenAPI 3.0 projection for a genuine multi-type union; not authored directly. */
+	oneOf?: JsonSchemaFragment[];
 }
 
 /**
@@ -71,6 +73,12 @@ export interface AttributeLike {
 	assignCreatedTime?: boolean;
 	assignUpdatedTime?: boolean;
 	nullable?: boolean;
+	/**
+	 * The source JSON-Schema type union, verbatim, when `static properties` declared one. `type` holds
+	 * the first non-null member so single-type consumers keep working; surfaces that can express a
+	 * union (MCP passes it through, OpenAPI 3.0 translates it to `oneOf`) read this instead.
+	 */
+	types?: readonly string[];
 	elements?: AttributeLike;
 	/** Sub-attributes of a nested object field (the same array form `Table.validate` iterates). */
 	properties?: AttributeLike[];
@@ -107,6 +115,10 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 	} else if (attr.type === 'array' && attr.elements) {
 		fragment.type = 'array';
 		fragment.items = attributeToFragment(attr.elements);
+	} else if (attr.types) {
+		// A declared union round-trips verbatim; collapsing it to `attr.type` here would make the
+		// canonical `Table.properties` disagree with what the author wrote.
+		fragment.type = [...attr.types] as JsonSchemaType[];
 	} else {
 		const jsonType = attr.type ? DATA_TYPES[attr.type] : undefined;
 		if (jsonType) fragment.type = jsonType;
@@ -157,9 +169,11 @@ function fragmentToAttribute(name: string, fragment: JsonSchemaFragment): Attrib
 		// than misleadingly reusing the array field's own name.
 		attr.elements = fragmentToAttribute('', fragment.items);
 	} else if (Array.isArray(fragment.type)) {
-		// JSON-Schema union type. Fold a `'null'` member into `nullable` (the OpenAPI-expressible form)
-		// and keep the remaining member. A single non-null member is the common `['T','null']` case; a
-		// genuine multi-type union isn't expressible on an attribute, so the first member is kept.
+		// JSON-Schema union type. Keep the source union on `types` so surfaces that can express one
+		// (MCP natively, OpenAPI 3.0 via `oneOf`) don't have to reconstruct it, and fold a `'null'`
+		// member into `nullable` as well since that is the form OpenAPI needs. `type` carries the first
+		// non-null member for the single-type consumers (validation, query coercion) that read it.
+		attr.types = fragment.type;
 		const members = fragment.type.filter((t) => t !== 'null');
 		if (members.length !== fragment.type.length) attr.nullable = true;
 		if (members.length > 0) attr.type = members[0];

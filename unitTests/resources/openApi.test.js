@@ -355,6 +355,8 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 			kind: { type: 'string', const: 'widget' },
 			nothing: { type: 'null' },
 			maybe: { type: ['string', 'null'] },
+			mixed: { type: ['string', 'number'] },
+			mixedMaybe: { type: ['string', 'integer', 'null'] },
 			nested: { type: 'object', properties: { inner: { type: 'string', const: 'x' }, deepNull: { type: 'null' } } },
 			list: { type: 'array', items: { type: 'string', const: 'y' } },
 			nullableEnum: { type: 'string', enum: ['a', 'b'], nullable: true },
@@ -435,9 +437,34 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 		expect(props.nullableConst.enum).to.deep.equal(['fixed', null]);
 	});
 
+	it('translates a genuine multi-type union to `oneOf`', () => {
+		// 3.0 has no type arrays. Keeping only the first member would narrow the contract silently —
+		// a client would be told `mixed` is a string when the resource also accepts a number.
+		const props = buildDocument().components.schemas.Widget.properties;
+		expect(props.mixed).to.deep.equal({ oneOf: [{ type: 'string' }, { type: 'number' }] });
+		expect(props.mixed).to.not.have.property('type');
+	});
+
+	it('carries nullability alongside a union', () => {
+		const props = buildDocument().components.schemas.Widget.properties;
+		expect(props.mixedMaybe.oneOf).to.deep.equal([{ type: 'string' }, { type: 'integer' }]);
+		expect(props.mixedMaybe.nullable).to.equal(true);
+	});
+
 	it('emits the properties under test (guards the walk assertions against an empty document)', () => {
 		const props = buildDocument().components.schemas.Widget.properties;
-		for (const key of ['kind', 'nothing', 'maybe', 'nested', 'list', 'nullableEnum', 'nullableConst', 'when']) {
+		for (const key of [
+			'kind',
+			'nothing',
+			'maybe',
+			'mixed',
+			'mixedMaybe',
+			'nested',
+			'list',
+			'nullableEnum',
+			'nullableConst',
+			'when',
+		]) {
 			expect(props, `fixture property ${key} missing — walk assertions would pass vacuously`).to.have.property(key);
 		}
 	});
