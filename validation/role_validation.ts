@@ -104,7 +104,10 @@ function customValidate(object, constraints) {
 			// rejected as a non-boolean. A truthiness gate would let those skip both this check AND the
 			// database-permission loop below (the key is a role type, so that loop excludes it), so an
 			// add/alter role would silently accept a value that violates the boolean contract.
-			if (role in object.permission && !validate.isBoolean(object.permission[role as any])) {
+			// `Object.hasOwn`, not `in`: `permission` is only presence-constrained, so a malformed payload
+			// (`permission: 'x'` / `1` / `true`) reaches here, and `in` throws on a primitive — turning a
+			// validation failure into a 500. `hasOwn` coerces and returns false instead.
+			if (Object.hasOwn(object.permission, role) && !validate.isBoolean(object.permission[role as any])) {
 				addPermError(HDB_ERROR_MSGS.SU_CU_ROLE_BOOLEAN_ERROR(role as any), validationErrors, undefined, undefined);
 			}
 		});
@@ -272,11 +275,19 @@ function customValidate(object, constraints) {
 function validateNoSUPerms(obj) {
 	const { operation, permission } = obj;
 	if (operation === terms.OPERATIONS_ENUM.ADD_ROLE || operation === terms.OPERATIONS_ENUM.ALTER_ROLE) {
-		//Check if role type is super user
-		const isSuRole = permission.super_user === true;
+		// A malformed `permission` (only presence-constrained) must not throw here either.
+		if (typeof permission !== 'object' || permission === null) return null;
 		const hasPerms = Object.keys(permission).length > 1;
-		if (hasPerms && isSuRole) {
+		if (!hasPerms) return null;
+		// Both role types are exclusive — the error message has always named CU as well. Before
+		// `cluster_user` joined ROLE_TYPES it was rejected incidentally, by the database-permission loop
+		// treating it as a database whose value wasn't an object; now that the loop skips it, the
+		// exclusivity has to be enforced here or `{ cluster_user: true, someDb: {...} }` validates.
+		if (permission.super_user === true) {
 			return HDB_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(terms.ROLE_TYPES_ENUM.SUPER_USER);
+		}
+		if (permission.cluster_user === true) {
+			return HDB_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(terms.ROLE_TYPES_ENUM.CLUSTER_USER);
 		}
 	}
 	return null;

@@ -296,6 +296,36 @@ describe('Test role_validation module ', () => {
 			});
 		});
 
+		// harper#1016 (review): a malformed `permission` primitive must stay a 400, not a 500. `permission`
+		// is only presence-constrained, so these reach the role-flag loop; `in` throws on a primitive.
+		[{ p: 'x' }, { p: 1 }, { p: true }].forEach(({ p }) => {
+			it(`should not throw on a malformed permission primitive ${JSON.stringify(p)}`, () => {
+				const test_role_json = TEST_ADD_ROLE_OBJECT();
+				test_role_json.permission = p;
+				expect(() => customValidate_rw(test_role_json, getAddRoleConstraints())).to.not.throw();
+			});
+		});
+
+		// harper#1016 (review): cluster_user is exclusive like super_user. Before CU joined ROLE_TYPES the
+		// database-permission loop rejected this incidentally; that loop now skips it, so validateNoSUPerms
+		// has to enforce it.
+		[
+			{ extra: 'someDb', value: { tables: {} } },
+			{ extra: 'operations', value: ['add_role'] },
+			{ extra: 'structure_user', value: true },
+		].forEach(({ extra, value }) => {
+			it(`should reject cluster_user = true combined with ${extra}`, () => {
+				const test_role_json = TEST_ADD_ROLE_OBJECT();
+				test_role_json.permission = { cluster_user: true, [extra]: value };
+				const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+				expect(test_result.statusCode).to.equal(400);
+				expect(test_result.http_resp_msg.main_permissions).to.include(
+					TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('cluster_user')
+				);
+			});
+		});
+
 		it('NOMINAL - should return null for valid ALTER_ROLE object', () => {
 			const test_result = customValidate_rw(TEST_ALTER_ROLE_OBJECT(), getAlterRoleConstraints());
 			expect(test_result).to.equal(null);
