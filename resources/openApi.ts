@@ -34,7 +34,7 @@ function openApiPrimitive(type: string | undefined, attributeName: string | unde
 	if (!resolved) return {};
 	// 3.0.x has no `'null'` type — nullability is the `nullable` keyword, so a bare `type: 'null'`
 	// becomes an untyped nullable schema rather than a type the dialect can't express.
-	if (resolved === 'null') return { nullable: true };
+	if (resolved === 'null') return {}; // 3.0 has no null type; a bare `nullable` on an untyped schema says nothing
 	// Preserve the Harper type name as `format` for the types where it adds information, matching the
 	// top-level `Type()` emitter.
 	return Object.hasOwn(DATA_TYPES, type) ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
@@ -225,18 +225,30 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				if (props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
 					const prop = props[name] as {
 						description?: string;
-						enum?: unknown;
+						enum?: unknown[];
+						type?: unknown;
 						format?: string;
 						const?: unknown;
 						nullable?: boolean;
 					};
 					if (description) prop.description = description;
 					if (attr.enum && prop.enum === undefined) prop.enum = attr.enum;
-					if (attr.format && prop.format === undefined) prop.format = attr.format;
+					// An author-declared `format` outranks the Harper type name `Type()` stamps on.
+					if (attr.format) prop.format = attr.format;
 					// `const` is draft-06; this document declares 3.0.3 (the draft-04 subset), so emit the
-					// equivalent single-value `enum` rather than a keyword the dialect doesn't define.
-					if (attr.const !== undefined && prop.enum === undefined) prop.enum = [attr.const];
-					if (nullable && prop.nullable === undefined) prop.nullable = true;
+					// equivalent single-value `enum`. Intersect when both are declared, so OpenAPI never
+					// advertises a wider value set than MCP from the same declaration.
+					if (attr.const !== undefined) {
+						prop.enum = Array.isArray(prop.enum) ? prop.enum.filter((value) => value === attr.const) : [attr.const];
+					}
+					// Only a typed schema can be nullable — a bare `{ nullable: true }` says nothing in 3.0,
+					// matching the guard the shared emitter applies.
+					if (nullable && prop.nullable === undefined && prop.type !== undefined) prop.nullable = true;
+					// 3.0's `nullable` does not widen an `enum`; without `null` in the list a validator
+					// rejects it regardless of the flag.
+					if (prop.nullable && Array.isArray(prop.enum) && !prop.enum.includes(null)) {
+						prop.enum = [...prop.enum, null];
+					}
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}

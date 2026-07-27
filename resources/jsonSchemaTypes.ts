@@ -306,18 +306,31 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 	}
 
 	if (attr.nullable) applyNullability(fragment, options.dialect);
-	if (attr.description && fragment.description === undefined) fragment.description = attr.description;
+	// An explicitly declared `description`/`format` outranks whatever the primitive mapper supplied as a
+	// default — a author writing `{ type: 'Date', format: 'date-time' }` means `date-time`, not the
+	// Harper type name the mapper stamps on.
+	if (attr.description) fragment.description = attr.description;
 	if (attr.enum && fragment.enum === undefined) fragment.enum = attr.enum;
-	if (attr.format && fragment.format === undefined) fragment.format = attr.format;
+	if (attr.format) fragment.format = attr.format;
 	if (attr.const !== undefined) {
 		// `const` is JSON Schema draft-06. OpenAPI 3.0.3's Schema Object is the draft-04 subset, so it
 		// has no such keyword — emit the equivalent single-value `enum` for that dialect. MCP speaks
 		// current JSON Schema and takes `const` directly.
 		if (options.dialect === 'openapi-3.0.3') {
-			if (fragment.enum === undefined) fragment.enum = [attr.const as never];
+			// Intersect rather than skip when both are declared: dropping the `const` would leave OpenAPI
+			// advertising a wider value set than MCP, from one declaration.
+			fragment.enum = fragment.enum
+				? (fragment.enum.filter((value) => value === attr.const) as never[])
+				: [attr.const as never];
 		} else if (fragment.const === undefined) {
 			fragment.const = attr.const;
 		}
+	}
+	// OpenAPI 3.0's `nullable` does not widen an `enum` — a validator still rejects `null` unless the
+	// value list contains it. Without this, marking an enum (or a const, now emitted as one) nullable
+	// produces a schema that contradicts itself.
+	if (options.dialect === 'openapi-3.0.3' && fragment.nullable && fragment.enum && !fragment.enum.includes(null)) {
+		fragment.enum = [...fragment.enum, null];
 	}
 	// `hidden` / `primaryKey` / `assignCreatedTime` / `assignUpdatedTime` are Harper directives, not
 	// schema vocabulary — they never belong in an emitted document.
