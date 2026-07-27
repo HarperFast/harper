@@ -358,6 +358,7 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 			mixed: { type: ['string', 'number'] },
 			mixedMaybe: { type: ['string', 'integer', 'null'] },
 			nested: { type: 'object', properties: { inner: { type: 'string', const: 'x' }, deepNull: { type: 'null' } } },
+			nullList: { type: 'array', items: { type: 'null' } },
 			list: { type: 'array', items: { type: 'string', const: 'y' } },
 			nullableEnum: { type: 'string', enum: ['a', 'b'], nullable: true },
 			nullableConst: { type: 'string', const: 'fixed', nullable: true },
@@ -449,6 +450,15 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 		const props = buildDocument().components.schemas.Widget.properties;
 		expect(props.mixedMaybe.oneOf).to.deep.equal([{ type: 'string' }, { type: 'integer' }]);
 		expect(props.mixedMaybe.nullable).to.equal(true);
+	});
+
+	it('expresses a null-only declaration at every depth, not just the top level', () => {
+		// 3.0 cannot say `type: 'null'`, but it can say "only null" with a null-only enum. The nested and
+		// array-item paths went through a different branch than the top-level one and said nothing at all.
+		const props = buildDocument().components.schemas.Widget.properties;
+		expect(props.nothing).to.deep.equal({ nullable: true, enum: [null] });
+		expect(props.nested.properties.deepNull).to.deep.equal({ nullable: true, enum: [null] });
+		expect(props.nullList.items).to.deep.equal({ nullable: true, enum: [null] });
 	});
 
 	it('emits the properties under test (guards the walk assertions against an empty document)', () => {

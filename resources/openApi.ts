@@ -41,7 +41,11 @@ function toOpenApiDialect(fragment: JsonSchemaFragment): JsonSchemaFragment {
 		} else if (members.length === 1) out.type = members[0];
 		else delete out.type;
 	} else if (out.type === 'null') {
+		// A null-only declaration. 3.0 has no `'null'` type, and a bare `nullable` on an untyped schema
+		// constrains nothing — a null-only `enum` is the form the dialect can actually express.
 		delete out.type;
+		out.nullable = true;
+		if (out.enum === undefined) out.enum = [null];
 	}
 	// `const` is draft-06; emit the equivalent single-value `enum`, intersecting when both are declared.
 	if (constValue !== undefined) {
@@ -256,7 +260,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						} else if (!DATA_TYPES[elements.type] && JSON_SCHEMA_SCALAR_TYPES.has(elements.type)) {
 							props[name] =
 								elements.type === 'null'
-									? { type: 'array', items: {} }
+									? { type: 'array', items: { nullable: true, enum: [null] } }
 									: { type: 'array', items: new Type(elements.type) };
 						} else {
 							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
@@ -264,9 +268,9 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					} else if (type === 'Any') {
 						props[name] = { format: type };
 					} else if (!DATA_TYPES[type] && JSON_SCHEMA_SCALAR_TYPES.has(type)) {
-						// OpenAPI 3.0.3 has no `'null'` type — nullability is expressed by the `nullable`
-						// keyword, so a bare `type: 'null'` becomes an untyped nullable schema.
-						props[name] = type === 'null' ? { nullable: true } : new Type(type);
+						// OpenAPI 3.0.3 has no `'null'` type. A bare `nullable` on an untyped schema says
+						// nothing, so express "only null" the one way the dialect can: a null-only `enum`.
+						props[name] = type === 'null' ? { nullable: true, enum: [null] } : new Type(type);
 					} else {
 						props[name] = new Type(DATA_TYPES[type], type);
 					}
