@@ -11,6 +11,7 @@ interface MultipartBody {
 
 const FIELD_SIZE_LIMIT = 1024 * 1024; // 1 MB per non-file field — generous for JSON params
 const MAX_FIELDS = 64;
+const UNSAFE_FIELD_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 // Operation handlers stream the file part directly into extraction (gunzip + tar-fs),
 // so there is no separate filesize cap to enforce here. Backpressure flows through busboy
 // → the file Readable → the consumer, bounded by disk space rather than memory.
@@ -71,6 +72,14 @@ export function parseMultipartRequest(
 			// fired and the file stream has typically ended too. The CLI always sends fields
 			// first; this branch only fires on malformed/hand-crafted clients.
 			logger.warn?.(`Multipart field "${name}" arrived after the file part; ignoring`);
+			return;
+		}
+		if (UNSAFE_FIELD_NAMES.has(name)) {
+			const error = new ClientError(`Multipart field "${name}" is not allowed`, 400);
+			callDone(error);
+			// Stop accepting bytes from a malicious request immediately. The raw-stream error
+			// handler below also tears down busboy, so a later file part cannot remain unread.
+			rawStream.destroy(error);
 			return;
 		}
 		body[name] = decodeFieldValue(value);

@@ -4,7 +4,7 @@ const terms = require('../../utility/hdbTerms.ts');
 const hdbUtil = require('../../utility/common_utils.ts');
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { realExit } = require('../threads/workerProcessGuard.ts');
-const { handleHDBError, hdbErrors } = require('../../utility/errors/hdbError.ts');
+const { ClientError, handleHDBError, hdbErrors } = require('../../utility/errors/hdbError.ts');
 const { isMainThread } = require('worker_threads');
 const { Readable } = require('stream');
 
@@ -42,6 +42,19 @@ const NO_AUTH_OPERATIONS = [
 	terms.OPERATIONS_ENUM.LOGIN,
 	terms.OPERATIONS_ENUM.LOGOUT,
 ];
+
+const UNSAFE_REQUEST_BODY_PROPERTIES = ['__proto__', 'constructor', 'prototype'];
+
+function validateRequestBodyProperties(body) {
+	if (!body || typeof body !== 'object') {
+		throw new ClientError('Invalid request body', 400);
+	}
+	for (const property of UNSAFE_REQUEST_BODY_PROPERTIES) {
+		if (Object.hasOwn(body, property)) {
+			throw new ClientError(`Request body property "${property}" is not allowed`, 400);
+		}
+	}
+}
 
 function handleServerUncaughtException(err) {
 	let message = `Found an uncaught exception with message: ${err.message}. ${os.EOL}Stack: ${err.stack} ${
@@ -145,8 +158,12 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 	let operation_function;
 
 	try {
-		// Just in case someone tries to bypass auth
-		if (req.body.bypass_auth) delete req.body.bypass_auth;
+		validateRequestBodyProperties(req.body);
+		// Authorization bypass is internal dispatch state, never client request data. Dispatch no
+		// longer reads these properties, but remove both true and false values before operation
+		// code sees the body.
+		if (Object.hasOwn(req.body, 'bypass_auth')) delete req.body.bypass_auth;
+		if (Object.hasOwn(req.body, 'bypassAuth')) delete req.body.bypassAuth;
 
 		operation_function = serverUtilities.chooseOperation(req.body);
 

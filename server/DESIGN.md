@@ -137,6 +137,17 @@ Consequences worth knowing:
 
 ---
 
+## Operations authorization boundary
+
+Operations request bodies are untrusted data. `serverHandlers.js → handlePostRequest()` rejects
+prototype-mutating property names and strips the legacy `bypass_auth` property before dispatch.
+`serverUtilities.ts → chooseOperation()` never reads authorization control from the body: trusted
+internal callers pass bypass state as a separate argument and expose it to operation handlers only
+through `operationAuthorizationState.ts`'s async context. When an operation registered by a component
+must run on a worker, `registeredOperations.ts` carries that state in the same-process ITC envelope,
+separately from the structured-cloned body. Never attach trusted dispatch state to an operation
+payload.
+
 ## Resource ↔ HTTP boundary
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.

@@ -27,6 +27,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { sendItcEvent } from '../threads/itc.js';
 import { onMessageByType, onThreadExit } from '../threads/manageThreads.js';
+import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
 
@@ -49,7 +50,7 @@ const EXECUTE_TIMEOUT_MS = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIM
 // survive the dist build). A worker can only receive an execute request after announcing a
 // registration — which goes through serverUtilities — so these are always set on that path.
 let localDispatch: {
-	chooseOperation: (body: any) => Function;
+	chooseOperation: (body: any, bypassAuth?: boolean) => Function;
 	processLocalTransaction: (req: any, operationFunction: Function) => Promise<any>;
 };
 export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
@@ -99,10 +100,13 @@ let rotation = 0;
  * function and metadata that `verifyPerms` needs only exist on the worker, which runs the full
  * `chooseOperation` check with the forwarded `hdb_user`.
  */
-export function getRemoteOperationFunction(name: string): ((body: any) => Promise<any>) | undefined {
+export function getRemoteOperationFunction(
+	name: string,
+	bypassAuth = false
+): ((body: any) => Promise<any>) | undefined {
 	if (!isMainThread) return undefined;
 	if (!registeredByWorker.has(name)) return undefined;
-	return (body: any) => executeRemoteOperation(name, body);
+	return (body: any) => executeRemoteOperation(name, body, bypassAuth);
 }
 
 function attachMainListeners() {
@@ -135,7 +139,7 @@ function attachMainListeners() {
 	});
 }
 
-async function executeRemoteOperation(name: string, body: any): Promise<any> {
+async function executeRemoteOperation(name: string, body: any, bypassAuth: boolean): Promise<any> {
 	attachMainListeners();
 	const workerIds = registeredByWorker.get(name);
 	const forwardBody = { ...body };
@@ -151,7 +155,7 @@ async function executeRemoteOperation(name: string, body: any): Promise<any> {
 		try {
 			sent = threads.sendToThread(targetThreadId, {
 				type: terms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST,
-				message: { requestId, body: forwardBody, originator: threadId },
+				message: { requestId, body: forwardBody, bypassAuth, originator: threadId },
 			});
 		} catch (error) {
 			// Structured-clone failure (e.g. a function or native handle on the request body) is a
@@ -198,20 +202,20 @@ async function executeRemoteOperation(name: string, body: any): Promise<any> {
  * (permission check + processLocalTransaction) and send the result back to the main thread.
  */
 export async function operationExecuteRequestHandler(event: {
-	message: { requestId: number; body: any; originator: number };
+	message: { requestId: number; body: any; bypassAuth?: boolean; originator: number };
 }) {
-	const { requestId, body, originator } = event.message;
+	const { requestId, body, bypassAuth, originator } = event.message;
 	let response;
 	try {
 		if (!localDispatch) throw new ServerError('This worker thread cannot execute operations', 503);
-		// bypass_auth is trusted as forwarded: the main thread already strips it from external
-		// HTTP requests (handlePostRequest, before any dispatch decision), and an internal caller
-		// legitimately setting it (server.operation(op, context, false)) must see the same
-		// authorize:false behavior whether the operation happens to run locally or via this bridge.
-		// ITC is an internal, same-process trust boundary — a worker able to forge this message
-		// already has direct DB access and gains nothing by spoofing bypass_auth.
-		const operationFunction = localDispatch.chooseOperation(body);
-		const result = await localDispatch.processLocalTransaction({ body }, operationFunction);
+		// Authorization state travels in the trusted same-process ITC envelope, never in the
+		// caller-controlled operation body. This preserves server.operation(..., false) across
+		// worker forwarding without creating a client-spoofable request property.
+		const trustedBypassAuth = bypassAuth === true;
+		const result = await runWithOperationAuthorizationBypass(trustedBypassAuth, () => {
+			const operationFunction = localDispatch.chooseOperation(body, trustedBypassAuth);
+			return localDispatch.processLocalTransaction({ body }, operationFunction);
+		});
 		if (result instanceof Readable || typeof result?.pipe === 'function') {
 			// Streaming results would need MessagePort transfer plumbing — explicitly unsupported
 			// for worker-registered operations for now (#1736), rather than failing opaquely.

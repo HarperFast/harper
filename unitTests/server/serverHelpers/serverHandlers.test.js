@@ -432,6 +432,38 @@ describe('Test serverHandlers.js module ', () => {
 			);
 		});
 
+		it('Should remove caller-supplied authorization bypass values before dispatch', async () => {
+			for (const property of ['bypass_auth', 'bypassAuth']) {
+				for (const bypassAuth of [true, false]) {
+					const body = { operation: 'create_schema', [property]: bypassAuth };
+					const request = { body };
+
+					await serverHandlers_rw.handlePostRequest(request);
+
+					assert.strictEqual(Object.hasOwn(request.body, property), false);
+					assert.strictEqual(choose_op_stub.lastCall.args[0], request.body);
+				}
+			}
+		});
+
+		it('Should reject a null request body with a client error', async () => {
+			await assert.rejects(serverHandlers_rw.handlePostRequest({ body: null }), /Invalid request body/);
+			assert.strictEqual(choose_op_stub.callCount, 0);
+		});
+
+		it('Should reject prototype-mutating properties from parsed request bodies', async () => {
+			for (const unsafeProperty of ['__proto__', 'constructor', 'prototype']) {
+				const body = { operation: 'create_schema' };
+				Object.defineProperty(body, unsafeProperty, {
+					value: { bypass_auth: true },
+					enumerable: true,
+				});
+
+				await assert.rejects(serverHandlers_rw.handlePostRequest({ body }), /is not allowed/);
+			}
+			assert.strictEqual(choose_op_stub.callCount, 0, 'unsafe request bodies must not reach dispatch');
+		});
+
 		it('Should handle error thrown from chooseOperation', async () => {
 			choose_op_stub.throws(TEST_ERR);
 			let test_result;

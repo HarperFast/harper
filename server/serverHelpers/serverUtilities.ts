@@ -48,6 +48,7 @@ import {
 	getRemoteOperationFunction,
 	setLocalOperationDispatch,
 } from './registeredOperations.ts';
+import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -203,7 +204,7 @@ server.setMcpQuotaHandler = (handler) => {
 	setMcpQuotaHandler(handler);
 };
 
-export function chooseOperation(json: OperationRequestBody) {
+export function chooseOperation(json: OperationRequestBody, bypassAuth = false) {
 	let getOpResult: OperationFunctionObject;
 	try {
 		getOpResult = getOperationFunction(json);
@@ -214,7 +215,7 @@ export function chooseOperation(json: OperationRequestBody) {
 		// and its metadata actually exist, so no perm check is skipped by returning early
 		// here (#1736). Workers never re-forward, so an unknown op can't loop.
 		if (isMainThread) {
-			const remoteOperationFunction = getRemoteOperationFunction(json.operation);
+			const remoteOperationFunction = getRemoteOperationFunction(json.operation, bypassAuth);
 			if (remoteOperationFunction) return remoteOperationFunction;
 		}
 		operationLog.error(`Error when selecting operation function - ${err}`);
@@ -231,7 +232,7 @@ export function chooseOperation(json: OperationRequestBody) {
 			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
 			json.parsed_sql_object = parsedSqlObject;
-			if (!json.bypass_auth) {
+			if (!bypassAuth) {
 				const astPermCheck = sql.checkASTPermissions(json, parsedSqlObject);
 				if (astPermCheck) {
 					operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
@@ -248,7 +249,7 @@ export function chooseOperation(json: OperationRequestBody) {
 			}
 			//we need to bypass permission checks to allow the createAuthorizationTokens
 		} else if (
-			!json.bypass_auth &&
+			!bypassAuth &&
 			json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
 			json.operation !== terms.OPERATIONS_ENUM.LOGIN &&
 			json.operation !== terms.OPERATIONS_ENUM.LOGOUT
@@ -310,9 +311,11 @@ _assignPackageExport('operation', operation);
  */
 export function operation(operation: OperationRequestBody, context: Context, authorize: boolean) {
 	operation.hdb_user = context?.user;
-	operation.bypass_auth = !authorize;
-	const operation_function = chooseOperation(operation);
-	return processLocalTransaction({ body: operation }, operation_function);
+	const bypassAuth = !authorize;
+	return runWithOperationAuthorizationBypass(bypassAuth, () => {
+		const operation_function = chooseOperation(operation, bypassAuth);
+		return processLocalTransaction({ body: operation }, operation_function);
+	});
 }
 
 interface Transaction {
