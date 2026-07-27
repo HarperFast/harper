@@ -38,8 +38,11 @@ General plugin configuration options:
 - `files` — `string | string[] | FilesOptionObject` _(optional)_ — Glob pattern(s) for files and directories handled by the plugin's default `EntryHandler`. Pattern rules:
   - Cannot contain `..` or start with `/`
   - `.` or `./` is transformed to `**/*` automatically
-- `urlPath` — `string` _(optional)_ — Base URL path prepended to resolved `files` entries. Cannot contain `..`. If starts with `./` or is `.`, the plugin name is automatically prepended
+- `urlPath` — `string` _(optional)_ — Base URL path prepended to resolved `files` entries and used to route the plugin's HTTP, WebSocket, and upgrade handlers. Cannot contain `..`. If it starts with `./` or is `.`, the plugin name is automatically prepended.
+- `host` — `string` _(optional)_ — Virtual hostname used to route the plugin's HTTP, WebSocket, and upgrade handlers
 - `timeout` — `number` _(optional)_ — Timeout in milliseconds for plugin operations. Takes precedence over the plugin's `defaultTimeout` and the system default (30 seconds)
+
+`urlPath` and `host` are available in v5.2.0. Harper automatically passes them to handlers registered through the scoped `server` API. See [Middleware routing](../http/overview#middleware-routing) for an example and [`HttpOptions`](../http/api#httpoptions) for matching behavior.
 
 ### File Entries
 

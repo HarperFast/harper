@@ -112,10 +112,10 @@ The corresponding instance method runs through Harper's normal `transactional()`
 
 ### `exportTypes` gating
 
-The MCP surface mirrors the public REST surface. A Resource is filtered out of MCP enumeration entirely when its registration sets `exportTypes.mcp = false`:
+The MCP surface mirrors the public REST surface. A Resource is filtered out of MCP enumeration entirely when its registration sets `exportTypes.mcp = false`. The `exportTypes` map is supplied to the registration call — `server.resources.set(path, Resource, exportTypes)` — not to `server.http` (which registers HTTP handlers and does not read `exportTypes`), and a `static exportTypes` field on the class is not read either:
 
 ```ts
-server.http(Resource, { name: 'internal-thing', exportTypes: { mcp: false } });
+server.resources.set('internal-thing', Resource, { mcp: false });
 ```
 
 This is independent of the `http` exportType — the only switch that operators set to scope MCP visibility is `mcp`.

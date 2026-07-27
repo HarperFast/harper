@@ -324,6 +324,24 @@ type Event @table {
 }
 ```
 
+### `@expiresAt`
+
+Marks a field as the record's absolute expiration time (Unix epoch milliseconds). Once the timestamp is in the past, the record is treated as expired: it is hidden from reads and physically removed by the eviction sweep. Useful for session, token, or per-record cache-entry tables where each record carries its own expiry.
+
+```graphql
+type Session @table {
+	id: ID @primaryKey
+	token: String
+	expiresAt: Long @expiresAt
+}
+```
+
+The `@expiresAt` field is authoritative over the table-level [`expiration`](#table) default, in both directions — a per-record value may extend a record's expiration past (since 5.2), or expire it before, the table default. When a record omits the field, the table default (if any) applies.
+
+- The field must be an absolute timestamp (Unix epoch milliseconds), not a duration. Negative values are ignored and fall back to the table default.
+- A full-record `put` that omits the field **clears** it (the record then follows the table default, or never expires if there is none). A `patch` of other fields preserves it — so a session-renewal write must re-include `expiresAt`.
+- On caching tables (with a [source](../resources/resource-api.md#sourcedfromresource-options)), set the per-record TTL via `context.expiresAt` in the source `get()` rather than an `@expiresAt` field.
+
 ### `@hidden` (Field Directive)
 
 Suppresses the field from MCP tool descriptors and the OpenAPI document. The attribute still exists in the table; data is still queryable through other interfaces subject to RBAC. Use this for fields that should not appear in introspectable surfaces.

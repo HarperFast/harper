@@ -225,7 +225,7 @@ type Product @table @export {
 	id: Long @primaryKey
 	name: String
 	resellerIds: [Long] @indexed
-	resellers: [Reseller] @relationship(from: "resellerId")
+	resellers: [Reseller] @relationship(from: "resellerIds")
 }
 ```
 

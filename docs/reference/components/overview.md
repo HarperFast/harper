@@ -131,6 +131,7 @@ Extensions require an `extensionModule` option pointing to the extension source.
 | [`loadEnv`](../environment-variables/overview.md) | Load environment variables from `.env` files      |
 | [`rest`](../rest/overview.md)                     | Enable automatic REST endpoint generation         |
 | [`roles`](../users-and-roles/overview.md)         | Define role-based access control from YAML files  |
+| [`scheduler`](./scheduler.md)                     | Run recurring jobs on a cron or interval schedule |
 | [`static`](../static-files/overview.md)           | Serve static files via HTTP                       |
 
 ## Known Custom Components
