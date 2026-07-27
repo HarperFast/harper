@@ -10,6 +10,7 @@ const {
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
+const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
 	let AuditedTable;
@@ -52,25 +53,34 @@ describe('Audit log', () => {
 			results.push(entry);
 		}
 		assert.equal(results.length, 4);
-		// Poll for the subscription events instead of a fixed 20ms delay, which is too short
-		// on a loaded CI runner and made this assertion flaky.
-		for (let i = 0; i < 20 && events.length <= 2; i++) {
-			await delay(10);
-		}
-		assert(events.length > 2, 'Should have at least a couple of update events');
+		// Subscription events are delivered off the commit path; nothing orders them against this
+		// assertion, so wait for them rather than sleeping a fixed 20ms and hoping.
+		await waitFor(() => events.length > 2, {
+			timeout: 5000,
+			message: 'Should have at least a couple of update events',
+		});
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
 		setAuditRetention(0.001, 1);
-		AuditedTable.auditStore.scheduleAuditCleanup(1);
+		// scheduleAuditCleanup() resolves once the pass serving the call has committed its deletions.
+		// This first one races the put below, so it may or may not see record 3's audit entry.
+		const firstPass = AuditedTable.auditStore.scheduleAuditCleanup(1);
 		await AuditedTable.put(3, { name: 'three' });
-		// Poll until cleanup completes (was a fixed 20ms which is too short on a loaded CI runner)
-		for (let i = 0; i < 20; i++) {
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			results = [];
-			for await (let entry of AuditedTable.getHistory()) {
-				results.push(entry);
-			}
-			if (results.length === 0) break;
-		}
+		await firstPass;
+		// Drive passes until the log is drained. Every iteration awaits a whole pass, so it makes real
+		// progress rather than hoping a background timer landed inside a fixed wall-clock budget — which
+		// is what the previous 20 x 10ms poll did. More than one iteration is only needed if the store
+		// holds more than MAX_DELETES_PER_CLEANUP stale entries, since a pass stops at that cap.
+		results = await waitFor(
+			async () => {
+				await AuditedTable.auditStore.scheduleAuditCleanup(1);
+				const remaining = [];
+				for await (let entry of AuditedTable.getHistory()) {
+					remaining.push(entry);
+				}
+				return remaining.length === 0 ? remaining : false;
+			},
+			{ timeout: 10000, interval: 0, message: 'audit log was not pruned' }
+		);
 
 		assert.equal(results.length, 0);
 		assert.equal(AuditedTable.primaryStore.getEntry(1), undefined); // verify that the delete entry was removed

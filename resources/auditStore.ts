@@ -151,6 +151,9 @@ export function openAuditStore(rootStore) {
 		};
 	};
 	let pendingCleanup = null;
+	// resolver of the scheduled-but-not-yet-started pass, so a schedule that supersedes it can hand
+	// its callers over to the replacement instead of leaving them on a promise that never settles
+	let pendingCleanupResolve: (() => void) | null = null;
 	let lastCleanupResolution: Promise<void>;
 	let cleanupPriority = 0;
 	let auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
@@ -161,24 +164,42 @@ export function openAuditStore(rootStore) {
 			return scheduleAuditCleanup(100);
 		}
 	});
+	/**
+	 * Schedules a pass of the audit cleanup loop. The returned promise settles once the pass that
+	 * serves this call has committed its deletions, so callers (notably tests) can await completion
+	 * instead of guessing a delay. A pass removes at most MAX_DELETES_PER_CLEANUP entries before
+	 * rescheduling itself, so settling means "that pass finished", not "the audit log is fully pruned".
+	 */
 	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
 		// Skip audit cleanup/purge in read-only mode
-		if (isReadOnlyMode()) return;
+		if (isReadOnlyMode()) return Promise.resolve();
 		if (auditStore instanceof RocksTransactionLogStore) {
 			auditStore.rootStore.purgeLogs({
 				before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
 			});
-			return;
+			return Promise.resolve();
 		}
 
 		if (newCleanupDelay) auditCleanupDelay = newCleanupDelay;
+		// the pass we are about to cancel has not started, so its callers are handed over to this one
+		const supersededResolve = pendingCleanupResolve;
 		clearTimeout(pendingCleanup);
 		const resolution = new Promise<void>((resolve) => {
+			pendingCleanupResolve = resolve;
 			pendingCleanup = setTimeout(async () => {
-				await lastCleanupResolution;
+				pendingCleanupResolve = null; // started, so a later schedule can no longer cancel this pass
+				// claim the serialization slot before yielding: assigning it after the await lets every
+				// pass released by the same resolution run concurrently over the same range
+				const previousCleanup = lastCleanupResolution;
 				lastCleanupResolution = resolution;
+				await previousCleanup;
 				// query for audit entries that are old
-				if (auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') return;
+				if (auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') {
+					// nothing to clean up and nothing to reschedule, but leaving `resolution` pending would
+					// wedge the loop permanently: it is now the resolution every later pass awaits
+					resolve();
+					return;
+				}
 				let deleted = 0;
 				let committed: Promise<void>;
 				let lastKey: any;
@@ -204,20 +225,24 @@ export function openAuditStore(rootStore) {
 					await committed;
 				} finally {
 					if (deleted === 0) {
-						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of the retention time)
-						auditCleanupDelay = Math.min(auditCleanupDelay << 1, auditRetention / 10);
+						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
+						// the retention time). `<<` would coerce to int32 here, and a sub-millisecond retention (used by
+						// tests) collapses the delay to 0 permanently — 0 << 1 is 0 — turning the backoff into a loop
+						// that reschedules every event turn for the life of the process.
+						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10));
 					} else {
 						// if we did delete something, update our updates since timestamp
 						updateLastRemoved(auditStore, lastKey);
 						// and do updates faster
 						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay >> 1;
 					}
-					resolve(undefined);
+					resolve();
 					scheduleAuditCleanup();
 				}
 				// we can run this pretty frequently since there is very little overhead to these queries
 			}, auditCleanupDelay).unref();
 		});
+		if (supersededResolve) resolution.then(supersededResolve);
 		return resolution;
 	}
 	auditStore.scheduleAuditCleanup = scheduleAuditCleanup;
