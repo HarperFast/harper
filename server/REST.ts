@@ -410,7 +410,12 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		(Request.prototype as any).includeExpensiveRecordCountEstimates = true;
 	}
 	resources = scope.resources;
-	const mountKey = `${scope.mount?.host ?? (httpOptions as any)?.host ?? ''}|${scope.mount?.urlPath ?? ''}${(httpOptions as any)?.urlPath ?? ''}`;
+	// Key on the route this registration will actually answer on, not on the parts it is composed
+	// from: two configurations that resolve to the same route are the same chain and must dedupe,
+	// while two that resolve to different routes must not collide. Concatenating the mount and the
+	// plugin's raw urlPath did collide (mount '/a' + 'bc' and mount '/ab' + 'c' both gave '/abc').
+	const route = scope.routeFor(httpOptions as any);
+	const mountKey = `${route.host ?? ''}|${route.urlPath ?? ''}`;
 	if (startedMounts.has(mountKey)) return;
 	startedMounts.add(mountKey);
 	scope.server.http(

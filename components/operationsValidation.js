@@ -18,6 +18,11 @@ const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
 // containing `=` or a newline) from injecting extra assignments into a .env file.
 const ENV_KEY_REGEX = /^[\w.-]+$/;
 
+// Compiled once and reused: a routing `host` is either a DNS hostname or a bare IPv6 literal, and
+// re-compiling these per validation call would allocate on every deploy_component.
+const HOSTNAME_SCHEMA = Joi.string().hostname();
+const IPV6_SCHEMA = Joi.string().ip({ version: 'ipv6' });
+
 module.exports = {
 	getDropCustomFunctionValidator,
 	setCustomFunctionValidator,
@@ -464,8 +469,8 @@ function deployComponentValidator(req) {
 			})
 			.optional()
 			.messages({
-				'any.invalid': 'urlPath must not contain ".."',
-				'string.dotSegment': 'urlPath must not contain "." path segments',
+				'any.invalid': '{#label} must not contain ".."',
+				'string.dotSegment': '{#label} must not contain "." path segments',
 			}),
 		// Virtual hostname the component is served on. Like `urlPath`, this is deployment routing and
 		// belongs on the root-config entry, not in the component's own config.yaml. `hostname()`
@@ -478,13 +483,12 @@ function deployComponentValidator(req) {
 				return value;
 			})
 			.custom((value, helpers) => {
-				const asHostname = Joi.string().hostname().validate(value);
-				if (!asHostname.error) return value;
+				if (!HOSTNAME_SCHEMA.validate(value).error) return value;
 				// Accept a bare IPv6 literal, which `hostname()` rejects but the router can match.
-				return Joi.string().ip({ version: 'ipv6' }).validate(value).error ? helpers.error('string.hostname') : value;
+				return IPV6_SCHEMA.validate(value).error ? helpers.error('string.hostname') : value;
 			})
 			.optional()
-			.messages({ 'string.bracketedHost': 'host must not be bracketed; use the bare IPv6 literal' }),
+			.messages({ 'string.bracketedHost': '{#label} must not be bracketed; use the bare IPv6 literal' }),
 		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
 		// identifying key rather than a separate discriminator field, so a new kind is added as
 		// another item alternative here without reshaping the field. Today: npm registry auth
