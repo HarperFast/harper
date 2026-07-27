@@ -215,6 +215,67 @@ describe('CrossThread Module', function () {
 			getWorkerCountStub.restore();
 		});
 
+		it('uses the real `workers` registry (excluding job workers) to size expectedResponses, not getWorkerCount()', async function () {
+			this.timeout(5000);
+			registry.setStatus('poolComp', 'healthy', 'Main thread');
+			getWorkerIndexStub.returns(0);
+
+			// getWorkerCount() stubbed to a WRONG value (1) so the test fails if the collector
+			// falls back to it instead of using `workers`.
+			const getWorkerCountStub = sinon.stub(manageThreadsModule, 'getWorkerCount').returns(1);
+
+			// Populate the real `workers` registry with 2 HTTP workers + 1 job worker. Job
+			// workers never receive the broadcast (broadcastWithAcknowledgement skips
+			// isJobWorker ports), so expectedResponses must be 2 (the HTTP workers only), not 3.
+			const httpWorkerA = {};
+			const httpWorkerB = {};
+			const jobWorker = { isJobWorker: true };
+			manageThreadsModule.workers.push(httpWorkerA, httpWorkerB, jobWorker);
+
+			try {
+				const startTime = Date.now();
+				onMessageByTypeStub.callsFake((eventType, handler) => {
+					setTimeout(() => {
+						handler({
+							message: {
+								requestId: 1,
+								workerIndex: 1,
+								isMainThread: false,
+								statuses: [['poolComp', { status: 'healthy' }]],
+							},
+						});
+						handler({
+							message: {
+								requestId: 1,
+								workerIndex: 2,
+								isMainThread: false,
+								statuses: [['poolComp', { status: 'healthy' }]],
+							},
+						});
+						// No third response -- the (excluded) job worker never gets asked.
+					}, 50);
+				});
+
+				const collected = await collector.collect(registry);
+				const resolveTime = Date.now() - startTime;
+
+				// Resolves once the 2 real HTTP-worker responses arrive, well under the 1s
+				// collector timeout -- if expectedResponses were wrongly 3 (job worker
+				// included) or 1 (getWorkerCount() fallback used), this would either stall to
+				// the timeout or resolve before both real responses are captured.
+				assert.ok(
+					resolveTime < 500,
+					`Collection took ${resolveTime}ms, should complete quickly once both HTTP workers respond`
+				);
+				assert.equal(collected.size, 3); // local + 2 HTTP workers
+				assert.ok(collected.has('poolComp@worker-1'));
+				assert.ok(collected.has('poolComp@worker-2'));
+			} finally {
+				manageThreadsModule.workers.length = 0; // restore the shared array for other tests
+				getWorkerCountStub.restore();
+			}
+		});
+
 		it('should reuse listener across multiple collections', async function () {
 			// First collection
 			await collector.collect(registry);

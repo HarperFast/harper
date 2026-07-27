@@ -6,7 +6,7 @@
  */
 
 import { sendItcEvent } from '../../server/threads/itc.js';
-import { getWorkerIndex, onMessageByType, getWorkerCount } from '../../server/threads/manageThreads.js';
+import { getWorkerIndex, onMessageByType, getWorkerCount, workers } from '../../server/threads/manageThreads.js';
 import { ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
@@ -118,12 +118,27 @@ export class CrossThreadStatusCollector {
 			const responses: Array<WorkerComponentStatuses> = [];
 			this.awaitingResponses.set(requestId, responses);
 
-			// Calculate expected number of responses
-			// Total threads = main thread (1) + worker threads (workerCount)
-			const workerCount = getWorkerCount() || 1;
-			const totalThreads = workerCount + 1;
-			// We expect responses from all threads except ourselves
-			const expectedResponses = totalThreads - 1;
+			// Calculate expected number of responses (every OTHER live thread that will actually
+			// be asked). `workers` (populated only on the thread that spawns children -- normally
+			// the main thread) is the authoritative count of every live worker thread across ALL
+			// thread types (http, job, replication, ...). getWorkerCount() only reports the size
+			// of the CALLING thread's own same-type pool -- e.g. an HTTP worker only knows the
+			// HTTP pool size, and the main thread (which isn't itself a worker) falls back to a
+			// hardcoded 1 regardless of how many worker threads actually exist. That undercounts
+			// expectedResponses whenever get_status is served from the main thread with more than
+			// one worker running, so the collector declares victory after the first responder and
+			// silently drops every later (and possibly divergent) response -- masking exactly the
+			// per-worker health disagreement this collector exists to surface. Job workers are
+			// excluded: broadcastWithAcknowledgement() (which sendItcEvent uses below) skips
+			// isJobWorker ports entirely -- they run a single isolated task and never see this
+			// broadcast, so counting them would make expectedResponses unreachable and stall every
+			// collection to its full timeout. Falls back to the old same-type-pool estimate when
+			// `workers` is empty -- either a genuinely zero-worker process, or (more commonly)
+			// this thread isn't the one that spawns children, so it has no visibility into
+			// siblings; still an undercount for that latter case when multiple worker types
+			// coexist, but no worse than before this fix.
+			const nonJobWorkerCount = workers.filter((worker) => !worker.isJobWorker).length;
+			const expectedResponses = nonJobWorkerCount || getWorkerCount() || 1;
 
 			// Set up response collection with timeout
 			const responsePromise = new Promise<Array<WorkerComponentStatuses>>((resolve, reject) => {
