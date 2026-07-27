@@ -1,0 +1,5 @@
+# The app declares only its own internal structure. Where it is served is the operator's
+# call, declared on this app's entry in the root config — see app-root-mount.test.ts.
+static:
+  files: 'web/**'
+  urlPath: 'assets'

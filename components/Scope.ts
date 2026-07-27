@@ -11,6 +11,7 @@ import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
+import { type ScopeMount } from './scopeMount.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
 import {
 	getSecretsForComponent,
@@ -88,7 +89,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		configFilePath: string,
 		applicationScope: ApplicationScope,
 		origin: string = appName,
-		isRootConfig?: boolean
+		isRootConfig?: boolean,
+		mount?: ScopeMount
 	) {
 		super();
 
@@ -118,13 +120,18 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 					if (typeof method === 'function') {
 						return (listener: any, options?: any) => {
 							const scopeConfig = (scopeRef.options?.getAll() as any) ?? {};
+							// An explicit call option wins over config, but either way the value is
+							// resolved here rather than passed through: plugins that spread their whole
+							// config section into these options (e.g. REST) would otherwise hand the
+							// router a raw, unresolved `urlPath` — './' became the literal route '/.'.
+							const rawUrlPath = options?.urlPath ?? scopeConfig.urlPath;
 							return method.call(target, listener, {
 								name: pluginName,
+								...options,
 								// resolve to the same base the entry pipeline uses ('assets' -> '/assets/',
 								// './x' -> '/<name>/x/') so route matching sees a real pathname prefix (#1583)
-								urlPath: scopeConfig.urlPath ? resolveBaseURLPath(pluginName, scopeConfig.urlPath) : undefined,
-								host: scopeConfig.host || undefined,
-								...options,
+								urlPath: rawUrlPath ? resolveBaseURLPath(pluginName, rawUrlPath) : undefined,
+								host: options?.host || scopeConfig.host || undefined,
 							});
 						};
 					}
@@ -142,7 +149,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		// isRootConfig is the loader's authoritative isRoot signal — it decides whether the
 		// watcher overlays runtime env config (#1618). When a caller doesn't provide it,
 		// OptionsWatcher falls back to its root-config filename heuristic.
-		this.options = new OptionsWatcher(pluginName, configFilePath, this.#logger, isRootConfig)
+		this.options = new OptionsWatcher(pluginName, configFilePath, this.#logger, isRootConfig, mount)
 			.on('error', this.#handleError.bind(this))
 			.on('change', this.#optionsWatcherChangeListener.bind(this)())
 			.on('ready', this.#handleOptionsWatcherReady.bind(this));

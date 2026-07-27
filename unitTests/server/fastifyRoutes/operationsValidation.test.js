@@ -442,6 +442,39 @@ describe('Test operationsValidation module', () => {
 			expect(result).to.be.ok;
 		});
 
+		it('accepts host alongside package', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: '@scope/pkg',
+				host: 'api.example.com',
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('accepts host and urlPath together', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: '@scope/pkg',
+				host: 'api.example.com',
+				urlPath: '/v1',
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects host without package', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', host: 'api.example.com' });
+			expect(result).to.be.ok;
+			expect(result.message).to.include('host');
+		});
+
+		it('rejects a host carrying a port or path — it would never match the router host compare', () => {
+			for (const host of ['api.example.com:9926', 'api.example.com/v1', 'https://api.example.com']) {
+				const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', host });
+				expect(result, host).to.be.ok;
+				expect(result.message, host).to.include('host');
+			}
+		});
+
 		it('rejects missing project', () => {
 			const result = validator.deployComponentValidator({ package: 'pkg' });
 			expect(result).to.be.ok;
