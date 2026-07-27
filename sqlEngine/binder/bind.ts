@@ -158,11 +158,12 @@ export function bindSelect(stmt: SelectNode): BoundSelect {
 
 function bindTableRef(ref: TableRefNode, databases: Record<string, Record<string, unknown>>): BoundTable {
 	const databaseName = ref.database || pickDefaultDatabase(databases, ref.table);
-	const dbEntry = databases[databaseName];
+	const dbEntry = Object.hasOwn(databases, databaseName) ? databases[databaseName] : undefined;
 	if (!dbEntry) {
 		throw new EngineUnsupportedError(`database "${databaseName}" not found`);
 	}
-	const resource = dbEntry[ref.table];
+	// Own-property test: `FROM toString` would otherwise bind Object.prototype's method as a table.
+	const resource = Object.hasOwn(dbEntry, ref.table) ? dbEntry[ref.table] : undefined;
 	if (!resource) {
 		throw new EngineUnsupportedError(`table "${databaseName}.${ref.table}" not found`);
 	}

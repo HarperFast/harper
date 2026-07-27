@@ -193,6 +193,53 @@ suite(
 			);
 		});
 
+		// Constructs whose reach the authorization layer cannot determine. None of them execute
+		// today (Harper rejects derived tables and ignores SELECT ... INTO), so these lock in the
+		// fail-closed denial rather than leaving the outcome to a downstream engine error.
+		test('a statement mixing a resolvable table with an unresolvable one is denied', async () => {
+			const r = await client
+				.reqAs(malloryHeaders)
+				.send({ operation: 'sql', sql: `SELECT * FROM ${DB}.${PUBLIC_TABLE}, ${SECRET_TABLE}` });
+
+			ok(
+				!JSON.stringify(r.body ?? '').includes(SECRET_SSN),
+				`AUTHZ BYPASS: a multi-table FROM leaked the protected ssn value (status=${r.status})`
+			);
+			ok(
+				isDenied(r.status),
+				`AUTHZ BYPASS: a multi-table FROM was authorized on the strength of the table that resolved ` +
+					`(status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
+			);
+		});
+
+		test('a derived table wrapping the forbidden table is denied', async () => {
+			const r = await client
+				.reqAs(malloryHeaders)
+				.send({ operation: 'sql', sql: `SELECT * FROM (SELECT * FROM ${SECRET_TABLE}) AS sub` });
+
+			ok(
+				!JSON.stringify(r.body ?? '').includes(SECRET_SSN),
+				`AUTHZ BYPASS: a derived table leaked the protected ssn value (status=${r.status})`
+			);
+			ok(
+				isDenied(r.status),
+				`a derived table must be refused by authorization, not left to a downstream error ` +
+					`(status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
+			);
+		});
+
+		test('SELECT ... INTO the forbidden table is denied', async () => {
+			const r = await client
+				.reqAs(malloryHeaders)
+				.send({ operation: 'sql', sql: `SELECT 1 AS id INTO ${SECRET_TABLE}` });
+
+			ok(
+				isDenied(r.status),
+				`a SELECT INTO target is invisible to the affected-attribute map and must be refused ` +
+					`(status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
+			);
+		});
+
 		test('unqualified DELETE on the forbidden table is denied and does not remove the row', async () => {
 			const r = await client
 				.reqAs(malloryHeaders)
