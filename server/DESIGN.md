@@ -119,6 +119,18 @@ Components register listeners with optional `before: 'name'` / `after: 'name'` o
 
 The default WebSocket upgrade handler is registered automatically inside `onWebSocket()` the first time it runs for a given port.
 
+### Application mounts (`host` / `urlPath` in the root config)
+
+An operator mounts an application by putting `host`/`urlPath` on its entry in the **root** config; `components/scopeMount.ts` models it and the loader threads it into every `Scope` for that application (both load paths — the root-config `package` recursion and the components-root directory scan).
+
+**The mount is applied at exactly one place: `Scope.routeFor()`, used by the `scope.server` proxy.** Do not push it anywhere else. In particular, do not compose it into the plugin config the entry pipeline reads: `entry.urlPath` is what `graphqlSchema` and `jsResource` derive **resource** paths from, and the router strips the mount _before_ REST resolves them. Composing it there registers a table at `/v1/Thing` while REST looks up `Thing`, and every mounted REST route 404s. A single-app `static` test will not catch it — static de-prefixes its own map keys, so it stays self-consistent either way.
+
+Consequences worth knowing:
+
+- Everything inside an application addresses itself **mount-relative**. Only two things need the absolute path: code that emits a URL back to the client (use `Scope.externalBasePath()` — static's redirect `Location`), and code that bypasses the routed chain (legacy fastify registers on the bare server, so its route prefix must be the full external path).
+- A plugin registering per-mount state must key it on `Scope.routeFor()`'s resolved route, not on the parts it composes from — distinct `(mount, pluginUrlPath)` pairs can flatten to the same string (`/a`+`bc` and `/ab`+`c`). `REST.ts`'s `startedMounts` does this; it replaced a process-global `started` flag that silently 404'd the second mounted application's REST API.
+- A mount is routing, **not** isolation: exported resources stay instance-wide, and a `host` mount cannot constrain legacy fastify routes.
+
 ---
 
 ## Resource ↔ HTTP boundary
