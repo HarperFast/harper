@@ -142,6 +142,15 @@ describe('GHSA-5c29-q62v-jrwf — unqualified SQL table resolution', () => {
 			]);
 		});
 
+		// AlaSQL puts a derived JOIN's source on `join.select` and leaves `join.table` undefined, so
+		// a guard keyed on join.table drops it from the inventory entirely.
+		it('reports a derived JOIN source, which carries no join.table', () => {
+			assert.deepStrictEqual(
+				unauthorized('SELECT p.id FROM data.customers AS p INNER JOIN (SELECT * FROM shared) AS s ON p.id = s.id'),
+				['subquery in JOIN position 1']
+			);
+		});
+
 		// A SELECT INTO target is always opaque, never a named reference. As a named reference it
 		// would satisfy the membership test against the entry the FROM collector created, so
 		// `SELECT * INTO data.customers FROM data.customers` would authorize a write on a read.

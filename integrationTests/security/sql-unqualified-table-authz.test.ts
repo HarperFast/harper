@@ -246,6 +246,28 @@ suite(
 			);
 		});
 
+		// A derived JOIN carries its source on `join.select` with no `join.table`, so it has to be
+		// reported explicitly — otherwise it leaves the inventory and attribute collection dies
+		// dereferencing join.table, surfacing as a 500 instead of an authorization refusal.
+		test('a derived JOIN source wrapping the forbidden table is denied', async () => {
+			const r = await client.reqAs(malloryHeaders).send({
+				operation: 'sql',
+				sql:
+					`SELECT p.id FROM ${DB}.${PUBLIC_TABLE} AS p ` +
+					`INNER JOIN (SELECT * FROM ${DB}.${SECRET_TABLE}) AS s ON p.id = s.id`,
+			});
+
+			ok(
+				!JSON.stringify(r.body ?? '').includes(SECRET_SSN),
+				`AUTHZ BYPASS: a derived JOIN leaked the protected ssn value (status=${r.status})`
+			);
+			ok(
+				isDenied(r.status),
+				`a derived JOIN source must be refused by authorization, not surface as a 500 ` +
+					`(status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
+			);
+		});
+
 		test('a derived table wrapping the forbidden table is denied', async () => {
 			const r = await client
 				.reqAs(malloryHeaders)
