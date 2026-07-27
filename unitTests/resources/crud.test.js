@@ -346,3 +346,42 @@ describe('transactional argument normalization with RequestTarget', () => {
 		assert.equal(record.stamped, true);
 	});
 });
+
+describe('v4-style instance post on a collection target', () => {
+	let PostBase, PostSub;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		PostBase = table({
+			table: 'InstancePostTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }, { name: 'stamped' }],
+		});
+		// Subclass with a v4-style instance post override that calls super.post(record),
+		// the form that previously fell through to missingMethod on a bare collection target.
+		PostSub = class extends PostBase {
+			async post(data) {
+				data.stamped = true;
+				return super.post(data);
+			}
+		};
+		Object.defineProperty(PostSub, 'name', { value: 'PostSub' });
+	});
+
+	it('super.post(record) from a bare collection target creates the record', async function () {
+		const target = new RequestTarget('');
+		const id = await PostSub.post(target, { title: 'created' });
+		assert.ok(id != null, 'create should return the new id');
+		const record = await PostSub.get(id);
+		assert.equal(record.title, 'created');
+		assert.equal(record.stamped, true, 'instance override should have run');
+	});
+
+	it('instance post on an identified resource still 405s', async function () {
+		await PostSub.put('existing-1', { title: 'x' });
+		await assert.rejects(
+			async () => PostSub.post(new RequestTarget('/existing-1'), { title: 'y' }),
+			/does not have a post method/
+		);
+	});
+});

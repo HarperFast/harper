@@ -233,3 +233,30 @@ describe('Parsing queries with RequestTarget', function () {
 		assert.equal(query.conditions[1].conditions[1].value, '2');
 	});
 });
+describe('RequestTarget collection semantics', () => {
+	it('bare resource path (empty, no trailing slash) is well-defined: null id, not a collection', function () {
+		const target = new RequestTarget('');
+		assert.equal(target.isCollection, false);
+		assert.equal(target.id, null);
+	});
+	it('root slash is a collection with null id', function () {
+		const target = new RequestTarget('/');
+		assert.equal(target.isCollection, true);
+		assert.equal(target.id, null);
+	});
+	it('query-only target is a collection', function () {
+		const target = new RequestTarget('?name=1');
+		assert.equal(target.isCollection, true);
+		assert.equal(target.id, null);
+	});
+	it('id path is not a collection', function () {
+		const target = new RequestTarget('some-id');
+		assert.equal(target.isCollection, undefined);
+		assert.equal(target.id, 'some-id');
+	});
+	it('argless construction leaves isCollection unset for callers to assign', function () {
+		const target = new RequestTarget();
+		assert.equal(target.isCollection, undefined);
+		assert.equal(target.id, undefined);
+	});
+});

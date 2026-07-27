@@ -359,7 +359,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				return newRecord?.[(this.constructor as any).primaryKey as keyof typeof newRecord] as any;
 			}
 		} else {
-			if (this.#isCollection) {
+			// no id is the collection form; posting a record to it creates it (the v4 super.post contract)
+			if (this.#isCollection || this.#id == null) {
 				const resource = await (this.constructor as any).create(this.#id, target, this.#context);
 				return resource.#id;
 			}
