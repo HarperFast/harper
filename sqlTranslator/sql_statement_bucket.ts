@@ -268,7 +268,15 @@ function getTableTargets(ast: any): TableTargets {
 			ast.from.forEach((from, index) => addRef(from, `subquery in FROM position ${index + 1}`));
 		}
 		if (Array.isArray(ast.joins)) {
-			ast.joins.forEach((join, index) => join?.table && addRef(join.table, `subquery in JOIN position ${index + 1}`));
+			ast.joins.forEach((join, index) => {
+				if (!join) return;
+				const description = `subquery in JOIN position ${index + 1}`;
+				// A derived JOIN (`JOIN (SELECT ...) AS s`) carries `join.select` and no `join.table`.
+				// It has to be marked opaque explicitly — passing the absent table to addRef would
+				// drop it from the inventory entirely.
+				if (join.table) addRef(join.table, description);
+				else opaque.push(description);
+			});
 		}
 		// Always opaque, never a named ref: SELECT INTO is a write whose permission is not modeled,
 		// and treating it as named would let it satisfy the affected-attribute check on an entry the
@@ -437,6 +445,10 @@ function getSelectAttributes(
 	});
 	if (ast.joins) {
 		ast.joins.forEach((join) => {
+			// A derived JOIN has `join.select` and no `join.table`; there is nothing to record for it.
+			// getTableTargets() reports it as opaque so the statement is refused with a 403 rather
+			// than dying here on `join.table.as` and surfacing as a 500.
+			if (!join?.table) return;
 			//copying the 'as' to the table rather than on the join allows for a more generic function in addSchemaTableToMap().
 			// as it can take a .table as well as a .join record. It's a bit hacky, but I don't think this should cause any problems.
 			if (join.as) {
