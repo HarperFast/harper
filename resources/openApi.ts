@@ -182,19 +182,25 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					} else if (type === 'Any') {
 						props[name] = { format: type };
 					} else if (!DATA_TYPES[type] && JSON_SCHEMA_SCALAR_TYPES.has(type)) {
-						props[name] = new Type(type);
+						// OpenAPI 3.0.3 has no `'null'` type — nullability is expressed by the `nullable`
+						// keyword, so a bare `type: 'null'` becomes an untyped nullable schema.
+						props[name] = type === 'null' ? { nullable: true } : new Type(type);
 					} else {
 						props[name] = new Type(DATA_TYPES[type], type);
 					}
 				}
-				// Attach per-property JSON-Schema hints (description/enum/format/const) so they surface in
+				// Attach per-property JSON-Schema hints (description/enum/format) so they surface in
 				// Swagger UI / Redoc; enum in particular tells clients the allowed values.
+				//
+				// This document declares OpenAPI 3.0.3, whose Schema Object is the JSON Schema draft-04
+				// subset: `const` only arrived in draft-06, so it is not a keyword here. Emit the
+				// equivalent single-value `enum` instead of a keyword the declared dialect doesn't define.
 				if (props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
-					const prop = props[name] as { description?: string; enum?: unknown; format?: string; const?: unknown };
+					const prop = props[name] as { description?: string; enum?: unknown; format?: string };
 					if (description) prop.description = description;
 					if (attr.enum && prop.enum === undefined) prop.enum = attr.enum;
 					if (attr.format && prop.format === undefined) prop.format = attr.format;
-					if (attr.const !== undefined && prop.const === undefined) prop.const = attr.const;
+					if (attr.const !== undefined && prop.enum === undefined) prop.enum = [attr.const];
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
