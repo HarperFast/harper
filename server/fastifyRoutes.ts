@@ -42,12 +42,14 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	// Fastify is registered as a global fallback below (`server.http(built.server)` on the bare
 	// server, not the scoped one), so it never joins a routed middleware chain. A `urlPath` mount
 	// still works — it becomes the fastify route prefix, which is matched against the full external
-	// path — but a `host` mount cannot constrain it, and these routes stay reachable under every
-	// Host header. Warn rather than imply isolation the fallback doesn't provide.
+	// path — but a `host` mount cannot constrain it: these routes would stay reachable under every
+	// Host header, silently dropping the isolation the operator declared. Refuse to load rather than
+	// imply isolation the fallback doesn't provide (review finding) — contained to this component by
+	// the loader's per-component try/catch, so it does not take down the rest of the application.
 	const mountedHost = scope.mount?.host ?? (scope.options.getAll() as { host?: string })?.host;
 	if (mountedHost) {
-		harperLogger.warn(
-			`Application '${basename(scope.appName)}' is mounted on host '${mountedHost}', but its fastifyRoutes are served on every host: legacy fastify routes are registered as a global fallback and cannot be constrained by host. Port them to server.http() to get host routing.`
+		throw new Error(
+			`Application '${basename(scope.appName)}' is mounted on host '${mountedHost}', but its fastifyRoutes cannot be constrained by host: legacy fastify routes are registered as a global fallback and would remain reachable on every host. Port them to server.http() to get host routing, or drop the host mount.`
 		);
 	}
 	scope.handleEntry(async (entry) => {

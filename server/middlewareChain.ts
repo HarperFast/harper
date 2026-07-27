@@ -244,10 +244,18 @@ export function stripPrefix(request: any, prefix: string): any {
  * and `describeChains` reports it, so the observed order can never drift from the served one.
  */
 export function resolveRoutedChains(portEntries: HttpEntry[], onCycle?: () => void): ResolvedChain[] {
-	// Global name registry across all routes (first registration wins)
-	const nameToEntry = new Map<string, HttpEntry>();
+	// Global name registry, but restricted to unmounted (no host/urlPath) entries — e.g.
+	// `authentication` — so it only ever supplies dependencies that are meant to apply everywhere.
+	// A mounted route's own plugins are resolved separately per-group below; if this stayed global
+	// across ALL routes (mounted or not), two applications mounted at different hosts/paths that
+	// each happen to register a same-named plugin (e.g. both enable `rest`) would resolve `after:
+	// 'rest'` to whichever one registered first — silently splicing one application's handler into
+	// another's request chain (review finding).
+	const globalNameToEntry = new Map<string, HttpEntry>();
 	for (const entry of portEntries) {
-		if (entry.name && !nameToEntry.has(entry.name)) nameToEntry.set(entry.name, entry);
+		if (entry.name && !entry.host && !entry.urlPath && !globalNameToEntry.has(entry.name)) {
+			globalNameToEntry.set(entry.name, entry);
+		}
 	}
 
 	// Group entries by (host, normalized urlPath) so that '/api' and '/api/' coalesce.
@@ -263,11 +271,24 @@ export function resolveRoutedChains(portEntries: HttpEntry[], onCycle?: () => vo
 	const defaultGroup = routeGroups.find((g) => !g.host && !g.urlPath);
 	const subRouteGroups = routeGroups.filter((g) => g.host || g.urlPath);
 
-	const subRoutes: ResolvedChain[] = subRouteGroups.map((group) => ({
-		host: group.host,
-		urlPath: group.urlPath,
-		order: topoSort(resolveDeps(group.entries, nameToEntry), onCycle),
-	}));
+	const subRoutes: ResolvedChain[] = subRouteGroups.map((group) => {
+		// This route's own plugins take priority over the global (unmounted) registry for the
+		// same name, so a same-named handler local to this mount always wins over an unrelated
+		// unmounted one — but the lookup never reaches into another mounted route's plugins.
+		const localNameToEntry = new Map(globalNameToEntry);
+		const seenInGroup = new Set<string>();
+		for (const entry of group.entries) {
+			if (entry.name && !seenInGroup.has(entry.name)) {
+				seenInGroup.add(entry.name);
+				localNameToEntry.set(entry.name, entry);
+			}
+		}
+		return {
+			host: group.host,
+			urlPath: group.urlPath,
+			order: topoSort(resolveDeps(group.entries, localNameToEntry), onCycle),
+		};
+	});
 
 	subRoutes.sort((a, b) => {
 		const aSpec = (a.host ? 2 : 0) + (a.urlPath ? 1 : 0);

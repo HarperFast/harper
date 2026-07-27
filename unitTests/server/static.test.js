@@ -12,6 +12,8 @@ function fakeScope(options = {}, mount = undefined) {
 		changeListeners: [],
 		restartRequests: 0,
 		mount,
+		listener: undefined,
+		entryCallback: undefined,
 	};
 	const scope = {
 		directory: '/fake/app',
@@ -32,10 +34,13 @@ function fakeScope(options = {}, mount = undefined) {
 			info() {},
 			warn: (message) => state.warnings.push(message),
 		},
-		handleEntry() {},
+		handleEntry(callback) {
+			state.entryCallback = callback;
+		},
 		requestRestart: () => state.restartRequests++,
 		server: {
-			http: (_listener, httpOptions) => {
+			http: (listener, httpOptions) => {
+				state.listener = listener;
 				state.httpOptions = httpOptions;
 			},
 		},
@@ -205,5 +210,38 @@ describe('static plugin ordering live reload', () => {
 			scope.fireChange(key);
 		}
 		assert.equal(state.restartRequests, 0);
+	});
+});
+
+describe('static plugin mount-root redirect', () => {
+	// A root-level static plugin (no urlPath of its own) has baseURLPath === '/', so gating the
+	// redirect on baseURLPath alone never fires — even though the application mount makes the
+	// client-visible root something other than '/'. Review finding: the mount root then serves
+	// without ever redirecting to its trailing-slash form.
+	it('redirects the application mount root to its trailing-slash form even when static has no urlPath of its own', () => {
+		const { scope, state } = fakeScope({}, { urlPath: '/v1' });
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: '/fake/app/web/index.html' });
+
+		const result = state.listener({ method: 'GET', pathname: '/', url: '/', originalPathname: '/v1' }, () => ({
+			status: -1,
+		}));
+
+		assert.equal(result.status, 301);
+		assert.equal(result.headers.Location, '/v1/');
+	});
+
+	it('does not redirect when the application has no mount (root stays root)', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		// A real, existing path — with no mount, the redirect guard is false and this falls through
+		// to actually serving the file (realpathSync must succeed).
+		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: __filename });
+
+		const result = state.listener({ method: 'GET', pathname: '/', url: '/', originalPathname: '/' }, () => ({
+			status: -1,
+		}));
+
+		assert.notEqual(result.status, 301);
 	});
 });

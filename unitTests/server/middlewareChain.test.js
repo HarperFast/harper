@@ -1029,6 +1029,39 @@ describe('describeChains', () => {
 			['auth', 'waf']
 		);
 	});
+
+	// Two applications mounted at different urlPaths each register a plugin under the same name
+	// (e.g. both enable `rest`). Resolving `after: 'rest'` in one mount must never reach into the
+	// other mount's same-named entry — that would splice one application's handler into another's
+	// request chain (review finding).
+	it('does not let a same-named entry from another mounted route satisfy `after`', () => {
+		const restOne = entry('rest', { urlPath: '/one', listener: 'rest-one' });
+		const authOne = entry('auth-one', { urlPath: '/one', after: 'rest' });
+		const restTwo = entry('rest', { urlPath: '/two', listener: 'rest-two' });
+		const authTwo = entry('auth-two', { urlPath: '/two', after: 'rest' });
+		const resolved = resolveRoutedChains([restOne, authOne, restTwo, authTwo]);
+
+		const one = resolved.find((r) => r.urlPath === '/one');
+		const restEntryForOne = one.order.find((e) => e.name === 'rest');
+		assert.strictEqual(restEntryForOne.listener, 'rest-one', "'/one' must resolve its own 'rest', not '/two's");
+
+		const two = resolved.find((r) => r.urlPath === '/two');
+		const restEntryForTwo = two.order.find((e) => e.name === 'rest');
+		assert.strictEqual(restEntryForTwo.listener, 'rest-two', "'/two' must resolve its own 'rest', not '/one's");
+	});
+
+	// An unmounted (no host/urlPath) entry like `authentication` is meant to apply everywhere, so a
+	// mounted route with no same-named entry of its own must still be able to depend on it.
+	it('still pulls in an unmounted global entry when the mounted route has no same-named entry of its own', () => {
+		const auth = entry('authentication');
+		const waf = entry('waf', { urlPath: '/secure', after: 'authentication' });
+		const resolved = resolveRoutedChains([auth, waf]);
+		const secure = resolved.find((r) => r.urlPath === '/secure');
+		assert.deepStrictEqual(
+			secure.order.map((e) => e.name),
+			['authentication', 'waf']
+		);
+	});
 });
 
 // ---------------------------------------------------------------------------

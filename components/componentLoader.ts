@@ -82,12 +82,30 @@ let resources;
  */
 function rootConfigMount(appName: string): ScopeMount | undefined {
 	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return undefined;
+	return toScopeMount(getConfigObj()?.[appName]);
+}
+
+/**
+ * Resolves the mount for `appName`, or reports the failure and returns `undefined` if the
+ * configured `host`/`urlPath` is invalid. The caller must skip loading the application in that
+ * case rather than loading it anyway: an invalid mount is a request to CONSTRAIN where the app is
+ * served, so loading it unconstrained would silently drop the isolation the operator configured
+ * (review finding) — worse than not loading it at all. Isolated per-app so one bad mount doesn't
+ * take down every other application's load.
+ */
+function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | undefined } | { ok: false } {
 	try {
-		return toScopeMount(getConfigObj()?.[appName]);
+		return { ok: true, mount: rootConfigMount(appName) };
 	} catch (error) {
-		// An invalid mount must not take down every other application's load.
-		harperLogger.error(`Ignoring invalid routing configured for '${appName}': ${(error as Error).message}`);
-		return undefined;
+		(error as Error).message = `Not loading '${appName}': invalid routing configured: ${(error as Error).message}`;
+		errorReporter?.(error);
+		(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error as Error));
+		componentLifecycle.failed(
+			appName,
+			error as Error,
+			`Component '${appName}' failed to load due to invalid routing configuration`
+		);
+		return { ok: false };
 	}
 }
 
@@ -109,12 +127,14 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
 			const appFolder = join(CF_ROUTES_DIR, appName);
+			const mountResult = tryRootConfigMount(appName);
+			if (!mountResult.ok) continue;
 			cfsLoaded.push(
 				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
 					isRoot: false,
 					autoReload: false,
 					appName,
-					mount: rootConfigMount(appName),
+					mount: mountResult.mount,
 				})
 			);
 		}
@@ -122,14 +142,17 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
-		cfsLoaded.push(
-			loadComponent(hdbAppFolder, resources, hdbAppFolder, {
-				isRoot: false,
-				autoReload: Boolean(process.env.DEV_MODE),
-				appName: hdbAppFolder,
-				mount: rootConfigMount(basename(hdbAppFolder)),
-			})
-		);
+		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
+		if (mountResult.ok) {
+			cfsLoaded.push(
+				loadComponent(hdbAppFolder, resources, hdbAppFolder, {
+					isRoot: false,
+					autoReload: Boolean(process.env.DEV_MODE),
+					appName: hdbAppFolder,
+					mount: mountResult.mount,
+				})
+			);
+		}
 	}
 	return Promise.all(cfsLoaded).then(() => {
 		watchesSetup = true;
