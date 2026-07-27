@@ -199,5 +199,24 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 			assert.strictEqual(note.type, 'string');
 			assert.strictEqual(note.nullable, true, 'the null member must become nullable, not be dropped');
 		});
+
+		it('preserves a genuine multi-type union instead of keeping only the first member', () => {
+			const [mixed] = projectPropertiesToAttributes({ mixed: { type: ['string', 'number'] } });
+			assert.deepStrictEqual(mixed.types, ['string', 'number']);
+			assert.strictEqual(mixed.type, 'string', 'single-type consumers still see the first member');
+		});
+
+		it('round-trips a union back to the declared fragment (properties -> attributes -> properties)', () => {
+			const declared = { mixed: { type: ['string', 'number'] }, maybe: { type: ['string', 'null'] } };
+			const round = projectAttributesToProperties(projectPropertiesToAttributes(declared));
+			assert.deepStrictEqual(round.mixed.type, ['string', 'number']);
+			assert.deepStrictEqual(round.maybe.type, ['string', 'null']);
+		});
+
+		it('keeps a `["null"]`-only declaration nullable rather than silently untyped', () => {
+			const [nothing] = projectPropertiesToAttributes({ nothing: { type: ['null'] } });
+			assert.strictEqual(nothing.nullable, true);
+			assert.deepStrictEqual(nothing.types, ['null']);
+		});
 	});
 });

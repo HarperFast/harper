@@ -23,6 +23,7 @@ function makeResources() {
 	Widget.properties = {
 		id: { type: 'string', primaryKey: true },
 		label: { type: 'string', description: 'Human-readable label' },
+		mixed: { type: ['string', 'number'] },
 	};
 	for (const v of ['get', 'put', 'patch', 'delete', 'search', 'post']) Widget.prototype[v] = function () {};
 	Widget.get = async (t) => ({ id: t.id });
@@ -73,5 +74,21 @@ describe('mcp/openapi — #1920 description convergence across surfaces', () => 
 
 		// Convergence: the per-property description is identical on both surfaces.
 		assert.equal(create.inputSchema.properties.label.description, schema.properties.label.description);
+	});
+
+	it('expresses a declared type union on each surface in that surface’s own dialect', () => {
+		const resources = makeResources();
+
+		_setResourcesForTest(resources);
+		registerApplicationTools();
+		const create = getTool('create_Widget');
+		// MCP speaks JSON Schema, which has type unions — pass the author's declaration through.
+		assert.deepEqual(create.inputSchema.properties.mixed.type, ['string', 'number']);
+
+		// OpenAPI 3.0 has no type arrays; the equivalent is `oneOf`. Same declaration, two encodings —
+		// what must NOT happen is either surface narrowing it to `string`.
+		const schema = generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget;
+		assert.deepEqual(schema.properties.mixed.oneOf, [{ type: 'string' }, { type: 'number' }]);
+		assert.equal(schema.properties.mixed.type, undefined);
 	});
 });

@@ -30,11 +30,15 @@ function toOpenApiDialect(fragment: JsonSchemaFragment): JsonSchemaFragment {
 		...rest
 	} = fragment;
 	const out: JsonSchemaFragment = rest;
-	// 3.0 has no `'null'` type and no type unions; nullability is the `nullable` keyword alone.
+	// 3.0 has no `'null'` type and no type unions: nullability is the `nullable` keyword, and a genuine
+	// multi-type union is `oneOf`. Keeping only the first member would silently narrow the contract.
 	if (Array.isArray(out.type)) {
 		const members = out.type.filter((t) => t !== 'null');
 		if (members.length !== out.type.length) out.nullable = true;
-		if (members.length > 0) out.type = members[0];
+		if (members.length > 1) {
+			delete out.type;
+			out.oneOf = members.map((member) => ({ type: member }));
+		} else if (members.length === 1) out.type = members[0];
 		else delete out.type;
 	} else if (out.type === 'null') {
 		delete out.type;
@@ -60,6 +64,24 @@ function toOpenApiDialect(fragment: JsonSchemaFragment): JsonSchemaFragment {
 	}
 	if (out.items) out.items = toOpenApiDialect(out.items);
 	return out;
+}
+
+/**
+ * The non-null members of an attribute's declared type union, but only when there is more than one —
+ * `['string','null']` is nullability, not a union, and the existing single-type path already handles
+ * it. Returns undefined when the attribute has no union to translate.
+ */
+function unionMembers(attr: { types?: readonly string[] }): string[] | undefined {
+	if (!attr.types) return undefined;
+	const members = attr.types.filter((member) => member !== 'null');
+	return members.length > 1 ? members : undefined;
+}
+
+/** A single union member as a 3.0 Schema Object, using the same type mapping as the scalar path. */
+function openApiUnionMember(member: string) {
+	return !DATA_TYPES[member] && JSON_SCHEMA_SCALAR_TYPES.has(member)
+		? new Type(member)
+		: new Type(DATA_TYPES[member], member);
 }
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
@@ -190,6 +212,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		if (attributes) {
 			for (const attr of attributes) {
 				const { type, name, elements, relationship, definition, nullable, description, hidden } = attr;
+				const union = unionMembers(attr);
 				// @hidden field-level: suppress the attribute from props, query params, and required.
 				if (hidden) continue;
 				const def = definition ?? elements?.definition;
@@ -217,6 +240,10 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						// Nested object from `static properties` — the shared projector emits the full object
 						// schema (sub-properties recursed); OpenAPI's table path uses $refs instead.
 						props[name] = toOpenApiDialect(attributeToFragment(attr));
+					} else if (union) {
+						// A genuine multi-type union (`['string','number']`). 3.0 has no type arrays, so the
+						// equivalent is `oneOf`; `attr.type` alone would drop every member but the first.
+						props[name] = { oneOf: union.map(openApiUnionMember) };
 					} else if (type === 'array') {
 						if (!elements) {
 							// `{ type: 'array' }` with no items — valid JSON Schema (array of anything).
