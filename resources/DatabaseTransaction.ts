@@ -20,7 +20,11 @@ const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS)
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN: 1, // the transaction is open and can be used for reads and writes
-	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
+	// LMDB-only (LMDBTransaction.ts): committed while reads were outstanding, still usable for immediate
+	// writes. The RocksDB path never enters this state — a commit with outstanding iterators replays its
+	// writes onto a fresh transaction and commits immediately (see the outstanding-iterators branch in
+	// commit()), going straight to CLOSED.
+	LINGERING: 2,
 };
 const MAX_RETRIES = 40;
 // Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
@@ -188,6 +192,9 @@ export class DatabaseTransaction implements Transaction {
 	retries = 0;
 	declare next: DatabaseTransaction;
 	declare stale: boolean;
+	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
+	// consumed by a commit round; iterator references are consumed only by doneReadTxn().
+	declare baseReadRefConsumed?: boolean;
 	declare startedFrom?: {
 		resourceName: string;
 		method: string;
@@ -232,6 +239,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 
 		this.readTxnsUsed = 1;
+		this.baseReadRefConsumed = false; // fresh handle, fresh base reference for commit() to consume
 		if (DEBUG_LONG_TXNS) {
 			this.stackTraces = [new StartedTransaction()];
 		}
@@ -251,15 +259,32 @@ export class DatabaseTransaction implements Transaction {
 	doneReadTxn() {
 		if (!this.transaction) return;
 		if (--this.readTxnsUsed === 0) {
+			// The native handle was only being held open for the read iterators: any writes staged
+			// through it were already committed at commit() time by replaying them onto a fresh
+			// transaction (see the outstanding-iterators branch in commit()), so aborting it here
+			// discards nothing — the replay re-staged the writes AND their audit/txn-log entries
+			// into its own transaction; this handle's never-committed log batch dies with it.
 			trackedTxns.delete(this);
-			if (this.open === TRANSACTION_STATE.LINGERING) {
-				// if we have lingering writes, we have to call commit to finish them
-				this.commit();
-			} else {
-				this.transaction?.abort();
-				this.transaction = null;
-			}
+			this.transaction?.abort();
+			this.transaction = null;
 		}
+	}
+
+	/**
+	 * Force-release the retained native read handle without touching staged writes. Used by the
+	 * long-transaction monitor for a CLOSED (already-acknowledged) transaction whose iterators have
+	 * held the read snapshot past the open-transaction limit: the writes are not the monitor's to
+	 * abort (an in-flight replay commit owns them), only the snapshot's lifetime is enforced.
+	 */
+	releaseReadTxn(): void {
+		trackedTxns.delete(this);
+		this.readTxnsUsed = 0; // doneReadTxn() no-ops for the remaining iterators (guarded on this.transaction)
+		try {
+			this.transaction?.abort();
+		} catch (error) {
+			harperLogger.debug?.('releasing timed-out read transaction', error);
+		}
+		this.transaction = null;
 	}
 
 	disregardReadTxn(): void {
@@ -297,7 +322,11 @@ export class DatabaseTransaction implements Transaction {
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
 		let txnTime = this.timestamp;
-		transaction ??= this.transaction;
+		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
+		// be retained for outstanding read iterators; staging into it would silently discard the write
+		// when doneReadTxn() aborts the handle, so such writes commit immediately on a fresh
+		// transaction below instead.
+		if (!transaction && this.open === TRANSACTION_STATE.OPEN) transaction = this.transaction;
 		let immediateCommit = false;
 		if (!transaction) {
 			transaction = new RocksTransaction(operation.store.store as RocksStore);
@@ -338,8 +367,9 @@ export class DatabaseTransaction implements Transaction {
 			if (result?.then) this.completions.push(result);
 		}
 		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
-		// Sticky record that THIS write staged with its audit entry appended (log entries are written
-		// at staging and are not part of the transaction, so they survive an abort). isRetry stagings
+		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
+		// native transaction and are durably written by its commit attempt — even a failed one — so
+		// they survive the abort-after-failed-commit of the retry paths). isRetry stagings
 		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
 		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
 		// retries where a recommit round self-skips before a fresh-transaction replay.
@@ -356,7 +386,9 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		if (this.timedOut) throw transactionOpenTooLongError();
-		const transaction = options.transaction ?? this.transaction; // reused across retries; the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain
+		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
+		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
+		let transaction = options.transaction ?? this.transaction;
 		for (let i = 0; i < this.writes.length; i++) {
 			let operation = this.writes[i];
 			if (!operation || (this.retries === 0 && operation.saved)) continue;
@@ -376,23 +408,51 @@ export class DatabaseTransaction implements Transaction {
 				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
 				// coordinatedRetry, or void on a normal commit/abort.
 				let commitResolution: Promise<number | void> | void;
-				if (--this.readTxnsUsed > 0) {
-					// we still have outstanding iterators using the transaction, we can't just commit/abort it, we will still
-					// need to use it
+				// Consume this commit's own read reference — exactly once per read handle: retry
+				// recursions, immediate-commit re-entries, and a second top-level commit() (wrapper
+				// commit after an explicit in-handler commit) must not steal a reference owned by an
+				// outstanding iterator (doneReadTxn() would then never release the native handle).
+				if (!this.baseReadRefConsumed) {
+					this.baseReadRefConsumed = true;
+					this.readTxnsUsed--;
+				}
+				if (this.readTxnsUsed > 0) {
+					// Outstanding iterators still stream through this.transaction — their native iterators
+					// live inside it (GetIterator wraps its write batch + snapshot), so committing or
+					// aborting the handle now would invalidate them mid-stream. Leave it open for the
+					// iterators (doneReadTxn() aborts it when the last one finishes) and commit the writes
+					// NOW by replaying them onto a fresh transaction, the same shape as the ERR_TRY_AGAIN
+					// replay below: entries reload through the new transaction and re-resolve against
+					// current state, and conflicts surface through the normal retry ladder. Deferring the
+					// native commit to doneReadTxn() instead (the old LINGERING state) meant anything that
+					// kept the last iterator from finishing cleanly — a hung stream, the long-transaction
+					// monitor's timeout abort — dropped writes the caller had already been told committed.
+					this.writes = this.writes.filter((write) => write); // filter out removed entries
 					if (this.writes.length > 0) {
-						// if there are outstanding writes, we have to call commit later to finish them
-						this.open = TRANSACTION_STATE.LINGERING;
-						/* TODO: This is not really the intended behavior though, we want to immediately commit writes, but continue to use
-						 * the transaction, as there is likely existing references to the transaction in other parts of the codebase,
-						 * particularly in the query iterator */
+						if (!options.transaction) {
+							// Deliberately NOT marked isRetry and NOT carrying over the original's onCommit:
+							// audit/txn-log entries batch natively on the transaction they were staged into and
+							// are only durably written by that transaction's commit attempt (an abort discards
+							// them — unlike the ERR_TRY_AGAIN replay below, where the original's FAILED commit
+							// attempt already wrote its log batch). The original handle here never attempts a
+							// commit, so the replayed stagings must re-append their entries into the replay
+							// transaction's own batch — which also installs the replay's own commit hook.
+							const replayTransaction = new RocksTransaction(
+								(this.writes[0].store.store ?? this.db.store) as RocksStore,
+								{ coordinatedRetry: true }
+							);
+							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
+							this.retries++; // a replay round: commit handlers re-base on the reloaded entries
+							for (const operation of this.writes) {
+								this.save(operation, replayTransaction, true, options);
+							}
+							transaction = replayTransaction;
+						}
+						// with options.transaction set this is a retry round — the save loop above already
+						// re-staged the writes into it
+						commitResolution = transaction.commit() as Promise<void>;
+						recordCommitLatency(commitResolution, performance.now());
 					}
-					/*
-				commitResolution =
-					this.writes.length > 0
-						? transaction?.commit({ renewAfterCommit: true }) // Try to use RocksDB's CommitAndTryCreateSnapshot
-			: // don't abort, we still have outstanding reads to complete
-							null;
-				*/
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
 					trackedTxns.delete(this);
@@ -493,7 +553,11 @@ export class DatabaseTransaction implements Transaction {
 								harperLogger.warn?.('onCommit handler failed after commit', error);
 							}
 							if (this.next) {
-								completions.push(this.next.commit(options));
+								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
+								// the next store — it must commit its own writes through its own transaction
+								completions.push(
+									this.next.commit(options.transaction ? { ...options, transaction: undefined } : options)
+								);
 							}
 							if (options?.flush) {
 								completions.push(this.writes[0].store.flushed);
@@ -595,7 +659,17 @@ export class DatabaseTransaction implements Transaction {
 									);
 								}
 								return this.commit({ ...options, transaction }); // try again
-							} else throw error;
+							} else {
+								// terminal (non-conflict) failure: release the native handle so it doesn't leak;
+								// usually already released by the failed commit itself, abort for the unexpected
+								// case (same defensive pattern as the retry-exhaustion give-up above)
+								try {
+									transaction.abort();
+								} catch (abortError) {
+									harperLogger.debug?.('aborting transaction after failed commit', abortError);
+								}
+								throw error;
+							}
 						}
 					);
 				}
@@ -611,7 +685,10 @@ export class DatabaseTransaction implements Transaction {
 				if (this.next) {
 					// now run any other transactions
 					options.timestamp = this.timestamp;
-					const nextResolution = this.next?.commit(options);
+					// as above: the next store must not inherit this store's explicit native transaction
+					const nextResolution = this.next?.commit(
+						options.transaction ? { ...options, transaction: undefined } : options
+					);
 					if ((nextResolution as any)?.then)
 						return (nextResolution as any)?.then((nextResolution) => ({
 							txnTime: this.timestamp,
@@ -700,9 +777,6 @@ export class DatabaseTransaction implements Transaction {
 		// in the chain un-poisoned (and thus eligible to be force-committed by a later commit cascade).
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			txn.timedOut = true;
-			// Force the CLOSED path when releasing the read snapshot: doneReadTxn() flushes lingering writes via
-			// commit() while open === LINGERING, and commit() now throws transactionOpenTooLongError once poisoned.
-			// Closing first makes the release discard (abort) the uncommitted writes instead, which is the intent.
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
@@ -772,7 +846,20 @@ function startMonitoringTxns() {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
-				if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
+				if (txn.open === TRANSACTION_STATE.CLOSED) {
+					// The commit was already acknowledged; any staged writes are riding an in-flight
+					// replay commit (see the outstanding-iterators branch in commit()) and are not the
+					// monitor's to abort — dropping them here would re-introduce the silent
+					// write-loss-after-ack this branch structure exists to prevent. Only the read
+					// snapshot's lifetime is left to enforce: release the retained native handle that
+					// the overdue iterators are holding open.
+					harperLogger.warn?.(
+						`Read iterators held a committed transaction's snapshot past the open-transaction limit; releasing it, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`
+					);
+					txn.releaseReadTxn();
+				} else if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
 					// Abort and surface an error rather than force-committing a partial write set: silently
 					// committing on the application's behalf breaks atomicity and can leave orphaned
 					// secondary-index entries that only a full index rebuild repairs (issue #1407). The app
