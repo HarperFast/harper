@@ -9,6 +9,7 @@ import RecursiveIterator from 'recursive-iterator';
 const harperLogger = require('../utility/logging/harper_logger').default || require('../utility/logging/harper_logger');
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
+import { resolveDefaultDatabase } from '../sqlEngine/binder/defaultDatabase.ts';
 
 class sqlStatementBucket {
 	ast: any;
@@ -182,7 +183,63 @@ function interpretAST(
 	schemaLookup: any,
 	tableToSchemaLookup: any
 ) {
+	qualifyBareTableRefs(ast);
 	getRecordAttributesAST(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup);
+}
+
+/**
+ * Every table reference the statement targets, whether or not it carries a schema qualifier.
+ * Mirrors the set of refs the engine's binder resolves (FROM + JOINs, or the single write target).
+ */
+function getTableRefs(ast: any): any[] {
+	if (!ast) return [];
+	const refs: any[] = [];
+	if (ast instanceof (alasql as any).yy.Select) {
+		if (Array.isArray(ast.from)) refs.push(...ast.from);
+		if (Array.isArray(ast.joins)) {
+			for (const join of ast.joins) {
+				if (join?.table) refs.push(join.table);
+			}
+		}
+	} else if (ast instanceof (alasql as any).yy.Insert) {
+		if (ast.into) refs.push(ast.into);
+	} else if (ast instanceof (alasql as any).yy.Update || ast instanceof (alasql as any).yy.Delete) {
+		if (ast.table) refs.push(ast.table);
+	}
+	return refs.filter((ref) => ref && ref.tableid);
+}
+
+/**
+ * True when the statement names a table at all. A calc-only SELECT (`SELECT ABS(-12)`) names
+ * none, which is why an empty affected-attribute map has to stay legal for that case — see the
+ * fail-closed check in verifyPermsAST, which uses this to tell "no table" apart from "a table we
+ * failed to record".
+ */
+export function statementHasTableTarget(ast: any): boolean {
+	return getTableRefs(ast).length > 0;
+}
+
+/**
+ * Resolve schema-unqualified table references in place, using the same default-database rule the
+ * engine's binder applies.
+ *
+ * Without this the authorization layer saw `databaseid === undefined`, recorded no table at all,
+ * and authorized the statement against an empty set — while the engine went on to resolve the
+ * same bare name to a real database and read or write it (GHSA-5c29-q62v-jrwf). Writing the
+ * resolved database back onto the AST means authorization and execution share one resolution
+ * rather than performing two that can disagree.
+ *
+ * A name that resolves to zero or to several databases is deliberately left bare: it stays
+ * unrecorded, and verifyPermsAST denies the statement instead of guessing a database.
+ */
+function qualifyBareTableRefs(ast: any): void {
+	for (const ref of getTableRefs(ast)) {
+		if (!hdbUtils.isEmptyOrZeroLength(ref.databaseid)) continue;
+		const resolved = resolveDefaultDatabase(ref.tableid);
+		if (resolved) {
+			ref.databaseid = resolved;
+		}
+	}
 }
 
 /**

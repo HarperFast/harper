@@ -436,6 +436,18 @@ export function verifyPermsAST(ast, userObject, operation) {
 			return null;
 		}
 
+		// Fail closed when the statement targets a table but we derived no schema for it.
+		// hasPermissions() iterates the schema/table map, so an empty map authorizes everything by
+		// vacuous truth — which is exactly how an unqualified `SELECT ... FROM customers` slipped
+		// through while the engine still resolved and read the table (GHSA-5c29-q62v-jrwf). An
+		// empty map is only legitimate for a statement that names no table at all (`SELECT ABS(-12)`);
+		// anything else means we could not resolve the target and must not authorize it.
+		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
+		if ((!schemas || schemas.length === 0) && bucketModule.statementHasTableTarget(ast)) {
+			harperLogger.info('Unresolved table reference in verifyPermsAST(), denying operation.');
+			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
+		}
+
 		const fullRolePerms = permsTranslator.getRolePermissions(userObject.role);
 		userObject.role.permission = fullRolePerms;
 
