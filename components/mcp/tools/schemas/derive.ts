@@ -19,6 +19,8 @@ export interface HarperAttribute {
 	description?: string;
 	hidden?: boolean;
 	nullable?: boolean;
+	/** Source JSON-Schema type union from `static properties`; MCP accepts type arrays, so it passes through. */
+	types?: readonly string[];
 	isPrimaryKey?: boolean;
 	properties?: HarperAttribute[];
 	elements?: HarperAttribute;
@@ -97,6 +99,10 @@ function attributeToProperty(attr: HarperAttribute): object {
 			type: 'array',
 			items: attributeToProperty(attr.elements),
 		};
+	} else if (attr.types) {
+		// MCP speaks JSON Schema, which has type unions — emit the author's union as declared rather
+		// than the single `type` the attribute form collapses to.
+		base = { type: [...attr.types] };
 	} else {
 		base = harperTypeToJsonSchema(attr.type) as typeof base;
 	}
