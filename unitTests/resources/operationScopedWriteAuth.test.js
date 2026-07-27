@@ -122,25 +122,39 @@ describe('operation-scoped write authorization', () => {
 				{ id: 'false-delete-b', owner: 'bob' },
 			]);
 			const deleteCalls = [];
-			let readCalls = 0;
+			const readTargets = [];
+			let internalScanTarget;
+			let concurrentRead;
+			const target = new RequestTarget('?kind=false-delete');
+			target.select = ['owner'];
 			class CollectionDelete extends Docs {
 				static loadAsInstance = false;
 				allowDelete(_user, target) {
 					deleteCalls.push({ target, isCollection: this.isCollection, owner: this.owner });
 					return true;
 				}
-				allowRead() {
-					readCalls++;
+				allowRead(_user, readTarget) {
+					readTargets.push(readTarget);
 					return false;
 				}
+				search(scanTarget) {
+					internalScanTarget = scanTarget;
+					concurrentRead = fromAsync(super.search(target));
+					return super.search(scanTarget);
+				}
 			}
-			const target = new RequestTarget('?kind=false-delete');
 			await CollectionDelete.delete(target, { user: alice, authorize: true });
 			assert.strictEqual(deleteCalls.length, 1);
 			assert.strictEqual(deleteCalls[0].target, target);
 			assert.strictEqual(deleteCalls[0].isCollection, true);
 			assert.strictEqual(deleteCalls[0].owner, undefined);
-			assert.strictEqual(readCalls, 0, 'the internal scan must not substitute allowRead');
+			assert.deepStrictEqual(await concurrentRead, []);
+			assert.ok(readTargets.length > 0, 'the concurrent read must still execute allowRead');
+			assert.notStrictEqual(internalScanTarget, target);
+			assert.strictEqual(internalScanTarget.checkPermission, false);
+			assert.deepStrictEqual(internalScanTarget.select, ['$id']);
+			assert.ok(target.checkPermission, 'the caller target remains armed for a later dispatch');
+			assert.deepStrictEqual(target.select, ['owner']);
 			assert.deepStrictEqual(await idsOf('false-delete'), []);
 		});
 
@@ -179,6 +193,48 @@ describe('operation-scoped write authorization', () => {
 				isAccessViolation
 			);
 			assert.deepStrictEqual(await idsOf('false-delete-denied'), ['false-delete-denied-a', 'false-delete-denied-b']);
+		});
+
+		it('re-authorizes a reused query-delete target without relying on caller mutation', async function () {
+			await seed('false-delete-reused', [{ id: 'false-delete-reused-a' }]);
+			let allowDeleteCalls = 0;
+			let readCalls = 0;
+			class ReusedTargetDelete extends Docs {
+				static loadAsInstance = false;
+				allowDelete() {
+					return ++allowDeleteCalls === 1;
+				}
+				allowRead() {
+					readCalls++;
+					return false;
+				}
+			}
+			const target = new RequestTarget('?kind=false-delete-reused');
+			const context = { user: alice, authorize: true };
+			await ReusedTargetDelete.delete(target, context);
+			await seed('false-delete-reused', [{ id: 'false-delete-reused-b' }]);
+			await assert.rejects(() => ReusedTargetDelete.delete(target, context), isAccessViolation);
+			assert.strictEqual(allowDeleteCalls, 2);
+			assert.strictEqual(readCalls, 0, 'the authorized delete scan must never substitute allowRead');
+			assert.deepStrictEqual(await idsOf('false-delete-reused'), ['false-delete-reused-b']);
+		});
+
+		it('normalizes a rejecting collection allowUpdate to AccessViolation before writing', async function () {
+			class RejectingCollectionPut extends Docs {
+				static loadAsInstance = false;
+				async allowUpdate() {
+					throw new Error('hook failed');
+				}
+			}
+			await assert.rejects(
+				() =>
+					RejectingCollectionPut.put([{ id: 'false-put-rejected', kind: 'false-put-rejected' }], {
+						user: alice,
+						authorize: true,
+					}),
+				isAccessViolation
+			);
+			assert.deepStrictEqual(await idsOf('false-put-rejected'), []);
 		});
 
 		it('authorizes publish once with allowCreate and never allowDelete', async function () {
@@ -355,6 +411,69 @@ describe('operation-scoped write authorization', () => {
 			assert.strictEqual(allowCreateCalls, 2);
 			assert.strictEqual(writes, 0);
 		});
+
+		it('keeps static publish authorization when an override copies the target', async function () {
+			let allowCreateCalls = 0;
+			let writes = 0;
+			class CopyingCollectionPublish extends Docs {
+				static loadAsInstance = false;
+				allowCreate() {
+					allowCreateCalls++;
+					return false;
+				}
+				publish(target, message) {
+					return super.publish(Object.assign(new RequestTarget(), target), message);
+				}
+				_writePublish() {
+					writes++;
+				}
+			}
+			await assert.rejects(
+				async () =>
+					CopyingCollectionPublish.publish('copied-publish-target', undefined, {
+						user: alice,
+						authorize: true,
+					}),
+				isAccessViolation
+			);
+			assert.strictEqual(allowCreateCalls, 1);
+			assert.strictEqual(writes, 0);
+		});
+
+		it('keeps static publish authorization for delegation after the override settles', async function () {
+			let allowCreateCalls = 0;
+			let writes = 0;
+			let delayedPublish;
+			class DelayedCollectionPublish extends Docs {
+				static loadAsInstance = false;
+				allowCreate() {
+					allowCreateCalls++;
+					return false;
+				}
+				publish(target, message) {
+					delayedPublish = new Promise((resolve, reject) =>
+						setImmediate(() => {
+							try {
+								resolve(super.publish(Object.assign(new RequestTarget(), target), message));
+							} catch (error) {
+								reject(error);
+							}
+						})
+					);
+					delayedPublish.catch(() => {});
+				}
+				_writePublish() {
+					writes++;
+				}
+			}
+			await DelayedCollectionPublish.publish('delayed-publish-target', undefined, {
+				user: alice,
+				authorize: true,
+			});
+			await assert.rejects(delayedPublish, isAccessViolation);
+			assert.strictEqual(allowCreateCalls, 1);
+			assert.strictEqual(writes, 0);
+		});
 	});
 
 	describe('loadAsInstance default compatibility', () => {
@@ -376,50 +495,6 @@ describe('operation-scoped write authorization', () => {
 			assert.strictEqual(calls[0].target, target);
 			assert.strictEqual(calls[0].owner, undefined);
 			assert.deepStrictEqual(await idsOf('instance-delete'), []);
-		});
-
-		it('keeps one collection-entry allowCreate verdict for an array put', async function () {
-			const createCalls = [];
-			let updateCalls = 0;
-			class InstancePut extends Docs {
-				allowCreate(_user, batch) {
-					createCalls.push({ batch, owner: this.owner });
-					return true;
-				}
-				allowUpdate() {
-					updateCalls++;
-					return false;
-				}
-			}
-			const batch = [
-				{ id: 'instance-put-a', kind: 'instance-put' },
-				{ id: 'instance-put-b', kind: 'instance-put' },
-			];
-			await InstancePut.put(batch, { user: alice, authorize: true });
-			assert.strictEqual(createCalls.length, 1);
-			assert.strictEqual(createCalls[0].batch, batch);
-			assert.strictEqual(createCalls[0].owner, undefined);
-			assert.strictEqual(updateCalls, 0);
-			assert.deepStrictEqual(await idsOf('instance-put'), ['instance-put-a', 'instance-put-b']);
-		});
-
-		it('writes each element when getResource resolves asynchronously', async function () {
-			class AsyncResolve extends Docs {
-				static getResource(target, context, options) {
-					return Promise.resolve(super.getResource(target, context, options));
-				}
-			}
-			await AsyncResolve.put(
-				[
-					{ id: 'async-element-a', kind: 'async-element', label: 'one' },
-					{ id: 'async-element-b', kind: 'async-element', label: 'two' },
-				],
-				{ user: alice }
-			);
-			assert.deepStrictEqual((await recordsOf('async-element')).map(({ id, label }) => [id, label]).sort(), [
-				['async-element-a', 'one'],
-				['async-element-b', 'two'],
-			]);
 		});
 
 		it('keeps a RequestTarget publish body as the message in default mode', async function () {

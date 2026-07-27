@@ -22,7 +22,7 @@ import { logger } from '../utility/logging/logger.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
-import { markStaticResourceTarget, unmarkStaticResourceTarget } from './staticResourceTarget.ts';
+import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -150,7 +150,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						async: true,
 					});
 					if (typeof elementResource.then === 'function')
-						results.push(elementResource.then((resource) => resource.put(element, query)));
+						results.push(elementResource.then((resource) => resource.put(element, request)));
 					else results.push(elementResource.put(element, query));
 				}
 				return Promise.all(results);
@@ -704,7 +704,8 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
-			if (isCollection && options.method === 'put' && Array.isArray(data)) query.isCollection = true;
+			if (isCollection && options.method === 'put' && Array.isArray(data) && this.loadAsInstance === false)
+				query.isCollection = true;
 		}
 		isCollection = query.isCollection;
 		if (
@@ -792,29 +793,11 @@ function transactional(
 			// both resolve to the same subscription iterable.
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
 			const runAction = (data: any) => {
-				const markedStaticTarget =
-					loadAsInstance === false && options.method === 'publish' && query && typeof query === 'object';
-				if (markedStaticTarget) markStaticResourceTarget(query);
-				let result;
-				try {
-					result = action(resource, query, context, data);
-				} catch (error) {
-					if (markedStaticTarget) unmarkStaticResourceTarget(query);
-					throw error;
-				}
-				if (markedStaticTarget) {
-					result = when(
-						result,
-						(value) => {
-							unmarkStaticResourceTarget(query);
-							return value;
-						},
-						(error) => {
-							unmarkStaticResourceTarget(query);
-							throw error;
-						}
-					);
-				}
+				// getResource creates a fresh receiver for this dispatch. Marking that receiver, rather
+				// than caller-owned target identity, preserves the static (target, message) signature when
+				// an override copies the target or delegates asynchronously after its own return settles.
+				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
+				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) => {
 					registerLiveSubscriptionForContext(subscription, resource, query, context);
