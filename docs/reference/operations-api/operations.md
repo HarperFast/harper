@@ -604,10 +604,12 @@ Deploys a component. The `package` option accepts any valid NPM reference includ
 
 Additional parameters:
 
-- `urlPath` — the HTTP URL path the component is mounted at (e.g. `"/api/v2"`). Must not contain `..` or `.` path segments. Persisted on the component's root-config entry; see [HTTP middleware routing](/reference/v5/http/overview#middleware-routing).
-- `host` — the virtual hostname the component is served on (e.g. `"api.example.com"`). Must be a bare hostname or IPv6 literal — no scheme, port, path, or brackets. Persisted alongside `urlPath`.
+- `urlPath` — the HTTP URL path the component is mounted at (e.g. `"/api/v2"`). Must not contain `..` or `.` path segments. Persisted on the component's root-config entry; see [HTTP middleware routing](../http/overview.md#middleware-routing).
+- `host` <VersionBadge version="v5.2.0" /> — the virtual hostname the component is served on (e.g. `"api.example.com"`). Must be a bare hostname or IPv6 literal — no scheme, port, path, or brackets. Persisted alongside `urlPath`.
 - `install_allow_scripts` — set to `true` to allow npm pre/post install scripts (disabled by default)
 - `credentials` — credentials for installing a component from a private npm registry or private git repository (see below)
+
+`urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
 
 #### Deploy credentials (`credentials`)
 
