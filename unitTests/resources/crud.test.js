@@ -373,8 +373,8 @@ describe('v4-style instance post on a collection target', () => {
 		const id = await PostSub.post(target, { title: 'created' });
 		assert.ok(id != null, 'create should return the new id');
 		const record = await PostSub.get(id);
-		assert.equal(record.title, 'created');
-		assert.equal(record.stamped, true, 'instance override should have run');
+		assert.strictEqual(record.title, 'created');
+		assert.strictEqual(record.stamped, true, 'instance override should have run');
 	});
 
 	it('instance post on an identified resource still 405s', async function () {
