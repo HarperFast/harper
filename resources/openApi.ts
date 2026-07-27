@@ -6,9 +6,61 @@ import {
 	JSON_SCHEMA_SCALAR_TYPES,
 	attributeToFragment,
 	projectPropertiesToAttributes,
+	type JsonSchemaFragment,
 } from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
+
+/**
+ * Convert a canonical `Table.properties` fragment into one this document's declared dialect accepts.
+ *
+ * `attributeToFragment` produces the front-end-neutral projection: it speaks current JSON Schema and
+ * carries Harper's own directives, neither of which belongs in an emitted 3.0.3 document. Rather than
+ * bend that projector (its output is also `Table.properties`, which must stay neutral), translate on
+ * the way out — recursively, since nested objects and array items are the paths that leak.
+ */
+function toOpenApiDialect(fragment: JsonSchemaFragment): JsonSchemaFragment {
+	// `hidden` / `primaryKey` / the timestamp flags are Harper behavior, not schema vocabulary.
+	const {
+		hidden: _hidden,
+		primaryKey: _primaryKey,
+		assignCreatedTime: _assignCreatedTime,
+		assignUpdatedTime: _assignUpdatedTime,
+		const: constValue,
+		...rest
+	} = fragment;
+	const out: JsonSchemaFragment = rest;
+	// 3.0 has no `'null'` type and no type unions; nullability is the `nullable` keyword alone.
+	if (Array.isArray(out.type)) {
+		const members = out.type.filter((t) => t !== 'null');
+		if (members.length !== out.type.length) out.nullable = true;
+		if (members.length > 0) out.type = members[0];
+		else delete out.type;
+	} else if (out.type === 'null') {
+		delete out.type;
+	}
+	// `const` is draft-06; emit the equivalent single-value `enum`, intersecting when both are declared.
+	if (constValue !== undefined) {
+		out.enum = Array.isArray(out.enum) ? out.enum.filter((v) => v === constValue) : [constValue as never];
+	}
+	// 3.0's `nullable` does not widen an `enum` — without `null` in the list a validator rejects it.
+	if (out.nullable && Array.isArray(out.enum) && !out.enum.includes(null)) out.enum = [...out.enum, null];
+	if (out.properties) {
+		const translated: Record<string, JsonSchemaFragment> = {};
+		for (const [key, sub] of Object.entries(out.properties)) {
+			if (sub.hidden) continue; // a hidden sub-property must not surface, and `required` follows below
+			translated[key] = toOpenApiDialect(sub);
+		}
+		out.properties = translated;
+		if (out.required) {
+			const visible = out.required.filter((key) => Object.hasOwn(translated, key));
+			if (visible.length > 0) out.required = visible;
+			else delete out.required;
+		}
+	}
+	if (out.items) out.items = toOpenApiDialect(out.items);
+	return out;
+}
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
 const DESCRIPTION_200 = 'successful operation';
@@ -164,18 +216,21 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					} else if (attr.properties) {
 						// Nested object from `static properties` — the shared projector emits the full object
 						// schema (sub-properties recursed); OpenAPI's table path uses $refs instead.
-						props[name] = attributeToFragment(attr);
+						props[name] = toOpenApiDialect(attributeToFragment(attr));
 					} else if (type === 'array') {
 						if (!elements) {
 							// `{ type: 'array' }` with no items — valid JSON Schema (array of anything).
 							props[name] = { type: 'array' };
 						} else if (elements.properties) {
 							// array of nested objects — project the element to its full object schema
-							props[name] = { type: 'array', items: attributeToFragment(elements) };
+							props[name] = { type: 'array', items: toOpenApiDialect(attributeToFragment(elements)) };
 						} else if (elements.type === 'Any') {
 							props[name] = { type: 'array', items: { format: elements.type } };
 						} else if (!DATA_TYPES[elements.type] && JSON_SCHEMA_SCALAR_TYPES.has(elements.type)) {
-							props[name] = { type: 'array', items: new Type(elements.type) };
+							props[name] =
+								elements.type === 'null'
+									? { type: 'array', items: {} }
+									: { type: 'array', items: new Type(elements.type) };
 						} else {
 							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
 						}
@@ -199,7 +254,8 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					const prop = props[name] as { description?: string; enum?: unknown; format?: string };
 					if (description) prop.description = description;
 					if (attr.enum && prop.enum === undefined) prop.enum = attr.enum;
-					if (attr.format && prop.format === undefined) prop.format = attr.format;
+					// An author-declared `format` outranks the Harper type name `Type()` stamps on.
+					if (attr.format) prop.format = attr.format;
 					if (attr.const !== undefined && prop.enum === undefined) prop.enum = [attr.const];
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
