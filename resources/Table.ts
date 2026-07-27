@@ -2714,7 +2714,7 @@ export function makeTable(options) {
 						);
 						if (!audit || isRocksDB) scheduleCleanup();
 					} else {
-						removeEntry(primaryStore, existingEntry, transaction && { transaction });
+						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
 				},
 			} as any);
