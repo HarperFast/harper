@@ -158,7 +158,7 @@ export function bindSelect(stmt: SelectNode): BoundSelect {
 
 function bindTableRef(ref: TableRefNode, databases: Record<string, Record<string, unknown>>): BoundTable {
 	const databaseName = ref.database || pickDefaultDatabase(databases, ref.table);
-	const dbEntry = Object.hasOwn(databases, databaseName) ? databases[databaseName] : undefined;
+	const dbEntry = databases && Object.hasOwn(databases, databaseName) ? databases[databaseName] : undefined;
 	if (!dbEntry) {
 		throw new EngineUnsupportedError(`database "${databaseName}" not found`);
 	}

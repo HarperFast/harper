@@ -45,6 +45,11 @@ const DB = 'data';
 const SECRET_TABLE = 'UnqualSecret';
 const PUBLIC_TABLE = 'UnqualPublic';
 
+const VAULT_DB = 'vault';
+const VAULT_TABLE = 'UnqualVault';
+const VAULT_ROW = 'vault-row-1';
+const VAULT_SSN = '999-88-7777';
+
 const SECRET_ROW = 'secret-row-1';
 const SECRET_SSN = '111-22-3333';
 const PUBLIC_ROW = 'public-row-1';
@@ -86,12 +91,31 @@ suite(
 						super_user: false,
 						[DB]: {
 							tables: {
+								// insert is granted so the INSERT-source test below is decided by its SOURCE
+								// table, not by a missing grant on the target.
 								[PUBLIC_TABLE]: {
+									read: true,
+									insert: true,
+									update: false,
+									delete: false,
+									attribute_permissions: [],
+								},
+							},
+						},
+						// Table-level read is granted, but `ssn` is denied at the attribute level — the
+						// check that only runs if the column's database resolves correctly.
+						[VAULT_DB]: {
+							tables: {
+								[VAULT_TABLE]: {
 									read: true,
 									insert: false,
 									update: false,
 									delete: false,
-									attribute_permissions: [],
+									attribute_permissions: [
+										{ attribute_name: 'id', read: true, insert: false, update: false },
+										{ attribute_name: 'label', read: true, insert: false, update: false },
+										{ attribute_name: 'ssn', read: false, insert: false, update: false },
+									],
 								},
 							},
 						},
@@ -127,6 +151,16 @@ suite(
 					schema: DB,
 					table: PUBLIC_TABLE,
 					records: [{ id: PUBLIC_ROW, label: 'public-label' }],
+				})
+				.expect(200);
+
+			await client
+				.req()
+				.send({
+					operation: 'insert',
+					schema: VAULT_DB,
+					table: VAULT_TABLE,
+					records: [{ id: VAULT_ROW, label: 'vault-label', ssn: VAULT_SSN }],
 				})
 				.expect(200);
 		});
@@ -236,6 +270,85 @@ suite(
 			ok(
 				isDenied(r.status),
 				`a SELECT INTO target is invisible to the affected-attribute map and must be refused ` +
+					`(status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
+			);
+		});
+
+		// Once bare names resolve, a statement can span two databases with no aliases anywhere. The
+		// column's database then has to come from the table-to-schema map: resolving it from the FROM
+		// table's database instead drops the column before its attribute permission is checked, so a
+		// role with table-level read but `ssn` denied would still receive `ssn`.
+		test('attribute-level denial is enforced on an unaliased cross-database join', async () => {
+			const r = await client.reqAs(malloryHeaders).send({
+				operation: 'sql',
+				sql: `SELECT ${VAULT_TABLE}.ssn FROM ${PUBLIC_TABLE} INNER JOIN ${VAULT_TABLE} ON ${PUBLIC_TABLE}.id = ${VAULT_TABLE}.id`,
+			});
+
+			ok(
+				!JSON.stringify(r.body ?? '').includes(VAULT_SSN),
+				`ATTRIBUTE AUTHZ BYPASS: a cross-database join returned an attribute the role is denied ` +
+					`(status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
+			);
+		});
+
+		test('the same denied attribute is refused when selected directly', async () => {
+			const r = await client
+				.reqAs(malloryHeaders)
+				.send({ operation: 'sql', sql: `SELECT id, ssn FROM ${VAULT_DB}.${VAULT_TABLE}` });
+
+			ok(
+				!JSON.stringify(r.body ?? '').includes(VAULT_SSN),
+				`ATTRIBUTE AUTHZ BYPASS: a denied attribute was returned (status=${r.status}): ` +
+					`${JSON.stringify(r.body).slice(0, 300)}`
+			);
+		});
+
+		test('a permitted attribute on the same table is still readable', async () => {
+			const r = await client
+				.reqAs(malloryHeaders)
+				.send({ operation: 'sql', sql: `SELECT id, label FROM ${VAULT_DB}.${VAULT_TABLE}` });
+
+			strictEqual(
+				r.status,
+				200,
+				`REGRESSION: a permitted attribute was refused (status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
+			);
+		});
+
+		// Nested and compound queries are not descended into by the attribute collectors, so a table
+		// referenced only from one of them is invisible to permission checking. They must be refused
+		// rather than left to whether the engine happens to support them.
+		for (const [label, sql] of [
+			['a WHERE subquery', `SELECT id FROM ${DB}.${PUBLIC_TABLE} WHERE id IN (SELECT id FROM ${SECRET_TABLE})`],
+			['an EXISTS subquery', `SELECT id FROM ${DB}.${PUBLIC_TABLE} WHERE EXISTS (SELECT id FROM ${SECRET_TABLE})`],
+			['a UNION branch', `SELECT id FROM ${DB}.${PUBLIC_TABLE} UNION SELECT id FROM ${SECRET_TABLE}`],
+			['an INSERT source query', `INSERT INTO ${DB}.${PUBLIC_TABLE} SELECT id, owner AS label FROM ${SECRET_TABLE}`],
+		] as [string, string][]) {
+			test(`${label} referencing the forbidden table is denied`, async () => {
+				const r = await client.reqAs(malloryHeaders).send({ operation: 'sql', sql });
+
+				ok(
+					!JSON.stringify(r.body ?? '').includes(SECRET_SSN),
+					`AUTHZ BYPASS: ${label} leaked protected data (status=${r.status})`
+				);
+				ok(
+					isDenied(r.status),
+					`${label} reaches a table the collectors never record, so it must be refused by ` +
+						`authorization (status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
+				);
+			});
+		}
+
+		// The INTO target is a write whose permission isn't modeled. Treating it as a normal named
+		// reference would let it satisfy the check on the map entry the FROM collector created.
+		test('SELECT INTO is denied even when its target matches the FROM table', async () => {
+			const r = await client
+				.reqAs(malloryHeaders)
+				.send({ operation: 'sql', sql: `SELECT * INTO ${DB}.${PUBLIC_TABLE} FROM ${DB}.${PUBLIC_TABLE}` });
+
+			ok(
+				isDenied(r.status),
+				`AUTHZ BYPASS: a SELECT INTO write was authorized by the FROM table's read entry ` +
 					`(status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
 			);
 		});
