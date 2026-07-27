@@ -4722,12 +4722,18 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('select * FROM orders - test no schema', async () => {
+		test('select * FROM orders - no schema resolves to the one database that has it', async () => {
+			// `orders` exists only in `northnwd`, so authorization and the engine both resolve the
+			// bare name to it and the query runs like the schema-qualified equivalent
+			// (GHSA-5c29-q62v-jrwf: resolution now happens once, before authorization).
 			await client
 				.req()
 				.send({ operation: 'sql', sql: 'select * FROM orders' })
-				.expect((r) => assert.equal(r.body.error, 'schema not defined for table orders', r.text))
-				.expect(500);
+				.expect((r) => {
+					assert.equal(r.body.length, 830, r.text);
+					assert.equal(r.body[0].orderid, 10248, r.text);
+				})
+				.expect(200);
 		});
 
 		test('select * from call.aggr - reserved words', async () => {
