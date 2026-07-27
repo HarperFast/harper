@@ -171,13 +171,17 @@ describe('dropTable ghost regression', () => {
 
 	it('bounds the retries of a drop that can never complete', async function () {
 		this.timeout(20000);
-		const Stuck = defineTable('GhostRetryBound');
+		// The attempt budget is module-level and deliberately survives until the
+		// process restarts, so a fixed name would start this test with a spent
+		// budget on any in-process re-run (a mocha retry, say).
+		const TABLE = `GhostRetryBound_${process.pid}_${Date.now()}`;
+		const Stuck = defineTable(TABLE);
 		await Stuck.put({ id: 1, str: 'data' });
 		const dbisDb = getDbisDb();
-		const meta = dbisDb.getSync('GhostRetryBound/');
+		const meta = dbisDb.getSync(`${TABLE}/`);
 		meta.dropping = true;
-		await dbisDb.put('GhostRetryBound/', meta);
-		delete databases[TEST_DB].GhostRetryBound;
+		await dbisDb.put(`${TABLE}/`, meta);
+		delete databases[TEST_DB][TABLE];
 
 		// completeInterruptedDrop finishes by removing the table's catalog rows.
 		// Fail that the way a storage environment that can no longer accept writes
@@ -185,7 +189,7 @@ describe('dropTable ghost regression', () => {
 		const originalRemove = dbisDb.remove;
 		let attempts = 0;
 		dbisDb.remove = function (key, ...rest) {
-			if (typeof key === 'string' && key.startsWith('GhostRetryBound/')) {
+			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
 				attempts++;
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
@@ -222,9 +226,9 @@ describe('dropTable ghost regression', () => {
 
 		// the tombstone is mirrored into every database that shares this store, so
 		// each stuck table gets its own give-up error - and only one
-		const giveUpLogs = errorLogs.filter((message) => String(message).includes('GhostRetryBound'));
+		const giveUpLogs = errorLogs.filter((message) => String(message).includes(TABLE));
 		const loggedTables = giveUpLogs.map((message) => String(message).match(/table (\S+)/)[1]);
-		assert.ok(loggedTables.includes(`${TEST_DB}.GhostRetryBound`), 'the stuck table must be named in the error');
+		assert.ok(loggedTables.includes(`${TEST_DB}.${TABLE}`), 'the stuck table must be named in the error');
 		assert.equal(
 			new Set(loggedTables).size,
 			loggedTables.length,
@@ -232,11 +236,75 @@ describe('dropTable ghost regression', () => {
 		);
 		assert.match(giveUpLogs[0], /giving up until this node restarts/);
 		// the table must stay unloaded regardless
-		assert.equal(getDatabases()[TEST_DB]?.GhostRetryBound, undefined, 'a tombstoned table must never load');
+		assert.equal(getDatabases()[TEST_DB]?.[TABLE], undefined, 'a tombstoned table must never load');
 
 		// the budget is exhausted for this process, so clean the tombstoned rows up
 		// by hand rather than leaving a stuck table behind for later tests
-		for (const key of [...dbisDb.getKeys({ start: 'GhostRetryBound/', end: 'GhostRetryBound0' })]) {
+		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
+			dbisDb.remove(key);
+		}
+		await dbisDb.committed;
+	});
+
+	// A spent budget must not outlive the drop that spent it. The create path
+	// completes interrupted drops itself, under the exclusive lock, and never
+	// passes through the reconcile - so a table can go from "budget exhausted" to
+	// "alive again" without the reconcile ever seeing a success. If the budget
+	// survived that, the table's NEXT interrupted drop would be skipped outright
+	// and its catalog rows would silently resurrect it.
+	it('clears a spent retry budget once the table is no longer tombstoned', async function () {
+		this.timeout(20000);
+		const TABLE = `GhostBudgetReset_${process.pid}_${Date.now()}`;
+		const Stuck = defineTable(TABLE);
+		await Stuck.put({ id: 1, str: 'data' });
+		const dbisDb = getDbisDb();
+
+		const setDropping = async (dropping) => {
+			const meta = dbisDb.getSync(`${TABLE}/`);
+			meta.dropping = dropping;
+			await dbisDb.put(`${TABLE}/`, meta);
+		};
+
+		const originalRemove = dbisDb.remove;
+		let attempts = 0;
+		dbisDb.remove = function (key, ...rest) {
+			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
+				attempts++;
+				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
+			}
+			return originalRemove.call(this, key, ...rest);
+		};
+		const reload = () => {
+			resetDatabases();
+			getDatabases();
+		};
+
+		try {
+			// spend the whole budget on a first interrupted drop
+			await setDropping(true);
+			delete databases[TEST_DB][TABLE];
+			for (let i = 0; i < 5; i++) reload();
+			const spent = attempts;
+			assert.ok(spent > 0, 'the first interrupted drop must be attempted');
+
+			// the drop is resolved elsewhere (the create path) and the table lives
+			// again: one reload with no tombstone must return the budget
+			await setDropping(false);
+			reload();
+
+			// a second interrupted drop must get a fresh budget, not the spent one
+			await setDropping(true);
+			delete databases[TEST_DB][TABLE];
+			reload();
+			assert.ok(
+				attempts > spent,
+				`a later interrupted drop must be retried again, not skipped on the previous drop's spent budget (attempts stuck at ${attempts})`
+			);
+		} finally {
+			dbisDb.remove = originalRemove;
+		}
+
+		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
 			dbisDb.remove(key);
 		}
 		await dbisDb.committed;
