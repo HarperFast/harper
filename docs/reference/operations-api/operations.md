@@ -606,6 +606,55 @@ Additional parameters:
 
 - `urlPath` — override the HTTP URL path the component is mounted at (e.g. `"/api/v2"`)
 - `install_allow_scripts` — set to `true` to allow npm pre/post install scripts (disabled by default)
+- `credentials` — credentials for installing a component from a private npm registry or private git repository (see below)
+
+#### Deploy credentials (`credentials`)
+
+When a component is installed from a private source, `credentials` supplies the authentication. It is an array of entries; each entry is one of two kinds, identified by its key:
+
+- **npm registry auth** — an entry with a `registry` key, applied to a private npm registry.
+- **git host auth** — an entry with a `host` key, applied to a private git repository fetched by reference (e.g. `package: "github:my-org/my-app#semver:v1.2.3"`).
+
+An entry provides its credential exactly one of two ways — a literal `token`, or a `secret` reference:
+
+| Field      | Kind | Description                                                                                                         |
+| ---------- | ---- | ------------------------------------------------------------------------------------------------------------------- |
+| `registry` | npm  | The registry URL or host the credential applies to. **Required** for an npm entry.                                  |
+| `scope`    | npm  | Optional npm `@scope` (e.g. `"@my-org"`) the entry applies to; omit to set the default registry.                    |
+| `host`     | git  | The bare git host the credential applies to (e.g. `"github.com"`). **Required** for a git entry.                    |
+| `username` | git  | Optional git HTTPS username. Defaults to `x-access-token` (GitHub); GitLab uses `oauth2`, Bitbucket `x-token-auth`. |
+| `token`    | both | A literal auth token, **or**                                                                                        |
+| `secret`   | both | The name of an [`hdb_secret`](../security/secrets.md) row to resolve the token from.                                |
+
+A provided **`token`** is not treated as ephemeral: Harper ingests it into the encrypted [secrets store](../security/secrets.md) and references it everywhere, so package-reference deploys keep working through rollback, reboot, and new peers joining — without re-supplying the token. The token is encrypted at rest, stripped from the operation before replication and from the operations log, and only ever crosses the cluster as ciphertext. A git-host token is additionally served to git **from memory** (via a credential helper) — it is never written to a file or into a URL. Using a **`secret`** reference names an existing store row directly. Ingesting a token requires custody on the deploying node; on OSS core without custody, a literal token falls back to a transient, this-node-only credential (not persisted or replicated).
+
+Ingested tokens are stored under a derived name granted to the component — `deploy.<component>.<registry>` for a registry entry, `deploy.<component>.git.<host>` for a git entry — so re-deploying with a rotated token idempotently updates the same row.
+
+Private npm registry:
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"package": "npm:@my-org/my-app@1.2.3",
+	"credentials": [{ "registry": "https://registry.my-org.com", "scope": "@my-org", "token": "npm_..." }]
+}
+```
+
+Private git repository (token resolved from an existing secret):
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"package": "github:my-org/my-app#semver:v1.2.3",
+	"credentials": [{ "host": "github.com", "secret": "deploy.my-app.git.github_com" }]
+}
+```
+
+:::note
+`credentials` replaces the earlier `registryAuth` field (renamed while the feature was in alpha, before it grew to carry git-host credentials). `registryAuth` is now rejected with an error directing you to `credentials`.
+:::
 
 The response includes a `deployment_id` that can be used to query the deployment record:
 
@@ -720,6 +769,117 @@ Adds an SSH key (must be ed25519) for authenticating deployments from private re
 	"host": "my-key.github.com",
 	"hostname": "github.com"
 }
+```
+
+---
+
+## Secrets
+
+Operations for managing the encrypted [secrets store](../security/secrets.md) (`system.hdb_secret`). All secret operations are **`super_user` only**. Values are never returned or logged by any of these operations.
+
+Detailed documentation: [Secrets](../security/secrets.md)
+
+:::tip
+Prefer a UI? [Harper Studio](../studio/overview.md) provides a graphical interface for creating, granting, and rotating secrets — it drives these operations for you, so you don't have to hand-craft the request bodies below.
+:::
+
+| Operation                | Description                                                    | Role Required |
+| ------------------------ | -------------------------------------------------------------- | ------------- |
+| `set_secret`             | Creates or updates a secret and chooses its delivery tier      | super_user    |
+| `grant_secret`           | Adds a component to a scoped secret's grants (idempotent)      | super_user    |
+| `revoke_secret`          | Removes a component from a scoped secret's grants (idempotent) | super_user    |
+| `list_secrets`           | Lists secret metadata — never envelopes or values              | super_user    |
+| `delete_secret`          | Deletes a secret row                                           | super_user    |
+| `get_secrets_public_key` | Returns the cluster public key for client-side encryption      | super_user    |
+
+### `set_secret`
+
+Creates or updates a secret. Supply exactly one of `value` (plaintext, encrypted on ingest — requires custody on this node) or `envelope` (an `enc:v1:` ciphertext produced client-side against `get_secrets_public_key`). The delivery tier is `processEnv: true` **or** `grants` — the two are mutually exclusive. On update, tier and metadata default to the stored row, so a value rotation preserves the tier without re-specifying it.
+
+| Parameter    | Type     | Description                                                                     |
+| ------------ | -------- | ------------------------------------------------------------------------------- |
+| `name`       | string   | Secret name (word characters, dots, dashes). **Required.**                      |
+| `value`      | string   | Plaintext value; encrypted immediately, then discarded. Requires custody.       |
+| `envelope`   | string   | `enc:v1:` ciphertext (alternative to `value`).                                  |
+| `processEnv` | boolean  | `true` delivers the secret via `process.env` (global tier).                     |
+| `grants`     | string[] | Components allowed to read the secret via the `secrets` accessor (scoped tier). |
+| `metadata`   | object   | Optional free-form label object (not a payload store).                          |
+
+```json
+{
+	"operation": "set_secret",
+	"name": "STRIPE_KEY",
+	"value": "sk_live_...",
+	"grants": ["payments-service"]
+}
+```
+
+Response:
+
+```json
+{ "name": "STRIPE_KEY", "kid": "<hex fingerprint>", "created": true }
+```
+
+### `grant_secret` / `revoke_secret`
+
+Add or remove a component from a scoped secret's grants list. Both are idempotent. A `processEnv` (global) secret cannot be granted — convert it with `set_secret` `processEnv: false` first.
+
+```json
+{ "operation": "grant_secret", "name": "STRIPE_KEY", "component": "payments-service" }
+```
+
+Response includes the updated `grants` array and a `changed` flag (`false` when the call was a no-op).
+
+### `list_secrets`
+
+Returns metadata for every secret — **never** envelopes or values. Each entry includes `name`, `kid`, `grants`, `processEnv`, `metadata`, `unverified`, `updated_by`, timestamps, and `kid_matches_custody` (so a stale row on a cloned/rekeyed node is immediately visible). The response also carries the node's `custody_fingerprint` (`null` when no custody is held).
+
+```json
+{ "operation": "list_secrets" }
+```
+
+Response:
+
+```json
+{
+	"secrets": [
+		{
+			"name": "STRIPE_KEY",
+			"kid": "a1b2c3d4...",
+			"grants": ["payments-service"],
+			"processEnv": false,
+			"metadata": {},
+			"unverified": false,
+			"updated_by": "admin",
+			"__createdtime__": 1700000000000,
+			"__updatedtime__": 1700000000000,
+			"kid_matches_custody": true
+		}
+	],
+	"custody_fingerprint": "a1b2c3d4..."
+}
+```
+
+### `delete_secret`
+
+Removes a secret row by `name`. Not cryptographic erasure — audit/transaction logs and backups retain the encrypted envelope.
+
+```json
+{ "operation": "delete_secret", "name": "STRIPE_KEY" }
+```
+
+### `get_secrets_public_key`
+
+Returns the cluster secrets public key for client-side envelope encryption. Requires custody on the node.
+
+```json
+{ "operation": "get_secrets_public_key" }
+```
+
+Response:
+
+```json
+{ "public_key": "-----BEGIN PUBLIC KEY-----\n...", "fingerprint": "<hex sha256>" }
 ```
 
 ---

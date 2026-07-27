@@ -133,6 +133,18 @@ See [Logging API](../logging/api.md) for full reference.
 
 A `Map` of all resources registered on this Harper server, keyed by their URL path. Each entry contains the resource class, path, and routing metadata. Use this to look up or enumerate registered resources programmatically.
 
+### `secrets`
+
+A read-only, name→value map of the scoped secrets granted to the current component (plus any `process.env`-resolved values it declared). Read secrets from the encrypted [secrets store](../security/secrets.md) without them landing in `process.env`:
+
+```javascript
+import { secrets } from 'harper';
+
+const { STRIPE_KEY } = secrets;
+```
+
+A module-top-level destructure is the recommended idiom — it binds correctly under every component loader. See [Secrets](../security/secrets.md) for full reference.
+
 ### `config`
 
 The configuration object for the current application, as provided by the component's configuration (e.g. `config.yaml`). Defaults to an empty object if no configuration is provided.

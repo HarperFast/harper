@@ -13,6 +13,10 @@ Harper supports loading environment variables in Harper applications `process.en
 If you are looking for information on how to configure your Harper installation using environment variables, see [Configuration](../configuration/overview.md) section for more information.
 :::
 
+:::tip
+For production credentials, prefer the encrypted, replicated [secrets store](../security/secrets.md) over a committed `.env` file. Secrets are stored as ciphertext, delivered to components via `process.env` or a per-component `secrets` accessor, and never appear in operation logs or replication payloads. The same `enc:v1:` envelope format also lets you encrypt individual `.env` values at rest.
+:::
+
 ## Configuration
 
 | Option     | Type                 | Required | Description                                                                            |
