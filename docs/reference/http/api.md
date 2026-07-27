@@ -40,11 +40,31 @@ To continue the middleware chain, call `next(request)`. To short-circuit, return
 
 ### `HttpOptions`
 
-| Property     | Type    | Default           | Description                                   |
-| ------------ | ------- | ----------------- | --------------------------------------------- |
-| `runFirst`   | boolean | `false`           | Insert this handler at the front of the chain |
-| `port`       | number  | `http.port`       | Target the HTTP server on this port           |
-| `securePort` | number  | `http.securePort` | Target the HTTPS server on this port          |
+<VersionBadge version="v5.2.0" /> (`name`, `before`, `after`, `urlPath`, and `host`)
+
+| Property     | Type    | Default                      | Description                                                                                                                                                                                              |
+| ------------ | ------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`       | string  | Registering component's name | Name this middleware entry so other entries can position themselves relative to it                                                                                                                       |
+| `before`     | string  | -                            | Run this entry before the named middleware entry                                                                                                                                                         |
+| `after`      | string  | -                            | Run this entry after the named middleware entry                                                                                                                                                          |
+| `urlPath`    | string  | -                            | Only handle requests whose pathname matches this prefix on a segment boundary (`/api` matches `/api` and `/api/x`, not `/apinews`). Harper removes the prefix before passing the request to the handler. |
+| `host`       | string  | -                            | Only handle requests whose `Host` header matches this virtual hostname (case-sensitive, port ignored)                                                                                                    |
+| `runFirst`   | boolean | `false`                      | Deprecated. Insert this handler at the front of the chain. Use `before` or `after` for explicit ordering.                                                                                                |
+| `port`       | number  | `http.port`                  | Target the HTTP server on this port                                                                                                                                                                      |
+| `securePort` | number  | `http.securePort`            | Target the HTTPS server on this port                                                                                                                                                                     |
+
+`host` and `urlPath` create a routed middleware chain. When both are present, both must match. Harper selects the most specific matching chain in this order: host and path, host only, then path only. Longer path prefixes take precedence. A request that matches no routed chain uses the default chain.
+
+```js
+server.http(handleAdminRequest, {
+	name: 'admin',
+	host: 'admin.example.com',
+	urlPath: '/api',
+	after: 'authentication',
+});
+```
+
+For this example, a request to `https://admin.example.com/api/users` reaches `handleAdminRequest` with a pathname of `/users`.
 
 ### `HttpServer`
 
@@ -162,12 +182,11 @@ type WsListener = (ws: WebSocket, request: Request, chainCompletion: Promise<voi
 
 ### `WsOptions`
 
-| Property     | Type    | Default           | Description                                     |
-| ------------ | ------- | ----------------- | ----------------------------------------------- |
-| `maxPayload` | number  | 100 MB            | Maximum WebSocket payload size                  |
-| `runFirst`   | boolean | `false`           | Insert this handler at the front of the chain   |
-| `port`       | number  | `http.port`       | Target the WebSocket server on this port        |
-| `securePort` | number  | `http.securePort` | Target the secure WebSocket server on this port |
+WsOptions supports the same options as [HttpOptions](#httpoptions), plus:
+
+| Property     | Type   | Default | Description                                     |
+| ------------ | ------ | ------- | ----------------------------------------------- |
+| `maxPayload` | number | 100 MB  | Maximum WebSocket message size accepted by `ws` |
 
 ---
 
@@ -206,11 +225,7 @@ type UpgradeListener = (request: IncomingMessage, socket: Socket, head: Buffer, 
 
 ### `UpgradeOptions`
 
-| Property     | Type    | Default           | Description                          |
-| ------------ | ------- | ----------------- | ------------------------------------ |
-| `runFirst`   | boolean | `false`           | Insert at the front of the chain     |
-| `port`       | number  | `http.port`       | Target the HTTP server on this port  |
-| `securePort` | number  | `http.securePort` | Target the HTTPS server on this port |
+UpgradeOptions supports the same options as [HttpOptions](#httpoptions).
 
 ---
 

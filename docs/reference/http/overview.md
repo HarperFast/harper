@@ -26,6 +26,25 @@ Harper uses a layered middleware chain for HTTP request processing. Components a
 
 Request and response objects follow the [WHATWG Fetch API](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API) conventions (`Request` and `Response` classes), providing good composability for layered middleware and clean mapping to REST resource handlers.
 
+### Middleware routing
+
+<VersionBadge version="v5.2.0" />
+
+Harper can route middleware by URL prefix, virtual hostname, or both. Set `urlPath` or `host` in a component's `config.yaml` to create a routed middleware chain without writing dispatch code:
+
+```yaml
+rest:
+  host: api.example.com
+  urlPath: /v1
+static:
+  files: 'web/**'
+  host: www.example.com
+```
+
+The `rest` handler receives requests under `api.example.com/v1`; Harper removes `/v1` from the pathname before invoking the chain. The `static` handler receives requests for `www.example.com`. Unmatched requests use the default middleware chain.
+
+Custom components can configure the same behavior programmatically with `server.http(listener, { host, urlPath })`. See [`HttpOptions`](./api#httpoptions) for matching priority and middleware ordering options.
+
 ## Protocols Served
 
 The HTTP server handles multiple protocols on the same port:
