@@ -26,11 +26,11 @@ The long-running operations (`create_backup`, `verify_backup`, `restore_backup`)
 
 Backup operations work whether or not Harper is running. Invoked from the CLI while the server is running, the operation is forwarded to the server; while the server is stopped, the command operates directly on the database and backup files. `get_backup` is the exception — it streams from a running server and has no offline form.
 
-The offline path matters for restore. RocksDB is single-writer, so an in-place restore requires the database to be fully closed first. A running Harper server can close its own worker threads' handles, but it cannot close a handle held by a loaded component, nor stop the `system` database it depends on to run — those databases can only be restored with the server stopped. See [when can a database be restored?](#when-can-a-database-be-restored) below.
+The offline path matters for restore. RocksDB is single-writer, so an in-place restore requires the database to be fully closed first. A running Harper server can close its own worker threads' handles, but it cannot close a handle held by a loaded component, nor stop the `system` database it depends on to run — those databases can only be restored with the server stopped. See ["when can a database be restored"](#when-can-a-database-be-restored) below.
 
 ## Limitations
 
-- **Managed backups require the RocksDB storage engine.** For LMDB databases, use [`get_backup`](./operations.md#get_backup) or [volume snapshots](../cli/commands.md#how-backups-work).
+- **Managed backups require the RocksDB storage engine.** For LMDB databases, use [`get_backup`](./operations.md#get_backup) or [volume snapshots](../cli/commands.md#backing-up-with-volume-snapshots).
 - **Whole-database granularity.** There is no per-table backup or restore. (The one exception: `get_backup` on an LMDB database can stream individual tables, and includes the audit store only with `include_audit`.)
 - **One storage root per database.** A database whose tables use per-table `path` storage configs spans multiple root stores and cannot be backed up with these operations.
 - **Backups live on the node that created them.** The backup repository is a local directory. For disaster recovery, copy backup directories off-host, or use `get_backup` to pull snapshots from a running server.
@@ -82,7 +82,11 @@ With the server running, this restores the database in place — Harper closes t
 
 ## Example: download a snapshot and restore it manually
 
-`get_backup` streams a full snapshot of a database from a running server — local or remote — which makes it the simplest way to keep backups off-host. For a RocksDB database the stream is a `tar` archive, gzipped by default:
+`get_backup` streams a full snapshot of a database from a running server — local or remote — which makes it the simplest way to keep backups off-host. What it streams depends on the storage engine, so the manual restore differs too. The examples below use the `data` database and the default storage path ([`storage.path`](../configuration/options.md#storage), default `<rootPath>/database`).
+
+### RocksDB <EngineBadge engines="RocksDB" />
+
+For a RocksDB database the stream is a `tar` archive, gzipped by default:
 
 ```bash
 harper get_backup database=data out=./data.tar.gz
@@ -92,16 +96,31 @@ harper get_backup database=data target=https://node-2.example.com:9925 out=./dat
 
 The archive contains the database's current state — all tables plus the transaction log — and extracts into a directory that opens directly as a RocksDB database.
 
-To restore it, stop Harper, replace the database's directory under the storage path ([`storage.path`](../configuration/options.md#storage), default `<rootPath>/database`) with the extracted archive, and start Harper again:
+To restore it, stop Harper, replace the database's directory under the storage path with the extracted archive, and start Harper again:
 
 ```bash
 harper stop
-mv ~/hdb/database/data ~/hdb/database/data.old
+mv ~/hdb/database/data ~/hdb/database/data.old # optional: keep a copy of the previous database
 mkdir -p ~/hdb/database/data
 tar -xzf data.tar.gz -C ~/hdb/database/data
 harper start
 ```
 
-Keeping the previous directory as `data.old` makes the swap easy to undo; delete it once the restored database checks out.
+### LMDB <EngineBadge engines="LMDB" />
 
-For an LMDB database, `get_backup` streams the database's `.mdb` file instead; restore it by replacing the database's `.mdb` file under the same storage path (`<storage.path>/<database>.mdb`) with the downloaded file while Harper is stopped.
+For an LMDB database the stream is the database's single `.mdb` file:
+
+```bash
+harper get_backup database=data out=./data.mdb
+# or pull from another instance
+harper get_backup database=data target=https://node-2.example.com:9925 out=./data.mdb
+```
+
+To restore it, stop Harper, replace the database's `.mdb` file under the storage path (`<storage.path>/<database>.mdb`) with the downloaded file, and start Harper again:
+
+```bash
+harper stop
+mv ~/hdb/database/data.mdb ~/hdb/database/data.mdb.old # optional: keep a copy of the previous database
+cp data.mdb ~/hdb/database/data.mdb
+harper start
+```

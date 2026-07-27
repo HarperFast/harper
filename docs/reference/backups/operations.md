@@ -25,7 +25,7 @@ Every operation on this page can be run from the CLI under its operation name, f
 
 Like any [CLI operation](../cli/operations-api-commands.md), backup commands also accept a remote `target=<url>` to run against another instance instead of the local one (see [Remote Operations](../cli/overview.md#remote-operations)). With a remote target the operation is always forwarded — there is no offline path.
 
-Offline invocation matters most for restore: an in-place `restore_backup` of the `system` database, or of any database a loaded component keeps open, must be run with the server stopped. See [when can a database be restored?](./overview.md#when-can-a-database-be-restored)
+Offline invocation matters most for restore: an in-place `restore_backup` of the `system` database, or of any database a loaded component keeps open, must be run with the server stopped. See ["when can a database be restored"](./overview.md#when-can-a-database-be-restored).
 
 ## `create_backup`
 

@@ -134,80 +134,6 @@ Drops an attribute and all its values from the specified table.
 
 ---
 
-## Backup & Restore
-
-Operations for backing up and restoring databases. Managed backups <VersionBadge version="v5.2.0" /> require the RocksDB storage engine; `get_backup` works with both RocksDB and LMDB.
-
-Detailed documentation: [Backup Operations](../backups/operations.md)
-
-| Operation        | Description                                                         | Role Required |
-| ---------------- | ------------------------------------------------------------------- | ------------- |
-| `create_backup`  | Creates a managed, incremental directory backup of a database (job) | super_user    |
-| `list_backups`   | Lists the managed backups for a database                            | super_user    |
-| `verify_backup`  | Verifies a managed backup's integrity (job)                         | super_user    |
-| `delete_backup`  | Deletes a single managed backup                                     | super_user    |
-| `purge_backups`  | Deletes all but the newest `keep_count` managed backups             | super_user    |
-| `restore_backup` | Restores a database from a managed backup (job)                     | super_user    |
-| `get_backup`     | Streams a full snapshot of a database in the response for download  | super_user    |
-
-### `create_backup`
-
-Creates an incremental directory backup of the database under the configured backup root. Runs as a background [job](#jobs) that reports the new `backup_id`.
-
-```json
-{ "operation": "create_backup", "database": "dev" }
-```
-
-### `list_backups`
-
-Returns the managed backups for a database, each with its `backup_id`, `timestamp`, `size`, and `file_count`.
-
-```json
-{ "operation": "list_backups", "database": "dev" }
-```
-
-### `verify_backup`
-
-Verifies a managed backup's integrity, including checksums when `verify_checksum` is `true` (slower). Runs as a background [job](#jobs).
-
-```json
-{ "operation": "verify_backup", "database": "dev", "backup_id": 1, "verify_checksum": true }
-```
-
-### `delete_backup`
-
-Deletes a single managed backup.
-
-```json
-{ "operation": "delete_backup", "database": "dev", "backup_id": 1 }
-```
-
-### `purge_backups`
-
-Deletes all but the newest `keep_count` managed backups.
-
-```json
-{ "operation": "purge_backups", "database": "dev", "keep_count": 3 }
-```
-
-### `restore_backup`
-
-Restores a database in place from a managed backup, as a background [job](#jobs). `backup_id` defaults to the latest backup. Restoring the `system` database, or a database a loaded component keeps open, requires the server to be stopped — see [when can a database be restored?](../backups/overview.md#when-can-a-database-be-restored)
-
-```json
-{ "operation": "restore_backup", "database": "dev", "backup_id": 1 }
-```
-
-### `get_backup`
-
-Streams a full snapshot of the specified database in the HTTP response for download. For RocksDB <VersionBadge type="changed" version="v5.2.0" />, a `tar` archive of the current state, gzipped by default; for LMDB, the `.mdb` file.
-
-```json
-{ "operation": "get_backup", "database": "dev" }
-```
-
----
-
 ## NoSQL Operations
 
 Operations for inserting, updating, deleting, and querying records using NoSQL.
@@ -1099,6 +1025,80 @@ Manage in-memory application status values. Status types: `primary`, `maintenanc
 
 ```json
 { "operation": "set_status", "id": "primary", "status": "active" }
+```
+
+---
+
+## Backup & Restore
+
+Operations for backing up and restoring databases. Managed backups <VersionBadge version="v5.2.0" /> require the RocksDB storage engine; `get_backup` works with both RocksDB and LMDB.
+
+Detailed documentation: [Backup Operations](../backups/operations.md)
+
+| Operation        | Description                                                         | Role Required |
+| ---------------- | ------------------------------------------------------------------- | ------------- |
+| `create_backup`  | Creates a managed, incremental directory backup of a database (job) | super_user    |
+| `list_backups`   | Lists the managed backups for a database                            | super_user    |
+| `verify_backup`  | Verifies a managed backup's integrity (job)                         | super_user    |
+| `delete_backup`  | Deletes a single managed backup                                     | super_user    |
+| `purge_backups`  | Deletes all but the newest `keep_count` managed backups             | super_user    |
+| `restore_backup` | Restores a database from a managed backup (job)                     | super_user    |
+| `get_backup`     | Streams a full snapshot of a database in the response for download  | super_user    |
+
+### `create_backup`
+
+Creates an incremental directory backup of the database under the configured backup root. Runs as a background [job](#jobs) that reports the new `backup_id`.
+
+```json
+{ "operation": "create_backup", "database": "dev" }
+```
+
+### `list_backups`
+
+Returns the managed backups for a database, each with its `backup_id`, `timestamp`, `size`, and `file_count`.
+
+```json
+{ "operation": "list_backups", "database": "dev" }
+```
+
+### `verify_backup`
+
+Verifies a managed backup's integrity, including checksums when `verify_checksum` is `true` (slower). Runs as a background [job](#jobs).
+
+```json
+{ "operation": "verify_backup", "database": "dev", "backup_id": 1, "verify_checksum": true }
+```
+
+### `delete_backup`
+
+Deletes a single managed backup.
+
+```json
+{ "operation": "delete_backup", "database": "dev", "backup_id": 1 }
+```
+
+### `purge_backups`
+
+Deletes all but the newest `keep_count` managed backups.
+
+```json
+{ "operation": "purge_backups", "database": "dev", "keep_count": 3 }
+```
+
+### `restore_backup`
+
+Restores a database in place from a managed backup, as a background [job](#jobs). `backup_id` defaults to the latest backup. Restoring the `system` database, or a database a loaded component keeps open, requires the server to be stopped — see [when can a database be restored?](../backups/overview.md#when-can-a-database-be-restored)
+
+```json
+{ "operation": "restore_backup", "database": "dev", "backup_id": 1 }
+```
+
+### `get_backup`
+
+Streams a full snapshot of the specified database in the HTTP response for download. For RocksDB <VersionBadge type="changed" version="v5.2.0" />, a `tar` archive of the current state, gzipped by default; for LMDB, the `.mdb` file.
+
+```json
+{ "operation": "get_backup", "database": "dev" }
 ```
 
 ---

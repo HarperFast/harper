@@ -272,6 +272,8 @@ See also: [Database Compaction](../database/compaction.md) for more information.
 
 #### How Backups Work
 
+Which backup approach to use depends on the storage engine: use **volume snapshots** for **LMDB** databases, and the [**RocksDB backup engine**](../backups/overview.md) (`harper create_backup`) for **RocksDB** databases. The RocksDB backup engine produces incremental, checksum-verified backups directly, with no need for atomic volume snapshots. The rest of this section covers the volume-snapshot approach.
+
 Harper uses a transactional commit process that ensures data on disk is always transactionally consistent with storage. This means Harper maintains database integrity in the event of a crash and allows you to use standard volume snapshot tools to make backups.
 
 **Backup Process**:
@@ -280,7 +282,7 @@ Database files are stored in the `hdb/database` directory. As long as the snapsh
 
 **Important Notes**:
 
-- **Atomic Snapshots**: Use volume snapshot tools that create atomic snapshots
+- **Atomic Snapshots**: Use volume snapshot tools for LMDB databases and the [RocksDB backup engine](../backups/overview.md) for RocksDB databases.
 - **Not Safe**: Simply copying an in-use database file using `cp` is **not reliable**
   - Progressive reads occur at different points in time
   - Results in an unreliable copy that likely won't be usable
@@ -293,8 +295,6 @@ Database files are stored in the `hdb/database` directory. As long as the snapsh
 - BTRFS snapshots
 - Cloud provider volume snapshots (AWS EBS, Azure Disk, GCP Persistent Disk)
 - Enterprise backup solutions with snapshot capabilities
-
-Harper also has a built-in backup system — managed incremental backups and snapshot downloads, runnable from the CLI under their operation names (e.g. `harper create_backup`). See [Backups](../backups/overview.md).
 
 ## Remote Operations
 
