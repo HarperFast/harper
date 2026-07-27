@@ -32,6 +32,23 @@ Available since: v4.1.0; expanded in: v4.3.0
 
 For remote operations (operations executed on a remote Harper instance via the `target` parameter), you must provide authentication credentials.
 
+### Authentication Precedence
+
+<VersionBadge type="changed" version="v5.2.0" />
+
+For remote Operations API commands, the CLI uses the first complete authentication source in this order:
+
+1. Dedicated `auth_username=` and `auth_password=` command parameters
+2. Credentials embedded in the `target` URL
+3. `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD`
+4. Legacy `CLI_TARGET_USERNAME` and `CLI_TARGET_PASSWORD`
+5. A token saved by `harper login`
+6. `username=` and `password=` operation parameters (legacy fallback)
+
+Credentials are resolved as a pair and are never combined across sources. An incomplete pair supplied with dedicated authentication parameters or in the target URL causes the command to fail. An incomplete environment-variable pair is skipped with a warning so that a saved login token can still be used.
+
+Before v5.2.0, `username=` and `password=` operation parameters took precedence over environment variables and saved login tokens. This could authenticate an operation as the wrong user when those fields were part of the operation payload, such as the user being created by `add_user`.
+
 ### Authentication Methods
 
 #### Method 1: Persistent Login (Recommended for Local Development)
@@ -62,15 +79,23 @@ harper logout https://server.com:9925
 - Simplifies frequent remote operations
 - No need to maintain environment variables in multiple terminal sessions
 
+A complete environment-variable credential pair takes precedence over a saved login token. Check the [authentication precedence](#authentication-precedence) when a project `.env` file and `harper login` are both configured for the same target.
+
 #### Method 2: Environment Variables (Recommended for CI/CD)
+
+<VersionBadge type="changed" version="v5.2.0" />
 
 The CLI supports loading environment variables from your shell environment (or optionally from a `.env` file in the current directory). This is the recommended method for CI/CD pipelines and for pre-populating the `target` parameter for specific projects.
 
+Starting in v5.2.0, a complete environment-variable credential pair takes precedence over a saved login token and the legacy `username=` and `password=` fallback. This makes the configured CI identity authoritative even when the operation payload also contains username or password fields.
+
 **Supported Variables**:
 
-- `HARPER_CLI_TARGET` (or `CLI_TARGET`) - Sets the default `target` for CLI commands.
-- `HARPER_CLI_USERNAME` (or `CLI_TARGET_USERNAME`) - Harper admin username for the target.
-- `HARPER_CLI_PASSWORD` (or `CLI_TARGET_PASSWORD`) - Harper admin password for the target.
+- `HARPER_CLI_TARGET` - Sets the default `target` for CLI commands. `CLI_TARGET` is the legacy equivalent.
+- `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD` - Preferred credential pair for the target.
+- `CLI_TARGET_USERNAME` and `CLI_TARGET_PASSWORD` - Lower-priority legacy credential pair.
+
+Each credential namespace is independent. For example, the CLI never combines `HARPER_CLI_USERNAME` with `CLI_TARGET_PASSWORD`. If either namespace supplies only a username or only a password, that incomplete pair is skipped with a warning.
 
 **Example `.env` file**:
 
@@ -94,7 +119,6 @@ export HARPER_CLI_PASSWORD=password
 - Credentials not visible in command history
 - More secure for scripting and CI/CD systems
 - Can be set once per session or project directory
-- Automatically populated by `harper login`
 
 **Automatic `.env` Updates**:
 
@@ -127,11 +151,54 @@ export HARPER_CLI_PASSWORD=$SECURE_PASSWORD  # from secret manager
 # Execute operations without passing credentials or target (if set)
 harper deploy target=https://prod-server.com:9925 replicated=true
 harper restart target=https://prod-server.com:9925 replicated=true
+
+# The environment variables authenticate the admin; username/password remain payload fields.
+# NEW_USER_PASSWORD is provided by a secret manager.
+harper add_user \
+  role=app \
+  active=true \
+  username=svc_app \
+  password="$NEW_USER_PASSWORD" \
+  target=https://prod-server.com:9925
 ```
 
-#### Method 3: Command Parameters
+#### Method 3: Dedicated Authentication Parameters
 
-Provide credentials directly as command parameters:
+<VersionBadge version="v5.2.0" />
+
+Use `auth_username=` and `auth_password=` to authenticate a single command explicitly. These parameters are used only for transport authentication and are not included in the Operations API request body.
+
+```bash
+# NEW_USER_PASSWORD is provided by a secret manager.
+harper add_user \
+  role=app \
+  active=true \
+  username=svc_app \
+  password="$NEW_USER_PASSWORD" \
+  target=https://server.com:9925 \
+  auth_username=HDB_ADMIN \
+  auth_password="$ADMIN_PASSWORD"
+```
+
+In this example, `auth_username` and `auth_password` identify the administrator making the request. The plain `username` and `password` fields remain in the `add_user` payload and identify the user being created.
+
+**Authentication Parameters**:
+
+- `auth_username=<username>` - Username used to authenticate the request
+- `auth_password=<password>` - Password used to authenticate the request
+
+**Cautions**:
+
+- Credentials visible in command history
+- Less secure for production environments
+- Exposed in process listings
+- For scripts, prefer environment-variable authentication
+
+#### Legacy `username` and `password` Fallback
+
+<VersionBadge type="changed" version="v5.2.0" />
+
+For backward compatibility, the CLI can use `username=` and `password=` as transport credentials when both are present and no higher-priority source is available:
 
 ```bash
 harper describe_database \
@@ -141,17 +208,7 @@ harper describe_database \
   password=password
 ```
 
-**Parameters**:
-
-- `username=<username>` - Harper admin username
-- `password=<password>` - Harper admin password
-
-**Cautions**:
-
-- Credentials visible in command history
-- Less secure for production environments
-- Exposed in process listings
-- Not recommended for scripts
+These names are also legitimate payload fields for operations such as `add_user`, `alter_user`, and `create_authentication_tokens`. Use environment variables, a saved login, or the dedicated `auth_` parameters whenever the payload user differs from the user authenticating the request.
 
 ### Target Parameter
 
@@ -171,6 +228,14 @@ target=http://localhost:9925
 # Custom port
 target=https://server.example.com:8080
 ```
+
+The target URL can also contain a complete username and password, which the CLI ranks above environment variables:
+
+```bash
+target=https://username:password@server.example.com:9925
+```
+
+Percent-encode reserved characters in either value (`@` becomes `%40`, for example). Avoid this form when possible: the URL can be exposed in shell history and process listings, and `harper login` can save its target to the project `.env` file. Prefer environment variables or a saved login for routine use.
 
 ## Security Best Practices
 
@@ -259,6 +324,11 @@ If you receive authentication errors:
 4. **Verify user permissions**:
    - Ensure the user has permission to execute the operation
    - Check user roles and permissions
+
+5. **Clear or override a stale saved token**:
+   - If a token in `~/.harperdb/credentials.json` expires and cannot be refreshed, the command can fail authentication without trying the legacy `username=` and `password=` fallback because the saved token has higher precedence
+   - Run `harper logout <target>` and then `harper login <target>` to replace the saved token
+   - For a one-off command, use a complete environment-variable pair or provide `auth_username=` and `auth_password=` to take precedence over the saved token
 
 ### Environment Variable Issues
 

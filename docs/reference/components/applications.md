@@ -97,18 +97,24 @@ harper deploy \
   replicated=true
 ```
 
-Or directly via command parameters (not recommended for production):
+### Dedicated Authentication Parameters
+
+<VersionBadge version="v5.2.0" />
+
+For one-off remote commands, dedicated authentication parameters are also available (not recommended for production):
 
 ```sh
 harper deploy \
   project=<name> \
   package=<package> \
-  username=<username> \
-  password=<password> \
+  auth_username=<username> \
+  auth_password=<password> \
   target=<remote> \
   restart=true \
   replicated=true
 ```
+
+Dedicated authentication parameters take precedence over environment variables and saved login tokens. See [CLI Authentication](../cli/authentication.md#authentication-precedence) for the full order and security guidance.
 
 ### Package Sources
 
