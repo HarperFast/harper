@@ -25,6 +25,8 @@ export interface HarperAttribute {
 	description?: string;
 	hidden?: boolean;
 	nullable?: boolean;
+	/** Source JSON-Schema type union from `static properties`; MCP accepts type arrays, so it passes through. */
+	types?: readonly string[];
 	isPrimaryKey?: boolean;
 	properties?: HarperAttribute[];
 	elements?: HarperAttribute;

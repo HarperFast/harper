@@ -32,6 +32,8 @@ export interface JsonSchemaFragment {
 	const?: unknown;
 	/** Binary encoding of a string-typed value. Emitted on the MCP surface only — not a 3.0.3 keyword. */
 	contentEncoding?: string;
+	/** Emitted by the OpenAPI 3.0 projection for a genuine multi-type union; not authored directly. */
+	oneOf?: JsonSchemaFragment[];
 }
 
 /**
@@ -75,6 +77,12 @@ export interface AttributeLike {
 	assignCreatedTime?: boolean;
 	assignUpdatedTime?: boolean;
 	nullable?: boolean;
+	/**
+	 * The source JSON-Schema type union, verbatim, when `static properties` declared one. `type` holds
+	 * the first non-null member so single-type consumers keep working; surfaces that can express a
+	 * union (MCP passes it through, OpenAPI 3.0 translates it to `oneOf`) read this instead.
+	 */
+	types?: readonly string[];
 	elements?: AttributeLike;
 	/** Sub-attributes of a nested object field (the same array form `Table.validate` iterates). */
 	properties?: AttributeLike[];
@@ -111,6 +119,10 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 	} else if (attr.type === 'array' && attr.elements) {
 		fragment.type = 'array';
 		fragment.items = attributeToFragment(attr.elements);
+	} else if (attr.types) {
+		// A declared union round-trips verbatim; collapsing it to `attr.type` here would make the
+		// canonical `Table.properties` disagree with what the author wrote.
+		fragment.type = [...attr.types] as JsonSchemaType[];
 	} else {
 		const jsonType = attr.type ? DATA_TYPES[attr.type] : undefined;
 		if (jsonType) fragment.type = jsonType;
@@ -161,9 +173,11 @@ function fragmentToAttribute(name: string, fragment: JsonSchemaFragment): Attrib
 		// than misleadingly reusing the array field's own name.
 		attr.elements = fragmentToAttribute('', fragment.items);
 	} else if (Array.isArray(fragment.type)) {
-		// JSON-Schema union type. Fold a `'null'` member into `nullable` (the OpenAPI-expressible form)
-		// and keep the remaining member. A single non-null member is the common `['T','null']` case; a
-		// genuine multi-type union isn't expressible on an attribute, so the first member is kept.
+		// JSON-Schema union type. Keep the source union on `types` so surfaces that can express one
+		// (MCP natively, OpenAPI 3.0 via `oneOf`) don't have to reconstruct it, and fold a `'null'`
+		// member into `nullable` as well since that is the form OpenAPI needs. `type` carries the first
+		// non-null member for the single-type consumers (validation, query coercion) that read it.
+		attr.types = fragment.type;
 		const members = fragment.type.filter((t) => t !== 'null');
 		if (members.length !== fragment.type.length) attr.nullable = true;
 		if (members.length > 0) attr.type = members[0];
@@ -251,6 +265,17 @@ export function resolveDeclaredType(type: string | undefined, context?: string):
 	return undefined;
 }
 
+/**
+ * The non-null members of an attribute's declared type union, but only when there is more than one —
+ * `['string','null']` is nullability, not a union, and `type` already carries its single member.
+ * Returns undefined when the attribute has no union to translate.
+ */
+export function unionMembers(attr: { types?: readonly string[] }): string[] | undefined {
+	if (!attr.types) return undefined;
+	const members = attr.types.filter((member) => member !== 'null');
+	return members.length > 1 ? members : undefined;
+}
+
 /** Test hook: the unknown-type warning is once-per-process, which would leak across test cases. */
 export function _resetUnknownTypeWarningsForTest(): void {
 	warnedUnknownTypes.clear();
@@ -303,6 +328,14 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 			const items = attributeToSchema(attr.elements, childOptions);
 			if (items) fragment.items = items;
 		}
+	} else if (attr.types && options.dialect === 'json-schema') {
+		// JSON Schema has type unions — emit the author's declaration as written.
+		fragment.type = [...attr.types] as JsonSchemaType[];
+	} else if (unionMembers(attr)) {
+		// 3.0.3 has neither type arrays nor a `null` type, so a genuine union becomes `oneOf`. Each
+		// member still goes through the surface's own primitive mapping, so it is described exactly as
+		// the same type would be on its own.
+		fragment.oneOf = unionMembers(attr).map((member) => options.mapPrimitive(member, attr));
 	} else {
 		// Copy the mapper's result field by field rather than merging it wholesale: the set of keys a
 		// surface may contribute to a leaf schema is fixed, and spreading an arbitrary object here would
@@ -312,6 +345,8 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 		if (primitive.description !== undefined) fragment.description = primitive.description;
 		if (primitive.format !== undefined) fragment.format = primitive.format;
 		if (primitive.contentEncoding !== undefined) fragment.contentEncoding = primitive.contentEncoding;
+		if (primitive.nullable !== undefined) fragment.nullable = primitive.nullable;
+		if (primitive.enum !== undefined) fragment.enum = primitive.enum;
 	}
 
 	if (attr.nullable) applyNullability(fragment, options.dialect);
@@ -347,9 +382,15 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 }
 
 function applyNullability(fragment: JsonSchemaFragment, dialect: SchemaDialect): void {
-	// Both dialects express nullability as a modification of `type`, so neither has anything to say
-	// about a fragment that never resolved one.
-	if (!('type' in fragment) || fragment.type === undefined) return;
+	// Nullability qualifies a schema that says something; neither dialect has anything to add to a
+	// fragment that resolved neither a `type` nor a `oneOf`.
+	if ((!('type' in fragment) || fragment.type === undefined) && fragment.oneOf === undefined) return;
+	if (fragment.type === undefined) {
+		// A `oneOf` union. 3.0 takes `nullable` alongside it; JSON Schema takes a `null` branch.
+		if (dialect === 'openapi-3.0.3') fragment.nullable = true;
+		else fragment.oneOf = [...fragment.oneOf, { type: 'null' }];
+		return;
+	}
 	if (dialect === 'openapi-3.0.3') {
 		// OpenAPI 3.0.3 has no union types; `nullable` is the spec-provided expression.
 		fragment.nullable = true;

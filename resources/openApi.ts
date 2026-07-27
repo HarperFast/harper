@@ -8,6 +8,7 @@ import {
 	attributeToSchema,
 	projectPropertiesToAttributes,
 	resolveDeclaredType,
+	unionMembers,
 } from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
@@ -34,7 +35,10 @@ function openApiPrimitive(type: string | undefined, attributeName: string | unde
 	if (!resolved) return {};
 	// 3.0.x has no `'null'` type — nullability is the `nullable` keyword, so a bare `type: 'null'`
 	// becomes an untyped nullable schema rather than a type the dialect can't express.
-	if (resolved === 'null') return {}; // 3.0 has no null type; a bare `nullable` on an untyped schema says nothing
+	// 3.0 has no `'null'` type. A bare `{ nullable: true }` constrains nothing, so express "only null"
+	// the one way the dialect can: a `null`-only enum. Dropping the declaration outright (#1921 review)
+	// left the document silent about a field the author did describe.
+	if (resolved === 'null') return { nullable: true, enum: [null] };
 	// Preserve the Harper type name as `format` for the types where it adds information, matching the
 	// top-level `Type()` emitter.
 	return Object.hasOwn(DATA_TYPES, type) ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
@@ -168,6 +172,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		if (attributes) {
 			for (const attr of attributes) {
 				const { type, name, elements, relationship, definition, nullable, description, hidden } = attr;
+				const union = unionMembers(attr);
 				// @hidden field-level: suppress the attribute from props, query params, and required.
 				if (hidden) continue;
 				const def = definition ?? elements?.definition;
@@ -196,6 +201,10 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						// shared emitter (sub-properties recursed, @hidden suppressed at every level, hints
 						// carried); OpenAPI's table path uses $refs instead.
 						props[name] = attributeToOpenApiSchema(attr) ?? {};
+					} else if (union) {
+						// A genuine multi-type union (`['string','number']`). 3.0 has no type arrays, so the
+						// equivalent is `oneOf`; `attr.type` alone would drop every member but the first.
+						props[name] = { oneOf: union.map((member) => openApiPrimitive(member, name)) };
 					} else if (type === 'array') {
 						if (!elements) {
 							// `{ type: 'array' }` with no items — valid JSON Schema (array of anything).
@@ -227,6 +236,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						description?: string;
 						enum?: unknown[];
 						type?: unknown;
+						oneOf?: unknown;
 						format?: string;
 						const?: unknown;
 						nullable?: boolean;
@@ -241,9 +251,11 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					if (attr.const !== undefined) {
 						prop.enum = Array.isArray(prop.enum) ? prop.enum.filter((value) => value === attr.const) : [attr.const];
 					}
-					// Only a typed schema can be nullable — a bare `{ nullable: true }` says nothing in 3.0,
-					// matching the guard the shared emitter applies.
-					if (nullable && prop.nullable === undefined && prop.type !== undefined) prop.nullable = true;
+					// Only a schema that says something can be nullable — a bare `{ nullable: true }` says nothing
+					// in 3.0. A `oneOf` union qualifies alongside a plain `type`.
+					if (nullable && prop.nullable === undefined && (prop.type !== undefined || prop.oneOf !== undefined)) {
+						prop.nullable = true;
+					}
 					// 3.0's `nullable` does not widen an `enum`; without `null` in the list a validator
 					// rejects it regardless of the flag.
 					if (prop.nullable && Array.isArray(prop.enum) && !prop.enum.includes(null)) {

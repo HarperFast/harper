@@ -371,7 +371,16 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 			kind: { type: 'string', const: 'widget' },
 			nothing: { type: 'null' },
 			maybe: { type: ['string', 'null'] },
-			nested: { type: 'object', properties: { inner: { type: 'string', const: 'x' }, deepNull: { type: 'null' } } },
+			mixed: { type: ['string', 'number'] },
+			mixedMaybe: { type: ['string', 'integer', 'null'] },
+			nested: {
+				type: 'object',
+				properties: {
+					inner: { type: 'string', const: 'x' },
+					deepNull: { type: 'null' },
+					deepMixed: { type: ['string', 'number'] },
+				},
+			},
 			list: { type: 'array', items: { type: 'string', const: 'y' } },
 			nullableEnum: { type: 'string', enum: ['a', 'b'], nullable: true },
 			nullableConst: { type: 'string', const: 'fixed', nullable: true },
@@ -488,9 +497,58 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 		expect(body.properties.status.enum, 'nullable enum admits null').to.deep.equal(['a', 'b', null]);
 	});
 
+	it('carries nullability onto the emitted scalar schema', () => {
+		// The walk assertions above only prove `type: 'null'` and unions are gone; they would pass just as
+		// happily if nullability were dropped instead of translated.
+		const props = buildDocument().components.schemas.Widget.properties;
+		expect(props.maybe).to.deep.equal({ type: 'string', nullable: true });
+		expect(props.nothing.nullable).to.equal(true);
+	});
+
+	it('widens a nullable `enum` with `null` (3.0 `nullable` does not do it)', () => {
+		const props = buildDocument().components.schemas.Widget.properties;
+		expect(props.nullableEnum.nullable).to.equal(true);
+		expect(props.nullableEnum.enum).to.deep.equal(['a', 'b', null]);
+		// `const` + `nullable`: the single-value enum still has to admit null.
+		expect(props.nullableConst.enum).to.deep.equal(['fixed', null]);
+	});
+
+	it('translates a genuine multi-type union to `oneOf`', () => {
+		// 3.0 has no type arrays. Keeping only the first member would narrow the contract silently —
+		// a client would be told `mixed` is a string when the resource also accepts a number.
+		const props = buildDocument().components.schemas.Widget.properties;
+		expect(props.mixed).to.deep.equal({ oneOf: [{ type: 'string' }, { type: 'number' }] });
+		expect(props.mixed).to.not.have.property('type');
+	});
+
+	it('carries nullability alongside a union', () => {
+		const props = buildDocument().components.schemas.Widget.properties;
+		expect(props.mixedMaybe.oneOf).to.deep.equal([{ type: 'string' }, { type: 'integer' }]);
+		expect(props.mixedMaybe.nullable).to.equal(true);
+	});
+
+	it('translates a union nested inside an object, not just at the top level', () => {
+		// The nested path is the one #1941/#1942 exist to keep in step with the top-level one; a union
+		// declared two levels down has to reach the same `oneOf`.
+		const nested = buildDocument().components.schemas.Widget.properties.nested;
+		expect(nested.properties.deepMixed.oneOf).to.deep.equal([{ type: 'string' }, { type: 'number' }]);
+		expect(nested.properties.deepMixed).to.not.have.property('type');
+	});
+
 	it('emits the properties under test (guards the walk assertions against an empty document)', () => {
 		const props = buildDocument().components.schemas.Widget.properties;
-		for (const key of ['kind', 'nothing', 'maybe', 'nested', 'list', 'nullableEnum', 'nullableConst', 'when']) {
+		for (const key of [
+			'kind',
+			'nothing',
+			'maybe',
+			'mixed',
+			'mixedMaybe',
+			'nested',
+			'list',
+			'nullableEnum',
+			'nullableConst',
+			'when',
+		]) {
 			expect(props, `fixture property ${key} missing — walk assertions would pass vacuously`).to.have.property(key);
 		}
 	});
