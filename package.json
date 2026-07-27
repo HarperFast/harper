@@ -251,7 +251,8 @@
 	},
 	"overrides": {
 		"alasql": {
-			"xlsx": "0.18.5"
+			"xlsx": "0.18.5",
+			"react-native-fs": "npm:noop2@^2.0.0"
 		}
 	},
 	"optionalDependencies": {
