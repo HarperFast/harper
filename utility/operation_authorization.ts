@@ -408,8 +408,8 @@ export function verifyPermsAST(ast, userObject, operation) {
 		throw handleHDBError(new Error());
 	}
 	try {
-		const bucket =
-			require('../sqlTranslator/sql_statement_bucket').default || require('../sqlTranslator/sql_statement_bucket');
+		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
+		const bucket = bucketModule.default || bucketModule;
 		const alasql = require('alasql');
 
 		const permsResponse = new PermissionResponseObject();
@@ -436,15 +436,18 @@ export function verifyPermsAST(ast, userObject, operation) {
 			return null;
 		}
 
-		// Fail closed when the statement targets a table but we derived no schema for it.
-		// hasPermissions() iterates the schema/table map, so an empty map authorizes everything by
-		// vacuous truth — which is exactly how an unqualified `SELECT ... FROM customers` slipped
-		// through while the engine still resolved and read the table (GHSA-5c29-q62v-jrwf). An
-		// empty map is only legitimate for a statement that names no table at all (`SELECT ABS(-12)`);
-		// anything else means we could not resolve the target and must not authorize it.
-		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
-		if ((!schemas || schemas.length === 0) && bucketModule.statementHasTableTarget(ast)) {
-			harperLogger.info('Unresolved table reference in verifyPermsAST(), denying operation.');
+		// Fail closed on any table the statement references that did not make it into the
+		// affected-attribute map. hasPermissions() only iterates that map, so a reference missing
+		// from it is never checked — which is how an unqualified `SELECT ... FROM customers` was
+		// authorized against an empty map while the engine resolved the same bare name and read the
+		// table (GHSA-5c29-q62v-jrwf). Checked per reference, not on the map being empty overall:
+		// a statement mixing a resolvable table with an unresolvable one has a non-empty map and
+		// would otherwise slip through on the strength of the table that did resolve.
+		const unauthorizedRefs = parsedAst.getUnauthorizedTableRefs();
+		if (unauthorizedRefs.length > 0) {
+			harperLogger.info(
+				`Unauthorizable table reference(s) in verifyPermsAST(): ${unauthorizedRefs.join(', ')}. Denying operation.`
+			);
 			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 

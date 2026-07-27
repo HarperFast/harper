@@ -16,7 +16,6 @@ const alasql = require('alasql');
 
 const bucketModule = require('#src/sqlTranslator/sql_statement_bucket');
 const SqlStatementBucket = bucketModule.default;
-const { statementHasTableTarget } = bucketModule;
 const { _setDatabasesLoader } = require('#src/sqlEngine/binder/defaultDatabase');
 
 /** Two databases; `orders` is unique to `sales`, `shared` exists in both (ambiguous). */
@@ -98,22 +97,57 @@ describe('GHSA-5c29-q62v-jrwf — unqualified SQL table resolution', () => {
 		});
 	});
 
-	describe('statementHasTableTarget distinguishes "no table" from "unresolved table"', () => {
-		it('is false for a calc-only SELECT, which legitimately affects no table', () => {
-			assert.strictEqual(statementHasTableTarget(parse('SELECT ABS(-12)')), false);
+	describe('getUnauthorizedTableRefs reports every reference the permission check would miss', () => {
+		const unauthorized = (sql) => new SqlStatementBucket(parse(sql)).getUnauthorizedTableRefs();
+
+		it('is empty for a calc-only SELECT, which legitimately affects no table', () => {
+			assert.deepStrictEqual(unauthorized('SELECT ABS(-12)'), []);
 		});
 
-		it('is true for every statement that names a table, resolved or not', () => {
-			assert.strictEqual(statementHasTableTarget(parse('SELECT id FROM shared')), true);
-			assert.strictEqual(statementHasTableTarget(parse('SELECT id FROM data.customers')), true);
-			assert.strictEqual(statementHasTableTarget(parse("INSERT INTO shared (id) VALUES ('a')")), true);
-			assert.strictEqual(statementHasTableTarget(parse("UPDATE shared SET a = 1 WHERE id = 'a'")), true);
-			assert.strictEqual(statementHasTableTarget(parse("DELETE FROM shared WHERE id = 'a'")), true);
+		it('is empty when every reference resolved and was recorded', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM customers'), []);
+			assert.deepStrictEqual(unauthorized('SELECT id FROM data.customers'), []);
+			assert.deepStrictEqual(unauthorized("INSERT INTO customers (id) VALUES ('a')"), []);
+			assert.deepStrictEqual(unauthorized("UPDATE customers SET name = 'x' WHERE id = 'a'"), []);
+			assert.deepStrictEqual(unauthorized("DELETE FROM customers WHERE id = 'a'"), []);
+			assert.deepStrictEqual(unauthorized('SELECT c.id FROM customers AS c INNER JOIN orders AS o ON c.id = o.id'), []);
 		});
 
-		it('is true when only a JOIN target is unresolvable', () => {
-			const ast = parse('SELECT c.id FROM data.customers AS c INNER JOIN shared AS s ON c.id = s.id');
-			assert.strictEqual(statementHasTableTarget(ast), true);
+		it('reports an ambiguous bare reference', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM shared'), ['shared']);
+		});
+
+		it('reports a bare reference no database defines', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM hdb_user'), ['hdb_user']);
+		});
+
+		// The regression the per-reference form exists for: a global "were any schemas recorded?"
+		// test passes here on the strength of the table that DID resolve.
+		it('reports an unresolvable table even when another table in the same statement resolved', () => {
+			const bucket = new SqlStatementBucket(parse('SELECT * FROM data.customers, shared'));
+			assert.deepStrictEqual(bucket.getSchemas(), ['data'], 'the resolvable table is still recorded');
+			assert.deepStrictEqual(bucket.getUnauthorizedTableRefs(), ['shared']);
+		});
+
+		it('reports an unresolvable JOIN target alongside a resolvable FROM target', () => {
+			assert.deepStrictEqual(
+				unauthorized('SELECT c.id FROM data.customers AS c INNER JOIN shared AS s ON c.id = s.id'),
+				['shared']
+			);
+		});
+
+		it('reports a derived table, whose reach cannot be determined', () => {
+			assert.deepStrictEqual(unauthorized('SELECT * FROM (SELECT * FROM customers) AS sub'), [
+				'subquery in FROM position 1',
+			]);
+		});
+
+		it("reports a SELECT's INTO target, which the affected-attribute map does not model", () => {
+			assert.deepStrictEqual(unauthorized('SELECT 1 AS id INTO customers'), ['data.customers']);
+		});
+
+		it('does not treat an Object.prototype member as a table', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM toString'), ['toString']);
 		});
 	});
 
