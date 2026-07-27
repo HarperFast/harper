@@ -4781,7 +4781,15 @@ export function makeTable(options) {
 			return history.reverse();
 		}
 		static clear() {
-			return primaryStore.clear();
+			// clear the primary store and every secondary index dbi (same pattern used by
+			// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
+			// index entries pointing at records that no longer exist.
+			const promises = [primaryStore.clear()];
+			for (const key in indices) {
+				const index = indices[key];
+				promises.push(index.clearAsync ? index.clearAsync() : index.clear());
+			}
+			return Promise.all(promises);
 		}
 		static cleanup() {
 			deleteCallbackHandle?.remove();
