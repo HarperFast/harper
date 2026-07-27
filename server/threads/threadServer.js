@@ -253,6 +253,41 @@ function startServers() {
 	});
 	return loaded;
 }
+/** True if some other TCP (non-UDS) listener registered by the operations API exists in SERVERS. */
+function hasOperationsTcpEndpoint() {
+	for (const key in SERVERS) {
+		if (!key.includes?.('/') && SERVERS[key]?.isOperationsServer) return true;
+	}
+	return false;
+}
+
+/**
+ * Handle a failed Unix domain socket bind: this fails soft (see listenOnPorts()'s UDS branch) for
+ * every path-keyed listener in SERVERS, not just the operations API's — a domain socket is a
+ * convenience mirror of its same-named TCP listener, and rejecting here used to abort the whole
+ * startup batch (process.exit in bin/run.ts's main()) over one socket, most commonly EINVAL from a
+ * rootPath-derived path exceeding the platform's ~107-byte sun_path limit.
+ *
+ * A lost mirror is routine when a TCP/other listener for the same server is still coming up
+ * alongside it, but the operations API can also be configured with only a domain socket (no
+ * port/securePort) — in that case this failure leaves it with no listener at all, which is worth a
+ * louder log than "lost a convenience mirror". Either way, also suppress/remove any TLS-mirror
+ * metadata already advertised for this socket (see markUdsBindFailed()) so a fronting proxy doesn't
+ * keep routing to a socket nothing is listening on.
+ */
+function handleDomainSocketBindFailure(port, server, err) {
+	httpComponent.markUdsBindFailed(port);
+	const message = `Failed to bind domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: ${err.message}. Continuing without this domain socket.`;
+	if (server.isOperationsServer && !hasOperationsTcpEndpoint()) {
+		harperLogger.fatal(
+			`${message} No other operations API endpoint (port/securePort) is configured — the operations API has no listener.`,
+			err
+		);
+	} else {
+		harperLogger.error(message, err);
+	}
+}
+
 let listening;
 function listenOnPorts() {
 	if (isBun) return listenOnPortsBun();
@@ -272,17 +307,7 @@ function listenOnPorts() {
 							harperLogger.info('Domain socket listening on ' + port);
 						})
 						.on('error', (err) => {
-							// A domain socket is a convenience mirror of the same-named TCP/other
-							// listeners in this Promise.all batch (e.g. the operations API's UDS
-							// alongside its TCP port) — rejecting here used to fail the whole batch,
-							// which aborted startup (process.exit in bin/run.ts's main()) over one
-							// socket, most commonly EINVAL from a rootPath-derived path exceeding the
-							// platform's ~107-byte sun_path limit. Fail soft: log and keep going so the
-							// TCP listener (and everything else) still comes up.
-							harperLogger.error(
-								`Failed to bind domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: ${err.message}. Continuing without this domain socket.`,
-								err
-							);
+							handleDomainSocketBindFailure(port, server, err);
 							resolve({ port, failed: true });
 						});
 				})
@@ -532,12 +557,9 @@ async function listenOnPortsBun() {
 								harperLogger.info('Domain socket listening on ' + port);
 							})
 							.on('error', (err) => {
-								// See the same fail-soft handling in listenOnPorts() above: a domain
+								// See handleDomainSocketBindFailure()/listenOnPorts() above: a domain
 								// socket bind failure must not abort the rest of this Promise.all batch.
-								harperLogger.error(
-									`Failed to bind domain socket listener at ${port}: ${err.message}. Continuing without this domain socket.`,
-									err
-								);
+								handleDomainSocketBindFailure(port, server, err);
 								resolve({ port, failed: true });
 							});
 					})

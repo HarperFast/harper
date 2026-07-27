@@ -17,6 +17,7 @@ const {
 	cleanupUdsFiles,
 	cleanupSocketsDirectory,
 	enableProxyProtocol,
+	markUdsBindFailed,
 } = require('#src/server/http');
 
 const TEST_SOCKETS_DIR = path.join(testUtils.ENV_DIR_PATH, 'sockets');
@@ -294,6 +295,25 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 		it('cleanupUdsFiles does not throw when files are already gone', () => {
 			registerUdsCleanupPaths(path.join(TEST_SOCKETS_DIR, 'ghost.sock'), path.join(TEST_SOCKETS_DIR, 'ghost.yaml'));
 			assert.doesNotThrow(() => cleanupUdsFiles());
+		});
+	});
+
+	// ─── markUdsBindFailed ─────────────────────────────────────────────────────
+
+	describe('markUdsBindFailed', () => {
+		it('removes a YAML metadata file already written for the failed socket', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'failed.yaml');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(!fs.existsSync(yamlPath), 'stale metadata for the failed mirror should be removed');
+		});
+
+		it('does not throw when the socket was never registered or has no metadata file on disk', () => {
+			assert.doesNotThrow(() => markUdsBindFailed(path.join(TEST_SOCKETS_DIR, 'never-registered.sock')));
 		});
 	});
 
