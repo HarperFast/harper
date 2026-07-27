@@ -42,7 +42,9 @@ General plugin configuration options:
 - `host` — `string` _(optional)_ — Virtual hostname used to route the plugin's HTTP, WebSocket, and upgrade handlers
 - `timeout` — `number` _(optional)_ — Timeout in milliseconds for plugin operations. Takes precedence over the plugin's `defaultTimeout` and the system default (30 seconds)
 
-`urlPath` and `host` are available in v5.2.0. Harper automatically passes them to handlers registered through the scoped `server` API. See [Middleware routing](../http/overview#middleware-routing) for an example and [`HttpOptions`](../http/api#httpoptions) for matching behavior.
+`urlPath` and `host` are available in v5.2.0. Harper automatically passes them to handlers registered through the scoped `server` API.
+
+These position a plugin **within** its application. Where the application itself is served is set on the application's entry in the root `harper-config.yaml`; that mount is prefixed onto each plugin's `urlPath`, and a `host` there overrides one set here. See [Middleware routing](../http/overview#middleware-routing) for the full picture and [`HttpOptions`](../http/api#httpoptions) for matching behavior.
 
 ### File Entries
 

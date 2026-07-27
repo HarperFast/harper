@@ -604,7 +604,8 @@ Deploys a component. The `package` option accepts any valid NPM reference includ
 
 Additional parameters:
 
-- `urlPath` — override the HTTP URL path the component is mounted at (e.g. `"/api/v2"`)
+- `urlPath` — the HTTP URL path the component is mounted at (e.g. `"/api/v2"`). Persisted on the component's root-config entry; see [HTTP middleware routing](/reference/v5/http/overview#middleware-routing).
+- `host` — the virtual hostname the component is served on (e.g. `"api.example.com"`). Must be a bare hostname — no scheme, port, or path. Persisted alongside `urlPath`.
 - `install_allow_scripts` — set to `true` to allow npm pre/post install scripts (disabled by default)
 - `credentials` — credentials for installing a component from a private npm registry or private git repository (see below)
 

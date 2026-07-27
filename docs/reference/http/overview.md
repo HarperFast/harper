@@ -30,18 +30,39 @@ Request and response objects follow the [WHATWG Fetch API](https://developer.moz
 
 <VersionBadge version="v5.2.0" />
 
-Harper can route middleware by URL prefix, virtual hostname, or both. Set `urlPath` or `host` in a component's `config.yaml` to create a routed middleware chain without writing dispatch code:
+Harper can route middleware by URL prefix, virtual hostname, or both, with no dispatch code in the application. Where an application is served is a deployment concern, so declare it on that application's entry in the root `harper-config.yaml`:
 
 ```yaml
-rest:
+# harper-config.yaml
+my-app:
   host: api.example.com
   urlPath: /v1
-static:
-  files: 'web/**'
-  host: www.example.com
 ```
 
-The `rest` handler receives requests under `api.example.com/v1`; Harper removes `/v1` from the pathname before invoking the chain. The `static` handler receives requests for `www.example.com`. Unmatched requests use the default middleware chain.
+Every handler the application registers — HTTP, WebSocket, and upgrade — is then served under `api.example.com/v1`, and Harper removes `/v1` from the pathname before invoking the chain. Requests that match no routed chain use the default middleware chain.
+
+Because routing lives in the root config, the same application package can be mounted at a different hostname or path per environment without editing the application. The entry does not need a `package` — routing applies to any application in the components root, however it was deployed.
+
+You can also set it at deploy time:
+
+```bash
+harper deploy project=my-app package=@my/app host=api.example.com urlPath=/v1
+```
+
+#### Routing individual plugins
+
+A plugin's own `urlPath` sets where it sits **within** the application, and is configured in the application's `config.yaml`:
+
+```yaml
+# my-app/config.yaml
+static:
+  files: 'web/**'
+  urlPath: assets
+```
+
+The application's mount composes with it rather than replacing it, so app-internal structure survives being relocated. With the root config above, the static files are served at `api.example.com/v1/assets/`. A plugin that configures no `urlPath` of its own is served at the mount itself (`api.example.com/v1`).
+
+An application can also set `host` per plugin, but a `host` on the root-config entry overrides it — the operator's choice of hostname wins over one the application shipped.
 
 Custom components can configure the same behavior programmatically with `server.http(listener, { host, urlPath })`. See [`HttpOptions`](./api#httpoptions) for matching priority and middleware ordering options.
 
