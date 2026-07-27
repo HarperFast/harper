@@ -52,7 +52,7 @@ import send from 'send';
  *
  * This plugin dynamically updates its behavior based on the current configuration file. Users can make updates and immediately see the changes reflect in the next request.
  *
- * Updates to the `files` option will clear the in-memory maps and allow them to regenerate based on the new configuration (since the default EntryHandler will regenerate anyways).
+ * Updates to the `files` option incrementally add newly matched paths and remove paths that no longer match while preserving common entries.
  * Updates to `urlPath` request a restart: the HTTP route mount is registered once at load and cannot be re-registered on a live server (#1583).
  */
 /**
@@ -187,10 +187,9 @@ export function handleApplication(scope: Scope) {
 
 	scope.options.on('change', (key) => {
 		if (key[0] === 'files') {
-			// If the files option changes, clear the maps and let the entry handler regenerate them
-			staticFiles.clear();
-			indexEntries.clear();
-			scope.logger.info(`Static files reinitialized due to change in ${key.join('.')}`);
+			// EntryHandler updates are incremental: paths no longer matched emit unlink, newly matched
+			// paths emit add, and common unchanged paths remain valid in these maps.
+			scope.logger.info(`Static file matches updated due to change in ${key.join('.')}`);
 			return;
 		}
 		if (key[0] === 'urlPath') {
@@ -222,12 +221,15 @@ export function handleApplication(scope: Scope) {
 		switch (entry.eventType) {
 			// Directories only matter for the `index` files
 			case 'addDir':
-			case 'unlinkDir':
 				// Handle `index.html` for directories for if/when the user enables the `index` option
 				const indexPath = join(entry.absolutePath, 'index.html');
-				if (existsSync(indexPath)) {
-					indexEntries[entry.eventType === 'addDir' ? 'set' : 'delete'](urlPath, indexPath);
-				}
+				if (existsSync(indexPath)) indexEntries.set(urlPath, indexPath);
+				break;
+			case 'unlinkDir':
+				// A config update can add a new absolute directory at this same URL before the old
+				// directory's synthesized unlink arrives. Remove only the identity being unlinked.
+				const removedIndexPath = join(entry.absolutePath, 'index.html');
+				if (indexEntries.get(urlPath) === removedIndexPath) indexEntries.delete(urlPath);
 				break;
 			// Otherwise, user must specify pattern to match individual files
 			case 'add':
@@ -243,7 +245,10 @@ export function handleApplication(scope: Scope) {
 				}
 				break;
 			case 'unlink':
-				// Remove the file from memory when it is deleted
+				// Additions are emitted while scanning, before removals synthesized at ready. When a files
+				// update re-roots two absolute files to the same URL, do not let the old unlink delete the
+				// replacement that was just added.
+				if (staticFiles.get(urlPath) !== entry.absolutePath) break;
 				staticFiles.delete(urlPath);
 				// If the file is an index.html, remove it from the index entries as well
 				if (urlPath.endsWith('index.html')) {

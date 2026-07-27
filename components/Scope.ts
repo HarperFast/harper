@@ -66,9 +66,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#deployEndHandler: (name: string) => void;
 	// While a deploy of this component is in flight, EntryHandler events do not
 	// drive requestRestart() — the deploy itself produces hundreds of file
-	// changes that would otherwise pile up. A single coalesced restart is
-	// triggered by the post-deploy re-scan instead.
+	// changes that would otherwise pile up. Logical changes from the completed
+	// post-deploy scan can request the restart after this gate is lowered.
 	#deployInFlight: boolean = false;
+	// OptionsWatcher and plugin callbacks are not paused with EntryHandlers. Preserve a restart they
+	// request during the deploy window and replay it once the intermediate filesystem state is gone.
+	#restartRequestedDuringDeploy: boolean = false;
 	applicationScope?: ApplicationScope;
 
 	options: OptionsWatcher;
@@ -301,6 +304,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	#onDeployStart(componentName: string): void {
 		this.#deployInFlight = true;
+		this.#restartRequestedDuringDeploy = false;
 		// Pause each EntryHandler so it stops emitting events for the
 		// intermediate filesystem state the deploy is writing, and so it
 		// releases its inotify handles while npm install is unpacking
@@ -315,18 +319,19 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	#onDeployEnd(componentName: string): void {
 		this.#deployInFlight = false;
+		const restartRequestedDuringDeploy = this.#restartRequestedDuringDeploy;
+		this.#restartRequestedDuringDeploy = false;
 
 		// Resume each EntryHandler BEFORE notifying plugins. Otherwise a plugin
 		// throwing in its deploy:end handler would abort this function and
 		// leave the watchers permanently paused (surfaced by Gemini review).
-		// The fresh chokidar watcher does an initial scan and emits add events
-		// for the post-deploy tree; the existing per-event listener calls
-		// scope.requestRestart() for each, and the restart debounce in
-		// componentLoader collapses them into a single restart cycle. Plugin
+		// The fresh chokidar watcher compares the post-deploy scan with its
+		// retained pre-deploy snapshot and emits only logical changes. Plugin
 		// handlers stay attached across the pause.
 		for (const entryHandler of this.#entryHandlers) {
 			void entryHandler.resume();
 		}
+		if (restartRequestedDuringDeploy) this.requestRestart();
 
 		this.#safeEmit('deploy:end', componentName);
 	}
@@ -520,9 +525,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	requestRestart() {
 		if (this.#deployInFlight) {
-			// Suppressed: a deploy is rewriting this component's files. The
-			// post-deploy re-scan in #onDeployEnd will trigger the coalesced
-			// restart instead.
+			// Defer while a deploy is rewriting this component's files. EntryHandlers are paused, but
+			// OptionsWatcher and plugin callbacks can still observe a lasting configuration change.
+			this.#restartRequestedDuringDeploy = true;
 			this.#logger.debug?.(`Restart suppressed (deploy in flight) for ${this.#appName}`);
 			return;
 		}

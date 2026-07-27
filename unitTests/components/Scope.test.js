@@ -425,10 +425,9 @@ describe('Scope', () => {
 			scope.requestRestart();
 			assert.equal(restartNeeded(), false, 'requestRestart was suppressed during deploy');
 
-			// Exit the deploy — restarts should be enabled again
+			// Exit the deploy — the suppressed request is replayed once, after the gate is lowered.
 			deployLifecycle._handle({ name: this.appName, phase: 'end' });
-			scope.requestRestart();
-			assert.equal(restartNeeded(), true, 'requestRestart works again after deploy:end');
+			assert.equal(restartNeeded(), true, 'a lasting restart request is replayed after deploy:end');
 
 			await scope.close();
 		});
@@ -457,7 +456,7 @@ describe('Scope', () => {
 			await scope.close();
 		});
 
-		it('pauses entry handlers on deploy:start and resumes them on deploy:end without losing plugin listeners', async () => {
+		it('pauses entry handlers and emits the changed-file diff on deploy:end without losing plugin listeners', async () => {
 			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
 
 			const scope = new Scope(
@@ -472,21 +471,23 @@ describe('Scope', () => {
 			// Register a plugin-style entry handler with a callback. Codex caught
 			// the original close+recreate design dropping these callbacks; this
 			// case guards against that regression.
-			const handlerSpy = spy();
-			const entryHandler = scope.handleEntry(handlerSpy);
+			const entries = [];
+			const entryHandler = scope.handleEntry((entry) => entries.push(entry));
 			await entryHandler.ready;
-			const callsBeforeDeploy = handlerSpy.callCount;
+			const callsBeforeDeploy = entries.length;
 			assert.ok(callsBeforeDeploy > 0, 'plugin handler fires for initial files');
 
 			// Enter and exit a deploy without touching the EntryHandler instance.
 			deployLifecycle._handle({ name: this.appName, phase: 'start' });
 			// Settle the pause's pending watcher.close() promise before resuming.
 			await new Promise((r) => setTimeout(r, 50));
+			await writeFile(this.testFilePath, '"deployed";');
 			deployLifecycle._handle({ name: this.appName, phase: 'end' });
 
-			// The same EntryHandler instance keeps the plugin's callback; the
-			// post-deploy re-scan should fire it again for the same file(s).
-			await waitFor(() => handlerSpy.callCount > callsBeforeDeploy, 3000);
+			// The same EntryHandler instance keeps the plugin's callback and translates the resumed
+			// watcher's fresh add into the logical change relative to the pre-deploy generation.
+			await waitFor(() => entries.length > callsBeforeDeploy, 3000);
+			assert.equal(entries.at(-1).eventType, 'change');
 
 			// And the EntryHandler instance is unchanged — listener attachment is
 			// preserved, not re-issued through a fresh wrapper.
@@ -494,10 +495,10 @@ describe('Scope', () => {
 
 			// Subsequent post-deploy file changes still fire the plugin handler
 			// (the wired listener is still attached).
-			const callsAfterResume = handlerSpy.callCount;
+			const callsAfterResume = entries.length;
 			await writeFile(this.testFilePath, '"after-deploy";');
-			await waitFor(() => handlerSpy.callCount > callsAfterResume);
-			assert.ok(handlerSpy.callCount > callsAfterResume, 'post-deploy change fires the plugin handler');
+			await waitFor(() => entries.length > callsAfterResume);
+			assert.ok(entries.length > callsAfterResume, 'post-deploy change fires the plugin handler');
 
 			await scope.close();
 		});
