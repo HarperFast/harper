@@ -410,6 +410,7 @@ async function deployComponent(req) {
 			};
 		}
 		if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
+		if (req.host !== undefined) applicationConfig.host = req.host;
 		// Persist credential references (never tokens) so every cold install of this component —
 		// reboot, new peer, rollback — re-resolves the credential from the store.
 		if (credentialReferences.length) applicationConfig.credentials = credentialReferences;

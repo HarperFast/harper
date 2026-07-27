@@ -461,6 +461,10 @@ function deployComponentValidator(req) {
 			})
 			.optional()
 			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
+		// Virtual hostname the component is served on. Like `urlPath`, this is deployment routing and
+		// belongs on the root-config entry, not in the component's own config.yaml. `hostname()`
+		// rejects a value carrying a port or path, which would never match the router's host compare.
+		host: Joi.string().hostname().optional(),
 		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
 		// identifying key rather than a separate discriminator field, so a new kind is added as
 		// another item alternative here without reshaping the field. Today: npm registry auth
@@ -490,7 +494,9 @@ function deployComponentValidator(req) {
 		registryAuth: Joi.any().forbidden().messages({
 			'any.unknown': `'registryAuth' has been renamed to 'credentials'`,
 		}),
-	}).with('urlPath', 'package');
+	})
+		.with('urlPath', 'package')
+		.with('host', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);
 }

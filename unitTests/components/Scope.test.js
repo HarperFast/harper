@@ -553,4 +553,72 @@ describe('Scope', () => {
 			);
 		});
 	});
+
+	// The `server` proxy is what turns config into routing: it names every middleware entry after
+	// the plugin and resolves the plugin's `urlPath`/`host` into the route the dispatcher matches.
+	describe('server proxy routing injection', () => {
+		const registerAndCapture = async (config, options, mount) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: config }));
+			const http = spy();
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			scope.server.http(() => {}, options);
+			await scope.close();
+			return http.getCall(0).args[1];
+		};
+
+		it('names the entry after the plugin and resolves the configured urlPath', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' });
+			assert.equal(injected.name, this.pluginName);
+			assert.equal(injected.urlPath, '/assets/');
+		});
+
+		it('resolves a plugin-name-relative urlPath rather than passing it through raw', async () => {
+			// A plugin that spreads its whole config section into these options (REST does) used to
+			// hand the router the literal './', which normalized to the unmatchable route '/.'
+			const injected = await registerAndCapture({ urlPath: './' }, { urlPath: './' });
+			assert.equal(injected.urlPath, `/${this.pluginName}/`);
+		});
+
+		it('lets an explicit call option override the configured urlPath, still resolved', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' }, { urlPath: 'other' });
+			assert.equal(injected.urlPath, '/other/');
+		});
+
+		it('carries the configured host', async () => {
+			const injected = await registerAndCapture({ host: 'api.example.com' });
+			assert.equal(injected.host, 'api.example.com');
+		});
+
+		it('leaves routing undefined when nothing configures it', async () => {
+			const injected = await registerAndCapture({ files: 'test.js' });
+			assert.equal(injected.urlPath, undefined);
+			assert.equal(injected.host, undefined);
+		});
+
+		it('routes by the application mount declared in the root config', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' }, undefined, {
+				host: 'api.example.com',
+				urlPath: '/v1',
+			});
+			assert.equal(injected.host, 'api.example.com');
+			assert.equal(injected.urlPath, '/v1/assets/');
+		});
+
+		it('mount host wins over a host the application shipped', async () => {
+			const injected = await registerAndCapture({ host: 'www.shipped.example' }, undefined, {
+				host: 'api.example.com',
+			});
+			assert.equal(injected.host, 'api.example.com');
+		});
+	});
 });

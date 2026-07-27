@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
 import { overlayRootEnvConfig, isRootConfigFilename } from '../config/harperConfigEnvVars.ts';
+import { applyScopeMount, type ScopeMount } from './scopeMount.ts';
 
 export interface Config {
 	[key: string]: ConfigValue;
@@ -94,12 +95,18 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#closed: boolean;
 	#openCount: number = 0;
 	#pendingReads: Set<Promise<void>> = new Set();
+	#mount?: ScopeMount;
 	ready: Promise<any[]>;
 
-	constructor(name: string, filePath: string, logger?: Logger, isRootConfig?: boolean) {
+	constructor(name: string, filePath: string, logger?: Logger, isRootConfig?: boolean, mount?: ScopeMount) {
 		super();
 		this.#name = name;
 		this.#filePath = filePath;
+		// The operator-declared mount for the application this scope belongs to (root config).
+		// Overlaid on every read so `getAll()` is the single effective view of this plugin's
+		// config — consumers that resolve routing from it (the `server` proxy, EntryHandler,
+		// static, fastifyRoutes) are correct without each having to know about mounts.
+		this.#mount = mount;
 		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
 		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
 		// Application scopes watch their own config.yaml and are never overlaid.
@@ -143,12 +150,12 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 					// If a config object does not exist
 					if (!this.#scopedConfig) {
 						// set it
-						this.#scopedConfig = this.#rootConfig[this.#name];
+						this.#scopedConfig = this.#mountedSection(this.#rootConfig[this.#name]);
 						// and emit a ready event
 						this.emit('ready', this.#scopedConfig);
 					} else {
 						// Otherwise, merge the new config with the old config
-						this.#merge(this.#rootConfig[this.#name], this.#scopedConfig);
+						this.#merge(this.#mountedSection(this.#rootConfig[this.#name]), this.#scopedConfig);
 					}
 				} else {
 					// Otherwise, if the extension is not in the config file
@@ -255,17 +262,26 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		if (!composed || !(this.#name in composed)) return false;
 		this.#rootConfig = composed;
 		if (!this.#scopedConfig) {
-			this.#scopedConfig = composed[this.#name];
+			this.#scopedConfig = this.#mountedSection(composed[this.#name]);
 			this.emit('ready', this.#scopedConfig);
 		} else {
-			this.#merge(composed[this.#name], this.#scopedConfig);
+			this.#merge(this.#mountedSection(composed[this.#name]), this.#scopedConfig);
 		}
 		return true;
 	}
 
 	#resetConfig() {
 		this.#rootConfig = DEFAULT_CONFIG;
-		this.#scopedConfig = this.#rootConfig[this.#name];
+		this.#scopedConfig = this.#mountedSection(this.#rootConfig[this.#name]);
+	}
+
+	/**
+	 * Overlays this scope's application mount onto a raw config section. Composed from the
+	 * freshly-parsed value on every read, so the prefix never compounds. Returns the section
+	 * unchanged (same reference) when there is no mount.
+	 */
+	#mountedSection(section: ConfigValue): ConfigValue {
+		return applyScopeMount(section, this.#name, this.#mount);
 	}
 
 	/**

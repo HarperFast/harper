@@ -29,6 +29,7 @@ import * as scheduler from '../resources/scheduler/scheduler.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
+import { toScopeMount, type ScopeMount } from './scopeMount.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
@@ -63,6 +64,33 @@ let resources;
  * @param loadedPluginModules
  * @param loadedResources
  */
+/**
+ * The application mount an operator declared for `appName` in the root config.
+ *
+ * Applications in the components root are loaded by directory scan, not from a root-config
+ * entry, so this is what makes a root-config entry authoritative for where an app is served:
+ *
+ * ```yaml
+ * my-app:
+ *   host: api.example.com
+ *   urlPath: /v1
+ * ```
+ *
+ * Works whether or not the entry also carries `package` — a payload-deployed app is mounted the
+ * same way as an installed one. A built-in plugin's config block is never an application mount;
+ * those keys (`http`, `mqtt`, …) configure the plugin itself.
+ */
+function rootConfigMount(appName: string): ScopeMount | undefined {
+	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return undefined;
+	try {
+		return toScopeMount(getConfigObj()?.[appName]);
+	} catch (error) {
+		// An invalid mount must not take down every other application's load.
+		harperLogger.error(`Ignoring invalid routing configured for '${appName}': ${(error as Error).message}`);
+		return undefined;
+	}
+}
+
 export async function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
@@ -82,7 +110,12 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			const appName = appEntry.name;
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			cfsLoaded.push(
-				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, { isRoot: false, autoReload: false, appName })
+				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
+					isRoot: false,
+					autoReload: false,
+					appName,
+					mount: rootConfigMount(appName),
+				})
 			);
 		}
 	}
@@ -94,6 +127,7 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 				isRoot: false,
 				autoReload: Boolean(process.env.DEV_MODE),
 				appName: hdbAppFolder,
+				mount: rootConfigMount(basename(hdbAppFolder)),
 			})
 		);
 	}
@@ -316,6 +350,10 @@ export interface LoadComponentOptions {
 	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
 	// across deploys (#1462).
 	collectScopes?: Set<Scope>;
+	// Routing the operator declared for this application in the root config (`host`/`urlPath` on
+	// the application's entry). Applied to every plugin scope this load creates, and inherited by
+	// components the application itself declares, so the whole subtree moves together.
+	mount?: ScopeMount;
 }
 
 /**
@@ -342,6 +380,7 @@ export async function loadComponent(
 		isRoot,
 		autoReload,
 		appName,
+		mount,
 	} = options;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
@@ -485,6 +524,12 @@ export async function loadComponent(
 								autoReload: false,
 								appName: appName || componentName,
 								collectScopes: options.collectScopes,
+								// `host`/`urlPath` on this entry route the component being loaded. For an
+								// application (no plugin module of its own) that entry is the only place an
+								// operator can say where the app is served — its own config.yaml declares the
+								// plugins, not the deployment. An inherited mount wins so a nested component
+								// can't escape the mount its parent application was given.
+								mount: mount ?? toScopeMount(componentConfig),
 							});
 							componentFunctionality[componentName] = true;
 						}
@@ -554,7 +599,10 @@ export async function loadComponent(
 						// authoritative root-ness: only root-load scopes watch THE root config and
 						// get the runtime env-config overlay (#1618) — an app component that happens
 						// to ship a root-named config file does not
-						isRoot
+						isRoot,
+						// A root-declared plugin reads its own `host`/`urlPath` straight from this
+						// config, so only an inherited application mount applies here.
+						mount
 					);
 
 					if (options.collectScopes) {
