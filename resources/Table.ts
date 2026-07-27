@@ -2714,6 +2714,7 @@ export function makeTable(options) {
 						);
 						if (!audit || isRocksDB) scheduleCleanup();
 					} else {
+						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
 				},
