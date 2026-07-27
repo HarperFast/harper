@@ -660,12 +660,31 @@ function Parameter(name, i, type) {
 function fragmentToOpenApiSchema(fragment: any): any {
 	if (!fragment || typeof fragment !== 'object') return { type: 'object' };
 	const schema: any = {};
-	if (fragment.type != null) schema.type = fragment.type;
+	// Request contracts are author-written JSON Schema, so the same 3.0.3 dialect rules apply here as
+	// on the table path: no `'null'` type, no type unions, no `const`. This function feeds every
+	// request body, response, and contract query parameter, so a fragment reaching it unfiltered is a
+	// non-conformant document even though the table-derived paths are clean.
+	if (Array.isArray(fragment.type)) {
+		const members = fragment.type.filter((t: unknown) => t !== 'null');
+		if (members.length !== fragment.type.length) schema.nullable = true;
+		if (members.length > 0) schema.type = members[0];
+	} else if (fragment.type != null && fragment.type !== 'null') {
+		schema.type = fragment.type;
+	}
 	if (fragment.format) schema.format = fragment.format;
 	if (fragment.description) schema.description = fragment.description;
 	if (fragment.enum) schema.enum = fragment.enum;
 	if (fragment.nullable) schema.nullable = true;
-	if (fragment.const !== undefined) schema.const = fragment.const;
+	// `const` is draft-06; emit the equivalent single-value `enum`, intersecting when both are declared.
+	if (fragment.const !== undefined) {
+		schema.enum = Array.isArray(schema.enum)
+			? schema.enum.filter((value: unknown) => value === fragment.const)
+			: [fragment.const];
+	}
+	// 3.0's `nullable` does not widen an `enum` — without `null` in the list a validator rejects it.
+	if (schema.nullable && Array.isArray(schema.enum) && !schema.enum.includes(null)) {
+		schema.enum = [...schema.enum, null];
+	}
 	if (fragment.items) schema.items = fragmentToOpenApiSchema(fragment.items);
 	if (fragment.properties) {
 		schema.properties = {};

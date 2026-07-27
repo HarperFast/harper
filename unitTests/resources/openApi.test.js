@@ -381,10 +381,37 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 			bytes: { type: 'Bytes' },
 		};
 		Widget.prototype.get = function () {};
+		// A request-contract resource alongside the table-shaped one: its schemas are author-written
+		// JSON Schema emitted through a different function (`fragmentToOpenApiSchema`), so a fixture
+		// with only the table path leaves every request body, response, and contract query parameter
+		// unguarded by the walks below.
+		function Contract() {}
+		Contract.prototype.get = function () {};
+		Contract.prototype.post = function () {};
+		Contract.path = '/contract';
+		Contract.requestContract = { path: '/contract' };
+		Contract.inputSchemas = {
+			post: {
+				body: {
+					type: 'object',
+					properties: {
+						kind: { type: 'string', const: 'order' },
+						note: { type: ['string', 'null'] },
+						status: { type: 'string', enum: ['a', 'b'], nullable: true },
+					},
+					required: ['kind'],
+				},
+			},
+		};
+		Contract.outputSchemas = { post: { type: 'object', properties: { tag: { type: 'string', const: 'ok' } } } };
+
 		const resources = new Map();
 		resources.set('Widget', { path: 'Widget', Resource: Widget, hasSubPaths: false, relativeURL: '' });
+		resources.set('Contract', { path: '/contract', Resource: Contract, hasSubPaths: false, relativeURL: '' });
 		resources.allTypes = new Map();
-		return generateJsonApi(resources, 'https://harper.fast');
+		// Judge what a consumer actually receives: `JSON.stringify` drops undefined-valued keys,
+		// so walking the live object would flag artifacts that never reach the wire.
+		return JSON.parse(JSON.stringify(generateJsonApi(resources, 'https://harper.fast')));
 	}
 
 	it('declares 3.0.x', () => {
@@ -447,6 +474,18 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 
 	it('lets an author-declared format outrank the Harper type name', () => {
 		expect(buildDocument().components.schemas.Widget.properties.when.format).to.equal('date-time');
+	});
+
+	it('translates request-contract schemas too (bodies, responses, contract query params)', () => {
+		// This path runs through `fragmentToOpenApiSchema`, not the table emitter, so it needs its own
+		// assertion — a fixture with only the table resource leaves it entirely unguarded.
+		const doc = buildDocument();
+		const body = doc.paths['/contract'].post.requestBody.content['application/json'].schema;
+		expect(body.properties.kind.enum, 'contract body const -> enum').to.deep.equal(['order']);
+		expect(body.properties.kind).to.not.have.property('const');
+		expect(body.properties.note.type, 'union folds to a single type').to.equal('string');
+		expect(body.properties.note.nullable).to.equal(true);
+		expect(body.properties.status.enum, 'nullable enum admits null').to.deep.equal(['a', 'b', null]);
 	});
 
 	it('emits the properties under test (guards the walk assertions against an empty document)', () => {
