@@ -72,10 +72,14 @@ async function rawOp(ctx: ContextWithHarper, operation: any): Promise<{ status: 
 
 async function readAuditCount(ctx: ContextWithHarper): Promise<number> {
 	const res = await sendOperation(ctx.harper, { operation: 'read_audit_log', schema: SCHEMA, table: TABLE });
-	if (Array.isArray(res)) {
-		return res.reduce((n: number, e: any) => n + (Array.isArray(e?.records) ? e.records.length : 1), 0);
+	// An unexpected (non-array) response — an error body, a shape change, a transient failure —
+	// must not silently read as "0 records": that would be indistinguishable from a genuinely
+	// empty audit log and could satisfy test 2's "count came back down" assertion for the wrong
+	// reason. Fail loudly instead of defaulting to a number that looks like success.
+	if (!Array.isArray(res)) {
+		throw new Error(`read_audit_log returned a non-array response, cannot compute a count: ${JSON.stringify(res).slice(0, 300)}`);
 	}
-	return 0;
+	return res.reduce((n: number, e: any) => n + (Array.isArray(e?.records) ? e.records.length : 1), 0);
 }
 
 async function pollReadiness(ctx: ContextWithHarper): Promise<void> {
