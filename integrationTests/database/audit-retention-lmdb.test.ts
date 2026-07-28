@@ -77,7 +77,9 @@ async function readAuditCount(ctx: ContextWithHarper): Promise<number> {
 	// empty audit log and could satisfy test 2's "count came back down" assertion for the wrong
 	// reason. Fail loudly instead of defaulting to a number that looks like success.
 	if (!Array.isArray(res)) {
-		throw new Error(`read_audit_log returned a non-array response, cannot compute a count: ${JSON.stringify(res).slice(0, 300)}`);
+		throw new Error(
+			`read_audit_log returned a non-array response, cannot compute a count: ${JSON.stringify(res).slice(0, 300)}`
+		);
 	}
 	return res.reduce((n: number, e: any) => n + (Array.isArray(e?.records) ? e.records.length : 1), 0);
 }
