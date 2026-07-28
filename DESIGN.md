@@ -406,3 +406,27 @@ extensionModule.handleApplication` gate (`components/componentLoader.ts`) means 
 `universalHeaders` is per-thread module state, populated only where the http component loads.
 Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
 so ops responses **will** carry the headers there (benign).
+
+## The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)
+
+npm decides whether to honor a dependency's bundled `npm-shrinkwrap.json` from the `_hasShrinkwrap`
+flag in the **registry packument**, metadata the registry sets at publish time — not by looking
+inside the tarball. So `npm install harper` from the registry installs exactly the tree the
+shrinkwrap describes, including honoring _omissions_ (it will not re-resolve an optional dependency
+that has been pruned out). But `npm install ./harper-*.tgz` has no packument, so npm never learns the
+shrinkwrap exists and re-resolves the whole tree from `package.json`. Verified on one published
+5.1.23 artifact: via the registry it honored the pin (fastify 5.8.5), from the tarball it resolved
+fresh (fastify 5.10.0, then-latest).
+
+Three consequences worth knowing before touching packaging:
+
+- `overrides` in harper's `package.json` are **root-only** and do nothing for anyone installing
+  harper. The shrinkwrap is the only lever that reaches consumers, which is why the react-native
+  prune lives in `build-tools/prune-shrinkwrap-react-native.mjs` rather than in `overrides` (#1937).
+- The published shrinkwrap is deliberately _not_ what `npm shrinkwrap` produced — `build.sh`
+  post-processes it (dev prune #1783, react-native prune #1937) to enforce that it describes only the
+  production tree a consumer installs. Anything added there must keep it internally consistent; a
+  pruned entry that something still requires would ship a broken tree to every consumer.
+- The Dockerfile installs the local tarball, so it gets **none** of this: its dependency tree is
+  resolved fresh at image-build time against whatever is newest within our semver ranges, meaning the
+  image is not reproducible and does not match what npm consumers receive (#1960).

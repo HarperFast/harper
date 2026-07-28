@@ -127,7 +127,7 @@ export function transactionOpenTooLongError(): ServerError {
 	// status (503/408) would invite clients and gateways to auto-retry the same doomed long transaction.
 	// 422 signals the request itself must change (split the work), which is the actionable response.
 	return new ServerError(
-		'Transaction was aborted after exceeding the open-transaction limit; split long-running work into smaller transactions',
+		'Transaction was aborted after exceeding the maximum open-transaction time; split long-running work into smaller transactions',
 		422
 	);
 }
