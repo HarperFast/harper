@@ -206,7 +206,6 @@ export function openAuditStore(rootStore) {
 					return;
 				}
 				let deleted = 0;
-				let committed: Promise<void>;
 				let lastKey: any;
 				try {
 					for (const auditRecord of auditStore.getRange({
@@ -215,7 +214,9 @@ export function openAuditStore(rootStore) {
 						end: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
 					})) {
 						try {
-							committed = removeAuditEntry(auditStore, auditRecord);
+							// awaited so a rejection (not just a synchronous throw) is caught here instead of
+							// escaping as an unhandled rejection once a later iteration's promise replaces this one
+							await removeAuditEntry(auditStore, auditRecord);
 						} catch (error) {
 							harperLogger.warn('Error removing audit entry', error);
 						}
@@ -227,12 +228,17 @@ export function openAuditStore(rootStore) {
 							break;
 						}
 					}
-					await committed;
 				} catch (error) {
 					// the timer callback is detached, so anything escaping here lands as an unhandled
 					// rejection instead of a log line — and skips the reschedule below with it
 					harperLogger.warn('Error during audit log cleanup', error);
 				} finally {
+					// resolve() first and unconditionally: updateLastRemoved() below can throw
+					// synchronously if the store transitions to closing/closed mid-pass, and a throw
+					// from the rest of this block must not skip settling `resolution` — that's the
+					// serialization barrier every later pass awaits, and never settling it wedges the
+					// cleanup loop for the life of the store.
+					resolve();
 					if (deleted === 0) {
 						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
 						// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
@@ -245,7 +251,6 @@ export function openAuditStore(rootStore) {
 						// and do updates faster
 						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
 					}
-					resolve();
 					scheduleAuditCleanup();
 				}
 				// we can run this pretty frequently since there is very little overhead to these queries
