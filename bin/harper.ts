@@ -32,6 +32,10 @@ install                         - Install harperdb
                                    or run 'harper login'. The equivalent auth_username=<value>
                                    auth_password=<value> args also work, but a password passed as an
                                    argument is exposed in shell history, process listings and CI logs.
+                                   A saved login token always outranks username=/password=, so a
+                                   stale token that fails to refresh will 401 rather than falling
+                                   back to them — run 'harper logout' or pass auth_username=/
+                                   auth_password= to override it.
 login [target] [username]       - Login to a remote or local Harper instance
 logout [target]                 - Logout from Harper and clear saved JWT
 mcp [subcommand]                - MCP stdio bridge / print-config / doctor (see 'harper mcp help')

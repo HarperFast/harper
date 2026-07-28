@@ -221,7 +221,8 @@ function resolveTransportCredentials(req: any, urlCredentials: { username: strin
 // Secret-valued CLI args, whatever their role (transport auth or operation payload). Logging a
 // parsed CLI request must go through redactCredentials() so a password doesn't land in the log
 // file — the command line already exposes it to shell history and process listings; the log
-// shouldn't be a third copy.
+// shouldn't be a third copy. This list is by field name, not exhaustive — any future secret-bearing
+// arg (a token, a key) needs to be added here explicitly, or it will reach logger.trace unredacted.
 const SECRET_FIELDS = new Set(['auth_password', 'password']);
 
 // `target=https://admin:secret@host` carries a password too, so masking the userinfo is part of
