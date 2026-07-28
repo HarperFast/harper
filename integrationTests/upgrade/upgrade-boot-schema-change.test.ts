@@ -394,15 +394,14 @@ suite('QA-647 upgrade-boot read visibility across surfaces (#1865)', { skip: ski
 			);
 
 			const cmp = (a: string[], b: string[], name: string) => {
-				const wasOk = matrixAfterRestart1[name as keyof SurfaceMatrix] as unknown as string[];
 				log(
-					`Q4 boot-order check (${name}): restart#1 misses=${(wasOk as string[]).length}, ` +
+					`Q4 boot-order check (${name}): restart#1 misses=${b.length}, ` +
 						`restart#2 misses=${a.length} -> ${
-							a.length === 0 && (wasOk as string[]).length > 0
+							a.length === 0 && b.length > 0
 								? 'CLEARED on 2nd boot (order-dependent)'
-								: a.length > 0 && (wasOk as string[]).length === 0
+								: a.length > 0 && b.length === 0
 									? 'NEW MISS introduced by 2nd boot alone'
-									: a.length === (wasOk as string[]).length
+									: a.length === b.length
 										? 'UNCHANGED across boots (stable)'
 										: 'CHANGED (different miss set/count)'
 						}`

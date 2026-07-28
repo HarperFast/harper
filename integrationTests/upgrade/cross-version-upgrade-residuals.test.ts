@@ -226,8 +226,7 @@ suite(
 			await sleep(killDelayMs);
 			log(`(b) dirty-shutdown trigger: ${acked}/${numChunks} chunk requests ACKed (client received 200) before kill`);
 			const proc = ctx.harper.process;
-			const pid = proc.pid!;
-			process.kill(-pid, 'SIGKILL');
+			proc.kill('SIGKILL');
 			await new Promise<void>((res) => proc.once('exit', res));
 			await allDone;
 			return { numChunks, ackedChunks: acked };
