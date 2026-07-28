@@ -344,6 +344,8 @@ suite(
 			['a WHERE subquery', `SELECT id FROM ${DB}.${PUBLIC_TABLE} WHERE id IN (SELECT id FROM ${SECRET_TABLE})`],
 			['an EXISTS subquery', `SELECT id FROM ${DB}.${PUBLIC_TABLE} WHERE EXISTS (SELECT id FROM ${SECRET_TABLE})`],
 			['a UNION branch', `SELECT id FROM ${DB}.${PUBLIC_TABLE} UNION SELECT id FROM ${SECRET_TABLE}`],
+			['an EXCEPT branch', `SELECT id FROM ${DB}.${PUBLIC_TABLE} EXCEPT SELECT id FROM ${SECRET_TABLE}`],
+			['an INTERSECT branch', `SELECT id FROM ${DB}.${PUBLIC_TABLE} INTERSECT SELECT id FROM ${SECRET_TABLE}`],
 			['an INSERT source query', `INSERT INTO ${DB}.${PUBLIC_TABLE} SELECT id, owner AS label FROM ${SECRET_TABLE}`],
 		] as [string, string][]) {
 			test(`${label} referencing the forbidden table is denied`, async () => {

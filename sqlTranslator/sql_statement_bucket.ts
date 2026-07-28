@@ -228,11 +228,11 @@ interface TableTargets {
 
 /**
  * AlaSQL fields that carry a nested or compound query: a WHERE subquery (`queries`), an EXISTS
- * subquery (`exists`), a UNION branch (`union`/`unionall`), and an INSERT's source SELECT
- * (`select`). The attribute collectors below don't descend into any of them, so a table
- * referenced only from one of these is invisible to permission checking.
+ * subquery (`exists`), a compound-query branch (`union`/`unionall`/`except`/`intersect`), and an
+ * INSERT's source SELECT (`select`). The attribute collectors below don't descend into any of
+ * them, so a table referenced only from one of these is invisible to permission checking.
  */
-const NESTED_QUERY_FIELDS = ['queries', 'exists', 'union', 'unionall', 'select'];
+const NESTED_QUERY_FIELDS = ['queries', 'exists', 'union', 'unionall', 'except', 'intersect', 'select'];
 
 /**
  * Every table the statement would touch. Mirrors the set of references the engine's binder
