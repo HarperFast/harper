@@ -517,6 +517,7 @@ export const CONFIG_PARAMS = {
 	LICENSE_MODE: 'license_mode',
 	LICENSE_REGION: 'license_region',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
+	MODELSGATEWAY_ENABLED: 'modelsGateway_enabled',
 	LOGGING_COLORS: 'logging_colors',
 	LOGGING_CONSOLE: 'logging_console',
 	LOGGING_FILE: 'logging_file',

@@ -6,9 +6,13 @@
  *   POST /v1/chat/completions    → V1ChatCompletions
  *   GET  /v1/models              → V1Models
  *
- * Off by default. Opt in by setting `enabled: true` in the `modelsGateway`
- * block of `harperdb-config.yaml`. Opt out explicitly with `enabled: false`.
- * This mirrors the `agent` component's enabled-flag pattern.
+ * Off by default, and `defaultConfig.yaml` deliberately ships no `modelsGateway`
+ * block: with the key absent the root loader skips the component before resolving
+ * it, so none of this module graph is imported on an instance that does not use
+ * the gateway. Opt in by adding the block to `harperdb-config.yaml` with
+ * `enabled: true`, or via `set_configuration` (`modelsGateway_enabled`).
+ * `enabled: false` is honored too, for an instance that wants the block present
+ * but inert — that costs the import, which is why it is not the shipped default.
  *
  * Example (opt in). `rest` is required: these are REST-served resources and the
  * gateway deliberately does not force REST to start (see `handleApplication`).
