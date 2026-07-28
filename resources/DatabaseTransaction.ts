@@ -179,6 +179,13 @@ export type TransactionWrite = {
 	// deletion stages an entry with no value). Reset at the top of each commit-handler invocation so
 	// a retry round that takes an early return doesn't leave the prior round's state behind.
 	stagedEntry?: Partial<Entry>;
+	// a later write to the same key in this transaction replaced (or deleted) the record this write
+	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
+	// commit-handler round, like stagedEntry.
+	superseded?: boolean;
+	// this write appended an audit entry, which references its saved blobs — they then belong to the
+	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
+	blobsAuditReferenced?: boolean;
 };
 
 /**
@@ -204,9 +211,23 @@ export function priorStagedEntry(operation: TransactionWrite): Partial<Entry> | 
  * throwing the same way.
  */
 function writeKeyId(key: Id): unknown {
-	return typeof key === 'object' && key !== null
-		? JSON.stringify(key, (_, v) => (typeof v === 'bigint' ? v.toString() : v))
-		: key;
+	if (typeof key === 'object' && key !== null) {
+		// Composite keys get their own namespace — a leading NUL, which no scalar string key can
+		// reach (escaped below) — with type-tagged elements, so the scalar string '["x"]' vs the
+		// composite ['x'], and [1n] vs ['1'] vs [1], all map to distinct keys.
+		return (
+			'\u0000' +
+			JSON.stringify(key, (_, v) => {
+				if (typeof v === 'bigint') return '\u0000b' + v.toString();
+				if (typeof v === 'string' && v.charCodeAt(0) === 0) return '\u0000s' + v;
+				return v;
+			})
+		);
+	}
+	// Escape the rare scalar string that would otherwise land in (or collide with an escapee of)
+	// the composite namespace; numbers and bigints keep their native Map identity.
+	if (typeof key === 'string' && (key.charCodeAt(0) === 0 || key.charCodeAt(0) === 1)) return '\u0001' + key;
+	return key;
 }
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
@@ -638,10 +659,13 @@ export class DatabaseTransaction implements Transaction {
 									);
 								}
 							}
-							// commit succeeded; clean up files for any writes whose commit-handler took an early-return.
-							// deferred until here so a retry that *would* have referenced the blob can flip skipped back to false first.
+							// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
+							// or whose stored record a later write to the same key replaced without an audit entry
+							// keeping its blobs reachable (checked against the final committed record, so a blob the
+							// later write retained survives). Deferred until here so a retry that *would* have
+							// referenced the blob can flip skipped/superseded back to false first.
 							for (const write of this.writes) {
-								if (write?.skipped && write?.savedBlobs)
+								if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
@@ -735,7 +759,7 @@ export class DatabaseTransaction implements Transaction {
 					);
 				}
 				for (const write of this.writes) {
-					if (write?.skipped && write?.savedBlobs)
+					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.clearWrites();

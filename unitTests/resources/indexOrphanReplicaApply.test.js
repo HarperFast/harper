@@ -87,7 +87,7 @@ describe('secondary index vs. replicated (source-applied) status transitions', (
 		await Inst.put({ id, status: 'RUNNING' });
 		await applyTransitions(id, TRANSITIONS, { awaitEach: false });
 		const record = await Inst.get(id);
-		assert.deepEqual(await indexState(id), [record.status]);
+		assert.deepStrictEqual(await indexState(id), [record.status]);
 	});
 
 	it('two updates to the same record in ONE replicated transaction leave no phantom', async () => {
@@ -115,7 +115,7 @@ describe('secondary index vs. replicated (source-applied) status transitions', (
 		});
 		await waitForStatus(id, 'STOPPED');
 		const record = await Inst.get(id);
-		assert.deepEqual(await indexState(id), [record.status], `index should hold only ${record.status}`);
+		assert.deepStrictEqual(await indexState(id), [record.status], `index should hold only ${record.status}`);
 	});
 
 	it('serialized apply (backpressured) leaves no phantom index entries', async () => {
@@ -123,6 +123,6 @@ describe('secondary index vs. replicated (source-applied) status transitions', (
 		await Inst.put({ id, status: 'RUNNING' });
 		await applyTransitions(id, TRANSITIONS, { awaitEach: true });
 		const record = await Inst.get(id);
-		assert.deepEqual(await indexState(id), [record.status]);
+		assert.deepStrictEqual(await indexState(id), [record.status]);
 	});
 });

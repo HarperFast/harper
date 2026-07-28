@@ -2257,6 +2257,7 @@ export function makeTable(options) {
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
+					write.superseded = false; // likewise: a later write to this key re-marks it this round
 					// The record a preceding write in this transaction left for this key is what this write
 					// applies to (see priorStagedEntry): a staged write is not visible to a read, so without
 					// this the index diff re-removes the values that write already removed and never removes
@@ -2286,10 +2287,15 @@ export function makeTable(options) {
 					//  during the write transaction.
 					// A write that follows another write to this key in this transaction is ordered by program
 					// order, not by timestamp: every write in a transaction carries the transaction's single
-					// timestamp, so a version comparison against what the earlier write staged is a tie, and
-					// the out-of-order resequencing below would treat this write as a re-delivered duplicate
-					// and drop it (the 4.7 behavior this fix must not reintroduce). It applies in order.
-					let precedesExisting = priorStaged ? 1 : precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					// timestamp, so a version comparison against what the earlier write landed (e.g. on a
+					// retry round after a partial apply) is a tie (0), and the out-of-order resequencing below
+					// would treat this write as a re-delivered duplicate and drop it (the 4.7 behavior this fix
+					// must not reintroduce). Program order only breaks the tie, though: a strictly newer
+					// existing version (< 0) can only be a concurrent transaction's write observed on a retry
+					// round, and must still go through the out-of-order merge below or its changes would be
+					// silently overwritten.
+					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (priorStaged && precedesExisting >= 0) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
@@ -2817,7 +2823,16 @@ export function makeTable(options) {
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
-						if (storeRecord) write.stagedEntry = { value: recordToStore };
+						if (storeRecord) {
+							write.stagedEntry = { value: recordToStore };
+							// blobs this write saved are referenced by its audit entry (if it wrote one), which
+							// then owns their lifetime; and any record an earlier write in this transaction
+							// stored is now replaced, so mark those writes for the superseded-blob cleanup
+							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
+							for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+								if (prior.stagedEntry) prior.superseded = true;
+							}
+						}
 					}
 				},
 			};
@@ -2897,6 +2912,7 @@ export function makeTable(options) {
 						: undefined,
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
+					write.superseded = false; // reset per round, as in the update path
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStaged = priorStagedEntry(write);
@@ -2906,10 +2922,12 @@ export function makeTable(options) {
 							context.lastModified = existingEntry.version;
 						TableResource._updateResource(this, existingEntry);
 					}
-					// a newer record exists locally — unless an earlier write in this transaction is what
-					// this delete follows, in which case program order (not the version comparison against
-					// the pre-transaction entry) decides, as in the update path
-					if (!priorStaged && precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					// a strictly newer record exists locally, so this delete loses. An earlier write in this
+					// transaction can never trip this guard — it shares this transaction's timestamp and
+					// compares as a tie (0), not < 0 — so a negative result always means a genuinely newer
+					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
+					// that a chained delete must not destroy.
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
 					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
@@ -2936,6 +2954,11 @@ export function makeTable(options) {
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
 					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
+					// the removal supersedes any record an earlier write in this transaction stored, so its
+					// saved blobs are cleaned up post-commit unless its audit entry references them
+					for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+						if (prior.stagedEntry) prior.superseded = true;
+					}
 				},
 			};
 			transaction.addWrite(write);
@@ -3972,7 +3995,7 @@ export function makeTable(options) {
 								logger.error?.('Error getting history entry', auditRecord.localTime, error);
 							}
 						}
-						for (let i = history.length; i > 0;) {
+						for (let i = history.length; i > 0; ) {
 							send(history[--i]);
 						}
 						// Use the latest record cursor saw (history[0] = most recent due to reverse
@@ -4081,7 +4104,7 @@ export function makeTable(options) {
 							} else break;
 							if (count) count--;
 						} while (nextTime > startTime && count !== 0);
-						for (let i = history.length; i > 0;) {
+						for (let i = history.length; i > 0; ) {
 							send(history[--i]);
 						}
 					}
@@ -4395,10 +4418,12 @@ export function makeTable(options) {
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a number`);
 								break;
 							case 'ID':
-								if (!(
-									typeof value === 'string' ||
-									(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
-								))
+								if (
+									!(
+										typeof value === 'string' ||
+										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
+									)
+								)
 									addError(
 										name,
 										'type',
