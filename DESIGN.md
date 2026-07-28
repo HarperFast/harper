@@ -57,6 +57,18 @@ When adding a new commit-handler early-return path: reset `write.skipped = false
 
 Known minor: if the monitor aborts a write transaction whose async `commit()` is already in flight (awaiting `before` hooks), the resumed continuation double-decrements `readTxnsUsed` and double-`abort()`s the underlying transaction (swallowed by the existing try/catch). Data is still correctly rolled back and the request errors; the only artifact is an inert negative counter on a dead transaction object.
 
+## Repeat writes to the same key in one transaction carry their state forward (`DatabaseTransaction`/`Table`)
+
+A transaction can hold more than one write to the same record key — two `patch()` calls inside one `transaction()`, or a replicated transaction carrying two updates to a record. Each write captures `operation.entry` (its idea of the current record) when it is staged, and **neither engine can refresh that from a read**: LMDB queues staged puts and applies them only in the commit batch, so a `getEntry` inside that loop still returns the pre-transaction record (the exclusive `store.transaction()` fallback is no better), and RocksDB read-your-writes only sees writes already staged into the native transaction — which the source-apply path, staging its whole batch before `commit()`, hasn't done yet.
+
+So the writes carry the state forward themselves: `addWrite` chains each write to the preceding write to the same store and key (`linkWrite` → `operation.priorWrite`), a commit handler publishes what it stored on `operation.stagedEntry`, and the next write reads it back through `priorStagedEntry()` and uses it as `existingRecord`. Consequences worth knowing:
+
+- Only the **record** comes from the earlier write. The rest of the entry (version, `localTime`/audit chain, blob metadata) stays the pre-transaction one — that is what this write's audit entry and optimistic version check are relative to.
+- A chained write is **in order by construction** (`precedesExisting = 1`), never resequenced or deduped. Every write in a transaction carries the transaction's single timestamp, so comparing versions against what the earlier write staged is a tie, and the out-of-order machinery would drop the later write as a re-delivered duplicate.
+- `clearWrites()` discards the chain along with the write set on commit/abort, so a reused transaction never bases a write on a previous batch's staged state.
+
+Before this (harper#1968), every write diffed against the pre-transaction record: the secondary index kept the intermediate value permanently (nothing reconciles an index against the records, so only a rebuild repairs it), and on LMDB the earlier write's changes were dropped outright.
+
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
 When `migrateOnStart` opens a source LMDB primary store to read records out for the RocksDB copy, it constructs an `OpenDBIObject` and calls `sourceRootStore.openDB(key, dbiInit)`. Critically, the per-attribute `compression` setting from the corresponding `__dbis__` entry must be assigned onto `dbiInit` before that call — `dbiInit.compression = attribute.compression`. Without it, lmdb-js doesn't install its decompression layer; every read on the DBI returns raw compressed bytes. msgpackr then misreads bytes in the `0x40–0x7F` range as shared-structure refs, calls `loadStructures` → decodes the (also compressed) structures buffer → finds more bytes in that range → recurses → stack overflow.

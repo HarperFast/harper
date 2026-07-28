@@ -173,13 +173,45 @@ export type TransactionWrite = {
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
 	appendedAuditEntry?: boolean;
+	// the preceding write to the same store and key in this transaction, if any (linked in addWrite)
+	priorWrite?: TransactionWrite;
+	// what this write left for its key in this transaction, once its commit handler stored it (a
+	// deletion stages an entry with no value). Reset at the top of each commit-handler invocation so
+	// a retry round that takes an early return doesn't leave the prior round's state behind.
+	stagedEntry?: Partial<Entry>;
 };
+
+/**
+ * The state a preceding write in this transaction left for `operation`'s key, or undefined if this
+ * is the first write to it. Within a transaction the writes are ordered by program order, and
+ * neither storage engine can serve that state to a read — LMDB applies staged writes only in the
+ * commit batch — so a later write to the same key gets its basis from the write that staged it
+ * rather than from a pre-transaction read (harper#1968). Walks past writes that staged nothing
+ * (a skipped or non-record write) to the last one that did.
+ */
+export function priorStagedEntry(operation: TransactionWrite): Partial<Entry> | undefined {
+	for (let prior = operation.priorWrite; prior; prior = prior.priorWrite) {
+		if (prior.stagedEntry) return prior.stagedEntry;
+	}
+}
+
+/**
+ * Key identity for the per-key write chain. A Map already distinguishes primitive types, so a
+ * numeric key indexes it as-is (no allocation on the write path); string and composite (array) keys
+ * go through JSON, whose encodings can never collide with each other ("a" vs ["a"]) or with a
+ * number.
+ */
+function writeKeyId(key: Id): unknown {
+	return typeof key === 'number' ? key : JSON.stringify(key);
+}
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
 
 export class DatabaseTransaction implements Transaction {
 	#context: Context;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
+	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
+	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
 	completions: Promise<void>[] = []; // the set of outstanding async operations to complete
 	db: RootDatabaseKind;
 	transaction: RocksTransactionWithRetry;
@@ -293,6 +325,30 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
+	/**
+	 * Chain a newly staged write to the preceding write to the same store and key, so its commit
+	 * handler can apply on top of what that write staged instead of the pre-transaction record
+	 * (see priorStagedEntry). Called by both engines' addWrite.
+	 */
+	linkWrite(operation: TransactionWrite): void {
+		if (operation.key === undefined) return;
+		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
+		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
+		const keyId = writeKeyId(operation.key);
+		const priorWrite = writesForStore.get(keyId);
+		if (priorWrite) operation.priorWrite = priorWrite;
+		writesForStore.set(keyId, operation);
+	}
+
+	/**
+	 * Discard the staged write set (committed or aborted); the per-key chain must go with it so a
+	 * reused transaction never bases a write on a previous batch's staged state.
+	 */
+	clearWrites(): void {
+		this.writes = [];
+		this.writesByKey = undefined;
+	}
+
 	checkOverloaded() {
 		if (
 			outstandingCommit &&
@@ -306,6 +362,7 @@ export class DatabaseTransaction implements Transaction {
 
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		this.linkWrite(operation);
 		this.writes.push(operation);
 		if (!operation.deferSave) {
 			// Setting saved to false means to defer saving
@@ -585,7 +642,7 @@ export class DatabaseTransaction implements Transaction {
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
-							this.writes = [];
+							this.clearWrites();
 							if (this.#context?.resourceCache) this.#context.resourceCache = null;
 							this.next = null;
 							let txnTime = this.timestamp;
@@ -677,7 +734,7 @@ export class DatabaseTransaction implements Transaction {
 					if (write?.skipped && write?.savedBlobs)
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
-				this.writes = [];
+				this.clearWrites();
 				if (this.#context?.resourceCache) this.#context.resourceCache = null;
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
@@ -712,7 +769,7 @@ export class DatabaseTransaction implements Transaction {
 				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 		}
 		// reset the transaction
-		this.writes = [];
+		this.clearWrites();
 		if (this.#context?.resourceCache) this.#context.resourceCache = null;
 	}
 	/**

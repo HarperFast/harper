@@ -106,6 +106,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			return result;
 		}
 
+		this.linkWrite(operation);
 		this.writes.push(operation); // standard path, add to current transaction
 	}
 
@@ -273,7 +274,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 							cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 					}
 					// now reset transactions tracking; this transaction be reused and committed again
-					this.writes = [];
+					this.clearWrites();
 					this.timestamp = 0;
 					this.next = null;
 					return Promise.all(completions).then(() => {
@@ -319,7 +320,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 		}
 		// reset the transaction
-		this.writes = [];
+		this.clearWrites();
 	}
 	save(..._args: any[]): any {
 		// noop for LMDB

@@ -31,7 +31,12 @@ import type { User } from '../security/user.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, transformForSelect } from './Resource.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
-import { DatabaseTransaction, ImmediateTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
+import {
+	DatabaseTransaction,
+	ImmediateTransaction,
+	priorStagedEntry,
+	TRANSACTION_STATE,
+} from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
@@ -2251,17 +2256,27 @@ export function makeTable(options) {
 					// (walk identity tie against its own staged record) before a fresh-transaction replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
+					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
+					// The record a preceding write in this transaction left for this key is what this write
+					// applies to (see priorStagedEntry): a staged write is not visible to a read, so without
+					// this the index diff re-removes the values that write already removed and never removes
+					// the ones it added — orphaning them — and an incremental update merges onto the
+					// pre-transaction record, dropping that write's changes entirely (harper#1968). Only the
+					// record comes from the earlier write; the rest of the entry (version, audit chain, blob
+					// metadata) stays the pre-transaction one, which is the version this write's audit entry
+					// and optimistic version check are still relative to.
+					const priorStaged = priorStagedEntry(write);
+					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
 						this.#entry = existingEntry;
-						if (existingEntry?.value && existingEntry.value.getRecord)
+						if (existingRecord && existingRecord.getRecord)
 							throw new Error('Can not assign a record to a record, check for circular references');
-						if (!fullUpdate) this.#record = existingEntry?.value ?? null;
+						if (!fullUpdate) this.#record = existingRecord ?? null;
 					}
 					this.#changes = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this.#version = txnTime;
-					const existingRecord = existingEntry?.value;
 					let incrementalUpdateToApply: boolean;
 
 					this.#savingOperation = null;
@@ -2269,7 +2284,12 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					// A write that follows another write to this key in this transaction is ordered by program
+					// order, not by timestamp: every write in a transaction carries the transaction's single
+					// timestamp, so a version comparison against what the earlier write staged is a tie, and
+					// the out-of-order resequencing below would treat this write as a re-delivered duplicate
+					// and drop it (the 4.7 behavior this fix must not reintroduce). It applies in order.
+					let precedesExisting = priorStaged ? 1 : precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
@@ -2794,6 +2814,10 @@ export function makeTable(options) {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
+						// publish what this write left for the key, for any later write to it in this
+						// transaction (an audit-only commit stored no record, so it stages nothing and the
+						// earlier staged record, if any, remains the basis)
+						if (storeRecord) write.stagedEntry = { value: recordToStore };
 					}
 				},
 			};
@@ -2862,7 +2886,7 @@ export function makeTable(options) {
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 
-			transaction.addWrite({
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
@@ -2872,15 +2896,22 @@ export function makeTable(options) {
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
-					const existingRecord = existingEntry?.value;
+					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
+					// what a preceding write in this transaction left for this key is what gets removed
+					// from the indices here, not the pre-transaction record (harper#1968)
+					const priorStaged = priorStagedEntry(write);
+					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
 						TableResource._updateResource(this, existingEntry);
 					}
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					// a newer record exists locally — unless an earlier write in this transaction is what
+					// this delete follows, in which case program order (not the version comparison against
+					// the pre-transaction entry) decides, as in the update path
+					if (!priorStaged && precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
-					} // a newer record exists locally
+					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
 					if (audit || trackDeletes) {
 						updateRecord(
@@ -2904,8 +2935,10 @@ export function makeTable(options) {
 						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
+					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
 				},
-			} as any);
+			};
+			transaction.addWrite(write);
 			return true;
 		}
 
