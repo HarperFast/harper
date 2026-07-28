@@ -79,6 +79,41 @@ describe('prune-shrinkwrap-react-native', () => {
 		assert.deepStrictEqual(Object.keys(twice.packages).sort(), Object.keys(once.packages).sort());
 	});
 
+	// Regression: severing every edge named react-native-fs, rather than only the ones the
+	// dependent declared optional, deleted a package that another dependent still required
+	// and left that requirement dangling in the published shrinkwrap.
+	it('keeps react-native-fs when another package hard-depends on it', () => {
+		const lock = fixture();
+		lock.packages[''].dependencies['other-pkg'] = '^1.0.0';
+		lock.packages['node_modules/other-pkg'] = { version: '1.0.0', dependencies: { 'react-native-fs': '^2.20.0' } };
+		const { stdout, result } = runPrune(lock);
+		assert.ok(result.packages['node_modules/react-native-fs'], 'react-native-fs is still required by other-pkg');
+		assert.ok(result.packages['node_modules/react-native'], 'its peer tree stays reachable through it');
+		assert.match(stdout, /nothing to prune/);
+	});
+
+	it('still prunes when the only other reference is another optional declaration', () => {
+		const lock = fixture();
+		lock.packages[''].dependencies['other-pkg'] = '^1.0.0';
+		lock.packages['node_modules/other-pkg'] = {
+			version: '1.0.0',
+			optionalDependencies: { 'react-native-fs': '^2.20.0' },
+		};
+		const { result } = runPrune(lock);
+		assert.ok(!result.packages['node_modules/react-native-fs'], 'both declarations are optional, so it goes');
+		assert.ok(result.packages['node_modules/other-pkg'], 'the optional dependent itself survives');
+	});
+
+	// The script fails the build if it *introduces* an unresolved required edge. It must not
+	// fail on one the input already had — published shrinkwraps legitimately carry some.
+	it('tolerates a required edge that was already unresolved before pruning', () => {
+		const lock = fixture();
+		lock.packages['node_modules/shared'].dependencies = { 'never-installed': '^1.0.0' };
+		const { stdout, result } = runPrune(lock);
+		assert.match(stdout, /Pruned 3 entries/);
+		assert.ok(result.packages['node_modules/shared'], 'the pre-existing gap is not ours to act on');
+	});
+
 	it('rejects an unsupported lockfileVersion', () => {
 		const lock = fixture();
 		lock.lockfileVersion = 2;
