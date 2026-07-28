@@ -1,0 +1,8 @@
+# QA-702 — regression anchor for #1863 ("fix: guard SSE writes against undefined event data
+# (#1724)") plus a re-characterization of F-133 (SSE mid-stream throw hang) on current main.
+#
+# No table backing is needed for the Resources under test, but a jsResource fixture requires
+# at least one @table/@export type to be a valid component, so this is a minimal placeholder.
+type Placeholder @table @export {
+	id: ID @primaryKey
+}
