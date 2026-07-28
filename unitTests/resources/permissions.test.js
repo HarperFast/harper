@@ -246,10 +246,7 @@ describe('Bare collection POST authorization', () => {
 		PostBase = table({
 			table: 'BarePostTable',
 			database: 'test',
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'title' },
-			],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
 		});
 		// custom post() override, the accepted no-slash collection POST compatibility path
 		PostSub = class extends PostBase {
