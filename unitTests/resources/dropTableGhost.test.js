@@ -526,4 +526,62 @@ describe('dropTable ghost regression', () => {
 		}
 		await dbisDb.committed;
 	});
+
+	// PR review (codex, pre-push): the earlier "bounds the retries" test fails
+	// removeSync for every row under the table's prefix, including the primary
+	// tombstone itself, so it can't tell whether the tombstone is removed
+	// before or after the other catalog rows - both orderings fail identically
+	// there. This test instead lets the primary tombstone's own removeSync
+	// succeed and fails only a secondary (indexed-attribute) row's, so it can
+	// distinguish the two: with the tombstone removed first, it would already
+	// be gone by the time the secondary row's removal throws; with it removed
+	// last (the fix), the throw happens before the primary is ever touched, so
+	// it must still be present after the failed reconcile.
+	it('a mid-cleanup catalog-row failure leaves the primary tombstone in place, not already-removed', async function () {
+		this.timeout(20000);
+		const TABLE = `GhostTombstoneOrder_${process.pid}_${Date.now()}`;
+		const Stuck = table({
+			table: TABLE,
+			database: TEST_DB,
+			attributes: [
+				{ name: 'id', type: 'Int', isPrimaryKey: true },
+				{ name: 'str', type: 'String', indexed: true },
+			],
+		});
+		await Stuck.put({ id: 1, str: 'data' });
+		const dbisDb = getDbisDb();
+		const secondaryKey = `${TABLE}/str`;
+		assert.ok(dbisDb.getSync(secondaryKey), 'the indexed attribute must have its own catalog row for this test to be meaningful');
+
+		const meta = dbisDb.getSync(`${TABLE}/`);
+		meta.dropping = true;
+		await dbisDb.put(`${TABLE}/`, meta);
+		delete databases[TEST_DB][TABLE];
+
+		const originalRemoveSync = dbisDb.removeSync;
+		dbisDb.removeSync = function (key, ...rest) {
+			if (key === secondaryKey) {
+				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
+			}
+			return originalRemoveSync.call(this, key, ...rest);
+		};
+		try {
+			resetDatabases();
+			getDatabases();
+		} finally {
+			dbisDb.removeSync = originalRemoveSync;
+		}
+
+		assert.ok(
+			dbisDb.getSync(`${TABLE}/`)?.dropping,
+			'the primary tombstone must survive a failure removing a different catalog row'
+		);
+		assert.equal(getDatabases()[TEST_DB]?.[TABLE], undefined, 'a tombstoned table must never load');
+
+		// clean up by hand now that removeSync works again
+		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
+			dbisDb.remove(key);
+		}
+		await dbisDb.committed;
+	});
 });

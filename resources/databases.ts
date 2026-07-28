@@ -253,6 +253,14 @@ const interruptedDropKey = (storePath: string, tableName: string, generation?: s
 // path+table prefix instead of guessing which generation to target.
 const interruptedDropKeyPrefix = (storePath: string, tableName: string) => `${storePath}\0${tableName}\0`;
 function clearInterruptedDropEntries(storePath: string, tableName: string) {
+	// This runs on every table on every reconcile pass (including every live,
+	// never-dropped table), so an unconditional scan would make schema reload
+	// cost grow with the total number of tracked retry entries on top of the
+	// table count. interruptedDropAttempts is empty in the overwhelming common
+	// case (no drop has ever failed to complete), so this size check keeps the
+	// healthy-system cost at O(1) and only pays for the scan while there is
+	// actually something to sweep.
+	if (interruptedDropAttempts.size === 0) return;
 	const prefix = interruptedDropKeyPrefix(storePath, tableName);
 	for (const key of interruptedDropAttempts.keys()) {
 		if (key.startsWith(prefix)) interruptedDropAttempts.delete(key);
