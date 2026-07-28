@@ -228,6 +228,51 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			const received = await feed(socket, Buffer.from(long));
 			assert.strictEqual(Buffer.concat(received).toString(), long);
 		});
+
+		// PROXY v2 (binary) — built the way a fronting proxy like symphony emits it
+		function buildV2Header(tlvBlock = Buffer.alloc(0)) {
+			const addresses = Buffer.from([203, 0, 113, 9, 127, 0, 0, 1, 0xb2, 0x6e /* 45678 */, 0, 0]);
+			const header = Buffer.alloc(16);
+			Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a]).copy(header, 0);
+			header[12] = 0x21; // v2, PROXY command
+			header[13] = 0x11; // TCP over IPv4
+			header.writeUInt16BE(addresses.length + tlvBlock.length, 14);
+			return Buffer.concat([header, addresses, tlvBlock]);
+		}
+
+		it('strips a PROXY v2 header and overrides remoteAddress/remotePort', async () => {
+			const socket = new EventEmitter();
+			const received = await feed(socket, Buffer.concat([buildV2Header(), Buffer.from('HELLO')]));
+			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
+			assert.strictEqual(socket.remoteAddress, '203.0.113.9');
+			assert.strictEqual(socket.remotePort, 45678);
+		});
+
+		it('buffers a PROXY v2 header split across data events', async () => {
+			const socket = new EventEmitter();
+			const full = Buffer.concat([buildV2Header(), Buffer.from('HELLO')]);
+			const received = await feed(socket, full.subarray(0, 7), full.subarray(7, 20), full.subarray(20));
+			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
+			assert.strictEqual(socket.remoteAddress, '203.0.113.9');
+		});
+
+		it('exposes a forwarded client cert with TLSSocket semantics', async () => {
+			// SSL TLV (0x20): client = SSL|CERT_CONN, verify = 0; then a 0xE0 cert TLV
+			const ssl = Buffer.from([0x20, 0x00, 0x05, 0x03, 0, 0, 0, 0]);
+			const der = Buffer.from('not-a-real-der-but-forwarded-opaquely');
+			const certTlv = Buffer.concat([Buffer.from([0xe2, 0x00, der.length]), der]);
+			const socket = new EventEmitter();
+			await feed(socket, Buffer.concat([buildV2Header(Buffer.concat([ssl, certTlv])), Buffer.from('APP')]));
+			assert.strictEqual(socket.authorized, true);
+			assert.strictEqual(typeof socket.getPeerCertificate, 'function');
+		});
+
+		it('gives non-proxied connections no-client-cert TLS defaults', async () => {
+			const socket = new EventEmitter();
+			await feed(socket, Buffer.from('MQTTCONNECT'));
+			assert.strictEqual(socket.authorized, false);
+			assert.deepStrictEqual(socket.getPeerCertificate(), {});
+		});
 	});
 
 	// ─── registerUdsCleanupPaths + cleanupUdsFiles ────────────────────────────
@@ -296,6 +341,35 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			assert.match(fs.readFileSync(yamlPath, 'utf8'), /^protocol: h2$/m);
 			writeUdsMetadata(yamlPath, 9926, makeSecureServer());
 			assert.doesNotMatch(fs.readFileSync(yamlPath, 'utf8'), /^protocol:/m);
+		});
+	});
+
+	describe('writeUdsMetadata mTLS advertisement', () => {
+		it('writes mtls flags when the mirrored port verifies client certs', () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9926.yaml');
+			const server = makeSecureServer();
+			server.verifiesClientCerts = true;
+			server.mtlsRequired = true;
+			writeUdsMetadata(yamlPath, 9926, server);
+			const content = fs.readFileSync(yamlPath, 'utf8');
+			assert.match(content, /^mtls: true$/m);
+			assert.match(content, /^mtlsRequired: true$/m);
+		});
+
+		it('omits mtls flags otherwise', () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9926.yaml');
+			writeUdsMetadata(yamlPath, 9926, makeSecureServer());
+			const content = fs.readFileSync(yamlPath, 'utf8');
+			assert.doesNotMatch(content, /^mtls:/m);
+			assert.doesNotMatch(content, /^mtlsRequired:/m);
+		});
+
+		it('omits mtls flags when the mirror cannot decode PROXY v2 (mtlsForwarding=false)', () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9926.yaml');
+			const server = makeSecureServer();
+			server.verifiesClientCerts = true;
+			writeUdsMetadata(yamlPath, 9926, server, undefined, false);
+			assert.doesNotMatch(fs.readFileSync(yamlPath, 'utf8'), /^mtls:/m);
 		});
 	});
 });
