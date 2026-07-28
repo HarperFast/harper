@@ -551,7 +551,10 @@ describe('dropTable ghost regression', () => {
 		await Stuck.put({ id: 1, str: 'data' });
 		const dbisDb = getDbisDb();
 		const secondaryKey = `${TABLE}/str`;
-		assert.ok(dbisDb.getSync(secondaryKey), 'the indexed attribute must have its own catalog row for this test to be meaningful');
+		assert.ok(
+			dbisDb.getSync(secondaryKey),
+			'the indexed attribute must have its own catalog row for this test to be meaningful'
+		);
 
 		const meta = dbisDb.getSync(`${TABLE}/`);
 		meta.dropping = true;

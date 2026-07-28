@@ -250,7 +250,12 @@ const interruptedDropTableKey = (storePath: string, tableName: string) => `${sto
 function getInterruptedDropAttempts(storePath: string, tableName: string, generation?: string): number {
 	return interruptedDropAttempts.get(interruptedDropTableKey(storePath, tableName))?.get(generation ?? 'legacy') ?? 0;
 }
-function setInterruptedDropAttempts(storePath: string, tableName: string, generation: string | undefined, attempts: number) {
+function setInterruptedDropAttempts(
+	storePath: string,
+	tableName: string,
+	generation: string | undefined,
+	attempts: number
+) {
 	const tableKey = interruptedDropTableKey(storePath, tableName);
 	let generations = interruptedDropAttempts.get(tableKey);
 	if (!generations) interruptedDropAttempts.set(tableKey, (generations = new Map()));
