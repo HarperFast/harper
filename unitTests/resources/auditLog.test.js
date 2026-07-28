@@ -76,12 +76,21 @@ describe('Audit log', () => {
 		assert(events.length >= 4, 'Should have one live-subscription event per write');
 		// Verify the actual invariant, not just the count: the LAST delivered event per id must
 		// reflect that id's final state (an earlier, superseded event for the same id may or may
-		// not also have been delivered, so this only checks the latest, not the total count).
-		const lastEventById = new Map();
-		for (const event of events) lastEventById.set(event.id, event);
-		assert.equal(lastEventById.get(1)?.type, 'delete', "id 1's final delivered event should be its delete");
+		// not also have been delivered, so this only checks the latest, not the total count). Wait
+		// for that final-state condition directly rather than trusting the count above, since a
+		// count can in principle be satisfied by intermediate events that aren't the final state yet.
+		const lastEventById = () => {
+			const map = new Map();
+			for (const event of events) map.set(event.id, event);
+			return map;
+		};
+		await waitFor(
+			() => lastEventById().get(1)?.type === 'delete' && lastEventById().get(2)?.value?.name === 'two-changed',
+			{ timeout: 2000, message: "Should have received id 1's delete and id 2's latest put" }
+		);
+		assert.equal(lastEventById().get(1)?.type, 'delete', "id 1's final delivered event should be its delete");
 		assert.equal(
-			lastEventById.get(2)?.value?.name,
+			lastEventById().get(2)?.value?.name,
 			'two-changed',
 			"id 2's final delivered event should be its latest put"
 		);
