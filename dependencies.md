@@ -60,9 +60,9 @@ Generally, dependencies are added by simply adding them to the dependencies list
 ## uWebSockets.js
 
 - Need for usage: Optional high-performance HTTP/WebSocket backend (#914), gated default-off behind HARPER_UWS_UDS (plaintext UDS behind symphony) / HARPER_UWS_HTTP (direct plaintext TCP). Loaded lazily only when a flag is set.
-- Size/memory cost: Prebuilt native V8 addon (~1MB per platform binary; the git dependency clones the repo with all platform binaries).
-- Security: Actively maintained C++ HTTP server; no npm advisory registry entry (installed as a git dependency, not from npm).
-- Binary compilation: Yes — ABI-locked, platform-specific prebuilt `.node` binaries committed in the repo. No musl/Alpine (glibc only). Installed via `github:uNetworking/uWebSockets.js#<tag>`, so it needs git at install time; being an optionalDependency, install tolerates its absence (missing git, unsupported platform) and Harper runs without it.
+- Size/memory cost: Prebuilt native V8 addon (~1MB per platform binary; the GitHub tarball contains all platform binaries).
+- Security: Actively maintained C++ HTTP server; no npm advisory registry entry (installed from a pinned GitHub tarball, not from npm).
+- Binary compilation: Yes — ABI-locked, platform-specific prebuilt `.node` binaries committed in the repo. No musl/Alpine (glibc only). Harper declares version 20.68.0 as an optional peer; operators enabling the backend must install the pinned GitHub tarball separately. It remains a devDependency so Harper's uWS test jobs install it without adding the GitHub tarball to consumers' production locks.
 - Overlap: Overlaps `ws` (WebSockets) and the Node/Bun HTTP paths; this is an alternative transport, not an addition.
 - Eventual removal: Kept as long as it demonstrates a meaningful throughput/latency win over the Node path; the flags let it be dropped without touching the default path.
 
