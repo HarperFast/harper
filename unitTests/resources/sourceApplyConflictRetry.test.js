@@ -5,18 +5,20 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
+const { DatabaseTransaction, TRANSACTION_STATE, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
 // A coordinatedRetry transaction (the source-apply path) signals an optimistic write conflict by
 // resolving commit() with this sentinel instead of rejecting with ERR_BUSY.
 const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
 
 // A source-apply commit that fails its optimistic-conflict check must converge on retry. ERR_BUSY
 // always could: recommitting re-writes each key, re-tracking it at the current sequence, so
-// validation passes once the contention clears. ERR_TRY_AGAIN never could: the memtable history
+// validation passes once the contention clears. ERR_TRY_AGAIN could not: the memtable history
 // validation needs is gone (flushed during a bulk-ingest burst), and recommitting the same
-// transaction re-checks the same stranded snapshot, so it fails forever even on an idle database.
-// The uncapped source-apply retry then spins for good and wedges the replication apply loop at its
-// commit await, freezing every replication leg of that database on the node. ERR_TRY_AGAIN retries
-// must replay the writes onto a fresh transaction so validation runs against current state.
+// transaction re-checked the same stranded snapshot, so it failed forever even on an idle database.
+// The uncapped source-apply retry then spun for good and wedged the replication apply loop at its
+// commit await, freezing every replication leg of that database on the node. rocksdb-js now resets
+// the transaction onto a fresh snapshot on a failed TryAgain commit (as it always did for IsBusy),
+// so the retry recommits the SAME transaction and its re-run validates against current state.
 describe('source-apply conflict retry converges instead of spinning', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let SpinTable;
@@ -32,8 +34,8 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 		});
 	});
 
-	// Spy on commits so the test can see which attempt failed validation and whether the retry ran
-	// on a fresh transaction (a new transaction id) or recommitted the failed one.
+	// Spy on commits so the test can see which attempt failed validation and confirm the retry
+	// recommitted the same transaction (same id) after the native in-place snapshot reset.
 	function spyOnCommits() {
 		const { Transaction } = require('@harperfast/rocksdb-js');
 		const originalCommit = Transaction.prototype.commit;
@@ -144,10 +146,10 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 			assert.ok(failed, 'the flush should strand the snapshot outside the memtable window');
 			const retried = attempts.find((attempt, index) => attempt.ok && index > attempts.indexOf(failed));
 			assert.ok(retried, 'a later commit attempt must succeed');
-			assert.notEqual(retried.id, failed.id, 'the retry must run on a fresh transaction');
-			assert.ok(
-				!attempts.some((attempt, index) => index > attempts.indexOf(failed) && attempt.id === failed.id),
-				'the stranded transaction must never be recommitted'
+			assert.equal(
+				retried.id,
+				failed.id,
+				'the retry must recommit the same transaction, reset in place onto a fresh snapshot'
 			);
 		} finally {
 			restore();
@@ -242,5 +244,68 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 		} finally {
 			restore();
 		}
+	});
+});
+
+// abortChainAfterRetries() gives up on a linked chain of transactions (multi-store commit) after
+// exhausting conflict retries. Its two-pass design (poison every link, then abort/release each) exists
+// specifically so a throw from one link's cleanup can't strand later links holding native handles /
+// read snapshots until GC. Exercised directly against the class rather than through 40 real retries,
+// which would require forcing MAX_RETRIES real conflicts end-to-end.
+describe('abortChainAfterRetries chain cleanup', () => {
+	// A minimal stand-in for a native RocksTransaction: abort() is the only method the wrapper calls.
+	function fakeNative() {
+		return {
+			aborted: false,
+			abort() {
+				this.aborted = true;
+			},
+		};
+	}
+
+	it("still detaches, untracks, and natively aborts later links when an earlier link's wrapper cleanup throws", () => {
+		const head = new DatabaseTransaction();
+		const next = new DatabaseTransaction();
+		head.next = next;
+
+		const headNative = fakeNative();
+		const nextNative = fakeNative();
+		next.transaction = nextNative;
+
+		// The head's write throws from wrapper cleanup (abort() synchronously calls
+		// write.store.getEntry(), which can fail on a closed store or decode error).
+		head.writes = [
+			{
+				savedBlobs: true,
+				key: 'poison',
+				store: {
+					getEntry() {
+						throw new Error('store closed');
+					},
+				},
+			},
+		];
+		next.writes = [];
+
+		const trackedTxns = setTxnExpiration(30000); // grabs the module's live tracking Set, no behavior change
+		trackedTxns.add(head);
+		trackedTxns.add(next);
+
+		// Must not throw: a link's cleanup failure is caught and logged, not propagated (or it would
+		// pre-empt the caller's give-up ServerError at the call site).
+		assert.doesNotThrow(() => head.abortChainAfterRetries(headNative));
+
+		assert.equal(head.open, TRANSACTION_STATE.CLOSED, 'head must be poisoned even though its cleanup threw');
+		assert.equal(next.open, TRANSACTION_STATE.CLOSED, 'later link must be poisoned');
+
+		assert.ok(headNative.aborted, 'head native transaction must still be aborted');
+		assert.ok(
+			nextNative.aborted,
+			"later link's native transaction must be aborted despite the earlier link's cleanup exception"
+		);
+
+		assert.equal(next.transaction, null, 'later link must have its native handle detached');
+		assert.ok(!trackedTxns.has(head), 'head must be untracked');
+		assert.ok(!trackedTxns.has(next), "later link must be untracked despite the earlier link's cleanup exception");
 	});
 });

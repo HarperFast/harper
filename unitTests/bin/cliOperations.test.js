@@ -765,6 +765,399 @@ describe('cliOperations', () => {
 			}
 		});
 	});
+
+	describe('dedicated auth args vs operation payload fields (harper#1872)', () => {
+		const captureRequest = () => {
+			const calls = [];
+			commonUtilsModule.httpRequest = async (options, body) => {
+				calls.push({ options, body });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+			return calls;
+		};
+
+		it('authenticates with auth_username/auth_password while add_user payload username/password stay in the body, not the auth header', async () => {
+			const calls = captureRequest();
+
+			await cliOperationsModule.cliOperations(
+				{
+					operation: 'add_user',
+					target: 'example.com',
+					auth_username: 'admin',
+					auth_password: 'admin-secret',
+					username: 'newuser',
+					password: 'new-user-secret',
+				},
+				true
+			);
+
+			assert.strictEqual(calls.length, 1);
+			const { options, body } = calls[0];
+			assert.strictEqual(
+				options.headers.Authorization,
+				`Basic ${Buffer.from('admin:admin-secret').toString('base64')}`
+			);
+			assert.strictEqual(body.username, 'newuser');
+			assert.strictEqual(body.password, 'new-user-secret');
+			assert.strictEqual(body.auth_username, undefined);
+			assert.strictEqual(body.auth_password, undefined);
+			assert.strictEqual(body.target, undefined);
+		});
+
+		it('falls back to plain username/password as auth when no auth_username/env-var auth is configured (backward compatible)', async () => {
+			const calls = captureRequest();
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'test', target: 'example.com', username: 'admin', password: 'admin-secret' },
+				true
+			);
+
+			const { options } = calls[0];
+			assert.strictEqual(
+				options.headers.Authorization,
+				`Basic ${Buffer.from('admin:admin-secret').toString('base64')}`
+			);
+		});
+
+		it('prefers env-var auth over payload username/password when auth_username/auth_password are absent', async () => {
+			const calls = captureRequest();
+			const originalUser = process.env.HARPER_CLI_USERNAME;
+			const originalPass = process.env.HARPER_CLI_PASSWORD;
+			process.env.HARPER_CLI_USERNAME = 'env-admin';
+			process.env.HARPER_CLI_PASSWORD = 'env-secret';
+			try {
+				await cliOperationsModule.cliOperations(
+					{ operation: 'add_user', target: 'example.com', username: 'newuser', password: 'new-user-secret' },
+					true
+				);
+			} finally {
+				if (originalUser === undefined) delete process.env.HARPER_CLI_USERNAME;
+				else process.env.HARPER_CLI_USERNAME = originalUser;
+				if (originalPass === undefined) delete process.env.HARPER_CLI_PASSWORD;
+				else process.env.HARPER_CLI_PASSWORD = originalPass;
+			}
+
+			const { options, body } = calls[0];
+			assert.strictEqual(
+				options.headers.Authorization,
+				`Basic ${Buffer.from('env-admin:env-secret').toString('base64')}`
+			);
+			// Env-var auth wins the transport leg, but the payload fields for the user being
+			// created are untouched — this is the whole point of the fix.
+			assert.strictEqual(body.username, 'newuser');
+			assert.strictEqual(body.password, 'new-user-secret');
+		});
+
+		it('strips auth_username/auth_password from a package deploy JSON body (the same non-multipart body path add_user uses)', async () => {
+			const calls = [];
+			commonUtilsModule.httpRequest = async (options, body) => {
+				calls.push({ options, body });
+				if (body?.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.0.31' }) };
+				}
+				return { statusCode: 200, body: JSON.stringify({ message: 'Successfully deployed', success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations(
+				{
+					operation: 'deploy_component',
+					package: '@scope/widget',
+					project: 'widget',
+					target: 'example.com',
+					auth_username: 'admin',
+					auth_password: 'admin-secret',
+				},
+				true
+			);
+
+			assert.strictEqual(calls.length, 2);
+			const deploy = calls[1];
+			assert.strictEqual(
+				deploy.options.headers.Authorization,
+				`Basic ${Buffer.from('admin:admin-secret').toString('base64')}`
+			);
+			assert.strictEqual(deploy.body.auth_username, undefined);
+			assert.strictEqual(deploy.body.auth_password, undefined);
+		});
+
+		it('strips auth_username/auth_password from the multipart directory-deploy body fields', async () => {
+			const originalScan = packageComponentModule.scanPackageDirectory;
+			const originalStream = packageComponentModule.streamPackagedDirectory;
+			packageComponentModule.scanPackageDirectory = async () => ({ totalSize: 0, danglingSymlinks: [] });
+			packageComponentModule.streamPackagedDirectory = () => Readable.from(Buffer.from('fake-tar-bytes'));
+
+			const sseDoneResponse = (result) =>
+				Object.assign(Readable.from([`event: done\ndata: ${JSON.stringify({ result })}\n\n`]), {
+					statusCode: 200,
+					headers: { 'content-type': 'text/event-stream' },
+				});
+
+			let multipartText;
+			commonUtilsModule.httpRequest = async (options, body) => {
+				if (body && typeof body.operation === 'string' && body.operation === 'registration_info') {
+					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+				}
+				// The multipart deploy body: a stream of form-data chunks, not a plain object.
+				const chunks = [];
+				for await (const chunk of body) chunks.push(Buffer.from(chunk));
+				multipartText = Buffer.concat(chunks).toString('utf8');
+				return sseDoneResponse({ message: 'Successfully deployed', success: true });
+			};
+
+			try {
+				await cliOperationsModule.cliOperations(
+					{
+						operation: 'deploy_component',
+						project: 'widget',
+						target: 'example.com',
+						auth_username: 'admin',
+						auth_password: 'admin-secret',
+					},
+					true
+				);
+			} finally {
+				packageComponentModule.scanPackageDirectory = originalScan;
+				packageComponentModule.streamPackagedDirectory = originalStream;
+			}
+
+			assert.doesNotMatch(multipartText, /name="auth_username"/);
+			assert.doesNotMatch(multipartText, /name="auth_password"/);
+			assert.match(multipartText, /name="operation"/);
+		});
+
+		// The credentials of the user being created/altered must never outrank the caller's own
+		// saved session — otherwise `harper login` + `add_user` authenticates as a user that
+		// doesn't exist yet and 401s.
+		for (const operation of ['add_user', 'alter_user']) {
+			it(`uses the saved login token for ${operation} while its payload username/password stay in the body`, async () => {
+				saveCredentials('https://example.com:9925/', {
+					operation_token: 'admin-token',
+					refresh_token: 'admin-refresh',
+				});
+				tokenAuthModule.isJWTExpired = () => false;
+				const calls = captureRequest();
+
+				await cliOperationsModule.cliOperations(
+					{
+						operation,
+						target: 'example.com',
+						username: 'newuser',
+						password: 'new-user-secret',
+						role: 'cluster_user',
+					},
+					true
+				);
+
+				const { options, body } = calls[0];
+				assert.strictEqual(options.headers.Authorization, 'Bearer admin-token');
+				assert.strictEqual(body.username, 'newuser');
+				assert.strictEqual(body.password, 'new-user-secret');
+			});
+		}
+
+		it('does not treat a lone payload username as auth (drop_user with a saved token)', async () => {
+			saveCredentials('https://example.com:9925/', { operation_token: 'admin-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+			const calls = captureRequest();
+
+			await cliOperationsModule.cliOperations({ operation: 'drop_user', target: 'example.com', username: 'bob' }, true);
+
+			const { options, body } = calls[0];
+			assert.strictEqual(options.headers.Authorization, 'Bearer admin-token');
+			assert.strictEqual(body.username, 'bob');
+		});
+
+		it('authenticates with the legacy CLI_TARGET_USERNAME/CLI_TARGET_PASSWORD pair', async () => {
+			const calls = captureRequest();
+			process.env.CLI_TARGET_USERNAME = 'legacy-admin';
+			process.env.CLI_TARGET_PASSWORD = 'legacy-secret';
+			try {
+				await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			} finally {
+				delete process.env.CLI_TARGET_USERNAME;
+				delete process.env.CLI_TARGET_PASSWORD;
+			}
+
+			assert.strictEqual(
+				calls[0].options.headers.Authorization,
+				`Basic ${Buffer.from('legacy-admin:legacy-secret').toString('base64')}`
+			);
+		});
+
+		describe('incomplete credential sources', () => {
+			let originalExit;
+			let originalConsoleError;
+			let consoleErrors;
+			let exitCode;
+
+			beforeEach(() => {
+				originalExit = process.exit;
+				originalConsoleError = console.error;
+				consoleErrors = [];
+				console.error = (...args) => consoleErrors.push(args.join(' '));
+				exitCode = undefined;
+				process.exit = (code) => {
+					exitCode = code;
+					throw new ProcessExitSignal(code);
+				};
+			});
+
+			afterEach(() => {
+				process.exit = originalExit;
+				console.error = originalConsoleError;
+			});
+
+			// The dangerous shape: without pair validation, `auth_username` would be paired with
+			// the *payload* password and the admin name sent with the new user's secret.
+			it('fails instead of pairing auth_username with a password from another source', async () => {
+				captureRequest();
+
+				await assert.rejects(
+					() =>
+						cliOperationsModule.cliOperations(
+							{
+								operation: 'add_user',
+								target: 'example.com',
+								auth_username: 'admin',
+								username: 'newuser',
+								password: 'new-user-secret',
+							},
+							true
+						),
+					ProcessExitSignal
+				);
+
+				assert.strictEqual(exitCode, 1);
+				assert.ok(consoleErrors.some((line) => line.includes('Incomplete credentials') && line.includes('username')));
+			});
+
+			it('fails on a lone auth_password', async () => {
+				captureRequest();
+
+				await assert.rejects(
+					() =>
+						cliOperationsModule.cliOperations(
+							{ operation: 'test', target: 'example.com', auth_password: 'admin-secret' },
+							true
+						),
+					ProcessExitSignal
+				);
+
+				assert.ok(consoleErrors.some((line) => line.includes('Incomplete credentials') && line.includes('password')));
+			});
+
+			// An empty value is "set but missing", not "unset" — a blank CI variable must not slip
+			// through the way `||` let it.
+			it('treats an empty auth_password as missing rather than absent', async () => {
+				captureRequest();
+
+				await assert.rejects(
+					() =>
+						cliOperationsModule.cliOperations(
+							{ operation: 'test', target: 'example.com', auth_username: 'admin', auth_password: '' },
+							true
+						),
+					ProcessExitSignal
+				);
+
+				assert.ok(consoleErrors.some((line) => line.includes('Incomplete credentials')));
+			});
+
+			// Unlike the args, a lone HARPER_CLI_USERNAME is a legitimate `harper login` idiom
+			// (the password is prompted for), so it must not break every later operation in the
+			// same shell — it is skipped, loudly, and the saved token is used instead.
+			it('warns and falls through to the saved token when only one env var of a pair is set', async () => {
+				saveCredentials('https://example.com:9925/', { operation_token: 'admin-token' });
+				tokenAuthModule.isJWTExpired = () => false;
+				const calls = captureRequest();
+				process.env.HARPER_CLI_USERNAME = 'env-admin';
+				delete process.env.HARPER_CLI_PASSWORD;
+				try {
+					await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+				} finally {
+					delete process.env.HARPER_CLI_USERNAME;
+				}
+
+				assert.strictEqual(calls[0].options.headers.Authorization, 'Bearer admin-token');
+				assert.ok(consoleErrors.some((line) => line.includes('Ignoring incomplete credentials')));
+			});
+
+			// `auth_username=$ADMIN_USER auth_password=$ADMIN_PASS` with both CI variables unset
+			// arrives as two empty strings. Falling through would run the command as whoever the
+			// saved token belongs to instead of failing.
+			it('fails when both dedicated auth args are supplied but empty', async () => {
+				saveCredentials('https://example.com:9925/', { operation_token: 'admin-token' });
+				tokenAuthModule.isJWTExpired = () => false;
+				captureRequest();
+
+				await assert.rejects(
+					() =>
+						cliOperationsModule.cliOperations(
+							{ operation: 'test', target: 'example.com', auth_username: '', auth_password: '' },
+							true
+						),
+					ProcessExitSignal
+				);
+
+				assert.ok(consoleErrors.some((line) => line.includes('Incomplete credentials')));
+			});
+		});
+
+		it('masks a password embedded in the target URL in the connection log', async () => {
+			const originalConsoleError = console.error;
+			const consoleErrors = [];
+			console.error = (...args) => consoleErrors.push(args.join(' '));
+			const calls = captureRequest();
+			try {
+				await cliOperationsModule.cliOperations(
+					{ operation: 'test', target: 'https://admin:url-secret@example.com:9925' },
+					true
+				);
+			} finally {
+				console.error = originalConsoleError;
+			}
+
+			// The credentials still authenticate the request; only the printed form is masked.
+			assert.strictEqual(
+				calls[0].options.headers.Authorization,
+				`Basic ${Buffer.from('admin:url-secret').toString('base64')}`
+			);
+			const connecting = consoleErrors.find((line) => line.startsWith('Connecting to'));
+			assert.ok(!connecting.includes('url-secret'), connecting);
+			assert.ok(connecting.includes('admin:***@example.com'), connecting);
+		});
+	});
+
+	describe('redactCredentials', () => {
+		it('masks secret values while leaving the rest of the parsed request intact', () => {
+			const redacted = cliOperationsModule.redactCredentials({
+				operation: 'add_user',
+				username: 'newuser',
+				password: 'new-user-secret',
+				auth_username: 'admin',
+				auth_password: 'admin-secret',
+			});
+
+			assert.deepStrictEqual(redacted, {
+				operation: 'add_user',
+				username: 'newuser',
+				password: '***',
+				auth_username: 'admin',
+				auth_password: '***',
+			});
+		});
+
+		it('masks userinfo in the target URL and leaves a credential-free target alone', () => {
+			assert.strictEqual(
+				cliOperationsModule.redactCredentials({ target: 'https://admin:url-secret@example.com:9925/' }).target,
+				'https://admin:***@example.com:9925/'
+			);
+			assert.strictEqual(
+				cliOperationsModule.redactCredentials({ target: 'https://example.com:9925/' }).target,
+				'https://example.com:9925/'
+			);
+		});
+	});
 });
 
 describe('deploy CLI verbs (stage / activate fold into deploy_component)', () => {

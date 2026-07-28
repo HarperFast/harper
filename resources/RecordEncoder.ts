@@ -101,6 +101,19 @@ const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publi
 // WeakMaps are definitely not the fastest form of private properties, but they are the only
 // way to do this with how the objects are frozen for now.
 export const entryMap = new WeakMap<any, Entry>();
+/**
+ * The shared base for decoded table records. Each encoder uses a subclass so its table-specific
+ * computed-property prototype remains isolated, while callers can identify records independently
+ * of whether msgpackr or structon decoded them.
+ */
+export class RecordObject {
+	getUpdatedTime(): number {
+		return entryMap.get(this)?.version;
+	}
+	getExpiresAt(): number {
+		return entryMap.get(this)?.expiresAt;
+	}
+}
 export let lastValueEncoding: Buffer | undefined;
 let timestampNextEncoding = 0,
 	metadataInNextEncoding = -1,
@@ -137,16 +150,9 @@ export class RecordEncoder extends StructonEncoder {
 		 * are usually frozen, but this can be extended (by the Updatable class) for providing
 		 * mutation methods.
 		 */
-		class RecordObject {
-			getUpdatedTime() {
-				return entryMap.get(this)?.version;
-			}
-			getExpiresAt() {
-				return entryMap.get(this)?.expiresAt;
-			}
-		}
+		class StoreRecordObject extends RecordObject {}
 
-		options.structPrototype = RecordObject.prototype;
+		options.structPrototype = StoreRecordObject.prototype;
 		super(options);
 		// Whether this store carries per-record version/timestamp metadata. Only versioned stores
 		// (primary table DBIs) prefix records with the metadata header; non-versioned internal DBIs
@@ -917,8 +923,4 @@ export function removeEntry(store: any, entry: any, options?: any) {
 		}
 	}
 	return removal;
-}
-export interface RecordObject {
-	getUpdatedTime(): number;
-	getExpiresAt(): number;
 }

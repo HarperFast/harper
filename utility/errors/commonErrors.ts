@@ -166,6 +166,7 @@ const ROLE_PERMS_ERROR_MSGS = {
 		`Your role does not have permission to view database metadata for '${schema_name}'`,
 	SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) =>
 		`Your role does not have permission to view database.table metadata for '${schema_name}.${table_name}'`,
+	PERMISSION_NOT_OBJECT: "Value for 'permission' must be an object of role and database permissions",
 	SU_ROLE_MISSING_ERROR: "Missing 'super_user' key/value in permission set",
 	SU_CU_ROLE_BOOLEAN_ERROR: (role) => `Value for '${role}' permission must be a boolean`,
 	STRUCTURE_USER_ROLE_TYPE_ERROR: (role) => `Value for '${role}' permission must be a boolean or Array`,

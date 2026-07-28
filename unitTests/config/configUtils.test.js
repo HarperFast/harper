@@ -402,6 +402,14 @@ describe('Test configUtils module', () => {
 			assert.deepStrictEqual(doc.secretCustody, {});
 		});
 
+		it('backfills waf when it is a registered built-in and the key is missing', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'waf=@/dist/waf/waf.js';
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), ['waf']);
+			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
+			assert.deepStrictEqual(doc.waf, {});
+		});
+
 		it('never re-adds a long-standing built-in absent from the config (e.g. admin-removed replication)', () => {
 			// replication is registered but NOT in the new-built-in backfill list, so a config that
 			// omits it (operator disabled it by removing the block) must stay without it.

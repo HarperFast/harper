@@ -61,11 +61,14 @@ const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or
 const SSE_OPERATIONS = new Set(['deploy_component', 'revert_component']);
 
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
-// They never get serialized into the request body.
+// They never get serialized into the request body. `username`/`password` are deliberately
+// NOT here: those args are payload fields (e.g. the user add_user/alter_user create/alter),
+// not transport — use `auth_username`/`auth_password` (or env-var/`harper login` auth) to
+// authenticate as a different user than the one being operated on.
 const TRANSPORT_ONLY_FIELDS = new Set([
 	'target',
-	'username',
-	'password',
+	'auth_username',
+	'auth_password',
 	'rejectUnauthorized',
 	'json',
 	'skip_node_modules',
@@ -177,7 +180,103 @@ function operationFields(req: any): any {
 	return fields;
 }
 
-export { cliOperations, buildRequest, verbRequirementError };
+function basicAuthHeader(username: string, password: string): string {
+	return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+}
+
+/**
+ * Picks the HTTP Basic credentials for a targeted operation from the first source that supplies
+ * any, in precedence order: the dedicated `auth_username=`/`auth_password=` args, then userinfo
+ * embedded in the target URL, then each env-var pair. Every source is all-or-nothing: pairing one
+ * source's username with another's password would send one identity's name with a different
+ * identity's secret, so a half-specified source is never completed from the next one (an empty
+ * value — a blank CI variable, say — counts as specified-but-missing).
+ *
+ * Returns undefined when no source is configured at all, which leaves authentication to the saved
+ * `harper login` token and, failing that, the legacy `username=`/`password=` payload fallback.
+ */
+function resolveTransportCredentials(req: any, urlCredentials: { username: string; password: string }) {
+	const sources = [
+		{
+			name: '`auth_username=`/`auth_password=`',
+			username: req.auth_username,
+			password: req.auth_password,
+			incompleteIsFatal: true,
+		},
+		{
+			name: 'the target URL',
+			// A URL with no userinfo yields empty strings, which here mean "absent" — unlike an
+			// explicitly passed empty value, there is nothing for the user to have gotten wrong.
+			username: urlCredentials.username || undefined,
+			password: urlCredentials.password || undefined,
+			incompleteIsFatal: true,
+		},
+		{
+			name: 'HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD',
+			username: process.env.HARPER_CLI_USERNAME,
+			password: process.env.HARPER_CLI_PASSWORD,
+			incompleteIsFatal: false,
+		},
+		{
+			name: 'CLI_TARGET_USERNAME/CLI_TARGET_PASSWORD',
+			username: process.env.CLI_TARGET_USERNAME,
+			password: process.env.CLI_TARGET_PASSWORD,
+			incompleteIsFatal: false,
+		},
+	];
+	// A source counts as configured once either half is *supplied*, empty or not: `auth_username=`
+	// with an unset CI variable behind it is a broken credential, and quietly falling through to a
+	// saved admin token would run the command as the wrong identity.
+	for (const { name, username, password, incompleteIsFatal } of sources) {
+		if (username === undefined && password === undefined) continue;
+		if (!username || !password) {
+			const missing = username ? 'a password' : password ? 'a username' : 'a username and a password';
+			const detail = `${name} is missing ${missing}, and credentials are never combined across sources`;
+			// Credentials passed explicitly for this command have no other purpose, so an
+			// incomplete pair is a mistake worth failing on. The env vars double as `harper login`
+			// inputs — a lone HARPER_CLI_USERNAME or HARPER_CLI_PASSWORD is a supported login idiom
+			// with the other half prompted for — so an incomplete pair there is skipped with a
+			// warning instead of breaking every later operation in the same shell or CI job.
+			if (incompleteIsFatal) throw new Error(`Incomplete credentials: ${detail}.`);
+			console.error(`Ignoring incomplete credentials: ${detail}.`);
+			continue;
+		}
+		return { username, password };
+	}
+}
+
+// Secret-valued CLI args, whatever their role (transport auth or operation payload). Logging a
+// parsed CLI request must go through redactCredentials() so a password doesn't land in the log
+// file — the command line already exposes it to shell history and process listings; the log
+// shouldn't be a third copy. This list is by field name, not exhaustive — any future secret-bearing
+// arg (a token, a key) needs to be added here explicitly, or it will reach logger.trace unredacted.
+const SECRET_FIELDS = new Set(['auth_password', 'password']);
+
+// `target=https://admin:secret@host` carries a password too, so masking the userinfo is part of
+// making a target printable — the same string is echoed by the "Connecting to ..." line.
+function redactTargetUrl(target: unknown): unknown {
+	if (typeof target !== 'string') return target;
+	try {
+		const url = new URL(target);
+		if (!url.password) return target;
+		url.password = '***';
+		return url.toString();
+	} catch {
+		return target;
+	}
+}
+
+function redactCredentials(req: any): any {
+	const redacted: any = {};
+	for (const [key, value] of Object.entries(req)) {
+		if (SECRET_FIELDS.has(key) && value) redacted[key] = '***';
+		else if (key === 'target') redacted[key] = redactTargetUrl(value);
+		else redacted[key] = value;
+	}
+	return redacted;
+}
+
+export { cliOperations, buildRequest, redactCredentials, verbRequirementError };
 
 // Package the current working directory into a multipart tarball upload for deploy_component. Covers
 // `harper deploy` and `harper stage` (deploy_component with activate:false) — both upload the incoming
@@ -280,27 +379,28 @@ async function cliOperations(req: any, skipResponseLog = false) {
 	const allCredentials = loadCredentials();
 	req.target = normalizeTarget(resolveTarget(req, allCredentials));
 	let target;
+	let urlCredentials = { username: '', password: '' };
 	if (req.target) {
+		let parsedTarget;
 		try {
-			target = new URL(req.target);
+			parsedTarget = new URL(req.target);
 		} catch (error) {
 			try {
-				target = new URL(`https://${req.target}:9925`);
+				parsedTarget = new URL(`https://${req.target}:9925`);
 			} catch {
 				throw error;
 			}
 		}
 		const resolvedTarget = req.target;
+		urlCredentials = { username: parsedTarget.username, password: parsedTarget.password };
 		target = {
-			protocol: target.protocol,
-			hostname: target.hostname,
-			port: target.port,
-			username: req.username || target.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME,
-			password: req.password || target.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD,
+			protocol: parsedTarget.protocol,
+			hostname: parsedTarget.hostname,
+			port: parsedTarget.port,
 			rejectUnauthorized: req.rejectUnauthorized,
 			resolvedTarget,
 		};
-		console.error(`Connecting to ${resolvedTarget}`);
+		console.error(`Connecting to ${redactTargetUrl(resolvedTarget)}`);
 	} else {
 		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
 		// is running and that we can communicate with it.
@@ -333,8 +433,15 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		options.method = 'POST';
 		options.headers = { 'Content-Type': 'application/json' };
 		options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
-		if (target?.username) {
-			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
+		// Authentication precedence: explicitly configured credentials (dedicated args, URL
+		// userinfo, env vars) beat everything, then the saved `harper login` token, and only then
+		// the legacy `username=`/`password=` payload fallback below. The saved token must outrank
+		// that fallback: for add_user/alter_user those args are the credentials of the user being
+		// created/altered, so treating them as auth would authenticate as a user who doesn't exist
+		// yet (or as the wrong identity) instead of using the admin's existing session.
+		const transportCredentials = target ? resolveTransportCredentials(req, urlCredentials) : undefined;
+		if (transportCredentials) {
+			options.headers.Authorization = basicAuthHeader(transportCredentials.username, transportCredentials.password);
 		} else if (allCredentials) {
 			let tokens = null;
 			let lookupKey = null;
@@ -376,6 +483,13 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				}
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
+		}
+		// Legacy fallback for operations where `username=`/`password=` genuinely ARE the caller's
+		// credentials (e.g. `create_table username= password=`) and nothing else is configured.
+		// Both are required — a lone `username=` (as in `drop_user username=bob`) is payload, not
+		// a credential.
+		if (target && !options.headers.Authorization && req.username && req.password) {
+			options.headers.Authorization = basicAuthHeader(req.username, req.password);
 		}
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the
@@ -452,7 +566,10 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				body = fields;
 			}
 		} else {
-			body = req;
+			// Same TRANSPORT_ONLY_FIELDS stripping as the deploy body paths above — auth_username/
+			// auth_password (and target/rejectUnauthorized/json/etc.) must never reach the wire as
+			// operation-payload fields, on this path either.
+			body = operationFields(req);
 		}
 		let response: any = await httpRequest(options, body);
 

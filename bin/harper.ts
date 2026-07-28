@@ -27,6 +27,15 @@ copy-db <source> <target>       - Copies a database from source path to target p
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
 install                         - Install harperdb
 <api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
+                                   To authenticate as a different user than the one being operated on
+                                   (e.g. add_user/alter_user), set HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD
+                                   or run 'harper login'. The equivalent auth_username=<value>
+                                   auth_password=<value> args also work, but a password passed as an
+                                   argument is exposed in shell history, process listings and CI logs.
+                                   A saved login token always outranks username=/password=, so a
+                                   stale token that fails to refresh will 401 rather than falling
+                                   back to them — run 'harper logout' or pass auth_username=/
+                                   auth_password= to override it.
 login [target] [username]       - Login to a remote or local Harper instance
 logout [target]                 - Logout from Harper and clear saved JWT
 mcp [subcommand]                - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
@@ -153,7 +162,7 @@ async function harper() {
 			return require('./run').main();
 		default:
 			const cliApiOp = cliOperations.buildRequest();
-			logger.trace('calling cli operations with:', cliApiOp);
+			logger.trace('calling cli operations with:', cliOperations.redactCredentials(cliApiOp));
 			await cliOperations.cliOperations(cliApiOp);
 			return;
 	}

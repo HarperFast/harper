@@ -31,7 +31,12 @@ import type { User } from '../security/user.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, transformForSelect } from './Resource.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
-import { DatabaseTransaction, ImmediateTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
+import {
+	DatabaseTransaction,
+	ImmediateTransaction,
+	priorStagedWrite,
+	TRANSACTION_STATE,
+} from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
@@ -62,14 +67,7 @@ import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.
 import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
-import {
-	recordUpdater,
-	removeEntry,
-	PENDING_LOCAL_TIME,
-	type RecordObject,
-	type Entry,
-	entryMap,
-} from './RecordEncoder.ts';
+import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, RecordObject, type Entry, entryMap } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -253,6 +251,87 @@ type ResidencyDefinition = number | string[] | void;
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
  * @param options
  */
+// Shallow-clone each condition entry (recursing into nested `and`/`or` groups) so
+// query planning never writes through to the caller's objects (harper#1572).
+// Array-form entries (`[attribute, value]`) and primitives pass through as-is;
+// `chainedConditions` sub-entries are intentionally left shared: planning only
+// reads them (collapsing into the parent's value/comparator), never writes them.
+// Module-scoped (stateless) so it isn't re-created on every search().
+function cloneConditions(conditions: any[]): any[] {
+	return conditions.map((condition) => {
+		if (condition == null || typeof condition !== 'object') return condition;
+		if (Array.isArray(condition)) {
+			// array-form entry (`[attribute, value]`) may also carry named props
+			// (comparator, estimated_count); preserve both.
+			return Object.assign(condition.slice(), condition);
+		}
+		const copy = { ...condition };
+		if (copy.conditions) copy.conditions = cloneConditions(copy.conditions);
+		return copy;
+	});
+}
+// Ambient, path-scoped cycle guard for the enumerable-struct `toJSON` serialization path. A record on
+// a cyclically-enumerable table can (transitively) reference itself, which would recurse forever through
+// JSON.stringify. The struct getters resolve related records by id — and without a shared cache each
+// resolution decodes a fresh instance — so object-identity tracking is defeated; we key on (tableId, id).
+// Only cyclic tables allocate/consult this map; acyclic-enumerable tables keep a guard-free fast path.
+// Keyed by table class → set of primary keys currently on the serialization path (avoids any tableId
+// stringification/collision concern).
+let structSerializationVisited: Map<any, Set<any>> | null = null;
+// Resolve Harper records within a guarded serialization, so none escape back to an encoder that would call
+// their toJSON after our path-scoped unwind and miss the cycle. Native values (Date, Buffer/typed arrays,
+// ArrayBuffer, etc.) stay intact for CBOR/MessagePack.
+function resolveStructForJSON(value: any): any {
+	if (value == null || typeof value !== 'object') return value;
+	const isRecordObject = value instanceof RecordObject;
+	if (isRecordObject) {
+		const toJSON = (value as any).toJSON;
+		// The table-installed toJSON resolves every surfaced value through this function before returning.
+		if (typeof toJSON === 'function') return toJSON.call(value);
+	}
+	if (Array.isArray(value)) {
+		let resolvedArray: any[] | undefined;
+		for (let index = 0; index < value.length; index++) {
+			if (!(index in value)) continue;
+			const original = value[index];
+			const resolved = resolveStructForJSON(original);
+			if (resolved !== original) {
+				resolvedArray ??= value.slice();
+				resolvedArray[index] = resolved;
+			}
+		}
+		return resolvedArray ?? value;
+	}
+	const prototype = Object.getPrototypeOf(value);
+	if (!isRecordObject && prototype !== Object.prototype && prototype !== null) return value;
+	// Materialize eligible containers in one pass so accessors run exactly once. A RecordObject without a
+	// table toJSON becomes plain response data rather than a detached record-shaped object with no entryMap metadata.
+	const resolvedObject = Object.create(isRecordObject ? Object.prototype : prototype);
+	for (const key of Object.keys(value)) {
+		const original = value[key];
+		resolvedObject[key] = resolveStructForJSON(original);
+	}
+	return resolvedObject;
+}
+// Is `start` reachable from itself through @enumerable table-typed edges? (Includes self-loops, e.g. a
+// tree table with an enumerable parent/children relationship.) Walks the per-table `enumerableRelationDefs`
+// graph, resolving each definition's `.tableClass` here — this runs lazily on first serialization, by which
+// point every table class is assigned (so self/forward refs whose tableClass was unset at collection time
+// resolve correctly).
+function detectCyclicEnumerable(start: any): boolean {
+	const queue = start.enumerableRelationDefs ? [...start.enumerableRelationDefs] : [];
+	const seen = new Set();
+	while (queue.length) {
+		const target = queue.pop()?.tableClass;
+		if (!target) continue;
+		if (target === start) return true;
+		if (seen.has(target)) continue;
+		seen.add(target);
+		if (target.enumerableRelationDefs) for (const def of target.enumerableRelationDefs) queue.push(def);
+	}
+	return false;
+}
+
 // #section: setup-and-factory
 export function makeTable(options) {
 	const {
@@ -311,6 +390,19 @@ export function makeTable(options) {
 	let expirationWarningChecked = false;
 	let propertyResolvers: any;
 	let hasRelationships = false;
+	// Attribute names surfaced by the struct `toJSON` on the default (no-select) read: everything that is
+	// @enumerable, PLUS @computed attributes whose declared type is NOT a table type (scalars/objects/arrays
+	// that don't resolve to another entity — harper#1484). Table-typed computed attributes and non-enumerable
+	// relationships stay lazy, preserving the edge/cycle guard. `enumerableRelationDefs` holds the type
+	// definitions reached by an @enumerable *table-typed* attribute — the edges that can form a cycle. We store
+	// the definition (set early, during connectPropertyType) rather than its `.tableClass` (assigned later, so
+	// unset for self/forward refs at collection time); `.tableClass` is resolved lazily at detection.
+	let enumerableAttributeNames: string[] = [];
+	const enumerableRelationDefs = new Set<any>();
+	// True when the table surfaces any non-table @computed attribute. A resolver can return a live (possibly
+	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
+	// it, so such a table takes the guarded serialization path rather than the raw fast path.
+	let hasSurfacedComputed = false;
 	let runningRecordExpiration: boolean;
 	const isRocksDB = primaryStore instanceof RocksDatabase;
 	type BigInt64ArrayAndMaxSafeId = BigInt64Array & { maxSafeId: number };
@@ -352,6 +444,75 @@ export function makeTable(options) {
 			return this.addTo(property, -value);
 		}
 	}
+	// Install the struct `toJSON` for a table that has @enumerable getters. JSON.stringify only walks own
+	// enumerable props (it skips inherited getters), so without this the enumerable getters never appear.
+	// The bounded enumeration (own keys + the known enumerable names) replaces the old whole-prototype-chain
+	// `for..in`, which cost O(inherited enumerables) per record. On a cyclically-enumerable table it also
+	// applies the path-scoped cycle guard; acyclic tables keep the cheap raw-value fast path.
+	function installEnumerableToJSON(structPrototype: any, tableClass: any, hasSurfacedComputed: boolean) {
+		const enumNames = enumerableAttributeNames;
+		let isCyclic: boolean | undefined; // lazily resolved on first serialization (once all tables loaded)
+		Object.defineProperty(structPrototype, 'toJSON', {
+			configurable: true,
+			value() {
+				if (isCyclic === undefined) {
+					isCyclic = detectCyclicEnumerable(tableClass);
+					if (isCyclic && getWorkerIndex() === 0)
+						harperLogger.warn?.(
+							`Table "${tableName}" has cyclically-enumerable relationships; cyclic references will be serialized as { ${primaryKey} } reference stubs. Consider removing @enumerable from one side of the cycle.`
+						);
+				}
+				// The fast path leaves surfaced values raw for native JSON.stringify to recurse — safe only when
+				// nothing surfaced can be a live entity that cycles. Statically-cyclic tables are excluded, and so
+				// are tables surfacing any non-table @computed: a resolver's runtime return could be a cyclic
+				// struct the static edge graph can't see, whatever its declared type. Those take the guarded path
+				// so the id-keyed guard + resolveStructForJSON catch any runtime cycle.
+				if (structSerializationVisited == null && !isCyclic && !hasSurfacedComputed) {
+					// fast path: bounded copy, values left raw (matches the previous for..in output). `name in json`
+					// treats an own stored key (already copied above) as taking precedence over its getter.
+					const json = {};
+					for (const key of Object.keys(this)) json[key] = this[key];
+					for (const name of enumNames) if (!(name in json)) json[name] = this[name];
+					return json;
+				}
+				// guarded path: track (tableClass, id) on the current serialization path and fully resolve
+				// nested structs so none escape back to native stringify after we unwind. All state setup lives
+				// inside the try so a throw from the primaryKey getter or the id-key normalization can never leak
+				// structSerializationVisited to a non-null Map for the rest of the thread's serializations.
+				const isTop = structSerializationVisited == null;
+				let ids: Set<any> | undefined;
+				let idKey: any;
+				let added = false;
+				try {
+					if (isTop) structSerializationVisited = new Map();
+					const id = this[primaryKey];
+					// Composite/array PKs and object-typed single PKs (Bytes/Uint8Array/Date/object) decode to a
+					// fresh instance each read, so identity-based membership would miss the same logical record;
+					// normalize any non-primitive id to a stable string key. The replacer keeps a BigInt component
+					// from throwing (JSON.stringify can't serialize BigInt natively); a primitive BigInt PK stays
+					// raw (Set membership is by value).
+					idKey =
+						id !== null && typeof id === 'object'
+							? JSON.stringify(id, (_, v) => (typeof v === 'bigint' ? v.toString() : v))
+							: id;
+					if (id != null) {
+						ids = structSerializationVisited!.get(tableClass);
+						if (!ids) structSerializationVisited!.set(tableClass, (ids = new Set()));
+						if (ids.has(idKey)) return { [primaryKey]: id }; // already on the path -> reference stub
+						ids.add(idKey);
+						added = true;
+					}
+					const json = {};
+					for (const key of Object.keys(this)) json[key] = resolveStructForJSON(this[key]);
+					for (const name of enumNames) if (!(name in json)) json[name] = resolveStructForJSON(this[name]);
+					return json;
+				} finally {
+					if (added) ids!.delete(idKey);
+					if (isTop) structSerializationVisited = null;
+				}
+			},
+		});
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -385,6 +546,7 @@ export function makeTable(options) {
 		static createdTimeProperty = createdTimeProperty;
 		static updatedTimeProperty = updatedTimeProperty;
 		static propertyResolvers;
+		static enumerableRelationDefs;
 		static userResolvers = {};
 		// `@embed` hook registry. `userSetEmbedders` records names set explicitly via
 		// `setEmbedAttribute` so a schema reload refreshes defaults without clobbering them.
@@ -2094,17 +2256,29 @@ export function makeTable(options) {
 					// (walk identity tie against its own staged record) before a fresh-transaction replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
+					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
+					write.superseded = false; // likewise: a later write to this key re-marks it this round
+					// The record a preceding write in this transaction left for this key is what this write
+					// applies to (see priorStagedWrite): a staged write is not visible to a read, so without
+					// this the index diff re-removes the values that write already removed and never removes
+					// the ones it added — orphaning them — and an incremental update merges onto the
+					// pre-transaction record, dropping that write's changes entirely (harper#1968). Only the
+					// record comes from the earlier write; the rest of the entry (version, audit chain, blob
+					// metadata) stays the pre-transaction one, which is the version this write's audit entry
+					// and optimistic version check are still relative to.
+					const priorStagedOp = priorStagedWrite(write);
+					const priorStaged = priorStagedOp?.stagedEntry;
+					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
 						this.#entry = existingEntry;
-						if (existingEntry?.value && existingEntry.value.getRecord)
+						if (existingRecord && existingRecord.getRecord)
 							throw new Error('Can not assign a record to a record, check for circular references');
-						if (!fullUpdate) this.#record = existingEntry?.value ?? null;
+						if (!fullUpdate) this.#record = existingRecord ?? null;
 					}
 					this.#changes = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this.#version = txnTime;
-					const existingRecord = existingEntry?.value;
 					let incrementalUpdateToApply: boolean;
 
 					this.#savingOperation = null;
@@ -2112,7 +2286,17 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
+					// A write that follows another write to this key in this transaction is ordered by program
+					// order, not by timestamp: every write in a transaction carries the transaction's single
+					// timestamp, so a version comparison against what the earlier write landed (e.g. on a
+					// retry round after a partial apply) is a tie (0), and the out-of-order resequencing below
+					// would treat this write as a re-delivered duplicate and drop it (the 4.7 behavior this fix
+					// must not reintroduce). Program order only breaks the tie, though: a strictly newer
+					// existing version (< 0) can only be a concurrent transaction's write observed on a retry
+					// round, and must still go through the out-of-order merge below or its changes would be
+					// silently overwritten.
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (priorStaged && precedesExisting >= 0) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
@@ -2637,6 +2821,19 @@ export function makeTable(options) {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
+						// publish what this write left for the key, for any later write to it in this
+						// transaction (an audit-only commit stored no record, so it stages nothing and the
+						// earlier staged record, if any, remains the basis)
+						if (storeRecord) {
+							write.stagedEntry = { value: recordToStore };
+							// blobs this write saved are referenced by its audit entry (if it wrote one), which
+							// then owns their lifetime; and any record an earlier write in this transaction
+							// stored is now replaced, so mark those writes for the superseded-blob cleanup
+							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
+							// only the nearest staged prior needs marking: anything older was already
+							// superseded by its own staged successor earlier in this commit round
+							if (priorStagedOp) priorStagedOp.superseded = true;
+						}
 					}
 				},
 			};
@@ -2705,7 +2902,7 @@ export function makeTable(options) {
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 
-			transaction.addWrite({
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
@@ -2715,15 +2912,26 @@ export function makeTable(options) {
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
-					const existingRecord = existingEntry?.value;
+					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
+					write.superseded = false; // reset per round, as in the update path
+					// what a preceding write in this transaction left for this key is what gets removed
+					// from the indices here, not the pre-transaction record (harper#1968)
+					const priorStagedOp = priorStagedWrite(write);
+					const priorStaged = priorStagedOp?.stagedEntry;
+					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
 						TableResource._updateResource(this, existingEntry);
 					}
+					// a strictly newer record exists locally, so this delete loses. An earlier write in this
+					// transaction can never trip this guard — it shares this transaction's timestamp and
+					// compares as a tie (0), not < 0 — so a negative result always means a genuinely newer
+					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
+					// that a chained delete must not destroy.
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
-					} // a newer record exists locally
+					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
 					if (audit || trackDeletes) {
 						updateRecord(
@@ -2744,10 +2952,17 @@ export function makeTable(options) {
 						);
 						if (!audit || isRocksDB) scheduleCleanup();
 					} else {
-						removeEntry(primaryStore, existingEntry);
+						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
+						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
+					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
+					// the removal supersedes the nearest record an earlier write in this transaction stored
+					// (older ones were already marked by their staged successors), so its saved blobs are
+					// cleaned up post-commit unless its audit entry references them
+					if (priorStagedOp) priorStagedOp.superseded = true;
 				},
-			} as any);
+			};
+			transaction.addWrite(write);
 			return true;
 		}
 
@@ -2812,6 +3027,17 @@ export function makeTable(options) {
 					},
 				].concat(conditions);
 			}
+			// Never mutate the caller's conditions in place. Query planning annotates
+			// and restructures conditions as it runs — it pushes a `{ comparator: 'sort' }`
+			// pseudo-condition for index-order alignment, sets `descending`, caches
+			// `estimated_count`, collapses chained conditions, and coerces values — all
+			// on the entry objects. When the caller reuses the same array/objects across
+			// queries those annotations leak: a leaked pseudo-condition throws a coercion
+			// error, a stale `descending` reverses a scan, a cached `estimated_count`
+			// misplans (harper#1572). Copy the array and every entry (recursing into
+			// nested `and`/`or` groups) up front so all downstream mutation is on our own
+			// objects. Entries are small and shallow; the clone is cheap next to the query.
+			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
 			const filtered = {};
 
@@ -4609,6 +4835,11 @@ export function makeTable(options) {
 			}
 			assignTrackedAccessors(this, this);
 			assignTrackedAccessors(Updatable, this, true);
+			// updatedAttributes() re-runs on every schema reload, so rebuild these from scratch rather than
+			// accumulating stale/duplicate entries across reloads.
+			enumerableAttributeNames = [];
+			enumerableRelationDefs.clear();
+			hasSurfacedComputed = false;
 			for (const attribute of attributes) {
 				const name = attribute.name;
 				if (attribute.resolve) {
@@ -4622,21 +4853,26 @@ export function makeTable(options) {
 						configurable: true,
 						enumerable: attribute.enumerable,
 					});
-					if (attribute.enumerable && !primaryStore.encoder.structPrototype.toJSON) {
-						Object.defineProperty(primaryStore.encoder.structPrototype, 'toJSON', {
-							configurable: true,
-							value() {
-								const json = {};
-								for (const key in this) {
-									// copy all enumerable properties, including from prototype
-									json[key] = this[key];
-								}
-								return json;
-							},
-						});
-					}
+					// The type definition (set early) marks a table-typed attribute; its `.tableClass` may not be
+					// assigned yet for self/forward refs, so key table-typedness off the definition, not tableClass.
+					const relationDef = attribute.definition || attribute.elements?.definition;
+					// Surface on the default read when @enumerable, or when a @computed attribute is NOT
+					// table-typed (harper#1484 — computed scalars). Table-typed computeds stay lazy.
+					if (attribute.enumerable || (attribute.computed && !relationDef)) enumerableAttributeNames.push(name);
+					// Only @enumerable *table-typed* attributes create a serialization edge that can cycle.
+					if (attribute.enumerable && relationDef) enumerableRelationDefs.add(relationDef);
+					// Any surfaced non-table @computed can return a live (possibly cyclic) entity at runtime,
+					// regardless of its declared scalar type — the static edge graph can't see it — so route it
+					// through the guarded serialization path.
+					if (attribute.computed && !relationDef) hasSurfacedComputed = true;
 				}
 			}
+			this.enumerableRelationDefs = enumerableRelationDefs;
+			// Re-install each reload so the toJSON closure captures the rebuilt name list; if a reload
+			// removed all enumerable/computed-scalar attributes, drop the now-unneeded toJSON.
+			if (enumerableAttributeNames.length > 0)
+				installEnumerableToJSON(primaryStore.encoder.structPrototype, this, hasSurfacedComputed);
+			else if (primaryStore.encoder.structPrototype.toJSON) delete primaryStore.encoder.structPrototype.toJSON;
 		}
 		// #section: computed-history
 		static setComputedAttribute(attribute_name, resolver) {
@@ -4751,7 +4987,15 @@ export function makeTable(options) {
 			return history.reverse();
 		}
 		static clear() {
-			return primaryStore.clear();
+			// clear the primary store and every secondary index dbi (same pattern used by
+			// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
+			// index entries pointing at records that no longer exist.
+			const promises = [primaryStore.clear()];
+			for (const key in indices) {
+				const index = indices[key];
+				promises.push(index.clearAsync ? index.clearAsync() : index.clear());
+			}
+			return Promise.all(promises);
 		}
 		static cleanup() {
 			deleteCallbackHandle?.remove();
@@ -4810,7 +5054,14 @@ export function makeTable(options) {
 			const index = indices[key];
 			const isIndexing = index.isIndexing;
 			const resolver = propertyResolvers[key];
-			const value = record && (resolver ? resolver(record) : record[key]);
+			// A null/undefined `record` means the record is being removed entirely (delete/eviction pass
+			// record=null), so there are NO values to index — resolve to undefined, not null. `record &&`
+			// yields `null` for record===null, which getIndexedValues() then treats as a genuine null field
+			// value and (for an indexNulls index — the default for @indexed) re-adds a [null, id] entry after
+			// the real [value, id] entry was removed, orphaning it against the now-deleted record. A record
+			// that is present but whose attribute is null is a different case (record is a truthy object) and
+			// still indexes under null. See harper#1894 (F-149).
+			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
 			const existingValue = existingRecord && (resolver ? resolver(existingRecord) : existingRecord[key]);
 			if (value === existingValue && !isIndexing) {
 				continue;

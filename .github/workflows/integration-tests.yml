@@ -4,6 +4,8 @@ on:
   push:
     branches: [main, 'v[0-9]+.[0-9]+']
   pull_request:
+  schedule:
+    - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
       node-version:
@@ -31,7 +33,11 @@ jobs:
       - name: Set Node versions
         id: set-node-versions
         run: |
-          if [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            # PR pushes run a single representative Node version to keep the dev loop fast;
+            # the full 22/24/26 matrix runs on push to main/release and on the nightly schedule.
+            echo "node-versions=[24]" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
             echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
           else
             echo "node-versions=[${{ github.event.inputs.node-version }}]" >> $GITHUB_OUTPUT
@@ -52,7 +58,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
@@ -89,7 +95,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
@@ -107,10 +113,16 @@ jobs:
           mkdir -p /tmp/harperdb-legacy
           npm install --ignore-scripts --prefix /tmp/harperdb-legacy harperdb@4
 
+      - name: Install harper@5.1.22 for cross-version upgrade tests
+        run: |
+          mkdir -p /tmp/harper-legacy-51
+          npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
+
       - name: Run Integration Test Shard ${{ matrix.shard }}
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
+          HARPER_LEGACY_51_PATH: /tmp/harper-legacy-51/node_modules/harper/dist/bin/harper.js
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
         run: |
           npm run test:integration:all -- --shard=${{ matrix.shard }}/6
@@ -133,7 +145,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Setup Node.js 24
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -170,7 +182,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Setup Node.js 24
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -216,7 +228,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -265,7 +277,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -283,6 +295,11 @@ jobs:
           mkdir -p /tmp/harperdb-legacy
           npm install --ignore-scripts --prefix /tmp/harperdb-legacy harperdb@4
 
+      - name: Install harper@5.1.22 for cross-version upgrade tests
+        run: |
+          mkdir -p /tmp/harper-legacy-51
+          npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
+
       # Serve the plaintext app HTTP port(s) through uWebSockets.js instead of the Node http server
       # (#914). Only non-secure, non-operations TCP ports are affected; secure/replication/ops paths
       # keep running on Node, so this exercises the uWS request/streaming/WS/GraphQL/Fastify-fallback
@@ -291,6 +308,7 @@ jobs:
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
+          HARPER_LEGACY_51_PATH: /tmp/harper-legacy-51/node_modules/harper/dist/bin/harper.js
           HARPER_UWS_HTTP: 1
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
         run: |

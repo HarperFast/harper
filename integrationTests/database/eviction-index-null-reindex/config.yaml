@@ -1,5 +1,5 @@
 graphqlSchema:
   files: '*.graphql'
 jsResource:
-  files: resources/*.js
+  files: resources.js
 rest: true

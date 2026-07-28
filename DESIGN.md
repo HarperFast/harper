@@ -8,8 +8,9 @@ Design notes and non-obvious internals for the harper-pro/core codebase. Complem
 
 Records stored in tables are plain objects given a `RecordObject` prototype, which provides `getExpiresAt()` and `getUpdatedTime()`. These methods read from `entryMap` (a `WeakMap` in `RecordEncoder.ts`), which maps each record object to its storage entry.
 
-- The prototype is set automatically by the msgpack decoder via `structPrototype` (per-table, defined inside `RecordEncoder`).
-- `entryMap.set(record, entry)` is called whenever a record is read from the store.
+- `RecordObject` is a shared runtime base class; every encoder creates an isolated `StoreRecordObject` subclass for its `structPrototype`, so table-specific computed getters do not leak across tables. Structon records inherit that prototype during decode. Classic msgpackr records decode as plain objects and are promoted by the store read wrappers before Harper exposes them.
+- Use `record instanceof RecordObject` when behavior must apply to either exposed representation. Do not use `entryMap.has(record)` as a record-type test: `entryMap` exists for storage metadata, and some range-read paths can prototype-promote a record without registering that mapping.
+- Point reads and other paths that need storage metadata call `entryMap.set(record, entry)` when exposing a record.
 - To give a plain JS object the RecordObject prototype without copying it (preserving mutability), use `Object.setPrototypeOf(obj, primaryStore.encoder.structPrototype)` then `entryMap.set(obj, entry)`.
 - Do **not** copy the object (e.g. via `Object.assign` into a new instance) if any code still holds a reference to the original and expects to mutate it — see below.
 
@@ -55,6 +56,20 @@ When adding a new commit-handler early-return path: reset `write.skipped = false
 - **Read-only, `sourceApply`, and `isReplay` transactions keep the prior force-commit behavior.** Read-only long transactions (large scans/exports) have no atomicity/index risk and must not have their ongoing reads poisoned. Canonical-source applies (replication peer / external caching source) and crash-recovery replay have no resubscribe/resume path: aborting a write would drop it while the resume cursor advances past it — a permanent divergence (harper-pro#348). `sourceApply` is propagated down the `next` chain in `txnForContext`, so gating on the head suffices. (Replay is additionally synchronous, so the async monitor can't fire mid-replay anyway.)
 
 Known minor: if the monitor aborts a write transaction whose async `commit()` is already in flight (awaiting `before` hooks), the resumed continuation double-decrements `readTxnsUsed` and double-`abort()`s the underlying transaction (swallowed by the existing try/catch). Data is still correctly rolled back and the request errors; the only artifact is an inert negative counter on a dead transaction object.
+
+## Repeat writes to the same key in one transaction carry their state forward (`DatabaseTransaction`/`Table`)
+
+A transaction can hold more than one write to the same record key — two `patch()` calls inside one `transaction()`, or a replicated transaction carrying two updates to a record. Each write captures `operation.entry` (its idea of the current record) when it is staged, and **neither engine can refresh that from a read**: LMDB queues staged puts and applies them only in the commit batch, so a `getEntry` inside that loop still returns the pre-transaction record (the exclusive `store.transaction()` fallback is no better), and RocksDB read-your-writes only sees writes already staged into the native transaction — which the source-apply path, staging its whole batch before `commit()`, hasn't done yet.
+
+So the writes carry the state forward themselves: `addWrite` chains each write to the preceding write to the same store and key (`linkWrite` → `operation.priorWrite`), a commit handler publishes what it stored on `operation.stagedEntry`, and the next write reads it back through `priorStagedEntry()` and uses it as `existingRecord`. Consequences worth knowing:
+
+- Only the **record** comes from the earlier write. The rest of the entry (version, `localTime`/audit chain, blob metadata) stays the pre-transaction one — that is what this write's audit entry and optimistic version check are relative to.
+- Program order breaks **ties only** (`if (priorStaged && precedesExisting >= 0) precedesExisting = 1`). Every write in a transaction carries the transaction's single timestamp, so a version comparison against what the earlier write landed (e.g. on a retry round after a partial apply) is a tie that the out-of-order machinery would otherwise drop as a re-delivered duplicate. A _strictly newer_ existing version can only be a concurrent transaction's write observed on a retry round; a chained write still goes through the out-of-order merge for it (and a chained delete still yields to it) rather than silently overwriting it.
+- A superseded write's **blobs are cleaned up post-commit**: when a later write to the key replaces (or deletes) the record an earlier write stored, the earlier write's `savedBlobs` are reachable only through its audit entry — so unless it wrote one (`blobsAuditReferenced`, in which case audit pruning owns them), the commit-cleanup pass deletes them, checked against the final committed record so a blob the later write retained survives. Without this, LMDB (whose replacement path never sees the intermediate entry) leaked the intermediate blob's file permanently.
+- The per-key chain map key (`writeKeyId`) is the **store's own canonical key encoding** (ordered-binary, as a latin1 string). JS value identity is wrong in both directions: `1n` and `1` are the same stored key and must chain, while `[0]` vs `[-0]` and `[null]` vs `[NaN]` are different stored keys that JSON/string coercion collapse. Symbol and null keys keep native identity (not key-encodable; never stage records).
+- `clearWrites()` discards the chain along with the write set on commit/abort, so a reused transaction never bases a write on a previous batch's staged state.
+
+Before this (harper#1968), every write diffed against the pre-transaction record: the secondary index kept the intermediate value permanently (nothing reconciles an index against the records, so only a rebuild repairs it), and on LMDB the earlier write's changes were dropped outright.
 
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
@@ -504,3 +519,27 @@ extensionModule.handleApplication` gate (`components/componentLoader.ts`) means 
 `universalHeaders` is per-thread module state, populated only where the http component loads.
 Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
 so ops responses **will** carry the headers there (benign).
+
+## The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)
+
+npm decides whether to honor a dependency's bundled `npm-shrinkwrap.json` from the `_hasShrinkwrap`
+flag in the **registry packument**, metadata the registry sets at publish time — not by looking
+inside the tarball. So `npm install harper` from the registry installs exactly the tree the
+shrinkwrap describes, including honoring _omissions_ (it will not re-resolve an optional dependency
+that has been pruned out). But `npm install ./harper-*.tgz` has no packument, so npm never learns the
+shrinkwrap exists and re-resolves the whole tree from `package.json`. Verified on one published
+5.1.23 artifact: via the registry it honored the pin (fastify 5.8.5), from the tarball it resolved
+fresh (fastify 5.10.0, then-latest).
+
+Three consequences worth knowing before touching packaging:
+
+- `overrides` in harper's `package.json` are **root-only** and do nothing for anyone installing
+  harper. The shrinkwrap is the only lever that reaches consumers, which is why the react-native
+  prune lives in `build-tools/prune-shrinkwrap-react-native.mjs` rather than in `overrides` (#1937).
+- The published shrinkwrap is deliberately _not_ what `npm shrinkwrap` produced — `build.sh`
+  post-processes it (dev prune #1783, react-native prune #1937) to enforce that it describes only the
+  production tree a consumer installs. Anything added there must keep it internally consistent; a
+  pruned entry that something still requires would ship a broken tree to every consumer.
+- The Dockerfile installs the local tarball, so it gets **none** of this: its dependency tree is
+  resolved fresh at image-build time against whatever is newest within our semver ranges, meaning the
+  image is not reproducible and does not match what npm consumers receive (#1960).
