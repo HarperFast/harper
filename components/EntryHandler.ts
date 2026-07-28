@@ -108,9 +108,18 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	// chokidar instance — otherwise a rapid pause→resume can overlap teardown
 	// and setup, which under inotify pressure can produce spurious EMFILE.
 	#pausedClose?: Promise<void>;
+	// Set while a watcher replacement is in flight, to serialize the next one. Concurrent
+	// #watch() calls would otherwise each observe the same live watcher before their close()
+	// await and then install their own, orphaning the intervening chokidar instance's inotify
+	// handles. Left undefined when idle so the first install — which has nothing to await —
+	// still claims its generation synchronously.
+	#watchInstall?: Promise<void>;
 	#usingPolling = false;
 	#closed = false;
 	#openCount = 0;
+	// Chokidar instances opened but not yet closed. Normally holds at most one entry; a larger
+	// set means a replacement watcher orphaned a live one, leaking its inotify handles.
+	#liveWatchers = new Set<FSWatcher>();
 	ready: Promise<any[]>;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: Logger) {
@@ -122,7 +131,9 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		this.#pendingFileReadsByGeneration = new Map();
 		this.#isInitialScanComplete = false;
 		this.ready = once(this, 'ready');
-		this.#watch();
+		// Fire-and-forget: the returned readiness latch rejects if the first generation emits
+		// `error` before `ready`, and consumers observe that through the 'error' event instead.
+		this.#watch().catch(() => {});
 	}
 
 	get name(): string {
@@ -422,6 +433,27 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	async #watch() {
+		// Replacement is serialized: an update() racing another update() or the polling-fallback
+		// recovery must not tear down and install watchers concurrently, or the watcher installed
+		// by the first call is overwritten by the second and never closed.
+		const install = this.#watchInstall ? this.#watchInstall.then(() => this.#installWatcher()) : this.#installWatcher();
+		// Release the chain once this replacement settles — a failed install must not block or
+		// reject later callers.
+		const settled: Promise<void> = install.then(
+			() => {
+				if (this.#watchInstall === settled) this.#watchInstall = undefined;
+			},
+			() => {
+				if (this.#watchInstall === settled) this.#watchInstall = undefined;
+			}
+		);
+		this.#watchInstall = settled;
+		await install;
+
+		return this.ready;
+	}
+
+	async #installWatcher(): Promise<void> {
 		// If pause() retained an in-flight close, wait for it to release inotify
 		// handles before we install a new watcher. Otherwise a fast pause→resume
 		// can overlap teardown and setup under inotify pressure.
@@ -430,16 +462,25 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			this.#pausedClose = undefined;
 		}
 
-		if (this.#watcher) await this.#watcher.close();
-		this.#watcher = undefined;
+		const outgoing = this.#watcher;
+		if (outgoing) {
+			// Stays installed across the await so a close() landing in the gap still includes this
+			// teardown in its own settle set; only clear it if close() didn't already replace it.
+			try {
+				await outgoing.close();
+			} finally {
+				this.#liveWatchers.delete(outgoing);
+			}
+			if (this.#watcher === outgoing) this.#watcher = undefined;
+		}
 
 		// If close() landed while a previous close()/recreate was awaiting, don't
 		// install a fresh watcher — it would outlive the EntryHandler.
-		if (this.#closed) return this.ready;
+		if (this.#closed) return;
 
 		// pause() may have landed in the gap before our async close resolved.
 		// If so, do not install a replacement watcher — resume() will.
-		if (this.#paused) return this.ready;
+		if (this.#paused) return;
 		const generation = ++this.#watchGeneration;
 
 		// Every watcher generation gets its own readiness latch and compares its
@@ -460,7 +501,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
 
 		this.#openCount++;
-		this.#watcher = chokidar
+		const watcher = (this.#watcher = chokidar
 			.watch(this.#component.commonPatternBase, {
 				cwd: this.#component.directory,
 				persistent: false,
@@ -498,9 +539,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			})
 			.on('all', (...args) => this.#handleAll(generation, ...args))
 			.on('error', this.#handleError.bind(this))
-			.on('ready', () => this.#handleReady(generation));
-
-		return this.ready;
+			.on('ready', () => this.#handleReady(generation)));
+		this.#liveWatchers.add(watcher);
 	}
 
 	// Test-only: simulate the underlying chokidar watcher emitting an error.
@@ -528,11 +568,24 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		return this.#openCount;
 	}
 
+	// Test-only: chokidar instances opened but not yet closed. The invariant is <= 1; anything
+	// higher means a replacement watcher orphaned a live one and leaked its inotify handles.
+	get _liveWatcherCountForTests(): number {
+		return this.#liveWatchers.size;
+	}
+
 	close(): Promise<this> {
 		this.#watchGeneration++;
 		this.#closed = true;
 		const pendingReads = [...this.#pendingFileReads];
-		const watcherClose = this.#watcher ? Promise.resolve(this.#watcher.close()).catch(() => {}) : Promise.resolve();
+		const outgoing = this.#watcher;
+		const watcherClose = outgoing
+			? Promise.resolve(outgoing.close())
+					.catch(() => {})
+					.then(() => {
+						this.#liveWatchers.delete(outgoing);
+					})
+			: Promise.resolve();
 		this.#watcher = undefined;
 		// If paused, there may be an in-flight close from pause() that hasn't settled yet.
 		// Include it so close() doesn't resolve while inotify handles are still releasing.
@@ -568,9 +621,14 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		if (this.#watcher) {
 			// Retain the close promise so resume()→#watch() can await full
 			// teardown before opening a new watcher.
-			this.#pausedClose = Promise.resolve(this.#watcher.close()).catch(() => {
-				// Teardown errors aren't actionable; swallow so resume can proceed.
-			});
+			const outgoing = this.#watcher;
+			this.#pausedClose = Promise.resolve(outgoing.close())
+				.catch(() => {
+					// Teardown errors aren't actionable; swallow so resume can proceed.
+				})
+				.then(() => {
+					this.#liveWatchers.delete(outgoing);
+				});
 			this.#watcher = undefined;
 		}
 	}
@@ -592,6 +650,10 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 
 	update(config: FilesOption | FileAndURLPathConfig) {
 		this.#component = new Component(this.name, this.directory, castConfig(config));
+		// Re-arm the readiness latch for parity with pause(). Without this, awaiting update() on an
+		// already-ready handler resolves against the outgoing generation's 'ready' — before the
+		// replacement generation has scanned, digested, and emitted its logical events.
+		if (!this.#closed) this.ready = once(this, 'ready');
 
 		return this.#watch();
 	}

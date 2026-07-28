@@ -511,6 +511,46 @@ describe('EntryHandler', () => {
 		assert.equal(entryHandler.listenerCount('addDir'), 0, 'addDir event listener should be removed');
 	});
 
+	it('serializes concurrent config updates without orphaning a watcher', async () => {
+		// A single config save that changes both `files` and `urlPath` drives two OptionsWatcher
+		// `change` events in one tick, so two update() calls enter watcher replacement while a
+		// watcher is live (not paused). Each must close the watcher it actually replaced —
+		// otherwise the first call's fresh chokidar instance is overwritten, never closed, and
+		// its inotify handles leak until GC (the pressure mode of harper#488).
+		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		await entryHandler.ready;
+		assert.equal(entryHandler._liveWatcherCountForTests, 1, 'one live watcher after the initial scan');
+
+		await Promise.all([entryHandler.update('b'), entryHandler.update('c')]);
+
+		assert.equal(entryHandler._openCountForTests, 3, 'the initial watcher plus one per update');
+		assert.equal(entryHandler._liveWatcherCountForTests, 1, 'each replacement closes the watcher it replaced');
+
+		await entryHandler.close();
+		assert.equal(entryHandler._liveWatcherCountForTests, 0, 'close() releases the last watcher');
+	});
+
+	it('update() readiness does not resolve against the outgoing generation', async () => {
+		// update() must re-arm the readiness latch the way pause() does. Otherwise awaiting it on
+		// an already-ready handler resolves immediately against the previous generation's `ready`,
+		// before the replacement generation has scanned, digested, and emitted its diff.
+		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		await entryHandler.ready;
+
+		const events = [];
+		entryHandler.on('all', (entry) => events.push(entry.eventType));
+
+		await entryHandler.update('b');
+
+		assert.deepEqual(
+			[...events].sort(),
+			['add', 'unlink'],
+			'the new generation has emitted its full diff by the time update() resolves'
+		);
+
+		await entryHandler.close();
+	});
+
 	it('should resolve the correct urlPath for files', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, 'foo/d');
 
