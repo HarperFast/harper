@@ -61,6 +61,45 @@ function sha256hex(buf: Buffer): string {
 	return createHash('sha256').update(buf).digest('hex');
 }
 
+// ── Stale-history contract (QA-406/QA-477, see file header): a GC'd blob's history/time-travel
+//    read must come back as a clean 404/ENOENT — never wrong bytes, a hang, a 500, or anything
+//    unclassified. Shared by all three suites below so the gate is uniform across arms. ────────
+type StaleReadTag =
+	| 'clean-404-ENOENT'
+	| 'wrong-bytes-as-current'
+	| 'stale-blob-still-readable'
+	| 'unknown-bytes'
+	| 'hang'
+	| 'error-500'
+	| 'unclassified';
+
+function classifyStaleRead(
+	outcome: any,
+	currentSha: string,
+	staleShas: string[]
+): { tag: StaleReadTag; detail: string } {
+	if (outcome.ok && outcome.sha === currentSha)
+		return { tag: 'wrong-bytes-as-current', detail: 'wrong-bytes-served-CURRENT-as-history' };
+	if (outcome.ok && staleShas.includes(outcome.sha))
+		return { tag: 'stale-blob-still-readable', detail: 'stale-blob-still-readable(unexpected-if-GCd)' };
+	if (outcome.ok) return { tag: 'unknown-bytes', detail: `unknown-bytes(sha=${outcome.sha})` };
+	if (outcome.isTimeout) return { tag: 'hang', detail: `HANG(${outcome.elapsedMs}ms)` };
+	if (outcome.statusCode === 404 || outcome.code === 'ENOENT')
+		return { tag: 'clean-404-ENOENT', detail: 'clean-404-ENOENT' };
+	if (outcome.statusCode === 500) return { tag: 'error-500', detail: `ENOENT-as-500(${outcome.error})` };
+	return { tag: 'unclassified', detail: `unclassified(${JSON.stringify(outcome)})` };
+}
+
+function assertCleanStaleRead(outcome: any, currentSha: string, staleShas: string[], label: string) {
+	const { tag, detail } = classifyStaleRead(outcome, currentSha, staleShas);
+	log(`>>> ${label} history classification: ${detail}`);
+	strictEqual(
+		tag,
+		'clean-404-ENOENT',
+		`${label}: superseded blob history read must be a clean 404/ENOENT, got ${detail}`
+	);
+}
+
 // ── Disk walker: full set of file paths under a dir ───────────────────────────
 async function fileSet(dir: string): Promise<Set<string>> {
 	const out = new Set<string>();
@@ -209,38 +248,15 @@ suite(
 			log(`[overwrite] history raw: ${JSON.stringify(hist.body.results, null, 2)}`);
 			ok(hist.body.count >= 3, 'expect at least 3 audit entries (v1, v2, v3 puts)');
 
-			// isThisVersionCurrent: the entry being classified IS the live/current version (its own
-			// sha correctly equalling currentSha is expected-ok, not a defect); only entries for a
-			// SUPERSEDED version reading back as currentSha are the wrong-bytes-as-history defect.
-			function classify(entry: any, currentSha: string, staleShas: string[], isThisVersionCurrent: boolean): string {
-				if (isThisVersionCurrent && entry.outcome.ok && entry.outcome.sha === currentSha)
-					return 'expected-ok-current-version-reads-as-current';
-				if (entry.outcome.ok && entry.outcome.sha === currentSha) return 'wrong-bytes-served-CURRENT-as-history';
-				if (entry.outcome.ok && staleShas.includes(entry.outcome.sha))
-					return 'stale-blob-still-readable(unexpected-if-GCd)';
-				if (entry.outcome.ok) return `unknown-bytes(sha=${entry.outcome.sha})`;
-				if (entry.outcome.isTimeout) return `HANG(${entry.outcome.elapsedMs}ms)`;
-				if (entry.outcome.statusCode === 404 || entry.outcome.code === 'ENOENT') return `clean-404-ENOENT`;
-				if (entry.outcome.statusCode === 500) return `ENOENT-as-500(${entry.outcome.error})`;
-				return `unclassified(${JSON.stringify(entry.outcome)})`;
-			}
-
 			const v1Entry = hist.body.results[0];
 			const v2Entry = hist.body.results[1];
 			const v3Entry = hist.body.results[hist.body.results.length - 1];
-			const v1Class = classify(v1Entry, shaC, [shaA], false);
-			const v2Class = classify(v2Entry, shaC, [shaB], false);
-			const v3Class = classify(v3Entry, shaC, [], true);
-			log(`\n>>> v1(GC'd blob A) history classification: ${v1Class}`);
-			log(`>>> v2(GC'd blob B) history classification: ${v2Class}`);
-			log(`>>> v3(current, blob C) history classification: ${v3Class}`);
 			ok(
 				v3Entry.outcome.ok && v3Entry.outcome.sha === shaC,
 				'current-version history entry must read as current blob C'
 			);
-			if (v1Class === 'wrong-bytes-served-CURRENT-as-history' || v2Class === 'wrong-bytes-served-CURRENT-as-history') {
-				log(`!!! DEFECT: wrong-bytes-as-history observed on the overwrite arm !!!`);
-			}
+			assertCleanStaleRead(v1Entry.outcome, shaC, [shaA], "v1(GC'd blob A)");
+			assertCleanStaleRead(v2Entry.outcome, shaC, [shaB], "v2(GC'd blob B)");
 
 			// Raw ops-API read_audit_log HTTP surface: what does a real client actually receive for
 			// a Blob-valued attribute in a JSON audit-log response?
@@ -259,21 +275,23 @@ suite(
 				`\n[overwrite] read_audit_log(hash_value=${id}) txn count: ${Array.isArray(auditTxns) ? auditTxns.length : 'n/a'}`
 			);
 			log(`[overwrite] read_audit_log raw body: ${JSON.stringify(auditResp.body, null, 2).slice(0, 4000)}`);
-			if (Array.isArray(auditTxns) && auditTxns.length) {
-				const contentShapes = auditTxns
-					.map((t: any) =>
-						t.records?.map((r: any) => (typeof r.content === 'object' ? r.content : `[non-object:${typeof r.content}]`))
-					)
-					.flat();
-				log(`[overwrite] read_audit_log Blob attribute shapes seen: ${JSON.stringify(contentShapes)}`);
-				log(
-					`>>> OPS-API SURFACE FINDING: read_audit_log's plain JSON response ${
-						contentShapes.some((c: any) => c && c.description)
-							? 'returns a PLACEHOLDER description object for the Blob attribute (never attempts a file read, so it can neither serve stale bytes nor surface an ENOENT for a reclaimed file via this surface)'
-							: 'did not show the expected placeholder shape — see raw body above'
-					}`
-				);
-			}
+			ok(
+				Array.isArray(auditTxns) && auditTxns.length > 0,
+				`read_audit_log must return at least one audit transaction for ${id}, got ${JSON.stringify(auditTxns)}`
+			);
+			const contentShapes = auditTxns
+				.map((t: any) =>
+					t.records?.map((r: any) => (typeof r.content === 'object' ? r.content : `[non-object:${typeof r.content}]`))
+				)
+				.flat();
+			log(`[overwrite] read_audit_log Blob attribute shapes seen: ${JSON.stringify(contentShapes)}`);
+			log(
+				`>>> OPS-API SURFACE FINDING: read_audit_log's plain JSON response ${
+					contentShapes.some((c: any) => c && c.description)
+						? 'returns a PLACEHOLDER description object for the Blob attribute (never attempts a file read, so it can neither serve stale bytes nor surface an ENOENT for a reclaimed file via this surface)'
+						: 'did not show the expected placeholder shape — see raw body above'
+				}`
+			);
 		});
 
 		test('leak-check arm (qa726b): N sequential overwrites — does audit retention pin old blob files?', async () => {
@@ -344,23 +362,8 @@ suite(
 			ok(deleteEntry, 'a delete-type audit entry must be present');
 			strictEqual(deleteEntry.outcome.noBody, true, 'delete entry must carry no body (not a dangling blob ref)');
 
-			let classification: string;
-			if (!preDeleteEntry) {
-				classification = 'no pre-delete entry found — inspect raw dump';
-			} else if (preDeleteEntry.outcome.ok && preDeleteEntry.outcome.sha === shaC) {
-				classification = 'DEFECT-wrong-bytes-as-history (pre-delete read returned reinserted blob C bytes)';
-			} else if (preDeleteEntry.outcome.ok && preDeleteEntry.outcome.sha === shaA) {
-				classification = 'ANOMALY-blobA-still-readable (contradicts confirmed GC of blob A file)';
-			} else if (preDeleteEntry.outcome.isTimeout) {
-				classification = `DEFECT-hang (${preDeleteEntry.outcome.elapsedMs}ms)`;
-			} else if (preDeleteEntry.outcome.statusCode === 404 || preDeleteEntry.outcome.code === 'ENOENT') {
-				classification = `EXPECTED-OK clean typed error (statusCode=${preDeleteEntry.outcome.statusCode})`;
-			} else if (preDeleteEntry.outcome.statusCode === 500) {
-				classification = `medium ENOENT-as-500 (${preDeleteEntry.outcome.error})`;
-			} else {
-				classification = `unclassified: ${JSON.stringify(preDeleteEntry.outcome)}`;
-			}
-			log(`\n>>> DELETE-REINSERT VARIANT CLASSIFICATION: ${classification}`);
+			ok(preDeleteEntry, 'a pre-delete put(A) audit entry must be present — inspect raw dump above');
+			assertCleanStaleRead(preDeleteEntry.outcome, shaC, [shaA], "pre-delete entry (GC'd blob A)");
 		});
 	}
 );
@@ -443,19 +446,7 @@ suite(
 			log(`[threads:4] history entries: ${hist.body.count}`);
 			log(`[threads:4] history raw: ${JSON.stringify(hist.body.results, null, 2)}`);
 			const v1Entry = hist.body.results[0];
-			let classification: string;
-			if (v1Entry.outcome.ok && v1Entry.outcome.sha === shaB) {
-				classification = 'DEFECT-wrong-bytes-as-history (threads:4)';
-			} else if (v1Entry.outcome.ok && v1Entry.outcome.sha === shaA) {
-				classification = 'ANOMALY-blobA-still-readable (threads:4)';
-			} else if (v1Entry.outcome.isTimeout) {
-				classification = `DEFECT-hang (threads:4, ${v1Entry.outcome.elapsedMs}ms)`;
-			} else if (v1Entry.outcome.statusCode === 404 || v1Entry.outcome.code === 'ENOENT') {
-				classification = `EXPECTED-OK clean typed error (threads:4, statusCode=${v1Entry.outcome.statusCode})`;
-			} else {
-				classification = `unclassified (threads:4): ${JSON.stringify(v1Entry.outcome)}`;
-			}
-			log(`\n>>> THREADS:4 ARM CLASSIFICATION: ${classification}`);
+			assertCleanStaleRead(v1Entry.outcome, shaB, [shaA], "v1(GC'd blob A, threads:4)");
 		});
 	}
 );

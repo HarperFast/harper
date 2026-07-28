@@ -522,24 +522,22 @@ suite(
 					const d = await diskFiles(blobRootDir);
 					filesAfter = d.files;
 					traj.push(`+${(i + 1) * 3}s:${d.files}f`);
-					if (d.files <= 2 + 2) break; // survivor + update-target, +tolerance
+					if (d.files <= 2) break; // exactly survivor + update-target, no tolerance
 				}
 				findings.push(`disk trajectory after cleanup_orphan_blobs: ${traj.join(' -> ')}`);
 
-				const tolerance = 5;
-				findings.push(
-					`final disk file count = ${filesAfter} (expected ~2: survivor + update-target, tolerance=${tolerance})`
-				);
-				if (filesAfter <= 2 + tolerance) {
+				findings.push(`final disk file count = ${filesAfter} (expected exactly 2: survivor + update-target)`);
+				if (filesAfter === 2) {
 					findings.push(`orphan-file VERDICT: CLEAN — no genuine leak survives cleanup_orphan_blobs`);
 				} else {
 					findings.push(
 						`orphan-file VERDICT: POSSIBLE LEAK — ${filesAfter} files remain for 2 live records even after cleanup_orphan_blobs`
 					);
 				}
-				ok(
-					filesAfter <= 2 + tolerance,
-					`GENUINE ORPHAN-FILE LEAK: ${filesAfter} blob files remain for 2 live records after cleanup_orphan_blobs (tolerance=${tolerance})`
+				strictEqual(
+					filesAfter,
+					2,
+					`GENUINE ORPHAN-FILE LEAK: ${filesAfter} blob files remain for 2 live records after cleanup_orphan_blobs (expected exactly 2)`
 				);
 			}
 		);
@@ -549,7 +547,12 @@ suite(
 			{ timeout: 60_000 },
 			async () => {
 				const beforeUpdate = await diskFiles(blobRootDir);
-				findings.push(`Q5: disk before update = ${beforeUpdate.files} files`);
+				findings.push(`Q5: disk before update = ${beforeUpdate.files} files: ${JSON.stringify(beforeUpdate.paths)}`);
+				strictEqual(
+					beforeUpdate.files,
+					2,
+					`Q5 precondition: exactly 2 blob files (survivor + update-target) must be live before the update, got ${beforeUpdate.files}`
+				);
 
 				const updateResp = await op({
 					action: 'update',
@@ -576,6 +579,12 @@ suite(
 				findings.push(
 					`Q5: disk right after update = ${rightAfterUpdate.files} files (old file may still be present as an on-demand orphan; expected)`
 				);
+				const newFiles = rightAfterUpdate.paths.filter((p) => !beforeUpdate.paths.includes(p));
+				ok(
+					newFiles.length === 1,
+					`Q5: expected exactly 1 new blob file created by the update, got ${newFiles.length}: ${JSON.stringify(newFiles)}`
+				);
+				const [newTargetPath] = newFiles;
 
 				const cleanupResp = await client
 					.req()
@@ -583,30 +592,47 @@ suite(
 					.expect(200);
 				findings.push(`Q5: cleanup_orphan_blobs response: ${JSON.stringify(cleanupResp.body).slice(0, 200)}`);
 
-				let filesAfter = rightAfterUpdate.files;
+				let finalPaths = rightAfterUpdate.paths;
 				const traj: string[] = [];
 				for (let i = 0; i < 10; i++) {
 					await sleep(3_000);
 					const d = await diskFiles(blobRootDir);
-					filesAfter = d.files;
+					finalPaths = d.paths;
 					traj.push(`+${(i + 1) * 3}s:${d.files}f`);
-					if (d.files <= 2 + 2) break; // survivor + update-target(new file only), + tolerance
+					if (d.files <= 2) break; // exactly survivor + update-target's new file, no tolerance
 				}
 				findings.push(`Q5: disk trajectory after cleanup_orphan_blobs: ${traj.join(' -> ')}`);
 
-				const tolerance = 5;
-				if (filesAfter <= 2 + tolerance) {
+				// Exact-set proof, not just a count: the file(s) released must be drawn from the known
+				// pre-update set (i.e. the OLD update-target blob specifically), and the survivor's
+				// original file plus the update's NEW file must both still be present untouched.
+				const releasedFromBefore = beforeUpdate.paths.filter((p) => !finalPaths.includes(p));
+				const retainedFromBefore = beforeUpdate.paths.filter((p) => finalPaths.includes(p));
+				findings.push(
+					`Q5: final disk files=${JSON.stringify(finalPaths)}; released-from-before=${JSON.stringify(releasedFromBefore)}; retained-from-before=${JSON.stringify(retainedFromBefore)}`
+				);
+				if (finalPaths.length === 2 && releasedFromBefore.length === 1 && finalPaths.includes(newTargetPath)) {
 					findings.push(
-						`Q5 VERDICT: CLEAN — old blob file for update-target was reclaimed (directly or via cleanup_orphan_blobs), no permanent leak`
+						`Q5 VERDICT: CLEAN — the specific old update-target blob file was released; survivor's file untouched`
 					);
 				} else {
 					findings.push(
-						`Q5 VERDICT: DEFECT — old blob file for update-target was never reclaimed even after cleanup_orphan_blobs (${filesAfter} files for 2 live records)`
+						`Q5 VERDICT: DEFECT — old blob file for update-target was not specifically released (final=${finalPaths.length} files)`
 					);
 				}
+				strictEqual(
+					finalPaths.length,
+					2,
+					`Q5 DEFECT: expected exactly 2 live blob files after cleanup_orphan_blobs, got ${finalPaths.length}: ${JSON.stringify(finalPaths)}`
+				);
+				strictEqual(
+					retainedFromBefore.length,
+					1,
+					`Q5 DEFECT: survivor's original blob file must remain untouched, got ${retainedFromBefore.length} pre-update file(s) retained: ${JSON.stringify(retainedFromBefore)}`
+				);
 				ok(
-					filesAfter <= 2 + tolerance,
-					`Q5 DEFECT: old blob file for update-target was not released even after cleanup_orphan_blobs: ${filesAfter} files remain for 2 live records (tolerance=${tolerance})`
+					finalPaths.includes(newTargetPath),
+					`Q5 DEFECT: update-target's NEW blob file (${newTargetPath}) must remain live after cleanup_orphan_blobs`
 				);
 			}
 		);

@@ -19,34 +19,40 @@
  * harper#846 (an EDQUOT restart loop: purge reports success, free space does not move, only a
  * restart clears it).
  *
- * ORACLE: per-process fd inspection via /proc, not df/statvfs (the task's dataRootDir lives on
- * a multi-TB shared filesystem with other processes writing to it — a df delta at 26MB
+ * ORACLE: per-process fd AND mmap inspection via /proc, not df/statvfs (the task's dataRootDir
+ * lives on a multi-TB shared filesystem with other processes writing to it — a df delta at 26MB
  * granularity is pure noise). `/proc/<pid>/fd/*` readlink targets ending in " (deleted)" are
- * unlinked-but-open inodes; `fs.statSync()` through that symlink returns the CURRENT stat of the
- * underlying inode (size, blocks) even though the directory entry is gone. `blocks * 512` is the
- * physical bytes still pinned to disk. This is exact and immune to concurrent-fs noise.
+ * unlinked-but-open inodes; `/proc/<pid>/map_files/*` covers the fd-blind case where a file was
+ * mmap()'d and its fd then closed (common for native storage engines), which never shows up
+ * under /proc/<pid>/fd at all. `fs.statSync()` through either symlink returns the CURRENT stat of
+ * the underlying inode (size, blocks) even though the directory entry is gone. `blocks * 512` is
+ * the physical bytes still pinned to disk. This is exact and immune to concurrent-fs noise.
  *
- * ARMED: before trusting any measurement, test 1 proves the walker can see a pinned deleted
- * inode it creates itself (open + write 20MB + unlink-while-open), so a later zero reading is
- * not an artifact of a broken walker.
+ * ARMED: before trusting any measurement, test 1 proves the fd walker can see a pinned deleted
+ * inode it creates itself (open + write 20MB + unlink-while-open), and test 1b proves the
+ * map_files walker can independently see a pinned deleted inode with NO open fd at all (exec a
+ * copy of the node binary + unlink-while-mapped), so a later zero reading on either oracle is not
+ * an artifact of a broken walker. `measurePinned()` also hard-fails (via `assertPidAccessible`)
+ * if either /proc/<pid>/fd or /proc/<pid>/map_files can't be listed for any scanned pid, so a
+ * permission/race failure surfaces as a test failure instead of a silently-trusted zero.
  *
  * THREE MEASUREMENT POINTS (same discriminator the task specifies):
  *   1. BEFORE purge (baseline — should be ~0 pinned-deleted bytes under dataRootDir)
  *   2. AFTER purge, SAME process (directory listing should already show the collapse)
  *   3. AFTER kill + restart on the identical dataRootDir (fresh process, no inherited fds)
  *
- * If (2) shows megabytes of deleted-but-open `.txnlog` inodes pinned that vanish by (3), the
- * hypothesis HOLDS and #846 has a root cause. If nothing is pinned at (2), the directory
- * collapse is real and the phantom reads (F-225) come from an in-memory cache instead — an
- * equally reportable, different root cause for #846 (or none).
+ * If (2) shows megabytes of deleted-but-pinned (fd- or mmap-held) `.txnlog` inodes that vanish by
+ * (3), the hypothesis HOLDS and #846 has a root cause. If nothing is pinned at (2) by either
+ * oracle, the directory collapse is real and the phantom reads (F-225) come from an in-memory
+ * cache instead — an equally reportable, different root cause for #846 (or none).
  *
- * OUTCOME (settled by this spec, then root-caused by QA-781): nothing is pinned at (2) — the
- * unlink/mmap hypothesis is REFUTED and the reclamation is real and immediate at the OS level.
- * The post-purge phantom reads are an in-process cache: rocksdb-js's `TransactionLog._logBuffers`
- * (`transaction-log-reader.ts`) holds `WeakRef<LogBuffer>` mmaps per logId with no purge
- * invalidation, so a previously-warmed log segment keeps serving byte-correct rows until GC or
- * restart. This spec is therefore the *reclamation* anchor; the cache behavior is tracked
- * separately (F-225).
+ * OUTCOME (observed on the prior wave, using an fd-only oracle; re-validated by this run under
+ * the now fd+mmap oracle): nothing was pinned at (2) — the unlink/mmap hypothesis is REFUTED and
+ * the reclamation is real and immediate at the OS level. The post-purge phantom reads are an
+ * in-process cache: rocksdb-js's `TransactionLog._logBuffers` (`transaction-log-reader.ts`) holds
+ * `WeakRef<LogBuffer>` mmaps per logId with no purge invalidation, so a previously-warmed log
+ * segment keeps serving byte-correct rows until GC or restart. This spec is therefore the
+ * *reclamation* anchor; the cache behavior is tracked separately (F-225).
  *
  * ALSO SETTLES: last wave's reporting oddity — `delete_audit_logs_before` reports
  * `log_files_deleted=0` despite the directory collapsing by 2 files. Source inspection
@@ -78,8 +84,11 @@ import {
 	closeSync,
 	unlinkSync,
 	fsyncSync,
+	copyFileSync,
+	chmodSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
 	setupHarperWithFixture,
@@ -108,7 +117,15 @@ const SAMPLE_INDICES = [0, 1, 50, 2000, 7400, 12000, 14799];
 // /proc-based fd oracle
 // ---------------------------------------------------------------------------------------------
 
-type PinnedFd = { pid: number; fd: string; target: string; size: number; blocksBytes: number; fdinfo: string };
+type PinnedFd = {
+	pid: number;
+	fd: string;
+	target: string;
+	size: number;
+	blocksBytes: number;
+	fdinfo: string;
+	kind: 'fd' | 'mmap';
+};
 
 function ppidOf(pid: number): number | undefined {
 	try {
@@ -161,6 +178,28 @@ function descendantPids(rootPid: number): number[] {
 	return [...result].filter((p) => existsSync(`/proc/${p}`));
 }
 
+/** Confirm both /proc/<pid>/fd and /proc/<pid>/map_files are actually readable for this pid.
+ * Both listers below swallow a per-fd/per-mapping race (closed/unmapped mid-scan) as an empty
+ * result for THAT entry, which is correct; but if the whole directory can't be opened (wrong
+ * uid, missing ptrace access, pid raced away before scanning), that must be a hard failure, not
+ * a silent zero — a zero from a directory we couldn't even list is not evidence of reclamation. */
+function assertPidAccessible(pid: number): void {
+	try {
+		readdirSync(`/proc/${pid}/fd`);
+	} catch (err: any) {
+		throw new Error(
+			`oracle cannot list /proc/${pid}/fd (${err?.code ?? err}) — a zero fd reading for this pid would be unverifiable`
+		);
+	}
+	try {
+		readdirSync(`/proc/${pid}/map_files`);
+	} catch (err: any) {
+		throw new Error(
+			`oracle cannot list /proc/${pid}/map_files (${err?.code ?? err}) — a zero mmap reading for this pid would be unverifiable`
+		);
+	}
+}
+
 /** Walk /proc/<pid>/fd/*, returning every entry whose readlink target is an unlinked-but-open
  * inode (ends in " (deleted)"), with the CURRENT size/blocks of that inode (fs.statSync through
  * the /proc fd symlink resolves to the live inode even though its directory entry is gone) and
@@ -198,7 +237,44 @@ function listOpenDeletedFds(pid: number): PinnedFd[] {
 		} catch {
 			/* not all fd kinds expose fdinfo cleanly */
 		}
-		out.push({ pid, fd, target, size, blocksBytes, fdinfo });
+		out.push({ pid, fd, target, size, blocksBytes, fdinfo, kind: 'fd' });
+	}
+	return out;
+}
+
+/** Walk /proc/<pid>/map_files/*, returning every mapping whose readlink target is an
+ * unlinked-but-open inode. An mmap-only pin (fd closed right after mmap(), as native storage
+ * engines commonly do) is invisible under /proc/<pid>/fd — it only shows up here. Same
+ * statSync-through-the-symlink trick as listOpenDeletedFds resolves the live inode's current
+ * size/blocks despite the directory entry being gone. */
+function listOpenDeletedMapFiles(pid: number): PinnedFd[] {
+	const mapDir = `/proc/${pid}/map_files`;
+	let entries: string[];
+	try {
+		entries = readdirSync(mapDir);
+	} catch {
+		return [];
+	}
+	const out: PinnedFd[] = [];
+	for (const range of entries) {
+		const mapPath = `${mapDir}/${range}`;
+		let target: string;
+		try {
+			target = readlinkSync(mapPath);
+		} catch {
+			continue; // mapping torn down mid-scan, or no permission
+		}
+		if (!target.endsWith(' (deleted)')) continue;
+		let size = 0;
+		let blocksBytes = 0;
+		try {
+			const st = statSync(mapPath); // stats the underlying (unlinked) inode, not the symlink
+			size = st.size;
+			blocksBytes = st.blocks * 512;
+		} catch {
+			/* raced with unmap */
+		}
+		out.push({ pid, fd: range, target, size, blocksBytes, fdinfo: '', kind: 'mmap' });
 	}
 	return out;
 }
@@ -214,8 +290,12 @@ type PinnedReport = {
 
 function measurePinned(rootPid: number, dataRootDir: string): PinnedReport {
 	const pidsScanned = descendantPids(rootPid);
+	for (const pid of pidsScanned) assertPidAccessible(pid);
 	const all: PinnedFd[] = [];
-	for (const pid of pidsScanned) all.push(...listOpenDeletedFds(pid));
+	for (const pid of pidsScanned) {
+		all.push(...listOpenDeletedFds(pid));
+		all.push(...listOpenDeletedMapFiles(pid));
+	}
 	const stripDeleted = (t: string) => t.replace(/ \(deleted\)$/, '');
 	const underRoot = all.filter((f) => stripDeleted(f.target).startsWith(dataRootDir));
 	const txnlogUnderRoot = underRoot.filter((f) => stripDeleted(f.target).includes('.txnlog'));
@@ -241,7 +321,7 @@ function fmtReport(label: string, r: PinnedReport): string {
 	];
 	for (const f of r.underRoot) {
 		lines.push(
-			`${label}:   pid=${f.pid} fd=${f.fd} target="${f.target}" size=${f.size} blocksBytes=${f.blocksBytes} fdinfo="${f.fdinfo}"`
+			`${label}:   [${f.kind}] pid=${f.pid} fd=${f.fd} target="${f.target}" size=${f.size} blocksBytes=${f.blocksBytes} fdinfo="${f.fdinfo}"`
 		);
 	}
 	return lines.join('\n');
@@ -454,6 +534,57 @@ suite(
 			}
 		});
 
+		test(
+			'1b. ARM THE MMAP ORACLE: prove the map_files walker can see a pinned deleted inode with NO open fd',
+			{ timeout: 20_000 },
+			async () => {
+				// Exec a COPY of the current node binary directly (argv0 = the copy itself, not
+				// "node <script>") so the kernel maps the copy's own text segment as the process image;
+				// unlink the copy while that child is still alive and holding it mapped. This is the
+				// fd-blind pin the review flagged: the mapping keeps the inode's blocks pinned with no
+				// corresponding /proc/<pid>/fd entry at all, which is exactly how native storage engines
+				// commonly leave a pin behind (mmap() then close() the fd).
+				const scratchDir = tmpdir();
+				const copyPath = join(scratchDir, `qa779-arm-mmap-node-copy-${process.pid}-${Date.now()}`);
+				const originalSize = statSync(process.execPath).size;
+				copyFileSync(process.execPath, copyPath);
+				chmodSync(copyPath, 0o755);
+
+				const child = spawn(copyPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+				try {
+					ok(child.pid, 'ARMING SETUP: spawned child must have a pid');
+					await sleep(300); // let execve() finish mapping the copy before we unlink it
+					unlinkSync(copyPath);
+					ok(!existsSync(copyPath), 'ARMING SETUP: copy should no longer appear in directory listing after unlink');
+
+					const found = listOpenDeletedMapFiles(child.pid!);
+					const match = found.find((f) => f.target.startsWith(copyPath));
+					findings.push(
+						`1b. ARMING: map_files walker(child pid=${child.pid}) found ${found.length} deleted-mapping entries total; ` +
+							`match for our unlinked-but-mapped node binary copy: ${match ? `size=${match.size} blocksBytes=${match.blocksBytes} (${fmtMiB(match.blocksBytes)})` : 'NOT FOUND'}`
+					);
+					ok(
+						match,
+						`ARMING FAILED: map_files walker did not detect a deliberately-created deleted-but-mapped inode with no open fd for ${copyPath} — an unarmed mmap oracle, any later zero is worthless`
+					);
+					strictEqual(
+						match.size,
+						originalSize,
+						`ARMING FAILED: map_files walker reported size=${match.size} for the mapped inode, expected the exact copied binary size ${originalSize}`
+					);
+					ok(
+						listOpenDeletedFds(child.pid!).every((f) => !f.target.startsWith(copyPath)),
+						'ARMING SANITY: the unlinked copy must NOT show up under /proc/<pid>/fd — this is specifically the mmap-only, fd-blind pin the fd walker alone cannot see'
+					);
+					findings.push(
+						'1b. ARMING PASSED: map_files walker correctly reports pinned bytes for a self-created unlinked-but-mapped inode with no open fd.'
+					);
+				} finally {
+					child.kill('SIGKILL');
+				}
+			}
+		);
+
 		test('2. settle the reporting-oddity question: does delete_audit_logs_before ever carry log_files_deleted?', async () => {
 			// Both ops are async jobs — the immediate HTTP response is just {message, job_id} for
 			// either one, so the comparison has to be made on the POLLED job's `result`, not the ack.
@@ -665,23 +796,24 @@ suite(
 			findings.push(
 				`8. VERDICT: ${
 					holds
-						? `HYPOTHESIS HOLDS — ${fmtMiB(point2.totalTxnlogBytes)} of .txnlog bytes were pinned to a deleted-but-open inode immediately after purge (same process), and dropped to 0 after restart. The directory-listing "reduction" measured at test 6 is an ILLUSION during the life of the process; the blocks are not actually returned to the filesystem until the last fd closes at restart. This directly root-causes harper#846 (EDQUOT restart loop: purge reports success, free space does not move, only a restart clears it).`
+						? `HYPOTHESIS HOLDS — ${fmtMiB(point2.totalTxnlogBytes)} of .txnlog bytes were pinned to a deleted-but-open-or-mapped inode immediately after purge (same process), and dropped to 0 after restart. The directory-listing "reduction" measured at test 6 is an ILLUSION during the life of the process; the blocks are not actually returned to the filesystem until the last fd/mapping is released at restart. This directly root-causes harper#846 (EDQUOT restart loop: purge reports success, free space does not move, only a restart clears it).`
 						: noPinning
-							? `HYPOTHESIS DOES NOT HOLD — no pinned deleted-but-open .txnlog inodes were observed post-purge despite the directory listing collapsing and read_audit_log continuing to serve purged rows (F-225). The space really was freed at the OS level; the phantom reads must be served from an in-memory cache (not a stale mmap/fd), which is a DIFFERENT root cause and would NOT explain harper#846's EDQUOT via this mechanism.`
+							? `HYPOTHESIS DOES NOT HOLD — no pinned deleted-but-open-or-mapped .txnlog inodes were observed post-purge (fd AND mmap oracles both checked) despite the directory listing collapsing and read_audit_log continuing to serve purged rows (F-225). The space really was freed at the OS level; the phantom reads must be served from an in-memory cache (not a stale mmap/fd), which is a DIFFERENT root cause and would NOT explain harper#846's EDQUOT via this mechanism.`
 							: `MIXED/INCONCLUSIVE — some pinning observed post-purge (${fmtMiB(point2.totalTxnlogBytes)}) but it did not clear (or did not exist) as cleanly as the two-sided hypothesis predicts; needs a follow-up run with finer-grained per-file identity tracking.`
 				}`
 			);
 			// The anchored invariant (green on current main): an audit purge must not leave rotated
-			// .txnlog blocks pinned to an unlinked-but-open inode. A regression here is exactly the
-			// harper#846 shape — purge reports success, the directory listing collapses, and the
-			// filesystem never actually gets its blocks back until the process restarts.
-			strictEqual(point1.totalTxnlogBytes, 0, 'pre-purge: no deleted-but-open .txnlog inodes expected');
+			// .txnlog blocks pinned to an unlinked-but-open-or-mapped inode (fd table OR mmap table —
+			// see the fd+mmap oracle above). A regression here is exactly the harper#846 shape — purge
+			// reports success, the directory listing collapses, and the filesystem never actually gets
+			// its blocks back until the process restarts.
+			strictEqual(point1.totalTxnlogBytes, 0, 'pre-purge: no deleted-but-open-or-mapped .txnlog inodes expected');
 			strictEqual(
 				point2.totalTxnlogBytes,
 				0,
-				`post-purge SAME PROCESS: purge leaked ${fmtMiB(point2.totalTxnlogBytes)} of .txnlog blocks pinned to unlinked-but-open fds — disk is not actually reclaimed until restart (harper#846 shape)`
+				`post-purge SAME PROCESS: purge leaked ${fmtMiB(point2.totalTxnlogBytes)} of .txnlog blocks pinned to unlinked-but-open-or-mapped inodes — disk is not actually reclaimed until restart (harper#846 shape)`
 			);
-			strictEqual(point3.totalTxnlogBytes, 0, 'post-restart: no deleted-but-open .txnlog inodes expected');
+			strictEqual(point3.totalTxnlogBytes, 0, 'post-restart: no deleted-but-open-or-mapped .txnlog inodes expected');
 			// The restart-side half of F-225: whatever the process served pre-restart, a purged row
 			// must be gone once the stale in-memory state is dropped.
 			strictEqual(
