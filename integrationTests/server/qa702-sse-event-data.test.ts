@@ -357,6 +357,9 @@ suite(
 				const uncaughtAfter = countUncaught(readLogSafe(logPath));
 				const newUncaught = uncaughtAfter - uncaughtBefore;
 				console.log(`[QA-702][b] new uncaughtException count for the mid-stream throw: ${newUncaught}`);
+				// Same contract as case (a): the mid-stream throw must be handled by the SSE serializer,
+				// not escape as an uncaught exception on the worker.
+				strictEqual(newUncaught, 0, `no NEW uncaughtException should be logged for the mid-stream throw. verdict=${verdict}`);
 
 				// The hang signal: our own bounded AbortController must NOT be what ended this request.
 				ok(
