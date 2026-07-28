@@ -225,16 +225,21 @@ describe('dropTable ghost regression', () => {
 			`completion attempts must stop, not repeat on every schema reload (${attempts - attemptsWhenExhausted} more over 5 further reloads)`
 		);
 
-		// the tombstone is mirrored into every database that shares this store, so
-		// each stuck table gets its own give-up error - and only one
+		// setupTestDBPath() mirrors this store's tombstone into every database
+		// alias that shares its physical path (data/dev/test/test2), and the
+		// reconcile runs once per alias per reload - but the retry budget is
+		// keyed on the physical store path, not the alias name, so all four
+		// aliases share one budget and this physically-one table gives up
+		// exactly once total, under whichever alias's reconcile pass happened
+		// to be the one that spent the last attempt.
 		const giveUpLogs = errorLogs.filter((message) => String(message).includes(TABLE));
 		const loggedTables = giveUpLogs.map((message) => String(message).match(/table (\S+)/)[1]);
-		assert.ok(loggedTables.includes(`${TEST_DB}.${TABLE}`), 'the stuck table must be named in the error');
 		assert.equal(
-			new Set(loggedTables).size,
 			loggedTables.length,
-			`each stuck table must log exactly one actionable error, got ${loggedTables.join(', ')}`
+			1,
+			`a table shared by every database alias must give up exactly once total, got: ${loggedTables.join(', ')}`
 		);
+		assert.ok(loggedTables[0].endsWith(`.${TABLE}`), 'the stuck table must be named in the error');
 		assert.match(giveUpLogs[0], /giving up until this worker restarts/);
 		// the table must stay unloaded regardless
 		assert.equal(getDatabases()[TEST_DB]?.[TABLE], undefined, 'a tombstoned table must never load');
@@ -325,14 +330,16 @@ describe('dropTable ghost regression', () => {
 			for (let i = 0; i < 5; i++) reload();
 			restoreRemove();
 			// setupTestDBPath() points data/dev/test/test2 at the same physical
-			// path, so this table's tombstone is reconciled (and separately
-			// budgeted) once per database name - matched here on the exact
-			// "database.table" identifier to isolate the worker-0 gate from that
-			// unrelated per-alias multiplication (see PR review discussion).
+			// path, so this table's tombstone is reconciled once per database
+			// alias per reload - but the retry budget is keyed on the physical
+			// store path (see interruptedDropKey), not the alias name, so all
+			// four aliases' reconcile passes share one budget and this table
+			// still gives up exactly once total, regardless of which alias's
+			// pass happens to be the one that trips the gate.
 			assert.equal(
-				errorLogs.filter((message) => String(message).includes(`${TEST_DB}.${WORKER_ZERO_TABLE}`)).length,
+				errorLogs.filter((message) => String(message).includes(WORKER_ZERO_TABLE)).length,
 				1,
-				'worker 0 must log the give-up error exactly once'
+				`worker 0 must log the give-up error exactly once across all database aliases, got: ${errorLogs.join(' | ')}`
 			);
 			cleanUpTombstone(dbisDb, WORKER_ZERO_TABLE);
 			await dbisDb.committed;

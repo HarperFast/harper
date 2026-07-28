@@ -223,19 +223,41 @@ const NEXT_TABLE_ID = Symbol.for('next-table-id');
 // unbounded retry turns one broken table into a per-reload log flood in every
 // worker thread.
 const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
-// database + table -> consecutive failed completion attempts in this thread.
-// Keyed with a NUL separator rather than a dot so that database "a.b" table "c"
-// and database "a" table "b.c" cannot share a budget.
+// physical store path + table -> consecutive failed completion attempts in
+// this thread. Keyed by the physical store path rather than the database
+// alias name: multiple database names can point at the same directory
+// (config-level aliasing), and readMetaDb/readRocksMetaDb reconcile each
+// alias's schema independently, so a table shared by N aliases would
+// otherwise be attempted (and give up) N times over - once per alias - on
+// top of the once-per-worker duplication. Keying by path collapses all of
+// that back down to one budget, and one give-up log via the worker-0 gate
+// below, per physical table. Keyed with a NUL separator rather than a dot so
+// that path "a.b" table "c" and path "a" table "b.c" cannot share a budget.
 const interruptedDropAttempts = new Map<string, number>();
 // Scoped by drop generation (Table.ts stamps a fresh id on every dropping
-// tombstone) rather than just database + table: a worker can exhaust one
-// drop's budget, then observe the table recreated and dropped again without
-// ever seeing an intermediate non-tombstoned row to reset on. Keying by
+// tombstone) rather than just path + table: a worker can exhaust one drop's
+// budget, then observe the table recreated and dropped again without ever
+// seeing an intermediate non-tombstoned row to reset on. Keying by
 // generation means the new drop's tombstone always carries a fresh key,
 // independent of what any worker last observed. Tombstones written before
 // this field existed fall back to a shared 'legacy' bucket.
-const interruptedDropKey = (databaseName: string, tableName: string, generation?: string) =>
-	`${databaseName}\0${tableName}\0${generation ?? 'legacy'}`;
+const interruptedDropKey = (storePath: string, tableName: string, generation?: string) =>
+	`${storePath}\0${tableName}\0${generation ?? 'legacy'}`;
+// A live (non-tombstoned) row never carries the dropGeneration of whatever
+// drop it resolved - generations are only stamped while dropping - so a
+// lookup keyed off the live row's (absent) generation can only ever hit the
+// 'legacy' bucket, never the actual spent UUID entry. That entry is
+// harmless (a new drop always gets a fresh generation-scoped key regardless)
+// but never gets cleaned up either, leaking one Map entry per historical
+// drop generation for the worker's lifetime. Sweep every entry under this
+// path+table prefix instead of guessing which generation to target.
+const interruptedDropKeyPrefix = (storePath: string, tableName: string) => `${storePath}\0${tableName}\0`;
+function clearInterruptedDropEntries(storePath: string, tableName: string) {
+	const prefix = interruptedDropKeyPrefix(storePath, tableName);
+	for (const key of interruptedDropAttempts.keys()) {
+		if (key.startsWith(prefix)) interruptedDropAttempts.delete(key);
+	}
+}
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -563,14 +585,14 @@ function initStores(
 	// it, because creating over a half-dropped table would resurrect its catalog
 	// rows. There a failure propagates to the caller as its own single error.
 	for (const [tableName, tableDef] of tablesToLoad) {
-		const dropKey = interruptedDropKey(databaseName, tableName, tableDef.primary?.dropGeneration);
+		const dropKey = interruptedDropKey(path, tableName, tableDef.primary?.dropGeneration);
 		if (!tableDef.primary?.dropping) {
 			// No tombstone, so any budget this table spent belongs to a drop that
 			// has since been resolved - by the create path, which completes
 			// interrupted drops itself and never passes through here. Leaving the
 			// budget spent would permanently skip cleanup for the table's NEXT
 			// interrupted drop.
-			interruptedDropAttempts.delete(dropKey);
+			clearInterruptedDropEntries(path, tableName);
 			continue;
 		}
 		const failedAttempts = interruptedDropAttempts.get(dropKey) ?? 0;
@@ -1285,8 +1307,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// before any reconcile observes it live in between would have its NEXT
 				// interrupted drop inherit this one's spent attempts. Generation-scoped
 				// keying (see interruptedDropKey) already makes that impossible, but
-				// clearing it here too avoids leaving a dead entry behind.
-				interruptedDropAttempts.delete(interruptedDropKey(databaseName, tableName, existingTableMeta?.dropGeneration));
+				// clearing it here too avoids leaving a dead entry behind - for every
+				// generation this table has ever spent, not just the one on this row.
+				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
@@ -1928,12 +1951,27 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 			}
 		}
 	}
+	// The primary catalog row (the `dropping` tombstone itself, keyed at exactly
+	// `tableName + '/'`) sorts first among these keys and so would be removed
+	// before the attribute rows that follow it. Removing it last instead means a
+	// removeSync failure partway through leaves the tombstone in place alongside
+	// whatever attribute rows didn't get removed yet, so a later retry still
+	// recognizes the table as mid-drop - instead of the tombstone vanishing
+	// first and stranding orphaned attribute rows that the next load would
+	// misread as a live (non-dropping) table.
+	const primaryCatalogKey = tableName + '/';
+	let removePrimaryLast = false;
 	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+		if (key === primaryCatalogKey) {
+			removePrimaryLast = true;
+			continue;
+		}
 		// removeSync (not remove): same reasoning as dropSync above - the async
 		// remove() rejects after this function has already returned, so a
 		// catalog-removal failure would bypass the retry accounting entirely.
 		(attributesDbi as any).removeSync(key);
 	}
+	if (removePrimaryLast) (attributesDbi as any).removeSync(primaryCatalogKey);
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {
