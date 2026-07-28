@@ -10,6 +10,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
+import { execFileSync } from 'node:child_process';
 import { streamPackagedDirectory, packageDirectory, scanPackageDirectory } from '../components/packageComponent.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
@@ -46,6 +47,11 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 	'json',
 	'skip_node_modules',
 	'skip_symlinks',
+	// deploy-by-reference opt-in: consumed client-side to build `package` (and derive `credentials`),
+	// never sent to the server. (`credentials`, plural, IS a real operation field and is sent.)
+	'by_ref',
+	'ref',
+	'credential',
 ]);
 
 // Streaming (multipart upload + SSE progress) deploy was introduced in 5.1.0. A CLI at >=
@@ -249,10 +255,126 @@ function redactCredentials(req: any): any {
 	return redacted;
 }
 
-export { cliOperations, buildRequest, redactCredentials, refreshExpiredOperationToken };
+export {
+	cliOperations,
+	buildRequest,
+	redactCredentials,
+	refreshExpiredOperationToken,
+	resolveGitCommittish,
+	deriveGitSecretName,
+};
+
+// --- deploy-by-reference (opt-in via `by_ref=true` / `ref=<committish>`) ----------------------
+// Resolve the app's GitHub repo + commit from the local working copy (or GitHub Actions env) so
+// `harper deploy by_ref=true` deploys a pinned commit by reference instead of uploading a payload
+// blob. Client-side: only the runner has the git context. The no-flag default stays the payload deploy.
+
+function runGit(args: string[]): string {
+	return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+}
+
+function resolveGitRepo(): string {
+	if (process.env.GITHUB_REPOSITORY) return process.env.GITHUB_REPOSITORY;
+	let url: string;
+	try {
+		url = runGit(['remote', 'get-url', 'origin']);
+	} catch {
+		throw new Error(
+			'deploy by_ref: no git `origin` remote found — push this project to GitHub, or pass an explicit package=.'
+		);
+	}
+	// git@github.com:owner/repo.git | https://github.com/owner/repo(.git) | ssh://…
+	const match = url.match(/github\.com[:/]+([^/]+\/[^/]+?)(?:\.git)?\/?$/i);
+	if (!match) throw new Error(`deploy by_ref: could not parse owner/repo from the origin remote: ${url}`);
+	return match[1];
+}
+
+function resolveGitCommittish(ref: unknown): string {
+	// buildRequest JSON-parses CLI args, so a numeric ref (e.g. `ref=1234567`) arrives as a number —
+	// coerce it back to a string rather than silently ignoring it and falling back to HEAD.
+	const refStr = typeof ref === 'string' || typeof ref === 'number' ? String(ref).trim() : '';
+	if (refStr.length > 0) return refStr; // explicit ref= wins
+	if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA;
+	try {
+		return runGit(['rev-parse', 'HEAD']);
+	} catch {
+		throw new Error('deploy by_ref: could not resolve HEAD — make at least one commit, or pass ref=<sha|tag>.');
+	}
+}
+
+function warnIfWorkingTreeDirty(): void {
+	try {
+		if (runGit(['status', '--porcelain'])) {
+			process.stderr.write(
+				'warning: working tree has uncommitted changes — the cluster deploys the committed (and pushed) commit, so those changes are NOT included.\n'
+			);
+		}
+	} catch {
+		// Not a git repo; resolveGitRepo/resolveGitCommittish will surface a clearer error.
+	}
+}
+
+function defaultProjectName(projectPath: string): string {
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.join(projectPath, 'package.json'), 'utf8'));
+		if (typeof pkg.name === 'string' && pkg.name.length > 0) return pkg.name.replace(/^@[^/]+\//, '');
+	} catch {
+		// No/invalid package.json — fall back to the directory name.
+	}
+	return path.basename(projectPath);
+}
+
+// Mirror the server's `deriveGitSecretName` (secretOperations.ts) EXACTLY so the reference this
+// attaches matches the row `harper deploy setup=true` sealed and a literal-token deploy would use:
+// `deploy.<component>.git.<host>` (host via normalizeGitHost).
+function deriveGitSecretName(component: string, host: string): string {
+	const hostPart = host
+		.trim()
+		.replace(/^[a-z0-9+.-]+:\/\//i, '')
+		.replace(/^\/\//, '')
+		.replace(/\/.*$/, '')
+		.replace(/^[^@]*@/, '')
+		.toLowerCase()
+		.replace(/[^\w.-]+/g, '_');
+	const componentPart = String(component).replace(/[^\w.-]+/g, '_');
+	return `deploy.${componentPart}.git.${hostPart}`;
+}
+
+// Opt-in deploy-by-reference: resolve the pinned git ref (+ optional sealed credential) onto `req` —
+// a `git+https` package pinned by SHA, plus a `credentials` reference when `credential=` is set.
+// Exported for unit tests.
+export function prepareDeployByRef(req: any): void {
+	const repo = resolveGitRepo();
+	const committish = resolveGitCommittish(req.ref);
+	warnIfWorkingTreeDirty();
+	if (!req.project) req.project = defaultProjectName(process.cwd());
+	// git+https (not ssh): a private clone is authenticated by a git-host token credential (#1799),
+	// which rides over HTTPS. A public repo needs no credential at all.
+	req.package = `git+https://github.com/${repo}.git#${committish}`;
+	// `credential=github.com` (or `credential=true`) attaches the sealed-token reference the cluster
+	// resolves at fetch time — provision it once with `harper deploy setup=true`.
+	const credentialHost =
+		req.credential === true
+			? 'github.com'
+			: typeof req.credential === 'string' && req.credential.length > 0
+				? req.credential
+				: undefined;
+	if (credentialHost && req.credentials === undefined) {
+		req.credentials = [{ host: credentialHost, secret: deriveGitSecretName(req.project, credentialHost) }];
+	}
+	process.stderr.write(`Deploying "${req.project}" by reference: ${req.package}\n`);
+}
+
 const PREPARE_OPERATION: any = {
 	deploy_component: async (req) => {
 		if (req.package) {
+			return;
+		}
+
+		// Opt-in: deploy a pinned git commit by reference instead of packaging the working directory.
+		// Templates scaffold `by_ref=true`; without the flag the payload path below is unchanged.
+		if (req.by_ref || req.ref) {
+			prepareDeployByRef(req);
 			return;
 		}
 

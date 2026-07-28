@@ -1159,3 +1159,61 @@ describe('cliOperations', () => {
 		});
 	});
 });
+
+describe('deploy by reference (by_ref)', () => {
+	const { prepareDeployByRef, resolveGitCommittish, deriveGitSecretName } = cliOperationsModule;
+	let savedRepo, savedSha, savedStderrWrite;
+
+	beforeEach(() => {
+		savedRepo = process.env.GITHUB_REPOSITORY;
+		savedSha = process.env.GITHUB_SHA;
+		// Resolve deterministically from env so the tests never shell out to git.
+		process.env.GITHUB_REPOSITORY = 'acme/demo';
+		process.env.GITHUB_SHA = 'abc123def456';
+		// Silence the "Deploying … by reference" line prepareDeployByRef writes to stderr.
+		savedStderrWrite = process.stderr.write;
+		process.stderr.write = () => true;
+	});
+
+	afterEach(() => {
+		if (savedRepo === undefined) delete process.env.GITHUB_REPOSITORY;
+		else process.env.GITHUB_REPOSITORY = savedRepo;
+		if (savedSha === undefined) delete process.env.GITHUB_SHA;
+		else process.env.GITHUB_SHA = savedSha;
+		process.stderr.write = savedStderrWrite;
+	});
+
+	it('builds a git+https package pinned to the resolved SHA', () => {
+		const req = { by_ref: true, project: 'demo' };
+		prepareDeployByRef(req);
+		assert.strictEqual(req.package, 'git+https://github.com/acme/demo.git#abc123def456');
+		assert.strictEqual(req.credentials, undefined); // no credential requested
+	});
+
+	it('an explicit ref= wins over GITHUB_SHA', () => {
+		const req = { by_ref: true, ref: 'v9.9.9', project: 'demo' };
+		prepareDeployByRef(req);
+		assert.strictEqual(req.package, 'git+https://github.com/acme/demo.git#v9.9.9');
+	});
+
+	it('resolveGitCommittish coerces a numeric ref to a string (buildRequest JSON-parses it)', () => {
+		assert.strictEqual(resolveGitCommittish(1234567), '1234567');
+		assert.strictEqual(resolveGitCommittish('v1.0.0'), 'v1.0.0');
+	});
+
+	it('credential=true attaches a github.com credential reference', () => {
+		const req = { by_ref: true, credential: true, project: 'demo' };
+		prepareDeployByRef(req);
+		assert.deepStrictEqual(req.credentials, [{ host: 'github.com', secret: 'deploy.demo.git.github.com' }]);
+	});
+
+	it('credential=<host> attaches a credential reference for that host', () => {
+		const req = { by_ref: true, credential: 'github.com', project: 'my-app' };
+		prepareDeployByRef(req);
+		assert.deepStrictEqual(req.credentials, [{ host: 'github.com', secret: 'deploy.my-app.git.github.com' }]);
+	});
+
+	it('deriveGitSecretName matches the server convention (deploy.<component>.git.<host>)', () => {
+		assert.strictEqual(deriveGitSecretName('my-app', 'github.com'), 'deploy.my-app.git.github.com');
+	});
+});
