@@ -110,7 +110,7 @@ describe('Write txn timeout', () => {
 					// hold the transaction open (with a pending write) long enough for the monitor to fire
 					await delay(150);
 				}),
-				/open-transaction limit/
+				/open-transaction time/
 			);
 			// the partial write must have been rolled back: no record by primary key...
 			assert.ok((await IndexedResource.get(101)) == null, 'timed-out write should not have been committed');
@@ -139,7 +139,7 @@ describe('Write txn timeout', () => {
 					await OtherResource.put(302, { name: 'should not persist' }, context); // write database B -> next
 					await delay(150);
 				}),
-				/open-transaction limit/
+				/open-transaction time/
 			);
 			assert.ok((await OtherResource.get(302)) == null, 'multi-store write should not have been committed');
 		} finally {
