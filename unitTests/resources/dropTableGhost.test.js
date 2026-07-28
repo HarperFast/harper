@@ -470,4 +470,53 @@ describe('dropTable ghost regression', () => {
 		}
 		await dbisDb.committed;
 	});
+
+	// Cross-model review: completeInterruptedDrop used to swallow every
+	// per-store dropSync failure (not just the tolerated "already dropped"
+	// race), then remove the catalog rows and let the caller clear the retry
+	// budget anyway - so a store that genuinely failed to drop was declared
+	// complete. A same-name recreate would then reuse (LMDB) or resurrect
+	// (RocksDB) that store's leftover data. LMDB-only: intercepts
+	// rootStore.openDB, the reconcile's own per-store open call, which is not
+	// reachable by stubbing a table's primaryStore/dbisDb like the other tests.
+	it('a genuine store-drop failure during reconcile preserves the tombstone instead of declaring success', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
+		this.timeout(20000);
+		const TABLE = `GhostDropSyncFail_${process.pid}_${Date.now()}`;
+		const Stuck = defineTable(TABLE);
+		await Stuck.put({ id: 1, str: 'data' });
+		const dbisDb = getDbisDb();
+		const rootStore = Stuck.primaryStore.rootStore;
+		const meta = dbisDb.getSync(`${TABLE}/`);
+		meta.dropping = true;
+		await dbisDb.put(`${TABLE}/`, meta);
+		delete databases[TEST_DB][TABLE];
+
+		const originalOpenDB = rootStore.openDB;
+		rootStore.openDB = function (key, ...rest) {
+			const store = originalOpenDB.call(this, key, ...rest);
+			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
+				store.dropSync = () => {
+					throw new Error('disk I/O error');
+				};
+			}
+			return store;
+		};
+		try {
+			resetDatabases();
+			getDatabases();
+		} finally {
+			rootStore.openDB = originalOpenDB;
+		}
+
+		const survivingMeta = dbisDb.getSync(`${TABLE}/`);
+		assert.ok(survivingMeta?.dropping, 'a genuine store-drop failure must leave the tombstone in place');
+		assert.equal(getDatabases()[TEST_DB]?.[TABLE], undefined, 'a tombstoned table must never load');
+
+		// clean up by hand now that dropSync works again
+		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
+			dbisDb.remove(key);
+		}
+		await dbisDb.committed;
+	});
 });
