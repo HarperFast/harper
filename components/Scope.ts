@@ -38,8 +38,10 @@ export type ScopeEventsMap = {
 	// file-driven work to avoid acting on intermediate states.
 	'deploy:start': [componentName: string];
 	// Fired after deploy I/O completes (success or failure). The scope's
-	// EntryHandlers have been recreated by this point; subsequent `add`/`change`
-	// events reflect the post-deploy tree.
+	// EntryHandlers have been resumed by this point; their replacement watcher
+	// generation compares the post-deploy scan with the retained pre-deploy
+	// snapshot, so subsequent events are the logical differences of that tree,
+	// not a replay of every surviving file as an `add`.
 	'deploy:end': [componentName: string];
 	[record: string]: [...args: unknown[]];
 };
@@ -329,7 +331,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		// retained pre-deploy snapshot and emits only logical changes. Plugin
 		// handlers stay attached across the pause.
 		for (const entryHandler of this.#entryHandlers) {
-			void entryHandler.resume();
+			// `ready` rejects if the resumed generation emits `error` first (the handler's own
+			// 'error' listener reports it); nothing here awaits it, so swallow to avoid an
+			// unhandled rejection.
+			void entryHandler.resume().catch(() => {});
 		}
 		if (restartRequestedDuringDeploy) this.requestRestart();
 
@@ -396,8 +401,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 					return;
 				}
 
-				// Otherwise, if an entry handler exists, update it with the new config
-				scope.#entryHandler.update(config as FileAndURLPathConfig);
+				// Otherwise, if an entry handler exists, update it with the new config. The returned
+				// readiness latch is not awaited here and rejects if the new generation errors, so
+				// swallow it — the handler's 'error' listener already reports it.
+				void scope.#entryHandler.update(config as FileAndURLPathConfig).catch(() => {});
 
 				return;
 			}
