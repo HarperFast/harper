@@ -39,7 +39,8 @@ describe('secondary index vs. replicated (source-applied) status transitions', (
 				return (sub = new IterableEventQueue());
 			},
 		});
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		// sourcedFrom subscribes asynchronously; wait for the subscription itself, not a guessed delay
+		await waitFor(() => sub, { message: 'source subscription was never established' });
 	});
 
 	async function applyTransitions(id, statuses, { awaitEach }) {

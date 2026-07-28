@@ -147,6 +147,59 @@ describe('secondary index vs. two writes to the same key in one transaction', ()
 	// A blob stored by an earlier write in the transaction and replaced by a later one is reachable
 	// from nothing once the transaction commits (no audit entry references it on an audit-off table),
 	// so it must be cleaned up like a skipped write's blobs.
+	// The chain's key identity must equal the store's key identity (ordered-binary). Tested at the
+	// unit level: pairs like [0]/[-0] and [null]/[NaN] are distinct stored keys that JSON collapses,
+	// but records with non-finite/falsy composite ids are currently unreadable through the resource
+	// point-read path (separate pre-existing bug, tracked), so an API-level regression can't run.
+	it('chain key identity matches the store key encoding for collision-prone ids', () => {
+		const { writeKeyId } = require('#src/resources/DatabaseTransaction');
+		const distinct = [
+			[[0], [-0]],
+			[[null], [NaN]],
+			[[Infinity], [-Infinity]],
+			[['x'], '["x"]'],
+			[[1n], ['1']],
+			[0, -0],
+		];
+		for (const [a, b] of distinct) {
+			assert.notStrictEqual(
+				writeKeyId(a),
+				writeKeyId(b),
+				`distinct stored keys must not share a chain key: ${String(a)} vs ${String(b)}`
+			);
+		}
+		const same = [
+			[1n, 1],
+			[2 ** 60, 1n << 60n],
+			[['x'], ['x']],
+			[
+				[1, 'a'],
+				[1, 'a'],
+			],
+		];
+		for (const [a, b] of same) {
+			assert.strictEqual(writeKeyId(a), writeKeyId(b), `same stored key must share a chain key: ${String(a)}`);
+		}
+	});
+
+	// ...and 1n vs 1 are the SAME stored key, so repeat writes through the two spellings must
+	// chain — otherwise the second write diffs against the pre-transaction record (harper#1968).
+	it('bigint and number spellings of the same id chain together', async () => {
+		await Inst.put({ id: 9007, status: 'RUNNING' });
+		const context = {};
+		await transaction(context, async () => {
+			await Inst.patch({ id: 9007n, status: 'STOPPING', first: 1 }, context);
+			await Inst.patch({ id: 9007, status: 'STOPPED', second: 2 }, context);
+		});
+		const record = await Inst.get(9007);
+		assert.strictEqual(record.status, 'STOPPED');
+		assert.strictEqual(record.first, 1, 'the bigint-spelled write was dropped from the merge basis');
+		assert.strictEqual(record.second, 2);
+		assert.deepStrictEqual(await indexedStatuses(9007), ['STOPPED'], 'intermediate status left in the index');
+	});
+
+	after(() => setDeletionDelay(500)); // restore the default; later test files share this mocha process
+
 	it('a blob replaced by a later write in the same transaction is cleaned up (audit off)', async () => {
 		setDeletionDelay(0);
 		const BlobTbl = table({

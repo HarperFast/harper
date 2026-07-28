@@ -34,7 +34,7 @@ import { when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
 	ImmediateTransaction,
-	priorStagedEntry,
+	priorStagedWrite,
 	TRANSACTION_STATE,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -2259,14 +2259,15 @@ export function makeTable(options) {
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
 					write.superseded = false; // likewise: a later write to this key re-marks it this round
 					// The record a preceding write in this transaction left for this key is what this write
-					// applies to (see priorStagedEntry): a staged write is not visible to a read, so without
+					// applies to (see priorStagedWrite): a staged write is not visible to a read, so without
 					// this the index diff re-removes the values that write already removed and never removes
 					// the ones it added — orphaning them — and an incremental update merges onto the
 					// pre-transaction record, dropping that write's changes entirely (harper#1968). Only the
 					// record comes from the earlier write; the rest of the entry (version, audit chain, blob
 					// metadata) stays the pre-transaction one, which is the version this write's audit entry
 					// and optimistic version check are still relative to.
-					const priorStaged = priorStagedEntry(write);
+					const priorStagedOp = priorStagedWrite(write);
+					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -2829,9 +2830,9 @@ export function makeTable(options) {
 							// then owns their lifetime; and any record an earlier write in this transaction
 							// stored is now replaced, so mark those writes for the superseded-blob cleanup
 							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
-							for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
-								if (prior.stagedEntry) prior.superseded = true;
-							}
+							// only the nearest staged prior needs marking: anything older was already
+							// superseded by its own staged successor earlier in this commit round
+							if (priorStagedOp) priorStagedOp.superseded = true;
 						}
 					}
 				},
@@ -2915,7 +2916,8 @@ export function makeTable(options) {
 					write.superseded = false; // reset per round, as in the update path
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
-					const priorStaged = priorStagedEntry(write);
+					const priorStagedOp = priorStagedWrite(write);
+					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -2954,11 +2956,10 @@ export function makeTable(options) {
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
 					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
-					// the removal supersedes any record an earlier write in this transaction stored, so its
-					// saved blobs are cleaned up post-commit unless its audit entry references them
-					for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
-						if (prior.stagedEntry) prior.superseded = true;
-					}
+					// the removal supersedes the nearest record an earlier write in this transaction stored
+					// (older ones were already marked by their staged successors), so its saved blobs are
+					// cleaned up post-commit unless its audit entry references them
+					if (priorStagedOp) priorStagedOp.superseded = true;
 				},
 			};
 			transaction.addWrite(write);
