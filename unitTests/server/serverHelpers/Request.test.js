@@ -208,6 +208,31 @@ describe('Request class', function () {
 			assert.strictEqual(request.protocol, 'http');
 		});
 
+		it('reports https on the UDS mirror when a PROXY v2 SSL TLV was forwarded', function () {
+			// UDS mirror is a plain node:http server → encrypted is undefined; the forwarded
+			// TLS facts (connectionInfo.tls) tell us the client connection was really TLS.
+			mockNodeRequest.socket.encrypted = undefined;
+			mockNodeRequest.socket.connectionInfo = { tls: { version: 'TLSv1.3' } };
+			assert.strictEqual(request.protocol, 'https');
+
+			// No forwarded TLS facts (v1 header / bare connection) keeps today's behavior.
+			mockNodeRequest.socket.connectionInfo = { ja4: 't13d1516h2_x_y' };
+			assert.strictEqual(request.protocol, 'http');
+		});
+
+		it('exposes forwarded connectionInfo, undefined when absent', function () {
+			assert.strictEqual(request.connectionInfo, undefined);
+			const info = {
+				alpn: 'h2',
+				authority: 'api.example.com',
+				ja4: 't13d1516h2_a_b',
+				tls: { version: 'TLSv1.3', verified: true },
+			};
+			mockNodeRequest.socket.connectionInfo = info;
+			assert.strictEqual(request.connectionInfo, info);
+			assert.strictEqual(request.connectionInfo.ja4, 't13d1516h2_a_b');
+		});
+
 		it('should return correct IP address', function () {
 			assert.strictEqual(request.ip, '192.168.1.100');
 		});

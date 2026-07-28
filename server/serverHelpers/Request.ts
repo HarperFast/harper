@@ -4,6 +4,7 @@ import { TLSSocket } from 'node:tls';
 import { EventEmitter } from 'node:events';
 import { Readable, PassThrough } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
+import type { ConnectionInfo } from './proxyProtocol.ts';
 
 export const isBun = typeof globalThis.Bun !== 'undefined';
 
@@ -14,6 +15,7 @@ interface IncomingMessage extends NodeIncomingMessage {
 		authorized?: boolean; // only for TLSSocket
 		encrypted?: boolean; // only for TLSSocket
 		getPeerCertificate?: (detailed?: boolean) => any; // only for TLSSocket
+		connectionInfo?: ConnectionInfo; // set by proxyProtocol on the UDS mirror from a PROXY v2 header
 		server?: {
 			mtlsConfig?: any;
 		};
@@ -109,7 +111,11 @@ export class Request {
 		else this.url = pathname;
 	}
 	get protocol() {
-		return this._nodeRequest.socket.encrypted ? 'https' : 'http';
+		// A directly-terminated TLS socket reports `encrypted`. The UDS mirror is a plain
+		// node:http server, so a connection the client made over TLS shows encrypted=undefined;
+		// the fronting proxy's PROXY v2 SSL TLV (connectionInfo.tls) tells us it was really TLS.
+		if (this._nodeRequest.socket.encrypted || this._nodeRequest.socket.connectionInfo?.tls) return 'https';
+		return 'http';
 	}
 	get ip() {
 		return this._nodeRequest.socket.remoteAddress;
@@ -131,6 +137,16 @@ export class Request {
 	}
 	get mtlsConfig() {
 		return this._nodeRequest.socket.server.mtlsConfig;
+	}
+	/**
+	 * TLS facts a fronting proxy (e.g. symphony) forwarded over a PROXY v2 header on the
+	 * UDS mirror: negotiated ALPN, SNI authority, TLS version/cipher, the client's JA3/JA4
+	 * fingerprint, and the verified mTLS client certificate chain. `undefined` when the
+	 * connection carried no PROXY v2 header (direct connection, or a v1 header). Never
+	 * populated from a request header — only from the trusted proxy-protocol channel.
+	 */
+	get connectionInfo(): ConnectionInfo | undefined {
+		return this._nodeRequest.socket.connectionInfo;
 	}
 	get body() {
 		return this.#body || (this.#body = new RequestBody(this._nodeRequest));

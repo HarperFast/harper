@@ -3,14 +3,19 @@
  * sockets fronted by a trusted proxy (e.g. symphony on the per-worker UDS
  * mirrors, which terminates TLS and forwards the original connection facts).
  *
- * Beyond the client source address, the v2 TLV vector can carry TLS facts the
- * proxy observed — most importantly the mTLS client certificate chain (custom
- * TLV 0xE2, one DER-encoded certificate per TLV, leaf first). Symphony only
- * emits the chain after its verifier accepted it, so on a trusted link a
+ * Beyond the client source address, the v2 TLV vector carries the TLS facts the
+ * proxy observed once it terminated TLS — negotiated ALPN, SNI authority, TLS
+ * version/cipher, the client's JA3/JA4 fingerprint, and the mTLS client
+ * certificate chain. These are otherwise invisible to a component behind Harper
+ * once the fronting proxy terminates TLS. They are decoded into a
+ * `ConnectionInfo` and surfaced on the request as `request.connectionInfo`.
+ *
+ * The mTLS client certificate chain (custom TLV 0xE2, one DER-encoded cert per
+ * TLV, leaf first) is additionally exposed with TLSSocket semantics — symphony
+ * only emits the chain after its verifier accepted it, so on a trusted link a
  * forwarded chain is treated like a directly-terminated, verified client cert:
- * `applyProxyHeader` gives the socket TLSSocket-shaped `authorized` and
- * `getPeerCertificate()` so the existing mTLS auth paths (HTTP and MQTT) work
- * unchanged.
+ * `applyProxyHeader` gives the socket `authorized` and `getPeerCertificate()`
+ * so the existing mTLS auth paths (HTTP and MQTT) work unchanged.
  *
  * Trust model: identical to the PROXY v1 source-address override — anything
  * that can write to the socket can claim any identity, so this must only be
@@ -27,17 +32,53 @@ const PROXY_V2_SIGNATURE = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a
 
 const PP2_FAMILY_TCP4 = 0x11;
 const PP2_FAMILY_TCP6 = 0x21;
+// Standard PROXY v2 TLV types (spec §2.2.x).
+const PP2_TYPE_ALPN = 0x01;
+const PP2_TYPE_AUTHORITY = 0x02;
 const PP2_TYPE_SSL = 0x20;
+const PP2_SUBTYPE_SSL_VERSION = 0x21;
+const PP2_SUBTYPE_SSL_CIPHER = 0x23;
 // Custom-range TLVs (0xE0-0xEF are application-specific per the spec), matching
 // symphony's allocation: 0xE0 = JA3, 0xE1 = JA4, 0xE2 = client cert chain.
+const PP2_TYPE_JA3 = 0xe0;
+const PP2_TYPE_JA4 = 0xe1;
 const PP2_TYPE_CLIENT_CERT = 0xe2;
 const PP2_CLIENT_CERT_CONN = 0x02;
 
-export interface ForwardedTls {
-	/** True when the proxy reported the presented client cert as verified (PP2 SSL TLV verify == 0). */
-	verified: boolean;
-	/** Client certificate chain (DER, leaf first) from PP2 0xE2 TLVs. */
-	clientCertChain: Buffer[];
+/** TLS facts the fronting proxy observed on the terminated connection. */
+export interface ForwardedTlsInfo {
+	/** Negotiated TLS version, e.g. "TLSv1.3" (PP2 SSL sub-TLV 0x21). */
+	version?: string;
+	/** Negotiated cipher suite name (PP2 SSL sub-TLV 0x23). */
+	cipher?: string;
+	/**
+	 * True when the SSL TLV reports a client certificate was presented and the proxy verified it
+	 * (verify == 0). This is the proxy's verify bit, not proof the cert bytes are available here:
+	 * the chain is in `clientCertChain` / `request.peerCertificate` but may be absent even when
+	 * `verified` is true (e.g. the proxy omitted an oversized chain). For the standard
+	 * "verified mTLS client" gate use `request.authorized`, which is chain-gated.
+	 */
+	verified?: boolean;
+}
+
+/**
+ * Connection-level facts forwarded by a trusted proxy over a PROXY v2 header.
+ * Present on `request.connectionInfo` only when a v2 header was decoded; every
+ * field is optional since a given route forwards only what it's configured to.
+ */
+export interface ConnectionInfo {
+	/** Negotiated ALPN protocol, e.g. "h2" (PP2 TLV 0x01). */
+	alpn?: string;
+	/** SNI hostname from the ClientHello (PP2 TLV 0x02). */
+	authority?: string;
+	/** TLS facts from the SSL TLV (0x20); present when the proxy terminated TLS. */
+	tls?: ForwardedTlsInfo;
+	/** Client JA3 fingerprint, 32-char MD5 hex (PP2 TLV 0xE0). */
+	ja3?: string;
+	/** Client JA4 fingerprint (PP2 TLV 0xE1). */
+	ja4?: string;
+	/** Verified mTLS client certificate chain (DER, leaf first) from PP2 0xE2 TLVs. */
+	clientCertChain?: Buffer[];
 }
 
 export interface DecodedProxyHeader {
@@ -46,7 +87,8 @@ export interface DecodedProxyHeader {
 	headerLength: number;
 	srcIp?: string;
 	srcPort?: number;
-	tls?: ForwardedTls;
+	/** Decoded v2 TLV facts; absent for a v1 header or a v2 header with no TLVs. */
+	connectionInfo?: ConnectionInfo;
 }
 
 export type ProxyHeaderDecision = { kind: 'incomplete' } | { kind: 'none' } | DecodedProxyHeader;
@@ -112,28 +154,63 @@ function decodeV2(buffer: Buffer): ProxyHeaderDecision {
 		return decoded;
 	}
 
+	const info: ConnectionInfo = {};
+	let tls: ForwardedTlsInfo | undefined;
 	let certPresented = false;
-	let verified = false;
 	let clientCertChain: Buffer[] | undefined;
 	while (tlvOffset + 3 <= headerLength) {
 		const type = buffer[tlvOffset];
 		const valueLength = buffer.readUInt16BE(tlvOffset + 1);
-		const valueEnd = tlvOffset + 3 + valueLength;
+		const valueStart = tlvOffset + 3;
+		const valueEnd = valueStart + valueLength;
 		if (valueEnd > headerLength) break; // malformed TLV — keep what we parsed so far
-		if (type === PP2_TYPE_SSL && valueLength >= 5) {
-			// struct pp2_tlv_ssl: client(1) verify(4, 0 = verified ok), then sub-TLVs
-			certPresented = (buffer[tlvOffset + 3] & PP2_CLIENT_CERT_CONN) !== 0;
-			verified = buffer.readUInt32BE(tlvOffset + 4) === 0;
+		if (type === PP2_TYPE_ALPN && valueLength > 0) {
+			info.alpn = buffer.toString('latin1', valueStart, valueEnd);
+		} else if (type === PP2_TYPE_AUTHORITY && valueLength > 0) {
+			info.authority = buffer.toString('utf8', valueStart, valueEnd);
+		} else if (type === PP2_TYPE_SSL && valueLength >= 5) {
+			// struct pp2_tlv_ssl: client(1) verify(4, 0 = verified ok), then sub-TLVs.
+			certPresented = (buffer[valueStart] & PP2_CLIENT_CERT_CONN) !== 0;
+			const verifyOk = buffer.readUInt32BE(valueStart + 1) === 0;
+			tls = { verified: certPresented && verifyOk };
+			parseSslSubTlvs(buffer, valueStart + 5, valueEnd, tls);
+		} else if (type === PP2_TYPE_JA3 && valueLength > 0) {
+			info.ja3 = buffer.toString('latin1', valueStart, valueEnd);
+		} else if (type === PP2_TYPE_JA4 && valueLength > 0) {
+			info.ja4 = buffer.toString('latin1', valueStart, valueEnd);
 		} else if (type === PP2_TYPE_CLIENT_CERT && valueLength > 0) {
 			// Copy so the retained chain doesn't pin the connection's first read buffer.
-			(clientCertChain ??= []).push(Buffer.from(buffer.subarray(tlvOffset + 3, valueEnd)));
+			(clientCertChain ??= []).push(Buffer.from(buffer.subarray(valueStart, valueEnd)));
 		}
 		tlvOffset = valueEnd;
 	}
-	if (certPresented && clientCertChain) {
-		decoded.tls = { verified, clientCertChain };
+	if (tls) info.tls = tls;
+	// A chain without the SSL TLV's cert-present bit is malformed; require both.
+	if (certPresented && clientCertChain) info.clientCertChain = clientCertChain;
+	// Attach only when at least one TLV populated a field. A direct field check (not
+	// Object.keys, which allocates an array) keeps the connection accept path allocation-free.
+	if (info.alpn || info.authority || info.tls || info.ja3 || info.ja4 || info.clientCertChain) {
+		decoded.connectionInfo = info;
 	}
 	return decoded;
+}
+
+/** Parse the version (0x21) and cipher (0x23) sub-TLVs inside a PP2 SSL TLV value. */
+function parseSslSubTlvs(buffer: Buffer, start: number, end: number, tls: ForwardedTlsInfo): void {
+	let offset = start;
+	while (offset + 3 <= end) {
+		const type = buffer[offset];
+		const length = buffer.readUInt16BE(offset + 1);
+		const valueStart = offset + 3;
+		const valueEnd = valueStart + length;
+		if (valueEnd > end) break;
+		if (type === PP2_SUBTYPE_SSL_VERSION) {
+			tls.version = buffer.toString('latin1', valueStart, valueEnd);
+		} else if (type === PP2_SUBTYPE_SSL_CIPHER) {
+			tls.cipher = buffer.toString('latin1', valueStart, valueEnd);
+		}
+		offset = valueEnd;
+	}
 }
 
 /**
@@ -170,25 +247,29 @@ function formatIpv6(buffer: Buffer, offset: number): string {
 
 /**
  * Apply a decoded PROXY header to the socket: override remoteAddress/remotePort
- * with the real client values, and when the proxy forwarded a verified client
- * cert chain, expose it with TLSSocket semantics (`authorized`,
- * `getPeerCertificate()`) so mTLS auth treats it like a directly-terminated cert.
+ * with the real client values, stash the forwarded `connectionInfo` (surfaced as
+ * `request.connectionInfo`), and when the proxy forwarded a verified client cert
+ * chain, expose it with TLSSocket semantics (`authorized`, `getPeerCertificate()`)
+ * so mTLS auth treats it like a directly-terminated cert.
  */
 export function applyProxyHeader(socket: any, header: DecodedProxyHeader): void {
 	if (header.srcIp !== undefined) {
 		Object.defineProperty(socket, 'remoteAddress', { value: header.srcIp, configurable: true });
 		Object.defineProperty(socket, 'remotePort', { value: header.srcPort, configurable: true });
 	}
-	const tls = header.tls;
-	if (tls) {
+	const info = header.connectionInfo;
+	if (!info) return;
+	socket.connectionInfo = info;
+	const chain = info.clientCertChain;
+	if (chain) {
 		let detailedCertificate: any;
 		let leafCertificate: any;
-		socket.authorized = tls.verified;
+		socket.authorized = info.tls?.verified === true;
 		// Lazy so X509 parsing only happens when an auth path actually reads the
 		// cert. Matches Node's TLSSocket API: detailed=true includes the
 		// issuerCertificate chain, otherwise just the peer certificate.
 		socket.getPeerCertificate = (detailed?: boolean) => {
-			detailedCertificate ??= synthesizePeerCertificate(tls.clientCertChain);
+			detailedCertificate ??= synthesizePeerCertificate(chain);
 			if (detailed) return detailedCertificate;
 			if (!leafCertificate) {
 				const { issuerCertificate: _omitted, ...leaf } = detailedCertificate;
