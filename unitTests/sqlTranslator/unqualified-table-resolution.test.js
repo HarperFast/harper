@@ -188,6 +188,18 @@ describe('GHSA-5c29-q62v-jrwf — unqualified SQL table resolution', () => {
 			]);
 		});
 
+		it('reports an EXCEPT branch', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM data.customers EXCEPT SELECT id FROM shared'), [
+				'nested query in "except"',
+			]);
+		});
+
+		it('reports an INTERSECT branch', () => {
+			assert.deepStrictEqual(unauthorized('SELECT id FROM data.customers INTERSECT SELECT id FROM shared'), [
+				'nested query in "intersect"',
+			]);
+		});
+
 		it("reports an INSERT's source query, whose FROM table is never recorded", () => {
 			assert.deepStrictEqual(unauthorized('INSERT INTO data.customers SELECT id FROM shared'), [
 				'nested query in "select"',
