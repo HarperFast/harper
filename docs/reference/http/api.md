@@ -78,17 +78,53 @@ A `Request` object is passed to HTTP middleware handlers and direct static REST 
 
 ### Properties
 
-| Property   | Type                                                                  | Description                                                                                                                                                                                          |
-| ---------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `url`      | string                                                                | The request target (path + query string), e.g. `/path?query=string`                                                                                                                                  |
-| `method`   | string                                                                | HTTP method: `GET`, `POST`, `PUT`, `DELETE`, etc.                                                                                                                                                    |
-| `headers`  | [`Headers`](https://developer.mozilla.org/en-US/docs/Web/API/Headers) | Request headers                                                                                                                                                                                      |
-| `pathname` | string                                                                | Path portion of the URL, without query string                                                                                                                                                        |
-| `protocol` | string                                                                | `http` or `https`                                                                                                                                                                                    |
-| `data`     | any                                                                   | Deserialized body, based on `Content-Type` header                                                                                                                                                    |
-| `ip`       | string                                                                | Remote IP address of the client (or last proxy)                                                                                                                                                      |
-| `host`     | string                                                                | Host from the request headers                                                                                                                                                                        |
-| `session`  | object                                                                | Current cookie-based session (a `Table` record instance). Update with `request.session.update({ key: value })`. A cookie is set automatically the first time a session is updated or a login occurs. |
+| Property         | Type                                                                  | Description                                                                                                                                                                                                                                                                                                                          |
+| ---------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `url`            | string                                                                | The request target (path + query string), e.g. `/path?query=string`                                                                                                                                                                                                                                                                  |
+| `method`         | string                                                                | HTTP method: `GET`, `POST`, `PUT`, `DELETE`, etc.                                                                                                                                                                                                                                                                                    |
+| `headers`        | [`Headers`](https://developer.mozilla.org/en-US/docs/Web/API/Headers) | Request headers                                                                                                                                                                                                                                                                                                                      |
+| `pathname`       | string                                                                | Path portion of the URL, without query string                                                                                                                                                                                                                                                                                        |
+| `protocol`       | string                                                                | `http` or `https`. Behind a TLS-terminating proxy that forwards PROXY protocol v2, this reflects the client's original scheme even though the proxy-to-Harper hop is plaintext.                                                                                                                                                      |
+| `data`           | any                                                                   | Deserialized body, based on `Content-Type` header                                                                                                                                                                                                                                                                                    |
+| `ip`             | string                                                                | Remote IP address of the client (or last proxy)                                                                                                                                                                                                                                                                                      |
+| `host`           | string                                                                | Host from the request headers                                                                                                                                                                                                                                                                                                        |
+| `session`        | object                                                                | Current cookie-based session (a `Table` record instance). Update with `request.session.update({ key: value })`. A cookie is set automatically the first time a session is updated or a login occurs.                                                                                                                                 |
+| `connectionInfo` | object \| undefined                                                   | TLS facts a fronting proxy forwarded over PROXY protocol v2 — negotiated ALPN, SNI, TLS version/cipher, the client's JA3/JA4 fingerprint, and the verified mTLS client certificate chain. `undefined` for a direct connection or one without a v2 header. See [Connection info](#connection-info). <VersionBadge version="v5.2.0" /> |
+
+### Connection info
+
+<VersionBadge version="v5.2.0" />
+
+When Harper runs behind a TLS-terminating proxy (for example, Harper Fabric's Symphony edge), the TLS handshake happens at the proxy, so facts about the client's TLS connection — its fingerprint, negotiated protocol, and any client certificate — are otherwise invisible to your application. When the proxy is configured to forward them over PROXY protocol v2, Harper decodes them and exposes them on `request.connectionInfo`:
+
+```ts
+interface ConnectionInfo {
+	alpn?: string; // negotiated ALPN protocol, e.g. "h2"
+	authority?: string; // SNI hostname from the ClientHello
+	tls?: {
+		version?: string; // e.g. "TLSv1.3"
+		cipher?: string; // negotiated cipher suite
+		verified?: boolean; // a client certificate was presented and the proxy verified it
+	};
+	ja3?: string; // JA3 fingerprint (32-char MD5 hex)
+	ja4?: string; // JA4 fingerprint
+	clientCertChain?: Buffer[]; // verified mTLS client certificate chain (DER, leaf first)
+}
+```
+
+`request.connectionInfo` is `undefined` unless a PROXY v2 header was decoded; each field is present only when the proxy actually forwarded it. Reading the client's JA4 fingerprint — e.g. to make a bot or abuse decision — is simply:
+
+```javascript
+class Origin {
+	get(request) {
+		const ja4 = request.connectionInfo?.ja4;
+		if (ja4 && abuseList.has(ja4)) throw new Error('blocked');
+		return fetch(request);
+	}
+}
+```
+
+**Trust and mTLS.** `connectionInfo` is populated only from the trusted proxy-protocol channel (Harper Fabric's per-worker Unix domain socket, writable only by the local proxy) — never from a request header, so a client cannot forge it. `tls.verified` reflects the proxy's verify bit: it can be `true` even when `clientCertChain` is absent (a proxy may verify a certificate but omit an oversized chain). For gating on a verified mTLS client identity, use the parsed [`request.peerCertificate`](../security/certificate-verification.md) and the connection's authenticated user, not `connectionInfo.tls.verified` alone.
 
 ### Methods
 
