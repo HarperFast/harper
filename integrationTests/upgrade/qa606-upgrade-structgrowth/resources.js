@@ -93,7 +93,7 @@ export class StructReport606 extends Resource {
 			typedStructs: enc && Array.isArray(enc.typedStructs) ? enc.typedStructs.length : null,
 			classicStructures: enc && Array.isArray(enc.structures) ? enc.structures.length : null,
 			maxOwnStructures: enc ? (enc.maxOwnStructures ?? null) : null,
-			storeCtor: store && store.constructor && store.constructor.name,
+			storeCtor: store?.constructor?.name,
 		};
 	}
 }
