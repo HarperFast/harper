@@ -206,9 +206,10 @@ function opOf(entry: any): string {
 	return entry.operation;
 }
 
-function defineSuite(threadCount: number) {
+function defineSuite(threadCount: number, engineOverride?: 'lmdb' | 'rocksdb') {
+	const engine = engineOverride ?? ENGINE;
 	suite(
-		`QA-725 audit log invariants under writes+prune [threads=${threadCount}, engine=${ENGINE}]`,
+		`QA-725 audit log invariants under writes+prune [threads=${threadCount}, engine=${engine}]`,
 		{ skip: skipSuite },
 		(ctx: ContextWithHarper) => {
 			before(async () => {
@@ -216,7 +217,7 @@ function defineSuite(threadCount: number) {
 					config: {
 						threads: { count: threadCount },
 						logging: { auditLog: true, auditRetention: AUDIT_RETENTION_SECONDS },
-						storage: { engine: ENGINE },
+						storage: { engine },
 					},
 					env: {},
 				});
@@ -264,8 +265,8 @@ function defineSuite(threadCount: number) {
 
 				const after = await readHistories(ctx, [id]);
 				const actualLen = after[id]?.length ?? 0;
-				const expectedLen = ENGINE === 'lmdb' ? 0 : 1;
-				const wrongProbe = ENGINE === 'lmdb' ? 1 : 0;
+				const expectedLen = engine === 'lmdb' ? 0 : 1;
+				const wrongProbe = engine === 'lmdb' ? 1 : 0;
 
 				// Deliberately assert a WRONG expected length (the opposite of what's correct for this
 				// engine) and confirm the assertion mechanism actually throws — proves the oracle is not
@@ -285,14 +286,14 @@ function defineSuite(threadCount: number) {
 					`ARMED-ORACLE CHECK FAILED: expected assert.strictEqual(${actualLen}, ${wrongProbe}) to throw AssertionError, oracle may be blind`
 				);
 				console.log(
-					`[QA-725 armed-oracle threads=${threadCount} engine=${ENGINE}] confirmed assertion fires on a known-wrong claim (actual=${actualLen})`
+					`[QA-725 armed-oracle threads=${threadCount} engine=${engine}] confirmed assertion fires on a known-wrong claim (actual=${actualLen})`
 				);
 
 				// Now the real, engine-correct assertion.
 				strictEqual(
 					actualLen,
 					expectedLen,
-					`after pruning past cutoff on ${ENGINE}, ${id} should have ${expectedLen} surviving audit entries, got ${actualLen}`
+					`after pruning past cutoff on ${engine}, ${id} should have ${expectedLen} surviving audit entries, got ${actualLen}`
 				);
 			});
 
@@ -386,7 +387,7 @@ function defineSuite(threadCount: number) {
 				const oldSurvivorCount = oldIds.reduce((acc, id) => acc + (oldHistories[id]?.length ?? 0), 0);
 				const newSurvivorCount = newIds.reduce((acc, id) => acc + (newHistories[id]?.length ?? 0), 0);
 				console.log(
-					`[QA-725 Q2 threads=${threadCount} engine=${ENGINE}] old (pre-cutoff) survivors=${oldSurvivorCount}/20, new (post-cutoff) survivors=${newSurvivorCount}/20`
+					`[QA-725 Q2 threads=${threadCount} engine=${engine}] old (pre-cutoff) survivors=${oldSurvivorCount}/20, new (post-cutoff) survivors=${newSurvivorCount}/20`
 				);
 
 				// Ground truth is the direct re-read, independent of whatever the prune op reported as
@@ -396,11 +397,11 @@ function defineSuite(threadCount: number) {
 				// rotation (mtime) and RocksDB's own memtable-flush state -- neither is reachable for
 				// this small a write volume in a short test process, so all 20 legitimately survive.
 				// Either way, post-cutoff entries must never be touched.
-				const expectedOldSurvivors = ENGINE === 'lmdb' ? 0 : 20;
+				const expectedOldSurvivors = engine === 'lmdb' ? 0 : 20;
 				strictEqual(
 					oldSurvivorCount,
 					expectedOldSurvivors,
-					`on ${ENGINE}, pre-cutoff entries should have ${expectedOldSurvivors} survivors, got ${oldSurvivorCount}`
+					`on ${engine}, pre-cutoff entries should have ${expectedOldSurvivors} survivors, got ${oldSurvivorCount}`
 				);
 				for (const id of newIds) {
 					const entries = newHistories[id] ?? [];
@@ -455,3 +456,8 @@ function defineSuite(threadCount: number) {
 
 defineSuite(1);
 defineSuite(4);
+// Always exercise the real-deletion branch regardless of the process's default storage
+// engine: CI's default (RocksDB) legitimately no-ops delete_transaction_logs_before for
+// this write volume (see header comment), so without an explicit LMDB instance every CI
+// run only ever proves the no-op path and never proves prune actually deletes anything.
+defineSuite(1, 'lmdb');

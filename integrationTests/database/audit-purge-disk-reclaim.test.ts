@@ -718,6 +718,22 @@ suite(
 				`6. POST-PURGE (same process) aggregate row count: ${postCount} (baseline was ${baselineCount}) — read_audit_log still serving purged rows?`
 			);
 
+			// The zero-pin gate at test 8 only proves that whatever WAS unlinked is not pinned — it
+			// says nothing about whether purge actually did its job in this process. Gate that
+			// directly: the job must report real deletion work (not a no-op), and the same-process
+			// directory listing must already show fewer .txnlog files than the pre-purge baseline
+			// (the header's documented "directory listing should already show the collapse" claim).
+			// Without these, a no-op/partial purge that defers all real work to restart would sail
+			// through the fd/mmap oracle with a trivial zero.
+			ok(
+				reportedDeleted >= VOLUME_RECORDS,
+				`purge job reported transactions_deleted=${reportedDeleted}, expected at least the seeded volume (${VOLUME_RECORDS}) — a no-op or partial purge must not pass`
+			);
+			ok(
+				postDiskStats.fileCount < preDiskStats.fileCount,
+				`purge left the same-process .txnlog file count unchanged (${postDiskStats.fileCount}, was ${preDiskStats.fileCount}) — the directory listing must already collapse in this process for the fd/mmap zero-pin gate at test 8 to mean anything`
+			);
+
 			// Cross-check F-225's specific claim directly in THIS run: isolated hash_value read-back,
 			// same process, for sample ids spanning the whole insert range, so we can see whether the
 			// aggregate count drop (14800 -> postCount) reflects genuinely-gone data or whether some

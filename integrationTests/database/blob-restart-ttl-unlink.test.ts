@@ -603,6 +603,34 @@ suite(
 				}
 				findings.push(`Q5: disk trajectory after cleanup_orphan_blobs: ${traj.join(' -> ')}`);
 
+				// The path-set comparison below cannot tell WHICH of the two pre-update paths (survivor
+				// vs. old update-target) was released — both are anonymous file paths. If cleanup
+				// released the wrong one (deleted survivor's live file, kept the stale update-target
+				// file), the set-shape assertions below would still pass. Close that gap directly via
+				// the application read path: re-GET both live records post-cleanup and require
+				// byte-exact content. A dangling/deleted blob file surfaces here as a read error or a
+				// sha mismatch, regardless of which anonymous path it was.
+				const survivorPostCleanup = await op({ action: 'get', id: 'survivor' }).expect(200);
+				ok(
+					survivorPostCleanup.body.present && survivorPostCleanup.body.shaMatch === true,
+					`Q5 DEFECT: survivor became dangling/corrupt after cleanup_orphan_blobs: ${JSON.stringify(survivorPostCleanup.body)}`
+				);
+				strictEqual(
+					survivorPostCleanup.body.readSha,
+					survivorSha,
+					'Q5 DEFECT: survivor bytes must still be byte-identical after cleanup_orphan_blobs'
+				);
+				const targetPostCleanup = await op({ action: 'get', id: 'update-target' }).expect(200);
+				ok(
+					targetPostCleanup.body.present && targetPostCleanup.body.shaMatch === true,
+					`Q5 DEFECT: update-target became dangling/corrupt after cleanup_orphan_blobs: ${JSON.stringify(targetPostCleanup.body)}`
+				);
+				strictEqual(
+					targetPostCleanup.body.readSha,
+					newSha,
+					'Q5 DEFECT: update-target must still read the NEW content after cleanup_orphan_blobs'
+				);
+
 				// Exact-set proof, not just a count: the file(s) released must be drawn from the known
 				// pre-update set (i.e. the OLD update-target blob specifically), and the survivor's
 				// original file plus the update's NEW file must both still be present untouched.

@@ -133,6 +133,24 @@ suite(
 			ok(guess === 'lmdb', `PRECONDITION: engine in effect must be lmdb, got ${guess}`);
 		});
 
+		test(
+			'0.5. let the initial one-shot cleanup delay elapse before seeding the measured cohort',
+			{ timeout: 20_000 },
+			async () => {
+				// scheduleAuditCleanup() is armed once at store-open with DEFAULT_AUDIT_CLEANUP_DELAY
+				// (10s, auditStore.ts:113/225) before any self-re-arm has happened. If the measured
+				// cohort below were inserted before that first callback fires, a single one-shot
+				// invocation — with NO working recursive re-arm at all (auditStore.ts:216) — could
+				// still sweep it once it ages past auditRetention, and this suite would stay green
+				// while the self-re-arming loop is entirely broken. Wait out that initial delay (with
+				// margin) first, so the cohort can only be inserted after at least one re-arm has
+				// already had to occur, and its later disappearance can only be explained by the loop
+				// continuing to re-arm itself.
+				await sleep(11_000);
+				lmdbFindings.push('0.5. waited out the initial one-shot cleanup delay window (11s)');
+			}
+		);
+
 		test('1. positive control: read_audit_log count actually grows on insert', async () => {
 			const before = await readAuditCount(ctx);
 			const records = Array.from({ length: 200 }, (_, i) => ({ id: `k${i}`, seq: i, payload: 'p'.repeat(200) }));
@@ -173,8 +191,8 @@ suite(
 				);
 
 				ok(
-					last < peak,
-					`LMDB self-re-arming retention loop did NOT reduce audit count passively within the bounded wait: peak=${peak} final=${last}. ` +
+					last <= peak - 200 || last === 0,
+					`LMDB self-re-arming retention loop did NOT fully purge the measured 200-record cohort within the bounded wait: peak=${peak} final=${last} (expected <= ${peak - 200} or 0). ` +
 						`If this fails, F-218's "RocksDB-specific" framing does not hold — LMDB fails too, which is a bigger/different finding.`
 				);
 				lmdbFindings.push(

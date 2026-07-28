@@ -151,6 +151,23 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 	}
 
 	/**
+	 * Positive control for the raw-index oracle itself: `measure()` only counts BAD entries
+	 * (null-keyed / dangling); if IndexDump or index population were broken and returned `[]`,
+	 * every phantom/dangling count below would be zero and the whole suite would pass having
+	 * observed nothing. Call this right after seeding, before any removal, so a failure here
+	 * means the oracle is blind rather than the fix being correct.
+	 */
+	async function assertIndexPositiveControl(table: string, expectedIds: string[], bucketValue: string) {
+		const idx = await indexDump(table);
+		const matching = idx.filter((e) => e.indexedValue === bucketValue && expectedIds.includes(e.primaryKey));
+		strictEqual(
+			matching.length,
+			expectedIds.length,
+			`POSITIVE CONTROL: raw index dump for ${table} must show all ${expectedIds.length} freshly-loaded rows under bucket=${bucketValue}, got ${matching.length} — if this fails the index oracle itself is broken/empty and every phantom/dangling count in this suite is meaningless`
+		);
+	}
+
+	/**
 	 * The 3-count oracle described in the task: for a set of removedIds against a table,
 	 *   danglingNonNull  — real-key (non-null) index entries pointing at a gone row (any gone row,
 	 *                       not just ones this test removed — classic F-149 shape).
@@ -197,6 +214,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		await post('/Load/', { table: 'DelTable', ids: delIds, bucket: 'DEL' });
 		let base = await dump('DelTable');
 		strictEqual(base.length, N, 'all rows present pre-delete');
+		await assertIndexPositiveControl('DelTable', delIds, 'DEL');
 
 		await post('/Delete/', { table: 'DelTable', ids: delIds });
 		await sleep(300);
@@ -228,6 +246,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		async () => {
 			const ctrlIds = ids('ctrl', N);
 			await post('/Load/', { table: 'ControlTable', ids: ctrlIds, bucket: 'ORIG' });
+			await assertIndexPositiveControl('ControlTable', ctrlIds, 'ORIG');
 			await post('/UpdateInPlace/', { table: 'ControlTable', ids: ctrlIds, bucket: 'UPDATED' });
 			await sleep(300);
 
@@ -236,6 +255,22 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 			strictEqual(m.baseCount, N, 'all control rows still present (never deleted)');
 			strictEqual(m.nullKeyedCount, 0, 'update-in-place must NOT produce any null-keyed index entry');
 			strictEqual(m.danglingNonNullCount, 0, 'update-in-place must NOT produce any dangling index entry');
+			// Exact-count proof the raw index actually tracked the update, not just "zero bad entries"
+			// (which a blind/broken index scan would also show): every control row must show up under
+			// its NEW bucket value and none under the stale one.
+			const idxAfter = await indexDump('ControlTable');
+			const updatedEntries = idxAfter.filter((e) => e.indexedValue === 'UPDATED' && ctrlIds.includes(e.primaryKey));
+			const staleOrigEntries = idxAfter.filter((e) => e.indexedValue === 'ORIG' && ctrlIds.includes(e.primaryKey));
+			strictEqual(
+				updatedEntries.length,
+				N,
+				`update-in-place: expected all ${N} control rows indexed under bucket=UPDATED, got ${updatedEntries.length}`
+			);
+			strictEqual(
+				staleOrigEntries.length,
+				0,
+				`update-in-place: expected no control rows still indexed under the stale bucket=ORIG, got ${staleOrigEntries.length}`
+			);
 		}
 	);
 
@@ -246,10 +281,25 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		await post('/Load/', { table: 'EvictTable', ids: evictIds, bucket: 'EVICT' });
 		let base = await dump('EvictTable');
 		strictEqual(base.length, N, 'all rows present pre-expiry');
+		await assertIndexPositiveControl('EvictTable', evictIds, 'EVICT');
 
 		// expiration:2s — wait past it, then GET each id to trigger the lazy-eviction path directly
 		// (ensureLoadedFromSource -> TableResource.evict()), NOT the background sweep (scanInterval:300s).
 		await sleep(2_500);
+		// Guard against the wrong-path race: Table.ts's scheduleCleanup() aligns its FIRST timer to
+		// the next wall-clock interval boundary counted from the start of the year (see
+		// resources/Table.ts scheduleCleanup — `nextScheduled = ceil((now - startOfYear) /
+		// interval) * interval + startOfYear`), not 300s from server start. Depending on where the
+		// test happens to land in that 5-minute cycle, the "never fires in this window" background
+		// sweep could in principle beat the GETs below to it, evicting via the wrong call site while
+		// this test still credits the lazy-eviction path. Assert the rows are still here immediately
+		// before triggering the lazy path, so that race fails loudly instead of silently passing.
+		const preGet = await dump('EvictTable');
+		strictEqual(
+			preGet.length,
+			N,
+			`RACE: background sweep (scanInterval:300) appears to have already evicted EvictTable rows before the lazy-path GETs ran (${preGet.length}/${N} remain) — this arm cannot isolate the lazy-eviction call site if that happens`
+		);
 		for (const id of evictIds) {
 			await fetch(`${httpURL}/EvictTable/${id}`, {
 				headers: { Authorization: auth },
@@ -292,6 +342,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		await post('/Load/', { table: 'SweepTable', ids: sweepIds, bucket: 'SWEEP' });
 		let base = await dump('SweepTable');
 		strictEqual(base.length, N, 'all rows present pre-expiry');
+		await assertIndexPositiveControl('SweepTable', sweepIds, 'SWEEP');
 
 		// expiration:3s, scanInterval:1s — poll until the background sweep drains the table. NO
 		// intervening reads (isolates the sweep path from the lazy-read path tested in Q2).

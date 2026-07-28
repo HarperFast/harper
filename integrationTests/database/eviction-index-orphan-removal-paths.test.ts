@@ -166,6 +166,35 @@ suite(`QA-661 F-149 fix probe [${ENGINE}] [threads=${WORKERS}]`, { skip: skipSui
 			const preBase = await primaryDump('Expiring');
 			strictEqual(preBase.rows.length, totalNonHeartbeat + HEARTBEAT_IDS.length, 'all rows present pre-sweep');
 
+			// Positive control: the post-sweep checks below prove absence of ORPHANED index entries
+			// for the ~150 rows the sweep is about to evict. That proof is only meaningful if those
+			// rows actually had live index entries to begin with — if seeding or indexing were
+			// silently broken, they'd never be indexed, their later absence would require no cleanup
+			// at all, and this removal oracle would pass having observed nothing. Assert full raw-index
+			// consistency (no dangling, no missing) BEFORE the sweep starts.
+			const preBucketConsistency = await checkConsistency('Expiring', 'bucket');
+			const preTagsConsistency = await checkConsistency('Expiring', 'tags');
+			strictEqual(
+				preBucketConsistency.missing.length,
+				0,
+				`POSITIVE CONTROL: pre-sweep bucket index must have an entry for every row's current value, got ${preBucketConsistency.missing.length} missing — an unindexed row would trivially pass the post-sweep orphan check`
+			);
+			strictEqual(
+				preBucketConsistency.dangling.length,
+				0,
+				`POSITIVE CONTROL: pre-sweep bucket index must have no dangling entries before the sweep even starts, got ${preBucketConsistency.dangling.length}`
+			);
+			strictEqual(
+				preTagsConsistency.missing.length,
+				0,
+				`POSITIVE CONTROL: pre-sweep tags index must have an entry for every row's current value(s), got ${preTagsConsistency.missing.length} missing`
+			);
+			strictEqual(
+				preTagsConsistency.dangling.length,
+				0,
+				`POSITIVE CONTROL: pre-sweep tags index must have no dangling entries before the sweep even starts, got ${preTagsConsistency.dangling.length}`
+			);
+
 			// Heartbeat loop: keep refreshing the heartbeat ids' bucket + tags (a full PUT resets
 			// expiresAt) every ~400ms for ~9s, cycling through 3 different bucket values and tag
 			// sets, WHILE the TTL sweep is actively evicting the other 150 rows concurrently.
@@ -264,6 +293,20 @@ suite(`QA-661 F-149 fix probe [${ENGINE}] [threads=${WORKERS}]`, { skip: skipSui
 		const allIds = preDump.rows.map((r: any) => r.id);
 		const toDelete = allIds.filter((_: string, i: number) => i % 2 === 0); // delete half
 
+		// Positive control: prove the half about to be delete()'d is actually indexed BEFORE we
+		// delete it. An unindexed row would trivially show zero dangling entries afterward.
+		const preConsistency = await checkConsistency('Perm', 'bucket');
+		strictEqual(
+			preConsistency.missing.length,
+			0,
+			`POSITIVE CONTROL: pre-delete bucket index must have an entry for every seeded row, got ${preConsistency.missing.length} missing`
+		);
+		strictEqual(
+			preConsistency.dangling.length,
+			0,
+			`POSITIVE CONTROL: pre-delete bucket index must have no dangling entries before delete() even runs, got ${preConsistency.dangling.length}`
+		);
+
 		const delRes = await postJSON('/DeleteIds/', { table: 'Perm', ids: toDelete });
 		strictEqual(delRes.status, 200, 'DeleteIds should succeed');
 
@@ -331,6 +374,20 @@ suite(`QA-661 F-149 fix probe [${ENGINE}] [threads=${WORKERS}]`, { skip: skipSui
 		const preDump = await primaryDump('Perm');
 		const evictIds = preDump.rows.filter((r: any) => r.id.startsWith('V-')).map((r: any) => r.id);
 		const toEvict = evictIds.filter((_: string, i: number) => i % 2 === 1); // evict half
+
+		// Positive control: prove the half about to be evict()'d is actually indexed BEFORE we
+		// evict it. An unindexed row would trivially show zero dangling entries afterward.
+		const preConsistency = await checkConsistency('Perm', 'bucket');
+		strictEqual(
+			preConsistency.missing.length,
+			0,
+			`POSITIVE CONTROL: pre-evict bucket index must have an entry for every seeded row, got ${preConsistency.missing.length} missing`
+		);
+		strictEqual(
+			preConsistency.dangling.length,
+			0,
+			`POSITIVE CONTROL: pre-evict bucket index must have no dangling entries before evict() even runs, got ${preConsistency.dangling.length}`
+		);
 
 		const evRes = await postJSON('/EvictIds/', { table: 'Perm', ids: toEvict });
 		strictEqual(evRes.status, 200, 'EvictIds should succeed');
