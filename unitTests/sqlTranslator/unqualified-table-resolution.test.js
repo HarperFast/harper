@@ -206,6 +206,19 @@ describe('GHSA-5c29-q62v-jrwf — unqualified SQL table resolution', () => {
 			]);
 		});
 
+		it('reports a PIVOT clause, whose pivoted column the collectors never walk', () => {
+			assert.deepStrictEqual(
+				unauthorized("SELECT * FROM data.customers PIVOT (SUM(amount) FOR category IN ('a','b')) AS p"),
+				['PIVOT clause']
+			);
+		});
+
+		it('reports an UNPIVOT clause, whose unpivoted column the collectors never walk', () => {
+			assert.deepStrictEqual(unauthorized('SELECT * FROM data.customers UNPIVOT (amount FOR category IN (a,b)) AS p'), [
+				'UNPIVOT clause',
+			]);
+		});
+
 		it('does not treat an Object.prototype member as a table', () => {
 			assert.deepStrictEqual(unauthorized('SELECT id FROM toString'), ['toString']);
 		});
