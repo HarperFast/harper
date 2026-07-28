@@ -196,13 +196,17 @@ export function priorStagedEntry(operation: TransactionWrite): Partial<Entry> | 
 }
 
 /**
- * Key identity for the per-key write chain. A Map already distinguishes primitive types, so a
- * numeric key indexes it as-is (no allocation on the write path); string and composite (array) keys
- * go through JSON, whose encodings can never collide with each other ("a" vs ["a"]) or with a
- * number.
+ * Key identity for the per-key write chain. A Map already distinguishes primitive types (including
+ * bigint, for ids beyond Number.MAX_SAFE_INTEGER), so any primitive key indexes it as-is (no
+ * allocation on the write path, and no risk of JSON.stringify throwing on a bigint — see
+ * BigInt.prototype.toJSON in JSONStream.ts). Only composite (array) keys need JSON, since two
+ * instances with the same content aren't reference-equal; the replacer keeps a bigint element from
+ * throwing the same way.
  */
 function writeKeyId(key: Id): unknown {
-	return typeof key === 'number' ? key : JSON.stringify(key);
+	return typeof key === 'object' && key !== null
+		? JSON.stringify(key, (_, v) => (typeof v === 'bigint' ? v.toString() : v))
+		: key;
 }
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
