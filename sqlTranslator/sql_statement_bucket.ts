@@ -649,7 +649,13 @@ function getSelectAttributes(
 					tableName = ast.from[0].tableid;
 				}
 
-				if (!affectedAttributes.get(orderSchema).has(tableName)) {
+				const schemaTables = affectedAttributes.get(orderSchema);
+				if (!schemaTables) {
+					harperLogger.info(`schema for table ${tableName} not resolved; skipping its attributes.`);
+					continue;
+				}
+
+				if (!schemaTables.has(tableName)) {
 					if (!tableLookup.has(tableName)) {
 						harperLogger.info(`table specified as ${tableName} not found.`);
 						return;
@@ -658,8 +664,8 @@ function getSelectAttributes(
 					}
 				}
 
-				if (affectedAttributes.get(orderSchema).get(tableName).indexOf(node.columnid) < 0) {
-					affectedAttributes.get(orderSchema).get(tableName).push(node.columnid);
+				if (schemaTables.get(tableName).indexOf(node.columnid) < 0) {
+					schemaTables.get(tableName).push(node.columnid);
 				}
 			}
 		}
