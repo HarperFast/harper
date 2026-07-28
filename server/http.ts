@@ -1599,7 +1599,7 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 	return servers;
 }
 
-export function enableProxyProtocol(httpServer) {
+export function enableProxyProtocol(httpServer, prehandoffTimeout = 10_000) {
 	// In Node.js v24+, the HTTP parser's data path goes through the C++ stream layer
 	// and does not call socket.emit('data') via JavaScript method dispatch.
 	// Overriding socket.emit or socket.push has no effect on the HTTP parser's data intake.
@@ -1627,6 +1627,12 @@ export function enableProxyProtocol(httpServer) {
 			// recover from a corrupted first packet, so we must not forward a partial header —
 			// it can arrive across multiple data events.
 			let pending: Buffer | null = null;
+			// Bounds how long a stalled peer can hold the pending-header buffer, matching
+			// withProxyProtocol's prehandoffTimeout for the same threat on the raw-socket path.
+			// Cleared (not just disabled) once the header resolves, so it can't fire on a later,
+			// unrelated keep-alive timeout.
+			const onPrehandoffTimeout = () => socket.destroy();
+			socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
 			socket.on('data', (chunk: Buffer) => {
 				if (headerHandled) return forward(chunk);
 				if (pending) chunk = Buffer.concat([pending, chunk]);
@@ -1638,6 +1644,8 @@ export function enableProxyProtocol(httpServer) {
 				}
 				headerHandled = true;
 				pending = null;
+				socket.setTimeout(0);
+				socket.removeListener('timeout', onPrehandoffTimeout);
 				if (decision.kind === 'none') {
 					// Not a PROXY header — forward everything unchanged.
 					return forward(chunk);
