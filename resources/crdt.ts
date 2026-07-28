@@ -39,6 +39,9 @@ export const operations = Object.assign(Object.create(null), {
  * @param newerUpdate
  */
 export function rebuildUpdateBefore(update: any, newerUpdate: any, fullUpdate?: boolean) {
+	// nothing newer to rebuild against (e.g. the basis is a chained delete's staged
+	// `{ value: undefined }` on an audit-off table): nothing is superseded, keep every field
+	if (newerUpdate == null) return update;
 	let newUpdate = null;
 	for (const key in update) {
 		if (key in newerUpdate) {

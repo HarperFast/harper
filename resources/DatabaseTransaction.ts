@@ -13,6 +13,7 @@ import { Transaction as RocksTransaction, type Store as RocksStore, constants } 
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
+import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
@@ -194,40 +195,28 @@ export type TransactionWrite = {
  * neither storage engine can serve that state to a read — LMDB applies staged writes only in the
  * commit batch — so a later write to the same key gets its basis from the write that staged it
  * rather than from a pre-transaction read (harper#1968). Walks past writes that staged nothing
- * (a skipped or non-record write) to the last one that did.
+ * (a skipped or non-record write) to the last one that did, returning the owning write.
  */
-export function priorStagedEntry(operation: TransactionWrite): Partial<Entry> | undefined {
+export function priorStagedWrite(operation: TransactionWrite): TransactionWrite | undefined {
 	for (let prior = operation.priorWrite; prior; prior = prior.priorWrite) {
-		if (prior.stagedEntry) return prior.stagedEntry;
+		if (prior.stagedEntry) return prior;
 	}
 }
 
 /**
- * Key identity for the per-key write chain. A Map already distinguishes primitive types (including
- * bigint, for ids beyond Number.MAX_SAFE_INTEGER), so any primitive key indexes it as-is (no
- * allocation on the write path, and no risk of JSON.stringify throwing on a bigint — see
- * BigInt.prototype.toJSON in JSONStream.ts). Only composite (array) keys need JSON, since two
- * instances with the same content aren't reference-equal; the replacer keeps a bigint element from
- * throwing the same way.
+ * Key identity for the per-key write chain, which must match the storage engines' key identity —
+ * and that identity is the ordered-binary encoding, not JS value identity. The mismatches run in
+ * both directions: `1n` and `1` (or `2**60` and `1n << 60n`) encode to the SAME stored key, so the
+ * chain must link them or repeat writes re-introduce the harper#1968 stale basis; while `[0]` vs
+ * `[-0]` and `[null]` vs `[NaN]` are DIFFERENT stored keys that value-ish encodings (JSON, string
+ * coercion) collapse, cross-contaminating unrelated records. So every key is mapped through the
+ * same encoder the stores use; latin1 keeps the bytes injective in a string. Symbol keys (internal
+ * metadata writes) can't be key-encoded and keep native identity; so does null (topic-less
+ * publishes), which never stages a record.
  */
-function writeKeyId(key: Id): unknown {
-	if (typeof key === 'object' && key !== null) {
-		// Composite keys get their own namespace — a leading NUL, which no scalar string key can
-		// reach (escaped below) — with type-tagged elements, so the scalar string '["x"]' vs the
-		// composite ['x'], and [1n] vs ['1'] vs [1], all map to distinct keys.
-		return (
-			'\u0000' +
-			JSON.stringify(key, (_, v) => {
-				if (typeof v === 'bigint') return '\u0000b' + v.toString();
-				if (typeof v === 'string' && v.charCodeAt(0) === 0) return '\u0000s' + v;
-				return v;
-			})
-		);
-	}
-	// Escape the rare scalar string that would otherwise land in (or collide with an escapee of)
-	// the composite namespace; numbers and bigints keep their native Map identity.
-	if (typeof key === 'string' && (key.charCodeAt(0) === 0 || key.charCodeAt(0) === 1)) return '\u0001' + key;
-	return key;
+export function writeKeyId(key: Id): unknown {
+	if (typeof key === 'symbol' || key == null) return key;
+	return toBufferKey(key as any).toString('latin1');
 }
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
@@ -353,7 +342,7 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Chain a newly staged write to the preceding write to the same store and key, so its commit
 	 * handler can apply on top of what that write staged instead of the pre-transaction record
-	 * (see priorStagedEntry). Called by both engines' addWrite.
+	 * (see priorStagedWrite). Called by both engines' addWrite.
 	 */
 	linkWrite(operation: TransactionWrite): void {
 		if (operation.key === undefined) return;
