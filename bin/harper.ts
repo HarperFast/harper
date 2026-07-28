@@ -170,6 +170,13 @@ async function harper() {
 			return require('./run').main();
 		default:
 			const cliApiOp = cliOperations.buildRequest();
+			// `harper deploy setup=true` provisions an encrypted deploy credential (client-side sealed
+			// token) rather than deploying — an interactive flow, not a single operation call.
+			if (cliApiOp.operation === 'deploy_component' && cliApiOp.setup) {
+				const { deploySetup } = require('./deploySetup');
+				await deploySetup(cliApiOp);
+				return;
+			}
 			logger.trace('calling cli operations with:', cliOperations.redactCredentials(cliApiOp));
 			await cliOperations.cliOperations(cliApiOp);
 			return;
