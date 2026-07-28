@@ -183,17 +183,18 @@ describe('dropTable ghost regression', () => {
 		await dbisDb.put(`${TABLE}/`, meta);
 		delete databases[TEST_DB][TABLE];
 
-		// completeInterruptedDrop finishes by removing the table's catalog rows.
-		// Fail that the way a storage environment that can no longer accept writes
-		// does, so every completion attempt fails identically and forever.
-		const originalRemove = dbisDb.remove;
+		// completeInterruptedDrop finishes by removing the table's catalog rows via
+		// removeSync. Fail that the way a storage environment that can no longer
+		// accept writes does, so every completion attempt fails identically and
+		// forever.
+		const originalRemoveSync = dbisDb.removeSync;
 		let attempts = 0;
-		dbisDb.remove = function (key, ...rest) {
+		dbisDb.removeSync = function (key, ...rest) {
 			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
 				attempts++;
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
-			return originalRemove.call(this, key, ...rest);
+			return originalRemoveSync.call(this, key, ...rest);
 		};
 		const storageLogger = harperLogger.forComponent('storage');
 		const originalLogError = storageLogger.error;
@@ -214,7 +215,7 @@ describe('dropTable ghost regression', () => {
 			for (let i = 0; i < 5; i++) reload();
 		} finally {
 			storageLogger.error = originalLogError;
-			dbisDb.remove = originalRemove;
+			dbisDb.removeSync = originalRemoveSync;
 		}
 
 		assert.ok(attemptsWhenExhausted > 0, 'the interrupted drop must be attempted at least once');
@@ -234,7 +235,7 @@ describe('dropTable ghost regression', () => {
 			loggedTables.length,
 			`each stuck table must log exactly one actionable error, got ${loggedTables.join(', ')}`
 		);
-		assert.match(giveUpLogs[0], /giving up until this node restarts/);
+		assert.match(giveUpLogs[0], /giving up until this worker restarts/);
 		// the table must stay unloaded regardless
 		assert.equal(getDatabases()[TEST_DB]?.[TABLE], undefined, 'a tombstoned table must never load');
 
@@ -270,15 +271,15 @@ describe('dropTable ghost regression', () => {
 			return dbisDb;
 		};
 		const stubFailingRemove = (dbisDb, table) => {
-			const originalRemove = dbisDb.remove;
-			dbisDb.remove = function (key, ...rest) {
+			const originalRemoveSync = dbisDb.removeSync;
+			dbisDb.removeSync = function (key, ...rest) {
 				if (typeof key === 'string' && key.startsWith(`${table}/`)) {
 					throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 				}
-				return originalRemove.call(this, key, ...rest);
+				return originalRemoveSync.call(this, key, ...rest);
 			};
 			return () => {
-				dbisDb.remove = originalRemove;
+				dbisDb.removeSync = originalRemoveSync;
 			};
 		};
 		const storageLogger = harperLogger.forComponent('storage');
@@ -360,14 +361,14 @@ describe('dropTable ghost regression', () => {
 			await dbisDb.put(`${TABLE}/`, meta);
 		};
 
-		const originalRemove = dbisDb.remove;
+		const originalRemoveSync = dbisDb.removeSync;
 		let attempts = 0;
-		dbisDb.remove = function (key, ...rest) {
+		dbisDb.removeSync = function (key, ...rest) {
 			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
 				attempts++;
 				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
 			}
-			return originalRemove.call(this, key, ...rest);
+			return originalRemoveSync.call(this, key, ...rest);
 		};
 		const reload = () => {
 			resetDatabases();
@@ -396,7 +397,72 @@ describe('dropTable ghost regression', () => {
 				`a later interrupted drop must be retried again, not skipped on the previous drop's spent budget (attempts stuck at ${attempts})`
 			);
 		} finally {
-			dbisDb.remove = originalRemove;
+			dbisDb.removeSync = originalRemoveSync;
+		}
+
+		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
+			dbisDb.remove(key);
+		}
+		await dbisDb.committed;
+	});
+
+	// PR review (kriszyp): the reset above depends on this worker observing an
+	// intermediate non-tombstoned row between two drops. A worker can exhaust
+	// drop A's budget, then never see A's catalog removal - because some other
+	// worker/process completed it and immediately recreated + re-dropped the
+	// table as drop B - before this worker's next reload. Without a per-drop
+	// identity, that reload would see only B's tombstone with A's spent count
+	// and skip every cleanup attempt for B. The budget is now keyed by the
+	// tombstone's own dropGeneration (stamped fresh by Table.ts on every drop),
+	// so B's tombstone never shares a key with A's, with no intermediate
+	// non-tombstoned reload required.
+	it('gives a fresh budget to a same-name drop that never left a non-tombstoned row visible', async function () {
+		this.timeout(20000);
+		const TABLE = `GhostGenerationRace_${process.pid}_${Date.now()}`;
+		const Stuck = defineTable(TABLE);
+		await Stuck.put({ id: 1, str: 'data' });
+		const dbisDb = getDbisDb();
+
+		const tombstone = async (generation) => {
+			const meta = dbisDb.getSync(`${TABLE}/`);
+			meta.dropping = true;
+			meta.dropGeneration = generation;
+			await dbisDb.put(`${TABLE}/`, meta);
+		};
+
+		const originalRemoveSync = dbisDb.removeSync;
+		let attempts = 0;
+		dbisDb.removeSync = function (key, ...rest) {
+			if (typeof key === 'string' && key.startsWith(`${TABLE}/`)) {
+				attempts++;
+				throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
+			}
+			return originalRemoveSync.call(this, key, ...rest);
+		};
+		const reload = () => {
+			resetDatabases();
+			getDatabases();
+		};
+
+		try {
+			// exhaust generation A's budget entirely
+			await tombstone('generation-A');
+			delete databases[TEST_DB][TABLE];
+			for (let i = 0; i < 5; i++) reload();
+			const spentOnA = attempts;
+			assert.ok(spentOnA > 0, 'generation A must be attempted');
+
+			// jump straight to generation B's tombstone - no reload ever observed a
+			// non-tombstoned row in between, unlike the previous test
+			await tombstone('generation-B');
+			delete databases[TEST_DB][TABLE];
+			reload();
+			assert.ok(
+				attempts > spentOnA,
+				`generation B must get its own budget instead of inheriting A's spent count (attempts stuck at ${attempts})`
+			);
+		} finally {
+			dbisDb.removeSync = originalRemoveSync;
 		}
 
 		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {

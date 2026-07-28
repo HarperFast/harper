@@ -13,6 +13,7 @@ import {
 } from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
+import { randomUUID } from 'node:crypto';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
@@ -1191,6 +1192,14 @@ export function makeTable(options) {
 				const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
 				if (primaryMeta && !primaryMeta.dropping) {
 					primaryMeta.dropping = true;
+					// Stamps this drop's identity so the interrupted-drop retry budget in
+					// databases.ts can be scoped to THIS drop rather than the table name: a
+					// worker that exhausts the budget for a table can observe the catalog
+					// mid-flight between this drop's completion and a same-name recreate's
+					// own drop, without ever seeing a non-tombstoned row to reset on. Keying
+					// the budget by generation instead makes the new drop's tombstone carry
+					// its own fresh key regardless of what any worker last observed.
+					primaryMeta.dropGeneration = randomUUID();
 					// put is rebound to putSync on RocksDB stores; on LMDB it returns
 					// a promise, so await it to make the tombstone durable before the
 					// destructive work below

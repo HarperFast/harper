@@ -227,7 +227,15 @@ const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
 // Keyed with a NUL separator rather than a dot so that database "a.b" table "c"
 // and database "a" table "b.c" cannot share a budget.
 const interruptedDropAttempts = new Map<string, number>();
-const interruptedDropKey = (databaseName: string, tableName: string) => `${databaseName}\0${tableName}`;
+// Scoped by drop generation (Table.ts stamps a fresh id on every dropping
+// tombstone) rather than just database + table: a worker can exhaust one
+// drop's budget, then observe the table recreated and dropped again without
+// ever seeing an intermediate non-tombstoned row to reset on. Keying by
+// generation means the new drop's tombstone always carries a fresh key,
+// independent of what any worker last observed. Tombstones written before
+// this field existed fall back to a shared 'legacy' bucket.
+const interruptedDropKey = (databaseName: string, tableName: string, generation?: string) =>
+	`${databaseName}\0${tableName}\0${generation ?? 'legacy'}`;
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -555,7 +563,7 @@ function initStores(
 	// it, because creating over a half-dropped table would resurrect its catalog
 	// rows. There a failure propagates to the caller as its own single error.
 	for (const [tableName, tableDef] of tablesToLoad) {
-		const dropKey = interruptedDropKey(databaseName, tableName);
+		const dropKey = interruptedDropKey(databaseName, tableName, tableDef.primary?.dropGeneration);
 		if (!tableDef.primary?.dropping) {
 			// No tombstone, so any budget this table spent belongs to a drop that
 			// has since been resolved - by the create path, which completes
@@ -584,7 +592,7 @@ function initStores(
 					// including threads:0 where the main thread acts as worker 0 - logs it, so one
 					// stuck table produces one actionable error instead of one per worker.
 					logger.error(
-						`Unable to complete the interrupted drop of table ${dropLabel} after ${attempt} attempts; giving up until this node restarts. ${tableName} stays unloaded, with its catalog rows and column families left in place. An "Invalid column family specified in write batch" cause means the storage environment for ${databaseName} has latched a background error and will reject every write to every table in it until this node restarts.`,
+						`Unable to complete the interrupted drop of table ${dropLabel} after ${attempt} attempts; giving up until this worker restarts (a full node restart also resets this). ${tableName} stays unloaded, with its catalog rows and column families left in place. An "Invalid column family specified in write batch" cause means the storage environment for ${databaseName} has latched a background error and will reject every write to every table in it until this node restarts.`,
 						error
 					);
 				}
@@ -1275,8 +1283,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// reconcile below, which is the only other place that returns a spent
 				// budget. Without clearing it here too, a table that gets dropped again
 				// before any reconcile observes it live in between would have its NEXT
-				// interrupted drop inherit this one's spent attempts.
-				interruptedDropAttempts.delete(interruptedDropKey(databaseName, tableName));
+				// interrupted drop inherit this one's spent attempts. Generation-scoped
+				// keying (see interruptedDropKey) already makes that impossible, but
+				// clearing it here too avoids leaving a dead entry behind.
+				interruptedDropAttempts.delete(interruptedDropKey(databaseName, tableName, existingTableMeta?.dropGeneration));
 			}
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
@@ -1912,7 +1922,10 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		}
 	}
 	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
-		attributesDbi.remove(key);
+		// removeSync (not remove): same reasoning as dropSync above - the async
+		// remove() rejects after this function has already returned, so a
+		// catalog-removal failure would bypass the retry accounting entirely.
+		(attributesDbi as any).removeSync(key);
 	}
 }
 
