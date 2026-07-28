@@ -599,7 +599,13 @@ function initStores(
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
-				interruptedDropAttempts.delete(dropKey);
+				// Sweep every generation this worker has ever tracked for this table, not
+				// just the one just resolved: if a prior generation was exhausted here,
+				// then resolved+recreated+re-dropped by another worker as this generation
+				// without this worker ever observing a live row in between (the only other
+				// place that sweeps), the prior generation's entry would otherwise never
+				// be cleared.
+				clearInterruptedDropEntries(path, tableName);
 				definedTables?.delete(tableName);
 			} catch (error) {
 				const attempt = failedAttempts + 1;
