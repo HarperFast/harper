@@ -137,7 +137,7 @@ const LOCK_TIMEOUT = 10000;
 // concurrent worker may already have dropped it; the storage engine reports
 // that as "Column family already dropped!". The family being gone is the
 // intended outcome, so swallow that specific error and rethrow anything else.
-function ignoreAlreadyDropped(error: any): void {
+export function ignoreAlreadyDropped(error: any): void {
 	if (error?.message?.includes('Column family already dropped')) return;
 	throw error;
 }

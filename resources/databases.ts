@@ -9,7 +9,7 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
-import { makeTable } from './Table.ts';
+import { makeTable, ignoreAlreadyDropped } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
@@ -1885,20 +1885,27 @@ async function runIndexing(Table, attributes, indicesToRemove) {
  * catalog rows. Called from the boot-time schema load and from the create
  * path when a same-named table is created over a tombstoned entry. Callers
  * are expected to hold the database's exclusive lock or be in single-threaded
- * startup; the per-store drops tolerate races (another worker may be
- * completing the same drop concurrently).
+ * startup; a redundant drop of an already-gone store (another worker may be
+ * completing the same drop concurrently) is tolerated, but any other
+ * per-store failure propagates so the catalog rows are NOT removed - a store
+ * that failed to drop must keep its tombstone, or a same-name recreate could
+ * reuse (LMDB) or resurrect (RocksDB) the old store's data. Logged only at
+ * debug: the caller's retry loop is what decides when a failure is
+ * actionable, and logging here on every attempt would flood at the same
+ * volume this function's callers are bounding.
  */
 function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
-	logger.warn(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 	if (rootStore instanceof RocksDatabase) {
 		for (const columnName of (rootStore as any).columns) {
 			if (columnName.startsWith(tableName + '/')) {
+				const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
 				try {
-					const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
 					columnStore.dropSync();
-					columnStore.close();
 				} catch (error) {
-					logger.warn(`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`, error);
+					ignoreAlreadyDropped(error);
+				} finally {
+					columnStore.close();
 				}
 			}
 		}
@@ -1907,17 +1914,17 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		// be dropped too; removing only the catalog rows would let a same-name
 		// recreate silently inherit the previous table's records.
 		for (const { key, value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			const objectStorage =
+				value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
+			const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
 			try {
-				const objectStorage =
-					value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
-				const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
 				// dropSync (not drop): this function is synchronous, and its callers rely on
 				// a thrown error to count against the retry budget below - the async drop()
 				// resolves/rejects after this try/catch has already returned, so a failure
 				// there would silently bypass the retry accounting entirely.
 				store.dropSync?.();
 			} catch (error) {
-				logger.warn(`Failed dropping store ${key} of ${databaseName}.${tableName}`, error);
+				ignoreAlreadyDropped(error);
 			}
 		}
 	}
