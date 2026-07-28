@@ -184,7 +184,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			const socket = new EventEmitter();
 			socket.setTimeout = sinon.stub().callsFake((ms, cb) => {
 				if (cb) socket.on('timeout', cb);
-			});
+				if (cb) socket.once('timeout', cb);
 			socket.destroy = sinon.stub();
 			return socket;
 		}
