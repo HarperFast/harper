@@ -143,6 +143,37 @@ describe('prune-shrinkwrap-react-native', () => {
 		assert.strictEqual(result.packages['node_modules/shared'].version, '1.0.0', 'hoisted copy untouched');
 	});
 
+	// The ancestor walk itself: a react-native-fs that only exists nested under its dependent,
+	// plus a dependency of it that only exists at the root. Getting either lookup wrong leaves
+	// the package unreachable, so it is never pruned and these assertions fail.
+	it('resolves a nested react-native-fs and walks up through ancestors to the root', () => {
+		const lock = fixture();
+		lock.packages[''].dependencies['other-pkg'] = '^1.0.0';
+		lock.packages['node_modules/other-pkg'] = {
+			version: '1.0.0',
+			optionalDependencies: { 'react-native-fs': '^2.19.0' },
+		};
+		// other-pkg's only resolution path is its own nested copy — resolving to the hoisted
+		// one instead would leave this entry marked reachable and unpruned.
+		lock.packages['node_modules/other-pkg/node_modules/react-native-fs'] = {
+			version: '2.19.0',
+			dependencies: { 'nested-rn-dep': '^1.0.0' },
+		};
+		// Two segments below where it lives, so resolve() must miss twice before hitting root.
+		lock.packages['node_modules/nested-rn-dep'] = { version: '1.0.0' };
+
+		const { result } = runPrune(lock);
+		assert.ok(
+			!result.packages['node_modules/other-pkg/node_modules/react-native-fs'],
+			'nested copy must resolve nested-first, and be pruned'
+		);
+		assert.ok(
+			!result.packages['node_modules/nested-rn-dep'],
+			'root-level dep reachable only through the nested copy — requires the ancestor walk'
+		);
+		assert.ok(result.packages['node_modules/other-pkg'], 'the dependent itself survives');
+	});
+
 	it('rejects an unsupported lockfileVersion', () => {
 		const lock = fixture();
 		lock.lockfileVersion = 2;
