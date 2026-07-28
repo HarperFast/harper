@@ -1,9 +1,0 @@
-# QA-779 — does RocksDB audit-log purge reclaim disk space in the same process, or only after
-# restart? (F-225 follow-up: read_audit_log kept serving purged rows byte-correct for the life
-# of the process while the .txnlog directory listing collapsed. This fixture mirrors QA-777's
-# Ledger shape so the same seed/purge/read-back mechanics apply.)
-type Ledger @table(audit: true) @export {
-	id: ID @primaryKey
-	seq: Int
-	payload: String
-}
