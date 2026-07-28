@@ -237,3 +237,55 @@ describe('Permissions through Resource API', () => {
 		assert(caught_error.message.includes('Unauthorized access'));
 	});
 });
+
+describe('Bare collection POST authorization', () => {
+	let PostBase, PostSub, insert_user, update_only_user;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		PostBase = table({
+			table: 'BarePostTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'title' },
+			],
+		});
+		// custom post() override, the accepted no-slash collection POST compatibility path
+		PostSub = class extends PostBase {
+			async post(data) {
+				return super.post(data);
+			}
+		};
+		Object.defineProperty(PostSub, 'name', { value: 'PostSub' });
+		const perms = (insert, update) => ({
+			role: {
+				permission: {
+					test: { tables: { BarePostTable: { read: true, insert, update, delete: false } } },
+				},
+			},
+		});
+		insert_user = perms(true, false);
+		update_only_user = perms(false, true);
+	});
+
+	it('default bare table POST returns the trailing-slash 404', async function () {
+		await assert.rejects(async () => PostBase.post(new RequestTarget(''), { title: 'x' }), /trailing slash/);
+	});
+	it('slash collection POST creates for a user with insert', async function () {
+		const id = await PostSub.post(new RequestTarget('/'), { title: 'slash' }, { user: insert_user, authorize: true });
+		assert.ok(id != null);
+	});
+	it('bare POST through a custom post() creates for a user with insert', async function () {
+		const id = await PostSub.post(new RequestTarget(''), { title: 'bare' }, { user: insert_user, authorize: true });
+		assert.ok(id != null);
+	});
+	it('update-only user is rejected on both bare and slash collection POST', async function () {
+		for (const target of [new RequestTarget(''), new RequestTarget('/')]) {
+			await assert.rejects(
+				async () => PostSub.post(target, { title: 'nope' }, { user: update_only_user, authorize: true }),
+				/Unauthorized/
+			);
+		}
+	});
+});
