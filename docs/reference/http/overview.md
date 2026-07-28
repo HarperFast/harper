@@ -71,7 +71,7 @@ Handlers see the request with the mount already removed from the pathname, so ap
 A mount is a routing prefix, not an isolation boundary:
 
 - **It does not namespace resources.** Exported tables live in one instance-wide registry, so a table exported by one application is reachable through any mounted REST route, not only its own.
-- **It does not constrain legacy Fastify routes by host.** `fastifyRoutes` registers as a global fallback outside the routed middleware chain, so those routes answer on every hostname. A `urlPath` mount does apply (it becomes the Fastify route prefix); a `host` mount does not, and Harper logs a warning when a host-mounted application declares `fastifyRoutes`. Port them to `server.http()` for host routing.
+- **It does not constrain legacy Fastify routes by host.** `fastifyRoutes` registers as a global fallback outside the routed middleware chain, so those routes answer on every hostname. A `urlPath` mount does apply (it becomes the Fastify route prefix); a `host` mount does not, and Harper refuses to load a host-mounted application that declares `fastifyRoutes` rather than silently serving it unconstrained. Port them to `server.http()` for host routing.
 
 Host matching ignores the port and is case-insensitive. IPv6 hosts are configured as a bare literal (`::1`), not bracketed.
 
