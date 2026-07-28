@@ -8,18 +8,27 @@ const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const {
 	backupDirForDatabase,
 	createBackupOffline,
+	deleteBackup,
 	deleteBackupOffline,
 	getBackupsRoot,
+	listBackups,
 	listBackupsInDir,
 	listBackupsOffline,
+	purgeBackups,
 	purgeBackupsOffline,
 	restoreBackup,
 	restoreBackupOffline,
+	validateCreateBackup,
 	validateDatabaseName,
 	validateRestoreBackup,
+	validateVerifyBackup,
 	verifyBackupOffline,
 	createBackupStream,
 } = require('#src/dataLayer/rocksdbBackup');
+
+// managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
+// in the online-operation tests below must therefore carry a super_user role.
+const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const { beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
 
 const DB_NAME = 'rocksdb-backup-unit-test';
@@ -207,7 +216,7 @@ describe('rocksdbBackup', function () {
 		it('rejects database=system with a pointer at running it offline', async function () {
 			for (const fn of [validateRestoreBackup, restoreBackup]) {
 				await assert.rejects(
-					fn({ database: 'system' }),
+					fn({ database: 'system', ...SU }),
 					(error) => error.statusCode === 400 && /restore_backup database=system/.test(error.message)
 				);
 			}
@@ -216,11 +225,41 @@ describe('rocksdbBackup', function () {
 		it('rejects target_database instead of silently restoring in place', async function () {
 			for (const fn of [validateRestoreBackup, restoreBackup]) {
 				await assert.rejects(
-					fn({ database: DB_NAME, target_database: 'copy' }),
+					fn({ database: DB_NAME, target_database: 'copy', ...SU }),
 					(error) => error.statusCode === 400 && /target_database/.test(error.message)
 				);
 			}
 		});
+	});
+
+	// These are whole-database administrative ops and must never be reachable by a non-super_user,
+	// even if a super_user places them in a role's `operations` allowlist (operation_authorization
+	// gate-2 would otherwise authorize the delegation without a table-permission check). The auth
+	// gate for the job ops (create/verify/restore) lives in their request-context validators.
+	describe('super_user enforcement', function () {
+		const gates = [
+			['list_backups', listBackups],
+			['delete_backup', deleteBackup],
+			['purge_backups', purgeBackups],
+			['create_backup', validateCreateBackup],
+			['verify_backup', validateVerifyBackup],
+			['restore_backup', validateRestoreBackup],
+		];
+		for (const [name, fn] of gates) {
+			it(`rejects ${name} for a non-super_user role`, async function () {
+				const nonSU = { database: DB_NAME, hdb_user: { role: { permission: { super_user: false } } } };
+				await assert.rejects(
+					fn(nonSU),
+					(error) => error.statusCode === 403 && /restricted to super_user/.test(error.message)
+				);
+			});
+			it(`rejects ${name} when no user is present`, async function () {
+				await assert.rejects(
+					fn({ database: DB_NAME }),
+					(error) => error.statusCode === 403 && /restricted to super_user/.test(error.message)
+				);
+			});
+		}
 	});
 
 	describe('createBackupStream', function () {

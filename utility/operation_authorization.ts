@@ -624,9 +624,12 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 		}
 		// Gate 2: op is SU-only but was explicitly granted via operations — allow without super_user.
 		// Without this, the SU check further below would still deny it even though it passed gate 1.
-		// TODO: ops registered with both requires_su AND non-empty CRUD perms (currently only getBackup)
-		// have their table-level CRUD check bypassed here. Should fall through for those instead of
-		// returning null unconditionally. Low risk today but worth tightening.
+		// TODO: ops registered with both requires_su AND non-empty CRUD perms have their table-level
+		// CRUD check bypassed here. Should fall through for those instead of returning null
+		// unconditionally. The managed-backup ops share this shape but self-enforce super_user in their
+		// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
+		// regardless; get_backup remains the one that relies solely on this gate. Low risk today but
+		// worth tightening.
 		if (requiredPermissions.get(op)?.requires_su) {
 			return null;
 		}

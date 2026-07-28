@@ -41,6 +41,22 @@ export class BackupInProgressError extends ClientError {
 	}
 }
 
+/**
+ * Enforce super_user for the managed-backup operations. These are whole-database administrative
+ * operations (not table-scoped), so they must never be delegable to a non-super_user role. The
+ * registered permission alone can't guarantee that: operation_authorization gate-2 authorizes any
+ * `requires_su` op placed in a role's `operations` allowlist without evaluating the declared table
+ * CRUD perms, so a non-SU role could otherwise reach these. Enforcing here — mirroring
+ * get_deployment_payload's requireSuperUser — closes that path regardless of the allowlist. For the
+ * job operations (create/verify/restore) this runs in the request-context validator, before any job
+ * record is created.
+ */
+function requireSuperUser(request: any, operationName: string): void {
+	if (!request?.hdb_user?.role?.permission?.super_user) {
+		throw new ClientError(`Operation '${operationName}' is restricted to super_user roles`, 403);
+	}
+}
+
 export function getBackupsRoot(): string {
 	const configured = getConfigPath(CONFIG_PARAMS.STORAGE_BACKUPPATH);
 	if (configured && typeof configured === 'string') return configured;
@@ -173,6 +189,7 @@ function toBackupResponse(info: BackupInfo): {
 // --- synchronous operations ---
 
 export async function listBackups(request: any) {
+	requireSuperUser(request, OPERATIONS_ENUM.LIST_BACKUPS);
 	const databaseName = getDatabaseName(request);
 	logger.info(`Listing backups for database '${databaseName}'`);
 	requireRocksRootStore(databaseName, OPERATIONS_ENUM.LIST_BACKUPS);
@@ -180,6 +197,7 @@ export async function listBackups(request: any) {
 }
 
 export async function deleteBackup(request: any) {
+	requireSuperUser(request, OPERATIONS_ENUM.DELETE_BACKUP);
 	const databaseName = getDatabaseName(request);
 	requireRocksRootStore(databaseName, OPERATIONS_ENUM.DELETE_BACKUP);
 	const backupId = requireBackupId(request.backup_id);
@@ -194,6 +212,7 @@ export async function deleteBackup(request: any) {
 }
 
 export async function purgeBackups(request: any) {
+	requireSuperUser(request, OPERATIONS_ENUM.PURGE_BACKUPS);
 	const databaseName = getDatabaseName(request);
 	requireRocksRootStore(databaseName, OPERATIONS_ENUM.PURGE_BACKUPS);
 	const keepCount = request.keep_count;
@@ -220,6 +239,7 @@ export async function purgeBackups(request: any) {
 // created) and the job function itself (run in the job worker thread).
 
 export async function validateCreateBackup(request: any) {
+	requireSuperUser(request, OPERATIONS_ENUM.CREATE_BACKUP);
 	const databaseName = getDatabaseName(request);
 	requireRocksRootStore(databaseName, OPERATIONS_ENUM.CREATE_BACKUP);
 }
@@ -252,6 +272,7 @@ async function describeBackup(backupDir: string, backupId: number): Promise<{ si
 }
 
 export async function validateVerifyBackup(request: any) {
+	requireSuperUser(request, OPERATIONS_ENUM.VERIFY_BACKUP);
 	const databaseName = getDatabaseName(request);
 	requireRocksRootStore(databaseName, OPERATIONS_ENUM.VERIFY_BACKUP);
 	requireBooleanOption(request.verify_checksum, 'verify_checksum');
@@ -270,6 +291,7 @@ export async function verifyBackup(request: any) {
 }
 
 export async function validateRestoreBackup(request: any) {
+	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
 	const databaseName = getDatabaseName(request);
 	if (databaseName === 'system') {
 		throw new ClientError(
