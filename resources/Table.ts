@@ -5573,9 +5573,6 @@ export function makeTable(options) {
 			replacingVersion: existingVersion,
 			noCacheStore: false,
 			source: null,
-			// use the same resource cache as a parent context so that if modifications are made to resources,
-			// they are visible in the parent requesting context
-			resourceCache: context?.resourceCache,
 			transaction: undefined,
 			expiresAt: undefined,
 			lastModified: undefined,

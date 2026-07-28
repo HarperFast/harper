@@ -95,7 +95,6 @@ export interface Context {
 	originatingOperation?: OperationFunctionName;
 	previousResidency?: string[];
 	nodeName?: string;
-	resourceCache?: Map<Id, any>;
 	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
 	timestamp?: number;
 	includeExpensiveRecordCountEstimates?: boolean;
@@ -127,8 +126,6 @@ export interface SourceContext<TRequestContext = Context, Record extends object 
 	noCacheStore?: boolean;
 	/** Reference to the source Resource instance */
 	source?: ResourceInterface<Record>;
-	/** Shared resource cache from parent context for visibility of modifications */
-	resourceCache?: Map<Id, any>;
 	/** Database transaction for the context */
 	transaction?: DatabaseTransaction;
 	/** The time at which the cached entry should expire (ms since epoch) */
