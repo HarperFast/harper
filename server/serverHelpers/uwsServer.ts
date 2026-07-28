@@ -13,7 +13,7 @@
  *    symphony upstream, real client IP via X-Forwarded-For, so this server never touches certs.
  *  - HARPER_UWS_HTTP: a direct plaintext TCP HTTP port (real peer IP from the socket).
  *
- * `uWebSockets.js` is an optionalDependency (ABI/platform-specific, built by CI).
+ * `uWebSockets.js` is an optional peer (ABI/platform-specific, installed for CI as a devDependency).
  */
 import { STATUS_CODES } from 'node:http';
 import { EventEmitter } from 'node:events';

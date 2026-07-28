@@ -2,7 +2,7 @@
  * Unit tests for the uWS UDS adapter (server/serverHelpers/uwsServer.ts, #914).
  *
  * Exercises the request-construction and response-serialization paths of createUwsServer over a
- * real Unix domain socket, without booting Harper. uWebSockets.js is an optionalDependency (built
+ * real Unix domain socket, without booting Harper. uWebSockets.js is an optional peer (installed
  * by CI); when it isn't installed for the current platform, the whole suite skips.
  */
 const assert = require('node:assert');

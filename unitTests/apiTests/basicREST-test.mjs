@@ -240,7 +240,7 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 24);
-			assert.equal(response.data[4].ageInMonths, undefined); // computed property shouldn't be returned by default
+			assert.equal(response.data[4].ageInMonths, 288); // harper#1484: computed scalars now surface on default reads
 			assert.equal(response.data[4].nameTitle, 'name4 title4'); // enumerable computed property should be returned by
 			// default
 		});
