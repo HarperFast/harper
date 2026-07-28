@@ -721,7 +721,6 @@ export class DatabaseTransaction implements Transaction {
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.clearWrites();
-							if (this.#context?.resourceCache) this.#context.resourceCache = null;
 							this.next = null;
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
@@ -813,7 +812,6 @@ export class DatabaseTransaction implements Transaction {
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.clearWrites();
-				if (this.#context?.resourceCache) this.#context.resourceCache = null;
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
@@ -848,7 +846,6 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// reset the transaction
 		this.clearWrites();
-		if (this.#context?.resourceCache) this.#context.resourceCache = null;
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
