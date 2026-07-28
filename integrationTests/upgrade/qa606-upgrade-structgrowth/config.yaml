@@ -1,0 +1,7 @@
+# QA-606 — upgraded (legacy-origin) dataset vs fresh-install control, typed-struct growth
+# under NEW width-heterogeneous writes once randomAccessFields is enabled.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true
