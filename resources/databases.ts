@@ -577,7 +577,12 @@ function initStores(
 				const dropLabel = `${databaseName}.${tableName}`;
 				if (attempt < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 					logger.debug(`Failed to complete interrupted drop of table ${dropLabel}, attempt ${attempt}`, error);
-				} else {
+				} else if (manageThreads.getWorkerIndex() === 0) {
+					// The attempt budget (and this failure) is independently tracked per worker
+					// thread, and the failure isn't transient, so every worker converges on the
+					// same give-up outcome. Only worker 0 - which exists in every threading mode,
+					// including threads:0 where the main thread acts as worker 0 - logs it, so one
+					// stuck table produces one actionable error instead of one per worker.
 					logger.error(
 						`Unable to complete the interrupted drop of table ${dropLabel} after ${attempt} attempts; giving up until this node restarts. ${tableName} stays unloaded, with its catalog rows and column families left in place. An "Invalid column family specified in write batch" cause means the storage environment for ${databaseName} has latched a background error and will reject every write to every table in it until this node restarts.`,
 						error
@@ -1266,6 +1271,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// entry as an existing table would recurse forever on the stale
 				// catalog row.
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				// This resolves the drop without ever going through the schema-load
+				// reconcile below, which is the only other place that returns a spent
+				// budget. Without clearing it here too, a table that gets dropped again
+				// before any reconcile observes it live in between would have its NEXT
+				// interrupted drop inherit this one's spent attempts.
+				interruptedDropAttempts.delete(interruptedDropKey(databaseName, tableName));
 			}
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
@@ -1890,8 +1901,11 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 				const objectStorage =
 					value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
 				const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
-				// lmdb drop commits with the env's next transaction
-				store.drop?.();
+				// dropSync (not drop): this function is synchronous, and its callers rely on
+				// a thrown error to count against the retry budget below - the async drop()
+				// resolves/rejects after this try/catch has already returned, so a failure
+				// there would silently bypass the retry accounting entirely.
+				store.dropSync?.();
 			} catch (error) {
 				logger.warn(`Failed dropping store ${key} of ${databaseName}.${tableName}`, error);
 			}
