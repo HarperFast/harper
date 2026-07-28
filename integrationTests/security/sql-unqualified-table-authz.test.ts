@@ -160,7 +160,13 @@ suite(
 					operation: 'insert',
 					schema: VAULT_DB,
 					table: VAULT_TABLE,
-					records: [{ id: VAULT_ROW, label: 'vault-label', ssn: VAULT_SSN }],
+					records: [
+						{ id: VAULT_ROW, label: 'vault-label', ssn: VAULT_SSN },
+						// Shares its id with PUBLIC_ROW so the cross-database join test below has a row to
+						// match — a join on non-matching keys returns [] and would pass even if the
+						// attribute check never ran.
+						{ id: PUBLIC_ROW, label: 'vault-label-joined', ssn: VAULT_SSN },
+					],
 				})
 				.expect(200);
 		});
@@ -309,6 +315,11 @@ suite(
 			ok(
 				!JSON.stringify(r.body ?? '').includes(VAULT_SSN),
 				`ATTRIBUTE AUTHZ BYPASS: a cross-database join returned an attribute the role is denied ` +
+					`(status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
+			);
+			ok(
+				isDenied(r.status),
+				`the join must be denied outright once the attribute check actually runs on a matching row ` +
 					`(status=${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`
 			);
 		});

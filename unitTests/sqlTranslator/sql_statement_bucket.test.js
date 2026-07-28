@@ -439,6 +439,36 @@ describe('Test sql_statement_bucket Class', () => {
 			assert.equal(affected_attrs.get(SCHEMA_NAME).get(TABLE_NAME).includes('ssn'), true);
 		});
 
+		it('Records an ORDER BY column on an unaliased joined table under its own schema, not the FROM schema', function () {
+			let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
+			// Mirrors `SELECT Public.id FROM data.Public JOIN vault.Vault ON Public.id = Vault.id
+			// ORDER BY Vault.ssn` — neither table is aliased, so schemaLookup (aliases only) can't
+			// resolve `Vault`; only tableToSchemaLookup (alias AND base name) can.
+			let ast = new alasql.yy.Select({
+				columns: [{ columnid: 'id', tableid: 'Public' }],
+				from: [{ databaseid: 'data', tableid: 'Public' }],
+				joins: [
+					{
+						joinmode: 'INNER',
+						table: { databaseid: 'vault', tableid: 'Vault' },
+						on: {
+							left: { columnid: 'id', tableid: 'Public' },
+							op: '=',
+							right: { columnid: 'id', tableid: 'Vault' },
+						},
+					},
+				],
+				order: [{ expression: { columnid: 'ssn', tableid: 'Vault' }, direction: 'ASC' }],
+			});
+			let affected_attrs = new Map();
+			let table_lookup = new Map();
+			let schema_lookup = new Map();
+			let table_to_schema_lookup = new Map();
+			getSelectAttributes(ast, affected_attrs, table_lookup, schema_lookup, table_to_schema_lookup);
+			assert.equal(affected_attrs.get('vault').get('Vault').includes('ssn'), true);
+			assert.equal(affected_attrs.get('data').get('Public').includes('ssn'), false);
+		});
+
 		it('Records a HAVING column that is absent from the SELECT list', function () {
 			let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
 			let copy = clone(TEST_SELECT_JSON);

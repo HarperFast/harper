@@ -239,8 +239,9 @@ const NESTED_QUERY_FIELDS = ['queries', 'exists', 'union', 'unionall', 'except',
  * resolves — FROM entries and JOIN targets for a SELECT, or the single target of a write.
  *
  * Anything the collectors do not model is reported as opaque rather than ignored, so the
- * authorization check refuses it. That covers derived tables, nested and compound queries, and a
- * SELECT's INTO target. Opaque is deliberately preferred over recursing into these constructs:
+ * authorization check refuses it. That covers derived tables, nested and compound queries, a
+ * SELECT's INTO target, and PIVOT/UNPIVOT. Opaque is deliberately preferred over recursing into
+ * these constructs:
  * a nested reference would still never be recorded in the affected-attribute map, so descending
  * to name it would not make it checkable — only refusable, which is what opaque already does.
  */
@@ -283,6 +284,11 @@ function getTableTargets(ast: any): TableTargets {
 		// FROM collector created — `SELECT * INTO data.t FROM data.t` would authorize a write on the
 		// strength of a read.
 		if (ast.into) opaque.push('SELECT INTO target');
+		// PIVOT/UNPIVOT expose a column's values as-is, but the attribute collectors don't walk
+		// pivot.expr/pivot.columnid — refuse rather than authorize on an attribute list that never
+		// saw the pivoted column.
+		if (ast.pivot) opaque.push('PIVOT clause');
+		if (ast.unpivot) opaque.push('UNPIVOT clause');
 		addNestedQueries();
 	} else if (ast instanceof (alasql as any).yy.Insert) {
 		addRef(ast.into, 'INSERT target');
@@ -633,7 +639,11 @@ function getSelectAttributes(
 		for (let { node } of orderIterator) {
 			if (node && node.columnid) {
 				let tableName = node.tableid;
-				const orderSchema = schemaLookup.has(tableName) ? schemaLookup.get(tableName) : schema;
+				// tableToSchemaLookup is keyed by alias AND by base table name — schemaLookup alone
+				// (aliases only) silently fell back to the FROM table's schema for an unaliased joined
+				// table, misattributing its column to the wrong database and dropping it from that
+				// table's attribute list without a permission check.
+				const orderSchema = resolveColumnSchema(tableName, schemaLookup, tableToSchemaLookup, schema);
 
 				if (!tableName) {
 					tableName = ast.from[0].tableid;
