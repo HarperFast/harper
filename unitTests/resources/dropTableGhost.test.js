@@ -246,6 +246,101 @@ describe('dropTable ghost regression', () => {
 		await dbisDb.committed;
 	});
 
+	it('only logs the give-up error from worker 0, not every worker', async function () {
+		this.timeout(20000);
+		// Every worker thread tracks its own budget and independently exhausts it,
+		// so without a single-worker gate this would log once per worker instead
+		// of once for the whole process. Uses two tables (one exhausted as a
+		// non-worker-0 thread, one as worker 0) because a table's budget only
+		// logs once, at the reload where it first hits MAX_INTERRUPTED_DROP_ATTEMPTS
+		// - re-observing an already-exhausted table from worker 0 does not re-log.
+		//
+		// table() reassigns rootStore.dbisDb to a fresh openDB() result on every
+		// create, so dbisDb must be (re-)fetched after a table is defined, not
+		// before - an earlier reference goes stale the moment the next table is
+		// created and stubbing it has no effect on the reconcile's real attributesDbi.
+		const stuckTombstone = async (table) => {
+			const Stuck = defineTable(table);
+			await Stuck.put({ id: 1, str: 'data' });
+			const dbisDb = getDbisDb();
+			const meta = dbisDb.getSync(`${table}/`);
+			meta.dropping = true;
+			await dbisDb.put(`${table}/`, meta);
+			delete databases[TEST_DB][table];
+			return dbisDb;
+		};
+		const stubFailingRemove = (dbisDb, table) => {
+			const originalRemove = dbisDb.remove;
+			dbisDb.remove = function (key, ...rest) {
+				if (typeof key === 'string' && key.startsWith(`${table}/`)) {
+					throw new Error('Remove failed: Invalid argument: Invalid column family specified in write batch');
+				}
+				return originalRemove.call(this, key, ...rest);
+			};
+			return () => {
+				dbisDb.remove = originalRemove;
+			};
+		};
+		const storageLogger = harperLogger.forComponent('storage');
+		const originalLogError = storageLogger.error;
+		const errorLogs = [];
+		storageLogger.error = (message, ...rest) => {
+			errorLogs.push(message);
+			return originalLogError.call(storageLogger, message, ...rest);
+		};
+		const reload = () => {
+			resetDatabases();
+			getDatabases();
+		};
+		const cleanUpTombstone = (dbisDb, table) => {
+			for (const key of [...dbisDb.getKeys({ start: `${table}/`, end: `${table}0` })]) {
+				dbisDb.remove(key);
+			}
+		};
+
+		const OTHER_WORKER_TABLE = `GhostWorkerGateOther_${process.pid}_${Date.now()}`;
+		const WORKER_ZERO_TABLE = `GhostWorkerGateZero_${process.pid}_${Date.now()}`;
+		try {
+			// exhaust the non-worker-0 table's budget entirely off-gate
+			let dbisDb = await stuckTombstone(OTHER_WORKER_TABLE);
+			let restoreRemove = stubFailingRemove(dbisDb, OTHER_WORKER_TABLE);
+			setMainIsWorker(false);
+			for (let i = 0; i < 5; i++) reload();
+			restoreRemove();
+			assert.equal(
+				errorLogs.filter((message) => String(message).includes(OTHER_WORKER_TABLE)).length,
+				0,
+				'a non-worker-0 thread must not log the give-up error'
+			);
+			cleanUpTombstone(dbisDb, OTHER_WORKER_TABLE);
+
+			// a fresh table's budget, exhausted on-gate, must log exactly once - this
+			// must be a separate table since the first one's budget is already spent
+			// and would no longer be retried (so re-observing it under worker 0
+			// would not exercise the gate at all)
+			dbisDb = await stuckTombstone(WORKER_ZERO_TABLE);
+			restoreRemove = stubFailingRemove(dbisDb, WORKER_ZERO_TABLE);
+			setMainIsWorker(true);
+			for (let i = 0; i < 5; i++) reload();
+			restoreRemove();
+			// setupTestDBPath() points data/dev/test/test2 at the same physical
+			// path, so this table's tombstone is reconciled (and separately
+			// budgeted) once per database name - matched here on the exact
+			// "database.table" identifier to isolate the worker-0 gate from that
+			// unrelated per-alias multiplication (see PR review discussion).
+			assert.equal(
+				errorLogs.filter((message) => String(message).includes(`${TEST_DB}.${WORKER_ZERO_TABLE}`)).length,
+				1,
+				'worker 0 must log the give-up error exactly once'
+			);
+			cleanUpTombstone(dbisDb, WORKER_ZERO_TABLE);
+			await dbisDb.committed;
+		} finally {
+			storageLogger.error = originalLogError;
+			setMainIsWorker(true);
+		}
+	});
+
 	// A spent budget must not outlive the drop that spent it. The create path
 	// completes interrupted drops itself, under the exclusive lock, and never
 	// passes through the reconcile - so a table can go from "budget exhausted" to
