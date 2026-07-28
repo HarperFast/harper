@@ -796,7 +796,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			// markUdsBindFailed(). SNICallback readiness and cert reloads are independent of the
 			// socket's bind outcome, so without this check a failed mirror could still get advertised.
 			const writeMetadata = () => {
-				if (!failedUdsPaths.has(udsPath)) writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+				if (!failedUdsPaths.has(udsPath))
+					writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
 			};
 			options.SNICallback.ready.then(writeMetadata);
 			server.secureContextsListeners.push(writeMetadata);
