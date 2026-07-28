@@ -131,7 +131,7 @@ describe('proxyProtocol decodeProxyHeader', () => {
 		assert.strictEqual(decision.srcIp, '203.0.113.9');
 		assert.strictEqual(decision.srcPort, 45678);
 		assert.strictEqual(decision.headerLength, header.length);
-		assert.strictEqual(decision.tls, undefined);
+		assert.strictEqual(decision.connectionInfo, undefined);
 	});
 
 	it('decodes a v2 TCP6 source address in compressed form', () => {
@@ -164,38 +164,69 @@ describe('proxyProtocol decodeProxyHeader', () => {
 		const header = buildV2Header({ tlvs: [sslTlv(), tlv(0xe2, CLIENT_DER), tlv(0xe2, CA_DER)] });
 		const decision = decodeProxyHeader(header);
 		assert.strictEqual(decision.kind, 'header');
-		assert.ok(decision.tls, 'tls facts expected');
-		assert.strictEqual(decision.tls.verified, true);
-		assert.strictEqual(decision.tls.clientCertChain.length, 2);
-		assert.ok(decision.tls.clientCertChain[0].equals(CLIENT_DER));
-		assert.ok(decision.tls.clientCertChain[1].equals(CA_DER));
+		const info = decision.connectionInfo;
+		assert.ok(info, 'connectionInfo expected');
+		assert.strictEqual(info.tls.verified, true);
+		assert.strictEqual(info.clientCertChain.length, 2);
+		assert.ok(info.clientCertChain[0].equals(CLIENT_DER));
+		assert.ok(info.clientCertChain[1].equals(CA_DER));
 	});
 
-	it('reports verified=false when the SSL TLV verify field is nonzero', () => {
+	it('reports tls.verified=false when the SSL TLV verify field is nonzero', () => {
 		const header = buildV2Header({ tlvs: [sslTlv({ verify: 1 }), tlv(0xe2, CLIENT_DER)] });
 		const decision = decodeProxyHeader(header);
-		assert.strictEqual(decision.tls.verified, false);
+		assert.strictEqual(decision.connectionInfo.tls.verified, false);
 	});
 
-	it('ignores cert TLVs when the SSL TLV does not report a presented cert', () => {
+	it('ignores the cert chain when the SSL TLV does not report a presented cert', () => {
 		const header = buildV2Header({ tlvs: [sslTlv({ certPresented: false }), tlv(0xe2, CLIENT_DER)] });
-		assert.strictEqual(decodeProxyHeader(header).tls, undefined);
+		const info = decodeProxyHeader(header).connectionInfo;
+		// SSL TLV is still present (version/verify facts), but no cert chain is attached.
+		assert.ok(info.tls, 'tls facts still present');
+		assert.strictEqual(info.tls.verified, false);
+		assert.strictEqual(info.clientCertChain, undefined);
 	});
 
-	it('skips unknown TLV types, including the JA3/JA4 fingerprint TLVs (0xE0/0xE1)', () => {
+	it('captures ALPN, authority, JA3, JA4, and SSL version/cipher TLVs', () => {
+		const sslWithSubTlvs = Buffer.concat([
+			Buffer.from([0x01 | 0x02]), // client: SSL | CERT_CONN
+			Buffer.from([0, 0, 0, 0]), // verify == 0
+			tlv(0x21, Buffer.from('TLSv1.3')), // sub-TLV: version
+			tlv(0x23, Buffer.from('TLS_AES_128_GCM_SHA256')), // sub-TLV: cipher
+		]);
 		const header = buildV2Header({
 			tlvs: [
 				tlv(0x01, Buffer.from('h2')),
-				tlv(0x02, Buffer.from('example.com')),
-				tlv(0xe0, Buffer.from('771,4865-4866,0-11-10,29-23,0')),
+				tlv(0x02, Buffer.from('api.example.com')),
+				tlv(0x20, sslWithSubTlvs),
+				tlv(0xe0, Buffer.from('0123456789abcdef0123456789abcdef')),
 				tlv(0xe1, Buffer.from('t13d1516h2_8daaf6152771_02713d6af862')),
-				sslTlv(),
 				tlv(0xe2, CLIENT_DER),
 			],
 		});
-		const decision = decodeProxyHeader(header);
-		assert.strictEqual(decision.tls.clientCertChain.length, 1);
-		assert.ok(decision.tls.clientCertChain[0].equals(CLIENT_DER));
+		const info = decodeProxyHeader(header).connectionInfo;
+		assert.strictEqual(info.alpn, 'h2');
+		assert.strictEqual(info.authority, 'api.example.com');
+		assert.strictEqual(info.ja3, '0123456789abcdef0123456789abcdef');
+		assert.strictEqual(info.ja4, 't13d1516h2_8daaf6152771_02713d6af862');
+		assert.strictEqual(info.tls.version, 'TLSv1.3');
+		assert.strictEqual(info.tls.cipher, 'TLS_AES_128_GCM_SHA256');
+		assert.strictEqual(info.tls.verified, true);
+		assert.ok(info.clientCertChain[0].equals(CLIENT_DER));
+	});
+
+	it('exposes JA3/JA4 without any SSL TLV or client cert', () => {
+		const header = buildV2Header({
+			tlvs: [
+				tlv(0xe0, Buffer.from('deadbeefdeadbeefdeadbeefdeadbeef')),
+				tlv(0xe1, Buffer.from('t13i310900_e8f1e7e78f70_1c1d2d3e4f5a')),
+			],
+		});
+		const info = decodeProxyHeader(header).connectionInfo;
+		assert.strictEqual(info.ja3, 'deadbeefdeadbeefdeadbeefdeadbeef');
+		assert.strictEqual(info.ja4, 't13i310900_e8f1e7e78f70_1c1d2d3e4f5a');
+		assert.strictEqual(info.tls, undefined);
+		assert.strictEqual(info.clientCertChain, undefined);
 	});
 
 	it('consumes a LOCAL command header without reading addresses', () => {
@@ -210,7 +241,7 @@ describe('proxyProtocol decodeProxyHeader', () => {
 		const decision = decodeProxyHeader(buildV2Header({ srcIp: [9, 9, 9, 9], tlvs: [bogus] }));
 		assert.strictEqual(decision.kind, 'header');
 		assert.strictEqual(decision.srcIp, '9.9.9.9');
-		assert.strictEqual(decision.tls, undefined);
+		assert.strictEqual(decision.connectionInfo, undefined);
 	});
 });
 
@@ -245,6 +276,36 @@ describe('proxyProtocol applyProxyHeader', () => {
 		applyProxyHeader(socket, decodeProxyHeader(header));
 		assert.strictEqual(socket.authorized, false);
 		assert.strictEqual(socket.getPeerCertificate().subject.CN, 'test-client');
+	});
+
+	it('stashes connectionInfo on the socket for the request layer', () => {
+		const sslWithSubTlvs = Buffer.concat([Buffer.from([0x01, 0, 0, 0, 0]), tlv(0x21, Buffer.from('TLSv1.3'))]);
+		const header = buildV2Header({
+			tlvs: [
+				tlv(0x01, Buffer.from('h2')),
+				tlv(0x02, Buffer.from('h.example.com')),
+				tlv(0x20, sslWithSubTlvs),
+				tlv(0xe1, Buffer.from('t13d1516h2_8daaf6152771_02713d6af862')),
+			],
+		});
+		const socket = {};
+		applyDefaultPeerCertificate(socket);
+		applyProxyHeader(socket, decodeProxyHeader(header));
+		assert.strictEqual(socket.connectionInfo.alpn, 'h2');
+		assert.strictEqual(socket.connectionInfo.authority, 'h.example.com');
+		assert.strictEqual(socket.connectionInfo.tls.version, 'TLSv1.3');
+		assert.strictEqual(socket.connectionInfo.ja4, 't13d1516h2_8daaf6152771_02713d6af862');
+		// No client cert in this header → the no-cert defaults stay in place.
+		assert.strictEqual(socket.authorized, false);
+		assert.deepStrictEqual(socket.getPeerCertificate(), {});
+	});
+
+	it('does not set connectionInfo for a v1 header', () => {
+		const socket = {};
+		applyDefaultPeerCertificate(socket);
+		applyProxyHeader(socket, decodeProxyHeader(Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\n')));
+		assert.strictEqual(socket.remoteAddress, '1.2.3.4');
+		assert.strictEqual(socket.connectionInfo, undefined);
 	});
 });
 
