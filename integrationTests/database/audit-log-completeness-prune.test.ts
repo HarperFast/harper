@@ -216,7 +216,19 @@ function defineSuite(threadCount: number, engineOverride?: 'lmdb' | 'rocksdb') {
 				await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 					config: {
 						threads: { count: threadCount },
-						logging: { auditLog: true, auditRetention: AUDIT_RETENTION_SECONDS },
+						// On LMDB, auditStore.ts's scheduleAuditCleanup() self-re-arms and passively purges
+						// anything older than `auditRetention` (audit-retention-lmdb.test.ts covers that
+						// path directly). Q2 below deliberately ages its "old" cohort past
+						// AUDIT_RETENTION_SECONDS before calling the EXPLICIT prune op under test — on
+						// LMDB, passive retention would very likely have already deleted that cohort by
+						// then, making the explicit-prune assertion pass regardless of whether the explicit
+						// op itself works. Set LMDB's actual (passive) retention far outside this suite's
+						// window so only the explicit op can be responsible for what this suite measures;
+						// AUDIT_RETENTION_SECONDS keeps driving the cutoff-spacing math below unchanged.
+						logging: {
+							auditLog: true,
+							auditRetention: engine === 'lmdb' ? 3600 : AUDIT_RETENTION_SECONDS,
+						},
 						storage: { engine },
 					},
 					env: {},

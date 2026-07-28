@@ -7,6 +7,8 @@
 //
 // Endpoints:
 //   POST /Load/          { table, ids: [...], bucket } — bulk insert.
+//   POST /PlantNull/     { table, id }                  — put a single row with a genuinely
+//                          null bucket (no fallback), to arm the null-keyed IndexDump scan itself.
 //   POST /Delete/        { table, ids: [...] }          — explicit Table.delete() per id.
 //   POST /UpdateInPlace/ { table, ids: [...], bucket }   — re-put same id with a new bucket value
 //                          (record stays non-null; exercises the ordinary update branch of
@@ -34,6 +36,20 @@ export class Load extends Resource {
 		const bucket = b.bucket ?? 'B';
 		for (const id of ids) await t.put({ id, bucket });
 		return { ok: true, table: b.table, count: ids.length };
+	}
+}
+
+export class PlantNull extends Resource {
+	// Directly writes a genuinely-null bucket on a LIVE row (no `?? 'B'` fallback like Load/
+	// UpdateInPlace) — used only to arm the null-keyed IndexDump scan itself, independent of any
+	// removal path. Proves the raw `index.getRange({ start: null })` oracle can see a null-keyed
+	// entry when one deliberately, unambiguously exists.
+	static loadAsInstance = false;
+	async post(query, body) {
+		const b = body || query || {};
+		const t = getTable(b.table);
+		await t.put({ id: b.id, bucket: null });
+		return { ok: true, table: b.table, id: b.id };
 	}
 }
 

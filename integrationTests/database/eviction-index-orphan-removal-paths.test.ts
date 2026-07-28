@@ -290,6 +290,11 @@ suite(`QA-661 F-149 fix probe [${ENGINE}] [threads=${WORKERS}]`, { skip: skipSui
 		const res = await postJSON('/Load/', { table: 'Perm', count: total, prefix: 'D', bucket: 'DEL', nullEvery: 6 });
 		strictEqual(res.status, 200, 'seed Perm for delete arm');
 		const preDump = await primaryDump('Perm');
+		// Independent of checkConsistency below: if seeding silently failed and primaryDump ever
+		// returned fewer rows than requested, checkConsistency's dangling/missing counts would be
+		// derived from that SAME short dump and could trivially read as "consistent" over an
+		// empty/partial cohort. Pin the raw row count first so that can't happen unnoticed.
+		strictEqual(preDump.rows.length, total, `all ${total} seeded rows must be present pre-delete`);
 		const allIds = preDump.rows.map((r: any) => r.id);
 		const toDelete = allIds.filter((_: string, i: number) => i % 2 === 0); // delete half
 
@@ -373,6 +378,10 @@ suite(`QA-661 F-149 fix probe [${ENGINE}] [threads=${WORKERS}]`, { skip: skipSui
 		strictEqual(res.status, 200, 'seed Perm for evict arm');
 		const preDump = await primaryDump('Perm');
 		const evictIds = preDump.rows.filter((r: any) => r.id.startsWith('V-')).map((r: any) => r.id);
+		// Independent of checkConsistency below: if seeding silently failed and fewer 'V-' rows
+		// than requested landed, the dangling/missing counts below would be derived from that same
+		// short cohort and could trivially read as "consistent" over an empty/partial set.
+		strictEqual(evictIds.length, total, `all ${total} seeded 'V-' rows must be present pre-evict`);
 		const toEvict = evictIds.filter((_: string, i: number) => i % 2 === 1); // evict half
 
 		// Positive control: prove the half about to be evict()'d is actually indexed BEFORE we

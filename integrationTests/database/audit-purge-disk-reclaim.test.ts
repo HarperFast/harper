@@ -733,6 +733,14 @@ suite(
 				postDiskStats.fileCount < preDiskStats.fileCount,
 				`purge left the same-process .txnlog file count unchanged (${postDiskStats.fileCount}, was ${preDiskStats.fileCount}) — the directory listing must already collapse in this process for the fd/mmap zero-pin gate at test 8 to mean anything`
 			);
+			// File count alone can be satisfied by one trivial rotated file disappearing while the
+			// bulk of the ~26.6MB seeded volume (VOLUME_RECORDS @ ~1.8KB, comment above) remains on
+			// disk. Require a meaningful byte-level collapse too — everything inserted is before the
+			// purge cutoff, so a real purge should reclaim the large majority of it, not a sliver.
+			ok(
+				postDiskStats.totalBytes <= preDiskStats.totalBytes / 2,
+				`purge only reduced same-process .txnlog bytes from ${fmtMiB(preDiskStats.totalBytes)} to ${fmtMiB(postDiskStats.totalBytes)} — expected at least half of the seeded volume reclaimed in this process, not just a smaller file count`
+			);
 
 			// Cross-check F-225's specific claim directly in THIS run: isolated hash_value read-back,
 			// same process, for sample ids spanning the whole insert range, so we can see whether the

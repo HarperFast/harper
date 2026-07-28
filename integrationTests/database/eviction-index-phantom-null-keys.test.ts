@@ -208,6 +208,32 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		matrix.push({ label, engine: ENGINE, expectPhantomPreFix: expectPhantom, ...m });
 	}
 
+	// ---- ARM: prove the null-keyed IndexDump scan itself can see a null-keyed entry -------------
+	// `assertIndexPositiveControl` above only proves the scan sees NON-null entries. Every phantom
+	// check in this file hinges on `index.getRange({ start: null })` actually surfacing null-keyed
+	// entries (the file header's own D-242 warning: an unqualified getRange() silently SKIPS them
+	// on LMDB). Plant one row with a genuinely-null bucket via /PlantNull/ (no removal path
+	// involved) and confirm the raw index dump reports it, before trusting any "zero null-keyed
+	// entries" result below as meaning "no phantom" rather than "scan is blind".
+	test('ARM: null-keyed IndexDump scan sees a deliberately-planted null-bucket row', { timeout: 15_000 }, async () => {
+		const armId = 'arm-null-0000';
+		await post('/PlantNull/', { table: 'DelTable', id: armId });
+		const idx = await indexDump('DelTable');
+		const planted = idx.find((e) => e.indexedValue === null && e.primaryKey === armId);
+		ok(
+			planted,
+			`ARMING FAILED: null-keyed IndexDump scan did not see the deliberately-planted null-bucket row ${armId} — the scan itself may be blind to null keys, which would make every "zero null-keyed entries" result below meaningless`
+		);
+		// Clean up before Q0 seeds its own delIds so it doesn't skew DelTable's row/index counts.
+		await post('/Delete/', { table: 'DelTable', ids: [armId] });
+		await sleep(300);
+		const idxAfter = await indexDump('DelTable');
+		ok(
+			!idxAfter.some((e) => e.primaryKey === armId),
+			`ARMING CLEANUP FAILED: planted row ${armId} still has an index entry after delete()`
+		);
+	});
+
 	// ---- Q0: explicit delete() (fastest, no wait — runs first so a partial run still verdicts) --
 	test('Q0 DelTable: explicit delete() phantom-null check', { timeout: 30_000 }, async () => {
 		const delIds = ids('del', N);
