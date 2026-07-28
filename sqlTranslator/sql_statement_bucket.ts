@@ -528,6 +528,70 @@ function getSelectAttributes(
 		}
 	}
 
+	// GROUP BY and HAVING can reference an attribute the SELECT list, WHERE, and JOIN ON never
+	// mention (`SELECT COUNT(*) FROM t GROUP BY ssn`, `... HAVING ssn = 'x'`) — without recording
+	// it here, checkAttributePerms() never sees that reference and a role denied READ on the
+	// attribute can still observe its distribution via the grouped/filtered result.
+	if (ast.group) {
+		const iterator = new RecursiveIterator(ast.group);
+		const fromTable = ast.from[0].tableid;
+
+		for (let { node } of iterator) {
+			if (node && node.columnid) {
+				let table = node.tableid ? node.tableid : fromTable;
+
+				const groupSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
+				const schemaTables = affectedAttributes.get(groupSchema);
+				if (!schemaTables) {
+					harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
+					continue;
+				}
+
+				if (!schemaTables.has(table)) {
+					if (!tableLookup.has(table)) {
+						harperLogger.info(`table specified as ${table} not found.`);
+						continue;
+					} else {
+						table = tableLookup.get(table);
+					}
+				}
+				if (schemaTables.get(table).indexOf(node.columnid) < 0) {
+					schemaTables.get(table).push(node.columnid);
+				}
+			}
+		}
+	}
+
+	if (ast.having) {
+		const iterator = new RecursiveIterator(ast.having);
+		const fromTable = ast.from[0].tableid;
+
+		for (let { node } of iterator) {
+			if (node && node.columnid) {
+				let table = node.tableid ? node.tableid : fromTable;
+
+				const havingSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
+				const schemaTables = affectedAttributes.get(havingSchema);
+				if (!schemaTables) {
+					harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
+					continue;
+				}
+
+				if (!schemaTables.has(table)) {
+					if (!tableLookup.has(table)) {
+						harperLogger.info(`table specified as ${table} not found.`);
+						continue;
+					} else {
+						table = tableLookup.get(table);
+					}
+				}
+				if (schemaTables.get(table).indexOf(node.columnid) < 0) {
+					schemaTables.get(table).push(node.columnid);
+				}
+			}
+		}
+	}
+
 	// It's important to also iterate through the JOIN clause in case there are other columns that are not included in
 	// the SELECT clause
 	if (ast.joins) {

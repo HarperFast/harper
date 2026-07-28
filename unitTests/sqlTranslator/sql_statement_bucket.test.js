@@ -424,6 +424,34 @@ describe('Test sql_statement_bucket Class', () => {
 			// No table was defined, so the returned value should be empty
 			assert.equal(statement.get(SCHEMA_NAME), undefined);
 		});
+
+		it('Records a GROUP BY column that is absent from the SELECT list', function () {
+			let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
+			let copy = clone(TEST_SELECT_JSON);
+			copy.columns = [{ columnid: 'id' }];
+			copy.group = [{ columnid: 'ssn' }];
+			delete copy.where;
+			let temp_select = new alasql.yy.Select(copy);
+			let affected_attrs = new Map();
+			let table_lookup = new Map();
+			let schema_lookup = new Map();
+			getSelectAttributes(temp_select, affected_attrs, table_lookup, schema_lookup);
+			assert.equal(affected_attrs.get(SCHEMA_NAME).get(TABLE_NAME).includes('ssn'), true);
+		});
+
+		it('Records a HAVING column that is absent from the SELECT list', function () {
+			let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
+			let copy = clone(TEST_SELECT_JSON);
+			copy.columns = [{ columnid: 'id' }];
+			copy.having = { left: { columnid: 'ssn' }, op: '=', right: { value: '111-22-3333' } };
+			delete copy.where;
+			let temp_select = new alasql.yy.Select(copy);
+			let affected_attrs = new Map();
+			let table_lookup = new Map();
+			let schema_lookup = new Map();
+			getSelectAttributes(temp_select, affected_attrs, table_lookup, schema_lookup);
+			assert.equal(affected_attrs.get(SCHEMA_NAME).get(TABLE_NAME).includes('ssn'), true);
+		});
 	});
 
 	describe(`Test getRecordAttributesAST`, function () {
