@@ -74,6 +74,17 @@ describe('Audit log', () => {
 		// The per-write waitForEventCount calls above already drained delivery after each write, so
 		// the full count is deterministic here — assert the tight bound rather than "a couple".
 		assert(events.length >= 4, 'Should have one live-subscription event per write');
+		// Verify the actual invariant, not just the count: the LAST delivered event per id must
+		// reflect that id's final state (an earlier, superseded event for the same id may or may
+		// not also have been delivered, so this only checks the latest, not the total count).
+		const lastEventById = new Map();
+		for (const event of events) lastEventById.set(event.id, event);
+		assert.equal(lastEventById.get(1)?.type, 'delete', "id 1's final delivered event should be its delete");
+		assert.equal(
+			lastEventById.get(2)?.value?.name,
+			'two-changed',
+			"id 2's final delivered event should be its latest put"
+		);
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
 		setAuditRetention(0.001, 1);
 		// scheduleAuditCleanup() resolves once the pass serving the call has committed its deletions.
