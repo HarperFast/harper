@@ -13,9 +13,11 @@
  * unmodified OpenAI client. See the SSE serving-path note in chatCompletions.ts
  * for why `stream: true` routes through `post()` rather than `connect()`.
  *
- * NOTE: `modelsGateway: { enabled: true }` is passed explicitly because the
- * gateway is off by default (`enabled: false` in defaultConfig.yaml). The test
- * harness plumbs this via HARPER_SET_CONFIG. This suite runs against a bare
+ * NOTE: `modelsGateway: { enabled: true }` is passed explicitly because
+ * defaultConfig.yaml ships no `modelsGateway` block at all — an absent key is
+ * what keeps the loader from importing this module graph on instances that do
+ * not use the gateway. The test harness plumbs this via HARPER_SET_CONFIG,
+ * which is also what makes the block exist for this run. This suite runs against a bare
  * instance (no deployed apps), so it also declares an explicit `rest` section
  * below: the gateway deliberately does NOT force REST to start (see
  * resources/models/v1/index.ts), so a real deployment must configure `rest`
@@ -55,8 +57,8 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 				// declared here — exactly as a real deployment would. `webSocket` is a leaf
 				// value because a plain empty object is dropped by flattenObject().
 				rest: { webSocket: true },
-				// Gateway is off by default (enabled: false in defaultConfig.yaml). Pass
-				// enabled: true explicitly to activate it for these tests. A plain empty
+				// Gateway is off by default — defaultConfig.yaml ships no modelsGateway
+				// block. Pass enabled: true explicitly to activate it. A plain empty
 				// object would be silently dropped by flattenObject() in harperConfigEnvVars.ts
 				// because it has no leaf paths to flatten.
 				modelsGateway: { enabled: true },
