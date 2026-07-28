@@ -223,48 +223,41 @@ const NEXT_TABLE_ID = Symbol.for('next-table-id');
 // unbounded retry turns one broken table into a per-reload log flood in every
 // worker thread.
 const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
-// physical store path + table -> consecutive failed completion attempts in
-// this thread. Keyed by the physical store path rather than the database
-// alias name: multiple database names can point at the same directory
-// (config-level aliasing), and readMetaDb/readRocksMetaDb reconcile each
-// alias's schema independently, so a table shared by N aliases would
-// otherwise be attempted (and give up) N times over - once per alias - on
-// top of the once-per-worker duplication. Keying by path collapses all of
-// that back down to one budget, and one give-up log via the worker-0 gate
-// below, per physical table. Keyed with a NUL separator rather than a dot so
-// that path "a.b" table "c" and path "a" table "b.c" cannot share a budget.
-const interruptedDropAttempts = new Map<string, number>();
-// Scoped by drop generation (Table.ts stamps a fresh id on every dropping
-// tombstone) rather than just path + table: a worker can exhaust one drop's
-// budget, then observe the table recreated and dropped again without ever
-// seeing an intermediate non-tombstoned row to reset on. Keying by
-// generation means the new drop's tombstone always carries a fresh key,
-// independent of what any worker last observed. Tombstones written before
-// this field existed fall back to a shared 'legacy' bucket.
-const interruptedDropKey = (storePath: string, tableName: string, generation?: string) =>
-	`${storePath}\0${tableName}\0${generation ?? 'legacy'}`;
-// A live (non-tombstoned) row never carries the dropGeneration of whatever
-// drop it resolved - generations are only stamped while dropping - so a
-// lookup keyed off the live row's (absent) generation can only ever hit the
-// 'legacy' bucket, never the actual spent UUID entry. That entry is
-// harmless (a new drop always gets a fresh generation-scoped key regardless)
-// but never gets cleaned up either, leaking one Map entry per historical
-// drop generation for the worker's lifetime. Sweep every entry under this
-// path+table prefix instead of guessing which generation to target.
-const interruptedDropKeyPrefix = (storePath: string, tableName: string) => `${storePath}\0${tableName}\0`;
+// physical store path + table -> drop generation -> consecutive failed
+// completion attempts in this thread. Keyed by the physical store path
+// rather than the database alias name: multiple database names can point at
+// the same directory (config-level aliasing), and readMetaDb/readRocksMetaDb
+// reconcile each alias's schema independently, so a table shared by N
+// aliases would otherwise be attempted (and give up) N times over - once per
+// alias - on top of the once-per-worker duplication. Keying by path
+// collapses all of that back down to one budget, and one give-up log via the
+// worker-0 gate below, per physical table.
+//
+// Nested by generation (Table.ts stamps a fresh id on every dropping
+// tombstone) rather than a single flat count per path+table: a worker can
+// exhaust one drop's budget, then observe the table recreated and dropped
+// again without ever seeing an intermediate non-tombstoned row to reset on.
+// A fresh generation always gets a fresh inner-map key, independent of what
+// any worker last observed. Tombstones written before this field existed
+// fall back to a shared 'legacy' bucket. Nesting (rather than a flat map
+// keyed by a combined string) also makes "clear every generation for this
+// path+table" an O(1) delete of the outer entry instead of a scan - a live
+// (non-tombstoned) row never carries the dropGeneration of whatever drop it
+// resolved, so a resolution can only ever identify the outer path+table key,
+// never the specific spent generation to target.
+const interruptedDropAttempts = new Map<string, Map<string, number>>();
+const interruptedDropTableKey = (storePath: string, tableName: string) => `${storePath}\0${tableName}`;
+function getInterruptedDropAttempts(storePath: string, tableName: string, generation?: string): number {
+	return interruptedDropAttempts.get(interruptedDropTableKey(storePath, tableName))?.get(generation ?? 'legacy') ?? 0;
+}
+function setInterruptedDropAttempts(storePath: string, tableName: string, generation: string | undefined, attempts: number) {
+	const tableKey = interruptedDropTableKey(storePath, tableName);
+	let generations = interruptedDropAttempts.get(tableKey);
+	if (!generations) interruptedDropAttempts.set(tableKey, (generations = new Map()));
+	generations.set(generation ?? 'legacy', attempts);
+}
 function clearInterruptedDropEntries(storePath: string, tableName: string) {
-	// This runs on every table on every reconcile pass (including every live,
-	// never-dropped table), so an unconditional scan would make schema reload
-	// cost grow with the total number of tracked retry entries on top of the
-	// table count. interruptedDropAttempts is empty in the overwhelming common
-	// case (no drop has ever failed to complete), so this size check keeps the
-	// healthy-system cost at O(1) and only pays for the scan while there is
-	// actually something to sweep.
-	if (interruptedDropAttempts.size === 0) return;
-	const prefix = interruptedDropKeyPrefix(storePath, tableName);
-	for (const key of interruptedDropAttempts.keys()) {
-		if (key.startsWith(prefix)) interruptedDropAttempts.delete(key);
-	}
+	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 
@@ -593,17 +586,19 @@ function initStores(
 	// it, because creating over a half-dropped table would resurrect its catalog
 	// rows. There a failure propagates to the caller as its own single error.
 	for (const [tableName, tableDef] of tablesToLoad) {
-		const dropKey = interruptedDropKey(path, tableName, tableDef.primary?.dropGeneration);
 		if (!tableDef.primary?.dropping) {
 			// No tombstone, so any budget this table spent belongs to a drop that
 			// has since been resolved - by the create path, which completes
 			// interrupted drops itself and never passes through here. Leaving the
 			// budget spent would permanently skip cleanup for the table's NEXT
-			// interrupted drop.
+			// interrupted drop. Checked (and, on the common all-live path, skipped)
+			// before touching the generation or the map at all, since this runs for
+			// every table on every reconcile pass.
 			clearInterruptedDropEntries(path, tableName);
 			continue;
 		}
-		const failedAttempts = interruptedDropAttempts.get(dropKey) ?? 0;
+		const generation = tableDef.primary?.dropGeneration;
+		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
@@ -617,7 +612,7 @@ function initStores(
 				definedTables?.delete(tableName);
 			} catch (error) {
 				const attempt = failedAttempts + 1;
-				interruptedDropAttempts.set(dropKey, attempt);
+				setInterruptedDropAttempts(path, tableName, generation, attempt);
 				const dropLabel = `${databaseName}.${tableName}`;
 				if (attempt < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 					logger.debug(`Failed to complete interrupted drop of table ${dropLabel}, attempt ${attempt}`, error);
@@ -1320,7 +1315,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// budget. Without clearing it here too, a table that gets dropped again
 				// before any reconcile observes it live in between would have its NEXT
 				// interrupted drop inherit this one's spent attempts. Generation-scoped
-				// keying (see interruptedDropKey) already makes that impossible, but
+				// keying (see interruptedDropAttempts) already makes that impossible, but
 				// clearing it here too avoids leaving a dead entry behind - for every
 				// generation this table has ever spent, not just the one on this row.
 				clearInterruptedDropEntries(rootStore.path, tableName);
