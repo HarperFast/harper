@@ -62,6 +62,17 @@ describe('V1Embeddings.post', () => {
 		assert.equal(result.status, 401, 'auth must be checked ahead of body validation');
 	});
 
+	// Mirrors the chatCompletions case: REST hands over the streaming JSON deserializer's
+	// promise, and a malformed body rejects it. That rejection must be shaped as an OpenAI
+	// 400 rather than escaping to REST's RFC 9457 path as a 500.
+	it('returns a 400 when the body promise rejects (malformed JSON), not a 500', async () => {
+		const result = await V1Embeddings.post(undefined, Promise.reject(new SyntaxError('Unexpected token')), {
+			user: SUPER_USER,
+		});
+		assert.equal(result.status, 400);
+		assert.equal(result.data.error.type, 'invalid_request_error');
+	});
+
 	it('accepts a batch at the 2048-item cap', async () => {
 		const body = { input: Array.from({ length: 2048 }, (_, i) => `item ${i}`) };
 		const result = await V1Embeddings.post(undefined, body, { user: SUPER_USER });
