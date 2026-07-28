@@ -16,6 +16,7 @@
 
 import * as readline from 'node:readline';
 import { loadCredentials, normalizeTarget } from './cliCredentials.ts';
+import { refreshExpiredOperationToken } from './cliOperations.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
@@ -32,6 +33,7 @@ interface CliOptions {
 	json: boolean;
 	once: boolean;
 	message?: string;
+	stdinConsumed?: boolean;
 }
 
 interface Connection {
@@ -65,7 +67,7 @@ export async function runAgentCli(argv: string[]): Promise<number> {
 
 	let connection: Connection;
 	try {
-		connection = resolveConnection(opts);
+		connection = await resolveConnection(opts);
 	} catch (err) {
 		console.error((err as Error).message);
 		return 1;
@@ -78,6 +80,7 @@ export async function runAgentCli(argv: string[]): Promise<number> {
 		} else if (opts.once || !process.stdin.isTTY) {
 			// Piped input / --once: treat all of stdin as a single prompt.
 			const piped = await readAllStdin();
+			opts.stdinConsumed = true;
 			if (!piped.trim()) {
 				console.error('No prompt provided.');
 				return 1;
@@ -139,7 +142,7 @@ function parseArgs(argv: string[]): CliOptions {
  * or Bearer auth, else the local domain socket. Mirrors the core of `cliOperations` without the
  * deploy-specific transport concerns.
  */
-function resolveConnection(opts: CliOptions): Connection {
+async function resolveConnection(opts: CliOptions): Promise<Connection> {
 	const credentials = loadCredentials();
 	const rawTarget =
 		opts.target || process.env.HARPER_CLI_TARGET || process.env.CLI_TARGET || (credentials && credentials.last_target);
@@ -170,6 +173,7 @@ function resolveConnection(opts: CliOptions): Connection {
 		} else {
 			const tokens = credentials?.targets?.[resolved];
 			if (tokens?.operation_token) {
+				await refreshExpiredOperationToken(options, tokens, resolved);
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			} else if (username) {
 				options.headers.Authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
@@ -325,9 +329,10 @@ class AgentClient {
 	private async resolveApprovals(session: any, rl?: readline.Interface): Promise<boolean> {
 		const pending = (session.pendingApprovals || []).filter((a: any) => a && !a.resolved);
 		if (!pending.length) return false;
-		// One-shot/piped paths have already read stdin to EOF (or there is no TTY), so a fresh readline
-		// on process.stdin would never resolve `question()` and the turn would hang forever. Fail loudly.
-		if (!rl && !process.stdin.isTTY) {
+		// One-shot/piped paths have already read stdin to EOF (no TTY, or `--once` drained a real
+		// TTY via readAllStdin), so a fresh readline on process.stdin would never resolve
+		// `question()` and the turn would hang forever. Fail loudly instead.
+		if (!rl && (this.opts.stdinConsumed || !process.stdin.isTTY)) {
 			throw new Error(
 				'Tool approval required, but no interactive terminal is available; re-run interactively to approve.'
 			);

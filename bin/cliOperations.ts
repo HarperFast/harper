@@ -249,7 +249,7 @@ function redactCredentials(req: any): any {
 	return redacted;
 }
 
-export { cliOperations, buildRequest, redactCredentials };
+export { cliOperations, buildRequest, redactCredentials, refreshExpiredOperationToken };
 const PREPARE_OPERATION: any = {
 	deploy_component: async (req) => {
 		if (req.package) {
@@ -328,6 +328,50 @@ function resolveTarget(req, allCredentials) {
 }
 
 /**
+ * If `tokens.operation_token` is expired and a `refresh_token` is on hand, refreshes it via
+ * `refresh_operation_token`, persisting the new token to the credentials file and updating
+ * `tokens.operation_token` in place. Shared by `cliOperations` and any other CLI transport
+ * (e.g. `harper agent`) authenticating with stored `harper login` tokens, so refresh behavior
+ * stays in one place instead of drifting between callers.
+ */
+async function refreshExpiredOperationToken(
+	options: any,
+	tokens: { operation_token: string; refresh_token: string },
+	lookupKey: string
+): Promise<void> {
+	if (!tokens.refresh_token || !isJWTExpired(tokens.operation_token)) return;
+	console.error('Operation token expired, attempting to refresh...');
+	try {
+		// Always use the standard operation timeout for this call, even when the caller's
+		// own options carry the longer SSE timeout (e.g. a deploy_component retry) — the
+		// refresh call itself is a small, fast request, not the streaming operation.
+		const refreshOptions = { ...options, timeout: CLI_OPERATION_TIMEOUT_MS };
+		refreshOptions.headers = { ...options.headers, Authorization: `Bearer ${tokens.refresh_token}` };
+		const refreshResponse = await httpRequest(refreshOptions, {
+			operation: 'refresh_operation_token',
+		});
+		if (refreshResponse.statusCode === 200) {
+			const refreshData = JSON.parse(refreshResponse.body);
+			if (refreshData.operation_token) {
+				tokens.operation_token = refreshData.operation_token;
+				saveCredentials(lookupKey, {
+					operation_token: tokens.operation_token,
+					refresh_token: tokens.refresh_token,
+				});
+				console.error('Operation token refreshed successfully.');
+			}
+		} else if (refreshResponse.statusCode === 401) {
+			console.error('Refresh token expired or invalid. Please run harper login again.');
+			process.exit(1);
+		} else {
+			console.error(`Failed to refresh operation token: ${refreshResponse.statusCode}`);
+		}
+	} catch (refreshErr) {
+		console.error(`Error refreshing operation token: ${refreshErr.message}`);
+	}
+}
+
+/**
  * Using a unix domain socket will send a request to hdb operations API server
  * @param req
  * @param skipResponseLog By default, the response is logged to the console. Set this to true to skip logging it, which can be useful for sensitive responses like login calls!
@@ -403,36 +447,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			}
 
 			if (tokens?.operation_token) {
-				if (tokens.refresh_token && isJWTExpired(tokens.operation_token)) {
-					console.error('Operation token expired, attempting to refresh...');
-					try {
-						const refreshOptions = { ...options, timeout: CLI_OPERATION_TIMEOUT_MS };
-						refreshOptions.headers = { ...options.headers, Authorization: `Bearer ${tokens.refresh_token}` };
-						const refreshResponse = await httpRequest(refreshOptions, {
-							operation: 'refresh_operation_token',
-						});
-						if (refreshResponse.statusCode === 200) {
-							const refreshData = JSON.parse(refreshResponse.body);
-							if (refreshData.operation_token) {
-								tokens.operation_token = refreshData.operation_token;
-								saveCredentials(lookupKey || target?.resolvedTarget, {
-									operation_token: tokens.operation_token,
-									refresh_token: tokens.refresh_token,
-								});
-								console.error('Operation token refreshed successfully.');
-								// Update the original request's authorization header with the new token
-								options.headers.Authorization = `Bearer ${tokens.operation_token}`;
-							}
-						} else if (refreshResponse.statusCode === 401) {
-							console.error('Refresh token expired or invalid. Please run harper login again.');
-							process.exit(1);
-						} else {
-							console.error(`Failed to refresh operation token: ${refreshResponse.statusCode}`);
-						}
-					} catch (refreshErr) {
-						console.error(`Error refreshing operation token: ${refreshErr.message}`);
-					}
-				}
+				await refreshExpiredOperationToken(options, tokens, lookupKey || target?.resolvedTarget);
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
 		}
