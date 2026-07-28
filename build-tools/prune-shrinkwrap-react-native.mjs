@@ -114,15 +114,18 @@ for (const key of withEdge) {
 	removed++;
 }
 
-// With the sever restricted to optional edges this should be unreachable: anything a
-// surviving package requires is reachable without the severed edge, so it is never
-// removed. It stays as a backstop because the cost of being wrong is a broken install for
-// every consumer — fail the build rather than write the file.
+// No package reachable from the root can trip this: anything a surviving package requires
+// is reachable without the severed edge, so it is never removed. Entries the root walk
+// never reaches can, though — most usefully when this runs on a shrinkwrap that still has
+// its devDependencies, since the walk only follows production edges and dev entries
+// pointing into the react-native subtree then look newly broken. That is why build.sh
+// prunes dev first, and why this fails the build rather than writing the file.
 const introduced = [...danglingRequiredEdges()].filter((edge) => !danglingBefore.has(edge));
 if (introduced.length > 0) {
 	throw new Error(
 		`pruning ${SEVER} left ${introduced.length} required dependenc${introduced.length === 1 ? 'y' : 'ies'} ` +
-			`unresolved, refusing to write ${file}:\n  ${introduced.join('\n  ')}`
+			`unresolved, refusing to write ${file}:\n  ${introduced.join('\n  ')}\n` +
+			`(if this is a full shrinkwrap, run prune-shrinkwrap-dev.mjs first — this expects a production-only tree)`
 	);
 }
 

@@ -114,6 +114,35 @@ describe('prune-shrinkwrap-react-native', () => {
 		assert.ok(result.packages['node_modules/shared'], 'the pre-existing gap is not ours to act on');
 	});
 
+	// The backstop's own trigger. Reachable via an entry the production walk never visits —
+	// in practice a dev entry, which is why build.sh prunes dev first.
+	it('refuses to write when the prune newly breaks a required edge', () => {
+		const lock = fixture();
+		lock.packages['node_modules/dev-only-tool'] = { version: '1.0.0', dependencies: { 'rn-only': '^1.0.0' } };
+		assert.throws(() => runPrune(lock), /required dependenc.* unresolved[\s\S]*node_modules\/dev-only-tool -> rn-only/);
+	});
+
+	it('points at the dev prune when it refuses', () => {
+		const lock = fixture();
+		lock.packages['node_modules/dev-only-tool'] = { version: '1.0.0', dependencies: { 'rn-only': '^1.0.0' } };
+		assert.throws(() => runPrune(lock), /run prune-shrinkwrap-dev\.mjs first/);
+	});
+
+	// resolve() must prefer a nested copy over the hoisted one, and handle scoped names —
+	// both appear in the real tree (`@react-native/*`) but not in the flat fixtures above.
+	it('resolves nested and scoped entries the way npm does', () => {
+		const lock = fixture();
+		lock.packages['node_modules/react-native'].dependencies['@scope/rn-helper'] = '^1.0.0';
+		lock.packages['node_modules/@scope/rn-helper'] = { version: '1.0.0' };
+		// A nested copy of `shared` under react-native: reachable only through the subtree,
+		// so it goes, while the hoisted `shared` the root depends on stays.
+		lock.packages['node_modules/react-native/node_modules/shared'] = { version: '2.0.0' };
+		const { result } = runPrune(lock);
+		assert.ok(!result.packages['node_modules/@scope/rn-helper'], 'scoped rn-only package pruned');
+		assert.ok(!result.packages['node_modules/react-native/node_modules/shared'], 'nested copy pruned');
+		assert.strictEqual(result.packages['node_modules/shared'].version, '1.0.0', 'hoisted copy untouched');
+	});
+
 	it('rejects an unsupported lockfileVersion', () => {
 		const lock = fixture();
 		lock.lockfileVersion = 2;
