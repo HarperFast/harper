@@ -647,7 +647,7 @@ async function* readPayloadBlobChunks(
 	}
 }
 
-function normalizePeerResult(raw: unknown): Record<string, unknown> {
+export function normalizePeerResult(raw: unknown): Record<string, unknown> {
 	if (!raw || typeof raw !== 'object') {
 		// Replication layer returned a primitive — preserve as a stringified marker so the
 		// audit row at least records that something came back from a peer.

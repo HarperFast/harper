@@ -40,6 +40,7 @@ const {
 	DeploymentRecorder,
 	awaitDeploymentRow,
 	markDeploymentTerminal,
+	normalizePeerResult,
 	readPayloadBlobWithRetry,
 	coerceTimeoutMs,
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
@@ -747,54 +748,14 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 		}
 
 		// ---- Activate gate: rare, but a node can stage OK and then fail the swap. ----
-		if (!req.ignore_replication_errors) {
-			const failed = recorder.getFailedPeers();
-			if (failed.length > 0) {
-				let revertNote = '';
-				// Opt-in swap-back: some nodes went live and some didn't, leaving the cluster split across
-				// versions. When revert_on_failure is set, roll the nodes that DID activate back to the
-				// retained previous version so the cluster reconverges. Best-effort — a revert failure must
-				// not mask the original activate failure.
-				if (req.revert_on_failure) {
-					try {
-						emit('phase', { phase: 'revert', status: 'start' });
-						// The origin activated, so revert it.
-						await revertApplication(application);
-						// Revert ONLY the peers that successfully activated (see selectRevertTargets): every known
-						// node minus the ones that failed to activate (still on the correct version) and minus this
-						// node (already reverted directly above; a second bidirectional revert would flip it back).
-						// replicateOperation has no subset targeting, so send point-to-point via sendOperationToNode.
-						const { getThisNodeName } = require('../server/nodeName.ts');
-						const activatedPeers = selectRevertTargets(server.nodes, failed, getThisNodeName());
-						const revertOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT, {
-							restart: req.restart,
-							deploymentId: recorder.deploymentId,
-						});
-						revertOp.replicated = false; // point-to-point; the peer must not re-fan the revert
-						const revertResults = await Promise.allSettled(
-							activatedPeers.map((node) => server.replication.sendOperationToNode(node, revertOp))
-						);
-						const revertFailures = revertResults.filter((result) => result.status === 'rejected').length;
-						emit('phase', { phase: 'revert', status: 'done' });
-						revertNote =
-							` Rolled the origin and ${activatedPeers.length - revertFailures} of ${activatedPeers.length} ` +
-							`activated peer(s) back to the previous version (revert_on_failure); the ${failed.length} peer(s) ` +
-							`that never activated were left on their current (correct) version.` +
-							(revertFailures > 0 ? ` ${revertFailures} peer revert(s) also failed.` : '') +
-							` Verify with get_components.`;
-					} catch (revertErr) {
-						log.warn('revert_on_failure rollback failed', revertErr);
-						revertNote = ` An automatic rollback (revert_on_failure) was attempted but also failed: ${revertErr?.message ?? revertErr}.`;
-					}
-				}
-				throw new ServerError(
-					`Component '${application.name}' was activated on the origin but failed to activate on ${failed.length} ` +
-						`of ${recorder.row.peer_results.length} peer node(s): ${describePeers(failed)}. Those nodes have the staged ` +
-						`build but did not go live.${revertNote} See deployment ${recorder.deploymentId} (get_deployment), or pass ` +
-						`ignore_replication_errors: true.`
-				);
-			}
-		}
+		await enforceActivatePeerGate({
+			req,
+			application,
+			emit,
+			failed: recorder.getFailedPeers(),
+			totalPeers: recorder.row.peer_results.length,
+			deploymentId: recorder.deploymentId,
+		});
 
 		response.deployment_id = recorder.deploymentId;
 		maybeReclaimPayload(recorder, emit);
@@ -900,7 +861,17 @@ async function deployComponentActivateExisting(req, credentialReferences) {
 		restart: rollingRestart ? false : req.restart,
 		deploymentId: stagingId,
 	});
-	const rep = await server.replication.replicateOperation(activateOp, {});
+	// Collect per-peer outcomes so a partially-failed activate can be gated below. There is no
+	// DeploymentRecorder on this path (the row was created and finished as `staged` by the earlier
+	// stage-and-stop), so a local collector stands in for recorder.recordPeer/getFailedPeers.
+	const peers = createPeerResultCollector();
+	const rep = await server.replication.replicateOperation(activateOp, {
+		onPeerResult: (result) => {
+			peers.record(result);
+			emit('peer', result);
+		},
+	});
+	if (rep?.replicated) peers.recordAll(rep.replicated);
 
 	const response = {
 		message: `Activated component: ${req.project}`,
@@ -930,6 +901,27 @@ async function deployComponentActivateExisting(req, credentialReferences) {
 		// No restart requested: activating a genuinely-new component still needs one to serve its routes
 		// (harper#674). activateApplication set isNewComponent from the pre-swap live dir above.
 		markRestartRequiredForNewComponent(application);
+	}
+
+	// ---- Activate gate: a peer can hold a good staged build and still fail the swap. Same gate the
+	// two-phase activate phase uses, so revert_on_failure / ignore_replication_errors behave identically
+	// whether the activate came from a full deploy or from `deploy_component({ deployment_id })`.
+	try {
+		await enforceActivatePeerGate({
+			req,
+			application,
+			emit,
+			failed: peers.getFailed(),
+			totalPeers: peers.total,
+			deploymentId: stagingId,
+		});
+	} catch (err) {
+		// The origin went live but the cluster did not converge — record the terminal state before
+		// surfacing the failure, so get_deployment doesn't still read `staged`.
+		await markDeploymentTerminal(stagingId, 'failed').catch((markErr) =>
+			log.warn('Failed to mark deployment as failed after a partial activate', markErr)
+		);
+		throw err;
 	}
 
 	// Best-effort: flip the staged deployment row (left 'staged' by the stage-and-stop) to success now
@@ -1213,6 +1205,90 @@ function buildReplicatedSubOp(req, operation, { includePayload = false, restart,
 // Render failed peer outcomes as "node (error)" for an operator-facing error message.
 function describePeers(failedPeers) {
 	return failedPeers.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? 'unknown error'})`).join(', ');
+}
+
+/**
+ * Collect per-peer replication outcomes when there is no DeploymentRecorder to hold them — the
+ * activate-existing path, where the hdb_deployment row was already created (and finished as `staged`)
+ * by the earlier stage-and-stop. Mirrors DeploymentRecorder.recordPeer's semantics exactly: results are
+ * normalized by the same normalizePeerResult and upserted by node name, so a peer reported both through
+ * the streaming `onPeerResult` callback and again in replicateOperation's final `replicated` aggregate
+ * is counted once, not twice.
+ */
+function createPeerResultCollector() {
+	const list = [];
+	const record = (result) => {
+		const normalized = normalizePeerResult(result);
+		const nodeName = normalized.node;
+		const idx = nodeName ? list.findIndex((entry) => entry.node === nodeName) : -1;
+		if (idx >= 0) list[idx] = normalized;
+		else list.push(normalized);
+	};
+	return {
+		record,
+		recordAll(results) {
+			if (Array.isArray(results)) for (const result of results) record(result);
+		},
+		getFailed: () => list.filter((peer) => peer?.status === 'failed'),
+		get total() {
+			return list.length;
+		},
+	};
+}
+
+/**
+ * Shared post-activate failure gate for every cluster-wide activate (the two-phase deploy's activate
+ * phase and `deploy_component({ deployment_id })`). replicateOperation never rejects on a per-peer
+ * failure — failures surface only as 'failed' peer entries — so without this gate a partially-failed
+ * activate returns 2xx and silently leaves the cluster split across versions.
+ *
+ * Unless `ignore_replication_errors` is set, throws when any peer failed to activate. When
+ * `revert_on_failure` is set, first rolls the origin and the peers that DID activate back to the
+ * retained previous version so the cluster reconverges — best-effort, since a revert failure must not
+ * mask the original activate failure.
+ */
+async function enforceActivatePeerGate({ req, application, emit, failed, totalPeers, deploymentId }) {
+	if (req.ignore_replication_errors) return;
+	if (!failed || failed.length === 0) return;
+	let revertNote = '';
+	if (req.revert_on_failure) {
+		try {
+			emit('phase', { phase: 'revert', status: 'start' });
+			// The origin activated, so revert it.
+			await revertApplication(application);
+			// Revert ONLY the peers that successfully activated (see selectRevertTargets): every known
+			// node minus the ones that failed to activate (still on the correct version) and minus this
+			// node (already reverted directly above; a second bidirectional revert would flip it back).
+			// replicateOperation has no subset targeting, so send point-to-point via sendOperationToNode.
+			const { getThisNodeName } = require('../server/nodeName.ts');
+			const activatedPeers = selectRevertTargets(server.nodes, failed, getThisNodeName());
+			const revertOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT, {
+				restart: req.restart,
+				deploymentId,
+			});
+			revertOp.replicated = false; // point-to-point; the peer must not re-fan the revert
+			const revertResults = await Promise.allSettled(
+				activatedPeers.map((node) => server.replication.sendOperationToNode(node, revertOp))
+			);
+			const revertFailures = revertResults.filter((result) => result.status === 'rejected').length;
+			emit('phase', { phase: 'revert', status: 'done' });
+			revertNote =
+				` Rolled the origin and ${activatedPeers.length - revertFailures} of ${activatedPeers.length} ` +
+				`activated peer(s) back to the previous version (revert_on_failure); the ${failed.length} peer(s) ` +
+				`that never activated were left on their current (correct) version.` +
+				(revertFailures > 0 ? ` ${revertFailures} peer revert(s) also failed.` : '') +
+				` Verify with get_components.`;
+		} catch (revertErr) {
+			log.warn('revert_on_failure rollback failed', revertErr);
+			revertNote = ` An automatic rollback (revert_on_failure) was attempted but also failed: ${revertErr?.message ?? revertErr}.`;
+		}
+	}
+	throw new ServerError(
+		`Component '${application.name}' was activated on the origin but failed to activate on ${failed.length} ` +
+			`of ${totalPeers} peer node(s): ${describePeers(failed)}. Those nodes have the staged ` +
+			`build but did not go live.${revertNote} See deployment ${deploymentId} (get_deployment), or pass ` +
+			`ignore_replication_errors: true.`
+	);
 }
 
 // Choose which peers a revert_on_failure swap-back should target: every known node EXCEPT

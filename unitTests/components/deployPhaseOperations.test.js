@@ -21,6 +21,7 @@ testUtils.preTestPrep();
 const operations = require('#src/components/operations');
 const { DEPLOY_STAGING_DIR, Application, stageApplication } = require('#src/components/Application');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
+const { server } = require('#src/server/Server');
 const { getConfigPath } = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
@@ -130,6 +131,59 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 			true,
 			'activating a never-live component without restart marks a restart required'
 		);
+	});
+
+	// The activate-existing path fans the activate out to peers just like the two-phase activate phase,
+	// and replicateOperation never rejects on a per-peer failure — failures surface only as 'failed'
+	// entries. Without the shared activate gate this path returned 2xx {activated:true} while part of the
+	// cluster stayed on the old version, making revert_on_failure/ignore_replication_errors no-ops here.
+	describe('deploy_component({deployment_id}) peer-failure gate', () => {
+		let priorReplicate;
+		// Swap in a replicator that reports one failed peer (the repo's property-swap pattern; no
+		// sinon/rewire per AGENTS.md). Restored after each test.
+		function stubFailedPeer() {
+			priorReplicate = server.replication.replicateOperation;
+			server.replication.replicateOperation = async () => ({
+				replicated: [{ node: 'peer-a', status: 'failed', reason: 'no staged build found' }],
+			});
+		}
+		afterEach(() => {
+			if (priorReplicate) server.replication.replicateOperation = priorReplicate;
+			priorReplicate = undefined;
+		});
+
+		async function stageOnly(name, marker) {
+			const staged = await operations.deployComponent({
+				project: name,
+				payload: await makeComponentPayload(marker),
+				activate: false,
+			});
+			return staged.deployment_id;
+		}
+
+		it('rejects (does not report success) when a peer fails to activate', async () => {
+			const name = freshName();
+			const deploymentId = await stageOnly(name, 'gate-fail');
+			stubFailedPeer();
+			await assert.rejects(
+				() => operations.deployComponent({ project: name, deployment_id: deploymentId }),
+				/failed to activate on 1 .*peer node\(s\).*peer-a/s,
+				'a partially-failed activate must surface as an error, not a 2xx success'
+			);
+		});
+
+		it('honors ignore_replication_errors on this path, resolving despite the failed peer', async () => {
+			const name = freshName();
+			const deploymentId = await stageOnly(name, 'gate-ignore');
+			stubFailedPeer();
+			const res = await operations.deployComponent({
+				project: name,
+				deployment_id: deploymentId,
+				ignore_replication_errors: true,
+			});
+			assert.strictEqual(res.activated, true, 'the opt-out still returns success');
+			assert.match(await readIndex(path.join(COMPONENTS_ROOT, name)), /gate-ignore/, 'the origin still went live');
+		});
 	});
 
 	it('deploy_component (two-phase default) stages then activates end-to-end', async () => {
