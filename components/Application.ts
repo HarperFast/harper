@@ -1568,11 +1568,17 @@ function spawnWithEnv(
 			didTimeout = true;
 			void terminateProcessTree(childProcess, closePromise).then(
 				() => {
+					// Only untrack once terminateProcessTree has confirmed the group is actually gone.
+					// The direct child can emit 'close' mid-grace-period (e.g. right after SIGTERM)
+					// while a same-group descendant is still alive; untracking there instead would let
+					// a worker exit in that window forget the group before it's truly empty.
+					untrackProcessGroup();
 					if (didSettle) return;
 					didSettle = true;
 					reject(new CommandTimeoutError(command, args, timeoutMs));
 				},
 				(error) => {
+					untrackProcessGroup();
 					if (didSettle) return;
 					didSettle = true;
 					reject(new CommandTimeoutError(command, args, timeoutMs, error));
@@ -1611,7 +1617,10 @@ function spawnWithEnv(
 
 		childProcess.on('error', (error) => {
 			clearTimeout(timeout);
-			untrackProcessGroup();
+			// See the 'close' handler: when didTimeout is true, the timeout path's own
+			// terminateProcessTree(...).then(...) owns untracking, only once it confirms the group is
+			// gone. Untracking here too could forget the group while that confirmation is still pending.
+			if (!didTimeout) untrackProcessGroup();
 			flushOutput();
 			// Print out stderr before rejecting
 			if (stderr) {
@@ -1644,8 +1653,11 @@ function spawnWithEnv(
 					}
 					return;
 				}
+				untrackProcessGroup();
 			}
-			untrackProcessGroup();
+			// When didTimeout is true, the timeout path's own terminateProcessTree(...).then(...) owns
+			// untracking (only once it confirms the group is gone) — untracking here too, before that
+			// confirmation lands, is exactly the premature-forget race described above.
 			// Flush any trailing partial lines so the caller sees process output that didn't
 			// end on a newline (some package managers do this on their final progress line).
 			flushOutput();
@@ -1712,9 +1724,12 @@ export async function waitForWindowsTreeTermination(
 	pollMs: number = PROCESS_TERMINATION_POLL_MS
 ): Promise<void> {
 	for (;;) {
-		if (await attemptTermination()) return;
-		// taskkill reports a nonzero status both for a real failure and for the normal race where
-		// the target exits before /PID is evaluated. Only the latter is safe to treat as success.
+		// A successful taskkill exit only proves the request was accepted, not that the whole tree
+		// has actually exited — Windows termination is asynchronous, and taskkill can report overall
+		// success even when a descendant is not yet (or never) reaped. Only an explicit `false` from
+		// treeIsAlive, independently confirming no member of the tree remains, is safe to return on;
+		// `true` or `null` (unknown) must keep the loop retrying.
+		await attemptTermination();
 		if ((await treeIsAlive()) === false) return;
 		await delay(pollMs);
 	}

@@ -988,7 +988,12 @@ function windowsProcessTreeIsAlive(rootPid) {
 // retry logic with injected callbacks instead of real Windows processes.
 async function waitUntilConfirmedGone(attemptTermination, treeIsAlive, pollMs) {
 	for (;;) {
-		if (await attemptTermination()) return;
+		// A successful taskkill exit only proves the request was accepted, not that the whole tree
+		// has actually exited — Windows termination is asynchronous, and taskkill can report overall
+		// success even when a descendant is not yet (or never) reaped. Only an explicit `false` from
+		// treeIsAlive, independently confirming no member of the tree remains, is safe to return on;
+		// `true` or `null` (unknown) must keep the loop retrying.
+		await attemptTermination();
 		if ((await treeIsAlive()) === false) return;
 		await delay(pollMs);
 	}

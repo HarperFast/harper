@@ -9,22 +9,20 @@ const { waitUntilConfirmedGone } = require('#src/server/threads/manageThreads');
 // exited before /PID was evaluated, so termination must not be confirmed on that alone. These
 // tests drive the retry loop directly with injected callbacks — no real Windows process needed.
 describe('waitUntilConfirmedGone', () => {
-	it('returns immediately once termination is attempted successfully', async () => {
-		let terminationAttempts = 0;
+	it('does not stop on a successful termination alone — still requires treeIsAlive to confirm', async () => {
+		// taskkill (or its POSIX equivalent) reporting success only proves the request was accepted,
+		// not that the tree has actually exited, so a truthy attemptTermination result must never be
+		// treated as sufficient by itself.
 		let aliveChecks = 0;
 		await waitUntilConfirmedGone(
-			async () => {
-				terminationAttempts++;
-				return true;
-			},
+			async () => true,
 			async () => {
 				aliveChecks++;
-				return true;
+				return aliveChecks < 3 ? true : false;
 			},
 			1
 		);
-		assert.equal(terminationAttempts, 1);
-		assert.equal(aliveChecks, 0);
+		assert.equal(aliveChecks, 3);
 	});
 
 	it('accepts a failed termination attempt once the tree is independently confirmed gone', async () => {
@@ -35,14 +33,14 @@ describe('waitUntilConfirmedGone', () => {
 		);
 	});
 
-	it('keeps retrying while termination fails and the tree is still confirmed alive', async () => {
+	it('keeps retrying while the tree is still confirmed alive', async () => {
 		let attempts = 0;
 		await waitUntilConfirmedGone(
 			async () => {
 				attempts++;
-				return attempts >= 3;
+				return false;
 			},
-			async () => true,
+			async () => attempts < 3,
 			1
 		);
 		assert.equal(attempts, 3);
