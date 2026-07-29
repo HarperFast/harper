@@ -1053,23 +1053,28 @@ export function errorForLog(error: any) {
 const MAX_SANITIZE_DEPTH = 20;
 
 /**
- * Realm-independent plain-object check: component code runs through node:vm, so a VM-created
- * object literal's prototype is a *different realm's* Object.prototype and fails a same-realm
- * `proto === Object.prototype` comparison - which would fall through to the "leave raw" branch
- * below and hand a VM diagnostic payload's nested Errors an unsanitized path to the raised inspect
- * depth (the same cross-realm concern isErrorLike already accounts for via isNativeError).
- * `Object.prototype.toString.call` reports the internal-slot tag ('[object Object]'), not the
- * prototype chain, so it is realm-independent the same way it is for Map/Set/Date/Error - but a
- * class instance also reports '[object Object]' when it has no custom Symbol.toStringTag, so that
- * alone can't distinguish "object literal" from "class instance". The second check does: the
- * *real* Object.prototype (in any realm) sits exactly one level up (its own prototype is null);
- * a class instance's prototype chain has its class's prototype in between, so this is false for
- * `new Causes()` while still true for a VM-created `{}`.
+ * True for the specific built-ins whose actual data is NOT reachable through their own-enumerable
+ * string/symbol keys, so rebuilding them via a property walk would silently corrupt their
+ * rendering (Object.keys(new Date()) is `[]`; a Buffer's bytes live in a typed-array internal
+ * slot, not enumerable own properties). Everything else - an object literal, a class instance, a
+ * VM cross-realm object of either - IS walked and rebuilt: a class or custom-prototype instance is
+ * just as capable of holding a nested Error as a plain object (`http_resp_msg` is a generic field,
+ * not limited to the known deploy payload), and leaving instances raw would hand the raised inspect
+ * depth below a real, generic secret-leak path. `types.is*` checks an internal slot, not the
+ * prototype chain, so - like isNativeError / types.isMap / types.isSet elsewhere in this file -
+ * this is realm-independent: a VM-created Date is still recognized as opaque.
  */
-function isPlainObject(value: object): boolean {
-	if (Object.prototype.toString.call(value) !== '[object Object]') return false;
-	const proto = Object.getPrototypeOf(value);
-	return proto === null || Object.getPrototypeOf(proto) === null;
+function isOpaqueBuiltin(value: object): boolean {
+	return (
+		types.isDate(value) ||
+		types.isRegExp(value) ||
+		types.isArrayBufferView(value) || // covers Buffer and every TypedArray/DataView
+		types.isAnyArrayBuffer(value) ||
+		types.isPromise(value) ||
+		types.isWeakMap(value) ||
+		types.isWeakSet(value) ||
+		types.isBoxedPrimitive(value) // a boxed Boolean/Number/String/Symbol/BigInt wrapper
+	);
 }
 
 /** A util.inspect-style placeholder for an accessor property, describing it without invoking the
@@ -1088,15 +1093,15 @@ function accessorPlaceholder(descriptor: PropertyDescriptor) {
  * anywhere inside a value later rendered with a raised inspect depth (see inspectForLog) would
  * otherwise surface its own-enumerable properties raw.
  *
- * Plain objects, arrays, Map, and Set are rebuilt so an Error nested inside them is still reached
- * and sanitized. Anything else (Date, Buffer, RegExp, a class instance) is returned as-is:
- * rebuilding one via Object.keys() would silently corrupt its rendering (a Date/Buffer's actual
- * data isn't reachable through its own enumerable string keys - Object.keys(new Date()) is `[]`)
- * in exchange for a residual gap - a raw Error nested inside one of these types is not sanitized -
- * that mirrors sanitizeErrorArgs' own accepted shallow-by-design boundary rather than introducing
- * a new one. Map/Set are common enough carriers for a nested cause (e.g. an aggregated-errors map)
- * that leaving them raw would hand the raised inspect depth here a real secret-leak path #1734
- * guards against everywhere else, so they get the same rebuild-and-sanitize treatment as objects.
+ * Arrays, Map, Set, and every other object EXCEPT the isOpaqueBuiltin exclusions above are rebuilt
+ * so an Error nested inside them at any depth is still reached and sanitized - a raw Error left
+ * unsanitized anywhere in the tree would surface its own-enumerable properties (e.g. an axios
+ * `config.headers.Authorization`) raw once the raised inspect depth below reaches it. A rebuilt
+ * object/class-instance clone has the original's prototype restored (Object.setPrototypeOf) so
+ * inspect() still shows its real class name and picks up any inspect.custom hook defined on the
+ * class's prototype (not an own property, so the symbol walk below wouldn't otherwise see it) -
+ * the clone differs from the original only in which of its OWN enumerable properties got swapped
+ * for a sanitized/placeholder value, same as it would for a plain object.
  *
  * Cycle-safe via a WeakMap from original to its (in-progress) clone, registered before recursing
  * into children, so a cycle resolves to the clone in progress rather than falling back to the raw
@@ -1106,12 +1111,17 @@ function accessorPlaceholder(descriptor: PropertyDescriptor) {
  * field, not the whole render (inspectForLog's own try/catch around inspect() is still the final
  * backstop regardless).
  *
- * Never invokes an accessor (getter) property: unlike util.inspect's default (which shows a
- * getter as `[Getter]` without calling it), reading `value[key]` for every own-enumerable key
- * would call every getter - turning a passive render of a caught operation error into arbitrary
- * synchronous code execution (a getter that loops, blocks, or mutates state runs while the logger
- * is just trying to report the *original* error). Property descriptors are read instead, and only
- * a data descriptor's value is recursed into; an accessor gets accessorPlaceholder's label.
+ * Never invokes an accessor (getter) property, and never resolves an overridable Symbol.iterator:
+ * unlike util.inspect's default (which shows a getter as `[Getter]` without calling it), reading
+ * `value[key]`/`value[sym]` for every own-enumerable key - or iterating an array/Map/Set with
+ * `for...of`, which resolves the value's own-or-inherited `Symbol.iterator` - would run arbitrary
+ * synchronous code, including a subclass instance's overridden iterator, while the logger is just
+ * trying to report the *original* error (a hostile accessor/iterator that loops, blocks, or
+ * mutates state runs regardless). Arrays are walked by own property descriptor per index instead
+ * of `for...of`; Map/Set are walked via their intrinsic prototype methods bound with `.call`,
+ * which reads the internal slot data directly rather than going through the instance's own (or an
+ * overriding subclass's) iterator method. Objects read property descriptors and recurse only into
+ * a data descriptor's value; an accessor gets accessorPlaceholder's label instead.
  */
 function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap(), depth = 0): any {
 	if (value === null || typeof value !== 'object') return value;
@@ -1128,7 +1138,7 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 		// (and any Error nested inside) unsanitized at the raised inspect depth below.
 		isMap = !isArray && types.isMap(value);
 		isSet = !isArray && !isMap && types.isSet(value);
-		if (!isArray && !isMap && !isSet && !isPlainObject(value)) return value;
+		if (!isArray && !isMap && !isSet && isOpaqueBuiltin(value)) return value;
 	} catch {
 		return value; // e.g. a revoked Proxy - util.inspect renders those fine on its own
 	}
@@ -1136,11 +1146,23 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 	if (isArray) {
 		const clone: any[] = [];
 		seen.set(value, clone);
-		for (const item of value) {
+		const length = value.length;
+		for (let i = 0; i < length; i++) {
+			let descriptor;
 			try {
-				clone.push(deepSanitizeErrors(item, seen, depth + 1));
+				descriptor = Object.getOwnPropertyDescriptor(value, i);
 			} catch {
-				clone.push(item);
+				continue; // leave index i a hole rather than risk a second throw
+			}
+			if (!descriptor) continue; // a genuine sparse-array hole - leave it, not `undefined`
+			if (descriptor.get || descriptor.set) {
+				clone[i] = accessorPlaceholder(descriptor);
+				continue;
+			}
+			try {
+				clone[i] = deepSanitizeErrors(descriptor.value, seen, depth + 1);
+			} catch {
+				clone[i] = descriptor.value;
 			}
 		}
 		return clone;
@@ -1149,7 +1171,9 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 	if (isMap) {
 		const clone = new Map();
 		seen.set(value, clone);
-		for (const [k, v] of value) {
+		// Map.prototype.entries bound via .call reads the internal [[MapData]] slot directly,
+		// rather than resolving value's own (or an overriding subclass's) Symbol.iterator.
+		for (const [k, v] of Map.prototype.entries.call(value)) {
 			try {
 				clone.set(deepSanitizeErrors(k, seen, depth + 1), deepSanitizeErrors(v, seen, depth + 1));
 			} catch {
@@ -1162,7 +1186,8 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 	if (isSet) {
 		const clone = new Set();
 		seen.set(value, clone);
-		for (const item of value) {
+		// Same rationale as the Map branch above: Set.prototype.values via .call, not for...of.
+		for (const item of Set.prototype.values.call(value)) {
 			try {
 				clone.add(deepSanitizeErrors(item, seen, depth + 1));
 			} catch {
@@ -1174,6 +1199,11 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 
 	const result: Record<string | symbol, any> = {};
 	seen.set(value, result);
+	try {
+		Object.setPrototypeOf(result, Object.getPrototypeOf(value));
+	} catch {
+		// leave result's prototype as plain Object - inspect() renders it without the class name
+	}
 	for (const key of Object.keys(value)) {
 		let descriptor;
 		try {
