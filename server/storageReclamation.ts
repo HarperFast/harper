@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -35,7 +35,13 @@ export type QuotaStatusData = {
  */
 function isPathWithinRoot(root: string, target: string): boolean {
 	const relativePath = relative(resolve(root), resolve(target));
-	return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
+	if (relativePath === '') return true;
+	if (isAbsolute(relativePath)) return false;
+	// Check the first segment specifically (`..`), not a `..`-prefix match — a child directory
+	// literally named e.g. `..data` (the Kubernetes ConfigMap/Secret atomic-update symlink
+	// convention) is not a parent-traversal and must not be rejected as escaping the root.
+	const firstSegment = relativePath.split(sep)[0];
+	return firstSegment !== '..';
 }
 
 /**
@@ -112,12 +118,16 @@ export type StorageSpaceStats = {
 export async function getStorageSpaceStats(path: string): Promise<StorageSpaceStats> {
 	const rootPath = envMgr.get(CONFIG_PARAMS.ROOTPATH);
 	const status = await getQuotaStatus();
+	const statusAge = status ? Date.now() - status.updatedAt : undefined;
 	if (
 		status &&
 		isValidQuotaStatus(status) &&
 		rootPath &&
 		isPathWithinRoot(rootPath, path) &&
-		Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS
+		// A negative age (clock skew, or a corrupt/future updatedAt) is not "fresh" — treat it the
+		// same as stale rather than trusting quota data indefinitely.
+		statusAge >= 0 &&
+		statusAge < QUOTA_STATUS_MAX_AGE_MS
 	) {
 		const available = Math.max(0, status.quotaBytes - status.usedBytes);
 		return { available, free: available, size: status.quotaBytes, basis: 'quota' };

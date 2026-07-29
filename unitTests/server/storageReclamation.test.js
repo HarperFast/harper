@@ -515,6 +515,37 @@ describe('storageReclamation module', function () {
 				assert.equal(stats.available, QUOTA_100GB - usedBytes);
 			});
 
+			it('uses quota data for a nested path literally named "..data" (Kubernetes ConfigMap/Secret convention)', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+				// A directory named "..data" starts with the string "..", but is a real child of
+				// tmpDir, not a parent-traversal — it must not be rejected as escaping the root.
+				const nestedPath = path.join(tmpDir, '..data');
+				fs.mkdirSync(nestedPath, { recursive: true });
+
+				const stats = await storageReclamation.getStorageSpaceStats(nestedPath);
+
+				assert.equal(stats.basis, 'quota');
+				assert.equal(stats.available, QUOTA_100GB - usedBytes);
+			});
+
+			it('falls back to statfs when quota-status updatedAt is in the future', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() + 60 * 60 * 1000 })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				// A future updatedAt (clock skew or a corrupt writer) yields a negative age, which
+				// must not be treated as "fresher than fresh" and trusted indefinitely.
+				assert.equal(stats.basis, 'filesystem');
+			});
+
 			it('clamps available to 0 when usage exceeds the quota', async function () {
 				const usedBytes = QUOTA_100GB + 5 * 1024 * 1024 * 1024;
 				fs.writeFileSync(
