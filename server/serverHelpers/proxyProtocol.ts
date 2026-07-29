@@ -160,7 +160,9 @@ function decodeV2(buffer: Buffer): ProxyHeaderDecision {
 		return decoded;
 	}
 
-	const info: ConnectionInfo = {};
+	// Lazily allocated: a v2 header with only address TLVs (or none) should not pay for a
+	// ConnectionInfo object it never populates.
+	let info: ConnectionInfo | undefined;
 	let tls: ForwardedTlsInfo | undefined;
 	let certPresented = false;
 	let clientCertChain: Buffer[] | undefined;
@@ -171,9 +173,9 @@ function decodeV2(buffer: Buffer): ProxyHeaderDecision {
 		const valueEnd = valueStart + valueLength;
 		if (valueEnd > headerLength) break; // malformed TLV — keep what we parsed so far
 		if (type === PP2_TYPE_ALPN && valueLength > 0) {
-			info.alpn = buffer.toString('latin1', valueStart, valueEnd);
+			(info ??= {}).alpn = buffer.toString('latin1', valueStart, valueEnd);
 		} else if (type === PP2_TYPE_AUTHORITY && valueLength > 0) {
-			info.authority = buffer.toString('utf8', valueStart, valueEnd);
+			(info ??= {}).authority = buffer.toString('utf8', valueStart, valueEnd);
 		} else if (type === PP2_TYPE_SSL && valueLength >= 5) {
 			// struct pp2_tlv_ssl: client(1) verify(4, 0 = verified ok), then sub-TLVs.
 			// Only PP2_CLIENT_SSL means the client actually connected over TLS; a
@@ -187,23 +189,19 @@ function decodeV2(buffer: Buffer): ProxyHeaderDecision {
 				parseSslSubTlvs(buffer, valueStart + 5, valueEnd, tls);
 			}
 		} else if (type === PP2_TYPE_JA3 && valueLength > 0) {
-			info.ja3 = buffer.toString('latin1', valueStart, valueEnd);
+			(info ??= {}).ja3 = buffer.toString('latin1', valueStart, valueEnd);
 		} else if (type === PP2_TYPE_JA4 && valueLength > 0) {
-			info.ja4 = buffer.toString('latin1', valueStart, valueEnd);
+			(info ??= {}).ja4 = buffer.toString('latin1', valueStart, valueEnd);
 		} else if (type === PP2_TYPE_CLIENT_CERT && valueLength > 0) {
 			// Copy so the retained chain doesn't pin the connection's first read buffer.
 			(clientCertChain ??= []).push(Buffer.from(buffer.subarray(valueStart, valueEnd)));
 		}
 		tlvOffset = valueEnd;
 	}
-	if (tls) info.tls = tls;
+	if (tls) (info ??= {}).tls = tls;
 	// A chain without the SSL TLV's cert-present bit is malformed; require both.
-	if (certPresented && clientCertChain) info.clientCertChain = clientCertChain;
-	// Attach only when at least one TLV populated a field. A direct field check (not
-	// Object.keys, which allocates an array) keeps the connection accept path allocation-free.
-	if (info.alpn || info.authority || info.tls || info.ja3 || info.ja4 || info.clientCertChain) {
-		decoded.connectionInfo = info;
-	}
+	if (certPresented && clientCertChain) (info ??= {}).clientCertChain = clientCertChain;
+	if (info) decoded.connectionInfo = info;
 	return decoded;
 }
 
