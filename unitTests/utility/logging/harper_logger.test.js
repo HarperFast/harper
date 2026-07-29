@@ -1000,6 +1000,138 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test inspectForLog function (harper#1982)', () => {
+		const util = require('util');
+		const { inspectForLog } = harperLoggerModule;
+		// inspectForLog returns a lazy wrapper; render it the same way the logger does.
+		const render = (value, options) => util.inspect(inspectForLog(value, options));
+
+		it('renders past Console default depth/array/string limits when given explicit options', () => {
+			const value = {
+				install_output: {
+					lines: [{ manager: 'npm', stream: 'stderr', line: 'npm error boom' }],
+				},
+			};
+			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
+			expect(result).to.not.include('[Object]');
+			expect(result).to.include('npm error boom');
+		});
+
+		it('defers rendering until actually stringified (does not compute eagerly)', () => {
+			let rendered = false;
+			const hostile = {
+				get [util.inspect.custom]() {
+					rendered = true;
+					return () => 'rendered-on-demand';
+				},
+			};
+			const wrapper = inspectForLog(hostile, { depth: 8 });
+			expect(rendered).to.equal(false, 'inspectForLog should not have touched the value yet');
+			expect(util.inspect(wrapper)).to.equal('rendered-on-demand');
+			expect(rendered).to.equal(true);
+		});
+
+		it('never throws, even if the value has a hostile custom inspect hook', () => {
+			const hostile = {
+				[util.inspect.custom]() {
+					throw new Error('formatter boom');
+				},
+			};
+			expect(() => render(hostile)).to.not.throw();
+			expect(render(hostile)).to.include('Unrenderable value');
+			expect(render(hostile)).to.include('formatter boom');
+		});
+
+		it('never throws on a revoked Proxy', () => {
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			expect(() => render(proxy)).to.not.throw();
+		});
+
+		it('sanitizes a nested Error at depth instead of exposing its own-enumerable properties raw (#1734)', () => {
+			// http_resp_msg is a generic field - a future caller could embed a raw Error several
+			// levels deep in it, unlike the known deployComponent shape this was written for.
+			const nested_error = new Error('request failed');
+			nested_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const value = { detail: { cause: { error: nested_error } }, other: 'fine' };
+
+			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('Authorization');
+			expect(result).to.include('Error: request failed');
+			expect(result).to.include('fine');
+		});
+
+		it('preserves an enumerable symbol property (e.g. a nested value’s own custom inspect hook)', () => {
+			const custom_rendered = { [util.inspect.custom]: () => 'custom-nested-render' };
+			const value = { inner: custom_rendered };
+			const result = render(value, { depth: 8 });
+			expect(result).to.include('custom-nested-render');
+		});
+
+		it('sanitizes a secret-carrying Error reached a second time through a cycle', () => {
+			const nested_error = new Error('request failed');
+			nested_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const value = { error: nested_error };
+			value.self = value; // cycle: the second path to `value` must not bypass sanitization
+
+			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.include('Error: request failed');
+		});
+
+		it('leaves built-in container types (Date, Map, Buffer) rendered natively instead of corrupting them', () => {
+			const date = new Date('2024-01-01T00:00:00.000Z');
+			const map = new Map([['key', 'value']]);
+			const buffer = Buffer.from('hi');
+			const result = render({ date, map, buffer }, { depth: 8 });
+			expect(result).to.include('2024-01-01T00:00:00.000Z');
+			expect(result).to.include("Map(1)");
+			expect(result).to.include('key');
+			expect(result).to.match(/Buffer\.from\(|<Buffer/);
+		});
+
+		it('omits a field whose getter throws instead of letting it fail the whole render', () => {
+			const hostile = {};
+			Object.defineProperty(hostile, 'poison', {
+				enumerable: true,
+				get() {
+					throw new Error('getter boom');
+				},
+			});
+			const value = { hostile, fine: 'still here' };
+			const result = render(value, { depth: 8 });
+			expect(result).to.not.include('Unrenderable value');
+			expect(result).to.include('still here');
+		});
+	});
+
+	describe('Test isErrorLike function (harper#1982)', () => {
+		const { isErrorLike } = harperLoggerModule;
+
+		it('recognizes a same-realm Error', () => {
+			expect(isErrorLike(new Error('boom'))).to.equal(true);
+		});
+
+		it('recognizes a cross-realm (VM-created) Error', () => {
+			const vm = require('vm');
+			const vmError = vm.runInNewContext('new Error("vm boom")');
+			expect(vmError instanceof Error).to.equal(false); // different realm's Error constructor
+			expect(isErrorLike(vmError)).to.equal(true);
+		});
+
+		it('does not recognize a plain object', () => {
+			expect(isErrorLike({ message: 'not an error' })).to.equal(false);
+		});
+
+		it('does not throw and returns false for a revoked Proxy', () => {
+			const { proxy, revoke } = Proxy.revocable(new Error('gone'), {});
+			revoke();
+			expect(() => isErrorLike(proxy)).to.not.throw();
+			expect(isErrorLike(proxy)).to.equal(false);
+		});
+	});
+
 	describe('Test logger auto-wrap of Error args (#1734)', () => {
 		// The HarperLogger level methods route every Error argument through errorForLog before
 		// Console formatting, so raw `logger.error(error)` calls anywhere in the codebase (or in
