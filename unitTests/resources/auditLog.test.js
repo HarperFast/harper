@@ -113,7 +113,7 @@ describe('Audit log', () => {
 		assert.equal(history[0].user, key.toString());
 		assert.deepEqual(history[0].value.id, key);
 	});
-	it('audit entries chain to the real prior version, not a placeholder flag', async () => {
+	it('audit entries chain to the real prior audit-store key, not a placeholder flag', async () => {
 		const id = 'previous-version-chain';
 		await AuditedTable.put(id, { name: 'v1' });
 		await AuditedTable.put(id, { name: 'v2' });
@@ -126,10 +126,32 @@ describe('Audit log', () => {
 		assert.equal(entries.length, 3);
 		// The first write has no prior entry, so previousVersion is falsy.
 		assert(!entries[0].previousVersion);
-		// Each later entry's previousVersion must point at the actual prior entry's version, not a
-		// 0/1 placeholder flag substituted from a shared per-environment register.
-		assert.equal(entries[1].previousVersion, entries[0].version);
-		assert.equal(entries[2].previousVersion, entries[1].version);
+		// Each later entry's previousVersion must point at the actual prior entry's own audit-store
+		// key (localTime on LMDB; RocksDB's version field already *is* its key), not a 0/1 placeholder
+		// flag substituted from a shared per-environment register. Resolving it through the audit
+		// store proves the chain is walkable, not just numerically similar.
+		assert.equal(entries[1].previousVersion, entries[0].localTime ?? entries[0].version);
+		assert.equal(entries[2].previousVersion, entries[1].localTime ?? entries[1].version);
+		assert(
+			AuditedTable.auditStore.get(entries[1].previousVersion, AuditedTable.tableId, id),
+			'previousVersion must resolve back to the actual prior audit entry'
+		);
+	});
+	// LMDB assigns each record's own localTime via lmdb-js's native monotonic clock, independent of
+	// the application-supplied `version` (e.g. a replicated write's origin timestamp, which can be
+	// backdated relative to this node's clock). previousVersion must point at the prior entry's
+	// localTime (the actual audit-store key space), not its origin version, or a replicated record's
+	// history becomes unwalkable.
+	it('previousVersion resolves correctly even when a write carries a backdated/replicated version', async () => {
+		const id = 'replicated-version-chain';
+		const originVersion = Date.now() - 100_000;
+		await AuditedTable.put(id, { name: 'first' }, { timestamp: originVersion });
+		await AuditedTable.put(id, { name: 'second' }, { timestamp: originVersion + 1 });
+		const secondEntry = AuditedTable.primaryStore.getEntry(id);
+		const secondAudit = AuditedTable.auditStore.get(secondEntry.localTime, AuditedTable.tableId, id);
+		const resolvedFirst = AuditedTable.auditStore.get(secondAudit.previousVersion, AuditedTable.tableId, id);
+		assert(resolvedFirst, 'previousVersion must resolve to the actual first audit entry');
+		assert.equal(resolvedFirst.version, originVersion);
 	});
 	it('dynamically add new transaction logs to iterator', async function () {
 		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb

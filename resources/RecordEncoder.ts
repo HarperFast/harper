@@ -851,7 +851,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						version: newVersion,
 						tableId,
 						recordId: id,
-						previousVersion: existingEntry?.version,
+						previousVersion: existingEntry?.localTime,
 						nodeId,
 						user: username,
 						type,
