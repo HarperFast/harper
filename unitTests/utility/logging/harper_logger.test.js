@@ -1048,6 +1048,18 @@ describe('Test harper_logger module', () => {
 			expect(() => render(proxy)).to.not.throw();
 		});
 
+		it('never throws when the custom inspect hook throws a hostile value (a revoked Proxy) instead of an Error', () => {
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			const hostile = {
+				[util.inspect.custom]() {
+					throw proxy; // `err instanceof Error` and `String(err)` both throw on a revoked Proxy
+				},
+			};
+			expect(() => render(hostile)).to.not.throw();
+			expect(render(hostile)).to.include('Unrenderable value');
+		});
+
 		it('sanitizes a nested Error at depth instead of exposing its own-enumerable properties raw (#1734)', () => {
 			// http_resp_msg is a generic field - a future caller could embed a raw Error several
 			// levels deep in it, unlike the known deployComponent shape this was written for.
@@ -1080,13 +1092,25 @@ describe('Test harper_logger module', () => {
 			expect(result).to.include('Error: request failed');
 		});
 
+		it('sanitizes a secret-carrying Error nested inside a Map or Set instead of leaving it raw', () => {
+			const nested_error = new Error('request failed');
+			nested_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const value = {
+				map: new Map([['cause', nested_error]]),
+				set: new Set([nested_error]),
+			};
+			const result = render(value, { depth: 8 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.include('Error: request failed');
+		});
+
 		it('leaves built-in container types (Date, Map, Buffer) rendered natively instead of corrupting them', () => {
 			const date = new Date('2024-01-01T00:00:00.000Z');
 			const map = new Map([['key', 'value']]);
 			const buffer = Buffer.from('hi');
 			const result = render({ date, map, buffer }, { depth: 8 });
 			expect(result).to.include('2024-01-01T00:00:00.000Z');
-			expect(result).to.include("Map(1)");
+			expect(result).to.include('Map(1)');
 			expect(result).to.include('key');
 			expect(result).to.match(/Buffer\.from\(|<Buffer/);
 		});

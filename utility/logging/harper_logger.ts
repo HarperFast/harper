@@ -1067,12 +1067,15 @@ function isPlainObject(value: object): boolean {
  * anywhere inside a value later rendered with a raised inspect depth (see inspectForLog) would
  * otherwise surface its own-enumerable properties raw.
  *
- * Only plain objects and arrays are rebuilt. Anything else (Date, Map, Set, Buffer, RegExp, a
- * class instance) is returned as-is: rebuilding one via Object.keys() would silently corrupt its
- * rendering (a Date/Map/Buffer's actual data isn't reachable through its own enumerable string
- * keys - Object.keys(new Date()) is `[]`) in exchange for a residual gap - a raw Error nested
- * inside one of these container types is not sanitized - that mirrors sanitizeErrorArgs' own
- * accepted shallow-by-design boundary rather than introducing a new one.
+ * Plain objects, arrays, Map, and Set are rebuilt so an Error nested inside them is still reached
+ * and sanitized. Anything else (Date, Buffer, RegExp, a class instance) is returned as-is:
+ * rebuilding one via Object.keys() would silently corrupt its rendering (a Date/Buffer's actual
+ * data isn't reachable through its own enumerable string keys - Object.keys(new Date()) is `[]`)
+ * in exchange for a residual gap - a raw Error nested inside one of these types is not sanitized -
+ * that mirrors sanitizeErrorArgs' own accepted shallow-by-design boundary rather than introducing
+ * a new one. Map/Set are common enough carriers for a nested cause (e.g. an aggregated-errors map)
+ * that leaving them raw would hand the raised inspect depth here a real secret-leak path #1734
+ * guards against everywhere else, so they get the same rebuild-and-sanitize treatment as objects.
  *
  * Cycle-safe via a WeakMap from original to its (in-progress) clone, registered before recursing
  * into children, so a cycle resolves to the clone in progress rather than falling back to the raw
@@ -1088,10 +1091,12 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 	if (seen.has(value)) return seen.get(value);
 	if (depth >= MAX_SANITIZE_DEPTH) return value;
 
-	let isArray: boolean;
+	let isArray: boolean, isMap: boolean, isSet: boolean;
 	try {
 		isArray = Array.isArray(value);
-		if (!isArray && !isPlainObject(value)) return value;
+		isMap = !isArray && value instanceof Map;
+		isSet = !isArray && !isMap && value instanceof Set;
+		if (!isArray && !isMap && !isSet && !isPlainObject(value)) return value;
 	} catch {
 		return value; // e.g. a revoked Proxy - util.inspect renders those fine on its own
 	}
@@ -1104,6 +1109,32 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 				clone.push(deepSanitizeErrors(item, seen, depth + 1));
 			} catch {
 				clone.push(item);
+			}
+		}
+		return clone;
+	}
+
+	if (isMap) {
+		const clone = new Map();
+		seen.set(value, clone);
+		for (const [k, v] of value) {
+			try {
+				clone.set(deepSanitizeErrors(k, seen, depth + 1), deepSanitizeErrors(v, seen, depth + 1));
+			} catch {
+				clone.set(k, v);
+			}
+		}
+		return clone;
+	}
+
+	if (isSet) {
+		const clone = new Set();
+		seen.set(value, clone);
+		for (const item of value) {
+			try {
+				clone.add(deepSanitizeErrors(item, seen, depth + 1));
+			} catch {
+				clone.add(item);
 			}
 		}
 		return clone;
@@ -1169,7 +1200,11 @@ export function inspectForLog(value: any, options?: any) {
 		try {
 			return inspect(deepSanitizeErrors(value), options);
 		} catch (err) {
-			return `[Unrenderable value: ${err instanceof Error ? err.message : String(err)}]`;
+			// errorToString is the guaranteed-never-throw stringifier (unlike `err instanceof Error` or
+			// `String(err)` here, both of which can themselves throw on a hostile value - e.g. a revoked
+			// Proxy thrown by a nested custom-inspect hook - which would otherwise escape this catch and
+			// mask the real operation error being logged).
+			return `[Unrenderable value: ${errorToString(err)}]`;
 		}
 	};
 	return { [inspect.custom]: render, toString: render };
