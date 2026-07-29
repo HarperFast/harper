@@ -149,7 +149,10 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 
 			// Proves the reassigned hdb_logger.error is the same function callOperationFunctionAsAwait
 			// invokes (not a different export) - if it weren't, logged_calls would still be empty here.
-			assert.ok(logged_calls.length >= 2, `expected the error label and payload to both be logged, got: ${logged_calls}`);
+			assert.ok(
+				logged_calls.length >= 2,
+				`expected the error label and payload to both be logged, got: ${logged_calls}`
+			);
 			assert.ok(
 				logged_calls[0].join(' ').includes('Error calling operation:'),
 				`expected the first logged call to be the operation-error label, got: ${logged_calls[0]}`
@@ -179,7 +182,10 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 				// expected - the structured error is rethrown after being logged
 			}
 
-			assert.ok(logged_calls.length >= 2, `expected the error label and payload to both be logged, got: ${logged_calls}`);
+			assert.ok(
+				logged_calls.length >= 2,
+				`expected the error label and payload to both be logged, got: ${logged_calls}`
+			);
 			// If OperationFunctionCaller inspected http_resp_msg directly instead of routing it through
 			// log.error, this would instead be a pre-formatted string with secretHeader dumped raw into
 			// it (the #1734 regression) - the real logger's own sanitizeErrorArgs/errorForLog (covered by
@@ -211,7 +217,10 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 				// expected - the structured error is rethrown after being logged
 			}
 
-			assert.ok(logged_calls.length >= 2, `expected the error label and payload to both be logged, got: ${logged_calls}`);
+			assert.ok(
+				logged_calls.length >= 2,
+				`expected the error label and payload to both be logged, got: ${logged_calls}`
+			);
 			assert.strictEqual(
 				logged_calls[1][0],
 				vm_error,
