@@ -198,7 +198,11 @@ describe('proxyProtocol decodeProxyHeader', () => {
 		// client = CERT_CONN only, no SSL bit: asserts a client cert without asserting TLS.
 		// JA3 alongside proves the TLV loop keeps parsing past the ignored SSL TLV.
 		const header = buildV2Header({
-			tlvs: [sslTlv({ clientSsl: false, certPresented: true }), tlv(0xe2, CLIENT_DER), tlv(0xe0, Buffer.from('0123456789abcdef0123456789abcdef'))],
+			tlvs: [
+				sslTlv({ clientSsl: false, certPresented: true }),
+				tlv(0xe2, CLIENT_DER),
+				tlv(0xe0, Buffer.from('0123456789abcdef0123456789abcdef')),
+			],
 		});
 		const info = decodeProxyHeader(header).connectionInfo;
 		assert.strictEqual(info.tls, undefined);
