@@ -217,11 +217,18 @@ suite(`QA-802 blob GC vs audit-log expiry (harper#708) [${ENGINE}]`, { skip: ski
 					`${netLeakedFiles} files / ${fmtKB(netLeakedBytes)} (${N} deletes => ${((netLeakedFiles / N) * 100).toFixed(0)}% retained) ` +
 					(netLeakedFiles <= 0 ? '— RECLAIMED (no leak observed)' : '— LEAK CONFIRMED on disk')
 			);
-			// Exploratory: record the numbers as findings above; do not hard-fail the suite on a
-			// leak (that IS the phenomenon under study), but do assert the harness measured
-			// something sane (store actually created files) so a broken probe doesn't silently
-			// report a false negative.
+			// Sanity: the harness must have measured something real (store actually created
+			// files) before the leak check below can mean anything.
 			ok(afterStore.files > base.files, 'sanity: store should have created on-disk blob files');
+			// Headline invariant this arm exists to pin: SQL-delete blob reclaim must be
+			// complete by the time deletionDelay + audit expiry + restart + the documented
+			// cleanup_orphan_blobs workaround have all had a chance to run. Logging the numbers
+			// without asserting them would let a total leak (100% retained) pass silently.
+			ok(
+				netLeakedFiles <= 0,
+				`LEAK: SQL-delete blob reclaim incomplete — ${netLeakedFiles} file(s) / ${fmtKB(netLeakedBytes)} still on disk ` +
+					`after delete+audit-expiry+restart+cleanup_orphan_blobs (harper#708)`
+			);
 		}
 	);
 
