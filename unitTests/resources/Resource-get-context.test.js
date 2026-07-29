@@ -304,4 +304,14 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 		await firstGetPromise;
 		await dropPromise;
 	});
+
+	// Not covered by an automated test here: dropTable()'s drain is bounded by LOCK_TIMEOUT
+	// (10s) and FAILS the drop (throws, leaving the durable tombstone for completeInterruptedDrop
+	// to retry) rather than proceeding to drop column families out from under a write that may
+	// still be staged - see the comment above the drain in dropTable(). Exercising the real
+	// 10-second timeout here would make this suite slow, and sinon fake timers over the
+	// transaction/commit machinery this exercises reliably hung the test run rather than
+	// advancing it. Verified manually with a standalone script instead (a source that never
+	// resolves; dropTable() rejects with a "timed out" error after ~10s and no column family is
+	// touched).
 });

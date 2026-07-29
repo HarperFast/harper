@@ -1372,19 +1372,29 @@ export function makeTable(options) {
 			// the table stuck "dropping" for completeInterruptedDrop to retry (and fail
 			// identically) on every subsequent load (harper#1381). Drain any in-flight commits
 			// before the blob sweep below (so it observes every row a drain-caught write just
-			// committed) and before touching a single column family. Bounded: the tracked
-			// promise covers the whole source round-trip (see getFromSource), so a hung or
-			// slow source could otherwise wedge this drop forever.
+			// committed) and before touching a single column family.
+			//
+			// Bounded, and fails CLOSED: the tracked promise covers the whole source round-trip
+			// plus the local commit (see getFromSource), so a hung/slow source or a slow commit
+			// (e.g. a large blob write) could otherwise wedge this drop forever. Rather than
+			// give up and drop anyway - which would reopen exactly the race this drain exists to
+			// close, just less often - a timeout FAILS the drop. The tombstone written above is
+			// already durable, so completeInterruptedDrop picks the drop back up on the next
+			// load, once the stuck write has had time to finish.
 			if (pendingSourceCommits.size) {
 				const pending = [...pendingSourceCommits];
-				let timedOut = false;
-				await Promise.race([
+				let timer: NodeJS.Timeout;
+				const timedOut = Symbol('timedOut');
+				const result = await Promise.race([
 					Promise.allSettled(pending),
-					new Promise<void>((resolve) => setTimeout(() => ((timedOut = true), resolve()), LOCK_TIMEOUT)),
+					new Promise<typeof timedOut>((resolve) => {
+						timer = setTimeout(() => resolve(timedOut), LOCK_TIMEOUT);
+					}),
 				]);
-				if (timedOut) {
-					logger.warn?.(
-						`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.length} in-flight source-populated cache write(s) on ${tableName}; proceeding with the drop anyway`
+				clearTimeout(timer);
+				if (result === timedOut) {
+					throw new Error(
+						`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.length} in-flight source-populated cache write(s) on ${tableName} to settle; refusing to drop the column families out from under a write that may still be staged. The drop tombstone is durable, so this will be retried on the next load.`
 					);
 				}
 			}
