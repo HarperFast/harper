@@ -29,7 +29,7 @@ import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 // `deriveGitSecretName`) EXACTLY, so a `deploy setup` seal and a later literal-token deploy overwrite
 // the SAME hdb_secret row. git hosts get a `.git.` segment (and normalizeGitHost handling); registries
 // don't — without the segment, a git and a registry credential for the same host would collide.
-function deriveSecretName(component: string, key: string, provider: string): string {
+export function deriveSecretName(component: string, key: string, provider: string): string {
 	const componentPart = String(component).replace(/[^\w.-]+/g, '_');
 	if (provider === 'github') {
 		// mirrors gitCredentialServer.normalizeGitHost() + deriveGitSecretName's `.git.` segment
