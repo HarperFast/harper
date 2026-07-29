@@ -461,10 +461,7 @@ describe('storageReclamation module', function () {
 			});
 
 			it('falls back to statfs when quotaBytes is not a positive number', async function () {
-				fs.writeFileSync(
-					quotaStatusPath,
-					JSON.stringify({ usedBytes: 1, quotaBytes: 0, updatedAt: Date.now() })
-				);
+				fs.writeFileSync(quotaStatusPath, JSON.stringify({ usedBytes: 1, quotaBytes: 0, updatedAt: Date.now() }));
 
 				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
 
