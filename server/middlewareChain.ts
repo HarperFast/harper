@@ -152,10 +152,12 @@ export function normalizeUrlPath(urlPath: string | undefined): string | undefine
 }
 
 /**
- * Extracts the hostname from a Host header value: the port is dropped and an IPv6 literal is
- * unwrapped from its brackets ('[::1]:9926' -> '::1'), so a bracket-less configured host can
- * match. Lowercased because hostnames are case-insensitive (RFC 4343) — a configured
- * 'API.example.com' must match the 'api.example.com' a client actually sends.
+ * Extracts the hostname from a Host/`:authority` header value: the port is dropped and an IPv6
+ * literal is unwrapped from its brackets ('[::1]:9926' -> '::1'), so a bracket-less configured
+ * host can match. Lowercased because hostnames are case-insensitive (RFC 4343) — a configured
+ * 'API.example.com' must match the 'api.example.com' a client actually sends. A trailing dot
+ * (the absolute-FQDN form some resolvers/clients emit, e.g. 'api.example.com.') is stripped —
+ * it names the same origin per RFC 1035.
  */
 export function hostnameFromHeader(hostHeader: string): string {
 	if (hostHeader.startsWith('[')) {
@@ -163,7 +165,18 @@ export function hostnameFromHeader(hostHeader: string): string {
 		if (end !== -1) return hostHeader.slice(1, end).toLowerCase();
 	}
 	const colon = hostHeader.indexOf(':');
-	return (colon === -1 ? hostHeader : hostHeader.slice(0, colon)).toLowerCase();
+	const hostname = (colon === -1 ? hostHeader : hostHeader.slice(0, colon)).toLowerCase();
+	return hostname.endsWith('.') ? hostname.slice(0, -1) : hostname;
+}
+
+/**
+ * Reads the request's authority for host matching: `request.host` (Harper's `Request` class)
+ * already resolves this correctly for both HTTP/1 (`Host` header) and HTTP/2 (`:authority`
+ * pseudo-header — HTTP/2 clients don't send `Host` at all). The header fallbacks below only
+ * cover request-like objects that don't carry that getter (e.g. bare fakes in tests).
+ */
+function requestAuthority(request: any): string {
+	return request.host ?? request.headers?.asObject?.[':authority'] ?? request.headers?.asObject?.host ?? '';
 }
 
 /**
@@ -174,8 +187,7 @@ export function hostnameFromHeader(hostHeader: string): string {
  */
 export function matchesRoute(request: any, route: { host?: string; urlPath?: string }): boolean {
 	if (route.host) {
-		const hostHeader: string = request.headers?.asObject?.host ?? '';
-		if (hostnameFromHeader(hostHeader) !== route.host.toLowerCase()) return false;
+		if (hostnameFromHeader(requestAuthority(request)) !== route.host.toLowerCase()) return false;
 	}
 	const urlPath = normalizeUrlPath(route.urlPath);
 	if (urlPath) {
@@ -309,23 +321,35 @@ export function buildRoutedChain(
 	const resolved = resolveRoutedChains(portEntries, onCycle);
 	// resolveRoutedChains returns sub-routes (dispatch order) followed by the default route last.
 	const defaultChain = buildLinearChain(resolved[resolved.length - 1].order, fallback);
+	// hostLower/urlPathWithSlash are computed once here rather than per request/per candidate:
+	// `route.urlPath` is already normalized by resolveRoutedChains, but `route.host` isn't
+	// (plugin-config hosts via routeFor aren't pre-lowercased), and matchesRoute's generic form
+	// would otherwise re-run toLowerCase()/a regex/a concat on every probe of every request —
+	// this dispatch is the mainline path once a port has any mounted route.
 	const subRouteChains = resolved.slice(0, -1).map((route) => ({
-		host: route.host,
+		hostLower: route.host?.toLowerCase(),
 		urlPath: route.urlPath,
+		urlPathWithSlash: route.urlPath ? route.urlPath + '/' : undefined,
 		chain: buildLinearChain(route.order, fallback),
 	}));
+	const anyHostRoute = subRouteChains.some((route) => route.hostLower);
 
 	return function dispatch(...args: any[]) {
 		const request = args[requestArgIndex];
+		// The request's authority is the same for every candidate probed below, so it's
+		// extracted once per request rather than once per candidate — and skipped entirely
+		// when no mounted route in this chain matches on host at all.
+		const requestHost = anyHostRoute ? hostnameFromHeader(requestAuthority(request)) : undefined;
+		const pathname: string = request.pathname ?? '/';
 		for (const route of subRouteChains) {
-			if (matchesRoute(request, route)) {
-				if (route.urlPath) {
-					const newArgs = args.slice();
-					newArgs[requestArgIndex] = stripPrefix(request, route.urlPath);
-					return route.chain(...newArgs);
-				}
-				return route.chain(...args);
+			if (route.hostLower && requestHost !== route.hostLower) continue;
+			if (route.urlPath) {
+				if (pathname !== route.urlPath && !pathname.startsWith(route.urlPathWithSlash as string)) continue;
+				const newArgs = args.slice();
+				newArgs[requestArgIndex] = stripPrefix(request, route.urlPath);
+				return route.chain(...newArgs);
 			}
+			return route.chain(...args);
 		}
 		return defaultChain(...args);
 	};
