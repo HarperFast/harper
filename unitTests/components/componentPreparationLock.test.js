@@ -10,13 +10,17 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 
 const { waitFor } = require('../waitFor.js');
-const { withComponentPreparationLock } = require('#src/components/componentPreparationLock');
+const {
+	componentPreparationLockIdentity,
+	withComponentPreparationLock,
+} = require('#src/components/componentPreparationLock');
 
 const lockModulePath = require.resolve('#src/components/componentPreparationLock');
 
 function startLockWorker(componentDirPath, hold = false) {
 	return new Worker(
 		`const { parentPort, workerData } = require('node:worker_threads');
+		Object.defineProperty(process, 'pid', { value: workerData.ownerPid, configurable: true });
 		const { withComponentPreparationLock } = require(workerData.lockModulePath);
 		let release;
 		const releasePromise = new Promise((resolve) => release = resolve);
@@ -30,7 +34,7 @@ function startLockWorker(componentDirPath, hold = false) {
 		}, { onWait: () => parentPort.postMessage('waiting') }).then(() => parentPort.postMessage('done'), (error) => {
 			parentPort.postMessage({ error: error.message });
 		});`,
-		{ eval: true, workerData: { componentDirPath, hold, lockModulePath } }
+		{ eval: true, workerData: { componentDirPath, hold, lockModulePath, ownerPid: process.pid } }
 	);
 }
 
@@ -89,6 +93,13 @@ describe('component preparation lock', () => {
 		await worker.terminate();
 	});
 
+	it('uses a case-insensitive lock identity on Windows', () => {
+		assert.equal(
+			componentPreparationLockIdentity('C:\\Components\\Widget', 'win32'),
+			componentPreparationLockIdentity('c:\\components\\widget', 'win32')
+		);
+	});
+
 	it('releases the lock when preparation fails', async () => {
 		const componentDirPath = join(rootDir, 'retry');
 		await assert.rejects(
@@ -139,8 +150,8 @@ describe('component preparation lock', () => {
 				'-e',
 				`const { withComponentPreparationLock } = require(${JSON.stringify(lockModulePath)});
 				withComponentPreparationLock(${JSON.stringify(componentDirPath)}, async () => {
-					process.stdout.write('locked\\n', () => process.exit(0));
-					await new Promise(() => {});
+					process.stdout.write('locked\\n');
+					setInterval(() => {}, 1000);
 				});`,
 			],
 			{ stdio: ['ignore', 'pipe', 'inherit'] }
@@ -148,13 +159,36 @@ describe('component preparation lock', () => {
 		const closePromise = once(child, 'close');
 		let output = '';
 		child.stdout.on('data', (chunk) => (output += chunk));
-		await waitFor(() => output.includes('locked'));
-		await closePromise;
+		try {
+			await waitFor(() => output.includes('locked'));
+		} finally {
+			child.kill();
+			await closePromise;
+		}
 
 		let acquired = false;
 		await withComponentPreparationLock(componentDirPath, async () => {
 			acquired = true;
 		});
+		assert.equal(acquired, true);
+	});
+
+	it('reclaims a same-process lock when the owning worker has exited', async () => {
+		const componentDirPath = join(rootDir, 'terminated-worker-reclaimed');
+		const messages = [];
+		const worker = startLockWorker(componentDirPath, true);
+		worker.on('message', (message) => messages.push(message));
+		await waitFor(() => messages.includes('acquired'));
+		await worker.terminate();
+
+		let acquired = false;
+		await withComponentPreparationLock(
+			componentDirPath,
+			async () => {
+				acquired = true;
+			},
+			{ timeoutMs: 100, isOwnerAlive: () => false }
+		);
 		assert.equal(acquired, true);
 	});
 

@@ -143,6 +143,7 @@ module.exports = {
 	onThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
+	isThreadRunning,
 	restartNumber: workerData?.restartNumber || 1,
 };
 
@@ -895,6 +896,11 @@ function registerProcessGroup(processGroupId) {
 function unregisterProcessGroup(processGroupId) {
 	if (isMainThread) removeProcessGroup(threadId, processGroupId);
 	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId });
+}
+
+async function isThreadRunning(ownerThreadId) {
+	if (ownerThreadId === threadId || ownerThreadId === 0) return true;
+	return (await getThreadInfo()).some((worker) => worker.threadId === ownerThreadId);
 }
 
 if (isMainThread) {

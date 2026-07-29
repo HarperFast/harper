@@ -14,6 +14,7 @@ import { CONFIG_PARAMS } from './hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { nonInteractiveSpawn } from '../components/Application.ts';
 import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
+import { isThreadRunning } from '../server/threads/manageThreads.js';
 
 /**
  * Executes npm install against specified custom function projects
@@ -43,8 +44,10 @@ export async function installModules(req: any) {
 		responseObject[project] = { npm_output: null, npm_error: null };
 		const projectPath = path.join(componentsRootDirPath, project);
 		try {
-			let { stdout, stderr } = await withComponentPreparationLock(projectPath, () =>
-				nonInteractiveSpawn(project, 'npm', args, projectPath)
+			let { stdout, stderr } = await withComponentPreparationLock(
+				projectPath,
+				() => nonInteractiveSpawn(project, 'npm', args, projectPath),
+				{ isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId) }
 			);
 			stdout = stdout ? stdout.replace('\n', '') : null;
 			stderr = stderr ? stderr.replace('\n', '') : null;
