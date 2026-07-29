@@ -1371,12 +1371,12 @@ describe('Test harper_logger module', () => {
 			expect(result).to.include('[Function: plain_function]');
 		});
 
-		it('falls back to a safe placeholder (not the raw child) when a nested value throws while being sanitized (#1734)', () => {
+		it('fails closed for a Proxy whose `ownKeys` trap throws - caught by the isProxy gate before the trap ever runs (#1734)', () => {
 			const secret_error = new Error('request failed');
 			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
-			// A Proxy whose `ownKeys` trap throws is reached one level into the walk (the plain-object
-			// branch calls Object.keys on it), so the recursive sanitize call on `hostile` itself
-			// throws - exercising the catch-fallback around a nested step, not the top-level guard.
+			// types.isProxy now recognizes `hostile` and returns a placeholder before any reflection,
+			// so the `ownKeys` trap never actually runs (see the dedicated trap-count test below) -
+			// this just pins the end-to-end secret-safety outcome for this shape.
 			const hostile = new Proxy(
 				{ error: secret_error },
 				{
@@ -1388,6 +1388,28 @@ describe('Test harper_logger module', () => {
 			const result = render({ hostile }, { depth: 8 });
 			expect(result).to.not.include('super-secret-token');
 			expect(result).to.not.include('Authorization');
+		});
+
+		it('falls back to a safe placeholder (not the raw child) if a nested sanitize step throws for a reason other than a Proxy trap', () => {
+			// Defensive coverage: with the isProxy gate now catching every Proxy before any
+			// reflection, no known real-world input reaches this catch block today - it's tested
+			// directly here (by forcing Array.isArray to throw for one specific value) so it stays
+			// proven safe as a backstop against whatever unforeseen way a future value might throw.
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const sentinel = { error: secret_error };
+			const original_is_array = Array.isArray;
+			const stub = sinon.stub(Array, 'isArray').callsFake((v) => {
+				if (v === sentinel) throw new Error('isArray boom');
+				return original_is_array(v);
+			});
+			try {
+				const result = render({ sentinel }, { depth: 8 });
+				expect(result).to.not.include('super-secret-token');
+				expect(result).to.not.include('Authorization');
+			} finally {
+				stub.restore();
+			}
 		});
 
 		it('never invokes ANY trap on a nested Proxy - not just a throwing one - and never leaks its target', () => {
@@ -1440,14 +1462,38 @@ describe('Test harper_logger module', () => {
 			expect(result).to.not.include('Authorization');
 		});
 
-		it('still resolves a huge expando-free Buffer/boxed-String via the fast path instead of scanning every index', () => {
+		it('fails closed to a bounded, quick placeholder for a huge Buffer/boxed-String instead of scanning every index - even when expando-free', () => {
+			// Above MAX_INDEXED_EXPANDO_CHECK_LENGTH, hasEnumerableOwnProps can't cheaply verify "no
+			// expando" (that's the whole point of the size cap - see its doc comment), so it fails
+			// CLOSED: a huge Buffer/boxed-String is treated as if it has an expando even when it does
+			// not, trading native-format fidelity (only above this size) for never scanning it and
+			// never guessing "clean" on data it didn't actually check.
 			const huge_buffer = Buffer.alloc(1_000_000);
 			const huge_boxed_string = new String('x'.repeat(1_000_000));
 			const start = process.hrtime.bigint();
 			const result = render({ huge_buffer, huge_boxed_string }, { depth: 8 });
 			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
-			expect(elapsed_ms).to.be.below(500, 'the expando-free fast path must not scan every element/character');
+			expect(elapsed_ms).to.be.below(500, 'failing closed above the size cap must not scan every element/character');
+			expect(result).to.not.match(/Buffer\.from\(|<Buffer/);
+			expect(result).to.include('with own properties omitted for safety');
+		});
+
+		it('still resolves a small expando-free Buffer/boxed-String natively (below the size cap, fast path unaffected)', () => {
+			const small_buffer = Buffer.from('hi');
+			const small_boxed_string = new String('hi');
+			const result = render({ small_buffer, small_boxed_string }, { depth: 8 });
 			expect(result).to.match(/Buffer\.from\(|<Buffer/);
+			expect(result).to.include('hi');
+		});
+
+		it('fails closed (safe summary, not raw) for a Buffer just over the size cap that actually carries an expando', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const hostile_buffer = Buffer.alloc(10_001);
+			hostile_buffer.cause = secret_error;
+			const result = render({ hostile_buffer }, { depth: 8 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('Authorization');
 		});
 	});
 
@@ -1474,6 +1520,18 @@ describe('Test harper_logger module', () => {
 			revoke();
 			expect(() => isErrorLike(proxy)).to.not.throw();
 			expect(isErrorLike(proxy)).to.equal(false);
+		});
+
+		it('never invokes a live (non-revoked) Proxy\'s getPrototypeOf trap - `instanceof` would otherwise trigger it', () => {
+			let trap_calls = 0;
+			const hostile = new Proxy(new Error('gone'), {
+				getPrototypeOf(target) {
+					trap_calls++;
+					return Reflect.getPrototypeOf(target);
+				},
+			});
+			expect(isErrorLike(hostile)).to.equal(false);
+			expect(trap_calls).to.equal(0, 'isErrorLike must classify a Proxy without reflecting on it at all');
 		});
 	});
 

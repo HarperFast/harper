@@ -186,14 +186,21 @@ async function updateLogSettings() {
 /**
  * True when the argument is an Error (same-realm or native cross-realm — component code runs
  * through node:vm, so a VM-created Error fails `instanceof Error` but passes `isNativeError`).
- * The try/catch guards exotic objects whose prototype is unreachable (e.g. a revoked Proxy,
- * where `instanceof` throws) — the logger must never throw on any input, and util.format
+ * A Proxy is checked and rejected FIRST, before `instanceof`: `instanceof` walks the prototype
+ * chain via `[[GetPrototypeOf]]`, which for a Proxy invokes its `getPrototypeOf` trap - a trap
+ * that hangs (an infinite loop) or has side effects would run to completion regardless of the
+ * try/catch below (which only helps a trap that throws), on whatever path called isErrorLike
+ * (e.g. logging a DIFFERENT operation's failure). `types.isProxy` queries the exotic object's
+ * internal slots directly and never reflects on it, so it's always safe to check first, even on
+ * a revoked Proxy. The try/catch below still guards other exotic objects whose prototype is
+ * unreachable for other reasons — the logger must never throw on any input, and util.format
  * renders those fine raw. Exported so call sites outside this module (e.g.
  * OperationFunctionCaller, deciding how to log an error-shaped value it didn't itself catch as
  * an Error) can reuse the same classification instead of a weaker local `instanceof` check.
  */
 export function isErrorLike(arg: any): boolean {
 	try {
+		if (types.isProxy(arg)) return false;
 		return arg instanceof Error || isNativeError(arg);
 	} catch {
 		return false;
@@ -1157,8 +1164,9 @@ function isOpaqueBuiltin(value: object): boolean {
 // so a hostile value can shadow it with an own `length` property reporting whatever it likes.
 const TYPED_ARRAY_PROTO = Object.getPrototypeOf(Uint8Array.prototype);
 
-// Above this many elements, hasEnumerableOwnProps skips its indexed-type check and assumes "no
-// expando" rather than paying for it - see the comment at that check for why.
+// Above this many elements, hasEnumerableOwnProps skips its indexed-type check and fails closed
+// (assumes an expando IS present, safe direction) rather than paying for it - see the comment at
+// that check for why.
 const MAX_INDEXED_EXPANDO_CHECK_LENGTH = 10_000;
 
 /**
@@ -1183,9 +1191,14 @@ const MAX_INDEXED_EXPANDO_CHECK_LENGTH = 10_000;
  * a multi-hundred-MB Buffer or huge boxed string would materialize a matching number of key strings
  * merely to decide this supposedly-cheap fast path applies, turning it into an attacker-sized scan
  * on the error-logging path itself. Above MAX_INDEXED_EXPANDO_CHECK_LENGTH elements, skip the check
- * and assume no expando instead: deliberately attaching a secret-bearing Error to an indexed value
- * that large is a vanishingly unlikely, deliberately hostile construction, and unconditionally
- * scanning it is a worse trade than accepting that narrow, contrived residual risk.
+ * and FAIL CLOSED (assume it HAS an expando) rather than skip it and assume clean: the safe
+ * direction when we can't verify is always "has an expando" (same as the hostile-trap catch above),
+ * never "verified clean" - failing open here would return e.g. a `Buffer.alloc(10_001)` carrying a
+ * real, ordinary-sized expando raw, unsanitized. Failing closed still avoids the expensive scan
+ * (that's the whole point of the size cap) - it just means a huge but genuinely expando-free
+ * Buffer/string also renders as safeOpaqueBuiltinSummary's generic placeholder above this size,
+ * rather than its full native format. Losing pretty-printing for a buffer/string that large is a
+ * reasonable trade for never guessing "clean" on data we didn't actually check.
  */
 function hasEnumerableOwnProps(value: object): boolean {
 	try {
@@ -1197,7 +1210,7 @@ function hasEnumerableOwnProps(value: object): boolean {
 			// property per spec and can't be shadowed, so a direct read is already safe.
 			const length = isTypedArray ? Reflect.get(TYPED_ARRAY_PROTO, 'length', value) : (value as any).length;
 			if (typeof length !== 'number') return true; // couldn't verify the intrinsic size - conservative
-			if (length > MAX_INDEXED_EXPANDO_CHECK_LENGTH) return false; // too large to check - accepted tradeoff
+			if (length > MAX_INDEXED_EXPANDO_CHECK_LENGTH) return true; // too large to check - fail closed, not clean
 			const keys = Object.keys(value);
 			for (const key of keys) {
 				const index = key === '' ? NaN : Number(key);
@@ -1371,7 +1384,12 @@ function deepSanitizeErrors(
 		}
 		if (isFunction && !hasEnumerableOwnProps(value)) return value; // same fast path, for functions
 	} catch {
-		return value; // e.g. a revoked Proxy - util.inspect renders those fine on its own
+		// The types.isProxy check above already routes every Proxy (revoked or not) to a placeholder
+		// before this block ever runs, so nothing YET IDENTIFIED reaches this catch on real input -
+		// but on the same "never fall back to raw" principle as every other catch in this walk, a
+		// safe placeholder costs nothing here and closes the door on whatever unforeseen way a
+		// future value might still throw here.
+		return sanitizeFailurePlaceholder();
 	}
 	// A function reaching here carries an expando: fall through into the generic object walk below
 	// (Object.keys/getOwnPropertyDescriptor/getOwnPropertySymbols all work the same on a function as
