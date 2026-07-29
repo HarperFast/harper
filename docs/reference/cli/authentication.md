@@ -40,8 +40,8 @@ For remote Operations API commands, the CLI uses the first complete authenticati
 
 1. Dedicated `auth_username=` and `auth_password=` command parameters
 2. Credentials embedded in the `target` URL
-3. `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD`
-4. Legacy `CLI_TARGET_USERNAME` and `CLI_TARGET_PASSWORD`
+3. `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD` environment variables
+4. Legacy `CLI_TARGET_USERNAME` and `CLI_TARGET_PASSWORD` environment variables
 5. A token saved by `harper login`
 6. `username=` and `password=` operation parameters (legacy fallback)
 
