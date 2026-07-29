@@ -1122,12 +1122,12 @@ const SYMBOLS_TRUNCATED_MARKER = Symbol('sanitize: symbol-keyed properties trunc
  * the header). There is no supported synchronous way to read that value in order to sanitize it, so
  * the only safe option is to never hand a Promise to inspect() raw.
  *
- * Residual gap, accepted rather than chased further: an *expando* own-enumerable property stashed
- * directly on one of these remaining opaque built-ins (e.g. `const d = new Date(); d.cause =
- * secretError`) is not reached either, since the value is returned entirely unwalked to protect its
- * native rendering. Attaching an expando to a Date/Buffer/etc. is not a pattern any real diagnostic
- * payload (deployComponent's or otherwise) produces - unlike the Map/Set/class-instance cases above,
- * which are ordinary, expected shapes for a generic `http_resp_msg` field.
+ * An *expando* own-enumerable property stashed directly on one of these (e.g. `const d = new
+ * Date(); d.cause = secretError`) would otherwise leak the same way the Promise case above does -
+ * inspect() renders own-enumerable properties on ANY object, opaque built-ins included. Handled by
+ * hasEnumerableOwnProps/safeOpaqueBuiltinSummary below: the fast, zero-cost, common path (no
+ * expando) returns the value raw and untouched; only a value actually carrying one pays for a safe
+ * replacement.
  */
 function isOpaqueBuiltin(value: object): boolean {
 	return (
@@ -1139,6 +1139,76 @@ function isOpaqueBuiltin(value: object): boolean {
 		types.isWeakSet(value) ||
 		types.isBoxedPrimitive(value) // a boxed Boolean/Number/String/Symbol/BigInt wrapper
 	);
+}
+
+/**
+ * True if `value` has any own-enumerable string or symbol property beyond its own intrinsic data -
+ * i.e. an expando - since none of isOpaqueBuiltin's types (nor a bare function) normally carry any.
+ * Checked before deciding whether an opaque built-in/function is safe to hand to inspect() raw.
+ * Errs conservative: if the check itself cannot be completed safely (a hostile `ownKeys`/descriptor
+ * trap), treat that as "has an expando" rather than risk a false "clean" on something we couldn't
+ * actually verify.
+ *
+ * A TypedArray/Buffer's own numeric indices ARE its intrinsic byte/element data, own-enumerable
+ * exactly like any other array - `Object.keys(Buffer.from('hi'))` is `['0', '1']` - so those don't
+ * count as expandos here; only a key beyond `[0, length)` does. DataView has no such index
+ * properties (its data is accessed only via get/set methods), so it's excluded from that carve-out.
+ */
+function hasEnumerableOwnProps(value: object): boolean {
+	try {
+		const keys = Object.keys(value);
+		if (keys.length > 0) {
+			if (ArrayBuffer.isView(value) && typeof (value as any).length === 'number' && !types.isDataView(value)) {
+				const length = (value as any).length;
+				for (const key of keys) {
+					const index = key === '' ? NaN : Number(key);
+					if (!(Number.isInteger(index) && index >= 0 && index < length && String(index) === key)) return true;
+				}
+			} else {
+				return true;
+			}
+		}
+		for (const sym of Object.getOwnPropertySymbols(value)) {
+			if (Object.getOwnPropertyDescriptor(value, sym)?.enumerable) return true;
+		}
+		return false;
+	} catch {
+		return true;
+	}
+}
+
+/**
+ * Returns a value safe to hand to inspect() in place of an opaque built-in that (unusually) carries
+ * an expando property - reached only via hasEnumerableOwnProps returning true, never on the common
+ * expando-free path. Date/RegExp/WeakMap/WeakSet are cheap to reconstruct byte/value-for-value from
+ * their intrinsic prototype (bound explicitly via .call/Reflect.get, not `value.getTime()` etc,
+ * exactly so an own property shadowing that method - the same class of hijack the Map/Set branches
+ * below guard against - can't run instead of the real accessor); WeakMap/WeakSet never expose their
+ * entries via inspect regardless, so a fresh empty instance loses nothing. Buffer/TypedArray/
+ * DataView/ArrayBuffer/boxed-primitives are left as a bounded type-tag summary instead: safely
+ * reconstructing an exact byte-for-byte or value-for-value copy needs per-subtype branching that
+ * isn't worth it for how rarely one of these ever carries an expando in the first place.
+ */
+function safeOpaqueBuiltinSummary(value: object): any {
+	try {
+		if (types.isDate(value)) return new Date(Date.prototype.getTime.call(value));
+		if (types.isRegExp(value)) {
+			const source = Reflect.get(RegExp.prototype, 'source', value);
+			const flags = Reflect.get(RegExp.prototype, 'flags', value);
+			return new RegExp(source, flags);
+		}
+		if (types.isWeakMap(value)) return new WeakMap();
+		if (types.isWeakSet(value)) return new WeakSet();
+	} catch {
+		// fall through to the generic tag-only summary below
+	}
+	let tag = 'value';
+	try {
+		tag = Object.prototype.toString.call(value).slice(8, -1);
+	} catch {
+		// leave the generic tag
+	}
+	return labelPlaceholder(`[${tag} with own properties omitted for safety]`);
 }
 
 /** Defines `key` as an own DATA property via defineProperty rather than `target[key] = value`.
@@ -1206,13 +1276,23 @@ function deepSanitizeErrors(
 	depth = 0,
 	budget: SanitizeBudget = { nodes: 0, maxEntries: DEFAULT_MAX_SANITIZE_ENTRIES }
 ): any {
-	if (value === null || typeof value !== 'object') return value;
+	// Functions are `typeof 'function'`, not 'object' - included here (rather than falling through
+	// as if they were a harmless primitive) because a function is just as capable of carrying an
+	// expando own-enumerable property (`fn.cause = secretError`, an ordinary and not-even-unusual
+	// JS pattern) as a plain object is, and inspect() renders those own properties the same way.
+	// Counted first, before even the primitive-leaf check below, so a primitive leaf (string/number/
+	// etc in an array/object, the overwhelmingly common case) consumes exactly as much of the shared
+	// budget as a container does. Without this, only container nodes counted towards
+	// MAX_SANITIZE_NODES while each one's up-to-budget.maxEntries primitive children were free, so
+	// e.g. 50,000 containers of 250 primitive fields each could still walk ~12.5 million values
+	// before this cap ever engaged.
+	if (++budget.nodes > MAX_SANITIZE_NODES) return labelPlaceholder('[Unrenderable value: sanitize budget exceeded]');
+	if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return value;
 	if (isErrorLike(value)) return errorForLog(value);
 	if (seen.has(value)) return seen.get(value);
 	if (depth >= MAX_SANITIZE_DEPTH) return value;
-	if (++budget.nodes > MAX_SANITIZE_NODES) return labelPlaceholder('[Unrenderable value: sanitize budget exceeded]');
 
-	let isArray: boolean, isMap: boolean, isSet: boolean;
+	let isArray: boolean, isMap: boolean, isSet: boolean, isFunction: boolean;
 	try {
 		isArray = Array.isArray(value);
 		// types.isMap/isSet check an internal slot, not the prototype chain, so (like isNativeError)
@@ -1221,15 +1301,29 @@ function deepSanitizeErrors(
 		// (and any Error nested inside) unsanitized at the raised inspect depth below.
 		isMap = !isArray && types.isMap(value);
 		isSet = !isArray && !isMap && types.isSet(value);
+		isFunction = !isArray && !isMap && !isSet && typeof value === 'function';
 		// See the Promise note on isOpaqueBuiltin above: its resolved/rejected value is arbitrary
 		// caller data that inspect() renders directly (own-enumerable properties included), and there
 		// is no supported synchronous way to read it in order to sanitize it - so unlike every other
 		// opaque built-in, a Promise is never handed to inspect() raw, sanitized or not.
 		if (!isArray && !isMap && !isSet && types.isPromise(value)) return labelPlaceholder('[Promise]');
-		if (!isArray && !isMap && !isSet && isOpaqueBuiltin(value)) return value;
+		if (!isArray && !isMap && !isSet && !isFunction && isOpaqueBuiltin(value)) {
+			// Fast, faithful, zero-cost path for the overwhelming common case: no expando, so the
+			// value is returned exactly as-is and inspect() renders its normal native format. Only a
+			// value that actually carries an expando pays for safeOpaqueBuiltinSummary below.
+			if (!hasEnumerableOwnProps(value)) return value;
+			return safeOpaqueBuiltinSummary(value);
+		}
+		if (isFunction && !hasEnumerableOwnProps(value)) return value; // same fast path, for functions
 	} catch {
 		return value; // e.g. a revoked Proxy - util.inspect renders those fine on its own
 	}
+	// A function reaching here carries an expando: fall through into the generic object walk below
+	// (Object.keys/getOwnPropertyDescriptor/getOwnPropertySymbols all work the same on a function as
+	// on a plain object) so that expando gets sanitized like any other object's - the clone won't be
+	// callable and inspect() renders it as a plain `Function { ... }` rather than `[Function: name]`,
+	// but that's a safe, honest trade for a case inspect() would otherwise render with a raw,
+	// unsanitized secret alongside it.
 
 	if (isArray) {
 		const clone: any[] = [];
