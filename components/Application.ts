@@ -1687,22 +1687,59 @@ export async function waitForConfirmedTermination(
 	while (await isAlive()) await delay(pollMs);
 }
 
+export async function waitForWindowsTreeTermination(
+	attemptTermination: () => boolean | Promise<boolean>,
+	treeIsAlive: () => boolean | null | Promise<boolean | null>,
+	pollMs: number = PROCESS_TERMINATION_POLL_MS
+): Promise<void> {
+	for (;;) {
+		if (await attemptTermination()) return;
+		// taskkill reports a nonzero status both for a real failure and for the normal race where
+		// the target exits before /PID is evaluated. Only the latter is safe to treat as success.
+		if ((await treeIsAlive()) === false) return;
+		await delay(pollMs);
+	}
+}
+
+async function windowsProcessTreeIsAlive(rootPid: number): Promise<boolean | null> {
+	// Query the process table rather than probing only the parent PID: descendants retain their
+	// ParentProcessId after the parent exits, which is exactly the taskkill "process not found" race.
+	const script =
+		`$rootPid = ${rootPid}; ` +
+		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
+		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
+		'while ($frontier.Count -gt 0) { ' +
+		'$next = @(); foreach ($parentPid in $frontier) { if ($seen[$parentPid]) { continue }; ' +
+		'$seen[$parentPid] = $true; foreach ($p in $all) { ' +
+		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
+		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
+		'$frontier = $next }; ' +
+		'if ($found) { exit 0 } else { exit 1 }';
+	return new Promise<boolean | null>((resolve) => {
+		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+			stdio: 'ignore',
+			windowsHide: true,
+		});
+		query.once('close', (code) => resolve(code === 0 ? true : code === 1 ? false : null));
+		query.once('error', () => resolve(null));
+	});
+}
+
 async function terminateWindowsProcessTree(childProcess: ChildProcess): Promise<void> {
 	if (!childProcess.pid) return;
-	// A failed taskkill is not evidence that descendants are gone. Retry until Windows confirms
-	// the /T tree termination; until then the caller intentionally keeps the component lock held.
-	for (;;) {
-		const terminated = await new Promise<boolean>((resolve) => {
-			const taskkill = spawn('taskkill', ['/pid', String(childProcess.pid), '/T', '/F'], {
-				stdio: 'ignore',
-				windowsHide: true,
-			});
-			taskkill.once('close', (code) => resolve(code === 0));
-			taskkill.once('error', () => resolve(false));
-		});
-		if (terminated) return;
-		await delay(PROCESS_TERMINATION_POLL_MS);
-	}
+	const rootPid = childProcess.pid;
+	await waitForWindowsTreeTermination(
+		() =>
+			new Promise<boolean>((resolve) => {
+				const taskkill = spawn('taskkill', ['/pid', String(rootPid), '/T', '/F'], {
+					stdio: 'ignore',
+					windowsHide: true,
+				});
+				taskkill.once('close', (code) => resolve(code === 0));
+				taskkill.once('error', () => resolve(false));
+			}),
+		() => windowsProcessTreeIsAlive(rootPid)
+	);
 }
 
 async function waitForProcessClose(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {

@@ -2,16 +2,17 @@
 
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
-const { createHash } = require('node:crypto');
 const { once } = require('node:events');
 const { Worker } = require('node:worker_threads');
-const { mkdtemp, rm, writeFile } = require('node:fs/promises');
+const { mkdtemp, mkdir, readdir, rm, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
 
 const { waitFor } = require('../waitFor.js');
 const {
 	componentPreparationLockIdentity,
+	componentPreparationLockPaths,
 	withComponentPreparationLock,
 } = require('#src/components/componentPreparationLock');
 
@@ -118,15 +119,15 @@ describe('component preparation lock', () => {
 
 	it('preserves a preparation failure when releasing the lock also fails', async () => {
 		const componentDirPath = join(rootDir, 'release-failure');
-		const lockName = createHash('sha256').update(componentDirPath).digest('hex');
-		const lockPath = join(rootDir, '.component-preparation-locks', lockName);
 		const releaseErrors = [];
 
 		await assert.rejects(
 			withComponentPreparationLock(
 				componentDirPath,
 				async () => {
-					await writeFile(lockPath, JSON.stringify({ pid: process.pid, threadId: 0, token: 'stolen' }));
+					const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+					const claimName = (await readdir(lockRoot)).find((name) => name.startsWith(`${lockName}.ticket.`));
+					await writeFile(join(lockRoot, claimName), JSON.stringify({ token: 'stolen' }));
 					throw new Error('preparation failed');
 				},
 				{
@@ -140,6 +141,61 @@ describe('component preparation lock', () => {
 		);
 		assert.equal(releaseErrors.length, 1);
 		assert.match(releaseErrors[0].message, /Lost ownership/);
+	});
+
+	it('does not let multiple contenders race while discarding a dead owner', async () => {
+		const componentDirPath = join(rootDir, 'dead-owner-contenders');
+		const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+		await mkdir(lockRoot, { recursive: true });
+		await writeFile(
+			join(lockRoot, `${lockName}.ticket.1.abandoned.json`),
+			JSON.stringify({
+				pid: process.pid,
+				threadId: 0,
+				processInstanceId: 'previous-process-instance',
+				token: 'abandoned',
+				ticket: 1,
+			})
+		);
+
+		const messages = [[], []];
+		const workers = [startLockWorker(componentDirPath, true), startLockWorker(componentDirPath, true)];
+		workers.forEach((worker, index) => worker.on('message', (message) => messages[index].push(message)));
+		try {
+			await waitFor(() => messages.flat().filter((message) => message === 'acquired').length === 1);
+			await delay(150);
+			assert.equal(messages.flat().filter((message) => message === 'acquired').length, 1);
+
+			const firstIndex = messages.findIndex((workerMessages) => workerMessages.includes('acquired'));
+			workers[firstIndex].postMessage('release');
+			await waitFor(() => messages.flat().filter((message) => message === 'acquired').length === 2);
+			workers[1 - firstIndex].postMessage('release');
+			await waitFor(() => messages.flat().filter((message) => message === 'done').length === 2);
+		} finally {
+			await Promise.all(workers.map((worker) => worker.terminate()));
+		}
+	});
+
+	it('ignores a same-PID owner from an earlier process instance', async () => {
+		const componentDirPath = join(rootDir, 'reused-pid');
+		const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+		await mkdir(lockRoot, { recursive: true });
+		await writeFile(
+			join(lockRoot, `${lockName}.ticket.1.old-instance.json`),
+			JSON.stringify({
+				pid: process.pid,
+				threadId: 0,
+				processInstanceId: 'earlier-container-start',
+				token: 'old-instance',
+				ticket: 1,
+			})
+		);
+
+		let acquired = false;
+		await withComponentPreparationLock(componentDirPath, async () => {
+			acquired = true;
+		});
+		assert.equal(acquired, true);
 	});
 
 	it('reclaims a lock abandoned by a terminated process', async () => {
