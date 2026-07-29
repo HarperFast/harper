@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785312632971,
+  "lastUpdate": 1785312636011,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7288,6 +7288,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 142.55,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "35c1f423b9e05ac858ec14bec4346d06d274c2e1",
+          "message": "fix(cli): refresh expired agent tokens; fix --once approval hang\n\nAddress heskew's two remaining non-blocking review notes on #1553:\n\n- `harper agent` hard-failed on an expired stored operation token instead\n  of self-healing via the refresh_token, unlike cliOperations.ts. Extract\n  the refresh logic into a shared `refreshExpiredOperationToken` helper in\n  cliOperations.ts and call it from both cliOperations and agentCli, so the\n  two transports can't drift again.\n- `--once` against a real TTY drains stdin via readAllStdin() before the\n  first turn; if that turn then needed approval, resolveApprovals() built a\n  new readline on the already-ended stdin and question() never resolved.\n  Track actual stdin consumption (opts.stdinConsumed) instead of relying on\n  isTTY, and fail loudly in that case like the non-TTY path already does.\n\nRefs #1553\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-28T13:58:29Z",
+          "url": "https://github.com/HarperFast/harper/commit/35c1f423b9e05ac858ec14bec4346d06d274c2e1"
+        },
+        "date": 1785312635077,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.57,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.23,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 17.91,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 17.99,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 22.74,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 16.88,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 33.79,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.68,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 18.41,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 168.52,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 45.95,
             "unit": "ms"
           }
         ]
