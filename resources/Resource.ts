@@ -715,23 +715,18 @@ function transactional(
 				query.isCollection = true;
 		}
 		isCollection = query.isCollection;
-		if (
-			options.method === 'post' &&
-			query.id === null &&
-			!isCollection &&
-			this.prototype.post === Resource.prototype.post
-		) {
-			// the matched path had nothing left to resolve into a collection or a specific record —
-			// i.e. it exactly matched a resource's base path without the required trailing slash
-			// (harper#678). This only matters for the base/default post() dispatch: it reads
-			// this.#isCollection (set from this same query) and falls back to missingMethod() for
-			// this state anyway, so rejecting early here just gives a clearer, purpose-built message.
-			// A resource with its own post() override (e.g. a component doing a bulk import via
-			// POST to its collection root, like the redirector template's Redirect.post()) is
-			// trusted to handle a null-id/non-collection target itself — it may not use id/isCollection
-			// at all, and forcing the trailing slash on it would break a currently-supported no-slash
-			// bulk-POST convention. See harper#678's regression on PR #1807.
-			throw new ClientError(`A trailing slash is required to POST to the ${this.name} collection`, 404);
+		if (options.method === 'post' && query.id === null && !isCollection) {
+			if (this.prototype.post === Resource.prototype.post) {
+				// exact base-path match with no trailing slash (harper#678): the default post dispatch
+				// has nothing to address, so reject with a purpose-built message
+				throw new ClientError(`A trailing slash is required to POST to the ${this.name} collection`, 404);
+			}
+			if (this.loadAsInstance !== false) {
+				// a custom instance post() override accepts the no-slash collection POST (redirector-style
+				// bulk import); normalize it so authorization and dispatch use collection semantics
+				query.isCollection = true;
+				isCollection = true;
+			}
 		}
 		let resourceOptions;
 		if (!context) {
