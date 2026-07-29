@@ -43,6 +43,7 @@ const PP2_SUBTYPE_SSL_CIPHER = 0x23;
 const PP2_TYPE_JA3 = 0xe0;
 const PP2_TYPE_JA4 = 0xe1;
 const PP2_TYPE_CLIENT_CERT = 0xe2;
+const PP2_CLIENT_SSL = 0x01;
 const PP2_CLIENT_CERT_CONN = 0x02;
 
 /** TLS facts the fronting proxy observed on the terminated connection. */
@@ -65,17 +66,22 @@ export interface ForwardedTlsInfo {
  * Connection-level facts forwarded by a trusted proxy over a PROXY v2 header.
  * Present on `request.connectionInfo` only when a v2 header was decoded; every
  * field is optional since a given route forwards only what it's configured to.
+ *
+ * `alpn`, `authority`, `ja3`, and `ja4` are raw TLV payloads: decoded as bytes
+ * (latin1/UTF-8) with no grammar or length validation beyond the enclosing
+ * PROXY header's bounds. Validate before placing them in headers, logs, cache
+ * keys, or other security-sensitive contexts.
  */
 export interface ConnectionInfo {
-	/** Negotiated ALPN protocol, e.g. "h2" (PP2 TLV 0x01). */
+	/** Negotiated ALPN protocol, e.g. "h2" (PP2 TLV 0x01). Raw, unvalidated. */
 	alpn?: string;
-	/** SNI hostname from the ClientHello (PP2 TLV 0x02). */
+	/** SNI hostname from the ClientHello (PP2 TLV 0x02). Raw, unvalidated. */
 	authority?: string;
 	/** TLS facts from the SSL TLV (0x20); present when the proxy terminated TLS. */
 	tls?: ForwardedTlsInfo;
-	/** Client JA3 fingerprint, 32-char MD5 hex (PP2 TLV 0xE0). */
+	/** Client JA3 fingerprint, 32-char MD5 hex (PP2 TLV 0xE0). Raw, unvalidated. */
 	ja3?: string;
-	/** Client JA4 fingerprint (PP2 TLV 0xE1). */
+	/** Client JA4 fingerprint (PP2 TLV 0xE1). Raw, unvalidated. */
 	ja4?: string;
 	/** Verified mTLS client certificate chain (DER, leaf first) from PP2 0xE2 TLVs. */
 	clientCertChain?: Buffer[];
@@ -170,10 +176,16 @@ function decodeV2(buffer: Buffer): ProxyHeaderDecision {
 			info.authority = buffer.toString('utf8', valueStart, valueEnd);
 		} else if (type === PP2_TYPE_SSL && valueLength >= 5) {
 			// struct pp2_tlv_ssl: client(1) verify(4, 0 = verified ok), then sub-TLVs.
-			certPresented = (buffer[valueStart] & PP2_CLIENT_CERT_CONN) !== 0;
-			const verifyOk = buffer.readUInt32BE(valueStart + 1) === 0;
-			tls = { verified: certPresented && verifyOk };
-			parseSslSubTlvs(buffer, valueStart + 5, valueEnd, tls);
+			// Only PP2_CLIENT_SSL means the client actually connected over TLS; a
+			// CERT_CONN bit without it is internally inconsistent (a client cert
+			// is a TLS construct) and reported alongside, not on its own.
+			const clientBits = buffer[valueStart];
+			if ((clientBits & PP2_CLIENT_SSL) !== 0) {
+				certPresented = (clientBits & PP2_CLIENT_CERT_CONN) !== 0;
+				const verifyOk = buffer.readUInt32BE(valueStart + 1) === 0;
+				tls = { verified: certPresented && verifyOk };
+				parseSslSubTlvs(buffer, valueStart + 5, valueEnd, tls);
+			}
 		} else if (type === PP2_TYPE_JA3 && valueLength > 0) {
 			info.ja3 = buffer.toString('latin1', valueStart, valueEnd);
 		} else if (type === PP2_TYPE_JA4 && valueLength > 0) {

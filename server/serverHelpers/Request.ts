@@ -419,6 +419,10 @@ export class BunRequest {
 	get mtlsConfig() {
 		return undefined;
 	}
+	get connectionInfo() {
+		// No PROXY v2 decoding on the Bun.serve() path
+		return undefined;
+	}
 	get body() {
 		return this.#body || (this.#body = new BunRequestBody(this._webRequest));
 	}
@@ -533,6 +537,10 @@ export class UwsRequest {
 		return null;
 	}
 	get mtlsConfig() {
+		return undefined;
+	}
+	get connectionInfo() {
+		// TLS terminated upstream — no PROXY v2 decoding at this hop.
 		return undefined;
 	}
 	get body() {

@@ -72,9 +72,9 @@ function tlv(type, value) {
 	return Buffer.concat([header, value]);
 }
 
-function sslTlv({ certPresented = true, verify = 0 } = {}) {
+function sslTlv({ certPresented = true, verify = 0, clientSsl = true } = {}) {
 	const value = Buffer.alloc(5);
-	value[0] = 0x01 | (certPresented ? 0x02 : 0); // PP2_CLIENT_SSL | PP2_CLIENT_CERT_CONN
+	value[0] = (clientSsl ? 0x01 : 0) | (certPresented ? 0x02 : 0); // PP2_CLIENT_SSL | PP2_CLIENT_CERT_CONN
 	value.writeUInt32BE(verify, 1);
 	return tlv(0x20, value);
 }
@@ -185,6 +185,25 @@ describe('proxyProtocol decodeProxyHeader', () => {
 		assert.ok(info.tls, 'tls facts still present');
 		assert.strictEqual(info.tls.verified, false);
 		assert.strictEqual(info.clientCertChain, undefined);
+	});
+
+	it('ignores an SSL TLV whose client field does not report PP2_CLIENT_SSL', () => {
+		// client = 0x00: no SSL, no cert-conn — the proxy is not claiming TLS was used.
+		// With no other TLVs, no connectionInfo fields are populated at all.
+		const header = buildV2Header({ tlvs: [sslTlv({ clientSsl: false, certPresented: false }), tlv(0xe2, CLIENT_DER)] });
+		assert.strictEqual(decodeProxyHeader(header).connectionInfo, undefined);
+	});
+
+	it('ignores CERT_CONN without PP2_CLIENT_SSL as internally inconsistent', () => {
+		// client = CERT_CONN only, no SSL bit: asserts a client cert without asserting TLS.
+		// JA3 alongside proves the TLV loop keeps parsing past the ignored SSL TLV.
+		const header = buildV2Header({
+			tlvs: [sslTlv({ clientSsl: false, certPresented: true }), tlv(0xe2, CLIENT_DER), tlv(0xe0, Buffer.from('0123456789abcdef0123456789abcdef'))],
+		});
+		const info = decodeProxyHeader(header).connectionInfo;
+		assert.strictEqual(info.tls, undefined);
+		assert.strictEqual(info.clientCertChain, undefined);
+		assert.strictEqual(info.ja3, '0123456789abcdef0123456789abcdef');
 	});
 
 	it('captures ALPN, authority, JA3, JA4, and SSL version/cipher TLVs', () => {
