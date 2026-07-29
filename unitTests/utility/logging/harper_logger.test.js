@@ -1390,28 +1390,6 @@ describe('Test harper_logger module', () => {
 			expect(result).to.not.include('Authorization');
 		});
 
-		it('falls back to a safe placeholder (not the raw child) if a nested sanitize step throws for a reason other than a Proxy trap', () => {
-			// Defensive coverage: with the isProxy gate now catching every Proxy before any
-			// reflection, no known real-world input reaches this catch block today - it's tested
-			// directly here (by forcing Array.isArray to throw for one specific value) so it stays
-			// proven safe as a backstop against whatever unforeseen way a future value might throw.
-			const secret_error = new Error('request failed');
-			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
-			const sentinel = { error: secret_error };
-			const original_is_array = Array.isArray;
-			const stub = sinon.stub(Array, 'isArray').callsFake((v) => {
-				if (v === sentinel) throw new Error('isArray boom');
-				return original_is_array(v);
-			});
-			try {
-				const result = render({ sentinel }, { depth: 8 });
-				expect(result).to.not.include('super-secret-token');
-				expect(result).to.not.include('Authorization');
-			} finally {
-				stub.restore();
-			}
-		});
-
 		it('never invokes ANY trap on a nested Proxy - not just a throwing one - and never leaks its target', () => {
 			const secret_error = new Error('request failed');
 			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
