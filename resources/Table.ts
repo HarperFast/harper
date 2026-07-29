@@ -5639,8 +5639,17 @@ export function makeTable(options) {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
 			let resolved;
-			// Tracked in pendingSourceCommits (below) so dropTable() can wait for this write to
-			// land before it drops the table's column families - see the comment there.
+			// Tracked in pendingSourceCommits (below) for the full lifetime of this transaction -
+			// including the source round-trip, not just from the point it's actually staged -
+			// so dropTable() can wait for it before dropping the table's column families (see the
+			// comment there). Registering only once a write reaches staging would track less (no
+			// Set churn for a plain cache miss, and a slow/hung source couldn't delay a drop) and
+			// is safe on its own given the live droppingTable re-checks in this function - but it
+			// would make dropTable()'s correctness depend on every future early-return path in
+			// this function remembering to check droppingTable, rather than on dropTable() simply
+			// waiting for whatever this function is doing. Tracking the whole lifetime is the
+			// belt to that suspenders, at the cost of a bounded wait on a merely slow source
+			// before the drain's fail-closed timeout below.
 			let commitPromise: Promise<any>;
 			when(
 				(commitPromise = transaction(sourceContext, async (_txn) => {
@@ -5898,9 +5907,7 @@ export function makeTable(options) {
 					if (embedBefore) await embedBefore();
 					if (droppingTable) {
 						// Re-check right before staging the write: dropTable() may have started
-						// while we were awaiting the embed step above, and the drain in dropTable()
-						// only waits for writes staged before it snapshotted pendingSourceCommits -
-						// staging one now would race the column-family drop (harper#1381).
+						// while we were awaiting the embed step above (harper#1381).
 						sourceContext.transaction.abort();
 						return;
 					}

@@ -186,8 +186,9 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 	// the drop itself before it removes the tombstoned catalog rows - leaving the table stuck
 	// "dropping" for completeInterruptedDrop to retry (and fail identically) on every
 	// subsequent load. That is the failure this test reproduces deterministically: rather than
-	// racing real timing (which only sometimes loses), the source's resolution is gated behind
-	// a promise the test controls, so the in-flight write is provably still pending when
+	// racing real timing (which only sometimes loses), an async step in the write's own
+	// path (the @embed pre-commit hook) is gated behind a promise the test controls, so the
+	// GET has already resolved to its caller - and the write is provably still pending - when
 	// dropTable() is called.
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // this table drop path is RocksDB-only
 
@@ -198,47 +199,60 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 		const TestTable = table({
 			table: 'DropRaceTable',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				// A get() resolves to its caller as soon as the source responds; the resulting
+				// cache write only actually stages afterward, past an async embed-hook step (see
+				// getFromSource - the embed step runs after the caller's promise has resolved).
+				// Gating the embed hook (rather than source.get() itself) pins down that exact
+				// post-resolution, pre-staging window instead of merely proving dropTable() waits
+				// on an outstanding source fetch (which it deliberately no longer does - a call
+				// still waiting on the source isn't tracked as a pending commit).
+				{ name: 'vector', type: 'Array', embed: { source: 'name', model: 'unused' } },
+			],
 		});
 
-		let releaseSource;
-		const sourceGate = new Promise((resolve) => {
-			releaseSource = resolve;
+		let releaseEmbed;
+		const embedGate = new Promise((resolve) => {
+			releaseEmbed = resolve;
 		});
-		let sourceEntered;
-		const sourceEnteredPromise = new Promise((resolve) => {
-			sourceEntered = resolve;
+		let embedEntered;
+		const embedEnteredPromise = new Promise((resolve) => {
+			embedEntered = resolve;
+		});
+		TestTable.setEmbedAttribute('vector', async () => {
+			embedEntered();
+			await embedGate;
+			return [1, 2, 3];
 		});
 		TestTable.sourcedFrom({
-			get: async (id) => {
-				sourceEntered();
-				await sourceGate;
-				return { id, name: 'gated' };
-			},
+			get: async (id) => ({ id, name: 'gated' }),
 			available: () => true,
 		});
 
-		// Kick off a get() that will hang inside the source until we release it below. Wait on
-		// an explicit signal (not a guessed number of ticks) that the source was actually
-		// entered, so this doesn't depend on scheduler timing under a loaded test runner.
+		// The GET resolves as soon as source.get() does; only the embed hook (and the write it
+		// gates) is held back, so the caller already has its data while the write is still
+		// pending. Wait on an explicit signal that the embedder was entered - not a guessed
+		// number of ticks - so this doesn't depend on scheduler timing under a loaded test runner.
 		const getPromise = TestTable.get('gated-1', {});
-		await sourceEnteredPromise;
+		await embedEnteredPromise;
 
 		let dropResolved = false;
 		const dropPromise = TestTable.dropTable().then(() => {
 			dropResolved = true;
 		});
 
-		// The source hasn't been released yet, so the cache write can't have landed - dropTable()
+		// The embed hook hasn't been released yet, so the cache write can't have staged - dropTable()
 		// must still be waiting on it, not racing ahead to drop the column families.
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		assert.strictEqual(
 			dropResolved,
 			false,
-			'dropTable() must not drop the column families while a source-populated cache write is still in flight'
+			'dropTable() must not drop the column families while a source-populated cache write is still pending'
 		);
 
-		releaseSource();
+		releaseEmbed();
 		await getPromise;
 		await dropPromise;
 		assert.strictEqual(dropResolved, true, 'dropTable() should resolve once the pending write has landed');
