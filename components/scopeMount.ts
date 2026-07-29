@@ -90,10 +90,18 @@ export function normalizeMountHost(host: string | undefined): string | undefined
 /**
  * Reads a mount off a root-config entry, or undefined when the entry declares no routing at
  * all — so an unmounted application takes exactly the code path it did before mounts existed.
+ *
+ * `host`/`urlPath` present but not a string (e.g. `host: 9926`, a likely typo for a quoted
+ * value) is rejected rather than silently treated as absent: this fail-closed behavior only
+ * works if a wrong-typed value fails the same way a wrong-format one does (review finding) —
+ * `null`/`undefined` are still "not declared", since that's how YAML represents an omitted key.
  */
 export function toScopeMount(config: unknown): ScopeMount | undefined {
 	if (!config || typeof config !== 'object') return undefined;
 	const { host, urlPath } = config as ScopeMount;
+	if (host !== undefined && host !== null && typeof host !== 'string') throw new InvalidMountHostError(String(host));
+	if (urlPath !== undefined && urlPath !== null && typeof urlPath !== 'string')
+		throw new InvalidMountPathError(String(urlPath));
 	const mountHost = normalizeMountHost(typeof host === 'string' ? host : undefined);
 	const mountPath = normalizeMountPath(typeof urlPath === 'string' ? urlPath : undefined);
 	if (!mountHost && !mountPath) return undefined;

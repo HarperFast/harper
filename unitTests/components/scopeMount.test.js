@@ -137,6 +137,24 @@ describe('scopeMount', () => {
 				urlPath: '/v1',
 			});
 		});
+
+		it('treats a null host/urlPath as not declared, same as omitted', () => {
+			assert.equal(toScopeMount({ package: '@my/app', host: null, urlPath: null }), undefined);
+		});
+
+		// A wrong-typed value (e.g. an unquoted YAML number) must fail the same way a wrong-format
+		// one does — silently treating it as absent would load the application unconstrained.
+		it('rejects a non-string host rather than silently loading unconstrained', () => {
+			assert.throws(() => toScopeMount({ package: '@my/app', host: 9926 }), InvalidMountHostError);
+			assert.throws(() => toScopeMount({ package: '@my/app', host: true }), InvalidMountHostError);
+			assert.throws(() => toScopeMount({ package: '@my/app', host: {} }), InvalidMountHostError);
+		});
+
+		it('rejects a non-string urlPath rather than silently loading unconstrained', () => {
+			assert.throws(() => toScopeMount({ package: '@my/app', urlPath: 9926 }), InvalidMountPathError);
+			assert.throws(() => toScopeMount({ package: '@my/app', urlPath: true }), InvalidMountPathError);
+			assert.throws(() => toScopeMount({ package: '@my/app', urlPath: [] }), InvalidMountPathError);
+		});
 	});
 
 	describe('composeMountedUrlPath', () => {
