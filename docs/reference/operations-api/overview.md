@@ -64,23 +64,24 @@ Operations are grouped by topic. See [Operations](./operations.md) for the compl
 
 **Topic categories:**
 
-| Category                                                            | Description                                                    | Detailed Docs                                                   |
-| ------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------- |
-| [Databases & Tables](./operations.md#databases--tables)             | Create and manage databases, tables, and attributes            | [Database Overview](../database/overview.md)                    |
-| [NoSQL Operations](./operations.md#nosql-operations)                | Insert, update, upsert, delete, and query records              | [REST Querying Reference](../rest/querying.md)                  |
-| [Bulk Operations](./operations.md#bulk-operations)                  | CSV/S3 import and export, batch delete                         | [Database Jobs](../database/jobs.md)                            |
-| [SQL Operations](./operations.md#sql-operations)                    | Execute SQL statements (use for investigation, not production) | —                                                               |
-| [Users & Roles](./operations.md#users--roles)                       | Manage users and role-based access control                     | [Users & Roles Operations](../users-and-roles/operations.md)    |
-| [Token Authentication](./operations.md#token-authentication)        | Create and refresh JWT tokens                                  | [JWT Authentication](../security/jwt-authentication.md)         |
-| [Components](./operations.md#components)                            | Deploy and manage Harper components                            | [Components Overview](../components/overview.md)                |
-| [Replication & Clustering](./operations.md#replication--clustering) | Configure cluster topology and replication                     | [Replication & Clustering](../replication/clustering.md)        |
-| [Configuration](./operations.md#configuration)                      | Read and update Harper configuration                           | —                                                               |
-| [System](./operations.md#system)                                    | Restart, system information, status management                 | —                                                               |
-| [Jobs](./operations.md#jobs)                                        | Query background job status                                    | [Database Jobs](../database/jobs.md)                            |
-| [Logs](./operations.md#logs)                                        | Read standard, transaction, and audit logs                     | [Logging Operations](../logging/operations.md)                  |
-| [Certificate Management](./operations.md#certificate-management)    | Manage TLS certificates                                        | [Certificate Management](../security/certificate-management.md) |
-| [Analytics](./operations.md#analytics)                              | Query analytics metrics                                        | [Analytics Operations](../analytics/operations.md)              |
-| [Registration & Licensing](./operations.md#registration--licensing) | License management                                             | —                                                               |
+| Category                                                             | Description                                                    | Detailed Docs                                                   |
+| -------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------- |
+| [Databases & Tables](./operations.md#databases--tables)              | Create and manage databases, tables, and attributes            | [Database Overview](../database/overview.md)                    |
+| [NoSQL Operations](./operations.md#nosql-operations)                 | Insert, update, upsert, delete, and query records              | [REST Querying Reference](../rest/querying.md)                  |
+| [Bulk Operations](./operations.md#bulk-operations)                   | CSV/S3 import and export, batch delete                         | [Database Jobs](../database/jobs.md)                            |
+| [SQL Operations](./operations.md#sql-operations)                     | Execute SQL statements (use for investigation, not production) | —                                                               |
+| [Users & Roles](./operations.md#users--roles)                        | Manage users and role-based access control                     | [Users & Roles Operations](../users-and-roles/operations.md)    |
+| [Token Authentication](./operations.md#token-authentication)         | Create and refresh JWT tokens                                  | [JWT Authentication](../security/jwt-authentication.md)         |
+| [Components](./operations.md#components)                             | Deploy and manage Harper components                            | [Components Overview](../components/overview.md)                |
+| [Replication & Clustering](./operations.md#replication--clustering)  | Configure cluster topology and replication                     | [Replication & Clustering](../replication/clustering.md)        |
+| [Configuration](./operations.md#configuration)                       | Read and update Harper configuration                           | —                                                               |
+| [Web Application Firewall](./operations.md#web-application-firewall) | Manage WAF rules, mode, and score threshold                    | [WAF Operations](../web-application-firewall/operations.md)     |
+| [System](./operations.md#system)                                     | Restart, system information, status management                 | —                                                               |
+| [Jobs](./operations.md#jobs)                                         | Query background job status                                    | [Database Jobs](../database/jobs.md)                            |
+| [Logs](./operations.md#logs)                                         | Read standard, transaction, and audit logs                     | [Logging Operations](../logging/operations.md)                  |
+| [Certificate Management](./operations.md#certificate-management)     | Manage TLS certificates                                        | [Certificate Management](../security/certificate-management.md) |
+| [Analytics](./operations.md#analytics)                               | Query analytics metrics                                        | [Analytics Operations](../analytics/operations.md)              |
+| [Registration & Licensing](./operations.md#registration--licensing)  | License management                                             | —                                                               |
 
 ## Past Release API Documentation
 
