@@ -4,7 +4,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 import { withComponentPreparationLock } from './componentPreparationLock.ts';
-import { registerProcessGroup, unregisterProcessGroup } from '../server/threads/manageThreads.js';
+import { isThreadRunning, registerProcessGroup, unregisterProcessGroup } from '../server/threads/manageThreads.js';
 import type { CredentialReference, ResolvedCredential, ResolvedRegistryCredential } from './secretOperations.ts';
 import {
 	GIT_CREDENTIAL_SOCKET_ENV,
@@ -1107,6 +1107,7 @@ export async function prepareApplication(application: Application) {
 						`Failed to release the component preparation lock for ${application.name}:`,
 						errorForLog(error)
 					),
+				isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
 			}
 		);
 	} finally {
@@ -1202,6 +1203,10 @@ export async function installApplications() {
 				logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
 				continue;
 			}
+			// Once preparation is required, the old entry is no longer evidence of a complete
+			// installation. In particular, a failed reinstall may leave a partial directory behind;
+			// retaining the prior entry would make the next boot skip that partial component.
+			delete harperApplicationLock.applications[name];
 
 			applicationInstallationPromises.push(
 				prepareApplication(application).then(

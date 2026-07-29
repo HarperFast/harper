@@ -18,6 +18,15 @@ export interface ComponentPreparationLockOptions {
 	timeoutMs?: number;
 	onWait?: (owner: ComponentPreparationLockOwner | null) => void;
 	onReleaseError?: (error: unknown) => void;
+	isOwnerAlive?: (owner: ComponentPreparationLockOwner) => boolean | Promise<boolean>;
+}
+
+export function componentPreparationLockIdentity(
+	componentDirPath: string,
+	platform: NodeJS.Platform = process.platform
+): string {
+	const canonicalPath = resolve(componentDirPath);
+	return platform === 'win32' ? canonicalPath.toLowerCase() : canonicalPath;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -38,14 +47,22 @@ async function readOwner(lockPath: string): Promise<ComponentPreparationLockOwne
 	}
 }
 
-async function removeStaleLock(lockPath: string): Promise<boolean> {
+async function removeStaleLock(lockPath: string, options: ComponentPreparationLockOptions): Promise<boolean> {
 	const owner = await readOwner(lockPath);
 	if (!owner) return false;
 	// All worker threads share a PID. Treat our own PID as authoritative instead of probing it:
 	// process.kill is commonly wrapped by embedders/test harnesses, and a false negative here would
 	// permit exactly the concurrent mutation this lock exists to prevent.
-	const ownerProcessExited = owner.pid !== process.pid && !isProcessAlive(owner.pid);
-	if (!ownerProcessExited) return false;
+	let ownerExited = owner.pid !== process.pid && !isProcessAlive(owner.pid);
+	if (owner.pid === process.pid && options.isOwnerAlive) {
+		try {
+			ownerExited = !(await options.isOwnerAlive(owner));
+		} catch {
+			// An unknown owner state is not permission to remove its lock.
+			return false;
+		}
+	}
+	if (!ownerExited) return false;
 
 	const stalePath = `${lockPath}.stale-${randomUUID()}`;
 	try {
@@ -65,7 +82,10 @@ async function acquireComponentPreparationLock(
 	// Keep the key stable while a preparation replaces the path. realpath() would change from the
 	// literal path to a symlink target (or back) mid-deploy and let a same-path waiter bypass the lock.
 	const canonicalPath = resolve(componentDirPath);
-	const lockName = createHash('sha256').update(canonicalPath).digest('hex');
+	// Windows resolves path aliases without normalizing case. Hash a case-folded identity so two
+	// accepted component names cannot bypass serialization while targeting the same directory.
+	const lockIdentity = componentPreparationLockIdentity(canonicalPath);
+	const lockName = createHash('sha256').update(lockIdentity).digest('hex');
 	const lockRoot = join(dirname(canonicalPath), COMPONENT_PREPARATION_LOCK_DIR);
 	const lockPath = join(lockRoot, lockName);
 	const owner: ComponentPreparationLockOwner = {
@@ -74,10 +94,12 @@ async function acquireComponentPreparationLock(
 		token: randomUUID(),
 	};
 	const temporaryLockPath = join(lockRoot, `.${lockName}.${owner.token}.tmp`);
-	const deadline = performance.now() + (options.timeoutMs ?? DEFAULT_LOCK_WAIT_TIMEOUT_MS);
+	const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_WAIT_TIMEOUT_MS;
+	let deadline = performance.now() + timeoutMs;
 
 	await mkdir(lockRoot, { recursive: true, mode: 0o700 });
 	let waitingReported = false;
+	let nextOwnerLivenessCheck = 0;
 	for (;;) {
 		try {
 			// Publish a fully-written owner record atomically. A process that dies before link() can
@@ -94,13 +116,27 @@ async function acquireComponentPreparationLock(
 			break;
 		} catch (error: any) {
 			if (error.code !== 'EEXIST') throw error;
-			if (await removeStaleLock(lockPath)) continue;
+			const now = performance.now();
+			if (now >= nextOwnerLivenessCheck) {
+				nextOwnerLivenessCheck = now + 500;
+				if (await removeStaleLock(lockPath, options)) continue;
+			}
 			if (!waitingReported) {
 				waitingReported = true;
 				options.onWait?.(await readOwner(lockPath));
 			}
-			if (performance.now() >= deadline) {
+			if (now >= deadline) {
 				const currentOwner = await readOwner(lockPath);
+				if (currentOwner && options.isOwnerAlive) {
+					try {
+						if (await options.isOwnerAlive(currentOwner)) {
+							// A known-live holder is allowed to finish; the deadline is only a backstop for an
+							// owner whose liveness cannot be established.
+							deadline = performance.now() + timeoutMs;
+							continue;
+						}
+					} catch {}
+				}
 				throw new Error(
 					`Timed out waiting for component preparation lock for ${canonicalPath}` +
 						(currentOwner ? ` held by process ${currentOwner.pid}, thread ${currentOwner.threadId}` : '')
