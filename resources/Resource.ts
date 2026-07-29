@@ -22,6 +22,7 @@ import { logger } from '../utility/logging/logger.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
+import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -148,7 +149,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const elementResource = resourceClass.getResource(target, request, {
 						async: true,
 					});
-					if (elementResource.then) results.push(elementResource.then((resource) => resource.put(element, request)));
+					if (typeof elementResource.then === 'function')
+						results.push(elementResource.then((resource) => resource.put(element, request)));
 					else results.push(elementResource.put(element, query));
 				}
 				return Promise.all(results);
@@ -709,6 +711,8 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
+			if (isCollection && options.method === 'put' && Array.isArray(data) && this.loadAsInstance === false)
+				query.isCollection = true;
 		}
 		isCollection = query.isCollection;
 		if (options.method === 'post' && query.id === null && !isCollection) {
@@ -790,6 +794,10 @@ function transactional(
 			// both resolve to the same subscription iterable.
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
 			const runAction = (data: any) => {
+				// getResource creates a fresh receiver for this dispatch. Marking that receiver, rather
+				// than caller-owned target identity, preserves the static (target, message) signature when
+				// an override copies the target or delegates asynchronously after its own return settles.
+				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) => {

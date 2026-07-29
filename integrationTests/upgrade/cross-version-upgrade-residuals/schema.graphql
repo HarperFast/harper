@@ -1,0 +1,11 @@
+# QA-660 (#1865 residual, source QA-658/P-437) — component-defined table used across a GENUINE
+# cross-version upgrade boot (5.1.22 -> current), with a dirty (SIGKILL) shutdown, width-
+# heterogeneous rows at scale, and concurrent writes across the boot boundary. Declared fields
+# are fixed/narrow; seeded rows also carry additional undeclared fields (see resources.js
+# hetExtra()) to build a non-trivial typed-struct dictionary.
+type Widget @table(database: "qa660") @export {
+	id: ID @primaryKey
+	sku: String @indexed
+	batch: String @indexed
+	name: String
+}

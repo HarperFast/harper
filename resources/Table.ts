@@ -31,7 +31,12 @@ import type { User } from '../security/user.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, transformForSelect } from './Resource.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
-import { DatabaseTransaction, ImmediateTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
+import {
+	DatabaseTransaction,
+	ImmediateTransaction,
+	priorStagedWrite,
+	TRANSACTION_STATE,
+} from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
@@ -55,6 +60,7 @@ import {
 	resolveComparator,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
+import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
@@ -514,7 +520,6 @@ export function makeTable(options) {
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
-
 		declare getProperty: (name: string) => any;
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
@@ -2039,31 +2044,41 @@ export function makeTable(options) {
 				const context = this.getContext();
 				if ((target as any).checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowUpdate((context as any).user, record, context);
-				}
-				return when(allowed, (allowed) => {
-					if (!allowed) {
+					try {
+						allowed = this.allowUpdate((context as any).user, record, context);
+					} catch {
 						throw new AccessViolation((context as any).user);
 					}
-					// standard path, handle arrays as multiple updates, and otherwise do a direct update
-					if (Array.isArray(record)) {
-						// Capture each element's operation synchronously (before any async `@embed`
-						// hook resolves): `#savingOperation` is a single field that parallel writes
-						// would otherwise clobber, so a deferred `save()` would commit the wrong op
-						// — e.g. one element's save running before a later element's vector is written.
-						const writes = record.map((element) => {
-							const id = element[primaryKey];
-							const writePromise = this._writeUpdate(id, element, true);
-							const operation = this.#savingOperation;
-							return when(writePromise, () => this.#saveOperation(operation));
-						});
-						this.#savingOperation = null;
-						return Promise.all(writes) as any;
-					} else {
-						const id = requestTargetToId(target as any);
-						return when(this._writeUpdate(id, record, true), () => this.save() as any);
+				}
+				return when(
+					allowed,
+					(allowed) => {
+						if (!allowed) {
+							throw new AccessViolation((context as any).user);
+						}
+						// standard path, handle arrays as multiple updates, and otherwise do a direct update
+						if (Array.isArray(record)) {
+							// Capture each element's operation synchronously (before any async `@embed`
+							// hook resolves): `#savingOperation` is a single field that parallel writes
+							// would otherwise clobber, so a deferred `save()` would commit the wrong op
+							// — e.g. one element's save running before a later element's vector is written.
+							const writes = record.map((element) => {
+								const id = element[primaryKey];
+								const writePromise = this._writeUpdate(id, element, true);
+								const operation = this.#savingOperation;
+								return when(writePromise, () => this.#saveOperation(operation));
+							});
+							this.#savingOperation = null;
+							return Promise.all(writes) as any;
+						} else {
+							const id = requestTargetToId(target as any);
+							return when(this._writeUpdate(id, record, true), () => this.save() as any);
+						}
+					},
+					() => {
+						throw new AccessViolation((context as any).user);
 					}
-				}) as any;
+				) as any;
 			}
 			// always return undefined
 		}
@@ -2251,17 +2266,29 @@ export function makeTable(options) {
 					// (walk identity tie against its own staged record) before a fresh-transaction replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
+					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
+					write.superseded = false; // likewise: a later write to this key re-marks it this round
+					// The record a preceding write in this transaction left for this key is what this write
+					// applies to (see priorStagedWrite): a staged write is not visible to a read, so without
+					// this the index diff re-removes the values that write already removed and never removes
+					// the ones it added — orphaning them — and an incremental update merges onto the
+					// pre-transaction record, dropping that write's changes entirely (harper#1968). Only the
+					// record comes from the earlier write; the rest of the entry (version, audit chain, blob
+					// metadata) stays the pre-transaction one, which is the version this write's audit entry
+					// and optimistic version check are still relative to.
+					const priorStagedOp = priorStagedWrite(write);
+					const priorStaged = priorStagedOp?.stagedEntry;
+					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
 						this.#entry = existingEntry;
-						if (existingEntry?.value && existingEntry.value.getRecord)
+						if (existingRecord && existingRecord.getRecord)
 							throw new Error('Can not assign a record to a record, check for circular references');
-						if (!fullUpdate) this.#record = existingEntry?.value ?? null;
+						if (!fullUpdate) this.#record = existingRecord ?? null;
 					}
 					this.#changes = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this.#version = txnTime;
-					const existingRecord = existingEntry?.value;
 					let incrementalUpdateToApply: boolean;
 
 					this.#savingOperation = null;
@@ -2269,7 +2296,17 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
+					// A write that follows another write to this key in this transaction is ordered by program
+					// order, not by timestamp: every write in a transaction carries the transaction's single
+					// timestamp, so a version comparison against what the earlier write landed (e.g. on a
+					// retry round after a partial apply) is a tie (0), and the out-of-order resequencing below
+					// would treat this write as a re-delivered duplicate and drop it (the 4.7 behavior this fix
+					// must not reintroduce). Program order only breaks the tie, though: a strictly newer
+					// existing version (< 0) can only be a concurrent transaction's write observed on a retry
+					// round, and must still go through the out-of-order merge below or its changes would be
+					// silently overwritten.
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (priorStaged && precedesExisting >= 0) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
@@ -2794,6 +2831,19 @@ export function makeTable(options) {
 							false,
 							storeRecord ? auditRecordToStore : (auditRecordToStore ?? recordUpdate)
 						);
+						// publish what this write left for the key, for any later write to it in this
+						// transaction (an audit-only commit stored no record, so it stages nothing and the
+						// earlier staged record, if any, remains the basis)
+						if (storeRecord) {
+							write.stagedEntry = { value: recordToStore };
+							// blobs this write saved are referenced by its audit entry (if it wrote one), which
+							// then owns their lifetime; and any record an earlier write in this transaction
+							// stored is now replaced, so mark those writes for the superseded-blob cleanup
+							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
+							// only the nearest staged prior needs marking: anything older was already
+							// superseded by its own staged successor earlier in this commit round
+							if (priorStagedOp) priorStagedOp.superseded = true;
+						}
 					}
 				},
 			};
@@ -2831,8 +2881,28 @@ export function makeTable(options) {
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
 			if (isSearchTarget(target)) {
-				target.select = ['$id']; // just get the primary key of each record so we can delete them
-				for await (const entry of this.search(target)) {
+				let scanTarget = target;
+				if ((target as any).checkPermission && (this.constructor as any).loadAsInstance === false) {
+					// False mode keeps model hooks at request scope. Authorize the destructive operation
+					// once before its scan, then prevent search() from substituting allowRead.
+					const context = this.getContext() as any;
+					let allowed;
+					try {
+						allowed = await this.allowDelete(context?.user, target as any, context);
+					} catch {
+						throw new AccessViolation(context?.user);
+					}
+					if (!allowed) throw new AccessViolation(context?.user);
+					// The delete's internal scan is private dispatch state. Do not mutate or mark the
+					// caller target: another concurrent search using that identity must still run allowRead.
+					scanTarget = Object.assign(
+						new RequestTarget(target instanceof URLSearchParams ? target.toString() : undefined),
+						target
+					);
+					(scanTarget as any).checkPermission = false;
+				}
+				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
+				for await (const entry of this.search(scanTarget)) {
 					this._writeDelete((entry as any).$id);
 				}
 				return true;
@@ -2862,7 +2932,7 @@ export function makeTable(options) {
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 
-			transaction.addWrite({
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
@@ -2872,15 +2942,26 @@ export function makeTable(options) {
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
-					const existingRecord = existingEntry?.value;
+					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
+					write.superseded = false; // reset per round, as in the update path
+					// what a preceding write in this transaction left for this key is what gets removed
+					// from the indices here, not the pre-transaction record (harper#1968)
+					const priorStagedOp = priorStagedWrite(write);
+					const priorStaged = priorStagedOp?.stagedEntry;
+					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
 						TableResource._updateResource(this, existingEntry);
 					}
+					// a strictly newer record exists locally, so this delete loses. An earlier write in this
+					// transaction can never trip this guard — it shares this transaction's timestamp and
+					// compares as a tie (0), not < 0 — so a negative result always means a genuinely newer
+					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
+					// that a chained delete must not destroy.
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
-					} // a newer record exists locally
+					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
 					if (audit || trackDeletes) {
 						updateRecord(
@@ -2904,8 +2985,14 @@ export function makeTable(options) {
 						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
+					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
+					// the removal supersedes the nearest record an earlier write in this transaction stored
+					// (older ones were already marked by their staged successors), so its saved blobs are
+					// cleaned up post-commit unless its audit entry references them
+					if (priorStagedOp) priorStagedOp.superseded = true;
 				},
-			} as any);
+			};
+			transaction.addWrite(write);
 			return true;
 		}
 
@@ -4176,7 +4263,8 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		publish(target: RequestTarget, message: Record, options?: any) {
-			if (message === undefined || message instanceof URLSearchParams) {
+			const falseModeDispatch = (this.constructor as any).loadAsInstance === false && isStaticResourceInstance(this);
+			if (!falseModeDispatch && (message === undefined || message instanceof URLSearchParams)) {
 				// legacy arg format, shift the args
 				this._writePublish(this.getId(), target, message);
 			} else {
@@ -4184,15 +4272,25 @@ export function makeTable(options) {
 				const context = this.getContext();
 				if ((target as any)?.checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowDelete((context as any).user, target as any, context);
-				}
-				return when(allowed, (allowed: boolean) => {
-					if (!allowed) {
+					try {
+						allowed = this.allowCreate((context as any).user, message, context);
+					} catch {
 						throw new AccessViolation((context as any).user);
 					}
-					const id = requestTargetToId(target);
-					this._writePublish(id, message, options);
-				});
+				}
+				return when(
+					allowed,
+					(allowed: boolean) => {
+						if (!allowed) {
+							throw new AccessViolation((context as any).user);
+						}
+						const id = requestTargetToId(target);
+						this._writePublish(id, message, options);
+					},
+					() => {
+						throw new AccessViolation((context as any).user);
+					}
+				);
 			}
 		}
 		_writePublish(id: Id, message, options?: any) {

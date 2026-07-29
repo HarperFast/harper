@@ -52,7 +52,11 @@ describe('Audit log', () => {
 			results.push(entry);
 		}
 		assert.equal(results.length, 4);
-		await delay(20);
+		// Poll for the subscription events instead of a fixed 20ms delay, which is too short
+		// on a loaded CI runner and made this assertion flaky.
+		for (let i = 0; i < 20 && events.length <= 2; i++) {
+			await delay(10);
+		}
 		assert(events.length > 2, 'Should have at least a couple of update events');
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
 		setAuditRetention(0.001, 1);
