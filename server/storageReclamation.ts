@@ -1,6 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -28,13 +28,32 @@ export type QuotaStatusData = {
 };
 
 /**
+ * Resolves `target` to its real (symlink-free) path. `target` itself may not exist yet (e.g. a
+ * table's storage directory that hasn't been created), so walk up to the nearest existing
+ * ancestor, resolve that, and rejoin the not-yet-existing remainder lexically — this still
+ * catches a symlinked *parent* directory, which is the case that actually matters for quota
+ * scoping (leaf directories are created by Harper itself, not symlinked).
+ */
+async function resolveRealPath(target: string): Promise<string> {
+	try {
+		return await realpath(target);
+	} catch {
+		const parent = dirname(target);
+		if (parent === target) return resolve(target);
+		return join(await resolveRealPath(parent), basename(target));
+	}
+}
+
+/**
  * Whether `target` resolves to a path inside `root`. quota-status.json is scoped to a single
  * ROOTPATH; a database or table configured with its own STORAGE_PATH (or a STORAGE_BLOBPATHS
  * entry) can live on an entirely different volume, and must not be reported against the root's
- * quota.
+ * quota. Compares real (symlink-resolved) paths, not just lexically-normalized ones — a `..`-free
+ * path can still be a symlink into another volume, and `resolve()` alone wouldn't catch that.
  */
-function isPathWithinRoot(root: string, target: string): boolean {
-	const relativePath = relative(resolve(root), resolve(target));
+async function isPathWithinRoot(root: string, target: string): Promise<boolean> {
+	const [resolvedRoot, resolvedTarget] = await Promise.all([resolveRealPath(root), resolveRealPath(target)]);
+	const relativePath = relative(resolvedRoot, resolvedTarget);
 	if (relativePath === '') return true;
 	if (isAbsolute(relativePath)) return false;
 	// Check the first segment specifically (`..`), not a `..`-prefix match — a child directory
@@ -123,11 +142,13 @@ export async function getStorageSpaceStats(path: string): Promise<StorageSpaceSt
 		status &&
 		isValidQuotaStatus(status) &&
 		rootPath &&
-		isPathWithinRoot(rootPath, path) &&
 		// A negative age (clock skew, or a corrupt/future updatedAt) is not "fresh" — treat it the
 		// same as stale rather than trusting quota data indefinitely.
 		statusAge >= 0 &&
-		statusAge < QUOTA_STATUS_MAX_AGE_MS
+		statusAge < QUOTA_STATUS_MAX_AGE_MS &&
+		// Checked last: it's the only async/IO-bound condition, so short-circuit it behind the
+		// cheap synchronous checks above.
+		(await isPathWithinRoot(rootPath, path))
 	) {
 		const available = Math.max(0, status.quotaBytes - status.usedBytes);
 		return { available, free: available, size: status.quotaBytes, basis: 'quota' };
