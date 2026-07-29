@@ -1,7 +1,7 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import logger from '../utility/logging/harper_logger.ts';
+import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 import { withComponentPreparationLock } from './componentPreparationLock.ts';
 import { registerProcessGroup, unregisterProcessGroup } from '../server/threads/manageThreads.js';
@@ -1193,9 +1193,15 @@ export async function installApplications() {
 			}
 
 			applicationInstallationPromises.push(
-				prepareApplication(application).then(() => {
-					harperApplicationLock.applications[name] = applicationConfig;
-				})
+				prepareApplication(application).then(
+					() => {
+						harperApplicationLock.applications[name] = applicationConfig;
+					},
+					(error) => {
+						logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
+						throw error;
+					}
+				)
 			);
 		} catch (error) {
 			logger.error?.(`Skipping installation of application ${name} due to invalid configuration: ${error.message}`);
