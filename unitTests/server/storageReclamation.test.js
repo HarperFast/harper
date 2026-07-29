@@ -450,6 +450,16 @@ describe('storageReclamation module', function () {
 				assert.equal(stats.free, stats.available);
 			});
 
+			it('treats a missing usedBytes as 0 rather than propagating NaN', async function () {
+				fs.writeFileSync(quotaStatusPath, JSON.stringify({ quotaBytes: QUOTA_100GB, updatedAt: Date.now() }));
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'quota');
+				assert.equal(stats.available, QUOTA_100GB);
+				assert.equal(stats.free, QUOTA_100GB);
+			});
+
 			it('clamps available to 0 when usage exceeds the quota', async function () {
 				const usedBytes = QUOTA_100GB + 5 * 1024 * 1024 * 1024;
 				fs.writeFileSync(
@@ -533,6 +543,23 @@ describe('storageReclamation module', function () {
 
 				// Ratio clamped to 0 → priority = Infinity → handler called
 				assert.ok(handler.calledOnce);
+			});
+
+			it('treats a zero-size result as ratio 0 (not NaN), so a full disk still triggers reclamation', async function () {
+				storageReclamation.__set__(
+					'getStorageSpaceStats',
+					sandbox.stub().resolves({ available: 0, free: 0, size: 0, basis: 'filesystem' })
+				);
+
+				const handler = sandbox.stub().returns(Promise.resolve());
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await storageReclamation.runReclamationHandlers();
+
+				// Without the size>0 guard, available/size is 0/0 = NaN, priority (threshold/NaN) is
+				// NaN, and `NaN > 1` is false — reclamation would silently never fire for a zero-size
+				// volume. Guarded, ratio is 0 and priority is 0.4/0 = Infinity, which correctly fires.
+				assert.ok(handler.calledOnce);
+				assert.ok(!Number.isNaN(handler.firstCall.args[0]));
 			});
 
 			it('falls back to statfs when quota-status file is absent', async function () {

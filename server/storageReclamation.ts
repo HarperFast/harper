@@ -87,7 +87,7 @@ export type StorageSpaceStats = {
 export async function getStorageSpaceStats(path: string): Promise<StorageSpaceStats> {
 	const status = await getQuotaStatus();
 	if (status?.quotaBytes && Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS) {
-		const available = Math.max(0, status.quotaBytes - status.usedBytes);
+		const available = Math.max(0, status.quotaBytes - (status.usedBytes ?? 0));
 		return { available, free: available, size: status.quotaBytes, basis: 'quota' };
 	}
 	const fsStats = await statfs(path);
@@ -103,7 +103,7 @@ export async function getStorageSpaceStats(path: string): Promise<StorageSpaceSt
 // Otherwise fall back to statfs for the registered path.
 const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
 	const { available, size } = await getStorageSpaceStats(path);
-	return available / size;
+	return size > 0 ? available / size : 0;
 };
 let getAvailableSpaceRatio: (path: string) => Promise<number> = defaultGetAvailableSpaceRatio;
 

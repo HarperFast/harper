@@ -33,6 +33,7 @@ import {
 	writeFile,
 	type FSWatcher,
 } from 'node:fs';
+import type { StatsFs } from 'node:fs';
 import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
@@ -45,7 +46,6 @@ import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpe
 import { getHeapStatistics } from 'node:v8';
 import { setTimeout as delay, setImmediate as rest } from 'node:timers/promises';
 import { _assignPackageExport } from '../globals.js';
-import { getStorageSpaceStats } from '../server/storageReclamation.ts';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -1330,8 +1330,11 @@ function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
 	}
 	if (((blobStoragePaths as any).lastUpdated ?? 0) + 60000 < now) {
 		(blobStoragePaths as any).lastUpdated = now;
-		// create a new frequency table based on the available space
-		createFrequencyTableForStoragePaths(blobStoragePaths);
+		// create a new frequency table based on the available space; fire-and-forget, so a
+		// transient stat/mkdir failure must not become an unhandled rejection
+		createFrequencyTableForStoragePaths(blobStoragePaths).catch((error) => {
+			logger.warn?.('Error creating storage path frequency table', error);
+		});
 	}
 	const nextIndex = (blobStoragePaths as any).frequencyTable[fileId % FREQUENCY_TABLE_SIZE];
 	return nextIndex;
@@ -1346,12 +1349,22 @@ async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 	if (!statfs) return; // statfs is not available on all older node versions
 	const availableSpaces = await Promise.all(
 		blobStoragePaths.map(async (path) => {
-			// getStorageSpaceStats prefers a fresh quota-status.json over statfs (#1976), and the
-			// quota-based branch never touches the path, so ensure it exists up front rather than
-			// relying on a statfs ENOENT to trigger creation.
-			if (!existsSync(path)) ensureDirSync(path);
-			const stats = await getStorageSpaceStats(path);
-			return Math.pow(stats.available, 0.8); // we don't want this to be quite linear, so we use a power function to reduce the impact of large differences in available space
+			// This compares MULTIPLE distinct paths against each other, so it always needs the
+			// real per-path number: quota-status.json (see getStorageSpaceStats, #1976) is a
+			// single instance-wide figure that can't tell two disks apart, and would collapse
+			// every path in a multi-volume STORAGE_BLOBPATHS config to the same "available" value.
+			let stats: StatsFs;
+			try {
+				stats = await statfs(path);
+			} catch (error) {
+				if (error.code !== 'ENOENT') throw error;
+				// if the path doesn't exist, go ahead and create it
+				ensureDirSync(path);
+				// try again after the path is created
+				stats = await statfs(path);
+			}
+			const availableSpace = stats.bavail * stats.bsize;
+			return Math.pow(availableSpace, 0.8); // we don't want this to be quite linear, so we use a power function to reduce the impact of large differences in available space
 		})
 	);
 	const frequencyTable = new Array(FREQUENCY_TABLE_SIZE);
