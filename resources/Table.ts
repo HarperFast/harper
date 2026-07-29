@@ -60,6 +60,7 @@ import {
 	resolveComparator,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
+import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
@@ -519,7 +520,6 @@ export function makeTable(options) {
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
-
 		declare getProperty: (name: string) => any;
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
@@ -2044,31 +2044,41 @@ export function makeTable(options) {
 				const context = this.getContext();
 				if ((target as any).checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowUpdate((context as any).user, record, context);
-				}
-				return when(allowed, (allowed) => {
-					if (!allowed) {
+					try {
+						allowed = this.allowUpdate((context as any).user, record, context);
+					} catch {
 						throw new AccessViolation((context as any).user);
 					}
-					// standard path, handle arrays as multiple updates, and otherwise do a direct update
-					if (Array.isArray(record)) {
-						// Capture each element's operation synchronously (before any async `@embed`
-						// hook resolves): `#savingOperation` is a single field that parallel writes
-						// would otherwise clobber, so a deferred `save()` would commit the wrong op
-						// — e.g. one element's save running before a later element's vector is written.
-						const writes = record.map((element) => {
-							const id = element[primaryKey];
-							const writePromise = this._writeUpdate(id, element, true);
-							const operation = this.#savingOperation;
-							return when(writePromise, () => this.#saveOperation(operation));
-						});
-						this.#savingOperation = null;
-						return Promise.all(writes) as any;
-					} else {
-						const id = requestTargetToId(target as any);
-						return when(this._writeUpdate(id, record, true), () => this.save() as any);
+				}
+				return when(
+					allowed,
+					(allowed) => {
+						if (!allowed) {
+							throw new AccessViolation((context as any).user);
+						}
+						// standard path, handle arrays as multiple updates, and otherwise do a direct update
+						if (Array.isArray(record)) {
+							// Capture each element's operation synchronously (before any async `@embed`
+							// hook resolves): `#savingOperation` is a single field that parallel writes
+							// would otherwise clobber, so a deferred `save()` would commit the wrong op
+							// — e.g. one element's save running before a later element's vector is written.
+							const writes = record.map((element) => {
+								const id = element[primaryKey];
+								const writePromise = this._writeUpdate(id, element, true);
+								const operation = this.#savingOperation;
+								return when(writePromise, () => this.#saveOperation(operation));
+							});
+							this.#savingOperation = null;
+							return Promise.all(writes) as any;
+						} else {
+							const id = requestTargetToId(target as any);
+							return when(this._writeUpdate(id, record, true), () => this.save() as any);
+						}
+					},
+					() => {
+						throw new AccessViolation((context as any).user);
 					}
-				}) as any;
+				) as any;
 			}
 			// always return undefined
 		}
@@ -2871,8 +2881,28 @@ export function makeTable(options) {
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
 			if (isSearchTarget(target)) {
-				target.select = ['$id']; // just get the primary key of each record so we can delete them
-				for await (const entry of this.search(target)) {
+				let scanTarget = target;
+				if ((target as any).checkPermission && (this.constructor as any).loadAsInstance === false) {
+					// False mode keeps model hooks at request scope. Authorize the destructive operation
+					// once before its scan, then prevent search() from substituting allowRead.
+					const context = this.getContext() as any;
+					let allowed;
+					try {
+						allowed = await this.allowDelete(context?.user, target as any, context);
+					} catch {
+						throw new AccessViolation(context?.user);
+					}
+					if (!allowed) throw new AccessViolation(context?.user);
+					// The delete's internal scan is private dispatch state. Do not mutate or mark the
+					// caller target: another concurrent search using that identity must still run allowRead.
+					scanTarget = Object.assign(
+						new RequestTarget(target instanceof URLSearchParams ? target.toString() : undefined),
+						target
+					);
+					(scanTarget as any).checkPermission = false;
+				}
+				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
+				for await (const entry of this.search(scanTarget)) {
 					this._writeDelete((entry as any).$id);
 				}
 				return true;
@@ -4233,7 +4263,8 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		publish(target: RequestTarget, message: Record, options?: any) {
-			if (message === undefined || message instanceof URLSearchParams) {
+			const falseModeDispatch = (this.constructor as any).loadAsInstance === false && isStaticResourceInstance(this);
+			if (!falseModeDispatch && (message === undefined || message instanceof URLSearchParams)) {
 				// legacy arg format, shift the args
 				this._writePublish(this.getId(), target, message);
 			} else {
@@ -4241,15 +4272,25 @@ export function makeTable(options) {
 				const context = this.getContext();
 				if ((target as any)?.checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowDelete((context as any).user, target as any, context);
-				}
-				return when(allowed, (allowed: boolean) => {
-					if (!allowed) {
+					try {
+						allowed = this.allowCreate((context as any).user, message, context);
+					} catch {
 						throw new AccessViolation((context as any).user);
 					}
-					const id = requestTargetToId(target);
-					this._writePublish(id, message, options);
-				});
+				}
+				return when(
+					allowed,
+					(allowed: boolean) => {
+						if (!allowed) {
+							throw new AccessViolation((context as any).user);
+						}
+						const id = requestTargetToId(target);
+						this._writePublish(id, message, options);
+					},
+					() => {
+						throw new AccessViolation((context as any).user);
+					}
+				);
 			}
 		}
 		_writePublish(id: Id, message, options?: any) {
