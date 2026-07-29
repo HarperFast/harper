@@ -408,6 +408,58 @@ describe('Test keys module', () => {
 		});
 	});
 
+	describe('createTLSSelector when the system database is not yet loaded on this thread', () => {
+		// A raw-socket listener (e.g. MQTT's securePort) can initialize its own TLS selector before
+		// this thread has loaded the system database — selector creation doesn't control
+		// component/database load order. Before this fix, that raced the (unguarded)
+		// `databases.system.hdb_certificate.subscribe(...)` call inside the selector's init promise,
+		// throwing synchronously and rejecting `.ready` before the rebuilder was ever registered —
+		// stranding the selector on an empty cert list with no path to recover except an unrelated
+		// private-key hot-reload elsewhere in the process. `databases.system` is defined via a
+		// `configurable: true` property (see resources/databases.ts), so it can be deleted/restored
+		// here to model that race against the real, shared module (a rewired local doesn't work: the
+		// compiled import isn't a reboundable local binding).
+		let liveTLSRebuilders;
+		let databases;
+		let systemDescriptor;
+
+		beforeEach(() => {
+			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			databases = require('#src/resources/databases').databases;
+			systemDescriptor = Object.getOwnPropertyDescriptor(databases, 'system');
+		});
+
+		afterEach(() => {
+			delete databases.system;
+			Object.defineProperty(databases, 'system', systemDescriptor);
+		});
+
+		it('resolves without throwing and still registers the rebuilder, instead of permanently stranding the selector', async () => {
+			delete databases.system; // as on a worker thread before the system db has loaded
+			const snapshot = [...liveTLSRebuilders];
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			try {
+				const selector = keys.createTLSSelector('mqtt');
+				let thrownError;
+				try {
+					await selector.initialize(pseudoServer);
+				} catch (err) {
+					thrownError = err;
+				}
+				expect(thrownError, 'must not throw/reject when databases.system is not yet loaded').to.be.undefined;
+				expect(pseudoServer.secureContexts.size, 'no certs are available yet').to.equal(0);
+				expect(
+					liveTLSRebuilders.size,
+					'the rebuilder must still be registered so a later cert-table subscription (once the ' +
+						'system db loads) or private-key reload can recover the selector'
+				).to.equal(snapshot.length + 1);
+			} finally {
+				liveTLSRebuilders.clear();
+				snapshot.forEach((r) => liveTLSRebuilders.add(r));
+			}
+		});
+	});
+
 	describe('certificate file_timestamp staleness guard', () => {
 		let certTable;
 		let certCn;
