@@ -85,7 +85,6 @@ describe('Login', () => {
 		let originalCwd;
 		let originalExit;
 		let originalStdoutWrite;
-		let originalStdinIsTTY;
 
 		// Mock cliOperations
 		const cliOperationsModule = require('#src/bin/cliOperations');
@@ -108,11 +107,6 @@ describe('Login', () => {
 			originalStdoutWrite = process.stdout.write;
 			process.stdout.write = () => {};
 
-			// A non-TTY stdin makes login skip the interactive CI/CD env prompt (as in CI), so
-			// these tests never block on it regardless of how the suite is launched.
-			originalStdinIsTTY = process.stdin.isTTY;
-			process.stdin.isTTY = false;
-
 			originalCliOperations = cliOperationsModule.cliOperations;
 			cliOperationsModule.cliOperations = async (req) => {
 				if (req.operation === 'create_authentication_tokens') {
@@ -130,7 +124,6 @@ describe('Login', () => {
 			process.cwd = originalCwd;
 			process.exit = originalExit;
 			process.stdout.write = originalStdoutWrite;
-			process.stdin.isTTY = originalStdinIsTTY;
 			cliOperationsModule.cliOperations = originalCliOperations;
 			fs.rmSync(testDir, { recursive: true, force: true });
 		});
@@ -183,7 +176,6 @@ describe('Login', () => {
 		let originalCwd;
 		let originalExit;
 		let originalStdoutWrite;
-		let originalStdinIsTTY;
 		let originalPrompt;
 		let originalCliOperations;
 		let loginRequest;
@@ -198,10 +190,6 @@ describe('Login', () => {
 			};
 			originalStdoutWrite = process.stdout.write;
 			process.stdout.write = () => {};
-			// Non-interactive stdin so login skips the CI/CD env-var confirm; these tests are about
-			// which credentials are sent, and shouldn't depend on whether the runner has a TTY.
-			originalStdinIsTTY = process.stdin.isTTY;
-			process.stdin.isTTY = false;
 			originalPrompt = inquirer.prompt;
 			inquirer.prompt = async (questions) => {
 				const q = Array.isArray(questions) ? questions[0] : questions;
@@ -218,7 +206,6 @@ describe('Login', () => {
 			process.cwd = originalCwd;
 			process.exit = originalExit;
 			process.stdout.write = originalStdoutWrite;
-			process.stdin.isTTY = originalStdinIsTTY;
 			inquirer.prompt = originalPrompt;
 			cliOperationsModule.cliOperations = originalCliOperations;
 			fs.rmSync(testDir, { recursive: true, force: true });
@@ -276,18 +263,24 @@ describe('Login', () => {
 		});
 	});
 
-	describe('CI/CD environment variable output', () => {
+	// `harper login --for-ci` is meant to be piped (`| gh secret set --env-file -`, `| pbcopy`), so
+	// what matters is not just that the credentials are printed but WHICH stream each byte lands
+	// on: anything besides the dotenv block on stdout corrupts the pipe, and a token on stderr
+	// defeats the point of keeping it off the screen.
+	describe('CI/CD environment variable output (--for-ci)', () => {
 		const testDir = path.join(os.tmpdir(), `harper-test-login-cicd-${Date.now()}`);
 		const cliOperationsModule = require('#src/bin/cliOperations');
 		let originalCwd;
 		let originalHome;
 		let originalExit;
-		let originalStdinIsTTY;
 		let originalPrompt;
 		let originalConsoleLog;
+		let originalStdoutWrite;
+		let originalStderrWrite;
 		let originalCliOperations;
-		let logged;
-		let confirmAnswer;
+		let stdout;
+		let stderr;
+		let refreshToken;
 
 		before(() => {
 			fs.mkdirSync(testDir, { recursive: true });
@@ -303,21 +296,16 @@ describe('Login', () => {
 				if (code !== 0) throw new Error('process.exit:' + code);
 			};
 
-			// Interactive stdin so login reaches the CI/CD confirm prompt.
-			originalStdinIsTTY = process.stdin.isTTY;
-			process.stdin.isTTY = true;
-
 			originalPrompt = inquirer.prompt;
 			inquirer.prompt = async (questions) => {
 				const q = Array.isArray(questions) ? questions[0] : questions;
-				if (q.name === 'show') return { show: confirmAnswer };
 				return { [q.name]: 'mock-response' };
 			};
 
 			originalCliOperations = cliOperationsModule.cliOperations;
 			cliOperationsModule.cliOperations = async (req) => {
 				if (req.operation === 'create_authentication_tokens') {
-					return { operation_token: 'op-tok', refresh_token: 'ref-tok', target: req.target };
+					return { operation_token: 'op-tok', refresh_token: refreshToken, target: req.target };
 				}
 				return {};
 			};
@@ -328,46 +316,95 @@ describe('Login', () => {
 			if (originalHome === undefined) delete process.env.HOME;
 			else process.env.HOME = originalHome;
 			process.exit = originalExit;
-			process.stdin.isTTY = originalStdinIsTTY;
 			inquirer.prompt = originalPrompt;
 			cliOperationsModule.cliOperations = originalCliOperations;
 			fs.rmSync(testDir, { recursive: true, force: true });
 		});
 
 		beforeEach(() => {
-			logged = [];
-			originalConsoleLog = console.log;
-			console.log = (...args) => {
-				logged.push(args.join(' '));
-			};
-			// Password from env so login stays non-interactive apart from the CI/CD confirm.
+			stdout = [];
+			stderr = [];
+			refreshToken = 'ref-tok';
+			// Password from env so login needs no interactive prompt.
 			process.env.HARPER_CLI_PASSWORD = 'password';
 		});
 
 		afterEach(() => {
-			console.log = originalConsoleLog;
 			delete process.env.HARPER_CLI_PASSWORD;
 			delete process.env.HARPER_CLI_TARGET;
 			delete process.env.CLI_TARGET;
 		});
 
-		it('prints the target and refresh token (only) when the user opts in', async () => {
-			confirmAnswer = true;
-			await login('example.com', 'mockuser');
-			const out = logged.join('\n');
-			assert.ok(out.includes('HARPER_CLI_TARGET=https://example.com:9925/'), out);
-			assert.ok(out.includes('HARPER_CLI_REFRESH_TOKEN=ref-tok'), out);
+		// Captures the streams only for the duration of the call — leaving them patched would also
+		// swallow mocha's own reporter output and mix it into these assertions.
+		async function captureLogin(...args) {
+			originalStdoutWrite = process.stdout.write;
+			originalStderrWrite = process.stderr.write;
+			originalConsoleLog = console.log;
+			process.stdout.write = (chunk) => {
+				stdout.push(String(chunk));
+				return true;
+			};
+			process.stderr.write = (chunk) => {
+				stderr.push(String(chunk));
+				return true;
+			};
+			// console.log is bound to the original stdout, so patch it too — otherwise a stray
+			// console.log would print for real and escape the "stdout is only the dotenv block" check.
+			console.log = (...parts) => {
+				stdout.push(`${parts.join(' ')}\n`);
+			};
+			try {
+				return await login(...args);
+			} finally {
+				process.stdout.write = originalStdoutWrite;
+				process.stderr.write = originalStderrWrite;
+				console.log = originalConsoleLog;
+			}
+		}
+
+		it('writes nothing but the dotenv block to stdout, so it can be piped', async () => {
+			await captureLogin('example.com', 'mockuser', { forCi: true });
+
+			// Exactly two lines, both KEY=value — `gh secret set --env-file -` reads this verbatim.
+			const lines = stdout
+				.join('')
+				.split('\n')
+				.filter((line) => line.length > 0);
+			assert.deepStrictEqual(lines, [
+				'HARPER_CLI_TARGET=https://example.com:9925/',
+				'HARPER_CLI_REFRESH_TOKEN=ref-tok',
+			]);
 			// The short-lived operation token is intentionally not emitted — the refresh token is
 			// the single durable secret; the CLI mints an operation token from it on each run.
-			assert.ok(!out.includes('HARPER_CLI_OPERATION_TOKEN'), out);
+			assert.ok(!stdout.join('').includes('HARPER_CLI_OPERATION_TOKEN'), stdout.join(''));
 		});
 
-		it('does not print tokens when the user declines', async () => {
-			confirmAnswer = false;
-			await login('example.com', 'mockuser');
-			const out = logged.join('\n');
-			assert.ok(!out.includes('HARPER_CLI_OPERATION_TOKEN='), out);
+		it('keeps the banner and status messages on stderr, away from the pipe', async () => {
+			await captureLogin('example.com', 'mockuser', { forCi: true });
+
+			const err = stderr.join('');
+			assert.ok(err.includes('Harper login'), err);
+			assert.ok(err.includes('Successfully logged in'), err);
+			// The token must never be duplicated onto stderr — keeping it off the screen is the
+			// whole reason for piping.
+			assert.ok(!err.includes('ref-tok'), err);
+		});
+
+		it('prints nothing at all without the flag (default login is unchanged)', async () => {
+			await captureLogin('example.com', 'mockuser');
+
+			const out = stdout.join('');
 			assert.ok(!out.includes('HARPER_CLI_REFRESH_TOKEN='), out);
+			assert.ok(!out.includes('ref-tok'), out);
+		});
+
+		// A silent empty stdout would be piped into a secret store and "succeed" at storing nothing.
+		it('fails loudly when the cluster returns no refresh token', async () => {
+			refreshToken = undefined;
+
+			await assert.rejects(() => captureLogin('example.com', 'mockuser', { forCi: true }), /process\.exit:1/);
+			assert.ok(!stdout.join('').includes('HARPER_CLI_TARGET='), stdout.join(''));
 		});
 	});
 });
