@@ -70,15 +70,40 @@ export function onStorageReclamation(
 }
 let reclamationTimer: NodeJS.Timeout;
 
+export type StorageSpaceStats = {
+	available: number;
+	free: number;
+	size: number;
+	// Whether these numbers reflect a quota (accurate for what Harper can actually write) or
+	// raw filesystem-level statfs (can be wildly wrong under a quota-limited data directory).
+	basis: 'quota' | 'filesystem';
+};
+
+/**
+ * Get available/free/size storage stats for a path, preferring a fresh quota-status.json (see
+ * getQuotaStatus) over statfs. statfs describes the filesystem, which is misleading whenever
+ * the data directory is quota-limited on a larger shared volume (#1976).
+ */
+export async function getStorageSpaceStats(path: string): Promise<StorageSpaceStats> {
+	const status = await getQuotaStatus();
+	if (status?.quotaBytes && Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS) {
+		const available = Math.max(0, status.quotaBytes - status.usedBytes);
+		return { available, free: available, size: status.quotaBytes, basis: 'quota' };
+	}
+	const fsStats = await statfs(path);
+	return {
+		available: fsStats.bavail * fsStats.bsize,
+		free: fsStats.bfree * fsStats.bsize,
+		size: fsStats.blocks * fsStats.bsize,
+		basis: 'filesystem',
+	};
+}
+
 // If a fresh quota-status.json exists (written by host-manager every ~90s), use quota-based ratio.
 // Otherwise fall back to statfs for the registered path.
 const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
-	const status = await getQuotaStatus();
-	if (status?.quotaBytes && Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS) {
-		return Math.max(0, status.quotaBytes - status.usedBytes) / status.quotaBytes;
-	}
-	const fsStats = await statfs(path);
-	return fsStats.bavail / fsStats.blocks;
+	const { available, size } = await getStorageSpaceStats(path);
+	return available / size;
 };
 let getAvailableSpaceRatio: (path: string) => Promise<number> = defaultGetAvailableSpaceRatio;
 

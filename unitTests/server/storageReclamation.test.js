@@ -434,6 +434,58 @@ describe('storageReclamation module', function () {
 			});
 		});
 
+		describe('getStorageSpaceStats', function () {
+			it('derives available/free/size from a fresh quota-status file', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'quota');
+				assert.equal(stats.size, QUOTA_100GB);
+				assert.equal(stats.available, QUOTA_100GB - usedBytes);
+				assert.equal(stats.free, stats.available);
+			});
+
+			it('clamps available to 0 when usage exceeds the quota', async function () {
+				const usedBytes = QUOTA_100GB + 5 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'quota');
+				assert.equal(stats.available, 0);
+				assert.equal(stats.free, 0);
+			});
+
+			it('falls back to statfs when quota-status file is absent', async function () {
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'filesystem');
+				assert.ok(stats.size > 0);
+				assert.ok(stats.available >= 0);
+				assert.ok(stats.free >= 0);
+			});
+
+			it('falls back to statfs when quota-status file is stale', async function () {
+				const staleTimestamp = Date.now() - 10 * 60 * 1000; // 10 minutes old
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes: 1, quotaBytes: QUOTA_100GB, updatedAt: staleTimestamp })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'filesystem');
+			});
+		});
+
 		describe('defaultGetAvailableSpaceRatio', function () {
 			beforeEach(function () {
 				storageReclamation.setAvailableSpaceRatioGetter(undefined); // use real default

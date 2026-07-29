@@ -54,7 +54,7 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | `nodeName.ts`                              | Resolves this node's name (config → hostname).                                  |
 | `static.ts`                                | Static file serving for component-bundled assets.                               |
 | `throttle.ts`                              | Per-IP / per-user request throttling.                                           |
-| `storageReclamation.ts`                    | Disk-pressure signals to downstream consumers.                                  |
+| `storageReclamation.ts`                    | Disk-pressure signals to downstream consumers; `getStorageSpaceStats()` is the shared quota-aware (falls back to `statfs`) source of available/free/size storage numbers — used by `Table.getStorageStats()` and blob storage path weighting, not just reclamation (#1976). |
 | `serverRegistry.ts`                        | Trivial registry export.                                                        |
 | `status/`                                  | Server status reporting (cluster status, per-port info).                        |
 

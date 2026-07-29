@@ -397,11 +397,11 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	}
 }
 
-function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
+async function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
 		try {
 			const [firstTable] = Object.values(tables);
-			const storageStats = firstTable?.getStorageStats();
+			const storageStats = await firstTable?.getStorageStats();
 			if (!storageStats) {
 				continue;
 			}
@@ -1047,7 +1047,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	storeDBSizeMetrics(analyticsTable, databases);
 
 	// database storage volume metrics
-	storeVolumeMetrics(analyticsTable, databases);
+	await storeVolumeMetrics(analyticsTable, databases);
 
 	// rocksdb engine stats (only for RocksDB-backed databases)
 	const rocksDBPeriod = lastRocksDBStatsTime ? now - lastRocksDBStatsTime : undefined;
