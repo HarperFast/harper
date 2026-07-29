@@ -480,6 +480,8 @@ async function runNpmPack(
 export const ASIDE_STAGING_DIR = '.deploy-aside';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
+const MAX_GIT_EXTRACTION_COMMANDS = 4;
+const MAX_INSTALL_COMMANDS = 2;
 
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
 // module (both in source and in dist), holds no secret, and is inert without a live session.
@@ -1088,13 +1090,22 @@ export async function prepareApplication(application: Application) {
 				}
 			},
 			{
-				// A package-reference preparation can run one command to pack and another to install.
-				// Bound orphaned same-process worker locks without rejecting behind a valid holder.
-				timeoutMs: 2 * commandTimeoutMs + COMPONENT_PREPARATION_WAIT_MARGIN_MS,
+				// The longest extraction path runs clone, tag listing, checkout, and npm pack. A custom
+				// package manager configured to warn can then fall back to npm, yielding two install
+				// commands. Bound orphaned same-process worker locks without rejecting behind a valid holder.
+				timeoutMs:
+					MAX_GIT_EXTRACTION_COMMANDS * DEFAULT_COMMAND_TIMEOUT_MS +
+					MAX_INSTALL_COMMANDS * commandTimeoutMs +
+					COMPONENT_PREPARATION_WAIT_MARGIN_MS,
 				onWait: (owner) =>
 					application.logger.info(
 						`Waiting for in-progress preparation of ${application.name}` +
 							(owner ? ` held by process ${owner.pid}, thread ${owner.threadId}` : '')
+					),
+				onReleaseError: (error) =>
+					application.logger.error(
+						`Failed to release the component preparation lock for ${application.name}:`,
+						errorForLog(error)
 					),
 			}
 		);

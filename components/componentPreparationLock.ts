@@ -17,6 +17,7 @@ export interface ComponentPreparationLockOwner {
 export interface ComponentPreparationLockOptions {
 	timeoutMs?: number;
 	onWait?: (owner: ComponentPreparationLockOwner | null) => void;
+	onReleaseError?: (error: unknown) => void;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -128,9 +129,22 @@ export async function withComponentPreparationLock<T>(
 	options: ComponentPreparationLockOptions = {}
 ): Promise<T> {
 	const release = await acquireComponentPreparationLock(componentDirPath, options);
+	let preparationFailed = false;
 	try {
 		return await prepare();
+	} catch (error) {
+		preparationFailed = true;
+		throw error;
 	} finally {
-		await release();
+		try {
+			await release();
+		} catch (error) {
+			if (!preparationFailed) throw error;
+			// Preserve the preparation failure as the primary error. Reporting a secondary release
+			// failure is best-effort because even an error-reporting callback must not mask it.
+			try {
+				options.onReleaseError?.(error);
+			} catch {}
+		}
 	}
 }
