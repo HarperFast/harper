@@ -18,7 +18,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { nonInteractiveSpawn } = require('#src/components/Application');
+const { nonInteractiveSpawn, waitForConfirmedTermination } = require('#src/components/Application');
 
 // Write `script` to a temp .js file and return its path; auto-removed in `after`.
 let workDir;
@@ -144,6 +144,20 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		assert.ok(sizeAfterTimeout > 0, 'descendant writer should have started before the timeout');
 		await delay(150); // asserting the non-event: no descendant may keep writing after rejection
 		assert.equal((await require('node:fs/promises').stat(writesPath)).size, sizeAfterTimeout);
+	});
+
+	it('does not report termination until the process tree is confirmed gone', async () => {
+		let alive = true;
+		let settled = false;
+		const confirmation = waitForConfirmedTermination(() => alive, 5).then(() => {
+			settled = true;
+		});
+
+		await delay(30);
+		assert.equal(settled, false, 'an unsuccessful termination attempt must keep the deployment lock held');
+		alive = false;
+		await confirmation;
+		assert.equal(settled, true);
 	});
 
 	it('terminates a detached process tree when its owning worker is force-terminated', async () => {

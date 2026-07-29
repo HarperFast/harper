@@ -1206,17 +1206,9 @@ export async function installApplications() {
 			// Once preparation is required, the old entry is no longer evidence of a complete
 			// installation. In particular, a failed reinstall may leave a partial directory behind;
 			// retaining the prior entry would make the next boot skip that partial component.
-			delete harperApplicationLock.applications[name];
-
 			applicationInstallationPromises.push(
-				prepareApplication(application).then(
-					() => {
-						harperApplicationLock.applications[name] = applicationConfig;
-					},
-					(error) => {
-						logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
-						throw error;
-					}
+				recordApplicationPreparation(harperApplicationLock, name, applicationConfig, () =>
+					prepareApplication(application)
 				)
 			);
 		} catch (error) {
@@ -1230,6 +1222,27 @@ export async function installApplications() {
 
 	// Finally, write the lock file
 	await writeFile(harperApplicationLockPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
+}
+
+/**
+ * Keep the boot-time application lock honest while a reinstall is in flight. Factored as an
+ * explicit production seam so the failure transition can be tested without replacing module
+ * bindings: a stale success is removed before preparation starts and restored only on success.
+ */
+export async function recordApplicationPreparation(
+	harperApplicationLock: { applications: Record<string, ApplicationConfig> },
+	name: string,
+	applicationConfig: ApplicationConfig,
+	prepare: () => Promise<void>
+): Promise<void> {
+	delete harperApplicationLock.applications[name];
+	try {
+		await prepare();
+		harperApplicationLock.applications[name] = applicationConfig;
+	} catch (error) {
+		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
+		throw error;
+	}
 }
 
 /**
@@ -1662,22 +1675,34 @@ async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number
 	return true;
 }
 
+/**
+ * Wait until the caller can positively establish that a timed-out process tree is gone. There is
+ * deliberately no deadline: releasing the component lock while a descendant can still resume and
+ * mutate node_modules is less safe than keeping that deployment wedged for operator intervention.
+ */
+export async function waitForConfirmedTermination(
+	isAlive: () => boolean | Promise<boolean>,
+	pollMs: number = PROCESS_TERMINATION_POLL_MS
+): Promise<void> {
+	while (await isAlive()) await delay(pollMs);
+}
+
 async function terminateWindowsProcessTree(childProcess: ChildProcess): Promise<void> {
 	if (!childProcess.pid) return;
-	await new Promise<void>((resolve) => {
-		const taskkill = spawn('taskkill', ['/pid', String(childProcess.pid), '/T', '/F'], {
-			stdio: 'ignore',
-			windowsHide: true,
+	// A failed taskkill is not evidence that descendants are gone. Retry until Windows confirms
+	// the /T tree termination; until then the caller intentionally keeps the component lock held.
+	for (;;) {
+		const terminated = await new Promise<boolean>((resolve) => {
+			const taskkill = spawn('taskkill', ['/pid', String(childProcess.pid), '/T', '/F'], {
+				stdio: 'ignore',
+				windowsHide: true,
+			});
+			taskkill.once('close', (code) => resolve(code === 0));
+			taskkill.once('error', () => resolve(false));
 		});
-		taskkill.once('close', (code) => {
-			if (code !== 0) childProcess.kill();
-			resolve();
-		});
-		taskkill.once('error', () => {
-			childProcess.kill();
-			resolve();
-		});
-	});
+		if (terminated) return;
+		await delay(PROCESS_TERMINATION_POLL_MS);
+	}
 }
 
 async function waitForProcessClose(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
@@ -1723,7 +1748,7 @@ async function terminateProcessTree(childProcess: ChildProcess, closePromise: Pr
 		} catch (error: any) {
 			if (error.code !== 'ESRCH') throw error;
 		}
-		await waitForProcessGroupExit(processGroupId, PROCESS_TERMINATION_GRACE_MS);
+		await waitForConfirmedTermination(() => processGroupIsAlive(processGroupId));
 	}
 	await waitForProcessClose(childProcess, closePromise);
 }
