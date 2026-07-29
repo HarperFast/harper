@@ -283,14 +283,18 @@ suite(`QA-809 drop-path kill-window sweep [rocksdb]`, { skip: skipSuite }, (ctx:
 				`[k${arm.delayMs}] immediately after drop_table returns: ${survivedAtReturn}/${N} ${arm.table} blob files still on disk`
 			);
 			if (arm.delayMs === 0) {
-				// Observation, not an assertion. A fix that unlinks synchronously before drop_table
-				// returns closes this window entirely — an improvement, which must not turn this
-				// anchor red. The invariant asserted after cleanup below holds either way; recording
-				// the window state keeps a closed window visible rather than silently vacuous.
+				// Oracle floor (b): if nothing survives the drop_table return, nothing is pending
+				// at the kill instant either, so the kill never lands mid-unlink — the downstream
+				// "reclaimed after cleanup" assertion would then pass vacuously (there is nothing
+				// to reclaim). Per this suite's documented oracle discipline, that premise failure
+				// must hard-fail this arm rather than silently degrade to a no-op control.
+				ok(
+					survivedAtReturn > 0,
+					`[k0] post-return unlink window is CLOSED (0/${N} ${arm.table} files survive drop_table's return) — ` +
+						`nothing was pending at the kill instant, so this run never tested a crash inside the unlink window.`
+				);
 				findings.push(
-					survivedAtReturn > 0
-						? `[k0] post-return unlink window is OPEN: ${survivedAtReturn}/${N} ${arm.table} files survive drop_table's return.`
-						: `[k0] post-return unlink window is CLOSED (0 survivors at return) — drop_table reclaims before returning; the kill arms degrade to no-op controls.`
+					`[k0] post-return unlink window is OPEN: ${survivedAtReturn}/${N} ${arm.table} files survive drop_table's return.`
 				);
 			}
 
@@ -327,9 +331,11 @@ suite(`QA-809 drop-path kill-window sweep [rocksdb]`, { skip: skipSuite }, (ctx:
 			// The invariant that survives any fix to the drop path: whatever a crash inside the
 			// unlink window leaves behind, cleanup_orphan_blobs must reclaim. A file that is still
 			// orphaned after restart + cleanup is unreclaimable disk — the user-visible defect.
-			// Asserted, not merely logged: the VERDICT strings below report but cannot fail.
+			// Asserted, not merely logged: the VERDICT strings below report but cannot fail. Zero
+			// tolerance — permitting even one straggler out of N would silently accept the exact
+			// partial-leak defect this arm exists to catch.
 			ok(
-				survivedAfterCleanup <= 1,
+				survivedAfterCleanup === 0,
 				`[k${arm.delayMs}] ${survivedAfterCleanup} blob file(s) remain PERMANENTLY ORPHANED after restart + ` +
 					`cleanup_orphan_blobs (delta vs pre-arm baseline). cleanup_orphan_blobs must fully reclaim files ` +
 					`orphaned by a crash inside drop_table's unlink window.`

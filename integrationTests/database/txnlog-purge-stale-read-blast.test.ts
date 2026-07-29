@@ -268,11 +268,19 @@ async function fullScan(
 	return r.body;
 }
 
-/** Assert a set of ids is present+byte-correct on ALL FIVE surfaces. Used for the armed control + KEEP sanity. */
+/**
+ * Assert a set of ids is present+byte-correct on ALL FIVE surfaces. Used for the armed
+ * control + KEEP sanity -- these are the "clean means clean" half of the oracle: if a
+ * surface silently returned empty for everything (broken query, not a real absence), only a
+ * positive-control check on that SAME surface would catch it. `bucket` must be the bucket
+ * all `ids` share, since the three bucket-scoped surfaces (REST query, search_by_value, SQL)
+ * are queried by bucket rather than by id.
+ */
 async function assertPresentEverywhere(
 	ctx: ContextWithHarper,
 	label: string,
 	ids: string[],
+	bucket: string,
 	expectedPayload: (i: number) => string,
 	seqOf: (id: string) => number,
 	findings: string[]
@@ -285,6 +293,25 @@ async function assertPresentEverywhere(
 			`[${label}] REST GET ${id} must be present+correct, got ${JSON.stringify(g)}`
 		);
 	}
+
+	const queryHits = await restQueryBucket(ctx, bucket);
+	const queryIds = new Set(queryHits.map((r) => r.id));
+	const sbvHits = await searchByBucket(ctx, bucket);
+	const sbvIds = new Set(sbvHits.map((r) => r.id));
+	const sqlHits = await sqlByBucket(ctx, bucket);
+	const sqlIds = new Set(sqlHits.map((r) => r.id));
+	for (const id of ids) {
+		ok(
+			queryIds.has(id),
+			`[${label}] REST-QUERY bucket=${bucket} must include ${id}, got ${queryHits.length} hits`
+		);
+		ok(
+			sbvIds.has(id),
+			`[${label}] SEARCH-BY-VALUE bucket=${bucket} must include ${id}, got ${sbvHits.length} hits`
+		);
+		ok(sqlIds.has(id), `[${label}] SQL bucket=${bucket} must include ${id}, got ${sqlHits.length} hits`);
+	}
+
 	const fs = await fullScan(ctx, ids);
 	for (const id of ids) {
 		const seq = seqOf(id);
@@ -294,7 +321,7 @@ async function assertPresentEverywhere(
 			`[${label}] FullScan ${id} must be present+correct, got ${JSON.stringify(rec)}`
 		);
 	}
-	findings.push(`[${label}] present+byte-correct on REST GET + FullScan for ${ids.length} id(s): ${ids.join(',')}`);
+	findings.push(`[${label}] present+byte-correct on all 5 surfaces for ${ids.length} id(s): ${ids.join(',')}`);
 }
 
 /** Assert a set of ids is ABSENT on ALL FIVE surfaces. This is the headline bound check. */
@@ -451,11 +478,12 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					const delSampleIds = DEL_SAMPLE_IDX.map((i) => `k${i}`);
 					const keepSampleIds = KEEP_SAMPLE_IDX.map((i) => `k${i}`);
 
-					// REST GET + FullScan for both sample sets.
+					// All five surfaces, for both sample sets.
 					await assertPresentEverywhere(
 						ctx,
 						'PRE-DELETE DEL samples',
 						delSampleIds,
+						'DEL',
 						payloadFor,
 						(id) => Number(id.slice(1)),
 						findings
@@ -464,6 +492,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						ctx,
 						'PRE-DELETE KEEP samples',
 						keepSampleIds,
+						'KEEP',
 						payloadFor,
 						(id) => Number(id.slice(1)),
 						findings
@@ -472,6 +501,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						ctx,
 						'PRE-DELETE CTRL',
 						CTRL_IDS,
+						'CTRL',
 						(seq) => ctrlPayload(seq),
 						(id) => 900_000 + CTRL_IDS.indexOf(id),
 						findings
@@ -550,6 +580,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						ctx,
 						'4. POST-DELETE CTRL (armed control)',
 						CTRL_IDS,
+						'CTRL',
 						(seq) => ctrlPayload(seq),
 						(id) => 900_000 + CTRL_IDS.indexOf(id),
 						findings
@@ -559,6 +590,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						ctx,
 						'4. POST-DELETE KEEP samples',
 						keepSampleIds,
+						'KEEP',
 						payloadFor,
 						(id) => Number(id.slice(1)),
 						findings
@@ -615,11 +647,19 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					});
 					ok(r.status === 200, `read_audit_log(${sampleId}) expected 200, got ${r.status}: ${r.text.slice(0, 300)}`);
 					const entries = Array.isArray(r.body?.[sampleId]) ? r.body[sampleId] : [];
-					const phantomAudit = entries.length > 0;
+					// k0's history has TWO entries: the original insert (timestamp < cutoffTimestamp,
+					// the one the purge targets) and the test-3 bulk delete (timestamp > cutoffTimestamp,
+					// since it happened after the cutoff was captured in test 1). The delete entry is
+					// NOT purge-eligible and legitimately survives -- only a still-present pre-cutoff
+					// entry is evidence of F-225 staleness. Counting any entry as "phantom" would flag
+					// this arm as reproducing F-225 on every run, purge bug or not.
+					const stalePreCutoffEntries = entries.filter((e: any) => Number(e.timestamp) < cutoffTimestamp);
+					const phantomAudit = stalePreCutoffEntries.length > 0;
 
 					findings.push(
 						`5. entries_deleted=${entriesDeleted}; SAME-PROCESS read_audit_log(${sampleId}) post-purge: ` +
-							`${phantomAudit ? `PHANTOM (${entries.length} entries still returned, reproduces F-225)` : 'clean (no entries -- F-225 not reproduced this run)'}`
+							`${entries.length} total entries, ${stalePreCutoffEntries.length} pre-cutoff -- ` +
+							`${phantomAudit ? `PHANTOM (${stalePreCutoffEntries.length} pre-cutoff entries still returned, reproduces F-225)` : 'clean (no pre-cutoff entries -- F-225 not reproduced this run)'}`
 					);
 					findings.push(
 						`5. CONTRAST: ordinary-reads verdict (test 4) vs audit-read verdict (this test) -- ` +
@@ -654,6 +694,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						ctx,
 						'6. POST-RESTART CTRL',
 						CTRL_IDS,
+						'CTRL',
 						(seq) => ctrlPayload(seq),
 						(id) => 900_000 + CTRL_IDS.indexOf(id),
 						findings
@@ -662,6 +703,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						ctx,
 						'6. POST-RESTART KEEP samples',
 						keepSampleIds,
+						'KEEP',
 						payloadFor,
 						(id) => Number(id.slice(1)),
 						findings
