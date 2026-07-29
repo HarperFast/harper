@@ -18,7 +18,11 @@ const { setTimeout: delay } = require('node:timers/promises');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { nonInteractiveSpawn, waitForConfirmedTermination } = require('#src/components/Application');
+const {
+	nonInteractiveSpawn,
+	waitForConfirmedTermination,
+	waitForWindowsTreeTermination,
+} = require('#src/components/Application');
 
 // Write `script` to a temp .js file and return its path; auto-removed in `after`.
 let workDir;
@@ -158,6 +162,19 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		alive = false;
 		await confirmation;
 		assert.equal(settled, true);
+	});
+
+	it('accepts a Windows taskkill miss only when the process tree is independently gone', async () => {
+		let attempts = 0;
+		await waitForWindowsTreeTermination(
+			() => {
+				attempts++;
+				return false;
+			},
+			() => false,
+			5
+		);
+		assert.equal(attempts, 1);
 	});
 
 	it('terminates a detached process tree when its owning worker is force-terminated', async () => {
