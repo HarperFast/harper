@@ -19,6 +19,7 @@ const {
 	awaitDeploymentRow,
 	readPayloadBlobWithRetry,
 	markDeploymentTerminal,
+	pruneProjectPayloads,
 } = require('#src/components/deploymentRecorder');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
@@ -46,6 +47,13 @@ function installMockDeploymentTable({ freezeGet = false } = {}) {
 		async patch(id, partial) {
 			const existing = rows.get(id);
 			if (existing) rows.set(id, { ...existing, ...partial });
+		},
+		// Minimal equality-only search over the stored rows, matching how the real table yields rows for
+		// `[{attribute, value}]` conditions. Enough for pruneProjectPayloads (filters by project).
+		async *search(conditions = []) {
+			for (const row of rows.values()) {
+				if (conditions.every((c) => row[c.attribute] === c.value)) yield row;
+			}
 		},
 	};
 	if (!databases.system) databases.system = {};
@@ -675,5 +683,118 @@ describe('markDeploymentTerminal', () => {
 	it('is a no-op when the row is absent (best-effort, never throws)', async () => {
 		await markDeploymentTerminal('missing', 'success');
 		assert.strictEqual(installed.mock.rows.has('missing'), false, 'no row is fabricated for an unknown id');
+	});
+});
+
+describe('pruneProjectPayloads (deployment_payloadRetention_maxCount)', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed.restore());
+
+	// A stored payload is modelled as a non-null payload_blob plus a payload_size, matching the row shape
+	// the recorder writes. started_at drives the newest-first ordering.
+	function seed(id, { project = 'app', startedAt, status = 'success', size = 100, payload = true }) {
+		installed.mock.rows.set(id, {
+			deployment_id: id,
+			project,
+			status,
+			started_at: startedAt,
+			payload_size: size,
+			payload_blob: payload ? { marker: id } : null,
+			event_log: [],
+		});
+	}
+	const hasPayload = (id) => installed.mock.rows.get(id).payload_blob != null;
+
+	it('keeps only the newest payload at the default count of 1, dropping older ones', async () => {
+		seed('d1', { startedAt: 100 });
+		seed('d2', { startedAt: 200 });
+		seed('d3', { startedAt: 300 });
+
+		const freed = await pruneProjectPayloads('app', 1);
+
+		assert.strictEqual(hasPayload('d3'), true, 'the newest payload is retained');
+		assert.strictEqual(hasPayload('d2'), false, 'older payloads are dropped');
+		assert.strictEqual(hasPayload('d1'), false, 'older payloads are dropped');
+		assert.strictEqual(freed, 200, 'reports the bytes reclaimed from the two dropped payloads');
+	});
+
+	it('retains rows and their metadata — only the tarball bytes are reclaimed', async () => {
+		seed('keep', { startedAt: 200 });
+		seed('pruned', { startedAt: 100 });
+
+		await pruneProjectPayloads('app', 1);
+
+		const row = installed.mock.rows.get('pruned');
+		assert.ok(row, 'the pruned deployment row still exists (audit trail preserved)');
+		assert.strictEqual(row.status, 'success', 'status is untouched');
+		assert.strictEqual(row.payload_size, 100, 'payload_size is retained as metadata');
+		assert.ok(
+			row.event_log.some((e) => e.event === 'payload_dropped' && e.data?.reason === 'payloadRetention_maxCount'),
+			'the drop is recorded in the event log with its reason'
+		);
+	});
+
+	it('honors a higher count, keeping the N newest', async () => {
+		seed('d1', { startedAt: 100 });
+		seed('d2', { startedAt: 200 });
+		seed('d3', { startedAt: 300 });
+
+		await pruneProjectPayloads('app', 2);
+
+		assert.deepStrictEqual(
+			['d1', 'd2', 'd3'].map(hasPayload),
+			[false, true, true],
+			'the two newest are kept, the oldest dropped'
+		);
+	});
+
+	it('never drops a non-terminal deployment (its blob may still be the replication channel)', async () => {
+		seed('newest', { startedAt: 300 });
+		seed('in-flight', { startedAt: 200, status: 'activating' });
+		seed('old', { startedAt: 100 });
+
+		await pruneProjectPayloads('app', 1);
+
+		assert.strictEqual(hasPayload('newest'), true, 'newest retained');
+		assert.strictEqual(hasPayload('in-flight'), true, 'the in-flight deployment keeps its payload');
+		assert.strictEqual(hasPayload('old'), false, 'the settled older one is still dropped');
+	});
+
+	it('scopes pruning to the given project', async () => {
+		seed('a-new', { project: 'app-a', startedAt: 200 });
+		seed('a-old', { project: 'app-a', startedAt: 100 });
+		seed('b-old', { project: 'app-b', startedAt: 100 });
+
+		await pruneProjectPayloads('app-a', 1);
+
+		assert.strictEqual(hasPayload('a-old'), false, "the other project's older payload is dropped");
+		assert.strictEqual(hasPayload('b-old'), true, 'a different project is untouched');
+	});
+
+	it('counts only rows that still hold a payload, so the cap is "at most N stored"', async () => {
+		// d3 is newest but already reclaimed (e.g. by the size-based drop), so it occupies no slot and the
+		// newest payload that DOES exist fills the single retained slot.
+		seed('d3', { startedAt: 300, payload: false });
+		seed('d2', { startedAt: 200 });
+		seed('d1', { startedAt: 100 });
+
+		await pruneProjectPayloads('app', 1);
+
+		assert.strictEqual(hasPayload('d2'), true, 'the newest surviving payload is retained');
+		assert.strictEqual(hasPayload('d1'), false, 'the older one is dropped');
+	});
+
+	it('drops every payload at a count of 0, and is safe with no rows / bad input', async () => {
+		seed('only', { startedAt: 100 });
+		assert.strictEqual(await pruneProjectPayloads('app', 0), 100, 'count 0 retains nothing');
+		assert.strictEqual(hasPayload('only'), false);
+
+		assert.strictEqual(await pruneProjectPayloads('no-such-project', 1), 0, 'unknown project frees nothing');
+		assert.strictEqual(await pruneProjectPayloads('', 1), 0, 'a blank project is a no-op');
+		assert.strictEqual(await pruneProjectPayloads('app', -1), 0, 'a negative count is rejected, not treated as 0');
+		assert.strictEqual(await pruneProjectPayloads('app', NaN), 0, 'a non-finite count is rejected');
 	});
 });

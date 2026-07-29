@@ -403,6 +403,8 @@ export const SERVICE_ACTIONS_ENUM = {
 	RENEWCERTS: 'renew-certs',
 	COPYDB: 'copy-db',
 	MCP: 'mcp',
+	AGENT: 'agent',
+	CHAT: 'chat',
 } as const;
 
 /** describes the Geo Conversion types */
@@ -583,6 +585,12 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
+	// Max stored deployment payloads (tarballs) kept per project. After a successful deploy, the
+	// payload_blob of older deployments beyond this count is dropped; the rows (metadata + event_log)
+	// are always retained. Bounds how much disk retained payloads can occupy per project — N copies of
+	// a large app payload would otherwise compete with the customer's own data for instance quota.
+	// See components/deploymentRecorder.ts (pruneProjectPayloads).
+	DEPLOYMENT_PAYLOADRETENTION_MAXCOUNT: 'deployment_payloadRetention_maxCount',
 	// Max not-yet-activated staged builds kept per component (`activate: false` stage-and-stops). When a
 	// new stage lands, the oldest beyond this count are evicted. See components/Application.ts.
 	DEPLOYMENT_STAGINGRETENTION_MAXCOUNT: 'deployment_stagingRetention_maxCount',

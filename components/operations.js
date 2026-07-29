@@ -41,6 +41,7 @@ const {
 	awaitDeploymentRow,
 	markDeploymentTerminal,
 	normalizePeerResult,
+	pruneProjectPayloads,
 	readPayloadBlobWithRetry,
 	coerceTimeoutMs,
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
@@ -600,6 +601,8 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 			maybeReclaimPayload(recorder, emit);
 			emit('phase', { phase: 'success', status: 'done' });
 			await recorder.finish('success');
+			// After finish(), so this deploy's row is terminal and counts as the newest retained payload.
+			schedulePayloadRetentionPrune(recorder, req.project, emit);
 		}
 		return response;
 	} catch (err) {
@@ -761,6 +764,8 @@ async function deployComponentTwoPhase(req, credentialReferences) {
 		maybeReclaimPayload(recorder, emit);
 		emit('phase', { phase: 'success', status: 'done' });
 		await recorder.finish('success');
+		// After finish(), so this deploy's row is terminal and counts as the newest retained payload.
+		schedulePayloadRetentionPrune(recorder, req.project, emit);
 		return response;
 	} catch (err) {
 		// An aborted deploy leaves the live component untouched; drop any staged build so it can't leak.
@@ -1319,6 +1324,25 @@ function maybeReclaimPayload(recorder, emit) {
 	}
 }
 
+/**
+ * Count-based payload retention (deployment_payloadRetention_maxCount): after a successful deploy, keep
+ * only the newest N stored payloads for this project and drop the rest. Where the size-based reclaim
+ * above only ever considers THIS deploy's payload, this bounds the total that accumulates per project.
+ *
+ * Deliberately best-effort and never awaited into the deploy's critical path: retention is disk
+ * hygiene, so a prune failure is logged and the deploy still succeeds. Skipped when a peer failed —
+ * the older payloads are still the retry/rollback artifacts in that case.
+ */
+function schedulePayloadRetentionPrune(recorder, project, emit) {
+	if (recorder.getFailedPeers().length > 0) return;
+	const maxCount = getPayloadRetentionMaxCount();
+	pruneProjectPayloads(project, maxCount)
+		.then((freed) => {
+			if (freed > 0) emit('payload_dropped', { payload_size: freed, max_count: maxCount });
+		})
+		.catch((err) => log.warn(`Failed to prune retained deployment payloads for '${project}'`, err));
+}
+
 // Build the structured failure (phase, install-output tail, deployment_id, failed peers) that the
 // Fastify error handler forwards verbatim, emit the matching SSE 'error' event so the two transports
 // stay symmetric, and record the terminal failure row. Returns the ServerError to throw.
@@ -1547,6 +1571,26 @@ const DEFAULT_COMPONENT_FILE_MAX_SIZE = 5 * 1024 * 1024; // 5 MB
 // deploy (see deployComponent). The metadata is retained; only the tarball bytes are reclaimed.
 // Configurable via deployment_payloadRetention_maxSize; set it very high to retain all payloads.
 const DEFAULT_PAYLOAD_RETENTION_MAX_SIZE = 10 * 1024 * 1024; // 10 MiB
+
+// How many stored payload tarballs to keep per project (newest first); older ones have their
+// payload_blob dropped after a successful deploy. Default 1 — retain only the current version's
+// payload. Conservative on purpose: instances on small quotas (free tier is 5GB total) must not have
+// N copies of a large app payload quietly competing with the customer's own data. Raise it to widen
+// the redeploy-by-reference window; 0 retains none. Configurable via
+// deployment_payloadRetention_maxCount.
+const DEFAULT_PAYLOAD_RETENTION_MAX_COUNT = 1;
+
+function getPayloadRetentionMaxCount() {
+	const configured = configUtils.getConfigValue(hdbTerms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXCOUNT);
+	// Same input discipline as getPayloadRetentionMaxSize: only a number or numeric string is a valid
+	// count. Anything else (unset, boolean, array, blank string) would coerce to 0 or 1 and silently
+	// change retention, so fall back to the default instead.
+	if (typeof configured !== 'number' && typeof configured !== 'string') return DEFAULT_PAYLOAD_RETENTION_MAX_COUNT;
+	if (typeof configured === 'string' && configured.trim() === '') return DEFAULT_PAYLOAD_RETENTION_MAX_COUNT;
+	const parsed = Number(configured);
+	if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_PAYLOAD_RETENTION_MAX_COUNT;
+	return Math.floor(parsed);
+}
 
 function getPayloadRetentionMaxSize() {
 	const configured = configUtils.getConfigValue(hdbTerms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE);

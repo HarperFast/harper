@@ -476,6 +476,62 @@ export async function markDeploymentTerminal(
 	await table.patch(deploymentId, { status, completed_at: Date.now() });
 }
 
+// Deployment statuses that are settled — a non-terminal deployment's payload_blob may still be the
+// replication channel peers are installing from, so retention must never yank it mid-flight. Mirrors
+// deploymentOperations.ts's guard for the explicit delete_deployment_payload operation.
+const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back']);
+
+/**
+ * Count-based payload retention: keep at most `maxCount` stored payload tarballs for a project,
+ * newest first, dropping the payload_blob of the rest. Rows are always retained — only the tarball
+ * bytes are reclaimed, so the audit trail (metadata + event_log) stays intact and `get_deployment`
+ * still reports the deployment; only `get_deployment_payload` stops being available for the pruned
+ * ones (`payload_blob_present: false`).
+ *
+ * Complements the size-based drop (`deployment_payloadRetention_maxSize`, which reclaims a single
+ * oversized payload right after its own deploy): this bounds how many payloads accumulate per project
+ * over time, which is what actually caps disk. Only rows that still HOLD a payload count toward
+ * `maxCount`, so the cap is literally "at most N stored payloads per project".
+ *
+ * Best-effort and observability-only — callers must not fail a deploy because pruning failed.
+ * Returns the total bytes reclaimed.
+ */
+export async function pruneProjectPayloads(project: string, maxCount: number): Promise<number> {
+	if (!project) return 0;
+	if (!Number.isFinite(maxCount) || maxCount < 0) return 0;
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	if (!table) return 0;
+
+	const withPayload: Array<Record<string, any>> = [];
+	for await (const row of table.search([{ attribute: 'project', value: project }])) {
+		if (row?.payload_blob != null) withPayload.push(row);
+	}
+	// Newest first by started_at; ties broken by deployment_id so the ordering (and therefore which
+	// payloads survive) is stable across runs — same tiebreak as handleListDeployments.
+	withPayload.sort(
+		(a, b) => (b.started_at ?? 0) - (a.started_at ?? 0) || String(a.deployment_id).localeCompare(b.deployment_id)
+	);
+
+	let freed = 0;
+	for (const row of withPayload.slice(maxCount)) {
+		// An in-flight deployment still counted toward maxCount above (its payload occupies disk) but
+		// must not be dropped — skip it and let a later prune reclaim it once it settles.
+		if (!TERMINAL_STATUSES.has(row.status)) continue;
+		const size = typeof row.payload_size === 'number' ? row.payload_size : 0;
+		// Copy before mutating: get()/search() rows may be shared or read-only records.
+		const updated: Record<string, any> = { ...row, payload_blob: null };
+		updated.event_log = Array.isArray(row.event_log) ? [...row.event_log] : [];
+		updated.event_log.push({
+			t: Date.now(),
+			event: 'payload_dropped',
+			data: { payload_size: size, reason: 'payloadRetention_maxCount', max_count: maxCount },
+		});
+		await table.put(updated);
+		freed += size;
+	}
+	return freed;
+}
+
 // Default peer-wait budget for the hdb_deployment row to replicate. A deploy is a rare,
 // heavyweight, user-initiated operation, and the `system`-table replication channel can be
 // backlogged behind unrelated writes when several deploys land in succession, so the row can

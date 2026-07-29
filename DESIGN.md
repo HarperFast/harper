@@ -441,6 +441,30 @@ eviction-on-stage keeps the surface at zero new operations. Consequence: activat
 that has already aged out of the window fails with "no staged build found" — expected once more than
 `maxCount` newer stages have landed for that component.
 
+**Payload retention.** Two independent bounds apply to the tarballs stored in `hdb_deployment`'s
+`payload_blob`, and they answer different questions:
+
+- `deployment_payloadRetention_maxSize` (default 10 MiB) — reclaims _this_ deploy's payload right after
+  it succeeds, if the tarball was large. Bounds the size of any single retained payload.
+- `deployment_payloadRetention_maxCount` (default **1**, `pruneProjectPayloads`) — keeps at most N
+  stored payloads _per project_, newest first, dropping the `payload_blob` of the rest after a
+  successful deploy. Bounds how many payloads accumulate over time, which is what actually caps disk.
+
+Only rows that still hold a payload count toward `maxCount`, so the cap reads literally as "at most N
+stored payloads per project." Rows are never deleted — pruning nulls the blob and appends a
+`payload_dropped` event, so the audit trail and `get_deployment` stay intact; only
+`get_deployment_payload` stops working for pruned deployments (`payload_blob_present: false`). A
+non-terminal deployment is counted but never dropped: its blob may still be the replication channel
+peers are installing from (the same guard `delete_deployment_payload` uses). Pruning is best-effort and
+off the deploy's critical path — a prune failure is logged, never fatal — and is skipped entirely when a
+peer failed, since the older payloads are the retry artifact in that case.
+
+The default of 1 is deliberately conservative rather than a redeploy-window convenience: instances on
+small quotas (free tier is 5 GB total) must not have N copies of a large app payload quietly competing
+with the customer's own data. Operators who want a wider redeploy-by-reference window raise it
+explicitly; 0 retains none. Note that an explicit `delete_deployment_payload` (harper#1893) forfeits
+redeployability for that deployment the same way an automatic prune does.
+
 ## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
 
 The built-in `scheduler` plugin (#951) runs config-declared jobs "exactly once per cluster." The

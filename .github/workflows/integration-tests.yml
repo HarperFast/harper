@@ -78,7 +78,7 @@ jobs:
             static/
             node_modules/
             package.json
-          retention-days: 1
+          retention-days: 7
 
   run-integration-tests:
     name: Integration Tests ${{matrix.shard}}/6 (Node.js v${{ matrix.node-version }})
