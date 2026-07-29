@@ -1052,6 +1052,37 @@ export function errorForLog(error: any) {
 // capped so a pathological/adversarial structure can't blow the stack.
 const MAX_SANITIZE_DEPTH = 20;
 
+// Default per-container breadth cap (used when inspectForLog's caller didn't request a specific
+// maxArrayLength) and an absolute ceiling on total nodes visited across the WHOLE walk. Per-
+// container breadth alone isn't enough: a structure that is merely wide at every one of
+// MAX_SANITIZE_DEPTH levels multiplies out to an astronomical node count, so a global counter is
+// the actual backstop. Both exist because sanitizing happens BEFORE util.inspect's own
+// maxArrayLength truncation runs - a huge/sparse array or a huge Map/Set in a structured error
+// (`new Array(0xffffffff)`, or a hostile component's crafted payload) would otherwise force this
+// walk to visit billions of entries and wedge the event loop while just trying to log the
+// *original* error, before inspect ever gets a chance to truncate the output.
+const DEFAULT_MAX_SANITIZE_ENTRIES = 1000;
+const MAX_SANITIZE_NODES = 50_000;
+
+interface SanitizeBudget {
+	nodes: number;
+	maxEntries: number;
+}
+
+/** A util.inspect-style placeholder rendered without invoking anything, used both for an unread
+ *  accessor property and for a budget-truncated container tail. */
+function labelPlaceholder(label: string) {
+	return { [inspect.custom]: () => label, toString: () => label };
+}
+
+/** A util.inspect-style placeholder for an accessor property, describing it without invoking the
+ *  getter — see the getter-invocation note on deepSanitizeErrors below. */
+function accessorPlaceholder(descriptor: PropertyDescriptor) {
+	return labelPlaceholder(
+		descriptor.get && descriptor.set ? '[Getter/Setter]' : descriptor.get ? '[Getter]' : '[Setter]'
+	);
+}
+
 /**
  * True for the specific built-ins whose actual data is NOT reachable through their own-enumerable
  * string/symbol keys, so rebuilding them via a property walk would silently corrupt their
@@ -1063,6 +1094,13 @@ const MAX_SANITIZE_DEPTH = 20;
  * depth below a real, generic secret-leak path. `types.is*` checks an internal slot, not the
  * prototype chain, so - like isNativeError / types.isMap / types.isSet elsewhere in this file -
  * this is realm-independent: a VM-created Date is still recognized as opaque.
+ *
+ * Residual gap, accepted rather than chased further: an *expando* own-enumerable property stashed
+ * directly on one of these opaque built-ins (e.g. `const d = new Date(); d.cause = secretError`)
+ * is not reached either, since the value is returned entirely unwalked to protect its native
+ * rendering. Attaching an expando to a Date/Buffer/Promise/etc. is not a pattern any real
+ * diagnostic payload (deployComponent's or otherwise) produces - unlike the Map/Set/class-instance
+ * cases above, which are ordinary, expected shapes for a generic `http_resp_msg` field.
  */
 function isOpaqueBuiltin(value: object): boolean {
 	return (
@@ -1077,11 +1115,16 @@ function isOpaqueBuiltin(value: object): boolean {
 	);
 }
 
-/** A util.inspect-style placeholder for an accessor property, describing it without invoking the
- *  getter — see the getter-invocation note on deepSanitizeErrors below. */
-function accessorPlaceholder(descriptor: PropertyDescriptor) {
-	const label = descriptor.get && descriptor.set ? '[Getter/Setter]' : descriptor.get ? '[Getter]' : '[Setter]';
-	return { [inspect.custom]: () => label, toString: () => label };
+/** Defines `key` as an own DATA property via defineProperty rather than `target[key] = value`.
+ *  Once a sanitized clone's prototype is restored to the original's (see deepSanitizeErrors), a
+ *  plain assignment for a key that has an inherited accessor further up that prototype chain would
+ *  invoke the INHERITED SETTER instead of creating an own property - running arbitrary code during
+ *  what should be a passive render - and a key literally named `__proto__` would hit the legacy
+ *  Object.prototype.__proto__ setter and reparent the clone instead of storing a property named
+ *  "__proto__". defineProperty always creates/replaces an own property directly, regardless of key
+ *  name or what the prototype chain declares. */
+function defineOwnProperty(target: any, key: string | symbol, value: any) {
+	Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
 }
 
 /**
@@ -1121,13 +1164,27 @@ function accessorPlaceholder(descriptor: PropertyDescriptor) {
  * of `for...of`; Map/Set are walked via their intrinsic prototype methods bound with `.call`,
  * which reads the internal slot data directly rather than going through the instance's own (or an
  * overriding subclass's) iterator method. Objects read property descriptors and recurse only into
- * a data descriptor's value; an accessor gets accessorPlaceholder's label instead.
+ * a data descriptor's value; an accessor gets accessorPlaceholder's label instead. Every own
+ * property is written via defineOwnProperty rather than assignment, so a clone whose prototype was
+ * restored to a class's prototype can't trigger an inherited setter (or the legacy `__proto__`
+ * setter) partway through the walk.
+ *
+ * Breadth-bounded via `budget`, shared across the whole walk (not reset per container): each
+ * container is capped at `budget.maxEntries` entries (with a placeholder noting what was
+ * skipped), and the walk stops sanitizing entirely past `MAX_SANITIZE_NODES` total nodes visited,
+ * regardless of per-container caps - see the constants' comment for why both are needed.
  */
-function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap(), depth = 0): any {
+function deepSanitizeErrors(
+	value: any,
+	seen: WeakMap<object, any> = new WeakMap(),
+	depth = 0,
+	budget: SanitizeBudget = { nodes: 0, maxEntries: DEFAULT_MAX_SANITIZE_ENTRIES }
+): any {
 	if (value === null || typeof value !== 'object') return value;
 	if (isErrorLike(value)) return errorForLog(value);
 	if (seen.has(value)) return seen.get(value);
 	if (depth >= MAX_SANITIZE_DEPTH) return value;
+	if (++budget.nodes > MAX_SANITIZE_NODES) return labelPlaceholder('[Unrenderable value: sanitize budget exceeded]');
 
 	let isArray: boolean, isMap: boolean, isSet: boolean;
 	try {
@@ -1147,7 +1204,14 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 		const clone: any[] = [];
 		seen.set(value, clone);
 		const length = value.length;
-		for (let i = 0; i < length; i++) {
+		// Reserve one slot for the truncation marker when overflowing, so the clone's final size is
+		// exactly budget.maxEntries - matching whatever maxArrayLength the caller will inspect() with
+		// - rather than maxEntries + 1, which util.inspect's OWN truncation would then clip anyway,
+		// silently hiding the marker (and the fact that anything was dropped at all) behind its
+		// generic "... N more items" ellipsis.
+		const overflow = length > budget.maxEntries;
+		const limit = overflow ? budget.maxEntries - 1 : length;
+		for (let i = 0; i < limit; i++) {
 			let descriptor;
 			try {
 				descriptor = Object.getOwnPropertyDescriptor(value, i);
@@ -1160,40 +1224,60 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 				continue;
 			}
 			try {
-				clone[i] = deepSanitizeErrors(descriptor.value, seen, depth + 1);
+				clone[i] = deepSanitizeErrors(descriptor.value, seen, depth + 1, budget);
 			} catch {
 				clone[i] = descriptor.value;
 			}
 		}
+		if (overflow) clone[limit] = labelPlaceholder(`[${length - limit} more array entries omitted (sanitize budget)]`);
 		return clone;
 	}
 
 	if (isMap) {
 		const clone = new Map();
 		seen.set(value, clone);
+		// Reflect.get with an explicit receiver reads Map.prototype's intrinsic `size` getter bound
+		// to value's internal slot, bypassing an overriding subclass's own `size` the same way the
+		// .call-bound entries() below bypasses an overriding subclass's Symbol.iterator.
+		const size = Reflect.get(Map.prototype, 'size', value);
+		const overflow = size > budget.maxEntries;
+		const limit = overflow ? budget.maxEntries - 1 : size;
+		let count = 0;
 		// Map.prototype.entries bound via .call reads the internal [[MapData]] slot directly,
 		// rather than resolving value's own (or an overriding subclass's) Symbol.iterator.
 		for (const [k, v] of Map.prototype.entries.call(value)) {
+			if (count++ >= limit) break;
 			try {
-				clone.set(deepSanitizeErrors(k, seen, depth + 1), deepSanitizeErrors(v, seen, depth + 1));
+				clone.set(deepSanitizeErrors(k, seen, depth + 1, budget), deepSanitizeErrors(v, seen, depth + 1, budget));
 			} catch {
 				clone.set(k, v);
 			}
 		}
+		if (overflow)
+			clone.set(
+				labelPlaceholder('[truncated]'),
+				labelPlaceholder(`[${size - limit} more Map entries omitted (sanitize budget)]`)
+			);
 		return clone;
 	}
 
 	if (isSet) {
 		const clone = new Set();
 		seen.set(value, clone);
+		const size = Reflect.get(Set.prototype, 'size', value);
+		const overflow = size > budget.maxEntries;
+		const limit = overflow ? budget.maxEntries - 1 : size;
+		let count = 0;
 		// Same rationale as the Map branch above: Set.prototype.values via .call, not for...of.
 		for (const item of Set.prototype.values.call(value)) {
+			if (count++ >= limit) break;
 			try {
-				clone.add(deepSanitizeErrors(item, seen, depth + 1));
+				clone.add(deepSanitizeErrors(item, seen, depth + 1, budget));
 			} catch {
 				clone.add(item);
 			}
 		}
+		if (overflow) clone.add(labelPlaceholder(`[${size - limit} more Set entries omitted (sanitize budget)]`));
 		return clone;
 	}
 
@@ -1213,13 +1297,13 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 		}
 		if (!descriptor) continue; // removed mid-walk by another property's getter side effect
 		if (descriptor.get || descriptor.set) {
-			result[key] = accessorPlaceholder(descriptor);
+			defineOwnProperty(result, key, accessorPlaceholder(descriptor));
 			continue;
 		}
 		try {
-			result[key] = deepSanitizeErrors(descriptor.value, seen, depth + 1);
+			defineOwnProperty(result, key, deepSanitizeErrors(descriptor.value, seen, depth + 1, budget));
 		} catch {
-			result[key] = descriptor.value;
+			defineOwnProperty(result, key, descriptor.value);
 		}
 	}
 	for (const sym of Object.getOwnPropertySymbols(value)) {
@@ -1237,20 +1321,20 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 			// reading it here isn't new arbitrary-code exposure the way an ordinary data getter
 			// would be - it's the documented render-hook contract, just resolved one level earlier.
 			try {
-				result[sym] = value[sym];
+				defineOwnProperty(result, sym, value[sym]);
 			} catch {
 				// leave unset - inspect() will render the rest of the object without a custom hook
 			}
 			continue;
 		}
 		if (descriptor.get || descriptor.set) {
-			result[sym] = accessorPlaceholder(descriptor);
+			defineOwnProperty(result, sym, accessorPlaceholder(descriptor));
 			continue;
 		}
 		try {
-			result[sym] = deepSanitizeErrors(descriptor.value, seen, depth + 1);
+			defineOwnProperty(result, sym, deepSanitizeErrors(descriptor.value, seen, depth + 1, budget));
 		} catch {
-			result[sym] = descriptor.value;
+			defineOwnProperty(result, sym, descriptor.value);
 		}
 	}
 	return result;
@@ -1267,11 +1351,19 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
  * logged (e.g. replace the caught operation error with an inspect error). Any Error nested inside
  * `value` is sanitized via deepSanitizeErrors before rendering, so a raised inspect depth here
  * can't surface a nested Error's own-enumerable properties (#1734) the way the raw value would.
+ * `options.maxArrayLength`, if given, also bounds sanitization's own per-container breadth (see
+ * deepSanitizeErrors' budget) - a caller raising the render limit is raising how much genuinely
+ * needs to be walked, not just how much of an already-cheap walk gets displayed.
  */
 export function inspectForLog(value: any, options?: any) {
 	const render = () => {
 		try {
-			return inspect(deepSanitizeErrors(value), options);
+			const maxEntries = Number(options?.maxArrayLength);
+			const budget: SanitizeBudget = {
+				nodes: 0,
+				maxEntries: maxEntries > 0 ? maxEntries : DEFAULT_MAX_SANITIZE_ENTRIES,
+			};
+			return inspect(deepSanitizeErrors(value, new WeakMap(), 0, budget), options);
 		} catch (err) {
 			// errorToString is the guaranteed-never-throw stringifier (unlike `err instanceof Error` or
 			// `String(err)` here, both of which can themselves throw on a hostile value - e.g. a revoked

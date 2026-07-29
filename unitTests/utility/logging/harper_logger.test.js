@@ -1153,6 +1153,61 @@ describe('Test harper_logger module', () => {
 			expect(result).to.not.include('poisoned');
 		});
 
+		it('bounds sanitization breadth instead of visiting every index of a huge sparse array', () => {
+			const huge_sparse_array = new Array(0xffffffff - 1); // length only - no actual elements
+			const start = process.hrtime.bigint();
+			const result = render({ huge_sparse_array }, { depth: 8, maxArrayLength: 250 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			expect(elapsed_ms).to.be.below(
+				2000,
+				'sanitizing a huge sparse array should stay bounded, not scan its full length'
+			);
+			expect(result).to.include('sanitize budget');
+		});
+
+		it('bounds sanitization breadth for a large Map/Set rather than cloning every entry', () => {
+			const huge_map = new Map(Array.from({ length: 10_000 }, (_, i) => [i, i]));
+			const huge_set = new Set(Array.from({ length: 10_000 }, (_, i) => i));
+			const result = render({ huge_map, huge_set }, { depth: 8, maxArrayLength: 250 });
+			expect(result).to.include('sanitize budget');
+		});
+
+		it('creates own properties via defineProperty instead of assignment, so an inherited setter or an own `__proto__` key cannot run during sanitization', () => {
+			let setter_calls = 0;
+			class WithSetter {
+				set detail(_v) {
+					setter_calls++;
+				}
+			}
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const with_setter = new WithSetter();
+			// Object.defineProperty (unlike `with_setter.detail = secret_error`, which would just
+			// invoke the class's setter above) creates an OWN data property that shadows it - the
+			// exact shape a real diagnostic payload could produce and the one this test needs.
+			Object.defineProperty(with_setter, 'detail', {
+				value: secret_error,
+				enumerable: true,
+				writable: true,
+				configurable: true,
+			});
+
+			const proto_bomb = {};
+			Object.defineProperty(proto_bomb, '__proto__', {
+				value: { own_marker: 'PROTO_BOMB_SURVIVED' },
+				enumerable: true,
+			});
+
+			const result = render({ with_setter, proto_bomb }, { depth: 8 });
+			expect(setter_calls).to.equal(0);
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.include('Error: request failed');
+			// If sanitization used plain assignment instead of defineProperty, `result['__proto__'] =`
+			// would reparent the CLONE instead of creating an own property, silently dropping this
+			// marker from the render (a reparented plain object shows no inherited properties).
+			expect(result).to.include('PROTO_BOMB_SURVIVED');
+		});
+
 		it('leaves built-in container types (Date, Map, Buffer) rendered natively instead of corrupting them', () => {
 			const date = new Date('2024-01-01T00:00:00.000Z');
 			const map = new Map([['key', 'value']]);
