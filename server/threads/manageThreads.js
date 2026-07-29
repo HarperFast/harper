@@ -899,7 +899,7 @@ function unregisterProcessGroup(processGroupId) {
 
 if (isMainThread) {
 	process.on('exit', () => {
-		for (const ownerThreadId of processGroupsByThread.keys()) terminateProcessGroupsForThread(ownerThreadId);
+		for (const ownerThreadId of [...processGroupsByThread.keys()]) terminateProcessGroupsForThread(ownerThreadId);
 	});
 }
 
