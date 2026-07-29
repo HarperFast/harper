@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -26,6 +26,31 @@ export type QuotaStatusData = {
 	quotaBytes?: number;
 	updatedAt: number;
 };
+
+/**
+ * Whether `target` resolves to a path inside `root`. quota-status.json is scoped to a single
+ * ROOTPATH; a database or table configured with its own STORAGE_PATH (or a STORAGE_BLOBPATHS
+ * entry) can live on an entirely different volume, and must not be reported against the root's
+ * quota.
+ */
+function isPathWithinRoot(root: string, target: string): boolean {
+	const relativePath = relative(resolve(root), resolve(target));
+	return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
+}
+
+/**
+ * Guards against a syntactically valid but semantically broken quota-status.json (missing or
+ * negative usage, non-positive quota, non-finite timestamp) being read as "100% free" or worse.
+ */
+function isValidQuotaStatus(status: QuotaStatusData): boolean {
+	return (
+		Number.isFinite(status.updatedAt) &&
+		Number.isFinite(status.quotaBytes) &&
+		status.quotaBytes > 0 &&
+		Number.isFinite(status.usedBytes) &&
+		status.usedBytes >= 0
+	);
+}
 
 /**
  * Reads the quota-status.json file written by host-manager.
@@ -85,9 +110,16 @@ export type StorageSpaceStats = {
  * the data directory is quota-limited on a larger shared volume (#1976).
  */
 export async function getStorageSpaceStats(path: string): Promise<StorageSpaceStats> {
+	const rootPath = envMgr.get(CONFIG_PARAMS.ROOTPATH);
 	const status = await getQuotaStatus();
-	if (status?.quotaBytes && Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS) {
-		const available = Math.max(0, status.quotaBytes - (status.usedBytes ?? 0));
+	if (
+		status &&
+		isValidQuotaStatus(status) &&
+		rootPath &&
+		isPathWithinRoot(rootPath, path) &&
+		Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS
+	) {
+		const available = Math.max(0, status.quotaBytes - status.usedBytes);
 		return { available, free: available, size: status.quotaBytes, basis: 'quota' };
 	}
 	const fsStats = await statfs(path);
@@ -99,11 +131,19 @@ export async function getStorageSpaceStats(path: string): Promise<StorageSpaceSt
 	};
 }
 
+/**
+ * Ratio of available to total size, guarding the 0/0 = NaN case (a zero-size statfs/quota result,
+ * e.g. an empty or misconfigured mount) so a full disk still reports a ratio of 0 rather than NaN.
+ */
+export function computeAvailableRatio(available: number, size: number): number {
+	return size > 0 ? available / size : 0;
+}
+
 // If a fresh quota-status.json exists (written by host-manager every ~90s), use quota-based ratio.
 // Otherwise fall back to statfs for the registered path.
 const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
 	const { available, size } = await getStorageSpaceStats(path);
-	return size > 0 ? available / size : 0;
+	return computeAvailableRatio(available, size);
 };
 let getAvailableSpaceRatio: (path: string) => Promise<number> = defaultGetAvailableSpaceRatio;
 

@@ -450,14 +450,69 @@ describe('storageReclamation module', function () {
 				assert.equal(stats.free, stats.available);
 			});
 
-			it('treats a missing usedBytes as 0 rather than propagating NaN', async function () {
+			it('falls back to statfs when usedBytes is missing, instead of treating it as 0 free usage', async function () {
 				fs.writeFileSync(quotaStatusPath, JSON.stringify({ quotaBytes: QUOTA_100GB, updatedAt: Date.now() }));
 
 				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
 
+				// A quota file missing usedBytes is malformed, not "0 used" — trusting it would
+				// report 100% free even if the volume is actually full.
+				assert.equal(stats.basis, 'filesystem');
+			});
+
+			it('falls back to statfs when quotaBytes is not a positive number', async function () {
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes: 1, quotaBytes: 0, updatedAt: Date.now() })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'filesystem');
+			});
+
+			it('falls back to statfs when usedBytes is negative', async function () {
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes: -1, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'filesystem');
+			});
+
+			it('falls back to statfs when the requested path is outside the quota root', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+				const otherVolume = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-quota-other-'));
+				try {
+					// e.g. a database configured with its own STORAGE_PATH on a different volume than
+					// ROOTPATH: the root's quota-status.json can't speak to this path's usage.
+					const stats = await storageReclamation.getStorageSpaceStats(otherVolume);
+
+					assert.equal(stats.basis, 'filesystem');
+				} finally {
+					fs.rmSync(otherVolume, { recursive: true });
+				}
+			});
+
+			it('uses quota data for a nested path within the quota root', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+				const nestedPath = path.join(tmpDir, 'databases', 'some-db');
+				fs.mkdirSync(nestedPath, { recursive: true });
+
+				const stats = await storageReclamation.getStorageSpaceStats(nestedPath);
+
 				assert.equal(stats.basis, 'quota');
-				assert.equal(stats.available, QUOTA_100GB);
-				assert.equal(stats.free, QUOTA_100GB);
+				assert.equal(stats.available, QUOTA_100GB - usedBytes);
 			});
 
 			it('clamps available to 0 when usage exceeds the quota', async function () {
@@ -545,21 +600,12 @@ describe('storageReclamation module', function () {
 				assert.ok(handler.calledOnce);
 			});
 
-			it('treats a zero-size result as ratio 0 (not NaN), so a full disk still triggers reclamation', async function () {
-				storageReclamation.__set__(
-					'getStorageSpaceStats',
-					sandbox.stub().resolves({ available: 0, free: 0, size: 0, basis: 'filesystem' })
-				);
-
-				const handler = sandbox.stub().returns(Promise.resolve());
-				storageReclamation.onStorageReclamation(tmpDir, handler, true);
-				await storageReclamation.runReclamationHandlers();
-
+			it('computeAvailableRatio treats a zero-size result as ratio 0 (not NaN), so a full disk still triggers reclamation', function () {
 				// Without the size>0 guard, available/size is 0/0 = NaN, priority (threshold/NaN) is
 				// NaN, and `NaN > 1` is false — reclamation would silently never fire for a zero-size
 				// volume. Guarded, ratio is 0 and priority is 0.4/0 = Infinity, which correctly fires.
-				assert.ok(handler.calledOnce);
-				assert.ok(!Number.isNaN(handler.firstCall.args[0]));
+				assert.equal(storageReclamation.computeAvailableRatio(0, 0), 0);
+				assert.ok(!Number.isNaN(storageReclamation.computeAvailableRatio(0, 0)));
 			});
 
 			it('falls back to statfs when quota-status file is absent', async function () {

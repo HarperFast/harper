@@ -4567,7 +4567,12 @@ export function makeTable(options) {
 					(stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize)
 			);
 		}
-		static getStorageStats() {
+		/**
+		 * Get available/free/size storage stats for the table's underlying volume. Async because
+		 * this may need to read quota-status.json (#1976); getSize/getAuditSize stay sync because
+		 * they only read in-memory store stats.
+		 */
+		static async getStorageStats() {
 			return getStorageSpaceStats(primaryStore.path);
 		}
 		static async getRecordCount(options?: any) {
