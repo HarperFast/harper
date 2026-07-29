@@ -87,11 +87,14 @@ interface LiveClaims {
 	tickets: ComponentPreparationLockOwner[];
 }
 
-async function scanLiveClaims(
+// Exported only so a test can force the exact interleaving below (readdir() observes a choosing
+// claim, then the read of that claim races against its removal) without a mocking library.
+export async function scanLiveClaims(
 	lockRoot: string,
 	lockName: string,
 	options: ComponentPreparationLockOptions,
-	ownToken?: string
+	ownToken?: string,
+	onEntriesListed?: () => Promise<void> | void
 ): Promise<LiveClaims> {
 	let entries: string[];
 	try {
@@ -100,14 +103,40 @@ async function scanLiveClaims(
 		if (error.code === 'ENOENT') return { choosing: [], tickets: [] };
 		throw error;
 	}
-	const claimNames = entries.filter(
-		(name) => name.startsWith(`${lockName}.choosing.`) || name.startsWith(`${lockName}.ticket.`)
-	);
+	await onEntriesListed?.();
+	const choosingPrefix = `${lockName}.choosing.`;
+	const ticketPrefix = `${lockName}.ticket.`;
+	const claimNames = entries.filter((name) => name.startsWith(choosingPrefix) || name.startsWith(ticketPrefix));
 	const claims = await Promise.all(
 		claimNames.map(async (name) => {
-			const claimPath = join(lockRoot, name);
-			const owner = await readOwner(claimPath);
-			return { name, claimPath, owner, alive: owner ? await ownerIsAlive(owner, options) : false };
+			let claimPath = join(lockRoot, name);
+			let owner = await readOwner(claimPath);
+			let isTicket = name.startsWith(ticketPrefix);
+			if (!owner && !isTicket) {
+				// acquireComponentPreparationLock always durably publishes its ticket before removing
+				// its choosing claim (never the reverse), so a choosing claim that vanished between
+				// readdir() and this read is not proof its contender is gone — it just finished
+				// choosing in that exact window. Look for the ticket it published under the same
+				// token (embedded in the filename, so no read is needed to recover it) before
+				// discarding it as stale.
+				const token = name.slice(choosingPrefix.length, -'.json'.length);
+				const ticketSuffix = `.${token}.json`;
+				let freshEntries: string[];
+				try {
+					freshEntries = await readdir(lockRoot);
+				} catch {
+					freshEntries = [];
+				}
+				const ticketName = freshEntries.find(
+					(candidate) => candidate.startsWith(ticketPrefix) && candidate.endsWith(ticketSuffix)
+				);
+				if (ticketName) {
+					claimPath = join(lockRoot, ticketName);
+					owner = await readOwner(claimPath);
+					isTicket = true;
+				}
+			}
+			return { claimPath, owner, isTicket, alive: owner ? await ownerIsAlive(owner, options) : false };
 		})
 	);
 	const choosing: ComponentPreparationLockOwner[] = [];
@@ -120,8 +149,8 @@ async function scanLiveClaims(
 			await rm(claim.claimPath, { force: true }).catch(() => {});
 			continue;
 		}
-		if (claim.name.startsWith(`${lockName}.choosing.`)) choosing.push(claim.owner);
-		else tickets.push(claim.owner);
+		if (claim.isTicket) tickets.push(claim.owner);
+		else choosing.push(claim.owner);
 	}
 	return { choosing, tickets };
 }

@@ -1623,10 +1623,29 @@ function spawnWithEnv(
 			}
 		});
 
-		childProcess.on('close', (code) => {
+		childProcess.on('close', async (code) => {
 			resolveClose();
-			untrackProcessGroup();
 			clearTimeout(timeout);
+			// A successful direct-child exit does not prove the process group is empty: a custom
+			// installer can spawn-and-unref a descendant that inherits the group and outlives its
+			// parent (same invariant terminateProcessTree enforces on the timeout path). Confirm/
+			// terminate the whole group before letting the caller treat this command as done, or a
+			// survivor could keep mutating node_modules after the component lock is released. Skip
+			// when a timeout is already driving its own terminateProcessTree call for this process.
+			if (!didTimeout && trackedProcessId) {
+				try {
+					await terminateProcessTree(childProcess, closePromise);
+				} catch (error) {
+					untrackProcessGroup();
+					flushOutput();
+					if (!didSettle) {
+						didSettle = true;
+						reject(error);
+					}
+					return;
+				}
+			}
+			untrackProcessGroup();
 			// Flush any trailing partial lines so the caller sees process output that didn't
 			// end on a newline (some package managers do this on their final progress line).
 			flushOutput();
