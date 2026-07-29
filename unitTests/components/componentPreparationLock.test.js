@@ -2,9 +2,10 @@
 
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { once } = require('node:events');
 const { Worker } = require('node:worker_threads');
-const { mkdtemp, rm } = require('node:fs/promises');
+const { mkdtemp, rm, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 
@@ -102,6 +103,32 @@ describe('component preparation lock', () => {
 			retried = true;
 		});
 		assert.equal(retried, true);
+	});
+
+	it('preserves a preparation failure when releasing the lock also fails', async () => {
+		const componentDirPath = join(rootDir, 'release-failure');
+		const lockName = createHash('sha256').update(componentDirPath).digest('hex');
+		const lockPath = join(rootDir, '.component-preparation-locks', lockName);
+		const releaseErrors = [];
+
+		await assert.rejects(
+			withComponentPreparationLock(
+				componentDirPath,
+				async () => {
+					await writeFile(lockPath, JSON.stringify({ pid: process.pid, threadId: 0, token: 'stolen' }));
+					throw new Error('preparation failed');
+				},
+				{
+					onReleaseError: (error) => {
+						releaseErrors.push(error);
+						throw new Error('reporting failed');
+					},
+				}
+			),
+			/preparation failed/
+		);
+		assert.equal(releaseErrors.length, 1);
+		assert.match(releaseErrors[0].message, /Lost ownership/);
 	});
 
 	it('reclaims a lock abandoned by a terminated process', async () => {
