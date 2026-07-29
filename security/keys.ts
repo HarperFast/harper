@@ -971,6 +971,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 			server.secureContexts = secureContexts;
 			server.secureContextsListeners = [];
 		}
+		let subscribedToCertTable = false;
 		return ((SNICallback as any).ready = new Promise<void>((resolve, reject) => {
 			function updateTLS() {
 				try {
@@ -980,6 +981,24 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					if (databases === undefined) {
 						resolve();
 						return;
+					}
+					if (databases.system === undefined) {
+						// The system database (hdb_certificate) isn't loaded on this thread yet — a
+						// component can create its listener (and this selector) before that happens;
+						// selector creation doesn't control component/database load order. Retry on
+						// the same debounce used for cert-table changes instead of resolving into a
+						// permanently empty selector: we haven't subscribed yet below, so nothing else
+						// would ever re-trigger this once system.hdb_certificate becomes available.
+						resolve();
+						scheduleRebuild();
+						return;
+					}
+					if (!subscribedToCertTable) {
+						subscribedToCertTable = true;
+						databases.system.hdb_certificate.subscribe({
+							listener: scheduleRebuild,
+							omitCurrent: true,
+						} as any);
 					}
 					for (const cert of databases.system.hdb_certificate.search([])) {
 						const certificate = cert.certificate;
@@ -1118,10 +1137,9 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					updateTLS();
 				}, TLS_REBUILD_DEBOUNCE_MS).unref();
 			};
-			databases?.system.hdb_certificate.subscribe({
-				listener: scheduleRebuild,
-				omitCurrent: true,
-			} as any);
+			// Register the private-key hot-reload rebuild path unconditionally, before the first
+			// updateTLS() pass: that pass may find the system database not yet loaded and retry
+			// (see above) rather than subscribe, so this must not depend on it succeeding.
 			if (liveReload) liveTLSRebuilders.add(scheduleRebuild);
 			updateTLS();
 		}));

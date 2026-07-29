@@ -585,12 +585,17 @@ function onSocket(listener, options) {
 	let socketServer;
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
-		const SNICallback = createTLSSelector('server', options.mtls);
+		// usageType lets a caller's certificates (tagged via hdb_certificate.uses) win the quality
+		// bonus in createTLSSelector for this listener, the same way http.ts's usageType does for
+		// operations-api/http listeners; falls back to the generic 'server' type for callers that
+		// don't specify one.
+		const usageType = options.usageType ?? 'server';
+		const SNICallback = createTLSSelector(usageType, options.mtls);
 		// OpenSSL takes the cipher list (and its @SECLEVEL) from the context the server was created with;
 		// a context swapped in by the SNI callback doesn't carry its own cipher list onto the connection.
 		// The listener-level string is therefore the only one honored — resolve it from every configured
 		// source (see resolveEffectiveTlsCiphers in keys.ts).
-		const effectiveCiphers = getEffectiveTlsCiphers('server', options.mtls);
+		const effectiveCiphers = getEffectiveTlsCiphers(usageType, options.mtls);
 		socketServer = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
