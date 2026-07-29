@@ -566,6 +566,7 @@ export class ResourceBridge extends BridgeMethods {
 		tables?: string[];
 		include_audit?: boolean;
 		gzip?: boolean;
+		exclude_blobs?: boolean;
 	}): Promise<Readable> {
 		const databaseName = getBackupObj.database || getBackupObj.schema || 'data';
 		const database = getDatabases()[databaseName];
@@ -590,9 +591,18 @@ export class ResourceBridge extends BridgeMethods {
 			if (getBackupObj.gzip !== undefined && typeof getBackupObj.gzip !== 'boolean') {
 				throw new ClientError(`'gzip' must be a boolean`);
 			}
+			if (getBackupObj.exclude_blobs !== undefined && typeof getBackupObj.exclude_blobs !== 'boolean') {
+				throw new ClientError(`'exclude_blobs' must be a boolean`);
+			}
 			const rootStore = resolveSingleRootStore(databaseName);
 			// gzip defaults on (it compresses the snapshot substantially); gzip=false opts out.
-			return createBackupStream(rootStore, databaseName, getBackupObj.gzip !== false);
+			// blobs are included by default; exclude_blobs=true streams an engine-only tar.
+			return createBackupStream(
+				rootStore,
+				databaseName,
+				getBackupObj.gzip !== false,
+				getBackupObj.exclude_blobs === true
+			);
 		}
 		if (getBackupObj.gzip !== undefined) {
 			throw new ClientError(`'gzip' is a RocksDB-only option; LMDB backups are gzipped per the accept-encoding header`);

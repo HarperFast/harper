@@ -1,9 +1,11 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdtempSync, rmSync } = require('node:fs');
-const { join } = require('node:path');
+const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
+const { spawn } = require('node:child_process');
+const { extract } = require('tar-stream');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const {
 	backupDirForDatabase,
@@ -25,6 +27,8 @@ const {
 	verifyBackupOffline,
 	createBackupStream,
 } = require('#src/dataLayer/rocksdbBackup');
+const { blobSnapshotDir } = require('#src/dataLayer/blobBackup');
+const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 
 // managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
 // in the online-operation tests below must therefore carry a super_user role.
@@ -47,11 +51,26 @@ describe('rocksdbBackup', function () {
 	});
 
 	after(function () {
+		// blob roots resolve outside storageDir (under the hdb base / configured blobPaths), so clean
+		// them explicitly for every database name these tests touch
+		for (const name of [DB_NAME, `${DB_NAME}-restored`, `${DB_NAME}-occupied`, `${DB_NAME}-blobs`]) {
+			for (const root of getBlobPathsForDatabaseName(name)) rmSync(root, { recursive: true, force: true });
+			rmSync(backupDirForDatabase(name), { recursive: true, force: true });
+		}
 		if (savedStoragePath === undefined) delete process.env.STORAGE_PATH;
 		else process.env.STORAGE_PATH = savedStoragePath;
 		rmSync(storageDir, { recursive: true, force: true });
 		rmSync(backupDirForDatabase(DB_NAME), { recursive: true, force: true });
 	});
+
+	// Write a blob file into a database's (first) blob root at the given fileId-style relative path.
+	function writeBlobFile(dbName, relPath, contents) {
+		const root = getBlobPathsForDatabaseName(dbName)[0];
+		const full = join(root, relPath);
+		mkdirSync(dirname(full), { recursive: true });
+		writeFileSync(full, contents);
+		return full;
+	}
 
 	function writeRecords(records) {
 		const database = RocksDatabase.open(databaseDir);
@@ -203,11 +222,11 @@ describe('rocksdbBackup', function () {
 		it('refuses to back up a database with an incomplete restore pending', async function () {
 			this.timeout(30000);
 			writeRecords([['alpha', { n: 1 }]]);
-			const token = beginRestore(databaseDir);
+			const lock = beginRestore(databaseDir);
 			try {
 				await assert.rejects(createBackupOffline(DB_NAME), (error) => error.statusCode === 409);
 			} finally {
-				completeRestore(databaseDir, token);
+				completeRestore(lock);
 			}
 		});
 	});
@@ -326,6 +345,190 @@ describe('rocksdbBackup', function () {
 			assert.ok(existsSync(backupDirForDatabase(DB_NAME)));
 			assert.ok(!existsSync(join(databaseDir, 'backups')));
 			await purgeBackupsOffline(DB_NAME, 0);
+		});
+	});
+
+	describe('blob snapshots (managed backup)', function () {
+		const BLOB_DB = `${DB_NAME}-blobs`;
+		const blobDbDir = () => join(storageDir, BLOB_DB);
+		const BLOB_REL = join('abc', 'def', 'ghi');
+
+		function writeBlobDbRecord() {
+			const database = RocksDatabase.open(blobDbDir());
+			try {
+				database.putSync('rec', { blob: BLOB_REL });
+			} finally {
+				database.close();
+			}
+		}
+
+		afterEach(async function () {
+			const before = await listBackupsInDir(backupDirForDatabase(BLOB_DB));
+			if (before.length > 0) await purgeBackupsOffline(BLOB_DB, 0);
+			for (const root of getBlobPathsForDatabaseName(BLOB_DB)) rmSync(root, { recursive: true, force: true });
+			rmSync(blobDbDir(), { recursive: true, force: true });
+		});
+
+		it('captures blobs by default and restores them, including a blob deleted after the backup', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			writeBlobFile(BLOB_DB, BLOB_REL, 'blob-payload');
+
+			const created = await createBackupOffline(BLOB_DB);
+			assert.strictEqual(created.blobs, true, 'blobs should be captured by default');
+			const snapshotFile = join(blobSnapshotDir(backupDirForDatabase(BLOB_DB), created.backup_id), '0', BLOB_REL);
+			assert.strictEqual(readFileSync(snapshotFile, 'utf8'), 'blob-payload', 'blob must be in the snapshot');
+
+			// delete the live blob after the backup, then restore in place — the blob must come back
+			rmSync(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL));
+			await restoreBackupOffline(BLOB_DB, created.backup_id);
+			assert.strictEqual(
+				readFileSync(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL), 'utf8'),
+				'blob-payload',
+				'a blob deleted after the backup must be restored'
+			);
+		});
+
+		it('exclude_blobs produces an engine-only backup with no blob snapshot', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			writeBlobFile(BLOB_DB, BLOB_REL, 'blob-payload');
+
+			const created = await createBackupOffline(BLOB_DB, true);
+			assert.strictEqual(created.blobs, false);
+			assert.ok(
+				!existsSync(blobSnapshotDir(backupDirForDatabase(BLOB_DB), created.backup_id)),
+				'no blob snapshot should be written when blobs are excluded'
+			);
+		});
+
+		it('delete_backup and purge_backups remove the corresponding blob snapshots', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			writeBlobFile(BLOB_DB, BLOB_REL, 'payload-1');
+			const first = await createBackupOffline(BLOB_DB);
+			writeBlobFile(BLOB_DB, BLOB_REL, 'payload-2');
+			const second = await createBackupOffline(BLOB_DB);
+			const backupDir = backupDirForDatabase(BLOB_DB);
+
+			assert.ok(existsSync(blobSnapshotDir(backupDir, first.backup_id)));
+			assert.ok(existsSync(blobSnapshotDir(backupDir, second.backup_id)));
+
+			await deleteBackupOffline(BLOB_DB, first.backup_id);
+			assert.ok(!existsSync(blobSnapshotDir(backupDir, first.backup_id)), 'delete_backup must drop its blob snapshot');
+			assert.ok(existsSync(blobSnapshotDir(backupDir, second.backup_id)), 'the surviving backup keeps its snapshot');
+
+			await purgeBackupsOffline(BLOB_DB, 0);
+			assert.ok(
+				!existsSync(blobSnapshotDir(backupDir, second.backup_id)),
+				'purge_backups must drop remaining snapshots'
+			);
+		});
+	});
+
+	describe('createBackupStream with blobs', function () {
+		async function extractTarNames(stream) {
+			const names = new Map();
+			const ex = extract();
+			const done = new Promise((resolve, reject) => {
+				ex.on('entry', (header, entryStream, next) => {
+					const chunks = [];
+					entryStream.on('data', (c) => chunks.push(c));
+					entryStream.on('end', () => {
+						names.set(header.name, Buffer.concat(chunks));
+						next();
+					});
+					entryStream.resume();
+				});
+				ex.on('finish', resolve);
+				ex.on('error', reject);
+			});
+			stream.pipe(ex);
+			await done;
+			return names;
+		}
+
+		it('includes blob files alongside the database files in a valid tar', async function () {
+			this.timeout(30000);
+			const STREAM_DB = `${DB_NAME}-blobs`;
+			const streamDbDir = join(storageDir, STREAM_DB);
+			const database = RocksDatabase.open(streamDbDir);
+			try {
+				database.putSync('rec', { blob: 'x' });
+			} finally {
+				database.close();
+			}
+			const blobRel = join('111', '222', '333');
+			writeBlobFile(STREAM_DB, blobRel, 'streamed-blob');
+
+			const store = RocksDatabase.open(streamDbDir);
+			try {
+				const stream = createBackupStream(store, STREAM_DB, false, false);
+				const entries = await extractTarNames(stream);
+				// the archive holds both the RocksDB files and the blob, and is a single valid tar
+				assert.ok(
+					[...entries.keys()].some((name) => name === 'CURRENT'),
+					'expected RocksDB CURRENT entry'
+				);
+				const blobEntry = `blobs/0/${blobRel.split(require('node:path').sep).join('/')}`;
+				assert.ok(entries.has(blobEntry), `expected blob entry ${blobEntry}, got: ${[...entries.keys()].join(', ')}`);
+				assert.strictEqual(entries.get(blobEntry).toString('utf8'), 'streamed-blob');
+			} finally {
+				store.close();
+				rmSync(streamDbDir, { recursive: true, force: true });
+				for (const root of getBlobPathsForDatabaseName(STREAM_DB)) rmSync(root, { recursive: true, force: true });
+			}
+		});
+
+		it('exclude_blobs streams an engine-only tar (no blobs/ entries)', async function () {
+			this.timeout(30000);
+			const store = RocksDatabase.open(databaseDir);
+			try {
+				const stream = createBackupStream(store, DB_NAME, false, true);
+				const entries = await extractTarNames(stream);
+				assert.ok(
+					![...entries.keys()].some((name) => name.startsWith('blobs/')),
+					'engine-only tar must have no blobs/'
+				);
+			} finally {
+				store.close();
+			}
+		});
+	});
+
+	describe('offline restore lock probe (two-process)', function () {
+		it('refuses to restore a database another process holds open (real rocksdb-js LOCK error)', async function () {
+			this.timeout(30000);
+			writeRecords([['alpha', { n: 1 }]]);
+			const created = await createBackupOffline(DB_NAME);
+
+			// hold the database open in a separate process, as a running Harper would
+			const bindingPath = require.resolve('@harperfast/rocksdb-js');
+			const child = spawn(process.execPath, [
+				'-e',
+				`const { RocksDatabase } = require(${JSON.stringify(bindingPath)});` +
+					`const db = RocksDatabase.open(${JSON.stringify(databaseDir)});` +
+					`process.stdout.write('OPEN\\n');` +
+					`setTimeout(() => { db.close(); process.exit(0); }, 15000);`,
+			]);
+			try {
+				await new Promise((resolve, reject) => {
+					let buf = '';
+					child.stdout.on('data', (d) => {
+						buf += d.toString();
+						if (buf.includes('OPEN')) resolve();
+					});
+					child.once('error', reject);
+					child.once('exit', (code) => reject(new Error(`child exited early (${code})`)));
+				});
+				await assert.rejects(
+					restoreBackupOffline(DB_NAME, created.backup_id),
+					(error) => error.statusCode === 409 && /open by a running Harper process/.test(error.message)
+				);
+			} finally {
+				child.kill('SIGKILL');
+				await purgeBackupsOffline(DB_NAME, 0);
+			}
 		});
 	});
 });

@@ -26,7 +26,7 @@ Commands:
 agent [message]                 - Chat with the built-in agent (interactive, or one-shot with a message; alias: chat)
 copy-db <source> <target>       - Copies a database from source path to target path
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
-get_backup database=<name> [gzip=false] [out=<file>] - Download a full backup from a running server (RocksDB: gzipped tar stream, gzip=false for plain tar)
+get_backup database=<name> [gzip=false] [exclude_blobs=true] [out=<file>] - Download a full backup from a running server (RocksDB: gzipped tar stream, gzip=false for plain tar; file-backed blobs are included by default, exclude_blobs=true for an engine-only archive)
 install                         - Install harperdb
 <api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
                                    To authenticate as a different user than the one being operated on

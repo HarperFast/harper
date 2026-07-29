@@ -1,8 +1,10 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, flushDatabases } = require('#src/resources/databases');
+const { table, flushDatabases, dropDatabase } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { beginRestore, completeRestore } = require('#src/dataLayer/restoreMarker');
 
 describe('flushDatabases', () => {
 	before(async function () {
@@ -102,5 +104,38 @@ describe('schemaDefined backfill on replicas missing the flag', () => {
 		await Rehealed.dbisDB.committed;
 		const healed = Rehealed.dbisDB.getSync(descriptorKey);
 		assert.strictEqual(healed.schemaDefined, true, 'on-disk descriptor must be rewritten with schemaDefined=true');
+	});
+});
+
+describe('dropDatabase restore serialization', () => {
+	const DB = 'drop-vs-restore-test';
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('refuses to drop a RocksDB database while a restore holds its lock, then drops once released', async function () {
+		this.timeout(30000);
+		const Table = table({
+			table: 'DropRestore',
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip(); // serialization is RocksDB-only
+
+		// simulate a restore in progress: it holds the per-database restore lock
+		const lock = beginRestore(rootStore.path);
+		try {
+			await assert.rejects(dropDatabase(DB), (error) => error.statusCode === 409);
+		} finally {
+			completeRestore(lock);
+		}
+		// the blocked window may have unloaded the database from the in-memory map (a DB being
+		// restored is intentionally not loaded); re-resolve it now that the marker is cleared, then
+		// confirm the drop proceeds once the lock is released
+		table({ table: 'DropRestore', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		await assert.doesNotReject(dropDatabase(DB));
 	});
 });

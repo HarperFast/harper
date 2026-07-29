@@ -469,9 +469,14 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 async function cliOperations(req: any, skipResponseLog = false) {
 	require('dotenv').config();
 
-	const { options, target } = await resolveRequestOptions(req);
-	await PREPARE_OPERATION[req.operation]?.(req);
+	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
+	// `auth_username=`/`auth_password=` pair, which resolveRequestOptions throws on) is mapped to the
+	// same console.error + process.exit(1) as every other failure below, rather than escaping as an
+	// unhandled rejection. `target` is declared out here so the catch can still reference it.
+	let options: any, target: any;
 	try {
+		({ options, target } = await resolveRequestOptions(req));
+		await PREPARE_OPERATION[req.operation]?.(req);
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the
 		// legacy JSON deploy if it predates 5.1. Local (domain-socket) deploys always

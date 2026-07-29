@@ -334,16 +334,30 @@ The `restore_backup` operation restores a user database on a live server by clos
 worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), and reloading it.
 Three non-obvious mechanics keep that safe:
 
-- **Two files next to (never inside) the database directory**: `<db>.restore.lock`, an OS-level
-  exclusive flock (rocksdb-js `tryFileLock`, auto-released on process death), serializes restores;
-  `<db>.restoring`, a marker written+fsynced (file _and_ parent directory) after the lock and
-  before any destructive step, means "a restore started and has not finished". Startup/rescan
-  detection (`databasesBlockedByRestore` in `resources/databases.ts`) checks the **marker first**
-  and only probes the lock when the marker exists — probes take the flock and are mutually
-  exclusive across threads, so probing the (persistent) lock file of every long-ago-restored
-  database on every rescan would make concurrent rescans misclassify healthy databases as
-  in-progress. Marker-present + lock-held = restore in progress (don't load); marker-present +
-  lock-free = crashed mid-restore (don't load; rerun the restore to recover).
+- **Two files in an isolated `.restore/` directory beside (never inside) the database directory**,
+  each keyed by `sha256(basename(dbPath)).slice(0,32)`: `<key>.lock`, an OS-level exclusive flock
+  (rocksdb-js `tryFileLock`, auto-released on process death), serializes restores; `<key>.restoring`,
+  a marker written+fsynced (file _and_ the `.restore/` directory) after the lock and before any
+  destructive step, means "a restore started and has not finished" (its first line records the
+  database directory name so the scan can map a marker back without decoding the key). The metadata
+  is hashed into a sibling directory rather than suffixed onto the database name (`<db>.restoring`)
+  for two reasons: a legal database literally named `orders.restoring` would otherwise be mistaken
+  for the restore marker of `orders`, and a 250-character name (the legal max) plus a `.restore.lock`
+  suffix exceeds `NAME_MAX` (255) on most filesystems. The `.restore/` directory has no
+  `CURRENT`/`MANIFEST-`/`.mdb`, so the database scan never mistakes it for a database. Startup/rescan
+  detection (`databasesBlockedByRestore` → `scanBlockedRestores` in `dataLayer/restoreMarker.ts`)
+  reads `.restore/` and checks the **marker first**, only probing the lock when the marker exists —
+  probes take the flock and are mutually exclusive across threads, so probing the (persistent) lock
+  file of every long-ago-restored database on every rescan would make concurrent rescans misclassify
+  healthy databases as in-progress. Marker-present + lock-held = restore in progress (don't load);
+  marker-present + lock-free = crashed mid-restore (don't load; rerun the restore to recover).
+- **A recovery restore must not clear a pre-existing marker on a pre-destruction failure.**
+  `beginRestore` returns `preexisting: true` when a `.restoring` marker was already present (this run
+  is a recovery over a possibly half-purged directory). If such a run fails _before_ any destruction
+  (e.g. `verifyDatabaseClosed` finds a leaked handle), it must leave the marker in place — clearing
+  it and broadcasting a reload would surface the earlier attempt's partial/corrupt directory as
+  healthy. Only a _fresh_ marker on a _previously healthy_ database that failed before destruction is
+  safe to clear.
 - **The ITC close broadcast is best-effort, so closure is verified before the purge.** The SCHEMA
   broadcast (`signalSchemaChange`) resolves after remote handlers complete but times out at 30s
   "best-effort", swallows errors, and never reaches job-worker threads at all (their ports are
@@ -376,14 +390,60 @@ Three non-obvious mechanics keep that safe:
   calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
   exited job worker leaves no residual handle to be mistaken for a live holder.
-- **Every path that can (re)open or delete a RocksDB database checks the restore state**, not just
-  the `getDatabases()` scan: `database()`'s on-demand open (`create_table`/`create_schema` would
-  otherwise resurrect a half-purged directory as a fresh empty DB, defeating the recovery
-  protocol) and `dropDatabase` (whose `destroy()` racing a restore's copy would gut a completed
-  restore with the marker already gone) both throw 409 via `throwIfBlockedByRestore`.
+- **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
+  A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
+  a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
+  (`acquireRestoreLock`, marker-less) for each RocksDB root store and holds it across the whole drop,
+  releasing in a `finally`; a restore in progress makes the acquire fail with 409, and a leftover
+  incomplete-restore marker (lock free, detected via `restoreMarkerPresent`, which — unlike
+  `checkRestoreState` — is safe while this thread holds the lock) is refused rather than dropped over.
+  `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
+  `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
+  the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.
+- **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
+  only when the CLI sees no server (a PID heuristic; the PID file is briefly absent mid-`harper
+  restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so before purging,
+  `restoreBackupOffline` opens the database to probe. It now takes the restore lock+marker _before_
+  probing (so a server that starts afterward sees the marker and refuses to load), and recognizes the
+  pinned rocksdb-js 2.5.0 lock error — a plain `Error` with no `code` and message
+  `IO error: While lock file: <db>/LOCK: Resource temporarily unavailable` (`isRocksDbLockError`) —
+  aborting with a 409 rather than purging a database another process holds open. Any _other_ open
+  failure (corrupt/half-restored) is exactly what restore recovers, so only a lock conflict aborts.
 
 Known limitation: the flock is process-owned; if the restore job's worker _thread_ dies without
-the process exiting, the lock stays held (restores 409) until Harper restarts.
+the process exiting, the lock stays held (restores 409) until Harper restarts. There is no typed
+native lock signal in rocksdb-js 2.5.0, so the offline probe relies on message matching; a native
+lock primitive is a rocksdb-js follow-on.
+
+## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
+
+A database's file-backed blobs live in one or more roots _outside_ the RocksDB directory
+(`getBlobPathsForDatabaseName` in `resources/blob.ts` — one per configured `storage.blobPaths`, else
+`<hdb_root>/blobs/<database>`), so the engine's backup does not capture them. `create_backup`,
+`restore_backup`, `delete_backup`, `purge_backups`, and the streaming `get_backup` therefore handle
+blobs alongside the engine data (the `exclude_blobs` request option — default false — opts out for an
+engine-only backup):
+
+- **Managed backups** snapshot the blob roots to `<backupDir>/blobs/<backupId>/<rootIndex>/<relpath>`
+  — a full, non-incremental copy per backup, mirroring the binding's `transaction_logs/<id>/` layout.
+  Files are hard-linked when possible (cheap, no extra space on the same filesystem) and copied when
+  the backup root is on a different filesystem; never symlinked. Hard-linking is safe against later
+  mutation because Harper blobs are content-addressed and write-once (each write allocates a new
+  monotonic file id → a new path; updates/deletes unlink the old path), so a snapshot's hard link
+  keeps the exact bytes even after the live blob is deleted, and no in-place overwrite can alter it.
+  The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create leaves no
+  partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot (so a
+  blob added after the backup is dropped and one deleted after it returns); `delete_backup` /
+  `purge_backups` remove the corresponding snapshot directories.
+- **`get_backup`** appends the blob files to the same tar under `blobs/<rootIndex>/<relpath>`. The
+  binding's streaming backup finalizes its tar with exactly a 1024-byte (two-block) end-of-archive
+  marker; `createBackupStream` streams the native _plain_ tar while withholding that trailer
+  (verifying it is all-zero), appends the blob entries via `tar-stream` (whose `finalize` writes the
+  one real trailer), and gzips the combined stream itself when requested — so the binding is always
+  asked for a plain tar and compression happens after the append. No scratch disk. Blob capture is
+  best-effort point-in-time (whatever files exist while it streams; a blob deleted mid-stream is
+  skipped) — Harper does not freeze blob writes for a backup, the same tradeoff the engine makes for
+  the transaction log.
 
 ## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
 

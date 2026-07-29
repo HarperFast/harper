@@ -40,7 +40,14 @@ import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
-import { checkRestoreState, RESTORE_LOCK_SUFFIX, RESTORING_MARKER_SUFFIX } from '../dataLayer/restoreMarker.ts';
+import {
+	acquireRestoreLock,
+	checkRestoreState,
+	releaseRestoreLock,
+	restoreMarkerPresent,
+	scanBlockedRestores,
+	type RestoreLock,
+} from '../dataLayer/restoreMarker.ts';
 
 /**
  * Check if Harper is running in read-only mode.
@@ -267,7 +274,7 @@ export function getDatabases(): Databases {
 		// First load all the databases from our main database folder
 		// TODO: Load any databases defined with explicit storage paths from the config
 		const entries = readdirSync(databasePath, { withFileTypes: true });
-		const blockedByRestore = databasesBlockedByRestore(databasePath, entries);
+		const blockedByRestore = databasesBlockedByRestore(databasePath);
 		for (const databaseEntry of entries) {
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
@@ -329,7 +336,7 @@ export function getDatabases(): Databases {
 			const databasePath = schemaConfig.path;
 			if (existsSync(databasePath)) {
 				const entries = readdirSync(databasePath, { withFileTypes: true });
-				const blockedByRestore = databasesBlockedByRestore(databasePath, entries);
+				const blockedByRestore = databasesBlockedByRestore(databasePath);
 				for (const databaseEntry of entries) {
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
@@ -413,15 +420,9 @@ export function getDatabases(): Databases {
  * mid-purge (the directory may be partial garbage) and must be rerun. The files live *next to*
  * the database directory, so this also covers a database whose directory is missing or empty.
  */
-function databasesBlockedByRestore(databasePath: string, entries: { name: string }[]): Set<string> {
+function databasesBlockedByRestore(databasePath: string): Set<string> {
 	const blocked = new Set<string>();
-	const candidates = new Set<string>();
-	for (const { name } of entries) {
-		if (name.endsWith(RESTORING_MARKER_SUFFIX)) candidates.add(name.slice(0, -RESTORING_MARKER_SUFFIX.length));
-		else if (name.endsWith(RESTORE_LOCK_SUFFIX)) candidates.add(name.slice(0, -RESTORE_LOCK_SUFFIX.length));
-	}
-	for (const dbName of candidates) {
-		const state = checkRestoreState(join(databasePath, dbName));
+	for (const [dbName, state] of scanBlockedRestores(databasePath)) {
 		if (state === 'in-progress') {
 			logger.warn(`A restore of database '${dbName}' is in progress; not loading it`);
 			blocked.add(dbName);
@@ -968,6 +969,33 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
 }
 
 /**
+ * Take the per-database restore lock for a drop, refusing (409) if a restore holds it (in-progress)
+ * or a crashed restore left a marker (incomplete). Pushes the acquired lock onto `held` so the
+ * caller releases it after the drop. On refusal, releases anything already held and throws.
+ */
+function lockDatabaseForDrop(dbPath: string, databaseName: string, held: RestoreLock[]): void {
+	let lock: RestoreLock;
+	try {
+		lock = acquireRestoreLock(dbPath);
+	} catch (error) {
+		for (const h of held) releaseRestoreLock(h);
+		throw error; // 409: a restore is in progress and holds the lock
+	}
+	// We now hold the lock, so no restore is active. A surviving marker is therefore debris from a
+	// crashed restore (incomplete) — refuse rather than delete a directory that still needs recovery.
+	if (restoreMarkerPresent(dbPath)) {
+		releaseRestoreLock(lock);
+		for (const h of held) releaseRestoreLock(h);
+		const error: any = new Error(
+			`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
+		);
+		error.statusCode = 409;
+		throw error;
+	}
+	held.push(lock);
+}
+
+/**
  * Delete the database
  * @param databaseName
  */
@@ -976,52 +1004,63 @@ export async function dropDatabase(databaseName) {
 	const dbTables = databases[databaseName];
 	let rootStore;
 
-	for (const tableName in dbTables) {
-		const table = dbTables[tableName];
-		rootStore = table.primaryStore.rootStore;
-		// a drop's file deletion must not interleave with a restore's purge-and-copy on the same
-		// directory (destroy landing after the restore's copy would gut a "successful" restore)
-		if (rootStore instanceof RocksDatabase) throwIfBlockedByRestore(rootStore.path, databaseName);
-		lmdbDatabaseEnvs.delete(rootStore.path);
-		rocksdbDatabaseEnvs.delete(rootStore.path);
-	}
-
-	for (const tableName in dbTables) {
-		databaseEventsEmitter.emit('dropTable', tableName, databaseName);
-	}
-
-	if (databaseName === 'data') {
-		for (const tableName in tables) {
-			delete tables[tableName];
+	// Hold the per-database restore lock across the entire drop so its file deletion can never
+	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
+	// restore's copy would gut a "successful" restore, and vice versa. Restore takes the same lock
+	// (before writing its marker), so both operations serialize on this one primitive rather than on
+	// a check-then-act marker probe. Released in the finally below.
+	const restoreLocks: RestoreLock[] = [];
+	try {
+		for (const tableName in dbTables) {
+			const table = dbTables[tableName];
+			rootStore = table.primaryStore.rootStore;
+			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			lmdbDatabaseEnvs.delete(rootStore.path);
+			rocksdbDatabaseEnvs.delete(rootStore.path);
 		}
-		delete tables[DEFINED_TABLES];
-	}
-	delete databases[databaseName];
 
-	databaseEventsEmitter.emit('dropDatabase', databaseName);
+		for (const tableName in dbTables) {
+			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
+		}
 
-	if (rootStore) {
-		if (rootStore.status === 'open') {
+		if (databaseName === 'data') {
+			for (const tableName in tables) {
+				delete tables[tableName];
+			}
+			delete tables[DEFINED_TABLES];
+		}
+		delete databases[databaseName];
+
+		databaseEventsEmitter.emit('dropDatabase', databaseName);
+
+		if (rootStore) {
+			if (rootStore.status === 'open') {
+				if (rootStore instanceof RocksDatabase) {
+					rootStore.close();
+					rootStore.destroy();
+				} else {
+					await rootStore.close();
+					await unlink(rootStore.path);
+				}
+			}
+		} else {
+			rootStore = database({ database: databaseName, table: null });
+			// a tableless database resolves its root store here rather than in the loop above, so take
+			// the drop lock now (still before any destructive step)
+			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 			if (rootStore instanceof RocksDatabase) {
 				rootStore.close();
 				rootStore.destroy();
-			} else {
+			} else if (rootStore.status === 'open') {
 				await rootStore.close();
 				await unlink(rootStore.path);
 			}
 		}
-	} else {
-		rootStore = database({ database: databaseName, table: null });
-		if (rootStore instanceof RocksDatabase) {
-			rootStore.close();
-			rootStore.destroy();
-		} else if (rootStore.status === 'open') {
-			await rootStore.close();
-			await unlink(rootStore.path);
-		}
-	}
 
-	await deleteRootBlobPathsForDB(rootStore);
+		await deleteRootBlobPathsForDB(rootStore);
+	} finally {
+		for (const lock of restoreLocks) releaseRestoreLock(lock);
+	}
 }
 
 /**

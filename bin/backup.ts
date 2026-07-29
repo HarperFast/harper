@@ -1,6 +1,7 @@
 'use strict';
 
 import { createWriteStream } from 'node:fs';
+import { rename, unlink } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import * as YAML from 'yaml';
@@ -61,7 +62,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 	let result: any;
 	switch (command) {
 		case OPERATIONS_ENUM.CREATE_BACKUP:
-			result = await createBackupOffline(databaseName);
+			result = await createBackupOffline(databaseName, request.exclude_blobs === true);
 			break;
 		case OPERATIONS_ENUM.LIST_BACKUPS:
 			result = await listBackupsOffline(databaseName);
@@ -102,16 +103,18 @@ function useOperationApi(request: any): boolean {
  * `get_backup` streams a full-snapshot tar of the database's current state from a running server
  * into a local file. It works against a remote server (`target=…`) or the local instance, resolving
  * the target and auth the same way as any other CLI operation; a local connection requires Harper to
- * be running (there is no offline form). For RocksDB the stream is gzipped by default; pass
- * `gzip=false` for a plain tar. While stopped, use `create_backup` — a local incremental directory
- * backup — instead.
+ * be running (there is no offline form). For RocksDB the stream is gzipped by default (pass
+ * `gzip=false` for a plain tar) and includes the database's file-backed blobs by default (pass
+ * `exclude_blobs=true` for an engine-only archive). While stopped, use `create_backup` — a local
+ * incremental directory backup — instead.
  */
 async function downloadBackup(request: any, databaseName: string): Promise<string> {
-	// only forward gzip when the user passed it — it is a RocksDB-only option (sending it
-	// unconditionally would fail LMDB downloads), and when unset the server applies its own
-	// default (RocksDB gzips)
+	// only forward gzip/exclude_blobs when the user passed them — they are RocksDB-only options
+	// (sending them unconditionally would fail LMDB downloads), and when unset the server applies its
+	// own defaults (RocksDB gzips and includes blobs)
 	const body: any = { operation: terms.OPERATIONS_ENUM.GET_BACKUP, database: databaseName };
 	if (request.gzip !== undefined) body.gzip = request.gzip;
+	if (request.exclude_blobs !== undefined) body.exclude_blobs = request.exclude_blobs;
 	// resolveRequestOptions connects to a remote target (target=/env/saved) or the local domain
 	// socket with auth; for a local connection it enforces that Harper is running.
 	const { options } = await resolveRequestOptions(request);
@@ -127,6 +130,16 @@ async function downloadBackup(request: any, databaseName: string): Promise<strin
 	// could otherwise return `../../…` and steer the write outside the cwd.
 	const serverFilename = response.headers['content-disposition']?.match(/filename="([^"]+)"/)?.[1];
 	const outputPath = request.out || (serverFilename && basename(serverFilename)) || `${databaseName}.backup`;
-	await pipeline(response, createWriteStream(outputPath));
+	// Stream to a temporary sibling and rename on success, so a network/server failure mid-download
+	// neither truncates an existing known-good backup at `outputPath` nor leaves a partial file that
+	// looks complete. The temp name is unique per process+time so concurrent downloads never collide.
+	const tempPath = `${outputPath}.${process.pid}-${Date.now()}.part`;
+	try {
+		await pipeline(response, createWriteStream(tempPath, { flags: 'wx' }));
+		await rename(tempPath, outputPath);
+	} catch (error) {
+		await unlink(tempPath).catch(() => {});
+		throw error;
+	}
 	return `Backup of database '${databaseName}' written to ${outputPath}`;
 }
