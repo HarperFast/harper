@@ -65,15 +65,23 @@ describe('Audit log', () => {
 			results.push(entry);
 		}
 		assert.equal(results.length, 5);
-		// Subscription events are delivered off the commit path; nothing orders them against this
-		// assertion, so wait for them rather than sleeping a fixed 20ms and hoping. Unlike the id 1 / id 2
-		// writes above, the delete(1), put(2, two-changed) and put(99, ...) events can never be coalesced
-		// away - each is the final (and, for id 99, only) write to its id - so events.length reaching 3 is
-		// a deterministic floor, not a timing gamble.
-		await waitFor(() => events.length >= 3, {
-			timeout: 5000,
-			message: 'Should have at least the non-coalescible update events (put 99, put 2 two-changed, delete 1)',
+		// Wait for and check the three specific terminal events by content, not just a count -
+		// a count alone (e.g. events.length >= 3) can be satisfied by early, supersede-able
+		// events (the id 1 / id 2 puts above) without proving the terminal writes were ever
+		// delivered, silently masking a regression that drops one of them.
+		const gotNinetyNinePut = () =>
+			events.some((e) => e.id === 99 && e.type === 'put' && e.value?.name === 'ninety-nine');
+		const gotTwoChangedPut = () =>
+			events.some((e) => e.id === 2 && e.type === 'put' && e.value?.name === 'two-changed');
+		const gotOneDelete = () => events.some((e) => e.id === 1 && e.type === 'delete');
+		await waitFor(() => gotNinetyNinePut() && gotTwoChangedPut() && gotOneDelete(), {
+			timeout: 2000,
+			interval: 20,
+			message: 'Should have delivered subscription events for put(99), put(2, two-changed), and delete(1)',
 		});
+		assert(gotNinetyNinePut(), 'Missing subscription event for put(99)');
+		assert(gotTwoChangedPut(), 'Missing subscription event for put(2, two-changed)');
+		assert(gotOneDelete(), 'Missing subscription event for delete(1)');
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
 		setAuditRetention(0.001, 1);
 		// scheduleAuditCleanup() resolves once the pass serving the call has committed its deletions.
