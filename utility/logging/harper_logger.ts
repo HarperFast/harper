@@ -1052,10 +1052,31 @@ export function errorForLog(error: any) {
 // capped so a pathological/adversarial structure can't blow the stack.
 const MAX_SANITIZE_DEPTH = 20;
 
-/** proto === Object.prototype covers `{}`/object literals; proto === null covers Object.create(null). */
+/**
+ * Realm-independent plain-object check: component code runs through node:vm, so a VM-created
+ * object literal's prototype is a *different realm's* Object.prototype and fails a same-realm
+ * `proto === Object.prototype` comparison - which would fall through to the "leave raw" branch
+ * below and hand a VM diagnostic payload's nested Errors an unsanitized path to the raised inspect
+ * depth (the same cross-realm concern isErrorLike already accounts for via isNativeError).
+ * `Object.prototype.toString.call` reports the internal-slot tag ('[object Object]'), not the
+ * prototype chain, so it is realm-independent the same way it is for Map/Set/Date/Error - but a
+ * class instance also reports '[object Object]' when it has no custom Symbol.toStringTag, so that
+ * alone can't distinguish "object literal" from "class instance". The second check does: the
+ * *real* Object.prototype (in any realm) sits exactly one level up (its own prototype is null);
+ * a class instance's prototype chain has its class's prototype in between, so this is false for
+ * `new Causes()` while still true for a VM-created `{}`.
+ */
 function isPlainObject(value: object): boolean {
+	if (Object.prototype.toString.call(value) !== '[object Object]') return false;
 	const proto = Object.getPrototypeOf(value);
-	return proto === Object.prototype || proto === null;
+	return proto === null || Object.getPrototypeOf(proto) === null;
+}
+
+/** A util.inspect-style placeholder for an accessor property, describing it without invoking the
+ *  getter — see the getter-invocation note on deepSanitizeErrors below. */
+function accessorPlaceholder(descriptor: PropertyDescriptor) {
+	const label = descriptor.get && descriptor.set ? '[Getter/Setter]' : descriptor.get ? '[Getter]' : '[Setter]';
+	return { [inspect.custom]: () => label, toString: () => label };
 }
 
 /**
@@ -1084,6 +1105,13 @@ function isPlainObject(value: object): boolean {
  * individually guarded so one hostile getter or exotic nested value can only cost that one
  * field, not the whole render (inspectForLog's own try/catch around inspect() is still the final
  * backstop regardless).
+ *
+ * Never invokes an accessor (getter) property: unlike util.inspect's default (which shows a
+ * getter as `[Getter]` without calling it), reading `value[key]` for every own-enumerable key
+ * would call every getter - turning a passive render of a caught operation error into arbitrary
+ * synchronous code execution (a getter that loops, blocks, or mutates state runs while the logger
+ * is just trying to report the *original* error). Property descriptors are read instead, and only
+ * a data descriptor's value is recursed into; an accessor gets accessorPlaceholder's label.
  */
 function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap(), depth = 0): any {
 	if (value === null || typeof value !== 'object') return value;
@@ -1094,8 +1122,12 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 	let isArray: boolean, isMap: boolean, isSet: boolean;
 	try {
 		isArray = Array.isArray(value);
-		isMap = !isArray && value instanceof Map;
-		isSet = !isArray && !isMap && value instanceof Set;
+		// types.isMap/isSet check an internal slot, not the prototype chain, so (like isNativeError)
+		// they still recognize a Map/Set created in a different realm (component code runs through
+		// node:vm) - `instanceof Map`/`Set` would not, silently leaving that container's contents
+		// (and any Error nested inside) unsanitized at the raised inspect depth below.
+		isMap = !isArray && types.isMap(value);
+		isSet = !isArray && !isMap && types.isSet(value);
 		if (!isArray && !isMap && !isSet && !isPlainObject(value)) return value;
 	} catch {
 		return value; // e.g. a revoked Proxy - util.inspect renders those fine on its own
@@ -1143,16 +1175,21 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 	const result: Record<string | symbol, any> = {};
 	seen.set(value, result);
 	for (const key of Object.keys(value)) {
-		let raw;
+		let descriptor;
 		try {
-			raw = value[key];
+			descriptor = Object.getOwnPropertyDescriptor(value, key);
 		} catch {
-			continue; // a throwing getter - omit rather than risk a second throw re-reading it
+			continue; // a hostile descriptor trap - omit rather than risk a second throw
+		}
+		if (!descriptor) continue; // removed mid-walk by another property's getter side effect
+		if (descriptor.get || descriptor.set) {
+			result[key] = accessorPlaceholder(descriptor);
+			continue;
 		}
 		try {
-			result[key] = deepSanitizeErrors(raw, seen, depth + 1);
+			result[key] = deepSanitizeErrors(descriptor.value, seen, depth + 1);
 		} catch {
-			result[key] = raw;
+			result[key] = descriptor.value;
 		}
 	}
 	for (const sym of Object.getOwnPropertySymbols(value)) {
@@ -1164,20 +1201,26 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap
 		}
 		if (!descriptor?.enumerable) continue;
 		if (sym === inspect.custom) {
-			// The custom renderer itself, not data - preserve unchanged rather than sanitize/invoke.
-			result[sym] = value[sym];
+			// The custom renderer itself, not data - preserve unchanged (even if defined via an
+			// accessor) rather than replace it with an accessor placeholder. util.inspect's own
+			// top-level render finds this hook via the exact same `value[sym]` property access, so
+			// reading it here isn't new arbitrary-code exposure the way an ordinary data getter
+			// would be - it's the documented render-hook contract, just resolved one level earlier.
+			try {
+				result[sym] = value[sym];
+			} catch {
+				// leave unset - inspect() will render the rest of the object without a custom hook
+			}
 			continue;
 		}
-		let raw;
-		try {
-			raw = value[sym];
-		} catch {
+		if (descriptor.get || descriptor.set) {
+			result[sym] = accessorPlaceholder(descriptor);
 			continue;
 		}
 		try {
-			result[sym] = deepSanitizeErrors(raw, seen, depth + 1);
+			result[sym] = deepSanitizeErrors(descriptor.value, seen, depth + 1);
 		} catch {
-			result[sym] = raw;
+			result[sym] = descriptor.value;
 		}
 	}
 	return result;
