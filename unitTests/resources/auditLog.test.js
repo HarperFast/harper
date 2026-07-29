@@ -45,6 +45,18 @@ describe('Audit log', () => {
 		events = [];
 		await AuditedTable.put(1, { name: 'one' });
 		await AuditedTable.put(2, { name: 'two' });
+		// Table.ts's subscription listener only forwards the *latest* value for a given id
+		// (it drops an audit record whose version no longer matches the primary entry's
+		// current version - see Table.ts's "out of order event" check). That's by design:
+		// rapid same-id writes are meant to coalesce to one event. But it means id 1's `put`
+		// and id 2's first `put` above are only delivered if the async notify pass (deferred
+		// via setImmediate off the audit store's 'committed' event) happens to run before the
+		// next write to that same id lands - a race that depends on runner scheduling, which
+		// is exactly what made this assertion flaky under CI load (issue #1939). id 99 below
+		// is never superseded by a later write in this test, so its event is guaranteed to
+		// survive coalescing and be delivered once the notify pass processes it, regardless
+		// of that timing race.
+		await AuditedTable.put(99, { name: 'ninety-nine' });
 		await AuditedTable.put(2, { name: 'two-changed' });
 		await AuditedTable.delete(1);
 		assert.equal(AuditedTable.primaryStore.getEntry(1).value, null); // verify that there is a delete entry
@@ -52,12 +64,15 @@ describe('Audit log', () => {
 		for await (let entry of AuditedTable.getHistory()) {
 			results.push(entry);
 		}
-		assert.equal(results.length, 4);
+		assert.equal(results.length, 5);
 		// Subscription events are delivered off the commit path; nothing orders them against this
-		// assertion, so wait for them rather than sleeping a fixed 20ms and hoping.
-		await waitFor(() => events.length > 2, {
+		// assertion, so wait for them rather than sleeping a fixed 20ms and hoping. Unlike the id 1 / id 2
+		// writes above, the delete(1), put(2, two-changed) and put(99, ...) events can never be coalesced
+		// away - each is the final (and, for id 99, only) write to its id - so events.length reaching 3 is
+		// a deterministic floor, not a timing gamble.
+		await waitFor(() => events.length >= 3, {
 			timeout: 5000,
-			message: 'Should have at least a couple of update events',
+			message: 'Should have at least the non-coalescible update events (put 99, put 2 two-changed, delete 1)',
 		});
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
 		setAuditRetention(0.001, 1);
