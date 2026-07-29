@@ -3,7 +3,7 @@
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const fs = require('fs-extra');
 const rewire = require('rewire');
 const path = require('path');
@@ -434,7 +434,7 @@ describe('Test keys module', () => {
 			Object.defineProperty(databases, 'system', systemDescriptor);
 		});
 
-		it('keeps `.ready` pending while the system database has not loaded, then resolves once it does', async function () {
+		it('keeps `.ready` pending while the system database has not loaded, then resolves with real certs once it does', async function () {
 			// `.ready` is a one-shot gate: server/threads/threadServer.js's Bun listener path awaits it
 			// exactly once and treats a resolved promise as "TLS decided" — if it resolved here with no
 			// certs available, a listener configured as secure would start in plaintext for the rest of
@@ -442,12 +442,16 @@ describe('Test keys module', () => {
 			// while the race is unresolved, only settling once a real pass (with the table loaded)
 			// completes. This uses the real (debounced, ~1.5s) retry and real timers — no Sinon fake
 			// timers, no rewire access to internal state — condition-waiting on the actual observable
-			// transition instead.
+			// transition instead. liveReload=false so this test's selector never registers with the
+			// module-level liveTLSRebuilders registry — a real selector (e.g. MQTT's) always defaults
+			// to true, but that registration isn't part of what this race is about, and leaving it true
+			// here would leak scheduleRebuild (and this test's pseudoServer/caCerts interaction) into
+			// every later test's private-key-reload rebuilds for the rest of the suite.
 			this.timeout(5000);
 			delete databases.system; // as on a worker thread before the system db has loaded
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
 
-			const selector = keys.createTLSSelector('mqtt');
+			const selector = keys.createTLSSelector('mqtt', undefined, false);
 			const readyPromise = selector.initialize(pseudoServer);
 
 			let settled = false;
@@ -456,8 +460,8 @@ describe('Test keys module', () => {
 				() => (settled = true)
 			);
 			await new Promise((resolve) => setImmediate(resolve)); // flush pending microtasks/macrotasks once
-			assert.equal(pseudoServer.secureContexts.size, 0, 'no certs are available yet');
-			assert.equal(
+			assert.strictEqual(pseudoServer.secureContexts.size, 0, 'no certs are available yet');
+			assert.strictEqual(
 				settled,
 				false,
 				'.ready must stay pending while the system database has not loaded — resolving it with no ' +
@@ -470,6 +474,51 @@ describe('Test keys module', () => {
 				timeout: 4000,
 				message: '.ready never resolved after the system database became available',
 			});
+			// A recovery that resolved with the table still empty (e.g. a race in restoring the
+			// property) would satisfy "settled" without actually fixing the incident being tested.
+			assert.ok(
+				pseudoServer.secureContexts.size > 0,
+				"the real cert table (loaded in this suite's before()) must populate secureContexts once recovered"
+			);
+		});
+
+		it('also retries (without throwing or resolving early) when `databases.system` exists but `hdb_certificate` is not yet attached to it', async function () {
+			// The production guard checks `databases.system?.hdb_certificate === undefined`, not just
+			// `databases.system === undefined` — the system database object and its hdb_certificate
+			// table can become available at different times. A regression that only handled the
+			// whole-`system`-missing case would still throw/strand here.
+			this.timeout(5000);
+			const realHdbCertificate = databases.system.hdb_certificate;
+			delete databases.system.hdb_certificate;
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			try {
+				const selector = keys.createTLSSelector('mqtt', undefined, false);
+				const readyPromise = selector.initialize(pseudoServer);
+
+				let settled = false;
+				readyPromise.then(
+					() => (settled = true),
+					() => (settled = true)
+				);
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(
+					settled,
+					false,
+					'.ready must stay pending while hdb_certificate is not yet attached to databases.system'
+				);
+
+				databases.system.hdb_certificate = realHdbCertificate;
+				await waitFor(() => settled, {
+					timeout: 4000,
+					message: '.ready never resolved after hdb_certificate became available',
+				});
+				assert.ok(
+					pseudoServer.secureContexts.size > 0,
+					'the real cert table must populate secureContexts once recovered'
+				);
+			} finally {
+				databases.system.hdb_certificate = realHdbCertificate;
+			}
 		});
 	});
 
