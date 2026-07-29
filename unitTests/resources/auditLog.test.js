@@ -113,6 +113,24 @@ describe('Audit log', () => {
 		assert.equal(history[0].user, key.toString());
 		assert.deepEqual(history[0].value.id, key);
 	});
+	it('audit entries chain to the real prior version, not a placeholder flag', async () => {
+		const id = 'previous-version-chain';
+		await AuditedTable.put(id, { name: 'v1' });
+		await AuditedTable.put(id, { name: 'v2' });
+		await AuditedTable.put(id, { name: 'v3' });
+		const entries = [];
+		for (const entry of AuditedTable.auditStore.getRange({ start: 1 })) {
+			if (entry.tableId === AuditedTable.tableId && entry.recordId === id) entries.push(entry);
+		}
+		entries.sort((a, b) => a.version - b.version);
+		assert.equal(entries.length, 3);
+		// The first write has no prior entry, so previousVersion is falsy.
+		assert(!entries[0].previousVersion);
+		// Each later entry's previousVersion must point at the actual prior entry's version, not a
+		// 0/1 placeholder flag substituted from a shared per-environment register.
+		assert.equal(entries[1].previousVersion, entries[0].version);
+		assert.equal(entries[2].previousVersion, entries[1].version);
+	});
 	it('dynamically add new transaction logs to iterator', async function () {
 		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb
 
