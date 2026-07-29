@@ -8,9 +8,12 @@
 // `npm install` line streaming.
 
 const assert = require('node:assert');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -121,5 +124,50 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		const result = await nonInteractiveSpawn('test-app', 'node', [script], workDir, 30_000);
 		assert.strictEqual(result.code, 0);
 		assert.match(result.stdout, /hello world/);
+	});
+
+	it('terminates descendant processes before a timed-out spawn rejects', async () => {
+		const writesPath = join(workDir, 'descendant-writes');
+		const writer = writeScript(
+			'descendant-writer.js',
+			`const fs = require('node:fs');
+			setInterval(() => fs.appendFileSync(${JSON.stringify(writesPath)}, 'x'), 10);`
+		);
+		const parent = writeScript(
+			'descendant-parent.js',
+			`require('node:child_process').spawn(process.execPath, [${JSON.stringify(writer)}], { stdio: 'ignore' });
+			setInterval(() => {}, 1000);`
+		);
+
+		await assert.rejects(nonInteractiveSpawn('test-app', 'node', [parent], workDir, 200), /timed out after 200ms/);
+		const sizeAfterTimeout = (await require('node:fs/promises').stat(writesPath)).size;
+		assert.ok(sizeAfterTimeout > 0, 'descendant writer should have started before the timeout');
+		await delay(150); // asserting the non-event: no descendant may keep writing after rejection
+		assert.equal((await require('node:fs/promises').stat(writesPath)).size, sizeAfterTimeout);
+	});
+
+	it('terminates a detached process tree when its owning worker is force-terminated', async () => {
+		const writesPath = join(workDir, 'worker-descendant-writes');
+		const writer = writeScript(
+			'worker-descendant-writer.js',
+			`const fs = require('node:fs');
+			setInterval(() => fs.appendFileSync(${JSON.stringify(writesPath)}, 'x'), 10);`
+		);
+		const harness = spawn(process.execPath, [require.resolve('./fixtures/processGroupHarness.js')], {
+			stdio: ['ignore', 'pipe', 'inherit'],
+			env: {
+				...process.env,
+				HARPER_TEST_PROCESS_GROUP_WRITER: writer,
+				HARPER_TEST_PROCESS_GROUP_OUTPUT: writesPath,
+			},
+		});
+		let output = '';
+		harness.stdout.on('data', (chunk) => (output += chunk));
+		await once(harness, 'close');
+		assert.match(output, /terminated/);
+
+		const sizeAfterTermination = (await require('node:fs/promises').stat(writesPath)).size;
+		await delay(150); // asserting the non-event: the worker's detached child must be gone
+		assert.equal((await require('node:fs/promises').stat(writesPath)).size, sizeAfterTermination);
 	});
 });

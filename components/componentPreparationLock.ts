@@ -1,0 +1,136 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { link, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, resolve, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { threadId } from 'node:worker_threads';
+
+export const COMPONENT_PREPARATION_LOCK_DIR = '.component-preparation-locks';
+const LOCK_POLL_INTERVAL_MS = 50;
+const DEFAULT_LOCK_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+
+export interface ComponentPreparationLockOwner {
+	pid: number;
+	threadId: number;
+	token: string;
+}
+
+export interface ComponentPreparationLockOptions {
+	timeoutMs?: number;
+	onWait?: (owner: ComponentPreparationLockOwner | null) => void;
+}
+
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error: any) {
+		return error.code === 'EPERM';
+	}
+}
+
+async function readOwner(lockPath: string): Promise<ComponentPreparationLockOwner | null> {
+	try {
+		return JSON.parse(await readFile(lockPath, 'utf8'));
+	} catch (error: any) {
+		if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
+		throw error;
+	}
+}
+
+async function removeStaleLock(lockPath: string): Promise<boolean> {
+	const owner = await readOwner(lockPath);
+	if (!owner) return false;
+	// All worker threads share a PID. Treat our own PID as authoritative instead of probing it:
+	// process.kill is commonly wrapped by embedders/test harnesses, and a false negative here would
+	// permit exactly the concurrent mutation this lock exists to prevent.
+	const ownerProcessExited = owner.pid !== process.pid && !isProcessAlive(owner.pid);
+	if (!ownerProcessExited) return false;
+
+	const stalePath = `${lockPath}.stale-${randomUUID()}`;
+	try {
+		await rename(lockPath, stalePath);
+	} catch (error: any) {
+		if (error.code === 'ENOENT') return true;
+		throw error;
+	}
+	await rm(stalePath, { force: true });
+	return true;
+}
+
+async function acquireComponentPreparationLock(
+	componentDirPath: string,
+	options: ComponentPreparationLockOptions
+): Promise<() => Promise<void>> {
+	// Keep the key stable while a preparation replaces the path. realpath() would change from the
+	// literal path to a symlink target (or back) mid-deploy and let a same-path waiter bypass the lock.
+	const canonicalPath = resolve(componentDirPath);
+	const lockName = createHash('sha256').update(canonicalPath).digest('hex');
+	const lockRoot = join(dirname(canonicalPath), COMPONENT_PREPARATION_LOCK_DIR);
+	const lockPath = join(lockRoot, lockName);
+	const owner: ComponentPreparationLockOwner = {
+		pid: process.pid,
+		threadId,
+		token: randomUUID(),
+	};
+	const temporaryLockPath = join(lockRoot, `.${lockName}.${owner.token}.tmp`);
+	const deadline = performance.now() + (options.timeoutMs ?? DEFAULT_LOCK_WAIT_TIMEOUT_MS);
+
+	await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+	let waitingReported = false;
+	for (;;) {
+		try {
+			// Publish a fully-written owner record atomically. A process that dies before link() can
+			// leave only its uniquely-named temporary file; contenders never mistake a partial owner
+			// record for the common lock.
+			await writeFile(temporaryLockPath, JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
+			try {
+				await link(temporaryLockPath, lockPath);
+			} finally {
+				// The common hard link, not this uniquely-named staging file, carries ownership.
+				// A cleanup failure must not turn a successfully acquired lock into an orphan.
+				await rm(temporaryLockPath, { force: true }).catch(() => {});
+			}
+			break;
+		} catch (error: any) {
+			if (error.code !== 'EEXIST') throw error;
+			if (await removeStaleLock(lockPath)) continue;
+			if (!waitingReported) {
+				waitingReported = true;
+				options.onWait?.(await readOwner(lockPath));
+			}
+			if (performance.now() >= deadline) {
+				const currentOwner = await readOwner(lockPath);
+				throw new Error(
+					`Timed out waiting for component preparation lock for ${canonicalPath}` +
+						(currentOwner ? ` held by process ${currentOwner.pid}, thread ${currentOwner.threadId}` : '')
+				);
+			}
+			await delay(LOCK_POLL_INTERVAL_MS);
+		}
+	}
+
+	return async () => {
+		const currentOwner = await readOwner(lockPath);
+		if (currentOwner?.token !== owner.token) {
+			throw new Error(`Lost ownership of component preparation lock for ${canonicalPath}`);
+		}
+		await rm(lockPath, { force: true });
+	};
+}
+
+/**
+ * Serialize destructive preparation work for one component path across Harper
+ * worker threads. Different component directories remain independent and can prepare in parallel.
+ */
+export async function withComponentPreparationLock<T>(
+	componentDirPath: string,
+	prepare: () => Promise<T>,
+	options: ComponentPreparationLockOptions = {}
+): Promise<T> {
+	const release = await acquireComponentPreparationLock(componentDirPath, options);
+	try {
+		return await prepare();
+	} finally {
+		await release();
+	}
+}
