@@ -364,7 +364,10 @@ describe('Caching', () => {
 			}
 			assert.equal(results.length, 1); // stale row served without waiting on source
 			assert.equal(results[0].id, 23);
-			assert.equal(sourceRequests, 1); // background revalidation was started
+			// The background revalidation is kicked off after the query already returned the stale
+			// row, so it may not have started yet on this tick (racy on a loaded CI runner) — poll
+			// for it instead, matching the same pattern used for the single-record path above.
+			await waitFor(() => sourceRequests === 1, { message: 'background revalidation should have started' });
 			assert.equal(sourceResponses, 0); // and the query did NOT block on it (response still gated)
 			assert(releaseSource, 'the source revalidation should be in-flight (gated)');
 			releaseSource(); // now let the background revalidation complete
