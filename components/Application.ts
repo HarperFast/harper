@@ -1240,11 +1240,13 @@ async function persistApplicationLock(
 	harperApplicationLock: { applications: Record<string, ApplicationConfig> }
 ): Promise<void> {
 	const previous = applicationLockWriteQueues.get(harperApplicationLockPath) ?? Promise.resolve();
-	const next = previous.catch(() => {}).then(async () => {
-		const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
-		await writeFile(tempPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
-		await rename(tempPath, harperApplicationLockPath);
-	});
+	const next = previous
+		.catch(() => {})
+		.then(async () => {
+			const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
+			await writeFile(tempPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
+			await rename(tempPath, harperApplicationLockPath);
+		});
 	applicationLockWriteQueues.set(harperApplicationLockPath, next);
 	await next;
 }
