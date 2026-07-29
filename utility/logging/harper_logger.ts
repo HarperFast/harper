@@ -1084,6 +1084,26 @@ function accessorPlaceholder(descriptor: PropertyDescriptor) {
 }
 
 /**
+ * Placeholder substituted when a recursive sanitize step on a child throws, instead of falling
+ * back to that child's raw (unsanitized) value. A throw here is not a reason to skip sanitizing -
+ * it is exactly the case a hostile value produces (e.g. a Proxy whose `ownKeys` trap throws once
+ * reached one level down), and the child that triggered it may itself contain an unsanitized
+ * Error. Falling back to raw would silently hand that Error to inspect() at the raised depth,
+ * recreating the #1734 leak this whole walk exists to prevent.
+ */
+function sanitizeFailurePlaceholder() {
+	return labelPlaceholder('[Unrenderable value: sanitize failed]');
+}
+
+// Unique symbol keys for the plain-object breadth-cap markers below, rather than a string key
+// like the array/Map/Set truncation markers use - a hostile or just plain unlucky object could
+// have an own string property literally named the same as a string marker, silently colliding
+// with (and hiding) real data. A locally-scoped Symbol can never collide with an enumerable
+// string OR pre-existing symbol key on the original value.
+const KEYS_TRUNCATED_MARKER = Symbol('sanitize: string-keyed properties truncated');
+const SYMBOLS_TRUNCATED_MARKER = Symbol('sanitize: symbol-keyed properties truncated');
+
+/**
  * True for the specific built-ins whose actual data is NOT reachable through their own-enumerable
  * string/symbol keys, so rebuilding them via a property walk would silently corrupt their
  * rendering (Object.keys(new Date()) is `[]`; a Buffer's bytes live in a typed-array internal
@@ -1095,12 +1115,19 @@ function accessorPlaceholder(descriptor: PropertyDescriptor) {
  * prototype chain, so - like isNativeError / types.isMap / types.isSet elsewhere in this file -
  * this is realm-independent: a VM-created Date is still recognized as opaque.
  *
+ * Promise is deliberately NOT included here (handled separately in deepSanitizeErrors, see below):
+ * unlike the others, a Promise's resolved/rejected value is not merely internal-slot data with a
+ * fixed rendering, it's arbitrary caller data - and util.inspect renders it directly, own-enumerable
+ * properties and all (`util.inspect(Promise.resolve(errorWithSecretHeader), { depth: 8 })` prints
+ * the header). There is no supported synchronous way to read that value in order to sanitize it, so
+ * the only safe option is to never hand a Promise to inspect() raw.
+ *
  * Residual gap, accepted rather than chased further: an *expando* own-enumerable property stashed
- * directly on one of these opaque built-ins (e.g. `const d = new Date(); d.cause = secretError`)
- * is not reached either, since the value is returned entirely unwalked to protect its native
- * rendering. Attaching an expando to a Date/Buffer/Promise/etc. is not a pattern any real
- * diagnostic payload (deployComponent's or otherwise) produces - unlike the Map/Set/class-instance
- * cases above, which are ordinary, expected shapes for a generic `http_resp_msg` field.
+ * directly on one of these remaining opaque built-ins (e.g. `const d = new Date(); d.cause =
+ * secretError`) is not reached either, since the value is returned entirely unwalked to protect its
+ * native rendering. Attaching an expando to a Date/Buffer/etc. is not a pattern any real diagnostic
+ * payload (deployComponent's or otherwise) produces - unlike the Map/Set/class-instance cases above,
+ * which are ordinary, expected shapes for a generic `http_resp_msg` field.
  */
 function isOpaqueBuiltin(value: object): boolean {
 	return (
@@ -1108,7 +1135,6 @@ function isOpaqueBuiltin(value: object): boolean {
 		types.isRegExp(value) ||
 		types.isArrayBufferView(value) || // covers Buffer and every TypedArray/DataView
 		types.isAnyArrayBuffer(value) ||
-		types.isPromise(value) ||
 		types.isWeakMap(value) ||
 		types.isWeakSet(value) ||
 		types.isBoxedPrimitive(value) // a boxed Boolean/Number/String/Symbol/BigInt wrapper
@@ -1195,6 +1221,11 @@ function deepSanitizeErrors(
 		// (and any Error nested inside) unsanitized at the raised inspect depth below.
 		isMap = !isArray && types.isMap(value);
 		isSet = !isArray && !isMap && types.isSet(value);
+		// See the Promise note on isOpaqueBuiltin above: its resolved/rejected value is arbitrary
+		// caller data that inspect() renders directly (own-enumerable properties included), and there
+		// is no supported synchronous way to read it in order to sanitize it - so unlike every other
+		// opaque built-in, a Promise is never handed to inspect() raw, sanitized or not.
+		if (!isArray && !isMap && !isSet && types.isPromise(value)) return labelPlaceholder('[Promise]');
 		if (!isArray && !isMap && !isSet && isOpaqueBuiltin(value)) return value;
 	} catch {
 		return value; // e.g. a revoked Proxy - util.inspect renders those fine on its own
@@ -1226,7 +1257,7 @@ function deepSanitizeErrors(
 			try {
 				clone[i] = deepSanitizeErrors(descriptor.value, seen, depth + 1, budget);
 			} catch {
-				clone[i] = descriptor.value;
+				clone[i] = sanitizeFailurePlaceholder();
 			}
 		}
 		if (overflow) clone[limit] = labelPlaceholder(`[${length - limit} more array entries omitted (sanitize budget)]`);
@@ -1247,11 +1278,21 @@ function deepSanitizeErrors(
 		// rather than resolving value's own (or an overriding subclass's) Symbol.iterator.
 		for (const [k, v] of Map.prototype.entries.call(value)) {
 			if (count++ >= limit) break;
+			// Sanitized independently (rather than in one combined try) so a throw sanitizing the key
+			// doesn't also discard an already-sanitized value, or vice versa - each side falls back to
+			// its own placeholder, never to the other's raw counterpart.
+			let sanitizedKey, sanitizedValue;
 			try {
-				clone.set(deepSanitizeErrors(k, seen, depth + 1, budget), deepSanitizeErrors(v, seen, depth + 1, budget));
+				sanitizedKey = deepSanitizeErrors(k, seen, depth + 1, budget);
 			} catch {
-				clone.set(k, v);
+				sanitizedKey = sanitizeFailurePlaceholder();
 			}
+			try {
+				sanitizedValue = deepSanitizeErrors(v, seen, depth + 1, budget);
+			} catch {
+				sanitizedValue = sanitizeFailurePlaceholder();
+			}
+			clone.set(sanitizedKey, sanitizedValue);
 		}
 		if (overflow)
 			clone.set(
@@ -1274,7 +1315,7 @@ function deepSanitizeErrors(
 			try {
 				clone.add(deepSanitizeErrors(item, seen, depth + 1, budget));
 			} catch {
-				clone.add(item);
+				clone.add(sanitizeFailurePlaceholder());
 			}
 		}
 		if (overflow) clone.add(labelPlaceholder(`[${size - limit} more Set entries omitted (sanitize budget)]`));
@@ -1288,7 +1329,16 @@ function deepSanitizeErrors(
 	} catch {
 		// leave result's prototype as plain Object - inspect() renders it without the class name
 	}
-	for (const key of Object.keys(value)) {
+	// Object.keys/getOwnPropertySymbols themselves are one unavoidable O(n) pass (a plain object,
+	// unlike Array/Map/Set, has no O(1) size to check before enumerating) - but everything AFTER
+	// that (getOwnPropertyDescriptor + recurse + defineProperty per key) is the expensive part, and
+	// that part IS capped at budget.maxEntries, same as every other container branch, so a
+	// million-key object can't turn a single log call into a million-entry clone.
+	const keys = Object.keys(value);
+	const keysOverflow = keys.length > budget.maxEntries;
+	const keysLimit = keysOverflow ? budget.maxEntries - 1 : keys.length;
+	for (let i = 0; i < keysLimit; i++) {
+		const key = keys[i];
 		let descriptor;
 		try {
 			descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -1303,10 +1353,20 @@ function deepSanitizeErrors(
 		try {
 			defineOwnProperty(result, key, deepSanitizeErrors(descriptor.value, seen, depth + 1, budget));
 		} catch {
-			defineOwnProperty(result, key, descriptor.value);
+			defineOwnProperty(result, key, sanitizeFailurePlaceholder());
 		}
 	}
-	for (const sym of Object.getOwnPropertySymbols(value)) {
+	if (keysOverflow)
+		defineOwnProperty(
+			result,
+			KEYS_TRUNCATED_MARKER,
+			labelPlaceholder(`[${keys.length - keysLimit} more properties omitted (sanitize budget)]`)
+		);
+	const symbols = Object.getOwnPropertySymbols(value);
+	const symbolsOverflow = symbols.length > budget.maxEntries;
+	const symbolsLimit = symbolsOverflow ? budget.maxEntries - 1 : symbols.length;
+	for (let i = 0; i < symbolsLimit; i++) {
+		const sym = symbols[i];
 		let descriptor;
 		try {
 			descriptor = Object.getOwnPropertyDescriptor(value, sym);
@@ -1334,9 +1394,15 @@ function deepSanitizeErrors(
 		try {
 			defineOwnProperty(result, sym, deepSanitizeErrors(descriptor.value, seen, depth + 1, budget));
 		} catch {
-			defineOwnProperty(result, sym, descriptor.value);
+			defineOwnProperty(result, sym, sanitizeFailurePlaceholder());
 		}
 	}
+	if (symbolsOverflow)
+		defineOwnProperty(
+			result,
+			SYMBOLS_TRUNCATED_MARKER,
+			labelPlaceholder(`[${symbols.length - symbolsLimit} more symbol properties omitted (sanitize budget)]`)
+		);
 	return result;
 }
 
