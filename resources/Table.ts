@@ -366,6 +366,13 @@ export function makeTable(options) {
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
+	// getFromSource() intentionally resolves its caller before the resolved record's cache
+	// write has committed (see there) so GET latency doesn't pay for the write. dropTable()
+	// must not drop this table's column families while one of those writes is still landing —
+	// racing a drop against an in-flight write is what corrupts the column family handle and
+	// produces "Invalid column family specified in write batch" (harper#1381). Track the
+	// in-flight commit promises here so dropTable() can drain them first.
+	const pendingSourceCommits = new Set<Promise<any>>();
 	let createdTimeProperty: Attribute | undefined,
 		updatedTimeProperty: Attribute | undefined,
 		expiresAtProperty: Attribute | undefined;
@@ -1351,6 +1358,20 @@ export function makeTable(options) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
 					deleteBlobsInObject(entry.value);
 				}
+			}
+			// A get() against a sourcedFrom table resolves to its caller before the resolved
+			// record's cache write has committed (see getFromSource) - the write lands "in the
+			// background" for latency reasons. No new request can reach this table now that it's
+			// removed from the schema above, but a write from a get() that already returned may
+			// still be in flight. Dropping the column families out from under that write is a
+			// genuine invariant violation, not just a benign race: RocksDB rejects the still-open
+			// write batch with "Invalid column family specified in write batch" (or "Could not
+			// access column family N"), which can also abort this drop before it removes the
+			// tombstoned catalog rows - leaving the table stuck "dropping" for
+			// completeInterruptedDrop to retry (and fail identically) on every subsequent load
+			// (harper#1381). Drain any in-flight commits before touching a single column family.
+			if (pendingSourceCommits.size) {
+				await Promise.allSettled([...pendingSourceCommits]);
 			}
 			if (databaseName === databasePath) {
 				// part of a database.
@@ -5585,8 +5606,11 @@ export function makeTable(options) {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
 			let resolved;
+			// Tracked in pendingSourceCommits (below) so dropTable() can wait for this write to
+			// land before it drops the table's column families - see the comment there.
+			let commitPromise: Promise<any>;
 			when(
-				transaction(sourceContext, async (_txn) => {
+				(commitPromise = transaction(sourceContext, async (_txn) => {
 					const start = performance.now();
 					let updatedRecord;
 					let hasChanges, invalidated;
@@ -5838,16 +5862,19 @@ export function makeTable(options) {
 					if (embedBefore) await embedBefore();
 					sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
 					dbTxn.addWrite(sourceWrite);
-				}),
+				})),
 				() => {
+					pendingSourceCommits.delete(commitPromise);
 					primaryStore.unlock(id);
 				},
 				(error) => {
+					pendingSourceCommits.delete(commitPromise);
 					primaryStore.unlock(id);
 					if (resolved) logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
 				}
 			);
+			pendingSourceCommits.add(commitPromise);
 		});
 	}
 

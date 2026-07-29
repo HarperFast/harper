@@ -176,3 +176,68 @@ describe('Resource.get context passing', function () {
 		assert(!result || result === null);
 	});
 });
+
+describe('dropTable waits for in-flight source-populated cache writes (harper#1381)', function () {
+	// Resource.get() resolves to its caller as soon as the source responds - the resulting
+	// cache write to the primary store commits "in the background" afterward (see
+	// getFromSource in Table.ts). If dropTable() drops the table's column families while one
+	// of those writes is still landing, RocksDB rejects the write with "Invalid column family
+	// specified in write batch" (or "Could not access column family N"), which can also abort
+	// the drop itself before it removes the tombstoned catalog rows - leaving the table stuck
+	// "dropping" for completeInterruptedDrop to retry (and fail identically) on every
+	// subsequent load. That is the failure this test reproduces deterministically: rather than
+	// racing real timing (which only sometimes loses), the source's resolution is gated behind
+	// a promise the test controls, so the in-flight write is provably still pending when
+	// dropTable() is called.
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // this table drop path is RocksDB-only
+
+	it('does not resolve dropTable() until a gated cache-from-source write has landed', async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		const TestTable = table({
+			table: 'DropRaceTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+
+		let releaseSource;
+		const sourceGate = new Promise((resolve) => {
+			releaseSource = resolve;
+		});
+		TestTable.sourcedFrom({
+			get: async (id) => {
+				await sourceGate;
+				return { id, name: 'gated' };
+			},
+			available: () => true,
+		});
+
+		// Kick off a get() that will hang inside the source until we release it below. Its
+		// cache-write commit is registered as pending the moment this call starts.
+		const getPromise = TestTable.get('gated-1', {});
+
+		// Let the get() call reach the gated source and register its pending commit.
+		await new Promise((resolve) => setImmediate(resolve));
+		await new Promise((resolve) => setImmediate(resolve));
+
+		let dropResolved = false;
+		const dropPromise = TestTable.dropTable().then(() => {
+			dropResolved = true;
+		});
+
+		// The source hasn't been released yet, so the cache write can't have landed - dropTable()
+		// must still be waiting on it, not racing ahead to drop the column families.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.strictEqual(
+			dropResolved,
+			false,
+			'dropTable() must not drop the column families while a source-populated cache write is still in flight'
+		);
+
+		releaseSource();
+		await getPromise;
+		await dropPromise;
+		assert.strictEqual(dropResolved, true, 'dropTable() should resolve once the pending write has landed');
+	});
+});
