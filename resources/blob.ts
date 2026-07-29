@@ -33,7 +33,6 @@ import {
 	writeFile,
 	type FSWatcher,
 } from 'node:fs';
-import type { StatsFs } from 'node:fs';
 import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
@@ -46,6 +45,7 @@ import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpe
 import { getHeapStatistics } from 'node:v8';
 import { setTimeout as delay, setImmediate as rest } from 'node:timers/promises';
 import { _assignPackageExport } from '../globals.js';
+import { getStorageSpaceStats } from '../server/storageReclamation.ts';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -1346,18 +1346,12 @@ async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 	if (!statfs) return; // statfs is not available on all older node versions
 	const availableSpaces = await Promise.all(
 		blobStoragePaths.map(async (path) => {
-			let stats: StatsFs;
-			try {
-				stats = await statfs(path);
-			} catch (error) {
-				if (error.code !== 'ENOENT') throw error;
-				// if the path doesn't exist, go ahead and create it
-				ensureDirSync(path);
-				// try again after the path is created
-				stats = await statfs(path);
-			}
-			const availableSpace = stats.bavail * stats.bsize;
-			return Math.pow(availableSpace, 0.8); // we don't want this to be quite linear, so we use a power function to reduce the impact of large differences in available space
+			// getStorageSpaceStats prefers a fresh quota-status.json over statfs (#1976), and the
+			// quota-based branch never touches the path, so ensure it exists up front rather than
+			// relying on a statfs ENOENT to trigger creation.
+			if (!existsSync(path)) ensureDirSync(path);
+			const stats = await getStorageSpaceStats(path);
+			return Math.pow(stats.available, 0.8); // we don't want this to be quite linear, so we use a power function to reduce the impact of large differences in available space
 		})
 	);
 	const frequencyTable = new Array(FREQUENCY_TABLE_SIZE);

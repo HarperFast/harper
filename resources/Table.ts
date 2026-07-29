@@ -73,7 +73,7 @@ import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
-import { onStorageReclamation } from '../server/storageReclamation.ts';
+import { onStorageReclamation, getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
@@ -4568,12 +4568,7 @@ export function makeTable(options) {
 			);
 		}
 		static getStorageStats() {
-			const stats = fs.statfsSync(primaryStore.path);
-			return {
-				available: stats.bavail * stats.bsize,
-				free: stats.bfree * stats.bsize,
-				size: stats.blocks * stats.bsize,
-			};
+			return getStorageSpaceStats(primaryStore.path);
 		}
 		static async getRecordCount(options?: any) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
