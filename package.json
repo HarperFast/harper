@@ -128,7 +128,7 @@
 		}
 	},
 	"devDependencies": {
-		"@harperfast/code-guidelines": "^0.1.1",
+		"@harperfast/code-guidelines": "^0.1.2",
 		"@harperfast/integration-testing": "^0.6.2",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/busboy": "^1.5.4",
