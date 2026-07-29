@@ -851,7 +851,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						version: newVersion,
 						tableId,
 						recordId: id,
-						previousVersion: existingEntry?.localTime,
+						previousVersion: isRocksDB ? existingEntry?.version : existingEntry?.localTime,
 						nodeId,
 						user: username,
 						type,
