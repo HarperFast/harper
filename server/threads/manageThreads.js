@@ -63,6 +63,7 @@ const FORCE_EXIT = 'force-exit';
 const EXTEND_SHUTDOWN_DEADLINE = 'extend-shutdown-deadline';
 const REGISTER_PROCESS_GROUP = 'register-process-group';
 const UNREGISTER_PROCESS_GROUP = 'unregister-process-group';
+const THREAD_INFO_REQUEST_TIMEOUT_MS = 1000;
 let getThreadInfo;
 // Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
 let selfExitTimer;
@@ -825,16 +826,35 @@ if (parentPort && workerData?.addPorts) {
 			arrayBuffers: memoryUsage.arrayBuffers,
 		});
 	}, REPORTING_INTERVAL).unref();
-	getThreadInfo = () =>
-		new Promise((resolve) => {
-			// request thread info from the parent thread and wait for it to response with info on all the threads
+	getThreadInfo = (timeoutMs) =>
+		new Promise((resolve, reject) => {
+			// Request thread info from the parent thread and wait for it to respond with info on all threads.
+			let timeout;
 			parentPort.on('message', receiveThreadInfo);
-			parentPort.postMessage({ type: REQUEST_THREAD_INFO });
+			try {
+				parentPort.postMessage({ type: REQUEST_THREAD_INFO });
+			} catch (error) {
+				cleanup();
+				reject(error);
+				return;
+			}
 			function receiveThreadInfo(message) {
 				if (message.type === THREAD_INFO) {
-					parentPort.off('message', receiveThreadInfo);
+					cleanup();
 					resolve(message.workers);
 				}
+			}
+			function cleanup() {
+				if (timeout) clearTimeout(timeout);
+				parentPort.off('message', receiveThreadInfo);
+			}
+			if (timeoutMs != null) {
+				timeout = setTimeout(() => {
+					cleanup();
+					const error = new Error(`Timed out waiting for thread information after ${timeoutMs}ms`);
+					error.code = 'ERR_THREAD_INFO_TIMEOUT';
+					reject(error);
+				}, timeoutMs);
 			}
 		});
 } else {
@@ -898,9 +918,9 @@ function unregisterProcessGroup(processGroupId) {
 	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId });
 }
 
-async function isThreadRunning(ownerThreadId) {
+async function isThreadRunning(ownerThreadId, timeoutMs = THREAD_INFO_REQUEST_TIMEOUT_MS) {
 	if (ownerThreadId === threadId || ownerThreadId === 0) return true;
-	return (await getThreadInfo()).some((worker) => worker.threadId === ownerThreadId);
+	return (await getThreadInfo(timeoutMs)).some((worker) => worker.threadId === ownerThreadId);
 }
 
 if (isMainThread) {
