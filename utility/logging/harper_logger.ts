@@ -184,11 +184,15 @@ async function updateLogSettings() {
 }
 
 /**
- * True when the argument is an Error (same-realm or native cross-realm). The try/catch guards
- * exotic objects whose prototype is unreachable (e.g. a revoked Proxy, where `instanceof`
- * throws) — the logger must never throw on any input, and util.format renders those fine raw.
+ * True when the argument is an Error (same-realm or native cross-realm — component code runs
+ * through node:vm, so a VM-created Error fails `instanceof Error` but passes `isNativeError`).
+ * The try/catch guards exotic objects whose prototype is unreachable (e.g. a revoked Proxy,
+ * where `instanceof` throws) — the logger must never throw on any input, and util.format
+ * renders those fine raw. Exported so call sites outside this module (e.g.
+ * OperationFunctionCaller, deciding how to log an error-shaped value it didn't itself catch as
+ * an Error) can reuse the same classification instead of a weaker local `instanceof` check.
  */
-function isErrorLike(arg: any): boolean {
+export function isErrorLike(arg: any): boolean {
 	try {
 		return arg instanceof Error || isNativeError(arg);
 	} catch {
@@ -344,6 +348,8 @@ module.exports = {
 	startOnMainThread: updateLogSettings,
 	errorToString,
 	errorForLog,
+	inspectForLog,
+	isErrorLike,
 	disableStdio,
 	externalLogger,
 };
@@ -1042,6 +1048,133 @@ export function errorForLog(error: any) {
 	return { [inspect.custom]: render, toString: render };
 }
 
+// Bounds deepSanitizeErrors' walk: deep enough to reach any realistic diagnostic payload shape,
+// capped so a pathological/adversarial structure can't blow the stack.
+const MAX_SANITIZE_DEPTH = 20;
+
+/** proto === Object.prototype covers `{}`/object literals; proto === null covers Object.create(null). */
+function isPlainObject(value: object): boolean {
+	const proto = Object.getPrototypeOf(value);
+	return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Recursively walks a plain object/array, replacing every Error-like value found at any depth
+ * with its errorForLog wrapper (see isErrorLike/errorForLog and #1734). sanitizeErrorArgs is
+ * deliberately shallow because it guards the hot, frequent top-level log-call path — this walk is
+ * for inspectForLog's callers instead, which are low-frequency (a caught error's diagnostic
+ * detail), so the extra traversal cost doesn't matter and full coverage does: an Error nested
+ * anywhere inside a value later rendered with a raised inspect depth (see inspectForLog) would
+ * otherwise surface its own-enumerable properties raw.
+ *
+ * Only plain objects and arrays are rebuilt. Anything else (Date, Map, Set, Buffer, RegExp, a
+ * class instance) is returned as-is: rebuilding one via Object.keys() would silently corrupt its
+ * rendering (a Date/Map/Buffer's actual data isn't reachable through its own enumerable string
+ * keys - Object.keys(new Date()) is `[]`) in exchange for a residual gap - a raw Error nested
+ * inside one of these container types is not sanitized - that mirrors sanitizeErrorArgs' own
+ * accepted shallow-by-design boundary rather than introducing a new one.
+ *
+ * Cycle-safe via a WeakMap from original to its (in-progress) clone, registered before recursing
+ * into children, so a cycle resolves to the clone in progress rather than falling back to the raw
+ * original (which would bypass sanitization on the repeated branch) - and depth-capped so a
+ * pathologically deep structure can't blow the stack. Every property read and recursive step is
+ * individually guarded so one hostile getter or exotic nested value can only cost that one
+ * field, not the whole render (inspectForLog's own try/catch around inspect() is still the final
+ * backstop regardless).
+ */
+function deepSanitizeErrors(value: any, seen: WeakMap<object, any> = new WeakMap(), depth = 0): any {
+	if (value === null || typeof value !== 'object') return value;
+	if (isErrorLike(value)) return errorForLog(value);
+	if (seen.has(value)) return seen.get(value);
+	if (depth >= MAX_SANITIZE_DEPTH) return value;
+
+	let isArray: boolean;
+	try {
+		isArray = Array.isArray(value);
+		if (!isArray && !isPlainObject(value)) return value;
+	} catch {
+		return value; // e.g. a revoked Proxy - util.inspect renders those fine on its own
+	}
+
+	if (isArray) {
+		const clone: any[] = [];
+		seen.set(value, clone);
+		for (const item of value) {
+			try {
+				clone.push(deepSanitizeErrors(item, seen, depth + 1));
+			} catch {
+				clone.push(item);
+			}
+		}
+		return clone;
+	}
+
+	const result: Record<string | symbol, any> = {};
+	seen.set(value, result);
+	for (const key of Object.keys(value)) {
+		let raw;
+		try {
+			raw = value[key];
+		} catch {
+			continue; // a throwing getter - omit rather than risk a second throw re-reading it
+		}
+		try {
+			result[key] = deepSanitizeErrors(raw, seen, depth + 1);
+		} catch {
+			result[key] = raw;
+		}
+	}
+	for (const sym of Object.getOwnPropertySymbols(value)) {
+		let descriptor;
+		try {
+			descriptor = Object.getOwnPropertyDescriptor(value, sym);
+		} catch {
+			continue;
+		}
+		if (!descriptor?.enumerable) continue;
+		if (sym === inspect.custom) {
+			// The custom renderer itself, not data - preserve unchanged rather than sanitize/invoke.
+			result[sym] = value[sym];
+			continue;
+		}
+		let raw;
+		try {
+			raw = value[sym];
+		} catch {
+			continue;
+		}
+		try {
+			result[sym] = deepSanitizeErrors(raw, seen, depth + 1);
+		} catch {
+			result[sym] = raw;
+		}
+	}
+	return result;
+}
+
+/**
+ * Returns a log-safe lazy wrapper around `util.inspect(value, options)`, for call sites that need
+ * to log a structured, non-Error value with non-default inspect options (e.g. a deeper depth or
+ * higher array/string limits than Console's defaults, to avoid flattening nested diagnostic data —
+ * see harper#1982). Same rationale as errorForLog: the wrapper defers the (potentially expensive,
+ * e.g. large-array) render until the logger's level gate actually writes the entry, and the render
+ * itself can never throw regardless of what `value` is — including a hostile nested
+ * `[util.inspect.custom]` hook — so a formatting failure can never mask the real thing being
+ * logged (e.g. replace the caught operation error with an inspect error). Any Error nested inside
+ * `value` is sanitized via deepSanitizeErrors before rendering, so a raised inspect depth here
+ * can't surface a nested Error's own-enumerable properties (#1734) the way the raw value would.
+ */
+export function inspectForLog(value: any, options?: any) {
+	const render = () => {
+		try {
+			return inspect(deepSanitizeErrors(value), options);
+		} catch (err) {
+			return `[Unrenderable value: ${err instanceof Error ? err.message : String(err)}]`;
+		}
+	};
+	return { [inspect.custom]: render, toString: render };
+}
+
 export function setMainLogger(logger: any) {
 	mainLogger = logger;
 }
@@ -1101,4 +1234,6 @@ export default {
 	AuthAuditLog,
 	errorToString,
 	errorForLog,
+	inspectForLog,
+	isErrorLike,
 };
