@@ -322,6 +322,23 @@ describe('matchesRoute', () => {
 		assert.strictEqual(matchesRoute(req('/deep/path', 'example.com'), route), true);
 		assert.strictEqual(matchesRoute(req('/deep/path', 'other.com'), route), false);
 	});
+
+	// HTTP/2 clients send the ':authority' pseudo-header, never 'Host' — reading headers.asObject.host
+	// directly (as this used to) silently 404s every host-mounted app under h2 while h1 keeps working.
+	it("matches via request.host (Harper's Request getter, correct for both HTTP/1 and HTTP/2)", () => {
+		const request = { pathname: '/', headers: { asObject: {} }, host: 'example.com' };
+		assert.strictEqual(matchesRoute(request, { host: 'example.com' }), true);
+	});
+
+	it("falls back to headers.asObject[':authority'] when request.host is unavailable (HTTP/2 without the Request wrapper)", () => {
+		const request = { pathname: '/', headers: { asObject: { ':authority': 'example.com:8080' } } };
+		assert.strictEqual(matchesRoute(request, { host: 'example.com' }), true);
+	});
+
+	it('matches a trailing-dot absolute-FQDN Host header against the same bare host (RFC 1035)', () => {
+		assert.strictEqual(matchesRoute(req('/', 'example.com.'), { host: 'example.com' }), true);
+		assert.strictEqual(matchesRoute(req('/', 'example.com.:8080'), { host: 'example.com' }), true);
+	});
 });
 
 // --------------------------------------------------------------------------
@@ -511,6 +528,36 @@ describe('makeCallbackChain', () => {
 		order.length = 0;
 		chain(req('/', 'other.com'));
 		assert.deepStrictEqual(order, ['default']);
+	});
+
+	// The dispatch loop precomputes hostLower once per chain build; confirm it still resolves an
+	// HTTP/2-shaped request (no 'host' header, only ':authority') via the routed-chain dispatcher.
+	it('routes to sub-chain by host under an HTTP/2-shaped request (":authority", no "host")', () => {
+		const order = [];
+		const responders = [
+			{
+				name: 'vhost-handler',
+				port: 9000,
+				host: 'example.com',
+				listener: (r, next) => {
+					order.push('vhost');
+					return next(r);
+				},
+			},
+			{
+				name: 'default-handler',
+				port: 9000,
+				listener: (r, next) => {
+					order.push('default');
+					return next(r);
+				},
+			},
+		];
+		const chain = makeCallbackChain(responders, 9000, UNHANDLED);
+		const h2Request = { pathname: '/', url: '/', headers: { asObject: { ':authority': 'example.com' } } };
+
+		chain(h2Request);
+		assert.deepStrictEqual(order, ['vhost']);
 	});
 
 	it('sub-route auto-pulls auth via `after` dependency', () => {

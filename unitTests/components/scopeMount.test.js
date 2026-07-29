@@ -6,6 +6,7 @@ const {
 	composeMountedUrlPath,
 	nestScopeMount,
 	InvalidMountPathError,
+	InvalidMountHostError,
 } = require('#src/components/scopeMount');
 const { InvalidBaseURLPathError } = require('#src/components/resolveBaseURLPath');
 
@@ -56,6 +57,30 @@ describe('scopeMount', () => {
 		it('passes through undefined and empty', () => {
 			assert.equal(normalizeMountHost(undefined), undefined);
 			assert.equal(normalizeMountHost(''), undefined);
+		});
+
+		it('accepts a bare IPv6 literal', () => {
+			assert.equal(normalizeMountHost('::1'), '::1');
+			assert.equal(normalizeMountHost('FE80::1'), 'fe80::1');
+		});
+
+		// A hand-edited root config has no equivalent to the deploy_component operation's Joi
+		// validator, so a value that could never match a Host/:authority header (a port, a scheme,
+		// a path suffix, malformed IDN) must fail loudly here rather than mount unreachably.
+		it('rejects a host carrying a port — never matches, since the router strips the header port separately', () => {
+			assert.throws(() => normalizeMountHost('api.example.com:9926'), InvalidMountHostError);
+		});
+
+		it('rejects a scheme', () => {
+			assert.throws(() => normalizeMountHost('https://api.example.com'), InvalidMountHostError);
+		});
+
+		it('rejects a path suffix', () => {
+			assert.throws(() => normalizeMountHost('api.example.com/v1'), InvalidMountHostError);
+		});
+
+		it('rejects a malformed hostname', () => {
+			assert.throws(() => normalizeMountHost('not a hostname'), InvalidMountHostError);
 		});
 	});
 

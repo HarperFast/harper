@@ -1,4 +1,6 @@
+import Joi from 'joi';
 import { InvalidBaseURLPathError, resolveBaseURLPath } from './resolveBaseURLPath.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
 
 /**
  * The routing an operator declared for an application in the *root* config, e.g.
@@ -33,6 +35,19 @@ export class InvalidMountPathError extends Error {
 	}
 }
 
+export class InvalidMountHostError extends Error {
+	constructor(host: string) {
+		super(
+			`An application mount host must be a bare hostname or IPv6 literal, with no scheme, port, or path. Received: '${host}'`
+		);
+	}
+}
+
+// Compiled once and reused, mirroring operationsValidation.js's deploy_component 'host' schema:
+// a routing host is either a DNS hostname or a bare IPv6 literal.
+const HOSTNAME_SCHEMA = Joi.string().hostname();
+const IPV6_SCHEMA = Joi.string().ip({ version: 'ipv6' });
+
 /**
  * Normalizes a mount prefix to a leading-slash, no-trailing-slash form ('/v1'), or
  * undefined when it constrains nothing ('', '/', undefined) — matching
@@ -56,11 +71,20 @@ export function normalizeMountPath(urlPath: string | undefined): string | undefi
  * Hostnames are case-insensitive (RFC 4343) and clients send them lowercased, so a mount is
  * held lowercased and compared that way. The bracket form of an IPv6 literal is unwrapped to
  * match what the router extracts from the Host header.
+ *
+ * Validated against the same grammar as the `deploy_component` operation's `host` field (a bare
+ * DNS hostname or IPv6 literal) — the root config is hand-edited YAML with no equivalent gate,
+ * so a value that would never match a Host header (a port, a scheme, a path suffix, malformed
+ * IDN) must be rejected here rather than silently mounting the application unreachably.
  */
 export function normalizeMountHost(host: string | undefined): string | undefined {
 	if (!host) return undefined;
 	const unbracketed = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
-	return unbracketed.toLowerCase();
+	const normalized = unbracketed.toLowerCase();
+	if (HOSTNAME_SCHEMA.validate(normalized).error && IPV6_SCHEMA.validate(normalized).error) {
+		throw new InvalidMountHostError(host);
+	}
+	return normalized;
 }
 
 /**
@@ -101,11 +125,18 @@ export function composeMountedUrlPath(
  *
  * The parent keeps hostname authority — a child cannot escape the host it is served on — while
  * paths compose, so a parent at `/v1` containing a child mounted at `/child` puts the child at
- * `/v1/child`. Returns whichever side is defined when only one is.
+ * `/v1/child`. Returns whichever side is defined when only one is. A child `host` that differs
+ * from the parent's is silently discarded by that authority rule; logged so the operator who
+ * wrote it isn't left guessing why it had no effect.
  */
 export function nestScopeMount(parent: ScopeMount | undefined, child: ScopeMount | undefined): ScopeMount | undefined {
 	if (!parent) return child;
 	if (!child) return parent;
+	if (parent.host && child.host && parent.host !== child.host) {
+		harperLogger.warn(
+			`Component mount host '${child.host}' is ignored because it is nested under an application mounted on host '${parent.host}' — a child's host cannot override its parent's.`
+		);
+	}
 	const urlPath = child.urlPath ? `${parent.urlPath ?? ''}${child.urlPath}` : parent.urlPath;
 	return { host: parent.host ?? child.host, urlPath: urlPath || undefined };
 }
