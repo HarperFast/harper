@@ -1293,6 +1293,84 @@ describe('Test harper_logger module', () => {
 			expect(result).to.include('Promise');
 		});
 
+		it('bounds total sanitize work (containers + primitive leaves), not just container count', () => {
+			// Each object has 1 container + 250 primitive fields; the global node budget must count
+			// leaves too, or 250 containers * 250 fields could walk ~62,500 values while only
+			// registering as 250 against MAX_SANITIZE_NODES.
+			const many_small_objects = {};
+			for (let i = 0; i < 250; i++) {
+				const child = {};
+				for (let j = 0; j < 250; j++) child[`f${j}`] = j;
+				many_small_objects[`child_${i}`] = child;
+			}
+			const start = process.hrtime.bigint();
+			const result = render(many_small_objects, { depth: 8, maxArrayLength: 250 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			expect(elapsed_ms).to.be.below(2000, 'leaf values must count against the shared node budget too');
+			expect(result).to.include('sanitize budget');
+		});
+
+		it('never hands a Date, RegExp, WeakMap, or WeakSet to inspect() raw once it carries a secret-bearing expando (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+
+			const hostile_date = new Date('2024-01-01T00:00:00.000Z');
+			hostile_date.cause = secret_error;
+			const hostile_regexp = /abc/gi;
+			hostile_regexp.cause = secret_error;
+			const hostile_weakmap = new WeakMap();
+			hostile_weakmap.cause = secret_error;
+			const hostile_weakset = new WeakSet();
+			hostile_weakset.cause = secret_error;
+
+			const result = render({ hostile_date, hostile_regexp, hostile_weakmap, hostile_weakset }, { depth: 8 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('Authorization');
+			// The expando-free common case is untouched: native rendering is still preserved.
+			expect(result).to.include('2024-01-01T00:00:00.000Z');
+			expect(result).to.match(/\/abc\/gi/);
+		});
+
+		it('still renders a Date/RegExp/WeakMap/WeakSet exactly natively when it has no expando (fast path unaffected)', () => {
+			const date = new Date('2024-01-01T00:00:00.000Z');
+			const regexp = /abc/gi;
+			const result = render({ date, regexp }, { depth: 8 });
+			expect(result).to.include('2024-01-01T00:00:00.000Z');
+			expect(result).to.match(/\/abc\/gi/);
+		});
+
+		it('falls back to a bounded, safe summary (not the raw value) for a Buffer/boxed-primitive carrying a secret-bearing expando (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const hostile_buffer = Buffer.from('hi');
+			hostile_buffer.cause = secret_error;
+			const hostile_boxed_number = Object.assign(new Number(5), { cause: secret_error });
+
+			const result = render({ hostile_buffer, hostile_boxed_number }, { depth: 8 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('Authorization');
+		});
+
+		it('sanitizes a function’s secret-bearing expando instead of handing the raw function to inspect() (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			function hostile_function() {}
+			hostile_function.cause = secret_error;
+
+			const result = render({ hostile_function }, { depth: 8 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('Authorization');
+			expect(result).to.include('Error: request failed');
+		});
+
+		it('still renders a plain function raw when it has no expando (fast path unaffected)', () => {
+			function plain_function(a, b) {
+				return a + b;
+			}
+			const result = render({ plain_function }, { depth: 8 });
+			expect(result).to.include('[Function: plain_function]');
+		});
+
 		it('falls back to a safe placeholder (not the raw child) when a nested value throws while being sanitized (#1734)', () => {
 			const secret_error = new Error('request failed');
 			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
