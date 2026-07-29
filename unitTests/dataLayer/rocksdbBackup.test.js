@@ -376,8 +376,14 @@ describe('rocksdbBackup', function () {
 
 			const created = await createBackupOffline(BLOB_DB);
 			assert.strictEqual(created.blobs, true, 'blobs should be captured by default');
-			const snapshotFile = join(blobSnapshotDir(backupDirForDatabase(BLOB_DB), created.backup_id), '0', BLOB_REL);
+			const backupDir = backupDirForDatabase(BLOB_DB);
+			const snapshotFile = join(blobSnapshotDir(backupDir, created.backup_id), '0', BLOB_REL);
 			assert.strictEqual(readFileSync(snapshotFile, 'utf8'), 'blob-payload', 'blob must be in the snapshot');
+
+			// a backup writes restore instructions and a blob-layout doc into the repository
+			const backupReadme = readFileSync(join(backupDir, 'README.md'), 'utf8');
+			assert.match(backupReadme, new RegExp(`restore_backup database=${BLOB_DB}`));
+			assert.ok(existsSync(join(backupDir, 'blobs', 'README.md')), 'blobs/ should carry a layout README');
 
 			// delete the live blob after the backup, then restore in place — the blob must come back
 			rmSync(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL));

@@ -1,7 +1,7 @@
 'use strict';
 
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
-import { open, readdir } from 'node:fs/promises';
+import { open, readdir, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -270,6 +270,7 @@ export async function createBackup(request: any) {
 	if (!excludeBlobs) {
 		await snapshotBlobs(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
 	}
+	await writeBackupReadme(backupDir, databaseName);
 	return {
 		database: databaseName,
 		backup_id: backupId,
@@ -290,6 +291,57 @@ async function describeBackup(backupDir: string, backupId: number): Promise<{ si
 		return {};
 	}
 	return { size: info.size, timestamp: info.timestamp };
+}
+
+/**
+ * Write a `README.md` into a database's backup directory with the commands to list, verify, and
+ * restore the backup, so the repository is recoverable without reading the source. Best-effort:
+ * a failure to write the doc must not fail an otherwise-successful backup. Overwritten on each
+ * create so it stays current.
+ */
+async function writeBackupReadme(backupDir: string, databaseName: string): Promise<void> {
+	const content = `# Harper backup — database "${databaseName}"
+
+This directory is a Harper-managed backup repository for the "${databaseName}" database: one or more
+RocksDB backups (engine data + transaction logs) and, unless created with \`exclude_blobs\`, a
+\`blobs/\` snapshot of the database's file-backed blobs (see blobs/README.md). It lives under
+\`storage.backupPath\` (default \`<rootPath>/backup\`), one directory per database. Do not edit these
+files by hand.
+
+## List / verify
+
+    harper list_backups database=${databaseName}
+    harper verify_backup database=${databaseName} backup_id=<id>
+
+## Restore
+
+Restore is destructive: it purges and rewrites the database directory — and every blob root — from
+the backup (blobs are restored automatically). Restore the latest backup in place:
+
+    harper restore_backup database=${databaseName}
+
+...or a specific id:
+
+    harper restore_backup database=${databaseName} backup_id=<id>
+
+A database held open by a loaded component — and always the \`system\` database — cannot be restored
+while Harper is running; stop the server and run the same command offline. Offline you can also
+restore into a *copy*, leaving the original untouched:
+
+    harper restore_backup database=${databaseName} target_database=${databaseName}-restore
+
+## Prune
+
+    harper delete_backup database=${databaseName} backup_id=<id>
+    harper purge_backups database=${databaseName} keep_count=<n>
+
+Both remove the RocksDB backup and its blob snapshot.
+`;
+	try {
+		await writeFile(join(backupDir, 'README.md'), content);
+	} catch (error) {
+		logger.warn(`Failed to write backup README in ${backupDir}: ${(error as Error).message}`);
+	}
 }
 
 export async function validateVerifyBackup(request: any) {
@@ -715,6 +767,7 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 		if (!excludeBlobs) {
 			await snapshotBlobs(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
 		}
+		await writeBackupReadme(backupDir, databaseName);
 		return {
 			database: databaseName,
 			backup_id: backupId,

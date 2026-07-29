@@ -71,6 +71,16 @@ describe('blobBackup', function () {
 			// an empty snapshot dir is created; restoring it just clears the target
 			assert.ok(existsSync(blobSnapshotDir(backupDir, 1)));
 		});
+
+		it('writes a README documenting the layout and the root-index mapping', async function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			await snapshotBlobs(backupDir, 1, [rootA, rootB]);
+			const readme = readFileSync(join(backupDir, 'blobs', 'README.md'), 'utf8');
+			assert.match(readme, /<backupId>\/<rootIndex>\/<shard1>\/<shard2>\/<fileId>/);
+			assert.match(readme, /storage\.blobPaths/);
+			assert.ok(readme.includes(`0 -> ${rootA}`), 'root index 0 must map to the first root');
+			assert.ok(readme.includes(`1 -> ${rootB}`), 'root index 1 must map to the second root');
+		});
 	});
 
 	describe('restoreBlobSnapshot', function () {

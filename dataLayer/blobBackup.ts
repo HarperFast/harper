@@ -1,7 +1,7 @@
 'use strict';
 
 import { existsSync } from 'node:fs';
-import { copyFile, link, mkdir, readdir, rename, rm, unlink } from 'node:fs/promises';
+import { copyFile, link, mkdir, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
 
@@ -125,6 +125,49 @@ export async function snapshotBlobs(backupDir: string, backupId: number, blobRoo
 	} catch (error) {
 		await rm(tempDir, { recursive: true, force: true }).catch(() => {});
 		throw error;
+	}
+	await writeBlobsReadme(backupDir, blobRoots);
+}
+
+/**
+ * Write a `README.md` into the backup's `blobs/` directory documenting the snapshot layout, so an
+ * operator inspecting or hand-recovering a backup can decode the numeric directories. Best-effort:
+ * a failure to write the doc must not fail an otherwise-successful backup.
+ */
+export async function writeBlobsReadme(backupDir: string, blobRoots: string[]): Promise<void> {
+	const rootMapping =
+		blobRoots.length > 0 ? blobRoots.map((root, index) => `      ${index} -> ${root}`).join('\n') : '      (none)';
+	const content = `# Harper blob snapshots
+
+This directory holds point-in-time snapshots of this database's file-backed blobs, captured
+alongside each RocksDB managed backup. You do not restore these by hand — \`restore_backup\` puts
+them back automatically (see ../README.md); this file just documents the layout.
+
+## Directory layout
+
+    <backupId>/<rootIndex>/<shard1>/<shard2>/<fileId>
+
+- **<backupId>** matches the RocksDB backup id (\`harper list_backups\`). Each id is a full,
+  independent snapshot (not incremental).
+- **<rootIndex>** is which of the database's blob roots the file came from — the index into
+  \`storage.blobPaths[n]\`. On restore the file is written back to the root at that index. When
+  \`storage.blobPaths\` is not configured there is a single default root (\`<rootPath>/blobs/<db>\`)
+  at index 0. Current mapping for this backup:
+
+${rootMapping}
+
+- **<shard1>/<shard2>/<fileId>** is Harper's on-disk blob layout, copied verbatim from the live
+  root: the hex blob file id split into two directory levels plus the file itself (keeping roughly
+  4096 entries per directory). E.g. a blob with id \`0x12345678\` lives at \`12/345/678\`; a short id
+  like \`0xc1a\` lives at \`0/0/c1a\`.
+
+Files are hard links to the live blobs when the backup is on the same filesystem, and copies
+otherwise.
+`;
+	try {
+		await writeFile(join(blobsRootDir(backupDir), 'README.md'), content);
+	} catch (error) {
+		logger.warn(`Failed to write blob snapshot README in ${backupDir}: ${(error as Error).message}`);
 	}
 }
 
