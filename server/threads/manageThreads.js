@@ -959,7 +959,13 @@ async function waitForProcessGroupExit(processGroupId) {
 // after its parent exits, which is exactly the taskkill "process not found" race, so query the
 // process table by walking parentage rather than trusting only the root pid.
 function windowsProcessTreeIsAlive(rootPid) {
+	// Exit code 1 must mean "queried the process table and positively found nothing" — never
+	// "the query itself failed" (e.g. Get-CimInstance denied or WMI unavailable), which would
+	// otherwise read identically to a confirmed-gone tree and release the lock while a descendant
+	// may still be alive. ErrorActionPreference=Stop plus the wrapping try/catch turns a query
+	// failure into its own exit code (2), which the caller below already treats as unknown.
 	const script =
+		"$ErrorActionPreference = 'Stop'; try { " +
 		`$rootPid = ${rootPid}; ` +
 		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
 		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
@@ -969,7 +975,8 @@ function windowsProcessTreeIsAlive(rootPid) {
 		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
 		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
 		'$frontier = $next }; ' +
-		'if ($found) { exit 0 } else { exit 1 }';
+		'if ($found) { exit 0 } else { exit 1 } ' +
+		'} catch { exit 2 }';
 	return new Promise((resolve) => {
 		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
 			stdio: 'ignore',

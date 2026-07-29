@@ -1207,8 +1207,12 @@ export async function installApplications() {
 			// installation. In particular, a failed reinstall may leave a partial directory behind;
 			// retaining the prior entry would make the next boot skip that partial component.
 			applicationInstallationPromises.push(
-				recordApplicationPreparation(harperApplicationLock, name, applicationConfig, () =>
-					prepareApplication(application)
+				recordApplicationPreparation(
+					harperApplicationLock,
+					name,
+					applicationConfig,
+					() => prepareApplication(application),
+					(lock) => persistApplicationLock(harperApplicationLockPath, lock)
 				)
 			);
 		} catch (error) {
@@ -1220,25 +1224,54 @@ export async function installApplications() {
 	logger.debug?.(applicationInstallationStatuses);
 	logger.info?.('All root applications loaded');
 
-	// Finally, write the lock file
-	await writeFile(harperApplicationLockPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
+	// Finally, write the lock file. Every component that went through recordApplicationPreparation
+	// already persisted its own transition durably; this covers components that were skipped
+	// (matching-config, already installed) and never mutated the in-memory object at all.
+	await persistApplicationLock(harperApplicationLockPath, harperApplicationLock);
+}
+
+// Concurrent components each persist the same shared lock file. Serialize per path so two
+// writers never race the same temp filename, and so a write always reflects the latest merged
+// in-memory state rather than a stale snapshot silently clobbering a sibling's just-written change.
+const applicationLockWriteQueues = new Map<string, Promise<void>>();
+
+async function persistApplicationLock(
+	harperApplicationLockPath: string,
+	harperApplicationLock: { applications: Record<string, ApplicationConfig> }
+): Promise<void> {
+	const previous = applicationLockWriteQueues.get(harperApplicationLockPath) ?? Promise.resolve();
+	const next = previous.catch(() => {}).then(async () => {
+		const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
+		await writeFile(tempPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
+		await rename(tempPath, harperApplicationLockPath);
+	});
+	applicationLockWriteQueues.set(harperApplicationLockPath, next);
+	await next;
 }
 
 /**
  * Keep the boot-time application lock honest while a reinstall is in flight. Factored as an
  * explicit production seam so the failure transition can be tested without replacing module
  * bindings: a stale success is removed before preparation starts and restored only on success.
+ *
+ * `persist` is durably awaited on both transitions — not just applied in memory — so a crash
+ * mid-preparation can never leave the on-disk lock file still claiming success for a directory a
+ * subsequent reinstall left partially written (which would make `installApplications`'s
+ * already-installed check at the top of this loop skip the required reinstall forever).
  */
 export async function recordApplicationPreparation(
 	harperApplicationLock: { applications: Record<string, ApplicationConfig> },
 	name: string,
 	applicationConfig: ApplicationConfig,
-	prepare: () => Promise<void>
+	prepare: () => Promise<void>,
+	persist: (lock: { applications: Record<string, ApplicationConfig> }) => Promise<void> = async () => {}
 ): Promise<void> {
 	delete harperApplicationLock.applications[name];
+	await persist(harperApplicationLock);
 	try {
 		await prepare();
 		harperApplicationLock.applications[name] = applicationConfig;
+		await persist(harperApplicationLock);
 	} catch (error) {
 		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
 		throw error;
@@ -1738,7 +1771,13 @@ export async function waitForWindowsTreeTermination(
 async function windowsProcessTreeIsAlive(rootPid: number): Promise<boolean | null> {
 	// Query the process table rather than probing only the parent PID: descendants retain their
 	// ParentProcessId after the parent exits, which is exactly the taskkill "process not found" race.
+	// Exit code 1 must mean "queried the process table and positively found nothing" — never
+	// "the query itself failed" (e.g. Get-CimInstance denied or WMI unavailable), which would
+	// otherwise read identically to a confirmed-gone tree and release the lock while a descendant
+	// may still be alive. ErrorActionPreference=Stop plus the wrapping try/catch turns a query
+	// failure into its own exit code (2), which the caller below already treats as unknown.
 	const script =
+		"$ErrorActionPreference = 'Stop'; try { " +
 		`$rootPid = ${rootPid}; ` +
 		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
 		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
@@ -1748,7 +1787,8 @@ async function windowsProcessTreeIsAlive(rootPid: number): Promise<boolean | nul
 		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
 		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
 		'$frontier = $next }; ' +
-		'if ($found) { exit 0 } else { exit 1 }';
+		'if ($found) { exit 0 } else { exit 1 } ' +
+		'} catch { exit 2 }';
 	return new Promise<boolean | null>((resolve) => {
 		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
 			stdio: 'ignore',
