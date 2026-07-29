@@ -7,6 +7,8 @@ const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { spawnSync } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const { setTimeout: delay } = require('node:timers/promises');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
 const { server } = require('../Server.ts');
@@ -63,8 +65,15 @@ const FORCE_EXIT = 'force-exit';
 const EXTEND_SHUTDOWN_DEADLINE = 'extend-shutdown-deadline';
 const REGISTER_PROCESS_GROUP = 'register-process-group';
 const UNREGISTER_PROCESS_GROUP = 'unregister-process-group';
+// Worker -> main: ask whether a dead owner thread's tracked process groups have been confirmed
+// terminated yet. Only main ever holds that state (owning threads register process groups only
+// with their own parentPort, which is main), so a non-main contender must ask remotely rather
+// than consult its own (always-empty) local map.
+const AWAIT_PROCESS_GROUP_TERMINATION = 'await-process-group-termination';
+const PROCESS_GROUP_TERMINATION_CONFIRMED = 'process-group-termination-confirmed';
 const THREAD_INFO_REQUEST_TIMEOUT_MS = 1000;
 let getThreadInfo;
+let awaitProcessGroupTermination;
 // Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
 let selfExitTimer;
 // An extended self-exit deadline requested by a drain (absolute epoch ms), honored regardless of whether
@@ -262,6 +271,11 @@ if (!parentPort) {
 	});
 	onMessageByType(RESOURCE_REPORT, (message, worker) => {
 		if (worker) recordResourceReport(worker, message);
+	});
+	onMessageByType(AWAIT_PROCESS_GROUP_TERMINATION, async (message, worker) => {
+		if (!worker) return;
+		await (pendingProcessGroupTerminations.get(message.ownerThreadId) ?? Promise.resolve());
+		worker.postMessage({ type: PROCESS_GROUP_TERMINATION_CONFIRMED, requestId: message.requestId });
 	});
 	onMessageByType(EXTEND_SHUTDOWN_DEADLINE, (message, worker) => {
 		worker?.extendTerminateDeadline?.(message.deadlineMs);
@@ -857,8 +871,26 @@ if (parentPort && workerData?.addPorts) {
 				}, timeoutMs);
 			}
 		});
+	let awaitTerminationRequestId = 0;
+	awaitProcessGroupTermination = (ownerThreadId) =>
+		new Promise((resolve) => {
+			// Deliberately no timeout: a contender must not reclaim a dead owner's lock while its
+			// process group might still be alive and mutating files, so this mirrors the unbounded
+			// wait Application.ts's waitForConfirmedTermination uses for the same reason.
+			const requestId = ++awaitTerminationRequestId;
+			parentPort.on('message', receiveConfirmation);
+			parentPort.postMessage({ type: AWAIT_PROCESS_GROUP_TERMINATION, ownerThreadId, requestId });
+			function receiveConfirmation(message) {
+				if (message.type === PROCESS_GROUP_TERMINATION_CONFIRMED && message.requestId === requestId) {
+					parentPort.off('message', receiveConfirmation);
+					resolve();
+				}
+			}
+		});
 } else {
 	getThreadInfo = getChildWorkerInfo;
+	awaitProcessGroupTermination = (ownerThreadId) =>
+		pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 }
 module.exports.getThreadInfo = getThreadInfo;
 
@@ -876,6 +908,45 @@ function onThreadExit(listener) {
 // pruning (unbounded growth is one entry per worker restart over the process lifetime).
 const notifiedDeadThreadIds = new Set();
 const processGroupsByThread = new Map();
+// A dead thread's process groups are killed asynchronously (SIGKILL/taskkill only queue the
+// request). While that termination is in flight, isThreadRunning must keep reporting the owner
+// as alive — otherwise a contender can delete the dead worker's lock claim and start a new
+// preparation before its old process tree is confirmed gone, reopening the concurrent-writer
+// window component-preparation locking exists to close.
+const pendingProcessGroupTerminations = new Map();
+const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
+
+// A process-group leader spawned by a worker thread's own event loop is normally reaped by that
+// same loop when it dies. But the only caller of this check (waitForProcessGroupExit, for a
+// *dead* owner thread) runs after that loop is already gone, so nothing will ever reap it here:
+// kill(pid, 0) keeps succeeding forever against the zombie's still-allocated PID slot. A zombie
+// can no longer touch the filesystem, so treat a confirmed zombie as dead rather than poll
+// forever for a reap that will never come. Reproduced by killing a worker mid-install: the
+// installer's process-group leader becomes a permanent `Z` in /proc without this check.
+function isZombieProcessGroupLeader(processGroupId) {
+	if (process.platform !== 'linux') return false;
+	let stat;
+	try {
+		stat = readFileSync(`/proc/${processGroupId}/stat`, 'utf8');
+	} catch {
+		return false;
+	}
+	// Format is "pid (comm) state ..."; comm can contain spaces/parens, so anchor on the last ')'.
+	return stat[stat.lastIndexOf(')') + 2] === 'Z';
+}
+
+function processGroupIsAlive(processGroupId) {
+	try {
+		process.kill(-processGroupId, 0);
+	} catch (error) {
+		return error.code === 'EPERM';
+	}
+	return !isZombieProcessGroupLeader(processGroupId);
+}
+
+async function waitForProcessGroupExit(processGroupId) {
+	while (processGroupIsAlive(processGroupId)) await delay(PROCESS_GROUP_TERMINATION_POLL_MS);
+}
 
 function addProcessGroup(ownerThreadId, processGroupId) {
 	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
@@ -891,11 +962,18 @@ function removeProcessGroup(ownerThreadId, processGroupId) {
 	if (processGroups.size === 0) processGroupsByThread.delete(ownerThreadId);
 }
 
+// Returns a promise that resolves once every process group tracked for `ownerThreadId` is
+// confirmed terminated. Callers that only need to fire the termination (e.g. the `exit` handler
+// below) can ignore the returned promise; isThreadRunning awaits it before declaring a dead
+// owner reclaimable. The kill signal for every group is sent synchronously, before any `await` —
+// this runs from a process `exit` handler too, where nothing queued after a suspension point is
+// guaranteed to run.
 function terminateProcessGroupsForThread(ownerThreadId) {
 	const processGroups = processGroupsByThread.get(ownerThreadId);
-	if (!processGroups) return;
+	if (!processGroups) return pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 	processGroupsByThread.delete(ownerThreadId);
-	for (const processGroupId of processGroups) {
+	const groupIds = [...processGroups];
+	for (const processGroupId of groupIds) {
 		try {
 			if (process.platform === 'win32') {
 				spawnSync('taskkill', ['/pid', String(processGroupId), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
@@ -906,6 +984,15 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 			if (error.code !== 'ESRCH') harperLogger.warn(`Failed to terminate process group ${processGroupId}:`, error);
 		}
 	}
+	const termination = Promise.all(
+		process.platform === 'win32' ? [] : groupIds.map((processGroupId) => waitForProcessGroupExit(processGroupId))
+	).finally(() => {
+		if (pendingProcessGroupTerminations.get(ownerThreadId) === termination) {
+			pendingProcessGroupTerminations.delete(ownerThreadId);
+		}
+	});
+	pendingProcessGroupTerminations.set(ownerThreadId, termination);
+	return termination;
 }
 
 function registerProcessGroup(processGroupId) {
@@ -920,7 +1007,11 @@ function unregisterProcessGroup(processGroupId) {
 
 async function isThreadRunning(ownerThreadId, timeoutMs = THREAD_INFO_REQUEST_TIMEOUT_MS) {
 	if (ownerThreadId === threadId || ownerThreadId === 0) return true;
-	return (await getThreadInfo(timeoutMs)).some((worker) => worker.threadId === ownerThreadId);
+	if ((await getThreadInfo(timeoutMs)).some((worker) => worker.threadId === ownerThreadId)) return true;
+	// The thread itself is gone, but it may still own process groups whose forced termination is
+	// in flight — wait for that to be confirmed before reporting the owner as reclaimable.
+	await awaitProcessGroupTermination(ownerThreadId);
+	return false;
 }
 
 if (isMainThread) {

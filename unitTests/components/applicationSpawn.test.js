@@ -20,6 +20,7 @@ testUtils.preTestPrep();
 
 const {
 	nonInteractiveSpawn,
+	terminateProcessTree,
 	waitForConfirmedTermination,
 	waitForWindowsTreeTermination,
 } = require('#src/components/Application');
@@ -148,6 +149,38 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		assert.ok(sizeAfterTimeout > 0, 'descendant writer should have started before the timeout');
 		await delay(150); // asserting the non-event: no descendant may keep writing after rejection
 		assert.equal((await require('node:fs/promises').stat(writesPath)).size, sizeAfterTimeout);
+	});
+
+	it('kills a lingering same-group descendant even when the direct child already exited', async () => {
+		const writesPath = join(workDir, 'orphaned-descendant-writes');
+		const writer = writeScript(
+			'orphaned-writer.js',
+			`const fs = require('node:fs');
+			setInterval(() => fs.appendFileSync(${JSON.stringify(writesPath)}, 'x'), 10);`
+		);
+		const parent = writeScript(
+			'orphaned-parent.js',
+			// Not detached: this descendant inherits the parent's process group. Unref'd so the
+			// parent can exit without waiting on it — the pattern a custom installer's daemonizing
+			// install script would use.
+			`require('node:child_process').spawn(process.execPath, [${JSON.stringify(writer)}], { stdio: 'ignore' }).unref();
+			process.exit(0);`
+		);
+		const childProcess = spawn(process.execPath, [parent], { stdio: 'ignore', detached: true });
+		await once(childProcess, 'exit');
+		// The direct child has already exited (exitCode is set) before termination is ever attempted —
+		// exactly the state that let the old exitCode/signalCode check skip probing the process group.
+		assert.notStrictEqual(childProcess.exitCode, null);
+
+		await delay(50);
+		const sizeBeforeTermination = (await require('node:fs/promises').stat(writesPath)).size;
+		assert.ok(sizeBeforeTermination > 0, 'descendant writer should have started before termination');
+
+		await terminateProcessTree(childProcess, Promise.resolve());
+
+		const sizeAfterTermination = (await require('node:fs/promises').stat(writesPath)).size;
+		await delay(150); // asserting the non-event: the orphaned descendant must be gone, not still writing
+		assert.equal((await require('node:fs/promises').stat(writesPath)).size, sizeAfterTermination);
 	});
 
 	it('does not report termination until the process tree is confirmed gone', async () => {

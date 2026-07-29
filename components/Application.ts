@@ -1758,7 +1758,7 @@ async function waitForProcessClose(childProcess: ChildProcess, closePromise: Pro
 	}
 }
 
-async function terminateProcessTree(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
+export async function terminateProcessTree(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
 	if (!childProcess.pid) {
 		await waitForProcessClose(childProcess, closePromise);
 		return;
@@ -1768,12 +1768,15 @@ async function terminateProcessTree(childProcess: ChildProcess, closePromise: Pr
 		await waitForProcessClose(childProcess, closePromise);
 		return;
 	}
-	if (childProcess.exitCode !== null || childProcess.signalCode !== null) {
+
+	// The direct child's exit does not prove the process group is empty: a custom installer can
+	// spawn-and-unref a descendant that inherits the group and outlives its parent. Probe the group
+	// itself rather than trusting childProcess.exitCode/signalCode.
+	const processGroupId = childProcess.pid;
+	if (!processGroupIsAlive(processGroupId)) {
 		await waitForProcessClose(childProcess, closePromise);
 		return;
 	}
-
-	const processGroupId = childProcess.pid;
 	try {
 		process.kill(-processGroupId, 'SIGTERM');
 	} catch (error: any) {
