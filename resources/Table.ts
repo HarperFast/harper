@@ -371,8 +371,10 @@ export function makeTable(options) {
 	// must not drop this table's column families while one of those writes is still landing —
 	// racing a drop against an in-flight write is what corrupts the column family handle and
 	// produces "Invalid column family specified in write batch" (harper#1381). Track the
-	// in-flight commit promises here so dropTable() can drain them first.
+	// in-flight commit promises here so dropTable() can drain them first, and stop admitting
+	// new ones (droppingTable) once a drop has actually started.
 	const pendingSourceCommits = new Set<Promise<any>>();
+	let droppingTable = false;
 	let createdTimeProperty: Attribute | undefined,
 		updatedTimeProperty: Attribute | undefined,
 		expiresAtProperty: Attribute | undefined;
@@ -1348,30 +1350,48 @@ export function makeTable(options) {
 					if (tombstoneWrite?.then) await tombstoneWrite;
 				}
 			}
+			// A get() against a sourcedFrom table resolves to its caller before the resolved
+			// record's cache write has committed (see getFromSource) - the write lands "in the
+			// background" for latency reasons. Flip this BEFORE removing the table from the
+			// schema below: getFromSource() checks it and skips caching (treats the load as
+			// noCacheStore) for any call it admits from here on, including one that slipped in
+			// through a stale reference to this Table between the two steps.
+			droppingTable = true;
 			// Remove the table from the in-memory schema immediately so concurrent
 			// requests get "table does not exist" instead of racing the column
 			// family drops below. If a drop fails past this point the table stays
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
 			delete databases[databaseName][tableName];
+			// The above stops new source-fill writes from starting, but a write from a get()
+			// that already returned to its caller may still be in flight. Dropping the column
+			// families out from under that write is a genuine invariant violation, not just a
+			// benign race: RocksDB rejects the still-open write batch with "Invalid column
+			// family specified in write batch" (or "Could not access column family N"), which
+			// can also abort this drop before it removes the tombstoned catalog rows - leaving
+			// the table stuck "dropping" for completeInterruptedDrop to retry (and fail
+			// identically) on every subsequent load (harper#1381). Drain any in-flight commits
+			// before the blob sweep below (so it observes every row a drain-caught write just
+			// committed) and before touching a single column family. Bounded: the tracked
+			// promise covers the whole source round-trip (see getFromSource), so a hung or
+			// slow source could otherwise wedge this drop forever.
+			if (pendingSourceCommits.size) {
+				const pending = [...pendingSourceCommits];
+				let timedOut = false;
+				await Promise.race([
+					Promise.allSettled(pending),
+					new Promise<void>((resolve) => setTimeout(() => ((timedOut = true), resolve()), LOCK_TIMEOUT)),
+				]);
+				if (timedOut) {
+					logger.warn?.(
+						`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.length} in-flight source-populated cache write(s) on ${tableName}; proceeding with the drop anyway`
+					);
+				}
+			}
 			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
 					deleteBlobsInObject(entry.value);
 				}
-			}
-			// A get() against a sourcedFrom table resolves to its caller before the resolved
-			// record's cache write has committed (see getFromSource) - the write lands "in the
-			// background" for latency reasons. No new request can reach this table now that it's
-			// removed from the schema above, but a write from a get() that already returned may
-			// still be in flight. Dropping the column families out from under that write is a
-			// genuine invariant violation, not just a benign race: RocksDB rejects the still-open
-			// write batch with "Invalid column family specified in write batch" (or "Could not
-			// access column family N"), which can also abort this drop before it removes the
-			// tombstoned catalog rows - leaving the table stuck "dropping" for
-			// completeInterruptedDrop to retry (and fail identically) on every subsequent load
-			// (harper#1381). Drain any in-flight commits before touching a single column family.
-			if (pendingSourceCommits.size) {
-				await Promise.allSettled([...pendingSourceCommits]);
 			}
 			if (databaseName === databasePath) {
 				// part of a database.
@@ -5592,7 +5612,10 @@ export function makeTable(options) {
 			replacingRecord: existingRecord,
 			replacingEntry: existingEntry,
 			replacingVersion: existingVersion,
-			noCacheStore: false,
+			// Once dropTable() has started, no new source-fill write may begin (dropTable()
+			// only drains writes already in flight - see there); still resolve the caller's
+			// read with fresh source data, just don't cache it into a table that's going away.
+			noCacheStore: droppingTable,
 			source: null,
 			// use the same resource cache as a parent context so that if modifications are made to resources,
 			// they are visible in the parent requesting context

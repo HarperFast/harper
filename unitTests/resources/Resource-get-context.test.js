@@ -240,4 +240,59 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 		await dropPromise;
 		assert.strictEqual(dropResolved, true, 'dropTable() should resolve once the pending write has landed');
 	});
+
+	it('does not start a new cache write once dropTable() has begun (late admission during the drain)', async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		const TestTable = table({
+			table: 'DropRaceLateAdmission',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+
+		let releaseFirst;
+		const firstGate = new Promise((resolve) => {
+			releaseFirst = resolve;
+		});
+		let lateSourceCalled = false;
+		TestTable.sourcedFrom({
+			get: async (id) => {
+				if (id === 'first') await firstGate;
+				else lateSourceCalled = true;
+				return { id, name: 'value' };
+			},
+			available: () => true,
+		});
+
+		// Start a write that keeps dropTable() draining, so there is a window in which the
+		// table is already marked dropping but the drop itself hasn't touched storage yet.
+		const firstGetPromise = TestTable.get('first', {});
+		await new Promise((resolve) => setImmediate(resolve));
+		await new Promise((resolve) => setImmediate(resolve));
+
+		const dropPromise = TestTable.dropTable();
+
+		// A get() admitted while the drop is draining must still return fresh source data...
+		const lateResult = await TestTable.get('late', {});
+		assert.ok(lateSourceCalled, 'the source should still be consulted for a late-admitted read');
+		assert.strictEqual(lateResult.name, 'value');
+		// ...but must not have started a new cache write into a table that's being dropped. The
+		// get() call itself resolves before its own cache write would land (that's the whole
+		// bug this file covers), so a correctly-blocked write and one that merely hasn't landed
+		// YET look identical immediately after the await above. Give a generous, bounded window
+		// for an (incorrectly) unblocked local write to land - the drop itself is still parked on
+		// the gated first write, so this checks storage well before any column family is
+		// touched, not a race against the drop.
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.strictEqual(
+			TestTable.primaryStore.getSync('late'),
+			undefined,
+			'a get() admitted after dropTable() started must not cache its result'
+		);
+
+		releaseFirst();
+		await firstGetPromise;
+		await dropPromise;
+	});
 });
