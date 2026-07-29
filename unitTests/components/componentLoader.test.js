@@ -399,4 +399,60 @@ describe('ComponentLoader Status Integration', function () {
 			}
 		});
 	});
+
+	// A mounted application's deprecated `start`/`startOnMainThread` hooks receive the raw,
+	// unmounted server (unlike the new Plugin API's `handleApplication(scope)`), so routes they
+	// register would silently escape the mount. Loading must fail closed instead (review finding).
+	describe('deprecated extension API vs an application mount', function () {
+		function makeOldApiComponent(pluginName, hooks) {
+			const componentDir = path.join(tempDir, `old-api-${pluginName}`);
+			if (!existsSync(componentDir)) mkdirSync(componentDir);
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${pluginName}: {}`);
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = hooks;
+			return componentDir;
+		}
+
+		afterEach(function () {
+			for (const pluginName of Object.keys(componentLoader.TRUSTED_RESOURCE_PLUGINS)) {
+				if (pluginName.startsWith('oldApi')) delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			}
+			componentLoader.loadedPaths.clear();
+		});
+
+		it('loads normally when the deprecated `start` hook is used unmounted', async function () {
+			const pluginName = 'oldApiUnmounted';
+			let started = false;
+			const componentDir = makeOldApiComponent(pluginName, {
+				start({ server }) {
+					started = true;
+					return { server };
+				},
+			});
+
+			await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
+
+			assert.equal(started, true, 'the deprecated start hook should have run');
+		});
+
+		it('fails closed when the deprecated `start` hook is used on a mounted application', async function () {
+			const pluginName = 'oldApiMounted';
+			let started = false;
+			const componentDir = makeOldApiComponent(pluginName, {
+				start({ server }) {
+					started = true;
+					return { server };
+				},
+			});
+
+			await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin', {
+				mount: { host: 'api.example.com', urlPath: undefined },
+			});
+
+			assert.equal(started, false, 'the deprecated start hook must not run for a mounted application');
+			const failedCalls = lifecycle.failed
+				.getCalls()
+				.filter((call) => call.args[0] === `old-api-${pluginName}.${pluginName}`);
+			assert.ok(failedCalls.length >= 1, 'the component should be marked failed rather than loaded unmounted');
+		});
+	});
 });

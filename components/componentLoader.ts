@@ -669,6 +669,24 @@ export async function loadComponent(
 					);
 				}
 
+				// `start`/`startOnMainThread` hand the plugin the raw, unmounted `server` directly —
+				// unlike the new Plugin API's `handleApplication(scope)`, which receives the mount-aware
+				// scope — so routes registered there would silently escape a configured host/urlPath
+				// mount and stay reachable unconstrained (review finding). Same isolation gap
+				// fastifyRoutes.ts already closes for its own legacy fallback (host-only there, since
+				// urlPath composes into its route prefix; here neither composes, so both are rejected).
+				// Refuse rather than imply an isolation the hook can't honor; contained to this
+				// component by the loader's per-component try/catch.
+				if (mount && (typeof extensionModule.start === 'function' || typeof extensionModule.startOnMainThread === 'function')) {
+					const error = new Error(
+						`Component '${componentName}' is mounted (${[mount.host && `host '${mount.host}'`, mount.urlPath && `urlPath '${mount.urlPath}'`]
+							.filter(Boolean)
+							.join(', ')}), but its deprecated 'start'/'startOnMainThread' extension API receives the bare, unmounted server — routes registered there would stay reachable unconstrained. Upgrade to the new Plugin API (handleApplication(scope)) or drop the mount.`
+					);
+					componentLifecycle.failed(componentStatusName, error, `Component '${componentStatusName}' failed to load`);
+					throw error;
+				}
+
 				if (isMainThread) {
 					// `startOnMainThread` is one-time main-thread init: run it at most once per component
 					// for the life of the process (first load / first deploy). On a reload of an
