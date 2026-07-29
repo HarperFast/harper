@@ -6,6 +6,7 @@
 const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
+const { spawnSync } = require('node:child_process');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
 const { server } = require('../Server.ts');
@@ -60,6 +61,8 @@ const FORCE_EXIT = 'force-exit';
 // Worker -> main request to push out the force-terminate backstop while the worker gracefully drains
 // in-flight work (e.g. replication blob sends) before shutdown. Carries an absolute epoch deadline.
 const EXTEND_SHUTDOWN_DEADLINE = 'extend-shutdown-deadline';
+const REGISTER_PROCESS_GROUP = 'register-process-group';
+const UNREGISTER_PROCESS_GROUP = 'unregister-process-group';
 let getThreadInfo;
 // Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
 let selfExitTimer;
@@ -138,6 +141,8 @@ module.exports = {
 	restoreShutdownDeadline,
 	registerWorkerDataProvider,
 	onThreadExit,
+	registerProcessGroup,
+	unregisterProcessGroup,
 	restartNumber: workerData?.restartNumber || 1,
 };
 
@@ -849,6 +854,55 @@ function onThreadExit(listener) {
 // ids are monotonically increasing and never reused within a process, so this never needs
 // pruning (unbounded growth is one entry per worker restart over the process lifetime).
 const notifiedDeadThreadIds = new Set();
+const processGroupsByThread = new Map();
+
+function addProcessGroup(ownerThreadId, processGroupId) {
+	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
+	let processGroups = processGroupsByThread.get(ownerThreadId);
+	if (!processGroups) processGroupsByThread.set(ownerThreadId, (processGroups = new Set()));
+	processGroups.add(processGroupId);
+}
+
+function removeProcessGroup(ownerThreadId, processGroupId) {
+	const processGroups = processGroupsByThread.get(ownerThreadId);
+	if (!processGroups) return;
+	processGroups.delete(processGroupId);
+	if (processGroups.size === 0) processGroupsByThread.delete(ownerThreadId);
+}
+
+function terminateProcessGroupsForThread(ownerThreadId) {
+	const processGroups = processGroupsByThread.get(ownerThreadId);
+	if (!processGroups) return;
+	processGroupsByThread.delete(ownerThreadId);
+	for (const processGroupId of processGroups) {
+		try {
+			if (process.platform === 'win32') {
+				spawnSync('taskkill', ['/pid', String(processGroupId), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+			} else {
+				process.kill(-processGroupId, 'SIGKILL');
+			}
+		} catch (error) {
+			if (error.code !== 'ESRCH') harperLogger.warn(`Failed to terminate process group ${processGroupId}:`, error);
+		}
+	}
+}
+
+function registerProcessGroup(processGroupId) {
+	if (isMainThread) addProcessGroup(threadId, processGroupId);
+	else parentPort?.postMessage({ type: REGISTER_PROCESS_GROUP, processGroupId });
+}
+
+function unregisterProcessGroup(processGroupId) {
+	if (isMainThread) removeProcessGroup(threadId, processGroupId);
+	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId });
+}
+
+if (isMainThread) {
+	process.on('exit', () => {
+		for (const ownerThreadId of processGroupsByThread.keys()) terminateProcessGroupsForThread(ownerThreadId);
+	});
+}
+
 function notifyThreadExit(deadThreadId) {
 	if (deadThreadId == null || notifiedDeadThreadIds.has(deadThreadId)) return;
 	notifiedDeadThreadIds.add(deadThreadId);
@@ -862,6 +916,9 @@ function notifyThreadExit(deadThreadId) {
 }
 
 function removePort(port, deadThreadId) {
+	// A sibling may already have announced this dead thread and removed its port. Process-group
+	// cleanup must still run when the authoritative close/exit event reaches this thread.
+	if (deadThreadId != null) terminateProcessGroupsForThread(deadThreadId);
 	const idx = connectedPorts.indexOf(port);
 	if (idx === -1) return;
 	connectedPorts.splice(idx, 1);
@@ -889,7 +946,11 @@ function addPort(port, keepRef, isJobWorker) {
 	const portThreadId = port.threadId;
 	port
 		.on('message', (message) => {
-			if (message.type === ADDED_PORT) {
+			if (message.type === REGISTER_PROCESS_GROUP) {
+				addProcessGroup(portThreadId, message.processGroupId);
+			} else if (message.type === UNREGISTER_PROCESS_GROUP) {
+				removeProcessGroup(portThreadId, message.processGroupId);
+			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);
 			} else if (message.type === ACKNOWLEDGEMENT) {

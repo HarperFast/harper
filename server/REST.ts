@@ -13,6 +13,7 @@ import { generateJsonApi } from '../resources/openApi.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { ASIDE_STAGING_DIR } from '../components/Application.ts';
+import { COMPONENT_PREPARATION_LOCK_DIR } from '../components/componentPreparationLock.ts';
 import { restartNeeded } from '../components/requestRestart.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
@@ -102,6 +103,7 @@ async function findInactiveComponent(url: string): Promise<string | undefined> {
 		name === '..' ||
 		name === 'node_modules' ||
 		name === ASIDE_STAGING_DIR ||
+		name === COMPONENT_PREPARATION_LOCK_DIR ||
 		name.includes('/') ||
 		name.includes('\\')
 	)

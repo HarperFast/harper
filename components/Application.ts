@@ -3,6 +3,8 @@ import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUti
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
+import { withComponentPreparationLock } from './componentPreparationLock.ts';
+import { registerProcessGroup, unregisterProcessGroup } from '../server/threads/manageThreads.js';
 import type { CredentialReference, ResolvedCredential, ResolvedRegistryCredential } from './secretOperations.ts';
 import {
 	GIT_CREDENTIAL_SOCKET_ENV,
@@ -28,13 +30,14 @@ import {
 	symlink,
 	writeFile,
 } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
@@ -475,6 +478,8 @@ async function runNpmPack(
 // during a deploy swap (see extractApplication). The leading dot keeps
 // loadComponentDirectories from loading its contents as components.
 export const ASIDE_STAGING_DIR = '.deploy-aside';
+const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
+const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
 
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
 // module (both in source and in dist), holds no secret, and is inert without a live session.
@@ -487,7 +492,8 @@ export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.j
  *
  * Writes the application to the configured components root directory using the `application.name` and overwrites any existing directory.
  *
- * This method should only be called from the main thread
+ * This method may be called from any Harper thread. Same-component calls are serialized across
+ * threads by the preparation lock below.
  */
 export async function extractApplication(application: Application) {
 	// Can't specify neither
@@ -688,7 +694,7 @@ export async function extractApplication(application: Application) {
  *
  * Will return early if `node_modules` already exists within the `application.dirPath`
  *
- * This method should only be called from the main thread
+ * This method may be called from any Harper thread as part of a serialized preparation.
  */
 export async function installApplication(application: Application) {
 	let packageJSON: any;
@@ -1042,7 +1048,8 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 /**
  * Extract and install the specified application.
  *
- * This method should only be called from the main thread
+ * This method may be called from any Harper thread. Same-component calls are serialized across
+ * threads by the preparation lock below.
  *
  * Bracketed with `deploy:start`/`deploy:end` lifecycle broadcasts so every
  * Harper thread's file watchers can suppress restart-on-change events while
@@ -1057,22 +1064,41 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 export async function prepareApplication(application: Application) {
 	await broadcastDeployStart(application.name);
 	try {
-		// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
-		// `npm install` authenticate against the private registry; always remove it afterward.
-		await application.writeTransientNpmrc();
-		try {
-			// The git credential socket only has to be up for extraction — that is where npm resolves and
-			// clones a git-reference package. Closing it before installApplication means the credential is
-			// already gone by the time the component's dependency tree (and any install script it is
-			// allowed to run) executes.
-			await application.startGitCredentialSession();
-			await extractApplication(application);
-		} finally {
-			await application.cleanupGitCredentialSession();
-		}
-		await installApplication(application);
+		const commandTimeoutMs = application.install?.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
+		await withComponentPreparationLock(
+			application.dirPath,
+			async () => {
+				try {
+					// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
+					// `npm install` authenticate against the private registry; always remove it afterward.
+					await application.writeTransientNpmrc();
+					try {
+						// The git credential socket only has to be up for extraction — that is where npm resolves and
+						// clones a git-reference package. Closing it before installApplication means the credential is
+						// already gone by the time the component's dependency tree (and any install script it is
+						// allowed to run) executes.
+						await application.startGitCredentialSession();
+						await extractApplication(application);
+					} finally {
+						await application.cleanupGitCredentialSession();
+					}
+					await installApplication(application);
+				} finally {
+					await application.cleanupTransientNpmrc();
+				}
+			},
+			{
+				// A package-reference preparation can run one command to pack and another to install.
+				// Bound orphaned same-process worker locks without rejecting behind a valid holder.
+				timeoutMs: 2 * commandTimeoutMs + COMPONENT_PREPARATION_WAIT_MARGIN_MS,
+				onWait: (owner) =>
+					application.logger.info(
+						`Waiting for in-progress preparation of ${application.name}` +
+							(owner ? ` held by process ${owner.pid}, thread ${owner.threadId}` : '')
+					),
+			}
+		);
 	} finally {
-		await application.cleanupTransientNpmrc();
 		broadcastDeployEnd(application.name);
 	}
 }
@@ -1166,9 +1192,11 @@ export async function installApplications() {
 				continue;
 			}
 
-			applicationInstallationPromises.push(prepareApplication(application));
-
-			harperApplicationLock.applications[name] = applicationConfig;
+			applicationInstallationPromises.push(
+				prepareApplication(application).then(() => {
+					harperApplicationLock.applications[name] = applicationConfig;
+				})
+			);
 		} catch (error) {
 			logger.error?.(`Skipping installation of application ${name} due to invalid configuration: ${error.message}`);
 		}
@@ -1404,7 +1432,7 @@ export async function nonInteractiveSpawn(
 	command: string,
 	args: string[],
 	cwd: string,
-	timeoutMs: number = 60 * 60 * 1000,
+	timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
 	onLine?: (stream: 'stdout' | 'stderr', line: string) => void,
 	npmUserconfigPath?: string,
 	gitCredentialEnv?: Record<string, string>
@@ -1482,11 +1510,39 @@ function spawnWithEnv(
 			cwd,
 			env,
 			stdio: ['ignore', 'pipe', 'pipe'],
+			// A dedicated POSIX process group lets a timeout terminate npm plus every reify worker
+			// and install-script descendant before the component preparation lock is released.
+			detached: process.platform !== 'win32',
 		});
+		const trackedProcessId = childProcess.pid;
+		if (trackedProcessId) registerProcessGroup(trackedProcessId);
+		let processGroupIsTracked = Boolean(trackedProcessId);
+		const untrackProcessGroup = () => {
+			if (!processGroupIsTracked || !trackedProcessId) return;
+			processGroupIsTracked = false;
+			unregisterProcessGroup(trackedProcessId);
+		};
 
+		let didTimeout = false;
+		let didSettle = false;
+		let resolveClose: () => void;
+		const closePromise = new Promise<void>((resolve) => {
+			resolveClose = resolve;
+		});
 		const timeout = setTimeout(() => {
-			childProcess.kill();
-			reject(new Error(`Command\`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`));
+			didTimeout = true;
+			void terminateProcessTree(childProcess, closePromise).then(
+				() => {
+					if (didSettle) return;
+					didSettle = true;
+					reject(new CommandTimeoutError(command, args, timeoutMs));
+				},
+				(error) => {
+					if (didSettle) return;
+					didSettle = true;
+					reject(new CommandTimeoutError(command, args, timeoutMs, error));
+				}
+			);
 		}, timeoutMs);
 
 		// If a caller passed onLine, line-buffer stdout/stderr alongside the existing
@@ -1510,27 +1566,41 @@ function spawnWithEnv(
 			stderrSplitter?.push(chunk);
 		});
 
-		childProcess.on('error', (error) => {
-			clearTimeout(timeout);
+		let didFlushOutput = false;
+		const flushOutput = () => {
+			if (didFlushOutput) return;
+			didFlushOutput = true;
 			stdoutSplitter?.flush();
 			stderrSplitter?.flush();
+		};
+
+		childProcess.on('error', (error) => {
+			clearTimeout(timeout);
+			untrackProcessGroup();
+			flushOutput();
 			// Print out stderr before rejecting
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
-			reject(error);
+			if (!didTimeout && !didSettle) {
+				didSettle = true;
+				reject(error);
+			}
 		});
 
 		childProcess.on('close', (code) => {
+			resolveClose();
+			untrackProcessGroup();
 			clearTimeout(timeout);
 			// Flush any trailing partial lines so the caller sees process output that didn't
 			// end on a newline (some package managers do this on their final progress line).
-			stdoutSplitter?.flush();
-			stderrSplitter?.flush();
+			flushOutput();
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
 			logger.loggerWithTag(`${applicationName}:spawn:${command}`).debug?.(`Process exited with code ${code}`);
+			if (didTimeout || didSettle) return;
+			didSettle = true;
 			resolve({
 				stdout,
 				stderr,
@@ -1538,6 +1608,102 @@ function spawnWithEnv(
 			});
 		});
 	});
+}
+
+const PROCESS_TERMINATION_GRACE_MS = 5000;
+const PROCESS_TERMINATION_POLL_MS = 25;
+const PROCESS_CLOSE_WAIT_MS = 5000;
+
+class CommandTimeoutError extends Error {
+	statusCode = 500;
+	constructor(command: string, args: string[], timeoutMs: number, cause?: unknown) {
+		super(`Command \`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`, { cause });
+		this.name = 'CommandTimeoutError';
+	}
+}
+
+function processGroupIsAlive(processGroupId: number): boolean {
+	try {
+		process.kill(-processGroupId, 0);
+		return true;
+	} catch (error: any) {
+		return error.code === 'EPERM';
+	}
+}
+
+async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {
+	const deadline = performance.now() + timeoutMs;
+	while (processGroupIsAlive(processGroupId)) {
+		if (performance.now() >= deadline) return false;
+		await delay(PROCESS_TERMINATION_POLL_MS);
+	}
+	return true;
+}
+
+async function terminateWindowsProcessTree(childProcess: ChildProcess): Promise<void> {
+	if (!childProcess.pid) return;
+	await new Promise<void>((resolve) => {
+		const taskkill = spawn('taskkill', ['/pid', String(childProcess.pid), '/T', '/F'], {
+			stdio: 'ignore',
+			windowsHide: true,
+		});
+		taskkill.once('close', (code) => {
+			if (code !== 0) childProcess.kill();
+			resolve();
+		});
+		taskkill.once('error', () => {
+			childProcess.kill();
+			resolve();
+		});
+	});
+}
+
+async function waitForProcessClose(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
+	let timer: ReturnType<typeof setTimeout>;
+	const closeTimeout = new Promise<false>((resolve) => {
+		timer = setTimeout(() => resolve(false), PROCESS_CLOSE_WAIT_MS);
+		timer.unref?.();
+	});
+	const closed = await Promise.race([closePromise.then(() => true), closeTimeout]);
+	clearTimeout(timer!);
+	if (!closed) {
+		// A detached descendant can retain inherited pipe descriptors after its process tree was
+		// terminated. Stop waiting on those descriptors so a bounded command timeout remains bounded.
+		childProcess.stdout?.destroy();
+		childProcess.stderr?.destroy();
+	}
+}
+
+async function terminateProcessTree(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
+	if (!childProcess.pid) {
+		await waitForProcessClose(childProcess, closePromise);
+		return;
+	}
+	if (process.platform === 'win32') {
+		await terminateWindowsProcessTree(childProcess);
+		await waitForProcessClose(childProcess, closePromise);
+		return;
+	}
+	if (childProcess.exitCode !== null || childProcess.signalCode !== null) {
+		await waitForProcessClose(childProcess, closePromise);
+		return;
+	}
+
+	const processGroupId = childProcess.pid;
+	try {
+		process.kill(-processGroupId, 'SIGTERM');
+	} catch (error: any) {
+		if (error.code !== 'ESRCH') throw error;
+	}
+	if (!(await waitForProcessGroupExit(processGroupId, PROCESS_TERMINATION_GRACE_MS))) {
+		try {
+			process.kill(-processGroupId, 'SIGKILL');
+		} catch (error: any) {
+			if (error.code !== 'ESRCH') throw error;
+		}
+		await waitForProcessGroupExit(processGroupId, PROCESS_TERMINATION_GRACE_MS);
+	}
+	await waitForProcessClose(childProcess, closePromise);
 }
 
 export function getEnvBuiltInComponents() {
