@@ -972,8 +972,13 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
  * Take the per-database restore lock for a drop, refusing (409) if a restore holds it (in-progress)
  * or a crashed restore left a marker (incomplete). Pushes the acquired lock onto `held` so the
  * caller releases it after the drop. On refusal, releases anything already held and throws.
+ *
+ * The lock is not reentrant within a process, so a path already in `held` must be skipped — every
+ * table in a RocksDB database shares one root store (and one lock path), and re-acquiring it in the
+ * same drop would spuriously 409 on the second table.
  */
 function lockDatabaseForDrop(dbPath: string, databaseName: string, held: RestoreLock[]): void {
+	if (held.some((h) => h.dbPath === dbPath)) return;
 	let lock: RestoreLock;
 	try {
 		lock = acquireRestoreLock(dbPath);

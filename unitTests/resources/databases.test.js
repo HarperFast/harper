@@ -138,4 +138,15 @@ describe('dropDatabase restore serialization', () => {
 		table({ table: 'DropRestore', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
 		await assert.doesNotReject(dropDatabase(DB));
 	});
+
+	it('drops a multi-table RocksDB database without a spurious lock 409', async function () {
+		this.timeout(30000);
+		// every table shares one root store / lock path, so the per-table lock must dedupe by path —
+		// otherwise the second table would re-acquire the (non-reentrant) lock and 409
+		const MULTI = 'drop-multi-table-test';
+		const T1 = table({ table: 'One', database: MULTI, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		table({ table: 'Two', database: MULTI, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		if (!(T1.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		await assert.doesNotReject(dropDatabase(MULTI));
+	});
 });
