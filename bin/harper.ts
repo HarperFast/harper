@@ -202,8 +202,10 @@ if (require.main === module) {
 	harper()
 		.then((message) => {
 			if (message) {
+				// console.log is the canonical terminal output for CLI results; logger.notify would
+				// print the same message a second time (its Console transport is stdout in CLI mode),
+				// so `harper help` and friends were emitted twice.
 				console.log(message);
-				logger.notify(message);
 			}
 			// Intentionally not calling `process.exit(0);` so if a CLI
 			// command resulted in a long running process (aka `run`),
