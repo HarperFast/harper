@@ -1389,6 +1389,66 @@ describe('Test harper_logger module', () => {
 			expect(result).to.not.include('super-secret-token');
 			expect(result).to.not.include('Authorization');
 		});
+
+		it('never invokes ANY trap on a nested Proxy - not just a throwing one - and never leaks its target', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			let trap_calls = 0;
+			const hostile = new Proxy(
+				{ error: secret_error },
+				{
+					ownKeys() {
+						trap_calls++;
+						return Reflect.ownKeys({ error: secret_error });
+					},
+					getPrototypeOf() {
+						trap_calls++;
+						return Object.prototype;
+					},
+					get(target, prop) {
+						trap_calls++;
+						return Reflect.get(target, prop);
+					},
+				}
+			);
+			const result = render({ hostile }, { depth: 8 });
+			expect(trap_calls).to.equal(0, 'no Proxy trap should ever be invoked while sanitizing');
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('Authorization');
+			expect(result).to.include('Proxy');
+		});
+
+		it('clamps an unbounded/huge caller-requested maxArrayLength to a hard ceiling instead of scanning the full array', () => {
+			const huge_array = new Array(1_000_000).fill(0);
+			const start = process.hrtime.bigint();
+			const result = render({ huge_array }, { depth: 8, maxArrayLength: Infinity });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			expect(elapsed_ms).to.be.below(
+				2000,
+				'an unbounded requested maxArrayLength must not defeat the sanitize breadth ceiling'
+			);
+			expect(result).to.include('sanitize budget');
+		});
+
+		it('never returns a nested Error unsanitized once the sanitize depth cap is hit (requires a caller-requested depth beyond the cap)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			let value = secret_error;
+			for (let i = 0; i < 25; i++) value = { nested: value };
+			const result = render(value, { depth: 30 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('Authorization');
+		});
+
+		it('still resolves a huge expando-free Buffer/boxed-String via the fast path instead of scanning every index', () => {
+			const huge_buffer = Buffer.alloc(1_000_000);
+			const huge_boxed_string = new String('x'.repeat(1_000_000));
+			const start = process.hrtime.bigint();
+			const result = render({ huge_buffer, huge_boxed_string }, { depth: 8 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			expect(elapsed_ms).to.be.below(500, 'the expando-free fast path must not scan every element/character');
+			expect(result).to.match(/Buffer\.from\(|<Buffer/);
+		});
 	});
 
 	describe('Test isErrorLike function (harper#1982)', () => {
