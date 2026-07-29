@@ -43,22 +43,32 @@ describe('Audit log', () => {
 	});
 	it('check log after writes and prune', async () => {
 		events = [];
+		// transactionBroadcast.ts coalesces 'committed' bursts landing in the same turn into a
+		// single notify pass, and the subscribe() listener (Table.ts) only delivers the LATEST
+		// value per id from that pass (by design, not a bug). Four same-turn writes to two ids
+		// can therefore collapse to as few as 2 delivered events no matter how long we later
+		// poll for them — waiting for the notify drain to catch up after EACH write (rather than
+		// after the whole burst) is what actually makes delivery deterministic.
+		async function waitForEventCount(count) {
+			for (let i = 0; i < 50 && events.length < count; i++) {
+				await delay(10);
+			}
+		}
 		await AuditedTable.put(1, { name: 'one' });
+		await waitForEventCount(1);
 		await AuditedTable.put(2, { name: 'two' });
+		await waitForEventCount(2);
 		await AuditedTable.put(2, { name: 'two-changed' });
+		await waitForEventCount(3);
 		await AuditedTable.delete(1);
+		await waitForEventCount(4);
 		assert.equal(AuditedTable.primaryStore.getEntry(1).value, null); // verify that there is a delete entry
 		let results = [];
 		for await (let entry of AuditedTable.getHistory()) {
 			results.push(entry);
 		}
 		assert.equal(results.length, 4);
-		// Subscription events are delivered off the commit path; nothing orders them against this
-		// assertion, so wait for them rather than sleeping a fixed 20ms and hoping.
-		await waitFor(() => events.length > 2, {
-			timeout: 5000,
-			message: 'Should have at least a couple of update events',
-		});
+		assert(events.length >= 4, 'Should have one live-subscription event per write');
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
 		setAuditRetention(0.001, 1);
 		// scheduleAuditCleanup() resolves once the pass serving the call has committed its deletions.
