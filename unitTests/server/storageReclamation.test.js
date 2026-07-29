@@ -497,6 +497,30 @@ describe('storageReclamation module', function () {
 				}
 			});
 
+			it('falls back to statfs when the path lexically stays under root but is a symlink to another volume', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+				const otherVolume = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-quota-other-'));
+				const linkPath = path.join(tmpDir, 'databases');
+				try {
+					fs.mkdirSync(path.join(otherVolume, 'some-db'));
+					fs.symlinkSync(otherVolume, linkPath);
+					const nestedPath = path.join(linkPath, 'some-db');
+
+					// `resolve()` alone would see this as lexically under tmpDir; only resolving the
+					// symlink reveals it actually points outside the quota root.
+					const stats = await storageReclamation.getStorageSpaceStats(nestedPath);
+
+					assert.equal(stats.basis, 'filesystem');
+				} finally {
+					fs.rmSync(linkPath, { force: true });
+					fs.rmSync(otherVolume, { recursive: true });
+				}
+			});
+
 			it('uses quota data for a nested path within the quota root', async function () {
 				const usedBytes = 30 * 1024 * 1024 * 1024;
 				fs.writeFileSync(
