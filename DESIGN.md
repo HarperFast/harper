@@ -402,7 +402,7 @@ Three non-obvious mechanics keep that safe:
   the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.
 - **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
   only when the CLI sees no server (a PID heuristic; the PID file is briefly absent mid-`harper
-  restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so before purging,
+restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so before purging,
   `restoreBackupOffline` opens the database to probe. It now takes the restore lock+marker _before_
   probing (so a server that starts afterward sees the marker and refuses to load), and recognizes the
   pinned rocksdb-js 2.5.0 lock error — a plain `Error` with no `code` and message

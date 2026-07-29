@@ -51,7 +51,8 @@ describe('backup.ts get_backup download (atomic write)', () => {
 		const outputPath = path.join(tmpDir, 'my.tar.gz');
 		process.argv = ['node', 'harper', 'get_backup', `out=${outputPath}`];
 
-		commonUtilsModule.httpRequest = async () => fakeResponse(Readable.from([Buffer.from('chunk-1-'), Buffer.from('chunk-2')]));
+		commonUtilsModule.httpRequest = async () =>
+			fakeResponse(Readable.from([Buffer.from('chunk-1-'), Buffer.from('chunk-2')]));
 
 		await runBackupCommand('get_backup');
 
