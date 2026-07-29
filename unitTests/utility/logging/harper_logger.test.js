@@ -1269,6 +1269,48 @@ describe('Test harper_logger module', () => {
 			expect(result).to.not.include('super-secret-token');
 			expect(result).to.include('Error: vm request failed');
 		});
+
+		it('bounds sanitization breadth for a plain object with a huge number of own properties', () => {
+			const huge_object = {};
+			for (let i = 0; i < 200_000; i++) huge_object[`key_${i}`] = i;
+			const start = process.hrtime.bigint();
+			const result = render({ huge_object }, { depth: 8, maxArrayLength: 250 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			expect(elapsed_ms).to.be.below(
+				2000,
+				'sanitizing a wide plain object should stay bounded, not clone every property'
+			);
+			expect(result).to.include('sanitize budget');
+		});
+
+		it('never hands a Promise to inspect() raw, even one resolved with a secret-carrying Error (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const value = { pending_check: Promise.resolve(secret_error) };
+			const result = render(value, { depth: 8 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('Authorization');
+			expect(result).to.include('Promise');
+		});
+
+		it('falls back to a safe placeholder (not the raw child) when a nested value throws while being sanitized (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			// A Proxy whose `ownKeys` trap throws is reached one level into the walk (the plain-object
+			// branch calls Object.keys on it), so the recursive sanitize call on `hostile` itself
+			// throws - exercising the catch-fallback around a nested step, not the top-level guard.
+			const hostile = new Proxy(
+				{ error: secret_error },
+				{
+					ownKeys() {
+						throw new Error('ownKeys boom');
+					},
+				}
+			);
+			const result = render({ hostile }, { depth: 8 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.not.include('Authorization');
+		});
 	});
 
 	describe('Test isErrorLike function (harper#1982)', () => {
