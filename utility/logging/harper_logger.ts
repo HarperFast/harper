@@ -1063,6 +1063,15 @@ const MAX_SANITIZE_DEPTH = 20;
 // *original* error, before inspect ever gets a chance to truncate the output.
 const DEFAULT_MAX_SANITIZE_ENTRIES = 1000;
 const MAX_SANITIZE_NODES = 50_000;
+// Hard ceiling on the per-container breadth budget, regardless of what a caller requests via
+// inspectForLog's `maxArrayLength` option. Without this, a caller passing an unbounded value
+// (`Infinity`, or just a very large finite one) sets a container's own loop limit that high too -
+// so even though deepSanitizeErrors itself starts returning cheap placeholders once
+// MAX_SANITIZE_NODES is exhausted, the PARENT loop (the one iterating a huge array/Map/Set's
+// entries) still runs for its full stated limit before that ever kicks in, defeating the budget as
+// a real ceiling on total work. The one caller in this codebase passes 250; this only bites a
+// caller that deliberately (or by bug) requests something far larger.
+const HARD_MAX_SANITIZE_ENTRIES = 10_000;
 
 interface SanitizeBudget {
 	nodes: number;
@@ -1141,6 +1150,17 @@ function isOpaqueBuiltin(value: object): boolean {
 	);
 }
 
+// %TypedArray%.prototype - the shared abstract superclass prototype every concrete TypedArray
+// (Uint8Array, Buffer, etc.) inherits `length` from. Read once so hasEnumerableOwnProps can bind
+// to it explicitly via Reflect.get, the same hijack-avoidance pattern as the Map/Set branches'
+// `Reflect.get(Map.prototype, 'size', value)` - the intrinsic `length` getter is spec-configurable,
+// so a hostile value can shadow it with an own `length` property reporting whatever it likes.
+const TYPED_ARRAY_PROTO = Object.getPrototypeOf(Uint8Array.prototype);
+
+// Above this many elements, hasEnumerableOwnProps skips its indexed-type check and assumes "no
+// expando" rather than paying for it - see the comment at that check for why.
+const MAX_INDEXED_EXPANDO_CHECK_LENGTH = 10_000;
+
 /**
  * True if `value` has any own-enumerable string or symbol property beyond its own intrinsic data -
  * i.e. an expando - since none of isOpaqueBuiltin's types (nor a bare function) normally carry any.
@@ -1151,22 +1171,40 @@ function isOpaqueBuiltin(value: object): boolean {
  *
  * A TypedArray/Buffer's own numeric indices ARE its intrinsic byte/element data, own-enumerable
  * exactly like any other array - `Object.keys(Buffer.from('hi'))` is `['0', '1']` - so those don't
- * count as expandos here; only a key beyond `[0, length)` does. DataView has no such index
- * properties (its data is accessed only via get/set methods), so it's excluded from that carve-out.
+ * count as expandos here; only a key beyond `[0, length)` does. A boxed String has the same shape
+ * (`Object.keys(new String('hi'))` is the same `['0', '1']`) and gets the same carve-out; detected
+ * via the intrinsic `Object.prototype.toString` tag rather than `instanceof String` (realm/hijack-
+ * safe, same technique safeOpaqueBuiltinSummary's fallback tag uses). DataView has no such index
+ * properties (its data is accessed only via get/set methods), so it's excluded from the carve-out
+ * and goes through the plain `Object.keys(value).length > 0` check like any ordinary object.
+ *
+ * For either indexed shape, checking for an expando against `Object.keys` costs one array
+ * allocation sized to the FULL length just to answer "clean or not" - fine for a small buffer, but
+ * a multi-hundred-MB Buffer or huge boxed string would materialize a matching number of key strings
+ * merely to decide this supposedly-cheap fast path applies, turning it into an attacker-sized scan
+ * on the error-logging path itself. Above MAX_INDEXED_EXPANDO_CHECK_LENGTH elements, skip the check
+ * and assume no expando instead: deliberately attaching a secret-bearing Error to an indexed value
+ * that large is a vanishingly unlikely, deliberately hostile construction, and unconditionally
+ * scanning it is a worse trade than accepting that narrow, contrived residual risk.
  */
 function hasEnumerableOwnProps(value: object): boolean {
 	try {
-		const keys = Object.keys(value);
-		if (keys.length > 0) {
-			if (ArrayBuffer.isView(value) && typeof (value as any).length === 'number' && !types.isDataView(value)) {
-				const length = (value as any).length;
-				for (const key of keys) {
-					const index = key === '' ? NaN : Number(key);
-					if (!(Number.isInteger(index) && index >= 0 && index < length && String(index) === key)) return true;
-				}
-			} else {
-				return true;
+		const isTypedArray = ArrayBuffer.isView(value) && !types.isDataView(value);
+		const isBoxedString = types.isBoxedPrimitive(value) && Object.prototype.toString.call(value) === '[object String]';
+		if (isTypedArray || isBoxedString) {
+			// The typed-array getter is bound explicitly (see TYPED_ARRAY_PROTO above) to survive a
+			// shadowed own `length`; a boxed String's `length` is a non-configurable, non-writable own
+			// property per spec and can't be shadowed, so a direct read is already safe.
+			const length = isTypedArray ? Reflect.get(TYPED_ARRAY_PROTO, 'length', value) : (value as any).length;
+			if (typeof length !== 'number') return true; // couldn't verify the intrinsic size - conservative
+			if (length > MAX_INDEXED_EXPANDO_CHECK_LENGTH) return false; // too large to check - accepted tradeoff
+			const keys = Object.keys(value);
+			for (const key of keys) {
+				const index = key === '' ? NaN : Number(key);
+				if (!(Number.isInteger(index) && index >= 0 && index < length && String(index) === key)) return true;
 			}
+		} else if (Object.keys(value).length > 0) {
+			return true;
 		}
 		for (const sym of Object.getOwnPropertySymbols(value)) {
 			if (Object.getOwnPropertyDescriptor(value, sym)?.enumerable) return true;
@@ -1288,9 +1326,26 @@ function deepSanitizeErrors(
 	// before this cap ever engaged.
 	if (++budget.nodes > MAX_SANITIZE_NODES) return labelPlaceholder('[Unrenderable value: sanitize budget exceeded]');
 	if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return value;
+	// Checked before isErrorLike/anything else that reflects on `value`: types.isProxy queries the
+	// exotic object's internal slots directly (safe even on a revoked Proxy - it never throws), but
+	// EVERY reflective operation past this point - `instanceof` inside isErrorLike, Array.isArray,
+	// Object.getPrototypeOf, Object.keys - invokes whatever trap the Proxy's handler defines for it.
+	// A throwing trap was already caught by the try/catch below, but a trap that hangs (an infinite
+	// loop) or has side effects runs to completion regardless of any catch - on the very path meant
+	// to log a DIFFERENT failure. There is no privileged way in userland to read a Proxy's target
+	// without going through its traps (the exact reason native util.inspect's default rendering,
+	// which does have that privileged access, isn't reusable here - see the Promise note above for
+	// the same class of "can't safely introspect this" tradeoff), so a Proxy is never reflected on
+	// at all: always a safe, static placeholder, trap or no trap.
+	if (types.isProxy(value)) return labelPlaceholder('[Proxy]');
 	if (isErrorLike(value)) return errorForLog(value);
 	if (seen.has(value)) return seen.get(value);
-	if (depth >= MAX_SANITIZE_DEPTH) return value;
+	// Depth-capped values are never handed back raw: an Error directly AT this depth is already
+	// caught by isErrorLike above, but a plain container here could still hold an Error somewhere
+	// inside it that we're choosing not to recurse into - handing it back unsanitized would let a
+	// caller-requested depth greater than MAX_SANITIZE_DEPTH (the one caller in this codebase uses
+	// 8, well under it) reach and print that Error's own-enumerable properties raw (#1734).
+	if (depth >= MAX_SANITIZE_DEPTH) return labelPlaceholder('[Unrenderable value: sanitize depth exceeded]');
 
 	let isArray: boolean, isMap: boolean, isSet: boolean, isFunction: boolean;
 	try {
@@ -1521,7 +1576,7 @@ export function inspectForLog(value: any, options?: any) {
 			const maxEntries = Number(options?.maxArrayLength);
 			const budget: SanitizeBudget = {
 				nodes: 0,
-				maxEntries: maxEntries > 0 ? maxEntries : DEFAULT_MAX_SANITIZE_ENTRIES,
+				maxEntries: maxEntries > 0 ? Math.min(maxEntries, HARD_MAX_SANITIZE_ENTRIES) : DEFAULT_MAX_SANITIZE_ENTRIES,
 			};
 			return inspect(deepSanitizeErrors(value, new WeakMap(), 0, budget), options);
 		} catch (err) {
