@@ -3,6 +3,7 @@
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
+const assert = require('node:assert/strict');
 const fs = require('fs-extra');
 const rewire = require('rewire');
 const path = require('path');
@@ -13,6 +14,7 @@ const config_utils = require('#src/config/configUtils');
 const mkcert = require('mkcert');
 const forge = require('node-forge');
 const pki = forge.pki;
+const { waitFor } = require('../waitFor.js');
 
 describe('Test keys module', () => {
 	const sandbox = sinon.createSandbox();
@@ -419,12 +421,10 @@ describe('Test keys module', () => {
 		// `configurable: true` property (see resources/databases.ts), so it can be deleted/restored
 		// here to model that race against the real, shared module (a rewired local doesn't work: the
 		// compiled import isn't a reboundable local binding).
-		let liveTLSRebuilders;
 		let databases;
 		let systemDescriptor;
 
 		beforeEach(() => {
-			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
 			databases = require('#src/resources/databases').databases;
 			systemDescriptor = Object.getOwnPropertyDescriptor(databases, 'system');
 		});
@@ -434,57 +434,42 @@ describe('Test keys module', () => {
 			Object.defineProperty(databases, 'system', systemDescriptor);
 		});
 
-		it('does not throw, registers the rebuilder immediately, keeps `.ready` pending until real cert state is known, then resolves once the table loads', async () => {
+		it('keeps `.ready` pending while the system database has not loaded, then resolves once it does', async function () {
 			// `.ready` is a one-shot gate: server/threads/threadServer.js's Bun listener path awaits it
 			// exactly once and treats a resolved promise as "TLS decided" — if it resolved here with no
 			// certs available, a listener configured as secure would start in plaintext for the rest of
 			// the process. So the fix must not just avoid throwing; it must also leave `.ready` PENDING
 			// while the race is unresolved, only settling once a real pass (with the table loaded)
-			// completes. The retry itself runs on a real (debounced) setTimeout via scheduleRebuild();
-			// fake the clock so the test controls exactly when that retry fires, rather than racing wall
-			// time. The shared sandbox's own afterEach (top of this file) restores real timers.
-			sandbox.useFakeTimers({ toFake: ['setTimeout'] });
+			// completes. This uses the real (debounced, ~1.5s) retry and real timers — no Sinon fake
+			// timers, no rewire access to internal state — condition-waiting on the actual observable
+			// transition instead.
+			this.timeout(5000);
 			delete databases.system; // as on a worker thread before the system db has loaded
-			const snapshot = [...liveTLSRebuilders];
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
-			try {
-				let thrownError;
-				let readyPromise;
-				try {
-					const selector = keys.createTLSSelector('mqtt');
-					readyPromise = selector.initialize(pseudoServer);
-				} catch (err) {
-					thrownError = err;
-				}
-				expect(thrownError, 'must not throw when databases.system is not yet loaded').to.be.undefined;
-				expect(pseudoServer.secureContexts.size, 'no certs are available yet').to.equal(0);
-				expect(
-					liveTLSRebuilders.size,
-					'the rebuilder must be registered immediately (not gated on the cert table loading) so a ' +
-						'later cert-table subscription or private-key reload can recover the selector'
-				).to.equal(snapshot.length + 1);
 
-				let settled = false;
-				readyPromise.then(
-					() => (settled = true),
-					() => (settled = true)
-				);
-				await new Promise((resolve) => setImmediate(resolve)); // flush microtasks; the fake clock never ticked
-				expect(
-					settled,
-					'.ready must stay pending while the system database has not loaded — resolving it with no ' +
-						'certs would let a caller (e.g. the Bun listener path) start a secure listener as plaintext'
-				).to.be.false;
+			const selector = keys.createTLSSelector('mqtt');
+			const readyPromise = selector.initialize(pseudoServer);
 
-				// the table becomes available; let the debounced retry fire and observe a real resolution
-				Object.defineProperty(databases, 'system', systemDescriptor);
-				await sandbox.clock.tickAsync(keys.__get__('TLS_REBUILD_DEBOUNCE_MS'));
-				await readyPromise;
-				expect(settled, '.ready must resolve once a real pass completes with the table loaded').to.be.true;
-			} finally {
-				liveTLSRebuilders.clear();
-				snapshot.forEach((r) => liveTLSRebuilders.add(r));
-			}
+			let settled = false;
+			readyPromise.then(
+				() => (settled = true),
+				() => (settled = true)
+			);
+			await new Promise((resolve) => setImmediate(resolve)); // flush pending microtasks/macrotasks once
+			assert.equal(pseudoServer.secureContexts.size, 0, 'no certs are available yet');
+			assert.equal(
+				settled,
+				false,
+				'.ready must stay pending while the system database has not loaded — resolving it with no ' +
+					'certs would let a caller (e.g. the Bun listener path) start a secure listener as plaintext'
+			);
+
+			// the table becomes available; let the real debounced retry fire and observe a real resolution
+			Object.defineProperty(databases, 'system', systemDescriptor);
+			await waitFor(() => settled, {
+				timeout: 4000,
+				message: '.ready never resolved after the system database became available',
+			});
 		});
 	});
 
@@ -780,15 +765,18 @@ describe('Test keys module', () => {
 			);
 		});
 
-		it("applies a 'server'-tagged legacy record for a non-http listener type (e.g. mqtt) but not for operations-api", () => {
-			// 'server' was every server.socket() raw-socket caller's usage type (and the plain-http
-			// default) before per-caller usageType existed — a cert tagged uses: ['server'] must keep
-			// applying to those listeners. operations-api has always had its own dedicated identity and
-			// never defaulted to 'server', so it must NOT newly start accepting a ['server']-tagged
-			// record's ciphers/@SECLEVEL just because 'server' gained legacy-generic status elsewhere.
+		it("applies a 'server'-tagged legacy record only for the explicit LEGACY_SERVER_FALLBACK_TYPES allowlist (mqtt), not for any other listener type", () => {
+			// 'server' was onSocket()'s raw-socket callers' usage type (and the plain-http default)
+			// before per-caller usageType existed — a cert tagged uses: ['server'] must keep applying
+			// to mqtt now that it passes its own specific type. This is an ALLOWLIST, not a denylist:
+			// every other existing type (operations-api, replication, ...) has always had its own
+			// dedicated identity and never defaulted to 'server', so none of them should newly start
+			// accepting a ['server']-tagged record's ciphers/@SECLEVEL just because 'server' gained
+			// legacy-generic status for mqtt's migration.
 			const records = [{ name: 'legacy-server', uses: ['server'], ciphers: RELAXED }];
 			expect(resolve(layers({}), records, 'mqtt', false)).to.equal(RELAXED);
 			expect(resolve(layers({}), records, 'operations-api', false)).to.be.undefined;
+			expect(resolve(layers({}), records, 'replication', false)).to.be.undefined;
 		});
 
 		it('normalizes a legacy scalar uses value', () => {
