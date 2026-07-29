@@ -23,35 +23,49 @@ Documentation: https://docs.harperdb.io/
 By default, the CLI also supports certain Operation APIs. Specify the operation name and any required parameters, and omit the 'operation' command.
 
 Commands:
-agent [message]                 - Chat with the built-in agent (interactive, or one-shot with a message; alias: chat)
-copy-db <source> <target>       - Copies a database from source path to target path
-dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
-get_backup database=<name> [gzip=false] [exclude_blobs=true] [out=<file>] - Download a full backup from a running server (RocksDB: gzipped tar stream, gzip=false for plain tar; file-backed blobs are included by default, exclude_blobs=true for an engine-only archive)
-install                         - Install harperdb
-<api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
-                                   To authenticate as a different user than the one being operated on
-                                   (e.g. add_user/alter_user), set HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD
-                                   or run 'harper login'. The equivalent auth_username=<value>
-                                   auth_password=<value> args also work, but a password passed as an
-                                   argument is exposed in shell history, process listings and CI logs.
-                                   A saved login token always outranks username=/password=, so a
-                                   stale token that fails to refresh will 401 rather than falling
-                                   back to them — run 'harper logout' or pass auth_username=/
-                                   auth_password= to override it.
-login [target] [username]       - Login to a remote or local Harper instance
-logout [target]                 - Logout from Harper and clear saved JWT
-mcp [subcommand]                - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
-register                        - Register harperdb
-renew-certs                     - Generate a new set of self-signed certificates
-restart                         - Restart the harperdb background process
-run <path>                      - Run the application in the specified path
-start                           - Starts a separate background process for harperdb and CLI will exit
-status                          - Print the status of Harper
-stop                            - Stop the harperdb background process
-help                            - Display this output
-upgrade                         - Upgrade harperdb
-version                         - Print the version
-deploy                          - Deploy the application locally or remotely with target=<remote url>
+
+Server
+  start                         - Starts a separate background process for harperdb and CLI will exit
+  stop                          - Stop the harperdb background process
+  restart                       - Restart the harperdb background process
+  status                        - Print the status of Harper
+
+Applications
+  run <path>                    - Run the application in the specified path
+  dev <path>                    - Run the application in dev mode with debugging, foreground logging, no auth
+  deploy                        - Deploy the application locally or remotely with target=<remote url>
+
+Install & maintenance
+  install                       - Install harperdb
+  upgrade                       - Upgrade harperdb
+  register                      - Register harperdb
+  renew-certs                   - Generate a new set of self-signed certificates
+  copy-db <source> <target>     - Copies a database from source path to target path
+  version                       - Print the version
+  help                          - Display this output
+
+Accounts
+  login [target] [username]     - Login to a remote or local Harper instance
+  logout [target]               - Logout from Harper and clear saved JWT
+
+Assistants
+  agent [message]               - Chat with the built-in agent (interactive, or one-shot with a message; alias: chat)
+  mcp [subcommand]              - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
+
+Operations API
+  <api-operation> <param>=<value>
+      Run an API operation and return the result to the CLI (not all operations are supported).
+      To authenticate as a different user than the one being operated on (e.g. add_user/alter_user),
+      set HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD or run 'harper login'. The equivalent
+      auth_username=<value> auth_password=<value> args also work, but a password passed as an
+      argument is exposed in shell history, process listings and CI logs. A saved login token always
+      outranks username=/password=, so a stale token that fails to refresh will 401 rather than
+      falling back to them — run 'harper logout' or pass auth_username=/auth_password= to override it.
+
+  get_backup database=<name> [gzip=false] [exclude_blobs=true] [out=<file>]
+      Download a full backup from a running server. RocksDB streams a gzipped tar (gzip=false for a
+      plain tar); file-backed blobs are included by default (exclude_blobs=true for an engine-only
+      archive). out=<file> sets the output path.
 `;
 
 async function harper() {
