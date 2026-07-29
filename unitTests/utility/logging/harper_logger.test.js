@@ -1104,6 +1104,55 @@ describe('Test harper_logger module', () => {
 			expect(result).to.include('Error: request failed');
 		});
 
+		it('sanitizes a secret-carrying Error held by a class/custom-prototype instance, preserving its class name', () => {
+			const nested_error = new Error('request failed');
+			nested_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			class Diagnostic {
+				constructor(cause) {
+					this.cause = cause;
+				}
+			}
+			const value = { diagnostic: new Diagnostic(nested_error) };
+			const result = render(value, { depth: 8 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.include('Error: request failed');
+			expect(result).to.include('Diagnostic');
+		});
+
+		it('never invokes an accessor-backed array entry, and never resolves an overridden Map/Set iterator', () => {
+			let array_getter_calls = 0;
+			const hostile_array = [];
+			Object.defineProperty(hostile_array, 0, {
+				enumerable: true,
+				get() {
+					array_getter_calls++;
+					return 'should not be called';
+				},
+			});
+			hostile_array.length = 1;
+
+			let iterator_calls = 0;
+			const hostile_map = new Map([['key', 'value']]);
+			hostile_map[Symbol.iterator] = function* () {
+				iterator_calls++;
+				yield ['poisoned', 'should not appear'];
+			};
+			const hostile_set = new Set(['value']);
+			hostile_set[Symbol.iterator] = function* () {
+				iterator_calls++;
+				yield 'poisoned';
+			};
+
+			const result = render({ hostile_array, hostile_map, hostile_set }, { depth: 8 });
+			expect(array_getter_calls).to.equal(0);
+			expect(iterator_calls).to.equal(0);
+			expect(result).to.include('[Getter]');
+			expect(result).to.not.include('should not be called');
+			expect(result).to.include("'key' => 'value'");
+			expect(result).to.include("'value'");
+			expect(result).to.not.include('poisoned');
+		});
+
 		it('leaves built-in container types (Date, Map, Buffer) rendered natively instead of corrupting them', () => {
 			const date = new Date('2024-01-01T00:00:00.000Z');
 			const map = new Map([['key', 'value']]);
