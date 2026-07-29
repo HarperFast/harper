@@ -14,6 +14,8 @@ const {
 	componentPreparationLockIdentity,
 	componentPreparationLockPaths,
 	withComponentPreparationLock,
+	scanLiveClaims,
+	COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
 } = require('#src/components/componentPreparationLock');
 
 const lockModulePath = require.resolve('#src/components/componentPreparationLock');
@@ -260,5 +262,57 @@ describe('component preparation lock', () => {
 			withComponentPreparationLock(componentDirPath, async () => {}, { timeoutMs: 100 }),
 			/Timed out waiting.*held by process \d+, thread/
 		);
+	});
+
+	it('does not drop a contender whose choosing claim is read after it upgrades to a ticket', async () => {
+		// acquireComponentPreparationLock always durably publishes its ticket before removing its
+		// choosing claim, but a scanner can still observe the choosing claim in readdir() and then
+		// read it only after that exact upgrade has completed — the choosing file is gone, and
+		// without the fallback this contender would vanish from the scan entirely (see the
+		// `onEntriesListed` hook below, which forces that interleaving deterministically).
+		const { lockRoot, lockName } = componentPreparationLockPaths(join(rootDir, 'race-target'));
+		await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+		const owner = {
+			pid: process.pid,
+			threadId: 0,
+			processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+			token: 'race-token',
+			ticket: 7,
+		};
+		const choosingPath = join(lockRoot, `${lockName}.choosing.${owner.token}.json`);
+		const ticketPath = join(lockRoot, `${lockName}.ticket.${owner.ticket}.${owner.token}.json`);
+		await writeFile(choosingPath, JSON.stringify(owner));
+
+		const result = await scanLiveClaims(lockRoot, lockName, {}, undefined, async () => {
+			await writeFile(ticketPath, JSON.stringify(owner));
+			await rm(choosingPath, { force: true });
+		});
+
+		assert.equal(result.choosing.length, 0);
+		assert.equal(result.tickets.length, 1);
+		assert.equal(result.tickets[0].token, 'race-token');
+	});
+
+	it('discards a choosing claim that vanishes with no ticket ever appearing', async () => {
+		// The negative case for the same fallback: a choosing claim can also disappear because a
+		// concurrent scanner already found its (genuinely dead) owner and removed it. No ticket
+		// ever appears under that token, so the claim must still be discarded, not treated as live.
+		const { lockRoot, lockName } = componentPreparationLockPaths(join(rootDir, 'no-race-target'));
+		await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+		const owner = {
+			pid: process.pid,
+			threadId: 0,
+			processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+			token: 'abandoned-token',
+		};
+		const choosingPath = join(lockRoot, `${lockName}.choosing.${owner.token}.json`);
+		await writeFile(choosingPath, JSON.stringify(owner));
+
+		const result = await scanLiveClaims(lockRoot, lockName, {}, undefined, async () => {
+			await rm(choosingPath, { force: true });
+		});
+
+		assert.equal(result.choosing.length, 0);
+		assert.equal(result.tickets.length, 0);
 	});
 });

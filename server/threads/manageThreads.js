@@ -6,7 +6,7 @@
 const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { readFileSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { join, isAbsolute, extname } = require('path');
@@ -154,6 +154,7 @@ module.exports = {
 	registerProcessGroup,
 	unregisterProcessGroup,
 	isThreadRunning,
+	waitUntilConfirmedGone,
 	restartNumber: workerData?.restartNumber || 1,
 };
 
@@ -293,6 +294,12 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
+// getThreadInfo/awaitProcessGroupTermination register their own one-shot parentPort listener per
+// call rather than going through onMessageByType, so without this, every reply would also reach
+// addPort's permanent dispatcher as an "unregistered" type: notifyMessageListeners would warn and
+// queue each one in messagesQueuedByType forever, and a lock-wait polls every 50ms.
+listenersByType.set(THREAD_INFO, null);
+listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
 
 function startWorker(path, options = {}) {
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
@@ -948,6 +955,61 @@ async function waitForProcessGroupExit(processGroupId) {
 	while (processGroupIsAlive(processGroupId)) await delay(PROCESS_GROUP_TERMINATION_POLL_MS);
 }
 
+// Mirrors Application.ts's windowsProcessTreeIsAlive: a descendant retains its ParentProcessId
+// after its parent exits, which is exactly the taskkill "process not found" race, so query the
+// process table by walking parentage rather than trusting only the root pid.
+function windowsProcessTreeIsAlive(rootPid) {
+	const script =
+		`$rootPid = ${rootPid}; ` +
+		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
+		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
+		'while ($frontier.Count -gt 0) { ' +
+		'$next = @(); foreach ($parentPid in $frontier) { if ($seen[$parentPid]) { continue }; ' +
+		'$seen[$parentPid] = $true; foreach ($p in $all) { ' +
+		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
+		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
+		'$frontier = $next }; ' +
+		'if ($found) { exit 0 } else { exit 1 }';
+	return new Promise((resolve) => {
+		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+			stdio: 'ignore',
+			windowsHide: true,
+		});
+		query.once('close', (code) => resolve(code === 0 ? true : code === 1 ? false : null));
+		query.once('error', () => resolve(null));
+	});
+}
+
+// The initial taskkill in terminateProcessGroupsForThread is fired synchronously (required so
+// that call still works from a process `exit` handler) but its result is not checked there, since
+// a nonzero exit is ambiguous between a real failure and the target having already exited. Confirm
+// via the process table and keep retrying taskkill until the whole tree is positively gone —
+// reclamation must not proceed on an unconfirmed guess either way. Exported so a test can drive the
+// retry logic with injected callbacks instead of real Windows processes.
+async function waitUntilConfirmedGone(attemptTermination, treeIsAlive, pollMs) {
+	for (;;) {
+		if (await attemptTermination()) return;
+		if ((await treeIsAlive()) === false) return;
+		await delay(pollMs);
+	}
+}
+
+function waitForWindowsGroupExit(processGroupId) {
+	return waitUntilConfirmedGone(
+		() =>
+			new Promise((resolve) => {
+				const taskkill = spawn('taskkill', ['/pid', String(processGroupId), '/T', '/F'], {
+					stdio: 'ignore',
+					windowsHide: true,
+				});
+				taskkill.once('close', (code) => resolve(code === 0));
+				taskkill.once('error', () => resolve(false));
+			}),
+		() => windowsProcessTreeIsAlive(processGroupId),
+		PROCESS_GROUP_TERMINATION_POLL_MS
+	);
+}
+
 function addProcessGroup(ownerThreadId, processGroupId) {
 	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
 	let processGroups = processGroupsByThread.get(ownerThreadId);
@@ -985,7 +1047,9 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 		}
 	}
 	const termination = Promise.all(
-		process.platform === 'win32' ? [] : groupIds.map((processGroupId) => waitForProcessGroupExit(processGroupId))
+		groupIds.map((processGroupId) =>
+			process.platform === 'win32' ? waitForWindowsGroupExit(processGroupId) : waitForProcessGroupExit(processGroupId)
+		)
 	).finally(() => {
 		if (pendingProcessGroupTerminations.get(ownerThreadId) === termination) {
 			pendingProcessGroupTerminations.delete(ownerThreadId);

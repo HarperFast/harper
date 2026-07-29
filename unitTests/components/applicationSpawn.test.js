@@ -183,6 +183,31 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		assert.equal((await require('node:fs/promises').stat(writesPath)).size, sizeAfterTermination);
 	});
 
+	it('does not resolve a successful install until a lingering same-group descendant is confirmed gone', async () => {
+		// The successful-close counterpart to the test above: the direct child here exits 0 (not a
+		// timeout), so this exercises spawnWithEnv's 'close' handler rather than terminateProcessTree
+		// called directly. Before this fix, a successful close resolved immediately without probing
+		// the process group, so this orphan could keep mutating node_modules after the caller (and
+		// the component preparation lock) considered the install done. The descendant's pid is
+		// printed (not written to a file on an interval) so the assertion doesn't race against
+		// whether it got a chance to run before termination — termination is expected to be prompt.
+		const writer = writeScript('success-orphan-writer.js', `setInterval(() => {}, 1000);`);
+		const parent = writeScript(
+			'success-orphan-parent.js',
+			`const child = require('node:child_process').spawn(process.execPath, [${JSON.stringify(writer)}], { stdio: 'ignore' });
+			child.unref();
+			console.log(child.pid);
+			process.exit(0);`
+		);
+
+		const result = await nonInteractiveSpawn('test-app', process.execPath, [parent], workDir, 30_000);
+		assert.strictEqual(result.code, 0, `expected exit 0, got ${result.code}; stderr=${result.stderr}`);
+		const descendantPid = Number(result.stdout.trim());
+		assert.ok(Number.isInteger(descendantPid) && descendantPid > 0, `expected a pid, got ${result.stdout}`);
+
+		assert.throws(() => process.kill(descendantPid, 0), /ESRCH/, 'descendant must already be gone by resolve');
+	});
+
 	it('does not report termination until the process tree is confirmed gone', async () => {
 		let alive = true;
 		let settled = false;
