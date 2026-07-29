@@ -1500,7 +1500,7 @@ describe('Test harper_logger module', () => {
 			expect(isErrorLike(proxy)).to.equal(false);
 		});
 
-		it('never invokes a live (non-revoked) Proxy\'s getPrototypeOf trap - `instanceof` would otherwise trigger it', () => {
+		it("never invokes a live (non-revoked) Proxy's getPrototypeOf trap - `instanceof` would otherwise trigger it", () => {
 			let trap_calls = 0;
 			const hostile = new Proxy(new Error('gone'), {
 				getPrototypeOf(target) {
