@@ -22,6 +22,17 @@ In reviewing the third party package or dependency, the following questions shou
 
 Generally, dependencies are added by simply adding them to the dependencies list in package.json. If the dependency is not necessary for the actual execution of the application (testing or building), it can be placed in devDependencies, or in optionalDependencies (we have done that with packages with binary compilations).
 
+## react-native-fs (removed from the published tree, not a dependency)
+
+This is the inverse of the entries below — a dependency we take deliberate steps to _not_ ship.
+
+- Where it comes from: `alasql` declares `optionalDependencies: { "react-native-fs": "^2.20.0" }`, and `react-native-fs` peer-depends on `react-native` **without** marking it optional. npm 7+ auto-installs peer dependencies, so resolving alasql pulls in `react-native`, `react`, `hermes`, `metro` and `react-devtools-core` — ~140MB and ~200 packages (#1937).
+- Why none of it is needed: every `require('react-native-fs')` in `alasql/dist/alasql.fs.js` sits behind a `utils.isReactNative` guard, so it is unreachable under Node. Harper only uses `alasql.parse` plus its function extensions.
+- How it is removed: `build-tools/prune-shrinkwrap-react-native.mjs` strips the subtree from the shrinkwrap that ships in the published package, alongside the existing dev prune. It computes the set of packages reachable with and without the `react-native-fs` edge and removes only the difference, so the set is derived rather than a hardcoded list that would rot as alasql's tree shifts. Only edges a dependent declared as an `optionalDependency` are severed — a package that hard-depends on `react-native-fs` keeps it alive for the whole tree — and the result is checked for newly-unresolved required edges before it is written, so a bad prune fails the build instead of shipping a broken shrinkwrap.
+- Why not an `overrides` entry in `package.json`: npm honours `overrides` only for the **root** project, so they do nothing for anyone installing harper. The published shrinkwrap _is_ authoritative for registry installs — npm learns it exists from the `_hasShrinkwrap` flag in the packument and installs exactly the tree it describes, without re-resolving pruned optional dependencies (verified against npm 11 by serving a package with a pruned shrinkwrap from a local registry). Pruning is therefore what actually reaches users, and it needs no stub package or third-party empty module.
+- Known gap: this only covers registry installs. `npm install <tarball>` has no packument, so npm never learns the shrinkwrap exists and resolves the tree fresh from `package.json` — which is how the Docker image is currently built, so the image still gets the subtree. Tracked separately.
+- Eventual removal: delete the script and its build step once `react-native-fs` marks its `react-native` peer optional, or once `alasql` stops declaring the optional dependency. The script reports that it found nothing to prune rather than failing, so it degrades quietly when that happens.
+
 ## graphql
 
 - Need for usage: For supporting GraphQL schemas and queries.

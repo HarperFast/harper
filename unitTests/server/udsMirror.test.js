@@ -177,6 +177,18 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 	// ─── enableProxyProtocol ──────────────────────────────────────────────────
 
 	describe('enableProxyProtocol', () => {
+		// Plain EventEmitter plus the net.Socket surface enableProxyProtocol depends on
+		// (setTimeout/destroy), matching net.Socket.setTimeout's real semantics closely enough
+		// for tests: registers the callback as a 'timeout' listener; a 0ms call just disarms it.
+		function createSocket() {
+			const socket = new EventEmitter();
+			socket.setTimeout = sinon.stub().callsFake((ms, cb) => {
+				if (cb) socket.once('timeout', cb);
+			});
+			socket.destroy = sinon.stub();
+			return socket;
+		}
+
 		// Install the wrapper, then deliver one or more chunks as the fronting proxy would.
 		async function feed(socket, ...chunks) {
 			const server = new EventEmitter();
@@ -190,7 +202,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 		}
 
 		it('strips the PROXY v1 header and forwards the remaining bytes', async () => {
-			const socket = new EventEmitter();
+			const socket = createSocket();
 			const received = await feed(socket, Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\nHELLO'));
 			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
 			assert.strictEqual(socket.remoteAddress, '1.2.3.4');
@@ -198,13 +210,13 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 		});
 
 		it('forwards a non-PROXY first chunk unchanged (e.g. an MQTT CONNECT)', async () => {
-			const socket = new EventEmitter();
+			const socket = createSocket();
 			const received = await feed(socket, Buffer.from('MQTTCONNECT'));
 			assert.strictEqual(Buffer.concat(received).toString(), 'MQTTCONNECT');
 		});
 
 		it('buffers a PROXY header split across data events (no partial leak to the parser)', async () => {
-			const socket = new EventEmitter();
+			const socket = createSocket();
 			const received = await feed(
 				socket,
 				Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111'), // no CRLF yet
@@ -216,14 +228,14 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 		});
 
 		it('buffers when the first chunk is shorter than the "PROXY " prefix', async () => {
-			const socket = new EventEmitter();
+			const socket = createSocket();
 			const received = await feed(socket, Buffer.from('PRO'), Buffer.from('XY TCP4 9.9.9.9 5.6.7.8 42 2222\r\nHI'));
 			assert.strictEqual(Buffer.concat(received).toString(), 'HI');
 			assert.strictEqual(socket.remoteAddress, '9.9.9.9');
 		});
 
 		it('forwards unchanged once the spec max length is exceeded without a CRLF', async () => {
-			const socket = new EventEmitter();
+			const socket = createSocket();
 			const long = 'PROXY ' + 'x'.repeat(200); // > 108 bytes, no CRLF
 			const received = await feed(socket, Buffer.from(long));
 			assert.strictEqual(Buffer.concat(received).toString(), long);
@@ -241,7 +253,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 		}
 
 		it('strips a PROXY v2 header and overrides remoteAddress/remotePort', async () => {
-			const socket = new EventEmitter();
+			const socket = createSocket();
 			const received = await feed(socket, Buffer.concat([buildV2Header(), Buffer.from('HELLO')]));
 			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
 			assert.strictEqual(socket.remoteAddress, '203.0.113.9');
@@ -249,7 +261,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 		});
 
 		it('buffers a PROXY v2 header split across data events', async () => {
-			const socket = new EventEmitter();
+			const socket = createSocket();
 			const full = Buffer.concat([buildV2Header(), Buffer.from('HELLO')]);
 			const received = await feed(socket, full.subarray(0, 7), full.subarray(7, 20), full.subarray(20));
 			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
@@ -261,17 +273,36 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			const ssl = Buffer.from([0x20, 0x00, 0x05, 0x03, 0, 0, 0, 0]);
 			const der = Buffer.from('not-a-real-der-but-forwarded-opaquely');
 			const certTlv = Buffer.concat([Buffer.from([0xe2, 0x00, der.length]), der]);
-			const socket = new EventEmitter();
+			const socket = createSocket();
 			await feed(socket, Buffer.concat([buildV2Header(Buffer.concat([ssl, certTlv])), Buffer.from('APP')]));
 			assert.strictEqual(socket.authorized, true);
 			assert.strictEqual(typeof socket.getPeerCertificate, 'function');
 		});
 
 		it('gives non-proxied connections no-client-cert TLS defaults', async () => {
-			const socket = new EventEmitter();
+			const socket = createSocket();
 			await feed(socket, Buffer.from('MQTTCONNECT'));
 			assert.strictEqual(socket.authorized, false);
 			assert.deepStrictEqual(socket.getPeerCertificate(), {});
+		});
+
+		it('destroys the connection if the peer stalls before completing the header', async () => {
+			const socket = createSocket();
+			const server = new EventEmitter();
+			enableProxyProtocol(server);
+			socket.on('data', () => {}); // stand-in for the HTTP parser's own listener
+			server.emit('connection', socket);
+			await new Promise((resolve) => process.nextTick(resolve));
+			socket.emit('data', Buffer.from('PROXY TCP4 1.2.3.4')); // no CRLF yet — still pending
+			socket.emit('timeout');
+			assert.strictEqual(socket.destroy.called, true);
+		});
+
+		it('clears the stall timeout once the header resolves', async () => {
+			const socket = createSocket();
+			await feed(socket, Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\nHELLO'));
+			socket.emit('timeout'); // an unrelated later timeout must be a no-op post-handoff
+			assert.strictEqual(socket.destroy.called, false);
 		});
 	});
 

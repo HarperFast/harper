@@ -83,10 +83,35 @@ export const LAUNCH_SERVICE_SCRIPTS = {
 	MAIN: 'dist/bin/harper.js',
 } as const;
 
-/** Specifies user role types */
+/**
+ * Special boolean role flags validated as role types (not database permissions).
+ * `cluster_user` belongs here alongside `super_user`: role validation checks both
+ * are booleans (SU_CU_ROLE_BOOLEAN_ERROR), and without it a non-boolean
+ * `cluster_user` falls through to database validation and reports a misleading
+ * "database 'cluster_user' does not exist" error (harper#1016).
+ */
 export const ROLE_TYPES_ENUM = {
 	SUPER_USER: 'super_user',
+	CLUSTER_USER: 'cluster_user',
 } as const;
+
+/**
+ * Named permission flags that live in a role's `permission` object alongside
+ * per-database permission blocks, which are keyed by database name. A database
+ * named after one of these flags collides with it — the role parser cannot tell
+ * a `super_user` flag from a `super_user` database's permissions — producing
+ * undefined behavior, so these are rejected as database/schema identifiers
+ * (harper#1016). Keep in sync with `UserRoleNamedPermissions` in security/user.ts.
+ * `access` is deliberately NOT here: roles.ts strips it out of `permission`
+ * before persistence (scoped-delegation), so it never collides at runtime.
+ */
+export const RESERVED_DATABASE_NAMES = [
+	'super_user',
+	'cluster_user',
+	'structure_user',
+	'operations',
+	'_expandedOperations',
+] as const;
 
 /** Email address for support requests */
 export const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
@@ -374,6 +399,8 @@ export const SERVICE_ACTIONS_ENUM = {
 	RENEWCERTS: 'renew-certs',
 	COPYDB: 'copy-db',
 	MCP: 'mcp',
+	AGENT: 'agent',
+	CHAT: 'chat',
 } as const;
 
 /** describes the Geo Conversion types */

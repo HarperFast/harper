@@ -23,7 +23,11 @@ const DB_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
 	.max(commonValidators.schema_length.maximum)
 	.pattern(schemaRegex)
-	.messages({ 'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message });
+	.invalid(...hdbTerms.RESERVED_DATABASE_NAMES)
+	.messages({
+		'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message,
+		'any.invalid': "'{#value}' is a reserved name and cannot be used as a database name",
+	});
 
 const TABLE_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
@@ -44,6 +48,16 @@ const PRIMARY_KEY_CONSTRAINTS = Joi.string()
 	.required();
 
 /** EXPORTED FUNCTIONS **/
+
+/**
+ * Validate a database name on its own — reserved names, length, format — without touching storage.
+ * The create paths below run the same constraint as part of their request validation; exposing it
+ * separately lets the name rule (harper#1016) be exercised without creating a database as a
+ * side effect.
+ */
+export function validateDatabaseName(databaseName: string) {
+	return validateBySchema({ schema: databaseName }, Joi.object({ schema: DB_NAME_CONSTRAINTS }));
+}
 
 export async function createSchema(schemaCreateObject: any) {
 	let schemaStructure = await createSchemaStructure(schemaCreateObject);

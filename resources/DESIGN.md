@@ -160,6 +160,9 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 
 - **Never** remove `transactional()` from a static method on `Resource` — it owns transaction context lifetime.
 - New `Resource` subclasses should override **instance** methods (`get`, `put`, ...) for behavior; static methods are the protocol entry points and stay generic.
+- **Overriding a static entry point takes over its whole contract.** Assigning `static post`/`put`/`patch` on a subclass shadows the `transactional()`-wrapped static, so none of that wrapper runs — including the `when(data, ...)` that resolves `data` and the `allowCreate`/`allowUpdate` gate. That is by design (it is how `login.ts` implements a deliberately pre-authentication endpoint), and it means an override owns two obligations the wrapper would otherwise have met:
+  - **`data` is a `MaybePromise` — `await` it.** Protocol callers pass `request.data` through unresolved; over REST that is the streaming deserializer's pending promise (`server/REST.ts` → `getDeserializer(…, true)`). A promise has no own enumerable properties, so skipping the `await` fails silently rather than loudly: `JSON.stringify(body) === '{}'` and every field reads `undefined`.
+  - **The override makes the access-control decision.** No `allow*` predicate runs for it. An override that is not meant to be public must check authorization itself.
 - When adding a new early-return path inside a commit handler in `_writeUpdate`, follow the blob-cleanup protocol documented in `../DESIGN.md` ("Blob orphan cleanup").
 - If you add a new top-level section to `Table.ts`, drop a `// #section: <name>` marker at its start and add a row to the section map above.
 - Tests for this layer live in `../unitTests/resources/`.

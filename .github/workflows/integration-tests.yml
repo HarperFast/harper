@@ -78,7 +78,7 @@ jobs:
             static/
             node_modules/
             package.json
-          retention-days: 1
+          retention-days: 7
 
   run-integration-tests:
     name: Integration Tests ${{matrix.shard}}/6 (Node.js v${{ matrix.node-version }})
@@ -113,10 +113,16 @@ jobs:
           mkdir -p /tmp/harperdb-legacy
           npm install --ignore-scripts --prefix /tmp/harperdb-legacy harperdb@4
 
+      - name: Install harper@5.1.22 for cross-version upgrade tests
+        run: |
+          mkdir -p /tmp/harper-legacy-51
+          npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
+
       - name: Run Integration Test Shard ${{ matrix.shard }}
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
+          HARPER_LEGACY_51_PATH: /tmp/harper-legacy-51/node_modules/harper/dist/bin/harper.js
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
         run: |
           npm run test:integration:all -- --shard=${{ matrix.shard }}/6
@@ -289,6 +295,11 @@ jobs:
           mkdir -p /tmp/harperdb-legacy
           npm install --ignore-scripts --prefix /tmp/harperdb-legacy harperdb@4
 
+      - name: Install harper@5.1.22 for cross-version upgrade tests
+        run: |
+          mkdir -p /tmp/harper-legacy-51
+          npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
+
       # Serve the plaintext app HTTP port(s) through uWebSockets.js instead of the Node http server
       # (#914). Only non-secure, non-operations TCP ports are affected; secure/replication/ops paths
       # keep running on Node, so this exercises the uWS request/streaming/WS/GraphQL/Fastify-fallback
@@ -297,6 +308,7 @@ jobs:
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
+          HARPER_LEGACY_51_PATH: /tmp/harper-legacy-51/node_modules/harper/dist/bin/harper.js
           HARPER_UWS_HTTP: 1
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
         run: |

@@ -13,6 +13,7 @@ import { Transaction as RocksTransaction, type Store as RocksStore, constants } 
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
+import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
@@ -127,7 +128,7 @@ export function transactionOpenTooLongError(): ServerError {
 	// status (503/408) would invite clients and gateways to auto-retry the same doomed long transaction.
 	// 422 signals the request itself must change (split the work), which is the actionable response.
 	return new ServerError(
-		'Transaction was aborted after exceeding the open-transaction limit; split long-running work into smaller transactions',
+		'Transaction was aborted after exceeding the maximum open-transaction time; split long-running work into smaller transactions',
 		422
 	);
 }
@@ -173,13 +174,58 @@ export type TransactionWrite = {
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
 	appendedAuditEntry?: boolean;
+	// the preceding write to the same store and key in this transaction, if any (linked in addWrite)
+	priorWrite?: TransactionWrite;
+	// what this write left for its key in this transaction, once its commit handler stored it (a
+	// deletion stages an entry with no value). Reset at the top of each commit-handler invocation so
+	// a retry round that takes an early return doesn't leave the prior round's state behind.
+	stagedEntry?: Partial<Entry>;
+	// a later write to the same key in this transaction replaced (or deleted) the record this write
+	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
+	// commit-handler round, like stagedEntry.
+	superseded?: boolean;
+	// this write appended an audit entry, which references its saved blobs — they then belong to the
+	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
+	blobsAuditReferenced?: boolean;
 };
+
+/**
+ * The state a preceding write in this transaction left for `operation`'s key, or undefined if this
+ * is the first write to it. Within a transaction the writes are ordered by program order, and
+ * neither storage engine can serve that state to a read — LMDB applies staged writes only in the
+ * commit batch — so a later write to the same key gets its basis from the write that staged it
+ * rather than from a pre-transaction read (harper#1968). Walks past writes that staged nothing
+ * (a skipped or non-record write) to the last one that did, returning the owning write.
+ */
+export function priorStagedWrite(operation: TransactionWrite): TransactionWrite | undefined {
+	for (let prior = operation.priorWrite; prior; prior = prior.priorWrite) {
+		if (prior.stagedEntry) return prior;
+	}
+}
+
+/**
+ * Key identity for the per-key write chain, which must match the storage engines' key identity —
+ * and that identity is the ordered-binary encoding, not JS value identity. The mismatches run in
+ * both directions: `1n` and `1` (or `2**60` and `1n << 60n`) encode to the SAME stored key, so the
+ * chain must link them or repeat writes re-introduce the harper#1968 stale basis; while `[0]` vs
+ * `[-0]` and `[null]` vs `[NaN]` are DIFFERENT stored keys that value-ish encodings (JSON, string
+ * coercion) collapse, cross-contaminating unrelated records. So every key is mapped through the
+ * same encoder the stores use; latin1 keeps the bytes injective in a string. Symbol keys (internal
+ * metadata writes) can't be key-encoded and keep native identity; so does null (topic-less
+ * publishes), which never stages a record.
+ */
+export function writeKeyId(key: Id): unknown {
+	if (typeof key === 'symbol' || key == null) return key;
+	return toBufferKey(key as any).toString('latin1');
+}
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
 
 export class DatabaseTransaction implements Transaction {
 	#context: Context;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
+	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
+	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
 	completions: Promise<void>[] = []; // the set of outstanding async operations to complete
 	db: RootDatabaseKind;
 	transaction: RocksTransactionWithRetry;
@@ -293,6 +339,30 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
+	/**
+	 * Chain a newly staged write to the preceding write to the same store and key, so its commit
+	 * handler can apply on top of what that write staged instead of the pre-transaction record
+	 * (see priorStagedWrite). Called by both engines' addWrite.
+	 */
+	linkWrite(operation: TransactionWrite): void {
+		if (operation.key === undefined) return;
+		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
+		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
+		const keyId = writeKeyId(operation.key);
+		const priorWrite = writesForStore.get(keyId);
+		if (priorWrite) operation.priorWrite = priorWrite;
+		writesForStore.set(keyId, operation);
+	}
+
+	/**
+	 * Discard the staged write set (committed or aborted); the per-key chain must go with it so a
+	 * reused transaction never bases a write on a previous batch's staged state.
+	 */
+	clearWrites(): void {
+		this.writes = [];
+		this.writesByKey = undefined;
+	}
+
 	checkOverloaded() {
 		if (
 			outstandingCommit &&
@@ -306,6 +376,7 @@ export class DatabaseTransaction implements Transaction {
 
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		this.linkWrite(operation);
 		this.writes.push(operation);
 		if (!operation.deferSave) {
 			// Setting saved to false means to defer saving
@@ -577,15 +648,18 @@ export class DatabaseTransaction implements Transaction {
 									);
 								}
 							}
-							// commit succeeded; clean up files for any writes whose commit-handler took an early-return.
-							// deferred until here so a retry that *would* have referenced the blob can flip skipped back to false first.
+							// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
+							// or whose stored record a later write to the same key replaced without an audit entry
+							// keeping its blobs reachable (checked against the final committed record, so a blob the
+							// later write retained survives). Deferred until here so a retry that *would* have
+							// referenced the blob can flip skipped/superseded back to false first.
 							for (const write of this.writes) {
-								if (write?.skipped && write?.savedBlobs)
+								if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
-							this.writes = [];
+							this.clearWrites();
 							if (this.#context?.resourceCache) this.#context.resourceCache = null;
 							this.next = null;
 							let txnTime = this.timestamp;
@@ -674,10 +748,10 @@ export class DatabaseTransaction implements Transaction {
 					);
 				}
 				for (const write of this.writes) {
-					if (write?.skipped && write?.savedBlobs)
+					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
-				this.writes = [];
+				this.clearWrites();
 				if (this.#context?.resourceCache) this.#context.resourceCache = null;
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
@@ -712,7 +786,7 @@ export class DatabaseTransaction implements Transaction {
 				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 		}
 		// reset the transaction
-		this.writes = [];
+		this.clearWrites();
 		if (this.#context?.resourceCache) this.#context.resourceCache = null;
 	}
 	/**
