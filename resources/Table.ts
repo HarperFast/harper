@@ -5749,8 +5749,11 @@ export function makeTable(options) {
 						sourceContext.transaction.abort();
 						return;
 					}
-					if (context?.noCacheStore || sourceContext.noCacheStore) {
-						// abort before we write any change
+					if (context?.noCacheStore || sourceContext.noCacheStore || droppingTable) {
+						// abort before we write any change. droppingTable is re-checked live (not just
+						// the noCacheStore snapshot taken at call start) because a call admitted before
+						// dropTable() began can still be sitting here after it started - the await above
+						// waited on the source, which may take arbitrarily long.
 						sourceContext.transaction.abort();
 						return;
 					}
@@ -5883,6 +5886,14 @@ export function makeTable(options) {
 						TableResource.userEmbedders
 					);
 					if (embedBefore) await embedBefore();
+					if (droppingTable) {
+						// Re-check right before staging the write: dropTable() may have started
+						// while we were awaiting the embed step above, and the drain in dropTable()
+						// only waits for writes staged before it snapshotted pendingSourceCommits -
+						// staging one now would race the column-family drop (harper#1381).
+						sourceContext.transaction.abort();
+						return;
+					}
 					sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
 					dbTxn.addWrite(sourceWrite);
 				})),

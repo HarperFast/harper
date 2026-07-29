@@ -205,21 +205,24 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 		const sourceGate = new Promise((resolve) => {
 			releaseSource = resolve;
 		});
+		let sourceEntered;
+		const sourceEnteredPromise = new Promise((resolve) => {
+			sourceEntered = resolve;
+		});
 		TestTable.sourcedFrom({
 			get: async (id) => {
+				sourceEntered();
 				await sourceGate;
 				return { id, name: 'gated' };
 			},
 			available: () => true,
 		});
 
-		// Kick off a get() that will hang inside the source until we release it below. Its
-		// cache-write commit is registered as pending the moment this call starts.
+		// Kick off a get() that will hang inside the source until we release it below. Wait on
+		// an explicit signal (not a guessed number of ticks) that the source was actually
+		// entered, so this doesn't depend on scheduler timing under a loaded test runner.
 		const getPromise = TestTable.get('gated-1', {});
-
-		// Let the get() call reach the gated source and register its pending commit.
-		await new Promise((resolve) => setImmediate(resolve));
-		await new Promise((resolve) => setImmediate(resolve));
+		await sourceEnteredPromise;
 
 		let dropResolved = false;
 		const dropPromise = TestTable.dropTable().then(() => {
@@ -255,21 +258,27 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 		const firstGate = new Promise((resolve) => {
 			releaseFirst = resolve;
 		});
+		let firstEntered;
+		const firstEnteredPromise = new Promise((resolve) => {
+			firstEntered = resolve;
+		});
 		let lateSourceCalled = false;
 		TestTable.sourcedFrom({
 			get: async (id) => {
-				if (id === 'first') await firstGate;
-				else lateSourceCalled = true;
+				if (id === 'first') {
+					firstEntered();
+					await firstGate;
+				} else lateSourceCalled = true;
 				return { id, name: 'value' };
 			},
 			available: () => true,
 		});
 
 		// Start a write that keeps dropTable() draining, so there is a window in which the
-		// table is already marked dropping but the drop itself hasn't touched storage yet.
+		// table is already marked dropping but the drop itself hasn't touched storage yet. Wait
+		// on an explicit "entered the source" signal rather than a guessed number of ticks.
 		const firstGetPromise = TestTable.get('first', {});
-		await new Promise((resolve) => setImmediate(resolve));
-		await new Promise((resolve) => setImmediate(resolve));
+		await firstEnteredPromise;
 
 		const dropPromise = TestTable.dropTable();
 
