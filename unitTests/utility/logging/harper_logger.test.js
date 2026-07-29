@@ -1128,6 +1128,43 @@ describe('Test harper_logger module', () => {
 			expect(result).to.not.include('Unrenderable value');
 			expect(result).to.include('still here');
 		});
+
+		it('never invokes a getter while sanitizing — describes it as [Getter] instead, same as util.inspect’s default', () => {
+			let call_count = 0;
+			const value = {};
+			Object.defineProperty(value, 'lazy', {
+				enumerable: true,
+				get() {
+					call_count++;
+					return 'should not be called';
+				},
+			});
+			const result = render({ value, fine: 'still here' }, { depth: 8 });
+			expect(call_count).to.equal(0);
+			expect(result).to.include('[Getter]');
+			expect(result).to.not.include('should not be called');
+			expect(result).to.include('still here');
+		});
+
+		it('sanitizes a secret-carrying Error nested inside a VM cross-realm plain object, Map, and Set', () => {
+			const vm = require('vm');
+			const context = vm.createContext();
+			const vm_error = vm.runInContext('new Error("vm request failed")', context);
+			vm_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const vm_plain_object = vm.runInContext('({})', context);
+			vm_plain_object.cause = vm_error;
+			const vm_map = vm.runInContext('new Map()', context);
+			vm_map.set('cause', vm_error);
+			const vm_set = vm.runInContext('new Set()', context);
+			vm_set.add(vm_error);
+
+			expect(vm_plain_object instanceof Object).to.equal(false); // different realm's Object constructor
+			expect(vm_map instanceof Map).to.equal(false); // different realm's Map constructor
+
+			const result = render({ vm_plain_object, vm_map, vm_set }, { depth: 8 });
+			expect(result).to.not.include('super-secret-token');
+			expect(result).to.include('Error: vm request failed');
+		});
 	});
 
 	describe('Test isErrorLike function (harper#1982)', () => {
