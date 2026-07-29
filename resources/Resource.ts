@@ -721,11 +721,12 @@ function transactional(
 				// has nothing to address, so reject with a purpose-built message
 				throw new ClientError(`A trailing slash is required to POST to the ${this.name} collection`, 404);
 			}
-			// a custom post() override accepts the no-slash collection POST (redirector-style bulk
-			// import); normalize to a well-formed collection target so authorization and dispatch
-			// treat it as an insert on the collection, same as the trailing-slash form
-			query.isCollection = true;
-			isCollection = true;
+			if (this.loadAsInstance !== false) {
+				// a custom instance post() override accepts the no-slash collection POST (redirector-style
+				// bulk import); normalize it so authorization and dispatch use collection semantics
+				query.isCollection = true;
+				isCollection = true;
+			}
 		}
 		let resourceOptions;
 		if (!context) {
