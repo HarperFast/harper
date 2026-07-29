@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isMainThread, threadId } from 'node:worker_threads';
@@ -12,6 +12,10 @@ if (isMainThread) process.env[PROCESS_INSTANCE_ENV] = randomUUID();
 export const COMPONENT_PREPARATION_PROCESS_INSTANCE_ID = process.env[PROCESS_INSTANCE_ENV] ?? randomUUID();
 const LOCK_POLL_INTERVAL_MS = 50;
 const DEFAULT_LOCK_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+// publishClaim's write-then-rename is two syscalls with no suspension point in between, so a
+// `.publishing` file surviving this long can only be a crash orphan (a write that was never
+// followed by its rename), never an in-flight publish.
+const STALE_PUBLISHING_SWEEP_AGE_MS = 60_000;
 
 export interface ComponentPreparationLockOwner {
 	pid: number;
@@ -79,6 +83,31 @@ async function ownerIsAlive(
 	} catch {
 		// An unknown owner state is not permission to ignore its ticket.
 		return true;
+	}
+}
+
+// Stricter than ownerIsAlive: used only to decide whether a wait deadline may be renewed. A bare
+// `kill(pid, 0)` on a *foreign* process proves some process holds that PID, not that it is the
+// original owner — the PID can be recycled by an unrelated long-lived process after a hard crash,
+// which would otherwise renew the deadline forever. Likewise, a rejected isOwnerAlive check is an
+// unknown state, not a live one. ownerIsAlive's conservative "assume alive" is still correct for
+// claim removal (it must not delete a possibly-live claim), but renewal has the opposite failure
+// mode: renewing on unconfirmed liveness makes the "bounded wait is a backstop when liveness can't
+// be established" invariant (DESIGN.md) unbounded. Only a same-process, same-instance owner that
+// the caller's own liveness check *positively confirms* is alive may renew; everything else falls
+// through to the bounded timeout, which only fails this waiter and never steals the lock.
+async function ownerLivenessConfirmed(
+	owner: ComponentPreparationLockOwner,
+	options: ComponentPreparationLockOptions
+): Promise<boolean> {
+	if (owner.pid !== process.pid || owner.processInstanceId !== COMPONENT_PREPARATION_PROCESS_INSTANCE_ID) {
+		return false;
+	}
+	if (!options.isOwnerAlive) return false;
+	try {
+		return await options.isOwnerAlive(owner);
+	} catch {
+		return false;
 	}
 }
 
@@ -161,6 +190,31 @@ function ticketPrecedes(left: ComponentPreparationLockOwner, right: ComponentPre
 	return leftTicket < rightTicket || (leftTicket === rightTicket && left.token < right.token);
 }
 
+// Best-effort cleanup for `.publishing` staging files orphaned by a crash between writeFile and
+// rename in publishClaim. Age-gated rather than identity-based (the filename's second UUID isn't
+// correlatable to any live owner) so a sweep can never race a genuinely in-flight publish.
+async function sweepStalePublishingFiles(lockRoot: string): Promise<void> {
+	let entries: string[];
+	try {
+		entries = await readdir(lockRoot);
+	} catch {
+		return;
+	}
+	await Promise.all(
+		entries
+			.filter((name) => name.endsWith('.publishing'))
+			.map(async (name) => {
+				const path = join(lockRoot, name);
+				try {
+					const stats = await stat(path);
+					if (Date.now() - stats.mtimeMs >= STALE_PUBLISHING_SWEEP_AGE_MS) {
+						await rm(path, { force: true }).catch(() => {});
+					}
+				} catch {}
+			})
+	);
+}
+
 async function publishClaim(claimPath: string, owner: ComponentPreparationLockOwner): Promise<void> {
 	// Keep the staging name outside the public `<lockName>.choosing|ticket.*` namespace so a
 	// contender cannot observe or clean it while its JSON write is still in progress.
@@ -197,6 +251,7 @@ async function acquireComponentPreparationLock(
 	let deadline = performance.now() + timeoutMs;
 
 	await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+	await sweepStalePublishingFiles(lockRoot);
 	try {
 		// Bakery "choosing" flag: an earlier contender will wait for this file to disappear before
 		// comparing tickets, while a later contender necessarily observes our published ticket.
@@ -226,12 +281,9 @@ async function acquireComponentPreparationLock(
 				options.onWait?.(blocker);
 			}
 			if (performance.now() >= deadline) {
-				const livenessCanBeEstablished =
-					blocker.pid !== process.pid ||
-					blocker.processInstanceId !== COMPONENT_PREPARATION_PROCESS_INSTANCE_ID ||
-					Boolean(options.isOwnerAlive);
-				if (livenessCanBeEstablished && (await ownerIsAlive(blocker, options))) {
-					// A known-live holder is allowed to finish; the deadline only bounds orphaned owners.
+				if (await ownerLivenessConfirmed(blocker, options)) {
+					// A confirmed-live holder is allowed to finish; the deadline only bounds owners whose
+					// liveness cannot be positively established.
 					deadline = performance.now() + timeoutMs;
 				} else {
 					throw new Error(
