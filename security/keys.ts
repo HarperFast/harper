@@ -833,14 +833,26 @@ function parseCipherString(ciphers) {
 /**
  * Whether a certificate (record or `tls[]` entry) can affect the given listener, mirroring
  * createTLSSelector's tolerant selection: no `uses` is a generic certificate, `'https'` is the
- * legacy generic use, and an authority matters exactly when the listener verifies client chains.
+ * legacy generic use (applies everywhere, including operations-api — pre-existing behavior),
+ * `'server'` is the legacy generic use specifically for the types that used to default to it
+ * (every `server.socket()` raw-socket caller, and plain HTTP, before per-caller usageType existed
+ * — a cert tagged `uses: ['server']` to target one must keep matching now that a caller like MQTT
+ * passes its own specific type). `'server'` excludes `operations-api`: that type has always had
+ * its own dedicated identity (never defaulted to `'server'`), so a `['server']`-tagged cert must
+ * not newly start winning cipher/quality consideration there. An authority matters exactly when
+ * the listener verifies client chains.
  */
 function ciphersCandidateRelevant(usesRaw, isAuthority, servesCertificate, type, verifiesClientCerts) {
 	if (isAuthority && verifiesClientCerts) return true;
 	if (!servesCertificate) return false;
 	// normalize: stored as scalar in legacy/manual entries, expected array
 	const uses = Array.isArray(usesRaw) ? usesRaw : usesRaw ? [usesRaw] : [];
-	return uses.length === 0 || uses.includes(type) || uses.includes('https');
+	return (
+		uses.length === 0 ||
+		uses.includes(type) ||
+		uses.includes('https') ||
+		(uses.includes('server') && type !== 'operations-api')
+	);
 }
 
 /**
@@ -982,14 +994,21 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						resolve();
 						return;
 					}
-					if (databases.system === undefined) {
-						// The system database (hdb_certificate) isn't loaded on this thread yet — a
+					if (databases.system?.hdb_certificate === undefined) {
+						// The system database (or its hdb_certificate table specifically — the two can
+						// become available at different times) isn't loaded on this thread yet. A
 						// component can create its listener (and this selector) before that happens;
-						// selector creation doesn't control component/database load order. Retry on
-						// the same debounce used for cert-table changes instead of resolving into a
-						// permanently empty selector: we haven't subscribed yet below, so nothing else
-						// would ever re-trigger this once system.hdb_certificate becomes available.
-						resolve();
+						// selector creation doesn't control component/database load order.
+						//
+						// Do NOT resolve here: callers await `.ready` to mean "the certificate state has
+						// been determined" — Bun's listenOnPortsBun(), for one, awaits it once and treats
+						// a resolved-with-no-context promise as "no TLS configured," starting the listener
+						// in plaintext for the rest of the process. Resolving early on a table that simply
+						// hasn't loaded YET would turn a transient boot-order race into a silent, permanent
+						// downgrade far worse than the empty-cert-list bug this retry exists to fix. Leave
+						// `.ready` pending and retry on the same debounce used for cert-table changes; we
+						// haven't subscribed yet below, so nothing else would otherwise re-trigger this once
+						// system.hdb_certificate becomes available.
 						scheduleRebuild();
 						return;
 					}
@@ -1019,8 +1038,9 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							const uses = Array.isArray(cert.uses) ? cert.uses : cert.uses ? [cert.uses] : [];
 							// prefer operations certificates for operations API
 							if (uses.includes(type)) quality += 3;
-							else if (uses.includes('https'))
-								quality += 0.5; // this was a legacy generic general use type
+							else if (uses.includes('https') || (uses.includes('server') && type !== 'operations-api'))
+								quality += 0.5; // legacy generic-use types (see ciphersCandidateRelevant's docblock
+							// for why 'server' excludes operations-api)
 							else quality -= uses.length / 5; // if there are designed uses for this that don't match, dock points
 
 							const private_key = getPrivateKeyByName(cert.private_key_name);
