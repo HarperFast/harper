@@ -440,9 +440,16 @@ describe('Test keys module', () => {
 					expect(chosen.name).to.include('sel-mqtt-tagged-');
 					// base quality 3 (is_self_signed: false) + 3 for the uses:['mqtt'] exact match, no
 					// hostname bonus (this candidate's `hostnames` is the synthetic one, not test_cert's
-					// real SANs) — asserting the value, not just the winning name, means a future tie or
-					// a defaultContext fall-through (the decoy is a strictly higher 6.1) fails here too.
+					// real SANs) — asserting the value, not just the winning name, means a future tie
+					// reads as a failure here too.
 					expect(chosen.quality).to.equal(6);
+					// Confirm the decoy is genuinely the whole table's best-quality cert (asserted
+					// directly, not inferred from a quality margin the environment doesn't guarantee —
+					// the decoy's own +0.1 hostname-match bonus depends on getHost() case-matching
+					// hostnamesFromCert's SANs, which this test doesn't control). This is what makes
+					// the assertion above meaningful: if the per-hostname map fell through to
+					// defaultContext, `chosen` would be the decoy, not the mqtt-tagged winner.
+					expect(selector.defaultContext?.name).to.include('sel-decoy-');
 				}
 			);
 		});
@@ -464,8 +471,12 @@ describe('Test keys module', () => {
 					const chosen = await chosenCert(selector, hostname);
 					expect(chosen.name).to.include('sel-server-fallback-');
 					// base quality 3 + 0.5 legacy-fallback credit, strictly ahead of the generic
-					// candidate's 3 and distinguishable from the decoy's 6.1 defaultContext fallback.
+					// candidate's 3.
 					expect(chosen.quality).to.equal(3.5);
+					// See the test above: the decoy (quality >= 6, always ahead of 3.5) is asserted as
+					// defaultContext directly, so a per-hostname-map fall-through is distinguishable
+					// from a real SNI-map hit regardless of the decoy's own hostname-bonus margin.
+					expect(selector.defaultContext?.name).to.include('sel-decoy-2-');
 				}
 			);
 		});
@@ -486,11 +497,13 @@ describe('Test keys module', () => {
 		// already uses (same `config_utils.getConfigFromFile` stub, shared across both instances),
 		// so `onSocket`'s real `createTLSSelector` call can actually build secure contexts instead
 		// of every candidate throwing "Missing private key" and being silently swallowed.
-		const { server } = require('#src/server/Server');
-		require('#src/server/threads/threadServer'); // side effect: registers server.socket = onSocket
-		const { databases } = require('#src/resources/databases');
-		const { SERVERS, portServer } = require('#src/server/serverRegistry');
-		const realKeys = require('#src/security/keys');
+		//
+		// The requires themselves are deferred into `before()` rather than sitting in the describe
+		// body: describe bodies run at mocha's *load* phase, before this file's own top-level
+		// `before()` (env_mgr.setHdbBasePath, testUtils.preTestPrep, etc.) has run — and
+		// threadServer.js calls env.initSync() at module load, which would otherwise read whatever
+		// real Harper config happens to exist on the machine running the suite.
+		let server, databases, SERVERS, portServer, realKeys;
 		// tls.createServer validates `ciphers` against OpenSSL's real cipher list at construction
 		// time, so these must be distinct, valid suite names, not arbitrary strings.
 		const rootCiphers = 'AES128-SHA';
@@ -502,6 +515,11 @@ describe('Test keys module', () => {
 		let previousOpsTls;
 
 		before(async () => {
+			({ server } = require('#src/server/Server'));
+			require('#src/server/threads/threadServer'); // side effect: registers server.socket = onSocket
+			({ databases } = require('#src/resources/databases'));
+			({ SERVERS, portServer } = require('#src/server/serverRegistry'));
+			realKeys = require('#src/security/keys');
 			await realKeys.loadCertificates();
 			previousTls = env_mgr.get('tls');
 			previousOpsTls = env_mgr.get('operationsApi_tls');
