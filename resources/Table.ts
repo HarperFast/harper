@@ -4890,15 +4890,17 @@ export function makeTable(options) {
 								const ids = object[relationship.from];
 								if (ids == null) return ids;
 								if (attribute.elements) {
+									// tolerate a scalar id in an array-typed FK field (legacy data written
+									// before attribute.set normalized single records to a one-element array)
+									const normalizedIds = Array.isArray(ids) ? ids : [ids];
+									if (normalizedIds.length === 0) return normalizedIds;
 									// getSync (not get): relationship accessors are a synchronous contract (as in v4);
 									// on RocksDB get() returns a Promise on a block-cache miss, which would leak an
 									// intermittent MaybePromise into user code
 									const store = definition.tableClass.primaryStore;
 									const method = returnEntry ? 'getEntry' : 'getSync';
 									const options = { transaction: txnForContext(context).getReadTxn() };
-									// tolerate a scalar id in an array-typed FK field (legacy data written
-									// before attribute.set normalized single records to a one-element array)
-									const results = (Array.isArray(ids) ? ids : [ids]).map((id) => {
+									const results = normalizedIds.map((id) => {
 										const value = store[method](id, options);
 										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 										return value;
