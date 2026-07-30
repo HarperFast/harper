@@ -992,9 +992,6 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 		return ((SNICallback as any).ready = new Promise<void>((resolve, reject) => {
 			function updateTLS() {
 				try {
-					secureContexts.clear();
-					caCerts.clear();
-					let bestQuality = 0;
 					if (databases === undefined) {
 						resolve();
 						return;
@@ -1014,9 +1011,24 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						// `.ready` pending and retry on the same debounce used for cert-table changes; we
 						// haven't subscribed yet below, so nothing else would otherwise re-trigger this once
 						// system.hdb_certificate becomes available.
+						//
+						// Surface the race: one breadcrumb is the difference between diagnosing this from a
+						// log and diagnosing it from a live cluster (as this bug required).
+						if (server && !server.tlsSelectorWaitedForSystemDb) {
+							server.tlsSelectorWaitedForSystemDb = true;
+							logger.warn?.(
+								`TLS selector for the '${type}' listener is waiting for system.hdb_certificate to load; retrying every ${TLS_REBUILD_DEBOUNCE_MS}ms`
+							);
+						}
 						scheduleRebuild();
 						return;
 					}
+					// Guards above have returned before touching secureContexts/caCerts, so the retry
+					// path never wipes a previously-published (non-empty) state before failing to
+					// replace it.
+					secureContexts.clear();
+					caCerts.clear();
+					let bestQuality = 0;
 					// Track the actual table instance, not just whether we've ever subscribed: resetDatabases()
 					// (copy_db, ITC restart handling) replaces databases.system.hdb_certificate with a new
 					// table object, and a boolean flag would never re-subscribe to it, permanently losing
@@ -1035,14 +1047,28 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							listener: scheduleRebuild,
 							omitCurrent: true,
 						} as any);
-						activeSubscription.catch((error) => logger.warn?.('Failed to subscribe to hdb_certificate table:', error));
+						activeSubscription.catch((error) => {
+							// Don't leave subscribedTable pointing at a table we failed to subscribe to —
+							// otherwise this selector never retries the subscription and silently loses live
+							// cert-table updates, the same failure shape this PR fixes elsewhere.
+							if (subscribedTable === databases.system?.hdb_certificate) subscribedTable = null;
+							logger.warn?.('Failed to subscribe to hdb_certificate table:', error);
+						});
 						if (previousSubscription) {
 							previousSubscription.then((subscription: any) => subscription?.end?.()).catch(() => {});
 						}
 					}
 					for (const cert of databases.system.hdb_certificate.search([])) {
 						const certificate = cert.certificate;
-						const certParsed = new X509Certificate(certificate);
+						let certParsed;
+						try {
+							certParsed = new X509Certificate(certificate);
+						} catch (error) {
+							// One unparseable record shouldn't abort the whole pass before any context is
+							// built — the second loop's per-cert try/catch doesn't cover this loop.
+							logger.error?.('Skipping unparseable certificate record', cert.name, error);
+							continue;
+						}
 						if (cert.is_authority) {
 							(certParsed as any).asString = certificate;
 							caCerts.set(certParsed.subject, certificate);
@@ -1143,6 +1169,24 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						} catch (error) {
 							logger.error?.('Error applying TLS for', cert.name, error);
 						}
+					}
+					if (liveReload && secureContexts.size === 0) {
+						// The not-loaded-yet guard above only covers the table object being absent, not the
+						// table being present but every row failing to apply (e.g. a private key not yet
+						// available on this thread, caught above per-cert). Resolving here would still write
+						// an empty `certificates:` list — the exact customer-visible symptom this PR exists to
+						// fix. Retry on the same debounce instead of publishing that state; a rebuild trigger
+						// (cert-table change or private-key reload, both already wired to scheduleRebuild) is
+						// almost certainly still coming on a normal boot, and this just avoids a window where
+						// we'd otherwise publish empty in the meantime.
+						//
+						// Gated on liveReload: transient, single-use selectors (getReplicationCert) legitimately
+						// resolve empty — e.g. the bootstrap check `if (!(await getReplicationCert())) { create
+						// one }` in generateCertAuthority's caller depends on an empty resolution meaning "no
+						// cert yet," and must not hang waiting for a cert that this exact call is about to create.
+						logger.warn?.(`TLS selector for the '${type}' listener resolved zero certificates; retrying`);
+						scheduleRebuild();
+						return;
 					}
 					// The listener's cipher string (and its @SECLEVEL, which governs client-cert chain
 					// verification) is fixed at server creation and cannot be swapped by rebuilding SNI
