@@ -337,6 +337,37 @@ describe('Test keys module', () => {
 		expect(thrownError, 'createTLSSelector must not throw for cert with non-array uses').to.be.undefined;
 	});
 
+	it('skips an unparseable certificate record instead of aborting the whole pass', async () => {
+		// Regression: the CA-collection loop parsed every row's `certificate` with no per-row guard,
+		// so one bad record threw before any secure context was built — the second loop's per-cert
+		// try/catch doesn't cover this loop. One bad row shouldn't empty the listener's context map.
+		const { databases } = require('#src/resources/databases');
+
+		const badCertName = 'test-unparseable-cert-' + Date.now();
+		await databases.system.hdb_certificate.put({
+			name: badCertName,
+			certificate: 'not a real certificate',
+			uses: [],
+			is_authority: false,
+			private_key_name: actual_cert.private_key_name,
+			is_self_signed: true,
+		});
+
+		let thrownError;
+		let selector;
+		try {
+			selector = keys.createTLSSelector('https');
+			await selector.initialize(null);
+		} catch (err) {
+			thrownError = err;
+		} finally {
+			await databases.system.hdb_certificate.delete(badCertName);
+		}
+
+		expect(thrownError, 'createTLSSelector must not reject for an unparseable certificate record').to.be.undefined;
+		expect(selector.defaultContext, 'the valid certificate must still be applied').to.exist;
+	});
+
 	describe('private-key hot-reload triggers a TLS context rebuild', () => {
 		// handlePrivateKeyReload is the single chokepoint for both the chokidar watcher and the
 		// periodic poll. On a worker, the new cert arrives via the hdb_certificate subscription, but
@@ -519,6 +550,76 @@ describe('Test keys module', () => {
 			} finally {
 				databases.system.hdb_certificate = realHdbCertificate;
 			}
+		});
+	});
+
+	describe('createTLSSelector when a completed pass resolves zero certificates', () => {
+		// The not-yet-loaded guard above only covers the table object being absent, not the table
+		// being present but every row failing to apply (e.g. a private key not synced to this thread
+		// yet). Before this fix, that resolved `.ready` with an empty cert list — the exact
+		// customer-visible symptom this PR exists to fix.
+		let databases;
+		let liveTLSRebuilders;
+		let rebuildersSnapshot;
+		let searchStub;
+
+		beforeEach(() => {
+			databases = require('#src/resources/databases').databases;
+			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			rebuildersSnapshot = [...liveTLSRebuilders];
+			searchStub = sandbox.stub(databases.system.hdb_certificate, 'search').returns([]);
+		});
+
+		afterEach(() => {
+			searchStub.restore();
+			liveTLSRebuilders.clear();
+			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
+		});
+
+		it('retries (does not resolve) for a live selector, then resolves with real certs once a rebuild sees them', async function () {
+			this.timeout(5000);
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			const readyPromise = selector.initialize(pseudoServer);
+
+			let settled = false;
+			readyPromise.then(
+				() => (settled = true),
+				() => (settled = true)
+			);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(pseudoServer.secureContexts.size, 0, 'no certs resolved from the stubbed empty search');
+			assert.strictEqual(
+				settled,
+				false,
+				'.ready must stay pending when a completed pass resolves zero certificates — resolving here would ' +
+					'publish an empty certificates list, the exact symptom this PR fixes'
+			);
+
+			searchStub.restore(); // the next rebuild sees the real (non-empty) cert table
+			await waitFor(() => settled, {
+				timeout: 4000,
+				message: '.ready never resolved after a rebuild saw real certificates',
+			});
+			assert.ok(
+				pseudoServer.secureContexts.size > 0,
+				'the real cert table must populate secureContexts once recovered'
+			);
+		});
+
+		it('does not retry for a transient (liveReload=false) selector — e.g. getReplicationCert must not hang waiting for a cert it is about to create', async () => {
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+
+			const selector = keys.createTLSSelector('replication', undefined, false);
+			await selector.initialize(pseudoServer);
+
+			assert.strictEqual(
+				pseudoServer.secureContexts.size,
+				0,
+				'transient selectors must resolve immediately with an empty result, not retry forever — the ' +
+					'bootstrap flow that creates the first replication cert depends on this resolving falsy'
+			);
 		});
 	});
 
