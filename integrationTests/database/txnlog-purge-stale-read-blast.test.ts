@@ -149,6 +149,7 @@ async function pollJob(ctx: ContextWithHarper, jobId: string, timeoutMs = 60_000
 	let last: any;
 	while (Date.now() < deadline) {
 		const r = await rawOp(ctx, { operation: 'get_job', id: jobId });
+		strictEqual(r.status, 200, `get_job(${jobId}) failed: ${r.text.slice(0, 300)}`);
 		last = Array.isArray(r.body) ? r.body[0] : r.body;
 		if (last?.status === 'COMPLETE' || last?.status === 'ERROR') return last;
 		await sleep(500);
@@ -635,6 +636,10 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					ok(
 						jobResult.status === 'COMPLETE',
 						`purge job should COMPLETE, got ${jobResult.status}: ${jobResult.message}`
+					);
+					ok(
+						entriesDeleted > 0,
+						`NON-VACUOUS PRECONDITION: audit purge job must report entries_deleted > 0, got ${entriesDeleted}`
 					);
 
 					const sampleId = `k${DEL_SAMPLE_IDX[0]}`; // k0 -- inserted well before cutoffTimestamp

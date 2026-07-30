@@ -127,6 +127,7 @@ suite(`QA-802 blob GC vs audit-log expiry (harper#708) [${ENGINE}]`, { skip: ski
 			}
 			await sleep(250);
 		}
+		throw new Error('QA-802: timed out waiting for /Doc/ to become ready');
 	}
 
 	before(async () => {
@@ -200,6 +201,7 @@ suite(`QA-802 blob GC vs audit-log expiry (harper#708) [${ENGINE}]`, { skip: ski
 
 			// Explicit documented workaround: cleanup_orphan_blobs.
 			const cleanup = await client.req().send({ operation: 'cleanup_orphan_blobs', database: 'data' });
+			strictEqual(cleanup.status, 200, `cleanup_orphan_blobs failed: ${JSON.stringify(cleanup.body)}`);
 			await sleep(5_000);
 			const afterCleanupOp = await diskUsage(blobRoot());
 
@@ -273,6 +275,10 @@ suite(`QA-802 blob GC vs audit-log expiry (harper#708) [${ENGINE}]`, { skip: ski
 				afterExpiry.files <= 2
 					? `Arm B [${ENGINE}] VERDICT: settled to ${afterExpiry.files} file(s) — no orphan growth from audit-only expiry (EXPECTED)`
 					: `Arm B [${ENGINE}] VERDICT: ${afterExpiry.files} files remain — unexpected growth, investigate`
+			);
+			ok(
+				afterExpiry.files <= 2,
+				`Arm B [${ENGINE}]: audit-only expiry should leave <=2 blob files, got ${afterExpiry.files}`
 			);
 		}
 	);
