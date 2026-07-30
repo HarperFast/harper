@@ -114,6 +114,10 @@ suite(
 	'QA-746 — LMDB audit retention: the self-re-arming cleanup loop purges passively',
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
+		// Captured by test 1 (pre-insert baseline) and consumed by test 2's purge threshold, so the
+		// "cohort is gone" check is pinned to a measured count rather than assuming exactly one
+		// audit entry per inserted record.
+		let controlBaseline = -1;
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 				config: {
@@ -159,6 +163,7 @@ suite(
 
 		test('1. positive control: read_audit_log count actually grows on insert', async () => {
 			const before = await readAuditCount(ctx);
+			controlBaseline = before;
 			const records = Array.from({ length: 200 }, (_, i) => ({ id: `k${i}`, seq: i, payload: 'p'.repeat(200) }));
 			const r = await rawOp(ctx, { operation: 'insert', schema: SCHEMA, table: TABLE, records });
 			ok(r.status === 200, `control insert should succeed, got ${r.status}: ${r.text.slice(0, 300)}`);
@@ -178,6 +183,7 @@ suite(
 			async () => {
 				const peak = await readAuditCount(ctx);
 				lmdbFindings.push(`2. peak audit count before passive wait: ${peak}`);
+				ok(controlBaseline >= 0, '2. controlBaseline was never captured -- test 1 (positive control) must run first');
 
 				// Poll (never call delete_audit_logs_before) until the self-re-arming loop has had
 				// several retention windows' worth of chances to sweep. auditRetention=5s; the loop's
@@ -189,16 +195,20 @@ suite(
 				while (Date.now() < deadline) {
 					last = await readAuditCount(ctx);
 					if (last < low) low = last;
-					if (last <= peak - 200 || last === 0) break; // the 200 control records are gone
+					// Pinned to the measured pre-insert baseline (test 1), not peak - 200: entries-per-
+					// record isn't necessarily 1, so this proves the WHOLE 200-record cohort is gone
+					// rather than merely that the count dropped by 200 (which a partial re-arm regression
+					// purging only 200 of the cohort's entries could satisfy even if entries-per-record > 1).
+					if (last <= controlBaseline) break;
 					await sleep(2000);
 				}
 				lmdbFindings.push(
-					`2. after bounded passive wait (no explicit prune): peak=${peak} final=${last} lowestObserved=${low}`
+					`2. after bounded passive wait (no explicit prune): baseline=${controlBaseline} peak=${peak} final=${last} lowestObserved=${low}`
 				);
 
 				ok(
-					last <= peak - 200 || last === 0,
-					`LMDB self-re-arming retention loop did NOT fully purge the measured 200-record cohort within the bounded wait: peak=${peak} final=${last} (expected <= ${peak - 200} or 0). ` +
+					last <= controlBaseline,
+					`LMDB self-re-arming retention loop did NOT fully purge the measured 200-record cohort within the bounded wait: baseline=${controlBaseline} peak=${peak} final=${last} (expected <= ${controlBaseline}). ` +
 						`If this fails, F-218's "RocksDB-specific" framing does not hold — LMDB fails too, which is a bigger/different finding.`
 				);
 				lmdbFindings.push(

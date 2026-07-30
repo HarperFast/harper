@@ -120,6 +120,37 @@ async function fileSet(dir: string): Promise<Set<string>> {
 	return out;
 }
 
+/**
+ * Bounded poll: settle on `dir`'s blob file set once it reaches `expectedCount` (pass Infinity
+ * when there is no known target — e.g. a leak-bounds check — to rely purely on stability), or
+ * once the count plateaus for at least `minStableMs` (well past blob.ts's deletionDelay). A fixed
+ * sleep before a single sample can land right on the async-unlink/GC boundary and read a stale
+ * pre-reclaim count under a loaded runner; polling toward the known target (or a real plateau)
+ * avoids that race.
+ */
+async function waitForFileSetSettle(
+	dir: string,
+	expectedCount: number,
+	{
+		timeoutMs = 10_000,
+		intervalMs = 250,
+		minStableMs = 1_500,
+	}: { timeoutMs?: number; intervalMs?: number; minStableMs?: number } = {}
+): Promise<Set<string>> {
+	const start = Date.now();
+	const deadline = start + timeoutMs;
+	let cur = await fileSet(dir);
+	let stableSince = start;
+	while (cur.size !== expectedCount && Date.now() < deadline) {
+		await sleep(intervalMs);
+		const next = await fileSet(dir);
+		if (next.size !== cur.size) stableSince = Date.now();
+		cur = next;
+		if (Date.now() - stableSince >= minStableMs) break; // plateaued short of target -- report now
+	}
+	return cur;
+}
+
 // ── Oracle arming (pre-flight, no Harper needed) ───────────────────────────────
 // Prove the sha256 comparator this whole test relies on (1) DOES flag known-different content
 // as different, and (2) does NOT flag identical content as different (a comparator that always
@@ -217,8 +248,7 @@ suite(
 			const r2 = await op({ action: 'write', table: db, id, seed: 'BLOB-B-MARKER', size: 20 * 1024 }).expect(200);
 			const shaB = r2.body.sha;
 			notStrictEqual(shaA, shaB, 'sanity: blob A and blob B must be byte-distinct');
-			await sleep(2000); // past default blob deletionDelay, with margin for GC
-			const filesV2 = await fileSet(dir);
+			const filesV2 = await waitForFileSetSettle(dir, filesV1.size);
 			const removedAfterV2 = [...filesV1].filter((f) => !filesV2.has(f));
 			log(
 				`[overwrite] v2 written: sha=${shaB.slice(0, 12)}; files=${filesV2.size}; removed=${JSON.stringify(removedAfterV2)}`
@@ -229,8 +259,7 @@ suite(
 			const shaC = r3.body.sha;
 			notStrictEqual(shaB, shaC, 'sanity: blob B and blob C must be byte-distinct');
 			notStrictEqual(shaA, shaC, 'sanity: blob A and blob C must be byte-distinct');
-			await sleep(2000);
-			const filesV3 = await fileSet(dir);
+			const filesV3 = await waitForFileSetSettle(dir, filesV1.size);
 			const removedAfterV3 = [...filesV2].filter((f) => !filesV3.has(f));
 			log(
 				`[overwrite] v3 written: sha=${shaC.slice(0, 12)}; files=${filesV3.size}; removed=${JSON.stringify(removedAfterV3)}`
@@ -303,8 +332,7 @@ suite(
 
 			for (let i = 1; i <= N; i++) {
 				await op({ action: 'write', table: db, id, seed: `LEAK-V${i}`, size: 20 * 1024 }).expect(200);
-				await sleep(600); // allow inline GC of the just-superseded blob to settle
-				const files = await fileSet(dir);
+				const files = await waitForFileSetSettle(dir, Infinity);
 				counts.push(files.size);
 				log(`[leak-check] after write v${i}: live blob files=${files.size}`);
 			}
@@ -340,8 +368,7 @@ suite(
 			const filesAfterV1 = await fileSet(dir);
 
 			await op({ action: 'delete', table: db, id }).expect(200);
-			await sleep(2000);
-			const filesAfterDelete = await fileSet(dir);
+			const filesAfterDelete = await waitForFileSetSettle(dir, filesAfterV1.size - 1);
 			const removedOnDelete = [...filesAfterV1].filter((f) => !filesAfterDelete.has(f));
 			log(`[del-reinsert] files removed on delete: ${JSON.stringify(removedOnDelete)}`);
 			ok(removedOnDelete.length > 0, 'delete must reclaim the blob file');
@@ -431,8 +458,8 @@ suite(
 			const r2 = await op({ action: 'write', table: db, id, seed: 'T4-BLOB-B', size: 20 * 1024 }).expect(200);
 			const shaB = r2.body.sha;
 			notStrictEqual(shaA, shaB, 'sanity: blob A and blob B byte-distinct');
-			await sleep(2500); // extra margin: 4 worker threads means GC may be scheduled on a different thread
-			const filesV2 = await fileSet(dir);
+			// 4 worker threads means GC may be scheduled on a different thread than the write.
+			const filesV2 = await waitForFileSetSettle(dir, filesV1.size);
 			const removed = [...filesV1].filter((f) => !filesV2.has(f));
 			log(
 				`\n[threads:4] files after v1: ${filesV1.size}; after v2+GC: ${filesV2.size}; removed=${JSON.stringify(removed)}`

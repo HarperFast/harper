@@ -202,7 +202,6 @@ async function burst(ctx: ContextWithHarper, prefix: string, count: number) {
 }
 
 function opOf(entry: any): string {
-	// ResourceBridge.readAuditLog maps internal 'put' -> 'upsert'; normalize back for readability.
 	return entry.operation;
 }
 
@@ -473,3 +472,8 @@ defineSuite(4);
 // this write volume (see header comment), so without an explicit LMDB instance every CI
 // run only ever proves the no-op path and never proves prune actually deletes anything.
 defineSuite(1, 'lmdb');
+// The claimed multi-worker prune/write seam (Q3) is only exercised against a backend that
+// demonstrably deletes if that backend is also LMDB -- the RocksDB threads=4 suite above
+// documents the low-volume purge as a legitimate no-op, so a regression in writes racing a
+// REAL LMDB deletion across 4 workers could otherwise pass unnoticed.
+defineSuite(4, 'lmdb');

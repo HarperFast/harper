@@ -91,6 +91,20 @@ export class Dump extends Resource {
 	}
 }
 
+// GET /StorageEngineInfo/?table=X -> code-derived signal for which storage engine is actually
+// backing this table (do NOT just trust the HARPER_STORAGE_ENGINE env var was honored).
+export class StorageEngineInfo extends Resource {
+	static loadAsInstance = false;
+	async get(query) {
+		const t = getTable(qget(query, 'table') || 'DelTable');
+		const primaryPath = t.primaryStore?.path || t.primaryStore?.rootStore?.path || null;
+		const indexHasPrefetch = !!t.indices?.bucket?.prefetch;
+		const looksLikeLmdbPath = typeof primaryPath === 'string' && primaryPath.endsWith('.mdb');
+		const isLmdb = looksLikeLmdbPath || indexHasPrefetch;
+		return { primaryPath, indexHasPrefetch, looksLikeLmdbPath, engineGuess: isLmdb ? 'lmdb' : 'rocksdb' };
+	}
+}
+
 export class IndexDump extends Resource {
 	static loadAsInstance = false;
 	async get(query) {

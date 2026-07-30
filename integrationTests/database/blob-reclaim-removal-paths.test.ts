@@ -94,23 +94,35 @@ async function diskUsage(dir: string): Promise<{ files: number; bytes: number }>
 	return { files, bytes };
 }
 
-/** Bounded convergence poll: sample `getUsage` until two consecutive reads agree, or time out. */
+/**
+ * Bounded convergence poll: wait until `getUsage` reports the caller's known `expectedFiles`
+ * count (real reclaim happened), or -- if it never gets there -- until the count plateaus for
+ * at least `minStableMs` (well past blob.ts's deletionDelay) so a genuine leak is reported
+ * promptly instead of spinning for the full timeout. Polling toward a known target (rather than
+ * accepting any two consecutive equal reads) avoids settling on a stale pre-unlink plateau when
+ * `intervalMs` happens to land near the unlink boundary.
+ */
 async function waitForSettle(
 	getUsage: () => Promise<{ files: number; bytes: number }>,
-	{ timeoutMs = 20_000, intervalMs = 500 }: { timeoutMs?: number; intervalMs?: number } = {}
+	expectedFiles: number,
+	{
+		timeoutMs = 20_000,
+		intervalMs = 250,
+		minStableMs = 1_500,
+	}: { timeoutMs?: number; intervalMs?: number; minStableMs?: number } = {}
 ): Promise<{ files: number; bytes: number; timedOut: boolean; waitedMs: number }> {
 	const start = Date.now();
 	const deadline = start + timeoutMs;
-	let prev = await getUsage();
-	while (Date.now() < deadline) {
+	let cur = await getUsage();
+	let stableSince = start;
+	while (cur.files !== expectedFiles && Date.now() < deadline) {
 		await sleep(intervalMs);
-		const cur = await getUsage();
-		if (cur.files === prev.files && cur.bytes === prev.bytes) {
-			return { ...cur, timedOut: false, waitedMs: Date.now() - start };
-		}
-		prev = cur;
+		const next = await getUsage();
+		if (next.files !== cur.files || next.bytes !== cur.bytes) stableSince = Date.now();
+		cur = next;
+		if (Date.now() - stableSince >= minStableMs) break; // plateaued short of target -- real leak, report now
 	}
-	return { ...prev, timedOut: true, waitedMs: Date.now() - start }; // gave up converging -- caller asserts against this last reading
+	return { ...cur, timedOut: cur.files !== expectedFiles, waitedMs: Date.now() - start };
 }
 
 suite(
@@ -191,7 +203,7 @@ suite(
 			strictEqual(afterStore.files - before.files, N, 'setup: N files should land before delete');
 
 			for (const key of keys) await op({ action: 'delete', db: 'data', table: 'Doc', key }).expect(200);
-			const settled = await waitForSettle(dataUsage);
+			const settled = await waitForSettle(dataUsage, before.files);
 			ledger.push(
 				`CONTROL delete: before=${before.files}f after-write=${afterStore.files}f after-settle=${settled.files}f (waited ${settled.waitedMs}ms) rows: wrote ${N}, target-rows-after=0`
 			);
@@ -231,7 +243,7 @@ suite(
 				`bulk SQL DELETE should remove all ${M} rows; ${remainingBulk.length} remain`
 			);
 
-			const settled = await waitForSettle(dataUsage);
+			const settled = await waitForSettle(dataUsage, before.files);
 			ledger.push(
 				`Arm C bulk-delete-by-search: before=${before.files}f after-write=${afterStore.files}f after-settle=${settled.files}f (waited ${settled.waitedMs}ms) rows: wrote ${M}, target-rows-after=0, actual-rows-after=${remainingBulk.length}`
 			);
@@ -273,7 +285,7 @@ suite(
 			strictEqual(r2.body.match, true, 'overwrite store mismatch');
 			const afterOverwrite = await dataUsage();
 
-			const settled = await waitForSettle(dataUsage);
+			const settled = await waitForSettle(dataUsage, before.files + 1);
 			ledger.push(
 				`Arm D overwrite-with-new-blob: before=${before.files}f after-1st-write=${afterFirst.files}f after-2nd-write(pre-settle)=${afterOverwrite.files}f after-settle=${settled.files}f (waited ${settled.waitedMs}ms); expect net +1 (old reclaimed, only new remains)`
 			);
@@ -327,7 +339,7 @@ suite(
 			const r2 = await op({ action: 'overwriteNonBlob', db: 'data', table: 'Doc', key, tag: 'cleared' }).expect(200);
 			strictEqual(r2.body.ok, true, `overwriteNonBlob failed: ${JSON.stringify(r2.body)}`);
 
-			const settled = await waitForSettle(dataUsage);
+			const settled = await waitForSettle(dataUsage, before.files);
 			ledger.push(
 				`Arm E overwrite-with-non-blob: before=${before.files}f after-write=${afterStore.files}f after-settle=${settled.files}f (waited ${settled.waitedMs}ms); expect net 0 (blob reclaimed, row survives without one)`
 			);
@@ -364,7 +376,7 @@ suite(
 			strictEqual(dropRes.status, 200, `drop_table failed: ${JSON.stringify(dropRes.body)}`);
 			const afterDropImmediate = await dataUsage();
 
-			let settled = await waitForSettle(dataUsage, { timeoutMs: 30_000 });
+			let settled = await waitForSettle(dataUsage, before.files, { timeoutMs: 30_000 });
 			let sweepNote = 'not needed';
 			if (settled.files > before.files) {
 				// Diagnostic ONLY -- run before the strict assert (which targets natural reclaim, not the
@@ -408,7 +420,7 @@ suite(
 			// dropDatabase() awaits deleteRootBlobPathsForDB() as its last step before returning, so the
 			// whole-directory rimraf should already be complete by the time the op response lands -- poll
 			// briefly anyway rather than assuming synchronous completion.
-			const settled = await waitForSettle(dropDbUsage, { timeoutMs: 10_000 });
+			const settled = await waitForSettle(dropDbUsage, 0, { timeoutMs: 10_000 });
 			ledger.push(
 				`Arm B drop_database: before=${before.files}f after-write=${afterStore.files}f after-settle=${settled.files}f (waited ${settled.waitedMs}ms); rows: wrote ${N}, database dropped (0 rows, unreachable)`
 			);

@@ -140,7 +140,7 @@ suite(
 			const deadline = Date.now() + timeoutMs;
 			while (Date.now() < deadline) {
 				try {
-					const r = await fetch(`${client.restURL}/PageCache672/`, {
+					const r = await fetch(`${client.restURL ?? (ctx.harper as any).httpURL}/PageCache672/`, {
 						method: 'GET',
 						headers: { Authorization: client.headers.Authorization },
 						signal: AbortSignal.timeout(3_000),

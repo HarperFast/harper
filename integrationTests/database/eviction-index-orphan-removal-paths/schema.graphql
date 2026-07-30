@@ -4,7 +4,10 @@
 #
 # Expiring: short TTL, aggressive scanInterval, TWO indexed attributes — one scalar (bucket, with
 # some null values to also exercise indexNulls) and one array-valued (tags, 0-3 elements).
-type Expiring @table(expiration: 5, scanInterval: 1) @export {
+# expiration is 15s (not the minimal 5s) to give ~160 rows' worth of awaited HTTP seeding plus the
+# pre-sweep consistency checks headroom on a loaded runner: with scanInterval:1 the first row would
+# otherwise risk expiring mid-seed, undercounting the pre-sweep positive-control row count.
+type Expiring @table(expiration: 15, scanInterval: 1) @export {
 	id: ID @primaryKey
 	bucket: String @indexed
 	tags: [String] @indexed
