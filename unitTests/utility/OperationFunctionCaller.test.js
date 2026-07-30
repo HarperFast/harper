@@ -227,5 +227,36 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 				'expected the raw VM Error instance to be passed to log.error, not a pre-formatted string'
 			);
 		});
+
+		it('reads a getter-backed http_resp_msg exactly once, so classification and logging cannot see different values (#1982 review)', async function () {
+			const secret_payload = { detail: { config: { headers: { Authorization: 'Bearer super-secret-token' } } } };
+			let read_count = 0;
+			const test_func_exception = async function () {
+				const err = new Error('operation failed');
+				Object.defineProperty(err, 'http_resp_msg', {
+					// A hostile/buggy accessor that looks like a safe string on an early read (the kind
+					// the old multi-read code would classify as "safe, pass through raw") but returns a
+					// secret-carrying object once actually logged - proving classification and logging
+					// now see the exact same snapshot rather than racing across separate reads.
+					get() {
+						read_count++;
+						return read_count === 1 ? 'looks safe' : secret_payload;
+					},
+				});
+				throw err;
+			};
+
+			try {
+				await op_func_caller.callOperationFunctionAsAwait(test_func_exception, new TestInputObject(), null);
+				assert.fail('expected callOperationFunctionAsAwait to reject');
+			} catch {
+				// expected - the structured error is rethrown after being logged
+			}
+
+			assert.strictEqual(read_count, 1, `expected http_resp_msg to be read exactly once, got ${read_count} reads`);
+			const logged = logged_calls.map((call_args) => call_args.join(' ')).join('\n');
+			assert.ok(!logged.includes('super-secret-token'), `logged output leaked the secret: ${logged}`);
+			assert.ok(logged.includes('looks safe'), `expected the single classified/logged value, got: ${logged}`);
+		});
 	});
 });

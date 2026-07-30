@@ -1515,9 +1515,26 @@ function deepSanitizeErrors(
 	const result: Record<string | symbol, any> = {};
 	seen.set(value, result);
 	try {
-		Object.setPrototypeOf(result, Object.getPrototypeOf(value));
+		const proto = Object.getPrototypeOf(value);
+		Object.setPrototypeOf(result, proto);
+		// A branded built-in with private internal slots (URL, Headers, Request/Response, or any
+		// custom class whose own accessors/[util.inspect.custom] read `#private` state) throws when
+		// util.inspect later renders a value wearing its prototype but lacking its real internal
+		// state - and that throw happens inside Node's OWN inspect logic, well after this walk has
+		// returned, so the only way to catch it here is to actually try inspecting the empty clone
+		// now, before any properties are attached. Left unguarded, that throw would surface all the
+		// way up to inspectForLog's outer catch and replace the ENTIRE structured payload - not just
+		// this one nested field - with a single "[Unrenderable value]", losing phase/install_output/
+		// deployment_id and everything else alongside it, for one URL-shaped field anywhere in the
+		// tree. Skipped for `null`/`Object.prototype`, the overwhelmingly common case for a JSON-like
+		// diagnostic payload, where no exotic prototype is ever attached and this check would be pure
+		// overhead for a class that could never fail it.
+		if (proto !== null && proto !== Object.prototype) inspect(result);
 	} catch {
-		// leave result's prototype as plain Object - inspect() renders it without the class name
+		// Reset to plain Object - inspect() renders it without the class name, but every actual
+		// property attached below is still safe to render (see above for why the prototype itself,
+		// not the data, is what's unsafe here).
+		Object.setPrototypeOf(result, Object.prototype);
 	}
 	// Object.keys/getOwnPropertySymbols themselves are one unavoidable O(n) pass (a plain object,
 	// unlike Array/Map/Set, has no O(1) size to check before enumerating) - but everything AFTER
