@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
@@ -1013,8 +1014,8 @@ describe('Test harper_logger module', () => {
 				},
 			};
 			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
-			expect(result).to.not.include('[Object]');
-			expect(result).to.include('npm error boom');
+			assert.ok(!result.includes('[Object]'));
+			assert.ok(result.includes('npm error boom'));
 		});
 
 		it('defers rendering until actually stringified (does not compute eagerly)', () => {
@@ -1026,9 +1027,9 @@ describe('Test harper_logger module', () => {
 				},
 			};
 			const wrapper = inspectForLog(hostile, { depth: 8 });
-			expect(rendered).to.equal(false, 'inspectForLog should not have touched the value yet');
-			expect(util.inspect(wrapper)).to.equal('rendered-on-demand');
-			expect(rendered).to.equal(true);
+			assert.strictEqual(rendered, false, 'inspectForLog should not have touched the value yet');
+			assert.strictEqual(util.inspect(wrapper), 'rendered-on-demand');
+			assert.strictEqual(rendered, true);
 		});
 
 		it('never throws, even if the value has a hostile custom inspect hook', () => {
@@ -1037,15 +1038,15 @@ describe('Test harper_logger module', () => {
 					throw new Error('formatter boom');
 				},
 			};
-			expect(() => render(hostile)).to.not.throw();
-			expect(render(hostile)).to.include('Unrenderable value');
-			expect(render(hostile)).to.include('formatter boom');
+			assert.doesNotThrow(() => render(hostile));
+			assert.ok(render(hostile).includes('Unrenderable value'));
+			assert.ok(render(hostile).includes('formatter boom'));
 		});
 
 		it('never throws on a revoked Proxy', () => {
 			const { proxy, revoke } = Proxy.revocable({}, {});
 			revoke();
-			expect(() => render(proxy)).to.not.throw();
+			assert.doesNotThrow(() => render(proxy));
 		});
 
 		it('never throws when the custom inspect hook throws a hostile value (a revoked Proxy) instead of an Error', () => {
@@ -1056,8 +1057,8 @@ describe('Test harper_logger module', () => {
 					throw proxy; // `err instanceof Error` and `String(err)` both throw on a revoked Proxy
 				},
 			};
-			expect(() => render(hostile)).to.not.throw();
-			expect(render(hostile)).to.include('Unrenderable value');
+			assert.doesNotThrow(() => render(hostile));
+			assert.ok(render(hostile).includes('Unrenderable value'));
 		});
 
 		it('sanitizes a nested Error at depth instead of exposing its own-enumerable properties raw (#1734)', () => {
@@ -1068,17 +1069,17 @@ describe('Test harper_logger module', () => {
 			const value = { detail: { cause: { error: nested_error } }, other: 'fine' };
 
 			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.not.include('Authorization');
-			expect(result).to.include('Error: request failed');
-			expect(result).to.include('fine');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Error: request failed'));
+			assert.ok(result.includes('fine'));
 		});
 
 		it('preserves an enumerable symbol property (e.g. a nested value’s own custom inspect hook)', () => {
 			const custom_rendered = { [util.inspect.custom]: () => 'custom-nested-render' };
 			const value = { inner: custom_rendered };
 			const result = render(value, { depth: 8 });
-			expect(result).to.include('custom-nested-render');
+			assert.ok(result.includes('custom-nested-render'));
 		});
 
 		it('sanitizes a secret-carrying Error reached a second time through a cycle', () => {
@@ -1088,8 +1089,8 @@ describe('Test harper_logger module', () => {
 			value.self = value; // cycle: the second path to `value` must not bypass sanitization
 
 			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.include('Error: request failed');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: request failed'));
 		});
 
 		it('sanitizes a secret-carrying Error nested inside a Map or Set instead of leaving it raw', () => {
@@ -1100,8 +1101,8 @@ describe('Test harper_logger module', () => {
 				set: new Set([nested_error]),
 			};
 			const result = render(value, { depth: 8 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.include('Error: request failed');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: request failed'));
 		});
 
 		it('sanitizes a secret-carrying Error held by a class/custom-prototype instance, preserving its class name', () => {
@@ -1114,9 +1115,9 @@ describe('Test harper_logger module', () => {
 			}
 			const value = { diagnostic: new Diagnostic(nested_error) };
 			const result = render(value, { depth: 8 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.include('Error: request failed');
-			expect(result).to.include('Diagnostic');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: request failed'));
+			assert.ok(result.includes('Diagnostic'));
 		});
 
 		it('renders the rest of a structured payload instead of losing it all when a nested value carries a branded prototype (e.g. URL) the clone cannot safely wear', () => {
@@ -1132,10 +1133,10 @@ describe('Test harper_logger module', () => {
 				install_output: { lines: ['step 1 ok', 'step 2 ok'] },
 			};
 			const result = render(value, { depth: 8 });
-			expect(result).to.not.include('Unrenderable value');
-			expect(result).to.include('install');
-			expect(result).to.include('step 1 ok');
-			expect(result).to.include('step 2 ok');
+			assert.ok(!result.includes('Unrenderable value'));
+			assert.ok(result.includes('install'));
+			assert.ok(result.includes('step 1 ok'));
+			assert.ok(result.includes('step 2 ok'));
 		});
 
 		it('never invokes an accessor-backed array entry, and never resolves an overridden Map/Set iterator', () => {
@@ -1163,13 +1164,13 @@ describe('Test harper_logger module', () => {
 			};
 
 			const result = render({ hostile_array, hostile_map, hostile_set }, { depth: 8 });
-			expect(array_getter_calls).to.equal(0);
-			expect(iterator_calls).to.equal(0);
-			expect(result).to.include('[Getter]');
-			expect(result).to.not.include('should not be called');
-			expect(result).to.include("'key' => 'value'");
-			expect(result).to.include("'value'");
-			expect(result).to.not.include('poisoned');
+			assert.strictEqual(array_getter_calls, 0);
+			assert.strictEqual(iterator_calls, 0);
+			assert.ok(result.includes('[Getter]'));
+			assert.ok(!result.includes('should not be called'));
+			assert.ok(result.includes("'key' => 'value'"));
+			assert.ok(result.includes("'value'"));
+			assert.ok(!result.includes('poisoned'));
 		});
 
 		it('bounds sanitization breadth instead of visiting every index of a huge sparse array', () => {
@@ -1177,18 +1178,15 @@ describe('Test harper_logger module', () => {
 			const start = process.hrtime.bigint();
 			const result = render({ huge_sparse_array }, { depth: 8, maxArrayLength: 250 });
 			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
-			expect(elapsed_ms).to.be.below(
-				2000,
-				'sanitizing a huge sparse array should stay bounded, not scan its full length'
-			);
-			expect(result).to.include('sanitize budget');
+			assert.ok(elapsed_ms < 2000, 'sanitizing a huge sparse array should stay bounded, not scan its full length');
+			assert.ok(result.includes('sanitize budget'));
 		});
 
 		it('bounds sanitization breadth for a large Map/Set rather than cloning every entry', () => {
 			const huge_map = new Map(Array.from({ length: 10_000 }, (_, i) => [i, i]));
 			const huge_set = new Set(Array.from({ length: 10_000 }, (_, i) => i));
 			const result = render({ huge_map, huge_set }, { depth: 8, maxArrayLength: 250 });
-			expect(result).to.include('sanitize budget');
+			assert.ok(result.includes('sanitize budget'));
 		});
 
 		it('creates own properties via defineProperty instead of assignment, so an inherited setter or an own `__proto__` key cannot run during sanitization', () => {
@@ -1218,13 +1216,13 @@ describe('Test harper_logger module', () => {
 			});
 
 			const result = render({ with_setter, proto_bomb }, { depth: 8 });
-			expect(setter_calls).to.equal(0);
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.include('Error: request failed');
+			assert.strictEqual(setter_calls, 0);
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: request failed'));
 			// If sanitization used plain assignment instead of defineProperty, `result['__proto__'] =`
 			// would reparent the CLONE instead of creating an own property, silently dropping this
 			// marker from the render (a reparented plain object shows no inherited properties).
-			expect(result).to.include('PROTO_BOMB_SURVIVED');
+			assert.ok(result.includes('PROTO_BOMB_SURVIVED'));
 		});
 
 		it('leaves built-in container types (Date, Map, Buffer) rendered natively instead of corrupting them', () => {
@@ -1232,10 +1230,10 @@ describe('Test harper_logger module', () => {
 			const map = new Map([['key', 'value']]);
 			const buffer = Buffer.from('hi');
 			const result = render({ date, map, buffer }, { depth: 8 });
-			expect(result).to.include('2024-01-01T00:00:00.000Z');
-			expect(result).to.include('Map(1)');
-			expect(result).to.include('key');
-			expect(result).to.match(/Buffer\.from\(|<Buffer/);
+			assert.ok(result.includes('2024-01-01T00:00:00.000Z'));
+			assert.ok(result.includes('Map(1)'));
+			assert.ok(result.includes('key'));
+			assert.match(result, /Buffer\.from\(|<Buffer/);
 		});
 
 		it('omits a field whose getter throws instead of letting it fail the whole render', () => {
@@ -1248,8 +1246,8 @@ describe('Test harper_logger module', () => {
 			});
 			const value = { hostile, fine: 'still here' };
 			const result = render(value, { depth: 8 });
-			expect(result).to.not.include('Unrenderable value');
-			expect(result).to.include('still here');
+			assert.ok(!result.includes('Unrenderable value'));
+			assert.ok(result.includes('still here'));
 		});
 
 		it('never invokes a getter while sanitizing — describes it as [Getter] instead, same as util.inspect’s default', () => {
@@ -1263,10 +1261,10 @@ describe('Test harper_logger module', () => {
 				},
 			});
 			const result = render({ value, fine: 'still here' }, { depth: 8 });
-			expect(call_count).to.equal(0);
-			expect(result).to.include('[Getter]');
-			expect(result).to.not.include('should not be called');
-			expect(result).to.include('still here');
+			assert.strictEqual(call_count, 0);
+			assert.ok(result.includes('[Getter]'));
+			assert.ok(!result.includes('should not be called'));
+			assert.ok(result.includes('still here'));
 		});
 
 		it('sanitizes a secret-carrying Error nested inside a VM cross-realm plain object, Map, and Set', () => {
@@ -1281,12 +1279,12 @@ describe('Test harper_logger module', () => {
 			const vm_set = vm.runInContext('new Set()', context);
 			vm_set.add(vm_error);
 
-			expect(vm_plain_object instanceof Object).to.equal(false); // different realm's Object constructor
-			expect(vm_map instanceof Map).to.equal(false); // different realm's Map constructor
+			assert.strictEqual(vm_plain_object instanceof Object, false); // different realm's Object constructor
+			assert.strictEqual(vm_map instanceof Map, false); // different realm's Map constructor
 
 			const result = render({ vm_plain_object, vm_map, vm_set }, { depth: 8 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.include('Error: vm request failed');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: vm request failed'));
 		});
 
 		it('bounds sanitization breadth for a plain object with a huge number of own properties', () => {
@@ -1295,11 +1293,8 @@ describe('Test harper_logger module', () => {
 			const start = process.hrtime.bigint();
 			const result = render({ huge_object }, { depth: 8, maxArrayLength: 250 });
 			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
-			expect(elapsed_ms).to.be.below(
-				2000,
-				'sanitizing a wide plain object should stay bounded, not clone every property'
-			);
-			expect(result).to.include('sanitize budget');
+			assert.ok(elapsed_ms < 2000, 'sanitizing a wide plain object should stay bounded, not clone every property');
+			assert.ok(result.includes('sanitize budget'));
 		});
 
 		it('never hands a Promise to inspect() raw, even one resolved with a secret-carrying Error (#1734)', () => {
@@ -1307,9 +1302,9 @@ describe('Test harper_logger module', () => {
 			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
 			const value = { pending_check: Promise.resolve(secret_error) };
 			const result = render(value, { depth: 8 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.not.include('Authorization');
-			expect(result).to.include('Promise');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Promise'));
 		});
 
 		it('bounds total sanitize work (containers + primitive leaves), not just container count', () => {
@@ -1325,8 +1320,8 @@ describe('Test harper_logger module', () => {
 			const start = process.hrtime.bigint();
 			const result = render(many_small_objects, { depth: 8, maxArrayLength: 250 });
 			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
-			expect(elapsed_ms).to.be.below(2000, 'leaf values must count against the shared node budget too');
-			expect(result).to.include('sanitize budget');
+			assert.ok(elapsed_ms < 2000, 'leaf values must count against the shared node budget too');
+			assert.ok(result.includes('sanitize budget'));
 		});
 
 		it('never hands a Date, RegExp, WeakMap, or WeakSet to inspect() raw once it carries a secret-bearing expando (#1734)', () => {
@@ -1343,19 +1338,19 @@ describe('Test harper_logger module', () => {
 			hostile_weakset.cause = secret_error;
 
 			const result = render({ hostile_date, hostile_regexp, hostile_weakmap, hostile_weakset }, { depth: 8 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.not.include('Authorization');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
 			// The expando-free common case is untouched: native rendering is still preserved.
-			expect(result).to.include('2024-01-01T00:00:00.000Z');
-			expect(result).to.match(/\/abc\/gi/);
+			assert.ok(result.includes('2024-01-01T00:00:00.000Z'));
+			assert.match(result, /\/abc\/gi/);
 		});
 
 		it('still renders a Date/RegExp/WeakMap/WeakSet exactly natively when it has no expando (fast path unaffected)', () => {
 			const date = new Date('2024-01-01T00:00:00.000Z');
 			const regexp = /abc/gi;
 			const result = render({ date, regexp }, { depth: 8 });
-			expect(result).to.include('2024-01-01T00:00:00.000Z');
-			expect(result).to.match(/\/abc\/gi/);
+			assert.ok(result.includes('2024-01-01T00:00:00.000Z'));
+			assert.match(result, /\/abc\/gi/);
 		});
 
 		it('falls back to a bounded, safe summary (not the raw value) for a Buffer/boxed-primitive carrying a secret-bearing expando (#1734)', () => {
@@ -1366,8 +1361,8 @@ describe('Test harper_logger module', () => {
 			const hostile_boxed_number = Object.assign(new Number(5), { cause: secret_error });
 
 			const result = render({ hostile_buffer, hostile_boxed_number }, { depth: 8 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.not.include('Authorization');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
 		});
 
 		it('does not additionally invoke a hostile `Symbol.toStringTag` getter on a boxed String while classifying it - only util.inspect’s own native rendering does', () => {
@@ -1395,7 +1390,7 @@ describe('Test harper_logger module', () => {
 			invoked = 0;
 
 			render({ boxed_string: makeBoxedString() }, { depth: 8 });
-			expect(invoked).to.equal(baseline);
+			assert.strictEqual(invoked, baseline);
 		});
 
 		it('sanitizes a function’s secret-bearing expando instead of handing the raw function to inspect() (#1734)', () => {
@@ -1405,9 +1400,9 @@ describe('Test harper_logger module', () => {
 			hostile_function.cause = secret_error;
 
 			const result = render({ hostile_function }, { depth: 8 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.not.include('Authorization');
-			expect(result).to.include('Error: request failed');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Error: request failed'));
 		});
 
 		it('still renders a plain function raw when it has no expando (fast path unaffected)', () => {
@@ -1415,7 +1410,7 @@ describe('Test harper_logger module', () => {
 				return a + b;
 			}
 			const result = render({ plain_function }, { depth: 8 });
-			expect(result).to.include('[Function: plain_function]');
+			assert.ok(result.includes('[Function: plain_function]'));
 		});
 
 		it('fails closed for a Proxy whose `ownKeys` trap throws - caught by the isProxy gate before the trap ever runs (#1734)', () => {
@@ -1433,8 +1428,8 @@ describe('Test harper_logger module', () => {
 				}
 			);
 			const result = render({ hostile }, { depth: 8 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.not.include('Authorization');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
 		});
 
 		it('never invokes ANY trap on a nested Proxy - not just a throwing one - and never leaks its target', () => {
@@ -1459,10 +1454,10 @@ describe('Test harper_logger module', () => {
 				}
 			);
 			const result = render({ hostile }, { depth: 8 });
-			expect(trap_calls).to.equal(0, 'no Proxy trap should ever be invoked while sanitizing');
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.not.include('Authorization');
-			expect(result).to.include('Proxy');
+			assert.strictEqual(trap_calls, 0, 'no Proxy trap should ever be invoked while sanitizing');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Proxy'));
 		});
 
 		it('clamps an unbounded/huge caller-requested maxArrayLength to a hard ceiling instead of scanning the full array', () => {
@@ -1470,11 +1465,11 @@ describe('Test harper_logger module', () => {
 			const start = process.hrtime.bigint();
 			const result = render({ huge_array }, { depth: 8, maxArrayLength: Infinity });
 			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
-			expect(elapsed_ms).to.be.below(
-				2000,
+			assert.ok(
+				elapsed_ms < 2000,
 				'an unbounded requested maxArrayLength must not defeat the sanitize breadth ceiling'
 			);
-			expect(result).to.include('sanitize budget');
+			assert.ok(result.includes('sanitize budget'));
 		});
 
 		it('never returns a nested Error unsanitized once the sanitize depth cap is hit (requires a caller-requested depth beyond the cap)', () => {
@@ -1483,8 +1478,8 @@ describe('Test harper_logger module', () => {
 			let value = secret_error;
 			for (let i = 0; i < 25; i++) value = { nested: value };
 			const result = render(value, { depth: 30 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.not.include('Authorization');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
 		});
 
 		it('fails closed to a bounded, quick placeholder for a huge Buffer/boxed-String instead of scanning every index - even when expando-free', () => {
@@ -1498,17 +1493,17 @@ describe('Test harper_logger module', () => {
 			const start = process.hrtime.bigint();
 			const result = render({ huge_buffer, huge_boxed_string }, { depth: 8 });
 			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
-			expect(elapsed_ms).to.be.below(500, 'failing closed above the size cap must not scan every element/character');
-			expect(result).to.not.match(/Buffer\.from\(|<Buffer/);
-			expect(result).to.include('with own properties omitted for safety');
+			assert.ok(elapsed_ms < 500, 'failing closed above the size cap must not scan every element/character');
+			assert.ok(!/Buffer\.from\(|<Buffer/.test(result));
+			assert.ok(result.includes('with own properties omitted for safety'));
 		});
 
 		it('still resolves a small expando-free Buffer/boxed-String natively (below the size cap, fast path unaffected)', () => {
 			const small_buffer = Buffer.from('hi');
 			const small_boxed_string = new String('hi');
 			const result = render({ small_buffer, small_boxed_string }, { depth: 8 });
-			expect(result).to.match(/Buffer\.from\(|<Buffer/);
-			expect(result).to.include('hi');
+			assert.match(result, /Buffer\.from\(|<Buffer/);
+			assert.ok(result.includes('hi'));
 		});
 
 		it('fails closed (safe summary, not raw) for a Buffer just over the size cap that actually carries an expando', () => {
@@ -1517,8 +1512,8 @@ describe('Test harper_logger module', () => {
 			const hostile_buffer = Buffer.alloc(10_001);
 			hostile_buffer.cause = secret_error;
 			const result = render({ hostile_buffer }, { depth: 8 });
-			expect(result).to.not.include('super-secret-token');
-			expect(result).to.not.include('Authorization');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
 		});
 	});
 
@@ -1526,25 +1521,25 @@ describe('Test harper_logger module', () => {
 		const { isErrorLike } = harperLoggerModule;
 
 		it('recognizes a same-realm Error', () => {
-			expect(isErrorLike(new Error('boom'))).to.equal(true);
+			assert.strictEqual(isErrorLike(new Error('boom')), true);
 		});
 
 		it('recognizes a cross-realm (VM-created) Error', () => {
 			const vm = require('vm');
 			const vmError = vm.runInNewContext('new Error("vm boom")');
-			expect(vmError instanceof Error).to.equal(false); // different realm's Error constructor
-			expect(isErrorLike(vmError)).to.equal(true);
+			assert.strictEqual(vmError instanceof Error, false); // different realm's Error constructor
+			assert.strictEqual(isErrorLike(vmError), true);
 		});
 
 		it('does not recognize a plain object', () => {
-			expect(isErrorLike({ message: 'not an error' })).to.equal(false);
+			assert.strictEqual(isErrorLike({ message: 'not an error' }), false);
 		});
 
 		it('does not throw and returns false for a revoked Proxy', () => {
 			const { proxy, revoke } = Proxy.revocable(new Error('gone'), {});
 			revoke();
-			expect(() => isErrorLike(proxy)).to.not.throw();
-			expect(isErrorLike(proxy)).to.equal(false);
+			assert.doesNotThrow(() => isErrorLike(proxy));
+			assert.strictEqual(isErrorLike(proxy), false);
 		});
 
 		it("never invokes a live (non-revoked) Proxy's getPrototypeOf trap - `instanceof` would otherwise trigger it", () => {
@@ -1555,8 +1550,8 @@ describe('Test harper_logger module', () => {
 					return Reflect.getPrototypeOf(target);
 				},
 			});
-			expect(isErrorLike(hostile)).to.equal(false);
-			expect(trap_calls).to.equal(0, 'isErrorLike must classify a Proxy without reflecting on it at all');
+			assert.strictEqual(isErrorLike(hostile), false);
+			assert.strictEqual(trap_calls, 0, 'isErrorLike must classify a Proxy without reflecting on it at all');
 		});
 	});
 
@@ -1668,8 +1663,8 @@ describe('Test harper_logger module', () => {
 			logger.dir(proxy);
 			logger.table([proxy]);
 			const output = lines.join('\n');
-			expect(output).to.not.include('super-secret-token');
-			expect(output).to.not.include('hdb_secret');
+			assert.ok(!output.includes('super-secret-token'));
+			assert.ok(!output.includes('hdb_secret'));
 		});
 
 		it('does not throw when a revoked Proxy appears as a cause', () => {
