@@ -38,8 +38,9 @@ let outstandingCommit, outstandingCommitStart;
 // at arm time (not read from `this.writes`/`this.startedFrom` lazily off the DatabaseTransaction
 // object) because that object can be reused for a later immediate commit while the original native
 // commit is still wedged — its resolve handler runs clearWrites() on the SAME object, which would
-// blank or replace the identity out from under a deferred read. Two reference assignments, no
-// allocation, and no lingering strong reference to the transaction/writes/entries graph.
+// blank or replace the identity out from under a deferred read. Three reference assignments, no
+// allocation, and no lingering reference to the writes/entries graph (the native transaction handle
+// is retained, but its lifetime is already bounded by the pending outstandingCommit promise).
 let outstandingCommitStore: any;
 let outstandingCommitStartedFrom: { resourceName: string; method: string } | undefined;
 let outstandingCommitNativeTransaction: any;
