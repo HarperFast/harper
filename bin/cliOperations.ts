@@ -12,6 +12,7 @@ import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { streamPackagedDirectory, packageDirectory, scanPackageDirectory } from '../components/packageComponent.ts';
+import { normalizeGitHost } from '../components/gitCredentialServer.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
@@ -356,18 +357,14 @@ function defaultProjectName(projectPath: string): string {
 	return path.basename(projectPath);
 }
 
-// Mirror the server's `deriveGitSecretName` (secretOperations.ts) EXACTLY so the reference this
-// attaches matches the row `harper deploy setup=true` sealed and a literal-token deploy would use:
-// `deploy.<component>.git.<host>` (host via normalizeGitHost).
+// Must produce the same name as the server's `deriveGitSecretName` (secretOperations.ts), so the
+// reference this attaches matches the row `harper deploy setup=true` sealed and a literal-token
+// deploy would use: `deploy.<component>.git.<host>`. Rather than restate the host-normalization
+// chain, this shares the server's own `normalizeGitHost` — a future host quirk added there then
+// can't drift from what the CLI sends. (gitCredentialServer.ts pulls in only node builtins plus
+// the error/logger utilities `bin/` already uses, so importing it costs the CLI nothing.)
 function deriveGitSecretName(component: string, host: string): string {
-	const hostPart = host
-		.trim()
-		.replace(/^[a-z0-9+.-]+:\/\//i, '')
-		.replace(/^\/\//, '')
-		.replace(/\/.*$/, '')
-		.replace(/^[^@]*@/, '')
-		.toLowerCase()
-		.replace(/[^\w.-]+/g, '_');
+	const hostPart = normalizeGitHost(host).replace(/[^\w.-]+/g, '_');
 	const componentPart = String(component).replace(/[^\w.-]+/g, '_');
 	return `deploy.${componentPart}.git.${hostPart}`;
 }
