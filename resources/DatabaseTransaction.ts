@@ -32,12 +32,16 @@ const MAX_RETRIES = 40;
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
 let outstandingCommit, outstandingCommitStart;
-// References (not a pre-built identity) for the transaction that armed `outstandingCommit`, kept
-// for the one-time checkOverloaded() log below (harper#2001) — `outstandingCommit` itself is
-// otherwise anonymous, so a stuck commit gives no indication of which database/table/resource to
-// investigate. Storing references instead of assembling the identity string here keeps the common
-// (non-wedged) commit path down to two assignments instead of an object allocation.
-let outstandingCommitTxn: DatabaseTransaction | undefined;
+// Identity references for the commit that armed `outstandingCommit`, kept for the one-time
+// checkOverloaded() log below (harper#2001) — `outstandingCommit` itself is otherwise anonymous, so
+// a stuck commit gives no indication of which database/table/resource to investigate. Snapshotted
+// at arm time (not read from `this.writes`/`this.startedFrom` lazily off the DatabaseTransaction
+// object) because that object can be reused for a later immediate commit while the original native
+// commit is still wedged — its resolve handler runs clearWrites() on the SAME object, which would
+// blank or replace the identity out from under a deferred read. Two reference assignments, no
+// allocation, and no lingering strong reference to the transaction/writes/entries graph.
+let outstandingCommitStore: any;
+let outstandingCommitStartedFrom: { resourceName: string; method: string } | undefined;
 let outstandingCommitNativeTransaction: any;
 // Ensures the checkOverloaded() rejection is logged once per stuck commit, not once per rejected
 // request — under load a wedged thread can reject hundreds of requests per second.
@@ -384,20 +388,18 @@ export class DatabaseTransaction implements Transaction {
 				// thread otherwise logs nothing at all server-side while rejecting every write with a
 				// 503, which was the single biggest obstacle to root-causing a recurrence.
 				outstandingCommitLogged = true;
-				const writtenStore = outstandingCommitTxn?.writes[0]?.store;
-				const startedFrom = outstandingCommitTxn?.startedFrom;
 				const nativeTransactionId = outstandingCommitNativeTransaction?.id;
 				harperLogger.error(
 					`Rejecting writes on this thread: a commit has been outstanding for ` +
 						`${Math.round(performance.now() - outstandingCommitStart)}ms (exceeds the ` +
-						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${writtenStore?.rootStore?.databaseName ?? '?'}.${writtenStore?.name ?? '?'}` +
+						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${outstandingCommitStore?.rootStore?.databaseName ?? '?'}.${outstandingCommitStore?.name ?? '?'}` +
 						(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
-						(startedFrom?.resourceName
-							? `, started from ${startedFrom.resourceName}${startedFrom.method ? '.' + startedFrom.method : ''}`
+						(outstandingCommitStartedFrom?.resourceName
+							? `, started from ${outstandingCommitStartedFrom.resourceName}${outstandingCommitStartedFrom.method ? '.' + outstandingCommitStartedFrom.method : ''}`
 							: '') +
-						`. Further writes and publishes from new application requests on this thread will be ` +
-						`rejected with 503 until the commit settles or the process is restarted (writes applied ` +
-						`from a canonical source, e.g. replication or a caching source, bypass this check).`
+						`. Further record updates and publishes from new application requests on this thread ` +
+						`will be rejected with 503 until the commit settles or the process is restarted (deletes, ` +
+						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
 			}
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
@@ -616,13 +618,18 @@ export class DatabaseTransaction implements Transaction {
 					if (!outstandingCommit) {
 						outstandingCommit = commitResolution;
 						outstandingCommitStart = performance.now();
-						// Keep references only, no allocation — the identity (table off this.writes[0].store,
-						// not this.db, which is whichever table first claimed this per-database transaction in
-						// txnForContext and so can name the wrong table when a transaction spans more than one
-						// table in the same database) is assembled lazily in checkOverloaded(), only on the 45s
-						// wedge path. Safe to defer: a stuck commit means the resolve handler below never runs,
-						// so this.writes is never cleared while outstandingCommit still references it.
-						outstandingCommitTxn = this;
+						// Snapshot the store/origin now rather than reading them off `this` lazily in
+						// checkOverloaded(): `this` (a DatabaseTransaction) can be reused for a later immediate
+						// commit while this native commit is still wedged, and that later commit's resolve
+						// handler runs clearWrites() on this SAME object — a lazy read would then blank or
+						// mis-attribute the identity out from under the deferred log. Read the table off the
+						// write itself, not this.db, which is whichever table first claimed this per-database
+						// transaction in txnForContext and so can name the wrong table when a transaction spans
+						// more than one table in the same database. Both are stable references (a Store, and an
+						// object set once and never mutated), so this holds no allocation and no lingering
+						// reference to the transaction/writes/entries graph.
+						outstandingCommitStore = this.writes[0]?.store;
+						outstandingCommitStartedFrom = this.startedFrom;
 						outstandingCommitNativeTransaction = transaction;
 						outstandingCommitLogged = false;
 						outstandingCommit
@@ -632,7 +639,8 @@ export class DatabaseTransaction implements Transaction {
 							.catch(() => {})
 							.finally(() => {
 								outstandingCommit = null;
-								outstandingCommitTxn = undefined;
+								outstandingCommitStore = undefined;
+								outstandingCommitStartedFrom = undefined;
 								outstandingCommitNativeTransaction = undefined;
 								outstandingCommitLogged = false;
 							});
