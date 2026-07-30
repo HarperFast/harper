@@ -766,6 +766,31 @@ describe('Querying through Resource API', () => {
 			});
 		});
 
+		it('relationship property access is synchronous (v4 contract)', async function () {
+			const record = await QueryTable.get('id-3');
+			// pin the contract: resolvers must never touch the async get() path, which
+			// returns a Promise on a RocksDB block-cache miss
+			const stores = [RelatedTable.primaryStore, ManyToMany.primaryStore];
+			const original_gets = stores.map((store) => store.get);
+			for (const store of stores)
+				store.get = () => {
+					throw new Error('relationship resolver must use the synchronous read path');
+				};
+			try {
+				const related = record.related;
+				assert.equal(typeof related?.then, 'undefined', 'many-to-one resolves synchronously');
+				assert.equal(related.name, 'related name 3');
+				const many_to_many = record.manyToMany;
+				assert(Array.isArray(many_to_many), 'array-of-foreign-keys resolves synchronously to an array');
+				assert.equal(many_to_many.length, 3);
+				assert.equal(many_to_many[0].name, 'many-to-many entry 3');
+				const children = related.childrenOfSelf;
+				assert(Array.isArray(children), 'one-to-many resolves synchronously to an array');
+			} finally {
+				stores.forEach((store, i) => (store.get = original_gets[i]));
+			}
+		});
+
 		it('Query by join with many-to-many (reverse)', async function () {
 			let results = [];
 			for await (let record of ManyToMany.search({
