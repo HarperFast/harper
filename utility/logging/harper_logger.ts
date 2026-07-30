@@ -1276,12 +1276,17 @@ function safeOpaqueBuiltinSummary(value: object): any {
 	} catch {
 		// fall through to the generic tag-only summary below
 	}
+	// A fixed, types.is*-derived tag - never Object.prototype.toString.call(value), which reads the
+	// value's own Symbol.toStringTag and would invoke a hostile getter defined there while merely
+	// picking a label (the same class of bug fixed in isErrorLike's classification - see there). Every
+	// branch here is an internal-slot check, so none of them can run caller-controlled code.
 	let tag = 'value';
-	try {
-		tag = Object.prototype.toString.call(value).slice(8, -1);
-	} catch {
-		// leave the generic tag
-	}
+	if (types.isStringObject(value)) tag = 'String';
+	else if (types.isNumberObject(value)) tag = 'Number';
+	else if (types.isBooleanObject(value)) tag = 'Boolean';
+	else if (types.isSymbolObject(value)) tag = 'Symbol';
+	else if (types.isArrayBufferView(value)) tag = 'ArrayBufferView';
+	else if (types.isAnyArrayBuffer(value)) tag = 'ArrayBuffer';
 	return labelPlaceholder(`[${tag} with own properties omitted for safety]`);
 }
 
@@ -1518,18 +1523,30 @@ function deepSanitizeErrors(
 		const proto = Object.getPrototypeOf(value);
 		Object.setPrototypeOf(result, proto);
 		// A branded built-in with private internal slots (URL, Headers, Request/Response, or any
-		// custom class whose own accessors/[util.inspect.custom] read `#private` state) throws when
-		// util.inspect later renders a value wearing its prototype but lacking its real internal
-		// state - and that throw happens inside Node's OWN inspect logic, well after this walk has
-		// returned, so the only way to catch it here is to actually try inspecting the empty clone
-		// now, before any properties are attached. Left unguarded, that throw would surface all the
-		// way up to inspectForLog's outer catch and replace the ENTIRE structured payload - not just
-		// this one nested field - with a single "[Unrenderable value]", losing phase/install_output/
-		// deployment_id and everything else alongside it, for one URL-shaped field anywhere in the
-		// tree. Skipped for `null`/`Object.prototype`, the overwhelmingly common case for a JSON-like
-		// diagnostic payload, where no exotic prototype is ever attached and this check would be pure
-		// overhead for a class that could never fail it.
-		if (proto !== null && proto !== Object.prototype) inspect(result);
+		// custom class whose own accessors read `#private` state) throws when util.inspect later
+		// renders a value wearing its prototype but lacking its real internal state - and that throw
+		// happens inside Node's OWN inspect logic, well after this walk has returned, so the only way
+		// to catch it here is to actually try inspecting the empty clone now, before any properties are
+		// attached. Left unguarded, that throw would surface all the way up to inspectForLog's outer
+		// catch and replace the ENTIRE structured payload - not just this one nested field - with a
+		// single "[Unrenderable value]", losing phase/install_output/deployment_id and everything else
+		// alongside it, for one URL-shaped field anywhere in the tree. Skipped for `null`/
+		// `Object.prototype`, the overwhelmingly common case for a JSON-like diagnostic payload, where
+		// no exotic prototype is ever attached and this check would be pure overhead for a class that
+		// could never fail it.
+		//
+		// A Proxy prototype is rejected outright, never probed: `Object.getPrototypeOf`/`inspect` on a
+		// value wearing it would invoke the Proxy's own traps (e.g. a `get` trap read while inspect
+		// looks up `.constructor`), running arbitrary caller-controlled code - and a hostile trap that
+		// never returns (`get() { while (true) {} }`) would wedge the worker on the error-logging path
+		// itself. `customInspect: false` keeps the probe from invoking `[util.inspect.custom]` too, so
+		// a legitimate class's custom inspector is invoked at most once - by the real render later -
+		// rather than once here (silently) and once more for the actual output, which would corrupt a
+		// stateful/one-shot inspector's second call.
+		if (proto !== null && proto !== Object.prototype) {
+			if (types.isProxy(proto)) throw new Error('unsafe Proxy prototype');
+			inspect(result, { customInspect: false });
+		}
 	} catch {
 		// Reset to plain Object - inspect() renders it without the class name, but every actual
 		// property attached below is still safe to render (see above for why the prototype itself,
