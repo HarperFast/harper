@@ -71,7 +71,7 @@ export function executeConditions(
 	recordAccess?
 ) {
 	const firstSearch = conditions[0];
-	// Record-level guards (a caller-supplied vectorFilter + a record-scoped allowRead) apply to every record
+	// Record-level guards (caller-supplied vectorFilter + rowFilter) apply to every record
 	// the query returns, independent of which condition leads (#1241). `recordAccess` is supplied only on
 	// the top-level executeConditions call (Table.search) and deliberately NOT threaded into the recursive
 	// calls below, so the guards run exactly once — on the final result set — rather than redundantly at
@@ -99,7 +99,7 @@ export function executeConditions(
 		});
 		// Record guards must hold on the OR union too — loading each surviving record and dropping the
 		// ones the guards reject (transformToEntries loads the record to evaluate a filter). Without this
-		// a record-level RBAC check would be bypassed by any OR query.
+		// a row filter would be bypassed by any OR query.
 		return recordGuards ? transformToEntries(deduped, recordGuards) : deduped;
 	} else {
 		// AND: use the indexed query for the first condition and filter by all subsequent conditions.
@@ -176,10 +176,10 @@ export function executeConditions(
 }
 
 /**
- * Build the record-level guards that apply to a query independent of its conditions (#1241/#1422):
+ * Build the record-level guards that apply to a query independent of its conditions:
  *   - `vectorFilter`: a caller-supplied `(record) => boolean` predicate (JS-API only).
- *   - `recordGuard`: the record-scoped allowRead check, pre-bound (fail-closed) by Table.search —
- *     invokes the resource class's overridden allowRead with `this` = each record.
+ *   - `rowFilter`: an explicit application-supplied predicate, bound to the current request context
+ *     by Table.search.
  * Both arrive already resolved on `recordAccess` (assembled once in Table.search). Returns an array of
  * `(record) => boolean` predicates, or undefined when neither is defined (the common case — zero
  * overhead). Predicates must be synchronous and side-effect free; records passed in are frozen.
@@ -189,7 +189,7 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 	const guards: ((record: any) => boolean)[] = [];
 	const vectorFilter = recordAccess.vectorFilter;
 	if (typeof vectorFilter === 'function') guards.push((record) => vectorFilter(record));
-	if (recordAccess.recordGuard) guards.push(recordAccess.recordGuard);
+	if (recordAccess.rowFilter) guards.push(recordAccess.rowFilter);
 	return guards.length > 0 ? guards : undefined;
 }
 
@@ -501,7 +501,7 @@ export function searchByIndex(
 	} else if (index && !skipIndex) {
 		if (index.customIndex) {
 			// Predicate-aware traversal (#1241): a record filter composed from companion AND conditions,
-			// a caller-supplied vectorFilter, and record-level RBAC is pushed into the index so it keeps
+			// caller-supplied vector and row filters are pushed into the index so it keeps
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;

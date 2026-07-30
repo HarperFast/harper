@@ -315,14 +315,13 @@ async function processFieldNode(
 	const query = {
 		select: buildSelectQuery(fieldNode.selectionSet, fragments),
 		conditions: buildConditionsQuery(fieldNode.arguments, resolvedVariables),
-		// Request authorization directly on the query target (checkPermission) rather than via the
-		// context-level `authorize` alias — same wrapper handling, and it keeps GraphQL consistent
-		// with the REST query path, including row-level (record-scoped allowRead) enforcement.
-		checkPermission: true,
 	};
 
 	const results = [];
-	for await (const result of resource.search(query, request)) {
+	// @ts-expect-error: `authorize` is a custom property on the request object.
+	request.authorize = true;
+	const searchResults = await resource.search(query, request);
+	for await (const result of searchResults) {
 		results.push(result);
 	}
 	return [fieldNode.name.value, results];
