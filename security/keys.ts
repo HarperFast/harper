@@ -830,17 +830,33 @@ function parseCipherString(ciphers) {
 	};
 }
 
+// Usage types that resolved to the generic 'server' by default before they were given their own
+// explicit usageType — an allowlist, not a denylist, of "type !== 'operations-api'": every OTHER
+// existing usageType ('operations-api', 'replication', ...) has had its own dedicated identity
+// since inception and never fell back to 'server', so a cert tagged uses: ['server'] was never
+// relevant to them and must not newly start winning cipher/quality consideration there. Add a type
+// here only when it is migrating away from onSocket()'s old unconditional 'server' default (as
+// 'mqtt' is doing now) and existing uses: ['server'] certs must keep matching it.
+const LEGACY_SERVER_FALLBACK_TYPES = new Set(['mqtt']);
+
 /**
  * Whether a certificate (record or `tls[]` entry) can affect the given listener, mirroring
  * createTLSSelector's tolerant selection: no `uses` is a generic certificate, `'https'` is the
- * legacy generic use, and an authority matters exactly when the listener verifies client chains.
+ * legacy generic use (applies everywhere, including operations-api and replication — pre-existing
+ * behavior), `'server'` is the legacy generic use only for LEGACY_SERVER_FALLBACK_TYPES, and an
+ * authority matters exactly when the listener verifies client chains.
  */
 function ciphersCandidateRelevant(usesRaw, isAuthority, servesCertificate, type, verifiesClientCerts) {
 	if (isAuthority && verifiesClientCerts) return true;
 	if (!servesCertificate) return false;
 	// normalize: stored as scalar in legacy/manual entries, expected array
 	const uses = Array.isArray(usesRaw) ? usesRaw : usesRaw ? [usesRaw] : [];
-	return uses.length === 0 || uses.includes(type) || uses.includes('https');
+	return (
+		uses.length === 0 ||
+		uses.includes(type) ||
+		uses.includes('https') ||
+		(uses.includes('server') && LEGACY_SERVER_FALLBACK_TYPES.has(type))
+	);
 }
 
 /**
@@ -1076,8 +1092,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							const uses = Array.isArray(cert.uses) ? cert.uses : cert.uses ? [cert.uses] : [];
 							// prefer operations certificates for operations API
 							if (uses.includes(type)) quality += 3;
-							else if (uses.includes('https'))
-								quality += 0.5; // this was a legacy generic general use type
+							else if (uses.includes('https') || (uses.includes('server') && LEGACY_SERVER_FALLBACK_TYPES.has(type)))
+								quality += 0.5; // legacy generic-use types (see ciphersCandidateRelevant's docblock)
 							else quality -= uses.length / 5; // if there are designed uses for this that don't match, dock points
 
 							const private_key = getPrivateKeyByName(cert.private_key_name);
