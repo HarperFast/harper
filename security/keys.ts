@@ -1154,7 +1154,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							logger.error?.('Error applying TLS for', cert.name, error);
 						}
 					}
-					if (liveReload && secureContexts.size === 0) {
+					if (liveReload && secureContexts.size === 0 && !defaultContext) {
 						// The not-loaded-yet guard above only covers the table object being absent, not the
 						// table being present but every row failing to apply (e.g. a private key not yet
 						// available on this thread, caught above per-cert). Resolving here would still write
@@ -1164,13 +1164,31 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						// almost certainly still coming on a normal boot, and this just avoids a window where
 						// we'd otherwise publish empty in the meantime.
 						//
+						// `!defaultContext` because an empty hostname map is not the same as "no TLS available":
+						// a cert whose hostnames resolve to [] (no usable SANs and no CN) builds no per-hostname
+						// entry but still sets a serviceable default context — that listener must resolve and
+						// serve via the default rather than retry forever for hostname entries that can't exist.
+						//
 						// Gated on liveReload: transient, single-use selectors (getReplicationCert) legitimately
 						// resolve empty — e.g. the bootstrap check `if (!(await getReplicationCert())) { create
 						// one }` in generateCertAuthority's caller depends on an empty resolution meaning "no
 						// cert yet," and must not hang waiting for a cert that this exact call is about to create.
-						logger.warn?.(`TLS selector for the '${type}' listener resolved zero certificates; retrying`);
+						//
+						// Latched like the system-db wait above: this retries indefinitely on the debounce, and
+						// an unlatched warn would emit ~57k lines/day from a listener stuck this way.
+						if (server && !server.tlsSelectorWarnedZeroCerts) {
+							server.tlsSelectorWarnedZeroCerts = true;
+							logger.warn?.(
+								`TLS selector for the '${type}' listener resolved zero certificates; retrying every ${TLS_REBUILD_DEBOUNCE_MS}ms`
+							);
+						}
 						scheduleRebuild();
 						return;
+					}
+					// A successful pass ends any warn latches so a later recurrence logs again.
+					if (server) {
+						server.tlsSelectorWaitedForSystemDb = false;
+						server.tlsSelectorWarnedZeroCerts = false;
 					}
 					// The listener's cipher string (and its @SECLEVEL, which governs client-cert chain
 					// verification) is fixed at server creation and cannot be swapped by rebuilding SNI

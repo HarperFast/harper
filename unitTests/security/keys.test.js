@@ -623,6 +623,88 @@ describe('Test keys module', () => {
 		});
 	});
 
+	describe('createTLSSelector when the hdb_certificate table object is swapped out', () => {
+		// The mechanism behind the reported incident (#1998): the LMDB→RocksDB engine migration —
+		// like resetDatabases() (copy_db, ITC restart) — REPLACES the databases.system.hdb_certificate
+		// object rather than mutating it (the schemaMigrationFragility "F4" hazard), orphaning any
+		// subscription bound to the old instance. The fix tracks the subscribed table instance inside
+		// updateTLS and re-subscribes when it changes. This test drives that path end-to-end through
+		// real module surfaces: the swap-detection can only run when something re-enters updateTLS,
+		// and here that trigger is the selector's still-live subscription on the OLD table firing on
+		// a write — the same trigger class (any scheduled rebuild) that a private-key reload or the
+		// zero-certs retry supplies in production.
+		let databases;
+		let liveTLSRebuilders;
+		let rebuildersSnapshot;
+		let realTable;
+		const swapTestCertName = 'swap-test-cert-' + Date.now();
+
+		beforeEach(() => {
+			databases = require('#src/resources/databases').databases;
+			realTable = databases.system.hdb_certificate;
+			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			rebuildersSnapshot = [...liveTLSRebuilders];
+		});
+
+		afterEach(async () => {
+			databases.system.hdb_certificate = realTable;
+			await realTable.delete(swapTestCertName).catch(() => {});
+			liveTLSRebuilders.clear();
+			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
+		});
+
+		it('re-subscribes to the new table instance and rebuilds contexts on the next rebuild after a swap', async function () {
+			this.timeout(10000);
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'baseline must be healthy before the swap');
+			const swapHostname = 'swap-test-unique.example.com';
+			assert.strictEqual(pseudoServer.secureContexts.has(swapHostname), false, 'sentinel hostname must not pre-exist');
+
+			// Model the engine-migration swap: a NEW table object (delegating to the real data so the
+			// rebuild pass has certs to apply), while the selector's subscription still points at the
+			// old instance. Live selectors left over from earlier tests in this file also detect the
+			// swap and re-subscribe, so the counters below are cross-selector totals — the assertion
+			// that THIS selector recovered is the sentinel hostname landing in its own contexts map.
+			let subscribeCalls = 0;
+			let searchCallsOnNewTable = 0;
+			databases.system.hdb_certificate = {
+				subscribe(options) {
+					subscribeCalls++;
+					return realTable.subscribe(options);
+				},
+				search(query) {
+					searchCallsOnNewTable++;
+					return realTable.search(query);
+				},
+			};
+
+			// Trigger a rebuild through the old subscription (still attached to the real table): a
+			// cert-table write, adding a record with a sentinel hostname that only a post-swap
+			// rebuild (reading through the NEW table object) can surface into this selector's map.
+			await realTable.put({
+				name: swapTestCertName,
+				certificate: test_cert,
+				hostnames: [swapHostname],
+				uses: [],
+				is_authority: false,
+				private_key_name: actual_cert.private_key_name,
+				is_self_signed: true,
+			});
+			await waitFor(() => pseudoServer.secureContexts.has(swapHostname), {
+				timeout: 6000,
+				message:
+					'this selector never rebuilt from the swapped-in table — the swap-detection/resubscribe path did not run',
+			});
+			// The rebuild that surfaced the sentinel runs the swap block first (liveReload=true and the
+			// table object changed), so by now the selector must have re-subscribed through the new
+			// instance and re-read through it.
+			assert.ok(subscribeCalls >= 1, 'the rebuild must re-subscribe via the new table instance');
+			assert.ok(searchCallsOnNewTable > 0, 'the rebuild must re-read certificates through the new table instance');
+		});
+	});
+
 	describe('certificate file_timestamp staleness guard', () => {
 		let certTable;
 		let certCn;
