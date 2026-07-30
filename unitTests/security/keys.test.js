@@ -396,9 +396,14 @@ describe('Test keys module', () => {
 			}
 		}
 
-		function chosenCertName(selector, host) {
+		// Resolves { name, quality } rather than just the winning name — quality > existingQuality
+		// (strict) means a tie is broken by hdb_certificate scan order, not by intent, so asserting
+		// the margin (not only who happened to win) keeps a future tie from reading as a pass here.
+		function chosenCert(selector, host) {
 			return new Promise((resolve, reject) => {
-				selector(host, (err, context) => (err ? reject(err) : resolve(context?.name)));
+				selector(host, (err, context) =>
+					err ? reject(err) : resolve(context && { name: context.name, quality: context.quality })
+				);
 			});
 		}
 
@@ -410,12 +415,18 @@ describe('Test keys module', () => {
 					{ name: 'sel-generic-' + Date.now(), uses: [] },
 				],
 				async () => {
-					// liveReload: false — these are transient, single-use selectors (see the docblock on
-					// createTLSSelector); the default would otherwise leak a rebuild subscription per test.
+					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
+					// rebuild registration per test); the hdb_certificate subscription itself is retained
+					// regardless — that's a pre-existing createTLSSelector characteristic, not something
+					// this arg controls.
 					const selector = keys.createTLSSelector('mqtt', undefined, false);
 					await selector.initialize(null);
-					const chosen = await chosenCertName(selector, hostname);
-					expect(chosen).to.include('sel-mqtt-tagged-');
+					const chosen = await chosenCert(selector, hostname);
+					expect(chosen.name).to.include('sel-mqtt-tagged-');
+					// base quality 3 (is_self_signed: false) + 3 for the uses:['mqtt'] exact match + 0.1 for the
+					// hostname SAN match (all candidates share the SAN, so it doesn't affect the ranking);
+					// asserting the value (not just the winning name) means a future tie reads as a failure too.
+					expect(chosen.quality).to.equal(6.1);
 				}
 			);
 		});
@@ -427,12 +438,17 @@ describe('Test keys module', () => {
 					{ name: 'sel-generic-2-' + Date.now(), uses: [] },
 				],
 				async () => {
-					// liveReload: false — these are transient, single-use selectors (see the docblock on
-					// createTLSSelector); the default would otherwise leak a rebuild subscription per test.
+					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
+					// rebuild registration per test); the hdb_certificate subscription itself is retained
+					// regardless — that's a pre-existing createTLSSelector characteristic, not something
+					// this arg controls.
 					const selector = keys.createTLSSelector('mqtt', undefined, false);
 					await selector.initialize(null);
-					const chosen = await chosenCertName(selector, hostname);
-					expect(chosen).to.include('sel-server-fallback-');
+					const chosen = await chosenCert(selector, hostname);
+					expect(chosen.name).to.include('sel-server-fallback-');
+					// base quality 3 + 0.5 legacy-fallback credit + 0.1 hostname-match, strictly ahead of the
+					// generic candidate's 3.1 — confirms a real margin, not a scan-order tiebreak.
+					expect(chosen.quality).to.equal(3.6);
 				}
 			);
 		});
