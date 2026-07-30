@@ -1406,14 +1406,88 @@ describe('deploy by reference (by_ref)', () => {
 	});
 
 	it('an explicit ref= wins over GITHUB_SHA', () => {
-		const req = { by_ref: true, ref: 'v9.9.9', project: 'demo' };
+		// `no-such-ref-here` doesn't resolve locally, so this also covers the pass-through fallback.
+		const req = { by_ref: true, ref: 'no-such-ref-here', project: 'demo' };
 		prepareDeployByRef(req);
-		assert.strictEqual(req.package, 'git+https://github.com/acme/demo.git#v9.9.9');
+		assert.strictEqual(req.package, 'git+https://github.com/acme/demo.git#no-such-ref-here');
 	});
 
 	it('resolveGitCommittish coerces a numeric ref to a string (buildRequest JSON-parses it)', () => {
 		assert.strictEqual(resolveGitCommittish(1234567), '1234567');
 		assert.strictEqual(resolveGitCommittish('v1.0.0'), 'v1.0.0');
+	});
+
+	// A real repo with known refs, so "resolves to a SHA" is asserted against an actual git
+	// resolution rather than whatever tags happen to exist in the checkout running the tests.
+	describe('explicit refs are pinned to an immutable SHA', () => {
+		const { execFileSync } = require('node:child_process');
+		let repoDir, priorCwd, headSha;
+
+		before(() => {
+			repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-by-ref-'));
+			const git = (...args) =>
+				execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+			git('init', '-q');
+			git('config', 'user.email', 'test@example.com');
+			git('config', 'user.name', 'Test');
+			git('commit', '-q', '--allow-empty', '-m', 'first');
+			git('tag', 'v1.2.3');
+			headSha = git('rev-parse', 'HEAD');
+			// runGit shells out against the real process cwd, so mocking process.cwd isn't enough.
+			priorCwd = process.cwd();
+			process.chdir(repoDir);
+		});
+
+		after(() => {
+			process.chdir(priorCwd);
+			fs.rmSync(repoDir, { recursive: true, force: true });
+		});
+
+		// Peers resolve the package independently, so a name that can move (a branch, or a tag
+		// repointed between one peer fetching and another re-fetching after a restart) would let
+		// nodes in the same cluster run different commits.
+		it('resolves a tag to its commit SHA rather than passing the name through', () => {
+			assert.strictEqual(resolveGitCommittish('v1.2.3'), headSha);
+		});
+
+		it('resolves a branch name to its commit SHA', () => {
+			assert.strictEqual(resolveGitCommittish('HEAD'), headSha);
+		});
+
+		it('passes a ref through unresolved when git cannot resolve it locally', () => {
+			// e.g. a branch that exists only on the remote — better to let the cluster resolve it
+			// than to fail on a ref the user can plainly see.
+			assert.strictEqual(resolveGitCommittish('only-on-the-remote'), 'only-on-the-remote');
+		});
+
+		// The cluster clones from the remote, so an unpushed commit fails server-side with an error
+		// far from the CLI. This temp repo has no remote at all, so nothing is "pushed".
+		it('warns when the commit to deploy is on no remote branch', () => {
+			const savedSha = process.env.GITHUB_SHA;
+			delete process.env.GITHUB_SHA; // take the local-resolution path, where the check applies
+			const written = [];
+			process.stderr.write = (chunk) => {
+				written.push(String(chunk));
+				return true;
+			};
+			try {
+				prepareDeployByRef({ by_ref: true, project: 'demo' });
+			} finally {
+				if (savedSha === undefined) delete process.env.GITHUB_SHA;
+				else process.env.GITHUB_SHA = savedSha;
+			}
+			assert.match(written.join(''), /isn't on any remote branch/);
+		});
+
+		it('skips the push check under GITHUB_SHA, where CI is already on a pushed commit', () => {
+			const written = [];
+			process.stderr.write = (chunk) => {
+				written.push(String(chunk));
+				return true;
+			};
+			prepareDeployByRef({ by_ref: true, project: 'demo' }); // GITHUB_SHA set by the outer beforeEach
+			assert.doesNotMatch(written.join(''), /isn't on any remote branch/);
+		});
 	});
 
 	it('credential=true attaches a github.com credential reference', () => {
