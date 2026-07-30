@@ -42,7 +42,9 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 			if (!(e instanceof TypeError)) throw e;
 			console.log('[early-hints] deploy response not received; relying on readiness poll', e);
 		}
-		if (deployBody) {
+		// Check that a response was actually received, not its truthiness — a 200 with a falsy
+		// body (e.g. null) is still a response the contract assertions below should catch.
+		if (deployBody !== undefined) {
 			strictEqual(deployBody.message, 'Successfully deployed: early-hints, restarting Harper');
 			ok(typeof deployBody.deployment_id === 'string', `expected deployment_id, got ${deployBody.deployment_id}`);
 		}
