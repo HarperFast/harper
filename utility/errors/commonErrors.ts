@@ -138,6 +138,8 @@ const OPERATION_AUTH_ERROR_MSGS = {
 	SYSTEM_TIMESTAMP_PERMS_ERR:
 		"Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users.",
 	UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
+	UNRESOLVED_SQL_TABLE:
+		'This operation is not authorized: the statement references a table that could not be resolved to a single database. Qualify the table with its database name (e.g. `database.table`).',
 	USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
 	DROP_SYSTEM:
 		"The 'system' database, tables and records are used internally by Harper and cannot be updated or removed.",

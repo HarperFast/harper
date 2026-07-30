@@ -9,6 +9,7 @@ import RecursiveIterator from 'recursive-iterator';
 const harperLogger = require('../utility/logging/harper_logger').default || require('../utility/logging/harper_logger');
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
+import { findDatabasesWithTable, loadDatabaseRegistry } from '../sqlEngine/binder/defaultDatabase.ts';
 
 class sqlStatementBucket {
 	ast: any;
@@ -93,6 +94,35 @@ class sqlStatementBucket {
 	 */
 	getAst() {
 		return this.ast;
+	}
+
+	/**
+	 * Tables the statement references that did NOT make it into the affected-attribute map — the
+	 * map permission checking iterates. Anything listed here would execute unchecked, so the
+	 * caller must fail the statement closed (GHSA-5c29-q62v-jrwf).
+	 *
+	 * A reference goes unrecorded when it could not be resolved to a single database (bare name
+	 * that no database defines, or that several define), when it is a construct we cannot reduce
+	 * to a named table (a derived table), or when it is a target the collectors do not model
+	 * (a SELECT's INTO). Returning descriptions rather than a boolean keeps the denial loggable.
+	 *
+	 * An empty result for a statement that names no table is correct and expected — that is a
+	 * calc-only select such as `SELECT ABS(-12)`.
+	 *
+	 * @returns {Array} - human-readable descriptions of the unauthorizable references
+	 */
+	getUnauthorizedTableRefs() {
+		const { named, opaque } = getTableTargets(this.ast);
+		const unauthorized = [...opaque];
+		for (const ref of named) {
+			const databaseid = ref.databaseid;
+			if (hdbUtils.isEmptyOrZeroLength(databaseid)) {
+				unauthorized.push(ref.tableid);
+			} else if (!this.affected_attributes.get(databaseid)?.has(ref.tableid)) {
+				unauthorized.push(`${databaseid}.${ref.tableid}`);
+			}
+		}
+		return unauthorized;
 	}
 
 	/**
@@ -182,7 +212,120 @@ function interpretAST(
 	schemaLookup: any,
 	tableToSchemaLookup: any
 ) {
+	qualifyBareTableRefs(ast);
 	getRecordAttributesAST(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup);
+}
+
+interface TableTargets {
+	/** References carrying a table name — the ones the engine binds one table each from. */
+	named: any[];
+	/**
+	 * FROM entries that don't reduce to a named table (a derived table / subquery). We can't say
+	 * which tables they reach, so they can't be authorized and must fail the statement closed.
+	 */
+	opaque: string[];
+}
+
+/**
+ * AlaSQL fields that carry a nested or compound query: a WHERE subquery (`queries`), an EXISTS
+ * subquery (`exists`), a compound-query branch (`union`/`unionall`/`except`/`intersect`), and an
+ * INSERT's source SELECT (`select`). The attribute collectors below don't descend into any of
+ * them, so a table referenced only from one of these is invisible to permission checking.
+ */
+const NESTED_QUERY_FIELDS = ['queries', 'exists', 'union', 'unionall', 'except', 'intersect', 'select'];
+
+/**
+ * Every table the statement would touch. Mirrors the set of references the engine's binder
+ * resolves — FROM entries and JOIN targets for a SELECT, or the single target of a write.
+ *
+ * Anything the collectors do not model is reported as opaque rather than ignored, so the
+ * authorization check refuses it. That covers derived tables, nested and compound queries, a
+ * SELECT's INTO target, and PIVOT/UNPIVOT. Opaque is deliberately preferred over recursing into
+ * these constructs:
+ * a nested reference would still never be recorded in the affected-attribute map, so descending
+ * to name it would not make it checkable — only refusable, which is what opaque already does.
+ */
+function getTableTargets(ast: any): TableTargets {
+	const named: any[] = [];
+	const opaque: string[] = [];
+	if (!ast) return { named, opaque };
+
+	const addRef = (ref: any, description: string) => {
+		if (!ref) return;
+		if (ref.tableid) named.push(ref);
+		else opaque.push(description);
+	};
+
+	const addNestedQueries = () => {
+		for (const field of NESTED_QUERY_FIELDS) {
+			const value = ast[field];
+			if (!value) continue;
+			if (Array.isArray(value) ? value.length > 0 : true) opaque.push(`nested query in "${field}"`);
+		}
+	};
+
+	if (ast instanceof (alasql as any).yy.Select) {
+		if (Array.isArray(ast.from)) {
+			ast.from.forEach((from, index) => addRef(from, `subquery in FROM position ${index + 1}`));
+		}
+		if (Array.isArray(ast.joins)) {
+			ast.joins.forEach((join, index) => {
+				if (!join) return;
+				const description = `subquery in JOIN position ${index + 1}`;
+				// A derived JOIN (`JOIN (SELECT ...) AS s`) carries `join.select` and no `join.table`.
+				// It has to be marked opaque explicitly — passing the absent table to addRef would
+				// drop it from the inventory entirely.
+				if (join.table) addRef(join.table, description);
+				else opaque.push(description);
+			});
+		}
+		// Always opaque, never a named ref: SELECT INTO is a write whose permission is not modeled,
+		// and treating it as named would let it satisfy the affected-attribute check on an entry the
+		// FROM collector created — `SELECT * INTO data.t FROM data.t` would authorize a write on the
+		// strength of a read.
+		if (ast.into) opaque.push('SELECT INTO target');
+		// PIVOT/UNPIVOT expose a column's values as-is, but the attribute collectors don't walk
+		// pivot.expr/pivot.columnid — refuse rather than authorize on an attribute list that never
+		// saw the pivoted column.
+		if (ast.pivot) opaque.push('PIVOT clause');
+		if (ast.unpivot) opaque.push('UNPIVOT clause');
+		addNestedQueries();
+	} else if (ast instanceof (alasql as any).yy.Insert) {
+		addRef(ast.into, 'INSERT target');
+		addNestedQueries();
+	} else if (ast instanceof (alasql as any).yy.Update || ast instanceof (alasql as any).yy.Delete) {
+		addRef(ast.table, 'write target');
+		addNestedQueries();
+	}
+	return { named, opaque };
+}
+
+/**
+ * Resolve schema-unqualified table references in place, using the same default-database rule the
+ * engine's binder applies.
+ *
+ * Without this the authorization layer saw `databaseid === undefined`, recorded no table at all,
+ * and authorized the statement against an empty set — while the engine went on to resolve the
+ * same bare name to a real database and read or write it (GHSA-5c29-q62v-jrwf). Writing the
+ * resolved database back onto the AST means authorization and execution share one resolution
+ * rather than performing two that can disagree.
+ *
+ * A name that resolves to zero or to several databases is deliberately left bare: it stays
+ * unrecorded, so the affected-table check below refuses it instead of guessing a database.
+ */
+function qualifyBareTableRefs(ast: any): void {
+	const { named } = getTableTargets(ast);
+	const bare = named.filter((ref) => hdbUtils.isEmptyOrZeroLength(ref.databaseid));
+	if (bare.length === 0) return;
+	// One registry load per statement, not per reference.
+	const databases = loadDatabaseRegistry();
+	if (!databases) return;
+	for (const ref of bare) {
+		const matches = findDatabasesWithTable(databases, ref.tableid);
+		if (matches.length === 1) {
+			ref.databaseid = matches[0];
+		}
+	}
 }
 
 /**
@@ -268,6 +411,22 @@ function getRecordAttributesAST(
  * @param affectedAttributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
  * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
+/**
+ * The database a column's table belongs to.
+ *
+ * `tableToSchemaLookup` is keyed by alias and by base table name, so it is the only mapping that
+ * resolves an unaliased table in a cross-database statement. Falling back to the FROM table's
+ * database (as the code did before schema-unqualified names could resolve to different databases)
+ * silently attributes a joined table's columns to the wrong database, and they then get dropped
+ * without an attribute-level permission check.
+ */
+function resolveColumnSchema(tableName: any, schemaLookup: any, tableToSchemaLookup: any, fallbackSchema: any) {
+	if (!tableName) return fallbackSchema;
+	if (tableToSchemaLookup?.has(tableName)) return tableToSchemaLookup.get(tableName);
+	if (schemaLookup?.has(tableName)) return schemaLookup.get(tableName);
+	return fallbackSchema;
+}
+
 function getSelectAttributes(
 	ast: any,
 	affectedAttributes: any,
@@ -292,6 +451,10 @@ function getSelectAttributes(
 	});
 	if (ast.joins) {
 		ast.joins.forEach((join) => {
+			// A derived JOIN has `join.select` and no `join.table`; there is nothing to record for it.
+			// getTableTargets() reports it as opaque so the statement is refused with a 403 rather
+			// than dying here on `join.table.as` and surfacing as a 500.
+			if (!join?.table) return;
 			//copying the 'as' to the table rather than on the join allows for a more generic function in addSchemaTableToMap().
 			// as it can take a .table as well as a .join record. It's a bit hacky, but I don't think this should cause any problems.
 			if (join.as) {
@@ -305,13 +468,25 @@ function getSelectAttributes(
 	for (let { node } of iterator) {
 		if (node && node.columnid) {
 			let tableName = node.tableid;
-			const columnSchema = schemaLookup.has(tableName) ? schemaLookup.get(tableName) : schema;
+			// tableToSchemaLookup is keyed by alias AND by base table name, so it resolves
+			// `SELECT vault.Secret.ssn FROM data.Public JOIN vault.Secret` where schemaLookup — which
+			// only ever holds aliases — would fall back to the FROM table's database and drop the
+			// column, skipping its attribute-level permission check.
+			const columnSchema = resolveColumnSchema(tableName, schemaLookup, tableToSchemaLookup, schema);
 
 			if (!tableName) {
 				tableName = ast.from[0].tableid;
 			}
 
-			if (!affectedAttributes.get(columnSchema).has(tableName)) {
+			const schemaTables = affectedAttributes.get(columnSchema);
+			if (!schemaTables) {
+				// The column's table was never recorded — an unresolvable reference alongside a
+				// resolvable one. getUnauthorizedTableRefs() reports it and the statement is denied.
+				harperLogger.info(`schema for table ${tableName} not resolved; skipping its attributes.`);
+				continue;
+			}
+
+			if (!schemaTables.has(tableName)) {
 				if (!tableLookup.has(tableName)) {
 					harperLogger.info(`table specified as ${tableName} not found.`);
 					return;
@@ -320,8 +495,8 @@ function getSelectAttributes(
 				}
 			}
 
-			if (affectedAttributes.get(columnSchema).get(tableName).indexOf(node.columnid) < 0) {
-				affectedAttributes.get(columnSchema).get(tableName).push(node.columnid);
+			if (schemaTables.get(tableName).indexOf(node.columnid) < 0) {
+				schemaTables.get(tableName).push(node.columnid);
 			}
 		}
 	}
@@ -336,7 +511,14 @@ function getSelectAttributes(
 			if (node && node.columnid) {
 				let table = node.tableid ? node.tableid : fromTable;
 
-				if (!affectedAttributes.get(schema).has(table)) {
+				const whereSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
+				const schemaTables = affectedAttributes.get(whereSchema);
+				if (!schemaTables) {
+					harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
+					continue;
+				}
+
+				if (!schemaTables.has(table)) {
 					if (!tableLookup.has(table)) {
 						harperLogger.info(`table specified as ${table} not found.`);
 						continue;
@@ -345,8 +527,72 @@ function getSelectAttributes(
 					}
 				}
 				//We need to check to ensure this columnid wasn't already set in the Map
-				if (affectedAttributes.get(schema).get(table).indexOf(node.columnid) < 0) {
-					affectedAttributes.get(schema).get(table).push(node.columnid);
+				if (schemaTables.get(table).indexOf(node.columnid) < 0) {
+					schemaTables.get(table).push(node.columnid);
+				}
+			}
+		}
+	}
+
+	// GROUP BY and HAVING can reference an attribute the SELECT list, WHERE, and JOIN ON never
+	// mention (`SELECT COUNT(*) FROM t GROUP BY ssn`, `... HAVING ssn = 'x'`) — without recording
+	// it here, checkAttributePerms() never sees that reference and a role denied READ on the
+	// attribute can still observe its distribution via the grouped/filtered result.
+	if (ast.group) {
+		const iterator = new RecursiveIterator(ast.group);
+		const fromTable = ast.from[0].tableid;
+
+		for (let { node } of iterator) {
+			if (node && node.columnid) {
+				let table = node.tableid ? node.tableid : fromTable;
+
+				const groupSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
+				const schemaTables = affectedAttributes.get(groupSchema);
+				if (!schemaTables) {
+					harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
+					continue;
+				}
+
+				if (!schemaTables.has(table)) {
+					if (!tableLookup.has(table)) {
+						harperLogger.info(`table specified as ${table} not found.`);
+						continue;
+					} else {
+						table = tableLookup.get(table);
+					}
+				}
+				if (schemaTables.get(table).indexOf(node.columnid) < 0) {
+					schemaTables.get(table).push(node.columnid);
+				}
+			}
+		}
+	}
+
+	if (ast.having) {
+		const iterator = new RecursiveIterator(ast.having);
+		const fromTable = ast.from[0].tableid;
+
+		for (let { node } of iterator) {
+			if (node && node.columnid) {
+				let table = node.tableid ? node.tableid : fromTable;
+
+				const havingSchema = resolveColumnSchema(node.tableid, schemaLookup, tableToSchemaLookup, schema);
+				const schemaTables = affectedAttributes.get(havingSchema);
+				if (!schemaTables) {
+					harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
+					continue;
+				}
+
+				if (!schemaTables.has(table)) {
+					if (!tableLookup.has(table)) {
+						harperLogger.info(`table specified as ${table} not found.`);
+						continue;
+					} else {
+						table = tableLookup.get(table);
+					}
+				}
+				if (schemaTables.get(table).indexOf(node.columnid) < 0) {
+					schemaTables.get(table).push(node.columnid);
 				}
 			}
 		}
@@ -363,7 +609,13 @@ function getSelectAttributes(
 					let table = node.tableid;
 					let schema = tableToSchemaLookup.get(table);
 
-					if (!affectedAttributes.get(schema).has(table)) {
+					const schemaTables = affectedAttributes.get(schema);
+					if (!schemaTables) {
+						harperLogger.info(`schema for table ${table} not resolved; skipping its attributes.`);
+						continue;
+					}
+
+					if (!schemaTables.has(table)) {
 						if (!tableLookup.has(table)) {
 							harperLogger.info(`table specified as ${table} not found.`);
 							continue;
@@ -372,8 +624,8 @@ function getSelectAttributes(
 						}
 					}
 					//We need to check to ensure this columnid wasn't already set in the Map
-					if (affectedAttributes.get(schema).get(table).indexOf(node.columnid) < 0) {
-						affectedAttributes.get(schema).get(table).push(node.columnid);
+					if (schemaTables.get(table).indexOf(node.columnid) < 0) {
+						schemaTables.get(table).push(node.columnid);
 					}
 				}
 			}
@@ -387,13 +639,23 @@ function getSelectAttributes(
 		for (let { node } of orderIterator) {
 			if (node && node.columnid) {
 				let tableName = node.tableid;
-				const orderSchema = schemaLookup.has(tableName) ? schemaLookup.get(tableName) : schema;
+				// tableToSchemaLookup is keyed by alias AND by base table name — schemaLookup alone
+				// (aliases only) silently fell back to the FROM table's schema for an unaliased joined
+				// table, misattributing its column to the wrong database and dropping it from that
+				// table's attribute list without a permission check.
+				const orderSchema = resolveColumnSchema(tableName, schemaLookup, tableToSchemaLookup, schema);
 
 				if (!tableName) {
 					tableName = ast.from[0].tableid;
 				}
 
-				if (!affectedAttributes.get(orderSchema).has(tableName)) {
+				const schemaTables = affectedAttributes.get(orderSchema);
+				if (!schemaTables) {
+					harperLogger.info(`schema for table ${tableName} not resolved; skipping its attributes.`);
+					continue;
+				}
+
+				if (!schemaTables.has(tableName)) {
 					if (!tableLookup.has(tableName)) {
 						harperLogger.info(`table specified as ${tableName} not found.`);
 						return;
@@ -402,8 +664,8 @@ function getSelectAttributes(
 					}
 				}
 
-				if (affectedAttributes.get(orderSchema).get(tableName).indexOf(node.columnid) < 0) {
-					affectedAttributes.get(orderSchema).get(tableName).push(node.columnid);
+				if (schemaTables.get(tableName).indexOf(node.columnid) < 0) {
+					schemaTables.get(tableName).push(node.columnid);
 				}
 			}
 		}
