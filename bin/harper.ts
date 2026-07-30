@@ -54,18 +54,15 @@ Assistants
 
 Operations API
   <api-operation> <param>=<value>
-      Run an API operation and return the result to the CLI (not all operations are supported).
+      Run an API operation and return the result to the CLI (not all operations are supported). See
+      the full list of operations at:
+      https://docs.harperdb.io/reference/v5/operations-api/operations
       To authenticate as a different user than the one being operated on (e.g. add_user/alter_user),
       set HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD or run 'harper login'. The equivalent
       auth_username=<value> auth_password=<value> args also work, but a password passed as an
       argument is exposed in shell history, process listings and CI logs. A saved login token always
       outranks username=/password=, so a stale token that fails to refresh will 401 rather than
       falling back to them — run 'harper logout' or pass auth_username=/auth_password= to override it.
-
-  get_backup database=<name> [gzip=false] [exclude_blobs=true] [out=<file>]
-      Download a full backup from a running server. RocksDB streams a gzipped tar (gzip=false for a
-      plain tar); file-backed blobs are included by default (exclude_blobs=true for an engine-only
-      archive). out=<file> sets the output path.
 `;
 
 async function harper() {
