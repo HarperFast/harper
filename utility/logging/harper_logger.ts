@@ -186,22 +186,24 @@ async function updateLogSettings() {
 /**
  * True when the argument is an Error (same-realm or native cross-realm — component code runs
  * through node:vm, so a VM-created Error fails `instanceof Error` but passes `isNativeError`).
- * A Proxy is checked and rejected FIRST, before `instanceof`: `instanceof` walks the prototype
- * chain via `[[GetPrototypeOf]]`, which for a Proxy invokes its `getPrototypeOf` trap - a trap
- * that hangs (an infinite loop) or has side effects would run to completion regardless of the
- * try/catch below (which only helps a trap that throws), on whatever path called isErrorLike
- * (e.g. logging a DIFFERENT operation's failure). `types.isProxy` queries the exotic object's
- * internal slots directly and never reflects on it, so it's always safe to check first, even on
- * a revoked Proxy. The try/catch below still guards other exotic objects whose prototype is
- * unreachable for other reasons — the logger must never throw on any input, and util.format
- * renders those fine raw. Exported so call sites outside this module (e.g.
- * OperationFunctionCaller, deciding how to log an error-shaped value it didn't itself catch as
- * an Error) can reuse the same classification instead of a weaker local `instanceof` check.
+ * Classified via `util.types.isNativeError` alone, never `instanceof Error`: `instanceof` walks
+ * the prototype chain via `[[GetPrototypeOf]]`, which for a value like
+ * `Object.create(Object.create(proxyAncestor))` eventually reaches `proxyAncestor` and invokes
+ * ITS `getPrototypeOf` trap, even though `arg` itself is an ordinary object and not a Proxy - a
+ * trap that hangs (an infinite loop) or has side effects would run to completion on whatever path
+ * called isErrorLike (e.g. logging a DIFFERENT operation's failure). `isNativeError` checks an
+ * internal slot directly, the same realm-independent, prototype-chain-independent mechanism
+ * `types.isMap`/`types.isDate`/etc. use elsewhere in this file, so it recognizes same-realm,
+ * cross-realm (VM), and Error-subclass instances without ever walking a prototype chain. The
+ * try/catch below still guards other exotic objects for other reasons — the logger must never
+ * throw on any input, and util.format renders those fine raw. Exported so call sites outside this
+ * module (e.g. OperationFunctionCaller, deciding how to log an error-shaped value it didn't itself
+ * catch as an Error) can reuse the same classification instead of a weaker local `instanceof`
+ * check.
  */
 export function isErrorLike(arg: any): boolean {
 	try {
-		if (types.isProxy(arg)) return false;
-		return arg instanceof Error || isNativeError(arg);
+		return isNativeError(arg);
 	} catch {
 		return false;
 	}
@@ -1019,8 +1021,12 @@ function renderErrorLine(error: any): string {
 		const base = typeof error?.stack === 'string' ? error.stack : errorToString(error);
 		return base + loggablePropsSuffix(error);
 	} catch (err) {
-		// error?.stack itself can throw on a hostile object even though errorToString cannot.
-		return `[Unrenderable Error: ${err instanceof Error ? err.message : String(err)}]`;
+		// error?.stack itself can throw on a hostile object (e.g. a getter on a `cause` chain member
+		// that throws a revoked Proxy) - `err` is then whatever was thrown, so it must be rendered via
+		// errorToString, the only renderer in this file explicitly guaranteed never to throw regardless
+		// of input. `err instanceof Error`/`String(err)` are NOT safe here: both throw on a revoked
+		// Proxy, which would defeat this catch's whole purpose.
+		return `[Unrenderable Error: ${errorToString(err)}]`;
 	}
 }
 
@@ -1268,7 +1274,23 @@ function safeOpaqueBuiltinSummary(value: object): any {
 		if (types.isDate(value)) return new Date(Date.prototype.getTime.call(value));
 		if (types.isRegExp(value)) {
 			const source = Reflect.get(RegExp.prototype, 'source', value);
-			const flags = Reflect.get(RegExp.prototype, 'flags', value);
+			// Built manually from each individual flag getter (bound via Reflect.get, same
+			// hijack-avoidance pattern as source/Map/Set elsewhere in this file) rather than reading
+			// the combined `RegExp.prototype.flags` getter: per spec, `flags` synthesizes its result by
+			// reading `this.global`, `this.ignoreCase`, etc. as ordinary property gets on `value` -
+			// each individual flag getter (`global`, `ignoreCase`, ...) instead reads the internal
+			// [[OriginalFlags]] slot directly, the same as `source`. An expando shadowing e.g. `global`
+			// with a hostile getter would otherwise have `flags` invoke it while merely trying to
+			// reconstruct a safe copy of the RegExp.
+			let flags = '';
+			if (Reflect.get(RegExp.prototype, 'hasIndices', value)) flags += 'd';
+			if (Reflect.get(RegExp.prototype, 'global', value)) flags += 'g';
+			if (Reflect.get(RegExp.prototype, 'ignoreCase', value)) flags += 'i';
+			if (Reflect.get(RegExp.prototype, 'multiline', value)) flags += 'm';
+			if (Reflect.get(RegExp.prototype, 'dotAll', value)) flags += 's';
+			if (Reflect.get(RegExp.prototype, 'unicode', value)) flags += 'u';
+			if (Reflect.get(RegExp.prototype, 'unicodeSets', value)) flags += 'v';
+			if (Reflect.get(RegExp.prototype, 'sticky', value)) flags += 'y';
 			return new RegExp(source, flags);
 		}
 		if (types.isWeakMap(value)) return new WeakMap();
@@ -1300,6 +1322,59 @@ function safeOpaqueBuiltinSummary(value: object): any {
  *  name or what the prototype chain declares. */
 function defineOwnProperty(target: any, key: string | symbol, value: any) {
 	Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
+/**
+ * True if `proto` (and every prototype above it, up to but excluding Object.prototype/null) is
+ * safe for a stateless sanitized clone to wear - i.e. util.inspect can later render a value with
+ * this prototype without running any caller-controlled code.
+ *
+ * This used to be answered by actually calling `inspect()` on the empty clone as a probe - but
+ * that IS running caller-controlled code, just earlier and silently: `inspect()` walks the full
+ * prototype chain (not just the immediate level) doing its own class-name/tag detection, which
+ * invokes a Proxy ANCESTOR's traps (`types.isProxy(proto)` alone only catches the immediate
+ * level), reads an inherited `Symbol.toStringTag` getter, and - even with `customInspect: false`
+ * suppressing the clone's OWN custom inspector - still leaves that same inspector to be invoked a
+ * second time by the real render later. A hostile trap/getter that never returns wedges the
+ * logging worker regardless of which of those two invocations reaches it.
+ *
+ * So this never invokes anything: `types.isProxy` and `Object.getOwnPropertyNames`/
+ * `getOwnPropertyDescriptor`/`getPrototypeOf` are internal-slot/structural reads on each
+ * non-Proxy level, same as the rest of this file's reflection. A level is rejected if it's a
+ * Proxy (any trap, including on revocation) or defines any OWN accessor (getter/setter) property
+ * - the exact shape of a branded built-in's internal-slot getter (e.g. URL.prototype's
+ * `href`/`protocol`/...), and there is no way to tell "safe getter" from "hostile getter" without
+ * invoking it, so any accessor anywhere in the chain fails closed. An ordinary class's prototype
+ * (only a data `constructor` property, plus perhaps plain methods) passes, so a plain
+ * custom-class instance still renders with its real class name (see the 'Diagnostic' test).
+ */
+function isSafeToWearPrototype(proto: object): boolean {
+	let level: any = proto;
+	while (level !== null && level !== Object.prototype) {
+		if (types.isProxy(level)) return false;
+		let keys: (string | symbol)[];
+		try {
+			keys = [...Object.getOwnPropertyNames(level), ...Object.getOwnPropertySymbols(level)];
+		} catch {
+			return false;
+		}
+		for (const key of keys) {
+			if (key === 'constructor') continue; // an ordinary data property on every class prototype
+			let descriptor;
+			try {
+				descriptor = Object.getOwnPropertyDescriptor(level, key);
+			} catch {
+				return false;
+			}
+			if (descriptor && (descriptor.get || descriptor.set)) return false;
+		}
+		try {
+			level = Object.getPrototypeOf(level);
+		} catch {
+			return false;
+		}
+	}
+	return true;
 }
 
 /**
@@ -1521,37 +1596,32 @@ function deepSanitizeErrors(
 	seen.set(value, result);
 	try {
 		const proto = Object.getPrototypeOf(value);
-		Object.setPrototypeOf(result, proto);
 		// A branded built-in with private internal slots (URL, Headers, Request/Response, or any
 		// custom class whose own accessors read `#private` state) throws when util.inspect later
-		// renders a value wearing its prototype but lacking its real internal state - and that throw
-		// happens inside Node's OWN inspect logic, well after this walk has returned, so the only way
-		// to catch it here is to actually try inspecting the empty clone now, before any properties are
-		// attached. Left unguarded, that throw would surface all the way up to inspectForLog's outer
-		// catch and replace the ENTIRE structured payload - not just this one nested field - with a
-		// single "[Unrenderable value]", losing phase/install_output/deployment_id and everything else
-		// alongside it, for one URL-shaped field anywhere in the tree. Skipped for `null`/
-		// `Object.prototype`, the overwhelmingly common case for a JSON-like diagnostic payload, where
-		// no exotic prototype is ever attached and this check would be pure overhead for a class that
-		// could never fail it.
+		// renders a value wearing its prototype but lacking its real internal state - and losing it
+		// unguarded would surface all the way up to inspectForLog's outer catch and replace the
+		// ENTIRE structured payload - not just this one nested field - with a single "[Unrenderable
+		// value]", losing phase/install_output/deployment_id and everything else alongside it, for
+		// one URL-shaped field anywhere in the tree.
 		//
-		// A Proxy prototype is rejected outright, never probed: `Object.getPrototypeOf`/`inspect` on a
-		// value wearing it would invoke the Proxy's own traps (e.g. a `get` trap read while inspect
-		// looks up `.constructor`), running arbitrary caller-controlled code - and a hostile trap that
-		// never returns (`get() { while (true) {} }`) would wedge the worker on the error-logging path
-		// itself. `customInspect: false` keeps the probe from invoking `[util.inspect.custom]` too, so
-		// a legitimate class's custom inspector is invoked at most once - by the real render later -
-		// rather than once here (silently) and once more for the actual output, which would corrupt a
-		// stateful/one-shot inspector's second call.
-		if (proto !== null && proto !== Object.prototype) {
-			if (types.isProxy(proto)) throw new Error('unsafe Proxy prototype');
-			inspect(result, { customInspect: false });
+		// This USED to be answered by actually calling `inspect()` on the empty clone as a probe, but
+		// that runs the same caller-controlled code it's trying to guard against, just earlier and
+		// silently: a Proxy ANYWHERE in the ancestor chain (not just the immediate `proto`) still gets
+		// its traps invoked by inspect's own class-name/tag walk, an inherited `Symbol.toStringTag`
+		// getter still gets read, and even `customInspect: false` only stops the PROBE's own call from
+		// invoking a custom inspector - the real render right after still invokes it a second time,
+		// corrupting a stateful/one-shot inspector's actual output. `isSafeToWearPrototype` answers the
+		// same question without invoking anything (see its doc comment); `proto` is restored only when
+		// it says so. Skipped for `null`/`Object.prototype`, the overwhelmingly common case for a
+		// JSON-like diagnostic payload, where no exotic prototype is ever attached and this check would
+		// be pure overhead for a class that could never fail it.
+		if (proto !== null && proto !== Object.prototype && isSafeToWearPrototype(proto)) {
+			Object.setPrototypeOf(result, proto);
 		}
 	} catch {
-		// Reset to plain Object - inspect() renders it without the class name, but every actual
-		// property attached below is still safe to render (see above for why the prototype itself,
-		// not the data, is what's unsafe here).
-		Object.setPrototypeOf(result, Object.prototype);
+		// Fall through with the clone's default Object.prototype - inspect() renders it without the
+		// class name, but every actual property attached below is still safe to render (see above for
+		// why the prototype itself, not the data, is what's unsafe here).
 	}
 	// Object.keys/getOwnPropertySymbols themselves are one unavoidable O(n) pass (a plain object,
 	// unlike Array/Map/Set, has no O(1) size to check before enumerating) - but everything AFTER
@@ -1604,11 +1674,30 @@ function deepSanitizeErrors(
 			// top-level render finds this hook via the exact same `value[sym]` property access, so
 			// reading it here isn't new arbitrary-code exposure the way an ordinary data getter
 			// would be - it's the documented render-hook contract, just resolved one level earlier.
+			let original;
 			try {
-				defineOwnProperty(result, sym, value[sym]);
+				original = value[sym];
 			} catch {
-				// leave unset - inspect() will render the rest of the object without a custom hook
+				continue; // leave unset - inspect() will render the rest of the object without a custom hook
 			}
+			if (typeof original !== 'function') continue; // not a valid hook - nothing to wrap or invoke
+			// The hook itself runs at REAL render time, entirely outside this walk - so whatever it
+			// RETURNS has never been through deepSanitizeErrors. Left as-is, a hook that returns a
+			// closure-captured secret-bearing Error (or any value with one nested inside) would have
+			// that Error rendered raw by the outer util.inspect call, bypassing this sanitizer entirely
+			// (#1994 review). This wraps the hook so the CALL is unchanged (still invoked with `this`
+			// bound to the original untrusted `value`, same as inspect would do directly) but its return
+			// value is sanitized with a fresh depth/budget - independent of this walk's own counters,
+			// which by render time are long since exhausted or out of scope.
+			defineOwnProperty(result, sym, (...args: any[]) => {
+				let rendered;
+				try {
+					rendered = original.apply(value, args);
+				} catch (err) {
+					return `[Unrenderable value: ${errorToString(err)}]`;
+				}
+				return deepSanitizeErrors(rendered, new WeakMap(), 0, { nodes: 0, maxEntries: DEFAULT_MAX_SANITIZE_ENTRIES });
+			});
 			continue;
 		}
 		if (descriptor.get || descriptor.set) {
