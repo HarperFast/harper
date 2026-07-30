@@ -378,20 +378,20 @@ describe('Test keys module', () => {
 		const hostname = 'localhost'; // present in test_cert's SANs (see the top-level `before`)
 
 		async function withCerts(certs, fn) {
-			for (const cert of certs) {
-				await databases.system.hdb_certificate.put({
-					certificate: test_cert,
-					is_authority: false,
-					private_key_name: actual_cert.private_key_name,
-					is_self_signed: false, // matches actual_cert's tier so quality differs only by `uses`
-					...cert,
-				});
-			}
 			try {
+				for (const cert of certs) {
+					await databases.system.hdb_certificate.put({
+						certificate: test_cert,
+						is_authority: false,
+						private_key_name: actual_cert.private_key_name,
+						is_self_signed: false, // matches actual_cert's tier so quality differs only by `uses`
+						...cert,
+					});
+				}
 				return await fn();
 			} finally {
 				for (const cert of certs) {
-					await databases.system.hdb_certificate.delete(cert.name);
+					await databases.system.hdb_certificate.delete(cert.name).catch(() => {});
 				}
 			}
 		}
@@ -410,7 +410,9 @@ describe('Test keys module', () => {
 					{ name: 'sel-generic-' + Date.now(), uses: [] },
 				],
 				async () => {
-					const selector = keys.createTLSSelector('mqtt');
+					// liveReload: false — these are transient, single-use selectors (see the docblock on
+					// createTLSSelector); the default would otherwise leak a rebuild subscription per test.
+					const selector = keys.createTLSSelector('mqtt', undefined, false);
 					await selector.initialize(null);
 					const chosen = await chosenCertName(selector, hostname);
 					expect(chosen).to.include('sel-mqtt-tagged-');
@@ -425,7 +427,9 @@ describe('Test keys module', () => {
 					{ name: 'sel-generic-2-' + Date.now(), uses: [] },
 				],
 				async () => {
-					const selector = keys.createTLSSelector('mqtt');
+					// liveReload: false — these are transient, single-use selectors (see the docblock on
+					// createTLSSelector); the default would otherwise leak a rebuild subscription per test.
+					const selector = keys.createTLSSelector('mqtt', undefined, false);
 					await selector.initialize(null);
 					const chosen = await chosenCertName(selector, hostname);
 					expect(chosen).to.include('sel-server-fallback-');

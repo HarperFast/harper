@@ -3,8 +3,7 @@
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { expect } = require('chai');
-const sinon = require('sinon');
+const assert = require('assert');
 
 const { handleApplication } = require('#src/server/mqtt');
 
@@ -13,30 +12,34 @@ const { handleApplication } = require('#src/server/mqtt');
 // mqtt-tagged certificates exact-match priority (see unitTests/security/keys.test.js for the
 // certificate-selection side of this contract).
 describe('mqtt.ts handleApplication raw-socket registration', () => {
+	function recordingServer() {
+		const calls = [];
+		return { socket: (...args) => calls.push(args), calls };
+	}
+
 	it("registers the raw TCP/TLS listener with usageType 'mqtt'", () => {
-		const socketSpy = sinon.spy();
+		const server = recordingServer();
 		const scope = {
 			options: { getAll: () => ({ network: { securePort: 8883 } }) },
-			server: { socket: socketSpy },
+			server,
 		};
 
 		handleApplication(scope);
 
-		expect(socketSpy.calledOnce).to.be.true;
-		const options = socketSpy.firstCall.args[1];
-		expect(options.usageType).to.equal('mqtt');
+		assert.strictEqual(server.calls.length, 1);
+		assert.strictEqual(server.calls[0][1].usageType, 'mqtt');
 	});
 
 	it("still passes usageType 'mqtt' when only a plain (non-TLS) port is configured", () => {
-		const socketSpy = sinon.spy();
+		const server = recordingServer();
 		const scope = {
 			options: { getAll: () => ({ network: { port: 1883 } }) },
-			server: { socket: socketSpy },
+			server,
 		};
 
 		handleApplication(scope);
 
-		expect(socketSpy.calledOnce).to.be.true;
-		expect(socketSpy.firstCall.args[1].usageType).to.equal('mqtt');
+		assert.strictEqual(server.calls.length, 1);
+		assert.strictEqual(server.calls[0][1].usageType, 'mqtt');
 	});
 });
