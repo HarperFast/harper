@@ -392,8 +392,8 @@ export class DatabaseTransaction implements Transaction {
 							? `, started from ${identity.resourceName}${identity.method ? '.' + identity.method : ''}`
 							: '') +
 						`. Further record writes and publishes from application requests on this thread will be ` +
-						`rejected with 503 until the commit settles or the process is restarted (replication-` +
-						`sourced writes are not gated by this check and continue).`
+						`rejected with 503 until the commit settles or the process is restarted (writes applied ` +
+						`from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
 			}
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
