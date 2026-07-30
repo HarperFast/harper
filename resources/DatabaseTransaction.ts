@@ -388,7 +388,7 @@ export class DatabaseTransaction implements Transaction {
 						`${Math.round(performance.now() - outstandingCommitStart)}ms (exceeds the ` +
 						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${identity?.database ?? '?'}.${identity?.table ?? '?'}` +
 						(identity?.resourceName ? `, started from ${identity.resourceName}.${identity.method}` : '') +
-						`. All further writes on this thread will be rejected with 503 until the commit settles or the process is restarted.`
+						`. Further write transactions started on this thread will be rejected with 503 until the commit settles or the process is restarted.`
 				);
 			}
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
@@ -600,16 +600,19 @@ export class DatabaseTransaction implements Transaction {
 						outstandingCommitStart = performance.now();
 						// Only a real write commit (this.writes.length > 0, above) identifies the wedge;
 						// an abort() flowing through this same arming branch has no writes and would
-						// otherwise mis-attribute the identity to an uninvolved read-only store.
-						outstandingCommitIdentity =
-							this.writes.length > 0
-								? {
-										database: (this.db as any)?.rootStore?.databaseName,
-										table: (this.db as any)?.name,
-										resourceName: this.startedFrom?.resourceName,
-										method: this.startedFrom?.method,
-									}
-								: undefined;
+						// otherwise mis-attribute the identity to an uninvolved read-only store. Read the
+						// table off the write itself (not this.db, which is whichever table first claimed
+						// this per-database transaction in txnForContext, and so can name the wrong table
+						// when a transaction spans more than one table in the same database).
+						const writtenStore = this.writes[0]?.store;
+						outstandingCommitIdentity = writtenStore
+							? {
+									database: writtenStore.rootStore?.databaseName,
+									table: writtenStore.name,
+									resourceName: this.startedFrom?.resourceName,
+									method: this.startedFrom?.method,
+								}
+							: undefined;
 						outstandingCommitLogged = false;
 						outstandingCommit
 							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
