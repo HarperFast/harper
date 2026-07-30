@@ -375,7 +375,12 @@ describe('Test keys module', () => {
 		// fallback credit. These exercise the actual certificate-selection path (SNICallback)
 		// with overlapping certificates for one hostname, so that regression fails here instead.
 		const { databases } = require('#src/resources/databases');
-		const hostname = 'localhost'; // present in test_cert's SANs (see the top-level `before`)
+		// A hostname outside test_cert's real SANs, given explicitly via `hostnames` below (the
+		// code honors `cert.hostnames ?? hostnamesFromCert(certParsed)`) — this keeps every
+		// candidate's quality a clean, hostname-bonus-free number, AND lets the decoy below (which
+		// keeps test_cert's real SANs, so it never registers under this key) prove the per-hostname
+		// SNI map is what's actually being exercised, not just the global `defaultContext` fallback.
+		const hostname = 'mqtt-2003-review.invalid';
 
 		async function withCerts(certs, fn) {
 			try {
@@ -407,12 +412,22 @@ describe('Test keys module', () => {
 			});
 		}
 
+		// Globally the best-quality certificate in the whole table (real SANs, so it picks up the
+		// getHost() hostname-match bonus none of the `hostname`-scoped candidates below get),
+		// but never registered under `hostname` — it must never win a lookup for `hostname`. If it
+		// does, the SNICallback fell through to `defaultContext` instead of using the per-hostname
+		// SNI map, which is exactly the failure mode a broken `hostnames` assignment would produce.
+		function decoy(name) {
+			return { name, uses: ['mqtt'], is_self_signed: false };
+		}
+
 		it('an MQTT selector chooses the mqtt-tagged certificate over a legacy server-tagged or generic certificate for the same hostname', async () => {
 			await withCerts(
 				[
-					{ name: 'sel-mqtt-tagged-' + Date.now(), uses: ['mqtt'] },
-					{ name: 'sel-server-tagged-' + Date.now(), uses: ['server'] },
-					{ name: 'sel-generic-' + Date.now(), uses: [] },
+					{ name: 'sel-mqtt-tagged-' + Date.now(), uses: ['mqtt'], hostnames: [hostname] },
+					{ name: 'sel-server-tagged-' + Date.now(), uses: ['server'], hostnames: [hostname] },
+					{ name: 'sel-generic-' + Date.now(), uses: [], hostnames: [hostname] },
+					decoy('sel-decoy-' + Date.now()),
 				],
 				async () => {
 					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
@@ -423,10 +438,11 @@ describe('Test keys module', () => {
 					await selector.initialize(null);
 					const chosen = await chosenCert(selector, hostname);
 					expect(chosen.name).to.include('sel-mqtt-tagged-');
-					// base quality 3 (is_self_signed: false) + 3 for the uses:['mqtt'] exact match + 0.1 for the
-					// hostname SAN match (all candidates share the SAN, so it doesn't affect the ranking);
-					// asserting the value (not just the winning name) means a future tie reads as a failure too.
-					expect(chosen.quality).to.equal(6.1);
+					// base quality 3 (is_self_signed: false) + 3 for the uses:['mqtt'] exact match, no
+					// hostname bonus (this candidate's `hostnames` is the synthetic one, not test_cert's
+					// real SANs) — asserting the value, not just the winning name, means a future tie or
+					// a defaultContext fall-through (the decoy is a strictly higher 6.1) fails here too.
+					expect(chosen.quality).to.equal(6);
 				}
 			);
 		});
@@ -434,8 +450,9 @@ describe('Test keys module', () => {
 		it('the legacy server-tagged fallback remains eligible for MQTT when no mqtt-tagged certificate exists', async () => {
 			await withCerts(
 				[
-					{ name: 'sel-server-fallback-' + Date.now(), uses: ['server'] },
-					{ name: 'sel-generic-2-' + Date.now(), uses: [] },
+					{ name: 'sel-server-fallback-' + Date.now(), uses: ['server'], hostnames: [hostname] },
+					{ name: 'sel-generic-2-' + Date.now(), uses: [], hostnames: [hostname] },
+					decoy('sel-decoy-2-' + Date.now()),
 				],
 				async () => {
 					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
@@ -446,11 +463,51 @@ describe('Test keys module', () => {
 					await selector.initialize(null);
 					const chosen = await chosenCert(selector, hostname);
 					expect(chosen.name).to.include('sel-server-fallback-');
-					// base quality 3 + 0.5 legacy-fallback credit + 0.1 hostname-match, strictly ahead of the
-					// generic candidate's 3.1 — confirms a real margin, not a scan-order tiebreak.
-					expect(chosen.quality).to.equal(3.6);
+					// base quality 3 + 0.5 legacy-fallback credit, strictly ahead of the generic
+					// candidate's 3 and distinguishable from the decoy's 6.1 defaultContext fallback.
+					expect(chosen.quality).to.equal(3.5);
 				}
 			);
+		});
+	});
+
+	describe('threadServer onSocket — usageType handoff (regression for #2003 review)', () => {
+		// The two describe blocks above cover each END of the usageType contract: mqtt.ts emits
+		// `usageType: 'mqtt'` (unitTests/server/mqtt.test.js), and createTLSSelector('mqtt', ...)
+		// honors it (above). The SEAM — threadServer.js's `const usageType = options.usageType ??
+		// 'server'`, which feeds BOTH createTLSSelector and getEffectiveTlsCiphers — had no
+		// coverage; a revert to a hardcoded 'server' there left every other test green (confirmed
+		// by mutation during review). This drives the real onSocket() (exported as `server.socket`)
+		// and observes getEffectiveTlsCiphers' config-layer output: only 'operations-api' picks up
+		// the operationsApi.tls layer, so a distinct effective cipher string per usageType proves
+		// the SAME local variable that reaches getEffectiveTlsCiphers is also what createTLSSelector
+		// receives — they are not independently computed.
+		const { server } = require('#src/server/Server');
+		require('#src/server/threads/threadServer'); // side effect: registers server.socket = onSocket
+		// tls.createServer validates `ciphers` against OpenSSL's real cipher list at construction
+		// time, so these must be distinct, valid suite names, not arbitrary strings.
+		const rootCiphers = 'AES128-SHA';
+		const opsCiphers = 'AES256-SHA';
+		let nextPort = 40000 + (process.pid % 1000);
+
+		before(() => {
+			env_mgr.setProperty('tls', { ciphers: rootCiphers });
+			env_mgr.setProperty('operationsApi_tls', { ciphers: opsCiphers });
+		});
+
+		after(() => {
+			env_mgr.setProperty('tls', undefined);
+			env_mgr.setProperty('operationsApi_tls', undefined);
+		});
+
+		it("applies the operationsApi.tls layer only when usageType is 'operations-api'", () => {
+			const socketServer = server.socket(() => {}, { securePort: nextPort++, usageType: 'operations-api' });
+			expect(socketServer.appliedCiphers).to.equal(opsCiphers);
+		});
+
+		it("falls back to the root tls layer for a non-operations-api usageType (e.g. 'mqtt')", () => {
+			const socketServer = server.socket(() => {}, { securePort: nextPort++, usageType: 'mqtt' });
+			expect(socketServer.appliedCiphers).to.equal(rootCiphers);
 		});
 	});
 

@@ -30,7 +30,10 @@ describe('mqtt.ts handleApplication raw-socket registration', () => {
 		assert.strictEqual(server.calls[0][1].usageType, 'mqtt');
 	});
 
-	it("still passes usageType 'mqtt' when only a plain (non-TLS) port is configured", () => {
+	it('registers the listener from a plain (non-TLS) port alone, without requiring securePort', () => {
+		// server/mqtt.ts sets `usageType: 'mqtt'` unconditionally in one options literal, so this
+		// doesn't add distinct usageType coverage over the test above — what it actually pins is
+		// the `if (port || securePort)` guard at server/mqtt.ts:88 firing for a port-only config.
 		const server = recordingServer();
 		const scope = {
 			options: { getAll: () => ({ network: { port: 1883 } }) },
