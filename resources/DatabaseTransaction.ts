@@ -610,14 +610,15 @@ export class DatabaseTransaction implements Transaction {
 						outstandingCommitStart = performance.now();
 						// Read the table off the write itself (not this.db, which is whichever table first
 						// claimed this per-database transaction in txnForContext, and so can name the wrong
-						// table when a transaction spans more than one table in the same database). An
-						// abort() flowing through this same arming branch has no writes (this.writes.length
-						// === 0, above) — its table is unknowable, but the database and the request that
-						// started it are still accurate and worth keeping rather than blanking entirely.
-						const writtenStore = this.writes[0]?.store;
+						// table when a transaction spans more than one table in the same database).
+						// commitResolution here is always transaction.commit()'s Promise, never abort()'s
+						// (rocksdb-js's abort() is synchronous and returns void, so it can't reach this
+						// `if (commitResolution)` branch) — and both commit() call sites are themselves
+						// guarded on this.writes.length > 0, so writtenStore is always defined.
+						const writtenStore = this.writes[0].store;
 						outstandingCommitIdentity = {
-							database: writtenStore ? writtenStore.rootStore?.databaseName : (this.db as any)?.rootStore?.databaseName,
-							table: writtenStore?.name,
+							database: writtenStore.rootStore?.databaseName,
+							table: writtenStore.name,
 							resourceName: this.startedFrom?.resourceName,
 							method: this.startedFrom?.method,
 							// Lets an operator correlate this log with the coordinated-retry debug line and
