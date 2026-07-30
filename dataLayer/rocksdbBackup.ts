@@ -2,7 +2,7 @@
 
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { open, readdir, writeFile } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
@@ -714,7 +714,10 @@ async function appendBlobEntries(pack: Pack, blobRoots: string[]): Promise<void>
 				if (entry.isDirectory()) {
 					stack.push(filePath);
 				} else if (entry.isFile()) {
-					await appendBlobFile(pack, filePath, `blobs/${index}/${relative(root, filePath)}`);
+					// tar entry names are always POSIX-separated; relative() yields `\` on Windows, which
+					// would otherwise become literal filename characters when extracted on POSIX
+					const relativePath = relative(root, filePath).split(sep).join('/');
+					await appendBlobFile(pack, filePath, `blobs/${index}/${relativePath}`);
 				}
 			}
 		}

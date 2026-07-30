@@ -33,13 +33,13 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
  * not itself a RocksDB/LMDB database (no `CURRENT`/`MANIFEST-`/`.mdb`), so the startup scan ignores
  * it, and no user can create a database that resolves to it.
  *
- * - `<.restore>/<key>.lock` — an OS-level exclusive file lock (via rocksdb-js `tryFileLock`),
+ * - `<meta-dir>/<key>.lock` — an OS-level exclusive file lock (via rocksdb-js `tryFileLock`),
  *   effective across processes, containers, and worker threads, auto-released on process exit.
  *   Only *held-ness* is meaningful; the file itself persists after release (harmless). Held for the
  *   duration of a restore, and briefly by `dropDatabase` so the two serialize on the same primitive.
  *   Known limitation: the lock is owned by the process, so if the restore job's worker *thread*
  *   dies without the process exiting, the lock stays held (restores 409) until Harper restarts.
- * - `<.restore>/<key>.restoring` — the completion marker. Written (and fsynced) after the lock is
+ * - `<meta-dir>/<key>.restoring` — the completion marker. Written (and fsynced) after the lock is
  *   acquired and before the destructive restore begins; deleted only after the restore completes
  *   successfully, while still holding the lock. Its *existence* means "a restore started and has
  *   not finished successfully". Its first line records the database directory name so the startup
@@ -53,9 +53,10 @@ export const RESTORE_LOCK_SUFFIX = '.lock';
 export const RESTORING_MARKER_SUFFIX = '.restoring';
 
 /**
- * Directory holding the restore metadata for a database — a `.restore/` sibling of the database
- * directory. Shared by every database under the same parent, so a single readdir surfaces all
- * pending restores during the startup scan.
+ * Directory holding the restore metadata for a database — the reserved `` `restore` `` sibling of
+ * the database directory (see the module header for why the name contains a backtick). Shared by
+ * every database under the same parent, so a single readdir surfaces all pending restores during
+ * the startup scan.
  */
 export function restoreMetaDir(dbPath: string): string {
 	return join(dirname(dbPath), RESTORE_META_DIR);
@@ -198,7 +199,7 @@ export function beginRestore(dbPath: string): RestoreLock {
 		} finally {
 			closeSync(fd);
 		}
-		// fsync the .restore directory so the marker's directory entry is durable — without this a
+		// fsync the metadata directory so the marker's directory entry is durable — without this a
 		// power loss can lose the entry, and a half-purged database would load as healthy
 		fsyncDir(restoreMetaDir(dbPath));
 	} catch (error) {
@@ -215,7 +216,7 @@ export function beginRestore(dbPath: string): RestoreLock {
 export function completeRestore(lock: RestoreLock): void {
 	try {
 		unlinkSync(restoringMarkerPath(lock.dbPath));
-		// fsync the .restore directory so the marker's *removal* is durable — symmetric with the
+		// fsync the metadata directory so the marker's *removal* is durable — symmetric with the
 		// creation fsync in beginRestore. Without it, a power loss could resurrect the marker's
 		// directory entry and misclassify a fully-restored database as incomplete.
 		fsyncDir(restoreMetaDir(lock.dbPath));
@@ -250,7 +251,7 @@ export function clearRestoreMarker(lock: RestoreLock): void {
 }
 
 /**
- * Scan a databases root's `.restore/` directory and report every database currently blocked from
+ * Scan a databases root's reserved `` `restore` `` metadata directory and report every database currently blocked from
  * loading, mapping each surviving marker back to its database name via the marker's first line.
  * Returns `[dbName, state]` pairs for markers whose state is `in-progress` or `incomplete`
  * (a `clear` result means the marker was removed concurrently and the database is loadable).

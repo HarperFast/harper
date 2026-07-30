@@ -334,19 +334,24 @@ The `restore_backup` operation restores a user database on a live server by clos
 worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), and reloading it.
 Three non-obvious mechanics keep that safe:
 
-- **Two files in an isolated `.restore/` directory beside (never inside) the database directory**,
+- **Two files in an isolated `` `restore` `` directory beside (never inside) the database directory**,
   each keyed by `sha256(basename(dbPath)).slice(0,32)`: `<key>.lock`, an OS-level exclusive flock
   (rocksdb-js `tryFileLock`, auto-released on process death), serializes restores; `<key>.restoring`,
-  a marker written+fsynced (file _and_ the `.restore/` directory) after the lock and before any
+  a marker written+fsynced (file _and_ the metadata directory) after the lock and before any
   destructive step, means "a restore started and has not finished" (its first line records the
   database directory name so the scan can map a marker back without decoding the key). The metadata
   is hashed into a sibling directory rather than suffixed onto the database name (`<db>.restoring`)
   for two reasons: a legal database literally named `orders.restoring` would otherwise be mistaken
   for the restore marker of `orders`, and a 250-character name (the legal max) plus a `.restore.lock`
-  suffix exceeds `NAME_MAX` (255) on most filesystems. The `.restore/` directory has no
-  `CURRENT`/`MANIFEST-`/`.mdb`, so the database scan never mistakes it for a database. Startup/rescan
+  suffix exceeds `NAME_MAX` (255) on most filesystems. The directory name deliberately contains a
+  backtick — `schemaRegex` (the database-name validator) forbids only `/` and a backtick among
+  filesystem-legal characters — so it can never collide with a legal database name, including a
+  database literally named `.restore` (which _is_ a legal name; a plain `.restore/` directory would
+  be exactly that database's directory). Because the startup scan opens any `CURRENT`+`MANIFEST-`
+  directory without re-applying `schemaRegex`, it also explicitly skips the reserved `` `restore` ``
+  entry so an out-of-band directory at that name is never loaded as a database. Startup/rescan
   detection (`databasesBlockedByRestore` → `scanBlockedRestores` in `dataLayer/restoreMarker.ts`)
-  reads `.restore/` and checks the **marker first**, only probing the lock when the marker exists —
+  reads the metadata directory and checks the **marker first**, only probing the lock when the marker exists —
   probes take the flock and are mutually exclusive across threads, so probing the (persistent) lock
   file of every long-ago-restored database on every rescan would make concurrent rescans misclassify
   healthy databases as in-progress. Marker-present + lock-held = restore in progress (don't load);

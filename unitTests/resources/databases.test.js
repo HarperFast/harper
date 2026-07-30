@@ -1,10 +1,12 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, flushDatabases, dropDatabase } = require('#src/resources/databases');
+const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
+const { dirname, join } = require('node:path');
+const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { beginRestore, completeRestore } = require('#src/dataLayer/restoreMarker');
+const { beginRestore, completeRestore, RESTORE_META_DIR } = require('#src/dataLayer/restoreMarker');
 
 describe('flushDatabases', () => {
 	before(async function () {
@@ -148,5 +150,28 @@ describe('dropDatabase restore serialization', () => {
 		table({ table: 'Two', database: MULTI, attributes: [{ name: 'id', isPrimaryKey: true }] });
 		if (!(T1.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
 		await assert.doesNotReject(dropDatabase(MULTI));
+	});
+
+	it('never loads the reserved restore-metadata directory as a database', function () {
+		// the API can't create a database with this name (schemaRegex rejects the backtick), but the
+		// scan opens any CURRENT+MANIFEST directory regardless of name, so it must skip the reserved dir
+		const anchor = table({
+			table: 'Anchor',
+			database: 'scan-skip-test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		if (!(anchor.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		const databasesRoot = dirname(anchor.primaryStore.rootStore.path);
+
+		// plant a directory that looks exactly like a RocksDB database at the reserved path
+		const reservedDir = join(databasesRoot, RESTORE_META_DIR);
+		mkdirSync(reservedDir, { recursive: true });
+		writeFileSync(join(reservedDir, 'CURRENT'), 'MANIFEST-000001\n');
+		writeFileSync(join(reservedDir, 'MANIFEST-000001'), '');
+
+		resetDatabases();
+		const loaded = getDatabases();
+		assert.strictEqual(loaded[RESTORE_META_DIR], undefined, 'reserved dir must not be loaded as a database');
+		assert.ok(existsSync(reservedDir), 'the reserved dir itself is left in place (used for lifecycle metadata)');
 	});
 });

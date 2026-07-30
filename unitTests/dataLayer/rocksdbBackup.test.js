@@ -479,6 +479,10 @@ describe('rocksdbBackup', function () {
 				const blobEntry = `blobs/0/${blobRel.split(require('node:path').sep).join('/')}`;
 				assert.ok(entries.has(blobEntry), `expected blob entry ${blobEntry}, got: ${[...entries.keys()].join(', ')}`);
 				assert.strictEqual(entries.get(blobEntry).toString('utf8'), 'streamed-blob');
+				// tar entry names are always POSIX-separated (no Windows backslashes leaking in)
+				for (const name of entries.keys()) {
+					assert.ok(!name.includes('\\'), `tar entry name must not contain a backslash: ${name}`);
+				}
 				// the archive carries the generated, self-documenting READMEs
 				assert.ok(entries.has('README.md'), 'archive should include a top-level README');
 				assert.match(entries.get('README.md').toString('utf8'), /get_backup/);

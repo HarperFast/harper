@@ -46,6 +46,7 @@ import {
 	releaseRestoreLock,
 	restoreMarkerPresent,
 	scanBlockedRestores,
+	RESTORE_META_DIR,
 	type RestoreLock,
 } from '../dataLayer/restoreMarker.ts';
 
@@ -276,6 +277,10 @@ export function getDatabases(): Databases {
 		const entries = readdirSync(databasePath, { withFileTypes: true });
 		const blockedByRestore = databasesBlockedByRestore(databasePath);
 		for (const databaseEntry of entries) {
+			// the restore-metadata directory is reserved: never load it as a database, even if a
+			// (out-of-band) RocksDB directory happens to occupy that reserved name — the API can't
+			// create it (schemaRegex forbids the backtick), but the scan opens any CURRENT+MANIFEST dir
+			if (databaseEntry.name === RESTORE_META_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
@@ -338,6 +343,7 @@ export function getDatabases(): Databases {
 				const entries = readdirSync(databasePath, { withFileTypes: true });
 				const blockedByRestore = databasesBlockedByRestore(databasePath);
 				for (const databaseEntry of entries) {
+					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
 						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
