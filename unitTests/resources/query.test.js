@@ -802,6 +802,16 @@ describe('Querying through Resource API', () => {
 			assert.deepEqual(object.manyToManyIds, [7], 'single record set on an elements attribute stores an array');
 		});
 
+		it('array-of-FK relationship nests a composite (array) related id as one element, not spread ids', function () {
+			const object = {};
+			many_to_many_attribute.set(object, { id: [7, 8] });
+			assert.deepEqual(
+				object.manyToManyIds,
+				[[7, 8]],
+				'a composite id must stay a single array element, not be spread into two scalar ids'
+			);
+		});
+
 		it('Query by join with many-to-many (reverse)', async function () {
 			let results = [];
 			for await (let record of ManyToMany.search({
