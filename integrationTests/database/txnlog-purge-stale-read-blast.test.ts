@@ -208,6 +208,11 @@ async function flush(ctx: ContextWithHarper): Promise<void> {
 		headers: { Authorization: authHeader(ctx) },
 	});
 	ok(r.status === 200, `/Flush/ should succeed, got ${r.status}`);
+	const body = await r.json();
+	ok(
+		body.flushed === true,
+		`/Flush/ must actually flush the primary store (data would stay in the memtable), got ${JSON.stringify(body)}`
+	);
 }
 
 // ---- Per-surface probes --------------------------------------------------------------------
@@ -219,7 +224,11 @@ async function restGetById(
 	id: string
 ): Promise<{ present: boolean; seq?: number; payload?: string }> {
 	const r = await restGet(ctx, `/${TABLE}/${encodeURIComponent(id)}`);
-	if (r.status !== 200 || !r.body) return { present: false };
+	if (r.status === 404) return { present: false };
+	// Only 200 (present) or 404 (absent) are valid outcomes here -- a 5xx must fail loudly
+	// rather than silently read as "clean absence" (which would mask a server error as the
+	// very reclamation success this suite exists to verify).
+	ok(r.status === 200 && r.body, `REST GET ${id} expected 200 or 404, got ${r.status}: ${JSON.stringify(r.body)}`);
 	return { present: true, seq: r.body.seq, payload: r.body.payload };
 }
 
