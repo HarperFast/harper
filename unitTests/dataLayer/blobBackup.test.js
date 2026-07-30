@@ -117,6 +117,25 @@ describe('blobBackup', function () {
 			assert.strictEqual(readFileSync(join(rootB, 'b/b/b'), 'utf8'), 'from-b');
 		});
 
+		it('rejects (without purging) a backup with more blob roots than the current config', async function () {
+			writeBlob(rootA, 'a/a/a', 'from-a');
+			writeBlob(rootB, 'b/b/b', 'from-b');
+			await snapshotBlobs(backupDir, 1, [rootA, rootB]); // captured with two roots
+
+			// restoring into a single-root configuration would mis-address root-index-1 blobs
+			writeBlob(rootA, 'existing/1/2', 'preexisting');
+			await assert.rejects(
+				restoreBlobSnapshot(backupDir, 1, 'testdb', [rootA]),
+				(error) => error.statusCode === 400 && /blob root/.test(error.message)
+			);
+			// the single root must not have been purged before the rejection
+			assert.strictEqual(
+				readFileSync(join(rootA, 'existing/1/2'), 'utf8'),
+				'preexisting',
+				'a rejected restore must not purge the blob root'
+			);
+		});
+
 		it('leaves live blobs untouched when the backup has no blob snapshot (engine-only backup)', async function () {
 			writeBlob(rootA, '001/002/003', 'live');
 			// no snapshotBlobs call for backup 2

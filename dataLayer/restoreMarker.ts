@@ -20,14 +20,18 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
  * and the shared per-database exclusion used by `dropDatabase` so a drop and a restore can never
  * mutate the same directory concurrently.
  *
- * Restore metadata lives in an isolated `.restore/` directory *beside* the database directory
+ * Restore metadata lives in an isolated `` `restore` `` directory *beside* the database directory
  * (never inside it, since a restore purges the destination). Each database's two files are keyed by
  * a hash of the database directory name rather than being suffixed onto the name itself. That keeps
  * them out of the database-name namespace — a legal database literally named `orders.restoring`
  * would otherwise be mistaken for the restore marker of `orders`, and a 250-character name plus a
- * `.restore.lock` suffix would exceed the 255-byte `NAME_MAX` on most filesystems. The `.restore/`
- * directory is not itself a RocksDB/LMDB database (no `CURRENT`/`MANIFEST-`/`.mdb`), so the startup
- * scan ignores it.
+ * `.restore.lock` suffix would exceed the 255-byte `NAME_MAX` on most filesystems. The directory
+ * name deliberately contains a backtick: `schemaRegex` (the database-name validator) forbids only
+ * `/` and `` ` `` among filesystem-legal characters, so no legal database can ever occupy this path
+ * — including a database literally named `.restore` (which *is* a legal name, so a plain `.restore`
+ * directory would collide with it and land the markers inside the live database). The directory is
+ * not itself a RocksDB/LMDB database (no `CURRENT`/`MANIFEST-`/`.mdb`), so the startup scan ignores
+ * it, and no user can create a database that resolves to it.
  *
  * - `<.restore>/<key>.lock` — an OS-level exclusive file lock (via rocksdb-js `tryFileLock`),
  *   effective across processes, containers, and worker threads, auto-released on process exit.
@@ -42,7 +46,9 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
  *   scan can map a marker back to the database it blocks without decoding the hashed key.
  */
 
-export const RESTORE_META_DIR = '.restore';
+// The backtick makes this an illegal database name (schemaRegex rejects `/` and backtick only), so
+// it can never collide with a real database directory — see the module header.
+export const RESTORE_META_DIR = '`restore`';
 export const RESTORE_LOCK_SUFFIX = '.lock';
 export const RESTORING_MARKER_SUFFIX = '.restoring';
 

@@ -3,6 +3,7 @@
 import { existsSync } from 'node:fs';
 import { copyFile, link, mkdir, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
 
 /**
@@ -191,6 +192,39 @@ export async function writeBlobsReadme(backupDir: string, blobRoots: string[]): 
 	}
 }
 
+/** The blob-root indices present in a snapshot (sorted); [] when the backup has no blob snapshot. */
+async function snapshotRootIndices(snapshotDir: string): Promise<number[]> {
+	if (!existsSync(snapshotDir)) return [];
+	return (await readdir(snapshotDir, { withFileTypes: true }))
+		.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+		.map((entry) => Number(entry.name))
+		.sort((a, b) => a - b);
+}
+
+/**
+ * Reject (before any destructive step) a restore whose snapshot has more blob roots than the
+ * database is currently configured with. File-backed blob references persist their `storageIndex`,
+ * so a record written under root index 1 keeps resolving through `blobRoots[1]`; collapsing the
+ * out-of-range index onto another root would preserve the bytes at the wrong address and the restore
+ * would "succeed" while reads of those blobs fail. The operator must reconcile `storage.blobPaths`
+ * to at least as many roots as the backup before restoring. Callers invoke this ahead of the engine
+ * restore so a mismatch never purges the database.
+ */
+export async function assertBlobSnapshotRestorable(
+	backupDir: string,
+	backupId: number,
+	blobRoots: string[]
+): Promise<void> {
+	const indices = await snapshotRootIndices(blobSnapshotDir(backupDir, backupId));
+	const maxIndex = indices.length > 0 ? indices[indices.length - 1] : -1;
+	if (maxIndex >= blobRoots.length) {
+		throw new ClientError(
+			`Cannot restore backup ${backupId}: it captured ${maxIndex + 1} blob root(s) but the database is now configured with ${blobRoots.length}. ` +
+				`Blob references persist their root index, so restoring would mis-address blobs — set 'storage.blobPaths' to at least ${maxIndex + 1} root(s) before restoring.`
+		);
+	}
+}
+
 /**
  * Restore a backup's blob snapshot back into the database's blob roots. Each root is purged and
  * rewritten from `blobs/<backupId>/<rootIndex>/` so the restored blob set matches the backup exactly
@@ -199,8 +233,8 @@ export async function writeBlobsReadme(backupDir: string, blobRoots: string[]): 
  * A backup created with blobs excluded (or an older backup that predates blob snapshots) has no
  * snapshot directory: in that case the live blob roots are left untouched and a warning is logged,
  * since purging them would strip blobs the restored records may still reference. Roots are restored
- * by index; a snapshot with more indices than the current configuration has roots restores the
- * extra indices' files into the last configured root so no blob bytes are silently dropped.
+ * by index into the *same* configured root; an incompatible root count is rejected up front (see
+ * `assertBlobSnapshotRestorable`) rather than collapsed, so blobs are never mis-addressed.
  */
 export async function restoreBlobSnapshot(
 	backupDir: string,
@@ -215,18 +249,16 @@ export async function restoreBlobSnapshot(
 		);
 		return;
 	}
-	const indexDirs = (await readdir(snapshotDir, { withFileTypes: true }))
-		.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
-		.map((entry) => Number(entry.name))
-		.sort((a, b) => a - b);
+	// defense in depth: the restore flow pre-checks before the engine restore, but re-validate here
+	// so this function never mis-addresses blobs regardless of caller
+	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
+	const indexDirs = await snapshotRootIndices(snapshotDir);
 	// purge every current blob root first so nothing newer than the backup survives the restore
 	for (const root of blobRoots) {
 		await rm(root, { recursive: true, force: true });
 	}
-	if (blobRoots.length === 0) return;
 	for (const index of indexDirs) {
-		const target = blobRoots[index] ?? blobRoots[blobRoots.length - 1];
-		await copyTree(join(snapshotDir, String(index)), target);
+		await copyTree(join(snapshotDir, String(index)), blobRoots[index]);
 	}
 }
 

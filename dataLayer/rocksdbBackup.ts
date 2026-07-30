@@ -20,6 +20,7 @@ import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { beginRestore, completeRestore, abandonRestore, checkRestoreState, type RestoreLock } from './restoreMarker.ts';
 import {
+	assertBlobSnapshotRestorable,
 	blobsReadmeContent,
 	deleteBlobSnapshot,
 	purgeBlobSnapshots,
@@ -438,6 +439,9 @@ export async function restoreBackup(request: any) {
 		loaded != null && Object.keys(loaded).length > 0
 			? requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP).path
 			: resolveDatabasePath(databaseName);
+	// reject a backup with more blob roots than the current config *before* anything destructive —
+	// restoring it would mis-address blobs (records persist their root index)
+	await assertBlobSnapshotRestorable(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
 	const lock = beginRestoreForDatabase(databaseDir, databaseName);
 	let destructionStarted = false;
 	try {
@@ -853,6 +857,9 @@ export async function restoreBackupOffline(databaseName: string, backupId?: numb
 			`target_database '${targetDatabase}' already exists at ${databaseDir}; restoring into it would destroy it — choose a new name, or restore in place by omitting target_database`
 		);
 	}
+	// reject a backup with more blob roots than the target's current config before anything
+	// destructive (records persist their root index, so collapsing would mis-address blobs)
+	await assertBlobSnapshotRestorable(backupDir, backupId, getBlobPathsForDatabaseName(targetDatabase ?? databaseName));
 	// Take the restore lock + marker BEFORE probing so a server that starts after this point sees the
 	// marker and refuses to load the database (closing the window between the probe and the purge).
 	const lock = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);

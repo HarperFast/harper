@@ -35,13 +35,33 @@ describe('restoreMarker', function () {
 	});
 
 	describe('paths', function () {
-		it('keeps restore metadata in an isolated .restore/ sibling directory, out of the database-name namespace', function () {
+		it('keeps restore metadata in an isolated sibling directory, out of the database-name namespace', function () {
 			const metaDir = restoreMetaDir(dbPath);
 			assert.strictEqual(metaDir, join(tempDir, RESTORE_META_DIR));
-			// both files live under .restore/, keyed by a hash — not suffixed onto the database name
+			// both files live under the metadata dir, keyed by a hash — not suffixed onto the db name
 			assert.strictEqual(dirname(restoreLockPath(dbPath)), metaDir);
 			assert.strictEqual(dirname(restoringMarkerPath(dbPath)), metaDir);
 			assert.ok(!restoringMarkerPath(dbPath).startsWith(dbPath), 'marker must not be dbPath + suffix');
+			// the metadata dir name must be an illegal database name so it can never collide with one
+			// (schemaRegex forbids only `/` and a backtick among filesystem-legal characters)
+			assert.ok(RESTORE_META_DIR.includes('`'), 'metadata dir name must contain a backtick');
+		});
+
+		it('does not collide with a database literally named ".restore" (a legal database name)', function () {
+			const dotRestore = join(tempDir, '.restore');
+			// a real .restore database directory would be purged on restore; the marker must NOT live
+			// inside it, or purgeAllFiles would delete the marker and completeRestore would ENOENT
+			const lock = beginRestore(dotRestore);
+			try {
+				assert.ok(
+					!restoringMarkerPath(dotRestore).startsWith(dotRestore + require('node:path').sep),
+					'marker must not be written inside the .restore database directory'
+				);
+				assert.ok(existsSync(restoringMarkerPath(dotRestore)));
+			} finally {
+				completeRestore(lock); // must not throw ENOENT
+			}
+			assert.strictEqual(checkRestoreState(dotRestore), 'clear');
 		});
 
 		it('a database literally named like a marker suffix does not collide with another database', function () {
