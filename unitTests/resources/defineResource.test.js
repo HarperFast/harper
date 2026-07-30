@@ -19,6 +19,32 @@ function targetWith(query, id) {
 }
 
 describe('defineResource / Resource.withSchema — runtime request contract', () => {
+	describe('bare POST dispatch', () => {
+		it('preserves a non-collection target for loadAsInstance=false resources', async () => {
+			let dispatch;
+			class StaticResource extends Resource {
+				static loadAsInstance = false;
+
+				post(target, data) {
+					dispatch = { receiver: this.constructor, isCollection: target.isCollection };
+					return data;
+				}
+			}
+			class CollectionResource extends StaticResource {
+				post() {
+					throw new Error('bare POST must not dispatch to the collection handler');
+				}
+			}
+			StaticResource.Collection = CollectionResource;
+
+			const data = { name: 'bare' };
+			const result = await StaticResource.post(new RequestTarget(''), data);
+			assert.strictEqual(result, data);
+			assert.strictEqual(dispatch.receiver, StaticResource);
+			assert.strictEqual(dispatch.isCollection, false);
+		});
+	});
+
 	describe('narrowed target — path param + query coercion', () => {
 		let captured;
 		const Widget = defineResource(

@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { waitFor } = require('../waitFor');
 
 describe('Resource.get context passing', function () {
 	// Note: When Resource.get calls source.get, the context is wrapped in a sourceContext object
@@ -12,6 +13,7 @@ describe('Resource.get context passing', function () {
 
 	let TestTable;
 	let sourceGetStub;
+	let expectedCachedRecords = 0;
 
 	before(function () {
 		setupTestDBPath();
@@ -35,6 +37,11 @@ describe('Resource.get context passing', function () {
 
 	after(async function () {
 		sinon.restore();
+
+		// Resource.get resolves before its source-backed cache write commits.
+		await waitFor(() => !TestTable || TestTable.primaryStore.getKeysCount() === expectedCachedRecords, {
+			message: 'Source-backed cache writes did not commit before teardown',
+		});
 
 		// Clean up the test table
 		await TestTable?.dropTable();
@@ -62,6 +69,7 @@ describe('Resource.get context passing', function () {
 
 		// Call Resource.get with context
 		const result = await TestTable.get(testId, testContext);
+		expectedCachedRecords++;
 
 		// Verify source.get was called
 		assert(sourceGetStub.calledOnce, 'source.get should be called once');
@@ -106,6 +114,7 @@ describe('Resource.get context passing', function () {
 		// Call within a transaction
 		await transaction(testContext, async () => {
 			const result = await TestTable.get(testId, testContext);
+			expectedCachedRecords++;
 
 			assert(sourceGetStub.calledOnce, 'source.get should be called once');
 
@@ -143,6 +152,7 @@ describe('Resource.get context passing', function () {
 
 		// Call without context
 		const result = await TestTable.get(testId);
+		expectedCachedRecords++;
 
 		assert(sourceGetStub.calledOnce);
 		const [idArg, contextArg] = sourceGetStub.firstCall.args;
@@ -157,7 +167,8 @@ describe('Resource.get context passing', function () {
 	it('should handle source.get returning null', async function () {
 		// Use a unique ID to ensure no cached data
 		const testId = 'test-null-' + Date.now() + '-' + Math.random();
-		const testContext = { user: { id: 'user-null' } };
+		// Avoid an unobservable empty background cache transaction during teardown.
+		const testContext = { user: { id: 'user-null' }, noCacheStore: true };
 
 		// Source returns null (record not found)
 		sourceGetStub.resolves(null);

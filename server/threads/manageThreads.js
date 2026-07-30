@@ -6,6 +6,9 @@
 const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
+const { spawn, spawnSync } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const { setTimeout: delay } = require('node:timers/promises');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
 const { server } = require('../Server.ts');
@@ -60,7 +63,17 @@ const FORCE_EXIT = 'force-exit';
 // Worker -> main request to push out the force-terminate backstop while the worker gracefully drains
 // in-flight work (e.g. replication blob sends) before shutdown. Carries an absolute epoch deadline.
 const EXTEND_SHUTDOWN_DEADLINE = 'extend-shutdown-deadline';
+const REGISTER_PROCESS_GROUP = 'register-process-group';
+const UNREGISTER_PROCESS_GROUP = 'unregister-process-group';
+// Worker -> main: ask whether a dead owner thread's tracked process groups have been confirmed
+// terminated yet. Only main ever holds that state (owning threads register process groups only
+// with their own parentPort, which is main), so a non-main contender must ask remotely rather
+// than consult its own (always-empty) local map.
+const AWAIT_PROCESS_GROUP_TERMINATION = 'await-process-group-termination';
+const PROCESS_GROUP_TERMINATION_CONFIRMED = 'process-group-termination-confirmed';
+const THREAD_INFO_REQUEST_TIMEOUT_MS = 1000;
 let getThreadInfo;
+let awaitProcessGroupTermination;
 // Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
 let selfExitTimer;
 // An extended self-exit deadline requested by a drain (absolute epoch ms), honored regardless of whether
@@ -138,6 +151,10 @@ module.exports = {
 	restoreShutdownDeadline,
 	registerWorkerDataProvider,
 	onThreadExit,
+	registerProcessGroup,
+	unregisterProcessGroup,
+	isThreadRunning,
+	waitUntilConfirmedGone,
 	restartNumber: workerData?.restartNumber || 1,
 };
 
@@ -256,6 +273,11 @@ if (!parentPort) {
 	onMessageByType(RESOURCE_REPORT, (message, worker) => {
 		if (worker) recordResourceReport(worker, message);
 	});
+	onMessageByType(AWAIT_PROCESS_GROUP_TERMINATION, async (message, worker) => {
+		if (!worker) return;
+		await (pendingProcessGroupTerminations.get(message.ownerThreadId) ?? Promise.resolve());
+		worker.postMessage({ type: PROCESS_GROUP_TERMINATION_CONFIRMED, requestId: message.requestId });
+	});
 	onMessageByType(EXTEND_SHUTDOWN_DEADLINE, (message, worker) => {
 		worker?.extendTerminateDeadline?.(message.deadlineMs);
 	});
@@ -272,6 +294,12 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
+// getThreadInfo/awaitProcessGroupTermination register their own one-shot parentPort listener per
+// call rather than going through onMessageByType, so without this, every reply would also reach
+// addPort's permanent dispatcher as an "unregistered" type: notifyMessageListeners would warn and
+// queue each one in messagesQueuedByType forever, and a lock-wait polls every 50ms.
+listenersByType.set(THREAD_INFO, null);
+listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
 
 function startWorker(path, options = {}) {
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
@@ -819,20 +847,57 @@ if (parentPort && workerData?.addPorts) {
 			arrayBuffers: memoryUsage.arrayBuffers,
 		});
 	}, REPORTING_INTERVAL).unref();
-	getThreadInfo = () =>
-		new Promise((resolve) => {
-			// request thread info from the parent thread and wait for it to response with info on all the threads
+	getThreadInfo = (timeoutMs) =>
+		new Promise((resolve, reject) => {
+			// Request thread info from the parent thread and wait for it to respond with info on all threads.
+			let timeout;
 			parentPort.on('message', receiveThreadInfo);
-			parentPort.postMessage({ type: REQUEST_THREAD_INFO });
+			try {
+				parentPort.postMessage({ type: REQUEST_THREAD_INFO });
+			} catch (error) {
+				cleanup();
+				reject(error);
+				return;
+			}
 			function receiveThreadInfo(message) {
 				if (message.type === THREAD_INFO) {
-					parentPort.off('message', receiveThreadInfo);
+					cleanup();
 					resolve(message.workers);
+				}
+			}
+			function cleanup() {
+				if (timeout) clearTimeout(timeout);
+				parentPort.off('message', receiveThreadInfo);
+			}
+			if (timeoutMs != null) {
+				timeout = setTimeout(() => {
+					cleanup();
+					const error = new Error(`Timed out waiting for thread information after ${timeoutMs}ms`);
+					error.code = 'ERR_THREAD_INFO_TIMEOUT';
+					reject(error);
+				}, timeoutMs);
+			}
+		});
+	let awaitTerminationRequestId = 0;
+	awaitProcessGroupTermination = (ownerThreadId) =>
+		new Promise((resolve) => {
+			// Deliberately no timeout: a contender must not reclaim a dead owner's lock while its
+			// process group might still be alive and mutating files, so this mirrors the unbounded
+			// wait Application.ts's waitForConfirmedTermination uses for the same reason.
+			const requestId = ++awaitTerminationRequestId;
+			parentPort.on('message', receiveConfirmation);
+			parentPort.postMessage({ type: AWAIT_PROCESS_GROUP_TERMINATION, ownerThreadId, requestId });
+			function receiveConfirmation(message) {
+				if (message.type === PROCESS_GROUP_TERMINATION_CONFIRMED && message.requestId === requestId) {
+					parentPort.off('message', receiveConfirmation);
+					resolve();
 				}
 			}
 		});
 } else {
 	getThreadInfo = getChildWorkerInfo;
+	awaitProcessGroupTermination = (ownerThreadId) =>
+		pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 }
 module.exports.getThreadInfo = getThreadInfo;
 
@@ -849,6 +914,188 @@ function onThreadExit(listener) {
 // ids are monotonically increasing and never reused within a process, so this never needs
 // pruning (unbounded growth is one entry per worker restart over the process lifetime).
 const notifiedDeadThreadIds = new Set();
+const processGroupsByThread = new Map();
+// A dead thread's process groups are killed asynchronously (SIGKILL/taskkill only queue the
+// request). While that termination is in flight, isThreadRunning must keep reporting the owner
+// as alive — otherwise a contender can delete the dead worker's lock claim and start a new
+// preparation before its old process tree is confirmed gone, reopening the concurrent-writer
+// window component-preparation locking exists to close.
+const pendingProcessGroupTerminations = new Map();
+const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
+
+// A process-group leader spawned by a worker thread's own event loop is normally reaped by that
+// same loop when it dies. But the only caller of this check (waitForProcessGroupExit, for a
+// *dead* owner thread) runs after that loop is already gone, so nothing will ever reap it here:
+// kill(pid, 0) keeps succeeding forever against the zombie's still-allocated PID slot. A zombie
+// can no longer touch the filesystem, so treat a confirmed zombie as dead rather than poll
+// forever for a reap that will never come. Reproduced by killing a worker mid-install: the
+// installer's process-group leader becomes a permanent `Z` in /proc without this check.
+function isZombieProcessGroupLeader(processGroupId) {
+	if (process.platform !== 'linux') return false;
+	let stat;
+	try {
+		stat = readFileSync(`/proc/${processGroupId}/stat`, 'utf8');
+	} catch {
+		return false;
+	}
+	// Format is "pid (comm) state ..."; comm can contain spaces/parens, so anchor on the last ')'.
+	return stat[stat.lastIndexOf(')') + 2] === 'Z';
+}
+
+function processGroupIsAlive(processGroupId) {
+	try {
+		process.kill(-processGroupId, 0);
+	} catch (error) {
+		return error.code === 'EPERM';
+	}
+	return !isZombieProcessGroupLeader(processGroupId);
+}
+
+async function waitForProcessGroupExit(processGroupId) {
+	while (processGroupIsAlive(processGroupId)) await delay(PROCESS_GROUP_TERMINATION_POLL_MS);
+}
+
+// Mirrors Application.ts's windowsProcessTreeIsAlive: a descendant retains its ParentProcessId
+// after its parent exits, which is exactly the taskkill "process not found" race, so query the
+// process table by walking parentage rather than trusting only the root pid.
+function windowsProcessTreeIsAlive(rootPid) {
+	// Exit code 1 must mean "queried the process table and positively found nothing" — never
+	// "the query itself failed" (e.g. Get-CimInstance denied or WMI unavailable), which would
+	// otherwise read identically to a confirmed-gone tree and release the lock while a descendant
+	// may still be alive. ErrorActionPreference=Stop plus the wrapping try/catch turns a query
+	// failure into its own exit code (2), which the caller below already treats as unknown.
+	const script =
+		"$ErrorActionPreference = 'Stop'; try { " +
+		`$rootPid = ${rootPid}; ` +
+		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
+		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
+		'while ($frontier.Count -gt 0) { ' +
+		'$next = @(); foreach ($parentPid in $frontier) { if ($seen[$parentPid]) { continue }; ' +
+		'$seen[$parentPid] = $true; foreach ($p in $all) { ' +
+		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
+		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
+		'$frontier = $next }; ' +
+		'if ($found) { exit 0 } else { exit 1 } ' +
+		'} catch { exit 2 }';
+	return new Promise((resolve) => {
+		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+			stdio: 'ignore',
+			windowsHide: true,
+		});
+		query.once('close', (code) => resolve(code === 0 ? true : code === 1 ? false : null));
+		query.once('error', () => resolve(null));
+	});
+}
+
+// The initial taskkill in terminateProcessGroupsForThread is fired synchronously (required so
+// that call still works from a process `exit` handler) but its result is not checked there, since
+// a nonzero exit is ambiguous between a real failure and the target having already exited. Confirm
+// via the process table and keep retrying taskkill until the whole tree is positively gone —
+// reclamation must not proceed on an unconfirmed guess either way. Exported so a test can drive the
+// retry logic with injected callbacks instead of real Windows processes.
+async function waitUntilConfirmedGone(attemptTermination, treeIsAlive, pollMs) {
+	for (;;) {
+		// A successful taskkill exit only proves the request was accepted, not that the whole tree
+		// has actually exited — Windows termination is asynchronous, and taskkill can report overall
+		// success even when a descendant is not yet (or never) reaped. Only an explicit `false` from
+		// treeIsAlive, independently confirming no member of the tree remains, is safe to return on;
+		// `true` or `null` (unknown) must keep the loop retrying.
+		await attemptTermination();
+		if ((await treeIsAlive()) === false) return;
+		await delay(pollMs);
+	}
+}
+
+function waitForWindowsGroupExit(processGroupId) {
+	return waitUntilConfirmedGone(
+		() =>
+			new Promise((resolve) => {
+				const taskkill = spawn('taskkill', ['/pid', String(processGroupId), '/T', '/F'], {
+					stdio: 'ignore',
+					windowsHide: true,
+				});
+				taskkill.once('close', (code) => resolve(code === 0));
+				taskkill.once('error', () => resolve(false));
+			}),
+		() => windowsProcessTreeIsAlive(processGroupId),
+		PROCESS_GROUP_TERMINATION_POLL_MS
+	);
+}
+
+function addProcessGroup(ownerThreadId, processGroupId) {
+	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
+	let processGroups = processGroupsByThread.get(ownerThreadId);
+	if (!processGroups) processGroupsByThread.set(ownerThreadId, (processGroups = new Set()));
+	processGroups.add(processGroupId);
+}
+
+function removeProcessGroup(ownerThreadId, processGroupId) {
+	const processGroups = processGroupsByThread.get(ownerThreadId);
+	if (!processGroups) return;
+	processGroups.delete(processGroupId);
+	if (processGroups.size === 0) processGroupsByThread.delete(ownerThreadId);
+}
+
+// Returns a promise that resolves once every process group tracked for `ownerThreadId` is
+// confirmed terminated. Callers that only need to fire the termination (e.g. the `exit` handler
+// below) can ignore the returned promise; isThreadRunning awaits it before declaring a dead
+// owner reclaimable. The kill signal for every group is sent synchronously, before any `await` —
+// this runs from a process `exit` handler too, where nothing queued after a suspension point is
+// guaranteed to run.
+function terminateProcessGroupsForThread(ownerThreadId) {
+	const processGroups = processGroupsByThread.get(ownerThreadId);
+	if (!processGroups) return pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
+	processGroupsByThread.delete(ownerThreadId);
+	const groupIds = [...processGroups];
+	for (const processGroupId of groupIds) {
+		try {
+			if (process.platform === 'win32') {
+				spawnSync('taskkill', ['/pid', String(processGroupId), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+			} else {
+				process.kill(-processGroupId, 'SIGKILL');
+			}
+		} catch (error) {
+			if (error.code !== 'ESRCH') harperLogger.warn(`Failed to terminate process group ${processGroupId}:`, error);
+		}
+	}
+	const termination = Promise.all(
+		groupIds.map((processGroupId) =>
+			process.platform === 'win32' ? waitForWindowsGroupExit(processGroupId) : waitForProcessGroupExit(processGroupId)
+		)
+	).finally(() => {
+		if (pendingProcessGroupTerminations.get(ownerThreadId) === termination) {
+			pendingProcessGroupTerminations.delete(ownerThreadId);
+		}
+	});
+	pendingProcessGroupTerminations.set(ownerThreadId, termination);
+	return termination;
+}
+
+function registerProcessGroup(processGroupId) {
+	if (isMainThread) addProcessGroup(threadId, processGroupId);
+	else parentPort?.postMessage({ type: REGISTER_PROCESS_GROUP, processGroupId });
+}
+
+function unregisterProcessGroup(processGroupId) {
+	if (isMainThread) removeProcessGroup(threadId, processGroupId);
+	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId });
+}
+
+async function isThreadRunning(ownerThreadId, timeoutMs = THREAD_INFO_REQUEST_TIMEOUT_MS) {
+	if (ownerThreadId === threadId || ownerThreadId === 0) return true;
+	if ((await getThreadInfo(timeoutMs)).some((worker) => worker.threadId === ownerThreadId)) return true;
+	// The thread itself is gone, but it may still own process groups whose forced termination is
+	// in flight — wait for that to be confirmed before reporting the owner as reclaimable.
+	await awaitProcessGroupTermination(ownerThreadId);
+	return false;
+}
+
+if (isMainThread) {
+	process.on('exit', () => {
+		for (const ownerThreadId of [...processGroupsByThread.keys()]) terminateProcessGroupsForThread(ownerThreadId);
+	});
+}
+
 function notifyThreadExit(deadThreadId) {
 	if (deadThreadId == null || notifiedDeadThreadIds.has(deadThreadId)) return;
 	notifiedDeadThreadIds.add(deadThreadId);
@@ -862,6 +1109,9 @@ function notifyThreadExit(deadThreadId) {
 }
 
 function removePort(port, deadThreadId) {
+	// A sibling may already have announced this dead thread and removed its port. Process-group
+	// cleanup must still run when the authoritative close/exit event reaches this thread.
+	if (deadThreadId != null) terminateProcessGroupsForThread(deadThreadId);
 	const idx = connectedPorts.indexOf(port);
 	if (idx === -1) return;
 	connectedPorts.splice(idx, 1);
@@ -889,7 +1139,11 @@ function addPort(port, keepRef, isJobWorker) {
 	const portThreadId = port.threadId;
 	port
 		.on('message', (message) => {
-			if (message.type === ADDED_PORT) {
+			if (message.type === REGISTER_PROCESS_GROUP) {
+				addProcessGroup(portThreadId, message.processGroupId);
+			} else if (message.type === UNREGISTER_PROCESS_GROUP) {
+				removeProcessGroup(portThreadId, message.processGroupId);
+			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);
 			} else if (message.type === ACKNOWLEDGEMENT) {

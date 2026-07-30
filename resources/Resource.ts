@@ -22,6 +22,7 @@ import { logger } from '../utility/logging/logger.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
+import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -148,7 +149,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const elementResource = resourceClass.getResource(target, request, {
 						async: true,
 					});
-					if (elementResource.then) results.push(elementResource.then((resource) => resource.put(element, request)));
+					if (typeof elementResource.then === 'function')
+						results.push(elementResource.then((resource) => resource.put(element, request)));
 					else results.push(elementResource.put(element, query));
 				}
 				return Promise.all(results);
@@ -709,25 +711,22 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
+			if (isCollection && options.method === 'put' && Array.isArray(data) && this.loadAsInstance === false)
+				query.isCollection = true;
 		}
 		isCollection = query.isCollection;
-		if (
-			options.method === 'post' &&
-			query.id === null &&
-			!isCollection &&
-			this.prototype.post === Resource.prototype.post
-		) {
-			// the matched path had nothing left to resolve into a collection or a specific record —
-			// i.e. it exactly matched a resource's base path without the required trailing slash
-			// (harper#678). This only matters for the base/default post() dispatch: it reads
-			// this.#isCollection (set from this same query) and falls back to missingMethod() for
-			// this state anyway, so rejecting early here just gives a clearer, purpose-built message.
-			// A resource with its own post() override (e.g. a component doing a bulk import via
-			// POST to its collection root, like the redirector template's Redirect.post()) is
-			// trusted to handle a null-id/non-collection target itself — it may not use id/isCollection
-			// at all, and forcing the trailing slash on it would break a currently-supported no-slash
-			// bulk-POST convention. See harper#678's regression on PR #1807.
-			throw new ClientError(`A trailing slash is required to POST to the ${this.name} collection`, 404);
+		if (options.method === 'post' && query.id === null && !isCollection) {
+			if (this.prototype.post === Resource.prototype.post) {
+				// exact base-path match with no trailing slash (harper#678): the default post dispatch
+				// has nothing to address, so reject with a purpose-built message
+				throw new ClientError(`A trailing slash is required to POST to the ${this.name} collection`, 404);
+			}
+			if (this.loadAsInstance !== false) {
+				// a custom instance post() override accepts the no-slash collection POST (redirector-style
+				// bulk import); normalize it so authorization and dispatch use collection semantics
+				query.isCollection = true;
+				isCollection = true;
+			}
 		}
 		let resourceOptions;
 		if (!context) {
@@ -796,6 +795,10 @@ function transactional(
 			// both resolve to the same subscription iterable.
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
 			const runAction = (data: any) => {
+				// getResource creates a fresh receiver for this dispatch. Marking that receiver, rather
+				// than caller-owned target identity, preserves the static (target, message) signature when
+				// an override copies the target or delegates asynchronously after its own return settles.
+				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) => {

@@ -1,8 +1,10 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import logger from '../utility/logging/harper_logger.ts';
+import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
+import { withComponentPreparationLock } from './componentPreparationLock.ts';
+import { isThreadRunning, registerProcessGroup, unregisterProcessGroup } from '../server/threads/manageThreads.js';
 import type { CredentialReference, ResolvedCredential, ResolvedRegistryCredential } from './secretOperations.ts';
 import {
 	GIT_CREDENTIAL_SOCKET_ENV,
@@ -30,13 +32,14 @@ import {
 	symlink,
 	writeFile,
 } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
@@ -477,6 +480,10 @@ async function runNpmPack(
 // during a deploy swap (see activateApplication). The leading dot keeps
 // loadComponentDirectories from loading its contents as components.
 export const ASIDE_STAGING_DIR = '.deploy-aside';
+const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
+const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
+const MAX_GIT_EXTRACTION_COMMANDS = 4;
+const MAX_INSTALL_COMMANDS = 2;
 
 // Hidden directory under the components root where the INCOMING version of a component is
 // fully built (extracted + `npm install`) before it goes live — the counterpart to
@@ -659,7 +666,8 @@ export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.j
  * `stageApplication` points it at the hidden staging directory instead, so the live path is never
  * touched until `activateApplication` swaps the staged copy into place.
  *
- * This method should only be called from the main thread
+ * This method may be called from any Harper thread. Same-component calls are serialized across
+ * threads by the preparation lock below.
  */
 export async function extractApplication(application: Application) {
 	// Can't specify neither
@@ -847,7 +855,7 @@ export async function extractApplication(application: Application) {
  *
  * Will return early if `node_modules` already exists within the build directory.
  *
- * This method should only be called from the main thread
+ * This method may be called from any Harper thread as part of a serialized preparation.
  */
 export async function installApplication(application: Application) {
 	const buildDirPath = application.buildDirPath;
@@ -1260,7 +1268,8 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 /**
  * Extract and install the specified application.
  *
- * This method should only be called from the main thread
+ * This method may be called from any Harper thread. Same-component calls are serialized across
+ * threads by the preparation lock below.
  *
  * Bracketed with `deploy:start`/`deploy:end` lifecycle broadcasts so every
  * Harper thread's file watchers can suppress restart-on-change events while
@@ -1275,22 +1284,51 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 export async function prepareApplication(application: Application) {
 	await broadcastDeployStart(application.name);
 	try {
-		// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
-		// `npm install` authenticate against the private registry; always remove it afterward.
-		await application.writeTransientNpmrc();
-		try {
-			// The git credential socket only has to be up for extraction — that is where npm resolves and
-			// clones a git-reference package. Closing it before installApplication means the credential is
-			// already gone by the time the component's dependency tree (and any install script it is
-			// allowed to run) executes.
-			await application.startGitCredentialSession();
-			await extractApplication(application);
-		} finally {
-			await application.cleanupGitCredentialSession();
-		}
-		await installApplication(application);
+		const commandTimeoutMs = application.install?.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
+		await withComponentPreparationLock(
+			application.dirPath,
+			async () => {
+				try {
+					// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
+					// `npm install` authenticate against the private registry; always remove it afterward.
+					await application.writeTransientNpmrc();
+					try {
+						// The git credential socket only has to be up for extraction — that is where npm resolves and
+						// clones a git-reference package. Closing it before installApplication means the credential is
+						// already gone by the time the component's dependency tree (and any install script it is
+						// allowed to run) executes.
+						await application.startGitCredentialSession();
+						await extractApplication(application);
+					} finally {
+						await application.cleanupGitCredentialSession();
+					}
+					await installApplication(application);
+				} finally {
+					await application.cleanupTransientNpmrc();
+				}
+			},
+			{
+				// The longest extraction path runs clone, tag listing, checkout, and npm pack. A custom
+				// package manager configured to warn can then fall back to npm, yielding two install
+				// commands. Bound orphaned same-process worker locks without rejecting behind a valid holder.
+				timeoutMs:
+					MAX_GIT_EXTRACTION_COMMANDS * DEFAULT_COMMAND_TIMEOUT_MS +
+					MAX_INSTALL_COMMANDS * commandTimeoutMs +
+					COMPONENT_PREPARATION_WAIT_MARGIN_MS,
+				onWait: (owner) =>
+					application.logger.info(
+						`Waiting for in-progress preparation of ${application.name}` +
+							(owner ? ` held by process ${owner.pid}, thread ${owner.threadId}` : '')
+					),
+				onReleaseError: (error) =>
+					application.logger.error(
+						`Failed to release the component preparation lock for ${application.name}:`,
+						errorForLog(error)
+					),
+				isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
+			}
+		);
 	} finally {
-		await application.cleanupTransientNpmrc();
 		broadcastDeployEnd(application.name);
 	}
 }
@@ -1588,10 +1626,18 @@ export async function installApplications() {
 				logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
 				continue;
 			}
-
-			applicationInstallationPromises.push(prepareApplication(application));
-
-			harperApplicationLock.applications[name] = applicationConfig;
+			// Once preparation is required, the old entry is no longer evidence of a complete
+			// installation. In particular, a failed reinstall may leave a partial directory behind;
+			// retaining the prior entry would make the next boot skip that partial component.
+			applicationInstallationPromises.push(
+				recordApplicationPreparation(
+					harperApplicationLock,
+					name,
+					applicationConfig,
+					() => prepareApplication(application),
+					(lock) => persistApplicationLock(harperApplicationLockPath, lock)
+				)
+			);
 		} catch (error) {
 			logger.error?.(`Skipping installation of application ${name} due to invalid configuration: ${error.message}`);
 		}
@@ -1601,8 +1647,60 @@ export async function installApplications() {
 	logger.debug?.(applicationInstallationStatuses);
 	logger.info?.('All root applications loaded');
 
-	// Finally, write the lock file
-	await writeFile(harperApplicationLockPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
+	// Finally, write the lock file. Every component that went through recordApplicationPreparation
+	// already persisted its own transition durably; this covers components that were skipped
+	// (matching-config, already installed) and never mutated the in-memory object at all.
+	await persistApplicationLock(harperApplicationLockPath, harperApplicationLock);
+}
+
+// Concurrent components each persist the same shared lock file. Serialize per path so two
+// writers never race the same temp filename, and so a write always reflects the latest merged
+// in-memory state rather than a stale snapshot silently clobbering a sibling's just-written change.
+const applicationLockWriteQueues = new Map<string, Promise<void>>();
+
+async function persistApplicationLock(
+	harperApplicationLockPath: string,
+	harperApplicationLock: { applications: Record<string, ApplicationConfig> }
+): Promise<void> {
+	const previous = applicationLockWriteQueues.get(harperApplicationLockPath) ?? Promise.resolve();
+	const next = previous
+		.catch(() => {})
+		.then(async () => {
+			const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
+			await writeFile(tempPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
+			await rename(tempPath, harperApplicationLockPath);
+		});
+	applicationLockWriteQueues.set(harperApplicationLockPath, next);
+	await next;
+}
+
+/**
+ * Keep the boot-time application lock honest while a reinstall is in flight. Factored as an
+ * explicit production seam so the failure transition can be tested without replacing module
+ * bindings: a stale success is removed before preparation starts and restored only on success.
+ *
+ * `persist` is durably awaited on both transitions — not just applied in memory — so a crash
+ * mid-preparation can never leave the on-disk lock file still claiming success for a directory a
+ * subsequent reinstall left partially written (which would make `installApplications`'s
+ * already-installed check at the top of this loop skip the required reinstall forever).
+ */
+export async function recordApplicationPreparation(
+	harperApplicationLock: { applications: Record<string, ApplicationConfig> },
+	name: string,
+	applicationConfig: ApplicationConfig,
+	prepare: () => Promise<void>,
+	persist: (lock: { applications: Record<string, ApplicationConfig> }) => Promise<void> = async () => {}
+): Promise<void> {
+	delete harperApplicationLock.applications[name];
+	await persist(harperApplicationLock);
+	try {
+		await prepare();
+		harperApplicationLock.applications[name] = applicationConfig;
+		await persist(harperApplicationLock);
+	} catch (error) {
+		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
+		throw error;
+	}
 }
 
 /**
@@ -1827,7 +1925,7 @@ export async function nonInteractiveSpawn(
 	command: string,
 	args: string[],
 	cwd: string,
-	timeoutMs: number = 60 * 60 * 1000,
+	timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
 	onLine?: (stream: 'stdout' | 'stderr', line: string) => void,
 	npmUserconfigPath?: string,
 	gitCredentialEnv?: Record<string, string>
@@ -1905,11 +2003,45 @@ function spawnWithEnv(
 			cwd,
 			env,
 			stdio: ['ignore', 'pipe', 'pipe'],
+			// A dedicated POSIX process group lets a timeout terminate npm plus every reify worker
+			// and install-script descendant before the component preparation lock is released.
+			detached: process.platform !== 'win32',
 		});
+		const trackedProcessId = childProcess.pid;
+		if (trackedProcessId) registerProcessGroup(trackedProcessId);
+		let processGroupIsTracked = Boolean(trackedProcessId);
+		const untrackProcessGroup = () => {
+			if (!processGroupIsTracked || !trackedProcessId) return;
+			processGroupIsTracked = false;
+			unregisterProcessGroup(trackedProcessId);
+		};
 
+		let didTimeout = false;
+		let didSettle = false;
+		let resolveClose: () => void;
+		const closePromise = new Promise<void>((resolve) => {
+			resolveClose = resolve;
+		});
 		const timeout = setTimeout(() => {
-			childProcess.kill();
-			reject(new Error(`Command\`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`));
+			didTimeout = true;
+			void terminateProcessTree(childProcess, closePromise).then(
+				() => {
+					// Only untrack once terminateProcessTree has confirmed the group is actually gone.
+					// The direct child can emit 'close' mid-grace-period (e.g. right after SIGTERM)
+					// while a same-group descendant is still alive; untracking there instead would let
+					// a worker exit in that window forget the group before it's truly empty.
+					untrackProcessGroup();
+					if (didSettle) return;
+					didSettle = true;
+					reject(new CommandTimeoutError(command, args, timeoutMs));
+				},
+				(error) => {
+					untrackProcessGroup();
+					if (didSettle) return;
+					didSettle = true;
+					reject(new CommandTimeoutError(command, args, timeoutMs, error));
+				}
+			);
 		}, timeoutMs);
 
 		// If a caller passed onLine, line-buffer stdout/stderr alongside the existing
@@ -1933,27 +2065,66 @@ function spawnWithEnv(
 			stderrSplitter?.push(chunk);
 		});
 
-		childProcess.on('error', (error) => {
-			clearTimeout(timeout);
+		let didFlushOutput = false;
+		const flushOutput = () => {
+			if (didFlushOutput) return;
+			didFlushOutput = true;
 			stdoutSplitter?.flush();
 			stderrSplitter?.flush();
+		};
+
+		childProcess.on('error', (error) => {
+			clearTimeout(timeout);
+			// See the 'close' handler: when didTimeout is true, the timeout path's own
+			// terminateProcessTree(...).then(...) owns untracking, only once it confirms the group is
+			// gone. Untracking here too could forget the group while that confirmation is still pending.
+			if (!didTimeout) untrackProcessGroup();
+			flushOutput();
 			// Print out stderr before rejecting
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
-			reject(error);
+			if (!didTimeout && !didSettle) {
+				didSettle = true;
+				reject(error);
+			}
 		});
 
-		childProcess.on('close', (code) => {
+		childProcess.on('close', async (code) => {
+			resolveClose();
 			clearTimeout(timeout);
+			// A successful direct-child exit does not prove the process group is empty: a custom
+			// installer can spawn-and-unref a descendant that inherits the group and outlives its
+			// parent (same invariant terminateProcessTree enforces on the timeout path). Confirm/
+			// terminate the whole group before letting the caller treat this command as done, or a
+			// survivor could keep mutating node_modules after the component lock is released. Skip
+			// when a timeout is already driving its own terminateProcessTree call for this process.
+			if (!didTimeout && trackedProcessId) {
+				try {
+					await terminateProcessTree(childProcess, closePromise);
+				} catch (error) {
+					untrackProcessGroup();
+					flushOutput();
+					if (!didSettle) {
+						didSettle = true;
+						reject(error);
+					}
+					return;
+				}
+				untrackProcessGroup();
+			}
+			// When didTimeout is true, the timeout path's own terminateProcessTree(...).then(...) owns
+			// untracking (only once it confirms the group is gone) — untracking here too, before that
+			// confirmation lands, is exactly the premature-forget race described above.
 			// Flush any trailing partial lines so the caller sees process output that didn't
 			// end on a newline (some package managers do this on their final progress line).
-			stdoutSplitter?.flush();
-			stderrSplitter?.flush();
+			flushOutput();
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
 			logger.loggerWithTag(`${applicationName}:spawn:${command}`).debug?.(`Process exited with code ${code}`);
+			if (didTimeout || didSettle) return;
+			didSettle = true;
 			resolve({
 				stdout,
 				stderr,
@@ -1961,6 +2132,164 @@ function spawnWithEnv(
 			});
 		});
 	});
+}
+
+const PROCESS_TERMINATION_GRACE_MS = 5000;
+const PROCESS_TERMINATION_POLL_MS = 25;
+const PROCESS_CLOSE_WAIT_MS = 5000;
+
+class CommandTimeoutError extends Error {
+	statusCode = 500;
+	constructor(command: string, args: string[], timeoutMs: number, cause?: unknown) {
+		super(`Command \`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`, { cause });
+		this.name = 'CommandTimeoutError';
+	}
+}
+
+function processGroupIsAlive(processGroupId: number): boolean {
+	try {
+		process.kill(-processGroupId, 0);
+		return true;
+	} catch (error: any) {
+		return error.code === 'EPERM';
+	}
+}
+
+async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {
+	const deadline = performance.now() + timeoutMs;
+	while (processGroupIsAlive(processGroupId)) {
+		if (performance.now() >= deadline) return false;
+		await delay(PROCESS_TERMINATION_POLL_MS);
+	}
+	return true;
+}
+
+/**
+ * Wait until the caller can positively establish that a timed-out process tree is gone. There is
+ * deliberately no deadline: releasing the component lock while a descendant can still resume and
+ * mutate node_modules is less safe than keeping that deployment wedged for operator intervention.
+ */
+export async function waitForConfirmedTermination(
+	isAlive: () => boolean | Promise<boolean>,
+	pollMs: number = PROCESS_TERMINATION_POLL_MS
+): Promise<void> {
+	while (await isAlive()) await delay(pollMs);
+}
+
+export async function waitForWindowsTreeTermination(
+	attemptTermination: () => boolean | Promise<boolean>,
+	treeIsAlive: () => boolean | null | Promise<boolean | null>,
+	pollMs: number = PROCESS_TERMINATION_POLL_MS
+): Promise<void> {
+	for (;;) {
+		// A successful taskkill exit only proves the request was accepted, not that the whole tree
+		// has actually exited — Windows termination is asynchronous, and taskkill can report overall
+		// success even when a descendant is not yet (or never) reaped. Only an explicit `false` from
+		// treeIsAlive, independently confirming no member of the tree remains, is safe to return on;
+		// `true` or `null` (unknown) must keep the loop retrying.
+		await attemptTermination();
+		if ((await treeIsAlive()) === false) return;
+		await delay(pollMs);
+	}
+}
+
+async function windowsProcessTreeIsAlive(rootPid: number): Promise<boolean | null> {
+	// Query the process table rather than probing only the parent PID: descendants retain their
+	// ParentProcessId after the parent exits, which is exactly the taskkill "process not found" race.
+	// Exit code 1 must mean "queried the process table and positively found nothing" — never
+	// "the query itself failed" (e.g. Get-CimInstance denied or WMI unavailable), which would
+	// otherwise read identically to a confirmed-gone tree and release the lock while a descendant
+	// may still be alive. ErrorActionPreference=Stop plus the wrapping try/catch turns a query
+	// failure into its own exit code (2), which the caller below already treats as unknown.
+	const script =
+		"$ErrorActionPreference = 'Stop'; try { " +
+		`$rootPid = ${rootPid}; ` +
+		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
+		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
+		'while ($frontier.Count -gt 0) { ' +
+		'$next = @(); foreach ($parentPid in $frontier) { if ($seen[$parentPid]) { continue }; ' +
+		'$seen[$parentPid] = $true; foreach ($p in $all) { ' +
+		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
+		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
+		'$frontier = $next }; ' +
+		'if ($found) { exit 0 } else { exit 1 } ' +
+		'} catch { exit 2 }';
+	return new Promise<boolean | null>((resolve) => {
+		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+			stdio: 'ignore',
+			windowsHide: true,
+		});
+		query.once('close', (code) => resolve(code === 0 ? true : code === 1 ? false : null));
+		query.once('error', () => resolve(null));
+	});
+}
+
+async function terminateWindowsProcessTree(childProcess: ChildProcess): Promise<void> {
+	if (!childProcess.pid) return;
+	const rootPid = childProcess.pid;
+	await waitForWindowsTreeTermination(
+		() =>
+			new Promise<boolean>((resolve) => {
+				const taskkill = spawn('taskkill', ['/pid', String(rootPid), '/T', '/F'], {
+					stdio: 'ignore',
+					windowsHide: true,
+				});
+				taskkill.once('close', (code) => resolve(code === 0));
+				taskkill.once('error', () => resolve(false));
+			}),
+		() => windowsProcessTreeIsAlive(rootPid)
+	);
+}
+
+async function waitForProcessClose(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
+	let timer: ReturnType<typeof setTimeout>;
+	const closeTimeout = new Promise<false>((resolve) => {
+		timer = setTimeout(() => resolve(false), PROCESS_CLOSE_WAIT_MS);
+		timer.unref?.();
+	});
+	const closed = await Promise.race([closePromise.then(() => true), closeTimeout]);
+	clearTimeout(timer!);
+	if (!closed) {
+		// A detached descendant can retain inherited pipe descriptors after its process tree was
+		// terminated. Stop waiting on those descriptors so a bounded command timeout remains bounded.
+		childProcess.stdout?.destroy();
+		childProcess.stderr?.destroy();
+	}
+}
+
+export async function terminateProcessTree(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
+	if (!childProcess.pid) {
+		await waitForProcessClose(childProcess, closePromise);
+		return;
+	}
+	if (process.platform === 'win32') {
+		await terminateWindowsProcessTree(childProcess);
+		await waitForProcessClose(childProcess, closePromise);
+		return;
+	}
+
+	// The direct child's exit does not prove the process group is empty: a custom installer can
+	// spawn-and-unref a descendant that inherits the group and outlives its parent. Probe the group
+	// itself rather than trusting childProcess.exitCode/signalCode.
+	const processGroupId = childProcess.pid;
+	if (!processGroupIsAlive(processGroupId)) {
+		await waitForProcessClose(childProcess, closePromise);
+		return;
+	}
+	try {
+		process.kill(-processGroupId, 'SIGTERM');
+	} catch (error: any) {
+		if (error.code !== 'ESRCH') throw error;
+	}
+	if (!(await waitForProcessGroupExit(processGroupId, PROCESS_TERMINATION_GRACE_MS))) {
+		try {
+			process.kill(-processGroupId, 'SIGKILL');
+		} catch (error: any) {
+			if (error.code !== 'ESRCH') throw error;
+		}
+		await waitForConfirmedTermination(() => processGroupIsAlive(processGroupId));
+	}
+	await waitForProcessClose(childProcess, closePromise);
 }
 
 export function getEnvBuiltInComponents() {

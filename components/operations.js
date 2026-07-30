@@ -35,6 +35,7 @@ const {
 	DEPLOY_STAGING_DIR,
 	DEPLOY_PREVIOUS_DIR,
 } = require('./Application.ts');
+const { COMPONENT_PREPARATION_LOCK_DIR } = require('./componentPreparationLock.ts');
 const { server } = require('../server/Server.ts');
 const {
 	DeploymentRecorder,
@@ -1512,7 +1513,8 @@ async function getComponents() {
 					itemName === 'node_modules' ||
 					itemName === ASIDE_STAGING_DIR ||
 					itemName === DEPLOY_STAGING_DIR ||
-					itemName === DEPLOY_PREVIOUS_DIR
+					itemName === DEPLOY_PREVIOUS_DIR ||
+					itemName === COMPONENT_PREPARATION_LOCK_DIR
 				)
 					continue;
 				const itemPath = path.join(dir, itemName);
