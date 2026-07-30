@@ -368,6 +368,72 @@ describe('Test keys module', () => {
 		expect(selector.defaultContext, 'the valid certificate must still be applied').to.exist;
 	});
 
+	describe('createTLSSelector certificate-selection priority for usageType (regression for #2003 review)', () => {
+		// The resolveEffectiveTlsCiphers allowlist test above only proves cipher/@SECLEVEL
+		// relevance — it would still pass if MQTT stopped forwarding usageType, or if
+		// createTLSSelector stopped giving uses:['mqtt'] exact-match priority / uses:['server']
+		// fallback credit. These exercise the actual certificate-selection path (SNICallback)
+		// with overlapping certificates for one hostname, so that regression fails here instead.
+		const { databases } = require('#src/resources/databases');
+		const hostname = 'localhost'; // present in test_cert's SANs (see the top-level `before`)
+
+		async function withCerts(certs, fn) {
+			for (const cert of certs) {
+				await databases.system.hdb_certificate.put({
+					certificate: test_cert,
+					is_authority: false,
+					private_key_name: actual_cert.private_key_name,
+					is_self_signed: false, // matches actual_cert's tier so quality differs only by `uses`
+					...cert,
+				});
+			}
+			try {
+				return await fn();
+			} finally {
+				for (const cert of certs) {
+					await databases.system.hdb_certificate.delete(cert.name);
+				}
+			}
+		}
+
+		function chosenCertName(selector, host) {
+			return new Promise((resolve, reject) => {
+				selector(host, (err, context) => (err ? reject(err) : resolve(context?.name)));
+			});
+		}
+
+		it('an MQTT selector chooses the mqtt-tagged certificate over a legacy server-tagged or generic certificate for the same hostname', async () => {
+			await withCerts(
+				[
+					{ name: 'sel-mqtt-tagged-' + Date.now(), uses: ['mqtt'] },
+					{ name: 'sel-server-tagged-' + Date.now(), uses: ['server'] },
+					{ name: 'sel-generic-' + Date.now(), uses: [] },
+				],
+				async () => {
+					const selector = keys.createTLSSelector('mqtt');
+					await selector.initialize(null);
+					const chosen = await chosenCertName(selector, hostname);
+					expect(chosen).to.include('sel-mqtt-tagged-');
+				}
+			);
+		});
+
+		it('the legacy server-tagged fallback remains eligible for MQTT when no mqtt-tagged certificate exists', async () => {
+			await withCerts(
+				[
+					{ name: 'sel-server-fallback-' + Date.now(), uses: ['server'] },
+					{ name: 'sel-generic-2-' + Date.now(), uses: [] },
+				],
+				async () => {
+					const selector = keys.createTLSSelector('mqtt');
+					await selector.initialize(null);
+					const chosen = await chosenCertName(selector, hostname);
+					expect(chosen).to.include('sel-server-fallback-');
+				}
+			);
+		});
+	});
+
 	describe('private-key hot-reload triggers a TLS context rebuild', () => {
 		// handlePrivateKeyReload is the single chokepoint for both the chokidar watcher and the
 		// periodic poll. On a worker, the new cert arrives via the hdb_certificate subscription, but
