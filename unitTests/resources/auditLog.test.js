@@ -49,10 +49,13 @@ describe('Audit log', () => {
 		// can therefore collapse to as few as 2 delivered events no matter how long we later
 		// poll for them — waiting for the notify drain to catch up after EACH write (rather than
 		// after the whole burst) is what actually makes delivery deterministic.
+		// >= rather than === in the condition: an overshoot (however it arose) should fall through
+		// to the assertions below with a clear message, not hang the waiter into its timeout.
 		async function waitForEventCount(count) {
-			for (let i = 0; i < 50 && events.length < count; i++) {
-				await delay(10);
-			}
+			await waitFor(() => events.length >= count, {
+				timeout: 5000,
+				message: `expected at least ${count} subscription events`,
+			});
 		}
 		await AuditedTable.put(1, { name: 'one' });
 		await waitForEventCount(1);
