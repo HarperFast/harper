@@ -163,7 +163,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						mqttLog.info?.('Socket error', error);
 					});
 				},
-				{ port, securePort, mtls, usageType: 'mqtt' }
+				{ port, securePort, mtls }
 			)
 		);
 	}
