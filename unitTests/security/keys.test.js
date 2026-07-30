@@ -672,6 +672,59 @@ describe('Test keys module', () => {
 				await databases.system.hdb_certificate.delete(triggerCertName).catch(() => {});
 			}
 		});
+
+		it('keeps rebuilding until the per-hostname certs load; recovery is driven by the retry, not the subscription', async function () {
+			// Regression for the port-8883 Symphony bug (follow-up to #1999). A raw-socket TLS listener
+			// (MQTT `securePort`) whose pass produces only a default-eligible cert with no per-hostname
+			// entry — a record with `hostnames: []`, or one whose real per-domain certs have not synced to
+			// this thread yet — used to resolve and STOP (`!defaultContextSetThisPass` disarmed the retry),
+			// so the exported UDS `certificates:` list stayed empty until restart even after the per-domain
+			// certs loaded via a bulk/sync path that never fires the selector's subscription. It must keep
+			// rebuilding until the per-hostname map populates, while still resolving `.ready` (serve via the
+			// default meanwhile — no plaintext hang).
+			this.timeout(6000);
+			searchStub.restore(); // replace the describe's empty stub with a default-only, hostname-less row
+			const defaultOnlyCert = {
+				name: 'default-only-no-hostnames-' + Date.now(),
+				certificate: test_cert,
+				private_key_name: actual_cert.private_key_name,
+				uses: [],
+				is_authority: false,
+				is_self_signed: true,
+				hostnames: [], // sets a default context (quality > 0) but contributes no per-hostname SNI entry
+			};
+			searchStub = sandbox.stub(databases.system.hdb_certificate, 'search').returns([defaultOnlyCert]);
+
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			const readyPromise = selector.initialize(pseudoServer);
+
+			let settled = false;
+			readyPromise.then(
+				() => (settled = true),
+				() => (settled = true)
+			);
+
+			// A default was produced, so `.ready` resolves and the listener serves via it (must not hang),
+			// but the per-hostname map is empty and the retry path must have latched its warn.
+			await waitFor(() => settled, { timeout: 2000, message: '.ready must resolve via the default context' });
+			assert.strictEqual(pseudoServer.secureContexts.size, 0, 'a hostname-less default builds no per-hostname entry');
+			assert.ok(pseudoServer.defaultContext, 'the default context must be set so the listener can serve');
+			assert.strictEqual(
+				pseudoServer.tlsSelectorWarnedZeroCerts,
+				true,
+				'an empty per-hostname map must take the retry path even when a default context was produced'
+			);
+
+			// The real per-domain certs (loaded in this suite's before()) become visible. Recovery must come
+			// from the scheduled rebuild — restoring the stub fires no cert-table event — which is exactly what
+			// the pre-fix "default set => resolve and stop" path failed to schedule.
+			searchStub.restore();
+			await waitFor(() => pseudoServer.secureContexts.size > 0, {
+				timeout: 4000,
+				message: 'the selector never republished the per-domain certs after they became visible',
+			});
+		});
 	});
 
 	describe('createTLSSelector when the hdb_certificate table object is swapped out', () => {

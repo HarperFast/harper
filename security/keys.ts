@@ -1162,45 +1162,53 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							logger.error?.('Error applying TLS for', cert.name, error);
 						}
 					}
-					if (liveReload && secureContexts.size === 0 && !defaultContextSetThisPass) {
-						// The not-loaded-yet guard above only covers the table object being absent, not the
-						// table being present but every row failing to apply (e.g. a private key not yet
-						// available on this thread, caught above per-cert). Resolving here would still write
-						// an empty `certificates:` list — the exact customer-visible symptom this PR exists to
-						// fix. Retry on the same debounce instead of publishing that state; a rebuild trigger
-						// (cert-table change or private-key reload, both already wired to scheduleRebuild) is
-						// almost certainly still coming on a normal boot, and this just avoids a window where
-						// we'd otherwise publish empty in the meantime.
-						//
-						// `!defaultContextSetThisPass` because an empty hostname map is not the same as "no TLS
-						// available": a cert whose hostnames resolve to [] (no usable SANs and no CN) builds no
-						// per-hostname entry but still sets a serviceable default context — that listener must
-						// resolve and serve via the default rather than retry forever for hostname entries that
-						// can't exist. It must be the per-pass flag, not the persistent `defaultContext` (see its
-						// declaration note): keying off the closure variable would disarm this retry for every
-						// pass after the first success, reopening the publish-empty window on live rebuilds.
+					if (liveReload && secureContexts.size === 0) {
+						// An empty per-hostname `secureContexts` map is not a valid steady state for a
+						// live-reloading SNI listener, so re-check on the debounce instead of resolving it as
+						// final. Two ways to land here:
+						//   1. Table object present but no row applied yet (e.g. a private key not yet available
+						//      on this thread, caught per-cert above) — the boot-order case this retry was
+						//      originally written for.
+						//   2. Only a default-eligible cert with no per-hostname entry applied — a record whose
+						//      stored `hostnames` is `[]`, or a cert with no SANs and no CN — while the real
+						//      per-domain certs have not landed on this thread yet. Those can arrive via a
+						//      bulk/initial-sync path that never fires this selector's hdb_certificate
+						//      subscription (the same event bypass #1999 documented for table swaps), so nothing
+						//      else re-triggers a rebuild. The raw-socket MQTT `securePort` listener then
+						//      publishes an empty `certificates:` list to its UDS metadata once at boot and keeps
+						//      it until restart, and a fronting proxy that routes by that list (Symphony on 8883)
+						//      serves the node certificate for every custom-domain SNI — the customer-visible bug.
 						//
 						// Gated on liveReload: transient, single-use selectors (getReplicationCert) legitimately
-						// resolve empty — e.g. the bootstrap check `if (!(await getReplicationCert())) { create
-						// one }` in generateCertAuthority's caller depends on an empty resolution meaning "no
-						// cert yet," and must not hang waiting for a cert that this exact call is about to create.
-						//
-						// Latched like the system-db wait above: this retries indefinitely on the debounce, and
-						// an unlatched warn would emit ~57k lines/day from a listener stuck this way.
+						// resolve empty — the bootstrap check `if (!(await getReplicationCert()))` depends on an
+						// empty resolution meaning "no cert yet" and must not hang. Latched like the system-db
+						// wait above (an unlatched warn would emit tens of thousands of lines/day when stuck).
 						if (server && !server.tlsSelectorWarnedZeroCerts) {
 							server.tlsSelectorWarnedZeroCerts = true;
 							logger.warn?.(
-								`TLS selector for the '${type}' listener resolved zero certificates; retrying every ${TLS_REBUILD_DEBOUNCE_MS}ms`
+								`TLS selector for the '${type}' listener resolved an empty per-hostname certificate map; retrying every ${TLS_REBUILD_DEBOUNCE_MS}ms`
 							);
 						}
 						scheduleRebuild();
-						return;
+						// No default context produced either → stay pending exactly as before: nothing to serve,
+						// and resolving would let Bun's listener path start plaintext (see the system-db guard
+						// above). If a default WAS produced this pass, fall through to resolve + publish so the
+						// listener serves via that default immediately, while the scheduleRebuild above stays
+						// armed to pick up the per-domain certs and rewrite the exported metadata once they load.
+						// This is the deliberate change from the original "default set ⇒ resolve and stop":
+						// serving a default is fine for a direct TLS client, but an SNI-routing proxy needs the
+						// per-hostname list, so an empty map must keep re-checking even when a default exists.
+						// Keyed off the per-pass `defaultContextSetThisPass`, never the persistent
+						// `defaultContext` (which survives passes and would wrongly report "have one" here).
+						if (!defaultContextSetThisPass) return;
 					}
-					// A successful pass ends any warn latches so a later recurrence logs again.
-					if (server) {
-						server.tlsSelectorWaitedForSystemDb = false;
-						server.tlsSelectorWarnedZeroCerts = false;
-					}
+					// Reaching here means the table was loaded (we passed the not-loaded guard), so clear that
+					// wait latch regardless of cert population, so a later system-db outage logs again.
+					if (server) server.tlsSelectorWaitedForSystemDb = false;
+					// The zero-cert latch clears only on a populated pass: the empty-map-with-default
+					// fall-through above also reaches here and must not clear it (that would re-warn on every
+					// debounced re-check while the per-domain certs are still loading).
+					if (server && secureContexts.size > 0) server.tlsSelectorWarnedZeroCerts = false;
 					// The listener's cipher string (and its @SECLEVEL, which governs client-cert chain
 					// verification) is fixed at server creation and cannot be swapped by rebuilding SNI
 					// contexts. If a rebuild finds the effective value has changed (e.g. a certificate
