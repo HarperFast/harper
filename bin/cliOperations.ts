@@ -293,7 +293,20 @@ function resolveGitCommittish(ref: unknown): string {
 	// buildRequest JSON-parses CLI args, so a numeric ref (e.g. `ref=1234567`) arrives as a number —
 	// coerce it back to a string rather than silently ignoring it and falling back to HEAD.
 	const refStr = typeof ref === 'string' || typeof ref === 'number' ? String(ref).trim() : '';
-	if (refStr.length > 0) return refStr; // explicit ref= wins
+	if (refStr.length > 0) {
+		// Resolve an explicit ref= to an immutable SHA too, rather than passing the name through.
+		// Cluster peers resolve the package independently, so `ref=main` — or a tag that moves
+		// between one peer fetching and another restarting and re-fetching — would otherwise leave
+		// nodes running different commits. `^{commit}` also dereferences annotated tags.
+		try {
+			return runGit(['rev-parse', `${refStr}^{commit}`]);
+		} catch {
+			// Not resolvable locally (e.g. a ref that only exists on the remote). Pass it through
+			// and let the cluster resolve it — losing the pin, but a deploy that works beats a
+			// deploy that fails on a ref the user can see on the remote.
+			return refStr;
+		}
+	}
 	if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA;
 	try {
 		return runGit(['rev-parse', 'HEAD']);
@@ -311,6 +324,25 @@ function warnIfWorkingTreeDirty(): void {
 		}
 	} catch {
 		// Not a git repo; resolveGitRepo/resolveGitCommittish will surface a clearer error.
+	}
+}
+
+// The likelier by_ref mistake isn't a dirty tree, it's committing and forgetting to push: the
+// cluster clones from the remote, so the SHA simply isn't there and the deploy fails server-side,
+// far from the CLI and with a much less obvious error. Checked against local remote-tracking refs,
+// so it costs no network round-trip — at the price of a false warning when the local view is stale,
+// which the message accounts for.
+function warnIfCommitNotPushed(committish: string): void {
+	try {
+		if (!runGit(['branch', '-r', '--contains', committish])) {
+			process.stderr.write(
+				`warning: commit ${committish.slice(0, 12)} isn't on any remote branch — push it, or the cluster ` +
+					"won't be able to clone it. (If you already pushed, run `git fetch` to refresh your remote refs.)\n"
+			);
+		}
+	} catch {
+		// Not a git repo, or a committish git can't resolve locally (a remote-only ref is expected
+		// to be absent here) — nothing useful to say, and the deploy itself surfaces real errors.
 	}
 }
 
@@ -347,6 +379,9 @@ export function prepareDeployByRef(req: any): void {
 	const repo = resolveGitRepo();
 	const committish = resolveGitCommittish(req.ref);
 	warnIfWorkingTreeDirty();
+	// Skipped under GITHUB_SHA: CI runs on a commit that is on the remote by construction, and a
+	// shallow/detached runner checkout has no remote-tracking branches to check against anyway.
+	if (!process.env.GITHUB_SHA) warnIfCommitNotPushed(committish);
 	if (!req.project) req.project = defaultProjectName(process.cwd());
 	// git+https (not ssh): a private clone is authenticated by a git-host token credential (#1799),
 	// which rides over HTTPS. A public repo needs no credential at all.
