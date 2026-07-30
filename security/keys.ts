@@ -988,6 +988,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 			server.secureContextsListeners = [];
 		}
 		let subscribedTable = null;
+		let activeSubscription: Promise<any> | null = null;
 		return ((SNICallback as any).ready = new Promise<void>((resolve, reject) => {
 			function updateTLS() {
 				try {
@@ -1023,11 +1024,21 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					// selector (getReplicationCert) doesn't pin scheduleRebuild — and everything it closes
 					// over — onto the long-lived table's subscriber list forever on every call.
 					if (liveReload && subscribedTable !== databases.system.hdb_certificate) {
+						// End the previous table's subscription before replacing it — otherwise every
+						// resetDatabases() (copy_db, ITC restart) appends another permanent listener onto
+						// the old (now-orphaned) table instance, so a node that cycles through repeated
+						// resets accumulates one dead Subscription (and its scheduleRebuild closure) per
+						// reset instead of holding just the current one.
+						const previousSubscription = activeSubscription;
 						subscribedTable = databases.system.hdb_certificate;
-						databases.system.hdb_certificate.subscribe({
+						activeSubscription = databases.system.hdb_certificate.subscribe({
 							listener: scheduleRebuild,
 							omitCurrent: true,
 						} as any);
+						activeSubscription.catch((error) => logger.warn?.('Failed to subscribe to hdb_certificate table:', error));
+						if (previousSubscription) {
+							previousSubscription.then((subscription: any) => subscription?.end?.()).catch(() => {});
+						}
 					}
 					for (const cert of databases.system.hdb_certificate.search([])) {
 						const certificate = cert.certificate;
