@@ -3,11 +3,12 @@ import { open, asBinary } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
 import { existsSync, mkdirSync } from 'node:fs';
+import { rename } from 'node:fs/promises';
 import { get } from '../utility/environment/environmentManager.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
-import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, DATABASES_DIR_NAME, MIGRATING_DIR_SUFFIX } from '../utility/hdbTerms.ts';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
 import { describeSchema } from '../dataLayer/schemaDescribe.ts';
 import { updateConfigValue } from '../config/configUtils.ts';
@@ -385,7 +386,31 @@ export async function migrateOnStart() {
 
 			console.log('Migrating', databaseName, 'from LMDB to RocksDB at', targetPath);
 
-			await copyDbToRocks(rootStore, databaseName, targetPath);
+			// Migrate into a staging directory and only rename it into place once the copy fully
+			// verifies. A failure part-way must never leave a partial RocksDB at targetPath: on the
+			// next boot both <db>.mdb and <db>/ would be discovered, and whichever binds last wins —
+			// if the partial RocksDB wins, migrateOnStart sees "already RocksDB", clears the flag,
+			// and abandons the intact LMDB. Staging dirs are excluded from discovery and any stale
+			// one is removed here before retrying, so an interrupted migration (throw or SIGKILL)
+			// always recovers by re-migrating from the untouched LMDB source.
+			const stagingPath = targetPath + MIGRATING_DIR_SUFFIX;
+			await remove(stagingPath);
+			try {
+				await copyDbToRocks(rootStore, databaseName, stagingPath);
+			} catch (error) {
+				try {
+					await remove(stagingPath);
+				} catch {
+					// discovery ignores the staging dir and the next attempt removes it
+				}
+				throw error;
+			}
+			// A directory already at targetPath can only be a stale partial from a pre-staging
+			// build's failed attempt (or a complete copy from a crash after rename but before the
+			// flag cleared) — discovery bound the LMDB source this boot, and we just produced a
+			// fresh verified copy from it, so replace.
+			await remove(targetPath);
+			await rename(stagingPath, targetPath);
 
 			// Back up the original LMDB file
 			console.log('Backing up LMDB', databaseName, 'to', backupDest);
@@ -423,6 +448,11 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	const sourceDbisDb = sourceRootStore.dbisDb;
 
 	const targetRootStore = openRocksDb(targetPath, { disableWAL: false });
+	// Every handle opened on targetPath. All must be closed before returning so the caller can
+	// atomically rename a staging directory into place — rocksdb-js registers descriptors by
+	// path string, so a handle left open on the staging path would hold the DB lock against the
+	// runtime's open of the renamed directory (harper#2012 restart-safety).
+	const targetHandles: RocksDatabase[] = [targetRootStore];
 	// sharedStructuresKey wires the rocksdb-js getStructures/saveStructures closures
 	// so that the plain msgpackr.Encoder used here persists structures within the
 	// __dbis__ CF at Symbol.for('structures'). The runtime attributesDbi RecordEncoder
@@ -436,6 +466,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		name: INTERNAL_DBIS_NAME,
 		sharedStructuresKey: Symbol.for('structures'),
 	});
+	targetHandles.push(targetDbisDb);
 
 	const STRUCTURES_KEY = Symbol.for('structures');
 	const copyStructures = (sourceDbi, storeName: string, extraTarget?: RocksDatabase) => {
@@ -490,8 +521,10 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			let canonicalStructures: any;
 			if (!isPrimary) {
 				targetDbi = openRocksDb(targetPath, { dupSort: true, name: key });
+				targetHandles.push(targetDbi);
 			} else {
 				targetDbi = openRocksDb(targetPath, { name: key });
+				targetHandles.push(targetDbi);
 				// Patch the existing encoder (encoder is a getter-only property on RocksDatabase, cannot be replaced)
 				// to install RecordEncoder's encode method so metadata headers (timestamps, HAS_BLOBS flag) are written
 				const existingEncoder = targetDbi.encoder as any;
@@ -544,10 +577,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				await firstVersioned.written;
 				await written;
 				const roundTrip = targetDbi.getBinarySync(firstVersioned.key);
-				const roundTripVersion =
-					roundTrip && roundTrip.length >= 8
-						? new DataView(roundTrip.buffer, roundTrip.byteOffset, roundTrip.byteLength).getFloat64(0)
-						: undefined;
+				const roundTripVersion = roundTrip && roundTrip.length >= 8 ? roundTrip.readDoubleBE(0) : undefined;
 				if (roundTripVersion !== firstVersioned.version) {
 					throw new Error(
 						`Migration of ${sourceDatabase} wrote record ${JSON.stringify(firstVersioned.key)} without its ` +
@@ -620,7 +650,15 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		// Node's unhandledRejection.
 		for (const saving of pendingBlobSaves) saving.catch(() => {});
 		transaction.done();
-		targetRootStore.close();
+		// Close every target handle (dbi CFs before the root) so no descriptor holds the DB lock
+		// on this path — required for the caller's staging-directory rename (harper#2012).
+		for (const handle of targetHandles.reverse()) {
+			try {
+				handle.close();
+			} catch (error) {
+				console.error('Error closing migration target store', error);
+			}
+		}
 	}
 
 	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder?) {

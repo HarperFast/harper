@@ -53,7 +53,7 @@ describe('migration: records carry the version/metadata prefix (#2012)', functio
 				const raw = cf.getBinarySync(id);
 				assert(raw, `record ${id} missing from migrated CF`);
 				// float64 of a current-era ms timestamp starts with 0x42
-				assert.equal(raw[0], 0x42, `record ${id} first byte ${raw[0]} — metadata prefix missing`);
+				assert.strictEqual(raw[0], 0x42, `record ${id} first byte ${raw[0]} — metadata prefix missing`);
 			}
 		} finally {
 			cf.close();
@@ -72,9 +72,9 @@ describe('migration: records carry the version/metadata prefix (#2012)', functio
 			for (const id of ['a', 'b', 'c']) {
 				const entry = cf.getEntry(id);
 				assert(entry?.value, `record ${id} missing via getEntry`);
-				assert.equal(entry.value.name, { a: 'alpha', b: 'beta', c: 'gamma' }[id]);
+				assert.strictEqual(entry.value.name, { a: 'alpha', b: 'beta', c: 'gamma' }[id]);
 				assert(entry.value instanceof RecordObject, `record ${id} decoded without the record prototype`);
-				assert.equal(entry.version, sourceVersions.get(id), `record ${id} lost its source version`);
+				assert.strictEqual(entry.version, sourceVersions.get(id), `record ${id} lost its source version`);
 			}
 		} finally {
 			cf.close();

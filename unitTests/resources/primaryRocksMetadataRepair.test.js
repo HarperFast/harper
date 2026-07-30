@@ -43,14 +43,14 @@ describe('PrimaryRocksDatabase metadata repair (#2012)', function () {
 		await store.put('noflags', { alpha: 1, beta: 2 }, version);
 
 		const entry = store.getEntry('noflags');
-		assert.equal(entry.version, version);
-		assert.deepEqual(Object.keys(entry.value), ['alpha', 'beta']);
-		assert.equal(entry.value.value, undefined, 'decode wrapper leaked as the record value');
+		assert.strictEqual(entry.version, version);
+		assert.deepStrictEqual(Object.keys(entry.value), ['alpha', 'beta']);
+		assert.strictEqual(entry.value.value, undefined, 'decode wrapper leaked as the record value');
 		assert(entry.value instanceof RecordObject);
 
 		for (const rangeEntry of store.getRange({ start: 'noflags', end: 'noflags~' })) {
-			assert.equal(rangeEntry.version, version);
-			assert.deepEqual(Object.keys(rangeEntry.value), ['alpha', 'beta']);
+			assert.strictEqual(rangeEntry.version, version);
+			assert.deepStrictEqual(Object.keys(rangeEntry.value), ['alpha', 'beta']);
 			assert(rangeEntry.value instanceof RecordObject);
 		}
 	});
@@ -61,9 +61,9 @@ describe('PrimaryRocksDatabase metadata repair (#2012)', function () {
 		await rawStore.put('legacy', packr.encode({ gamma: 3, delta: 4 }));
 
 		const entry = store.getEntry('legacy');
-		assert.deepEqual({ ...entry.value }, { gamma: 3, delta: 4 });
+		assert.deepStrictEqual({ ...entry.value }, { gamma: 3, delta: 4 });
 		assert(entry.value instanceof RecordObject, 'point read returned a prototype-less plain object');
-		assert.equal(entry.version, undefined);
+		assert.strictEqual(entry.version, undefined);
 
 		const viaGet = store.getSync('legacy');
 		assert(viaGet instanceof RecordObject);
