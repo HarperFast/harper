@@ -32,6 +32,14 @@ const MAX_RETRIES = 40;
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
 let outstandingCommit, outstandingCommitStart;
+// Identity of the transaction that armed `outstandingCommit`, captured for the one-time
+// checkOverloaded() log below (harper#2001) — `outstandingCommit` itself is otherwise anonymous,
+// so a stuck commit gives no indication of which database/table/resource to investigate.
+let outstandingCommitIdentity:
+	{ database?: string; table?: string; resourceName?: string; method?: string } | undefined;
+// Ensures the checkOverloaded() rejection is logged once per stuck commit, not once per rejected
+// request — under load a wedged thread can reject hundreds of requests per second.
+let outstandingCommitLogged = false;
 
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
@@ -369,6 +377,20 @@ export class DatabaseTransaction implements Transaction {
 			!this.overloadChecked &&
 			performance.now() - outstandingCommitStart > MAX_OUTSTANDING_TXN_DURATION
 		) {
+			if (!outstandingCommitLogged) {
+				// Log once per stuck commit (not once per rejected request, harper#2001): a wedged
+				// thread otherwise logs nothing at all server-side while rejecting every write with a
+				// 503, which was the single biggest obstacle to root-causing a recurrence.
+				outstandingCommitLogged = true;
+				const identity = outstandingCommitIdentity;
+				harperLogger.error(
+					`Rejecting writes on this thread: a commit has been outstanding for ` +
+						`${Math.round(performance.now() - outstandingCommitStart)}ms (exceeds the ` +
+						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${identity?.database ?? '?'}.${identity?.table ?? '?'}` +
+						(identity?.resourceName ? `, started from ${identity.resourceName}.${identity.method}` : '') +
+						`. All further writes on this thread will be rejected with 503 until the commit settles or the process is restarted.`
+				);
+			}
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
@@ -576,6 +598,13 @@ export class DatabaseTransaction implements Transaction {
 					if (!outstandingCommit) {
 						outstandingCommit = commitResolution;
 						outstandingCommitStart = performance.now();
+						outstandingCommitIdentity = {
+							database: (this.db as any)?.rootStore?.databaseName,
+							table: (this.db as any)?.name,
+							resourceName: this.startedFrom?.resourceName,
+							method: this.startedFrom?.method,
+						};
+						outstandingCommitLogged = false;
 						outstandingCommit
 							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
 							// will correct course, but the reject will still be propagated on the
@@ -583,6 +612,8 @@ export class DatabaseTransaction implements Transaction {
 							.catch(() => {})
 							.finally(() => {
 								outstandingCommit = null;
+								outstandingCommitIdentity = undefined;
+								outstandingCommitLogged = false;
 							});
 					}
 					const completions = [];
