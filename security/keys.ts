@@ -1151,7 +1151,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 								'Adding TLS',
 								(secureContext as any).name,
 								'for',
-								server.ports || 'client',
+								server?.ports || 'client',
 								'cert named',
 								cert.name,
 								'hostnames',
