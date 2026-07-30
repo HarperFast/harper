@@ -479,6 +479,11 @@ describe('rocksdbBackup', function () {
 				const blobEntry = `blobs/0/${blobRel.split(require('node:path').sep).join('/')}`;
 				assert.ok(entries.has(blobEntry), `expected blob entry ${blobEntry}, got: ${[...entries.keys()].join(', ')}`);
 				assert.strictEqual(entries.get(blobEntry).toString('utf8'), 'streamed-blob');
+				// the archive carries the generated, self-documenting READMEs
+				assert.ok(entries.has('README.md'), 'archive should include a top-level README');
+				assert.match(entries.get('README.md').toString('utf8'), /get_backup/);
+				assert.ok(entries.has('blobs/README.md'), 'archive should include a blobs layout README');
+				assert.match(entries.get('blobs/README.md').toString('utf8'), /rootIndex/);
 			} finally {
 				store.close();
 				rmSync(streamDbDir, { recursive: true, force: true });

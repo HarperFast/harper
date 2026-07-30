@@ -130,29 +130,42 @@ export async function snapshotBlobs(backupDir: string, backupId: number, blobRoo
 }
 
 /**
- * Write a `README.md` into the backup's `blobs/` directory documenting the snapshot layout, so an
- * operator inspecting or hand-recovering a backup can decode the numeric directories. Best-effort:
- * a failure to write the doc must not fail an otherwise-successful backup.
+ * Build the `blobs/README.md` documenting the blob snapshot layout, so an operator inspecting or
+ * hand-recovering a backup can decode the numeric directories. Two variants:
+ * - managed (default): a create_backup repository, where snapshots are keyed by backup id
+ *   (`<backupId>/<rootIndex>/…`) and restore is automatic via `restore_backup`.
+ * - archive (`archive: true`): a downloaded `get_backup` tar, which holds a single snapshot with no
+ *   backup-id level (`<rootIndex>/…`) and is restored by extracting the files back into the roots.
  */
-export async function writeBlobsReadme(backupDir: string, blobRoots: string[]): Promise<void> {
+export function blobsReadmeContent(blobRoots: string[], { archive = false }: { archive?: boolean } = {}): string {
 	const rootMapping =
 		blobRoots.length > 0 ? blobRoots.map((root, index) => `      ${index} -> ${root}`).join('\n') : '      (none)';
-	const content = `# Harper blob snapshots
-
-This directory holds point-in-time snapshots of this database's file-backed blobs, captured
+	const layout = archive
+		? '<rootIndex>/<shard1>/<shard2>/<fileId>'
+		: '<backupId>/<rootIndex>/<shard1>/<shard2>/<fileId>';
+	const intro = archive
+		? `This directory holds this database's file-backed blobs within a downloaded \`get_backup\` archive.
+To restore them, extract each \`<rootIndex>/\` tree back into the matching blob root (see the mapping
+below and ../README.md).`
+		: `This directory holds point-in-time snapshots of this database's file-backed blobs, captured
 alongside each RocksDB managed backup. You do not restore these by hand — \`restore_backup\` puts
-them back automatically (see ../README.md); this file just documents the layout.
+them back automatically (see ../README.md); this file just documents the layout.`;
+	const backupIdBullet = archive
+		? ''
+		: `- **<backupId>** matches the RocksDB backup id (\`harper list_backups\`). Each id is a full,
+  independent snapshot (not incremental).
+`;
+	return `# Harper blob snapshots
+
+${intro}
 
 ## Directory layout
 
-    <backupId>/<rootIndex>/<shard1>/<shard2>/<fileId>
+    ${layout}
 
-- **<backupId>** matches the RocksDB backup id (\`harper list_backups\`). Each id is a full,
-  independent snapshot (not incremental).
-- **<rootIndex>** is which of the database's blob roots the file came from — the index into
-  \`storage.blobPaths[n]\`. On restore the file is written back to the root at that index. When
-  \`storage.blobPaths\` is not configured there is a single default root (\`<rootPath>/blobs/<db>\`)
-  at index 0. Current mapping for this backup:
+${backupIdBullet}- **<rootIndex>** is which of the database's blob roots the file came from — the index into
+  \`storage.blobPaths[n]\`. When \`storage.blobPaths\` is not configured there is a single default root
+  (\`<rootPath>/blobs/<db>\`) at index 0. Current mapping for this backup:
 
 ${rootMapping}
 
@@ -164,8 +177,15 @@ ${rootMapping}
 Files are hard links to the live blobs when the backup is on the same filesystem, and copies
 otherwise.
 `;
+}
+
+/**
+ * Write the `blobs/README.md` into a managed backup's `blobs/` directory. Best-effort: a failure to
+ * write the doc must not fail an otherwise-successful backup.
+ */
+export async function writeBlobsReadme(backupDir: string, blobRoots: string[]): Promise<void> {
 	try {
-		await writeFile(join(blobsRootDir(backupDir), 'README.md'), content);
+		await writeFile(join(blobsRootDir(backupDir), 'README.md'), blobsReadmeContent(blobRoots));
 	} catch (error) {
 		logger.warn(`Failed to write blob snapshot README in ${backupDir}: ${(error as Error).message}`);
 	}

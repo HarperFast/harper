@@ -19,7 +19,13 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { beginRestore, completeRestore, abandonRestore, checkRestoreState, type RestoreLock } from './restoreMarker.ts';
-import { deleteBlobSnapshot, purgeBlobSnapshots, restoreBlobSnapshot, snapshotBlobs } from './blobBackup.ts';
+import {
+	blobsReadmeContent,
+	deleteBlobSnapshot,
+	purgeBlobSnapshots,
+	restoreBlobSnapshot,
+	snapshotBlobs,
+} from './blobBackup.ts';
 import logger from '../utility/logging/harper_logger.ts';
 
 /**
@@ -618,7 +624,11 @@ async function streamBackupWithBlobs(
 
 		const pack = tarPack();
 		const packed = pipeline(pack, plain); // ends `plain` once the blob entries + trailer are written
-		await appendBlobEntries(pack, databaseName);
+		const blobRoots = getBlobPathsForDatabaseName(databaseName);
+		await appendBlobEntries(pack, blobRoots);
+		// generate the same self-documenting READMEs a managed backup writes to disk, on the fly
+		await addTextEntry(pack, 'README.md', streamedBackupReadme(databaseName));
+		await addTextEntry(pack, 'blobs/README.md', blobsReadmeContent(blobRoots, { archive: true }));
 		pack.finalize();
 		await packed;
 		await consumed;
@@ -677,12 +687,11 @@ function writeWithBackpressure(dest: PassThrough, chunk: Buffer): Promise<void> 
 }
 
 /**
- * Append every blob file under the database's blob roots to `pack` as `blobs/<rootIndex>/<relpath>`
+ * Append every blob file under the given blob roots to `pack` as `blobs/<rootIndex>/<relpath>`
  * entries. Size is captured at open time and exactly that many bytes are streamed; a file that
  * vanished before it could be opened (a concurrent blob delete) is skipped.
  */
-async function appendBlobEntries(pack: Pack, databaseName: string): Promise<void> {
-	const blobRoots = getBlobPathsForDatabaseName(databaseName);
+async function appendBlobEntries(pack: Pack, blobRoots: string[]): Promise<void> {
 	for (let index = 0; index < blobRoots.length; index++) {
 		const root = blobRoots[index];
 		if (!existsSync(root)) continue;
@@ -734,6 +743,44 @@ async function appendBlobFile(pack: Pack, filePath: string, name: string): Promi
 	} finally {
 		await handle.close();
 	}
+}
+
+/** Add an in-memory string to the pack as a single tar entry (used for the generated READMEs). */
+async function addTextEntry(pack: Pack, name: string, content: string): Promise<void> {
+	const buffer = Buffer.from(content, 'utf8');
+	await new Promise<void>((resolvePromise, reject) => {
+		const entry = pack.entry({ name, size: buffer.length }, (error) => (error ? reject(error) : resolvePromise()));
+		entry.end(buffer);
+	});
+}
+
+/**
+ * The top-level `README.md` embedded in a downloaded `get_backup` archive. Unlike a managed backup
+ * repository (which is restored in place via `restore_backup`), this is a raw snapshot tar restored
+ * by extracting its files back into the database directory and blob roots.
+ */
+function streamedBackupReadme(databaseName: string): string {
+	return `# Harper backup archive — database "${databaseName}"
+
+A full point-in-time snapshot of the "${databaseName}" database, produced by \`get_backup\`:
+  - the RocksDB data and manifest at the archive root (CURRENT, MANIFEST-*, *.sst, OPTIONS-*)
+  - transaction_logs/ — the transaction log snapshot
+  - blobs/ — the database's file-backed blobs, unless this archive was created with exclude_blobs
+    (see blobs/README.md for the layout and the root-index mapping)
+
+## Restoring
+
+This is a raw snapshot archive, not a managed backup repository. To restore it, stop Harper and lay
+the files back down in two places:
+  1. The RocksDB files — everything except blobs/ — go into the database's directory
+     (typically <rootPath>/database/${databaseName}).
+  2. Each blobs/<rootIndex>/ tree goes into the matching blob root — the index maps to
+     storage.blobPaths[n], or <rootPath>/blobs/${databaseName} when blobPaths is not configured
+     (see blobs/README.md). Then start Harper.
+
+For a server-managed, in-place restore instead, use the managed backup workflow (create_backup /
+restore_backup): https://docs.harperdb.io/reference/v5/operations-api/operations
+`;
 }
 
 // --- offline CLI paths (server stopped) ---
