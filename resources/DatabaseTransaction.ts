@@ -598,12 +598,18 @@ export class DatabaseTransaction implements Transaction {
 					if (!outstandingCommit) {
 						outstandingCommit = commitResolution;
 						outstandingCommitStart = performance.now();
-						outstandingCommitIdentity = {
-							database: (this.db as any)?.rootStore?.databaseName,
-							table: (this.db as any)?.name,
-							resourceName: this.startedFrom?.resourceName,
-							method: this.startedFrom?.method,
-						};
+						// Only a real write commit (this.writes.length > 0, above) identifies the wedge;
+						// an abort() flowing through this same arming branch has no writes and would
+						// otherwise mis-attribute the identity to an uninvolved read-only store.
+						outstandingCommitIdentity =
+							this.writes.length > 0
+								? {
+										database: (this.db as any)?.rootStore?.databaseName,
+										table: (this.db as any)?.name,
+										resourceName: this.startedFrom?.resourceName,
+										method: this.startedFrom?.method,
+									}
+								: undefined;
 						outstandingCommitLogged = false;
 						outstandingCommit
 							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic

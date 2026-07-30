@@ -5436,6 +5436,10 @@ export function makeTable(options) {
 					// Inherit the replay marker so a multi-table replay transaction skips validation on
 					// every store, not just the first (harper#1316).
 					transaction.next.isReplay = transaction.isReplay;
+					// Inherit which resource/method started this logical operation, so a chained (second
+					// table) transaction's long-transaction-abort and stuck-commit logs (DatabaseTransaction.ts)
+					// can still identify the request that caused them instead of leaving that field blank.
+					transaction.next.startedFrom = transaction.startedFrom;
 					if (transaction.open === TRANSACTION_STATE.CLOSED) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
