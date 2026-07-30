@@ -134,6 +134,7 @@ describe('Querying through Resource API', () => {
 				name: i === 17 ? [long_str] : i === 18 ? long_str : 'many-to-many entry ' + i,
 			});
 		}
+		await ManyToMany.put({ id: ['composite', 42], name: 'composite id entry' });
 		let last;
 		for (let i = 0; i < 100; i++) {
 			let many_ids = [];
@@ -804,12 +805,16 @@ describe('Querying through Resource API', () => {
 
 		it('array-of-FK relationship nests a composite (array) related id as one element, not spread ids', function () {
 			const object = {};
-			many_to_many_attribute.set(object, { id: [7, 8] });
+			many_to_many_attribute.set(object, { id: ['composite', 42] });
 			assert.deepEqual(
 				object.manyToManyIds,
-				[[7, 8]],
+				[['composite', 42]],
 				'a composite id must stay a single array element, not be spread into two scalar ids'
 			);
+
+			const resolved = many_to_many_attribute.resolve(object);
+			assert.equal(resolved.length, 1, 'the composite id resolves to exactly the one related record');
+			assert.equal(resolved[0].name, 'composite id entry');
 		});
 
 		it('array-of-FK relationship with no stored ids resolves to an empty array without reading', async function () {
