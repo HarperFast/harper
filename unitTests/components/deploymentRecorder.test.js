@@ -20,6 +20,7 @@ const {
 	readPayloadBlobWithRetry,
 	markDeploymentTerminal,
 	pruneProjectPayloads,
+	getDeploymentRow,
 } = require('#src/components/deploymentRecorder');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
@@ -683,6 +684,58 @@ describe('markDeploymentTerminal', () => {
 	it('is a no-op when the row is absent (best-effort, never throws)', async () => {
 		await markDeploymentTerminal('missing', 'success');
 		assert.strictEqual(installed.mock.rows.has('missing'), false, 'no row is fabricated for an unknown id');
+	});
+});
+
+describe('getDeploymentRow', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed.restore());
+
+	it('returns the row, including its package_identifier', async () => {
+		// deploy_component({deployment_id}) reads this to recover the package identifier of a deployment
+		// that was staged as a `package` deploy — an activate-by-id request carries no `package` of its own.
+		installed.mock.rows.set('dep-1', {
+			deployment_id: 'dep-1',
+			project: 'my-app',
+			package_identifier: 'npm:@my-org/my-app@1.2.3',
+			status: 'staged',
+		});
+		const row = await getDeploymentRow('dep-1');
+		assert.strictEqual(row?.package_identifier, 'npm:@my-org/my-app@1.2.3');
+	});
+
+	it('returns a row whose payload has already been reclaimed', async () => {
+		// The point of this helper over awaitDeploymentRow: that one polls until the row carries a
+		// payload_blob, so it would never return a deployment whose payload retention already dropped —
+		// which is exactly the row an activate-by-id still needs to read.
+		installed.mock.rows.set('reclaimed', {
+			deployment_id: 'reclaimed',
+			package_identifier: 'npm:pkg@1',
+			payload_blob: null,
+			status: 'success',
+		});
+		const row = await getDeploymentRow('reclaimed');
+		assert.strictEqual(row?.package_identifier, 'npm:pkg@1', 'a payload-less row is still returned');
+	});
+
+	it('returns undefined for an unknown id or a blank id', async () => {
+		assert.strictEqual(await getDeploymentRow('nope'), undefined);
+		assert.strictEqual(await getDeploymentRow(''), undefined);
+	});
+
+	it('returns undefined when the deployment table is not provisioned', async () => {
+		installed.restore();
+		const prior = databases.system?.[DEPLOYMENT_TABLE];
+		if (databases.system) delete databases.system[DEPLOYMENT_TABLE];
+		try {
+			assert.strictEqual(await getDeploymentRow('dep-1'), undefined, 'a missing table is not an error');
+		} finally {
+			if (databases.system && prior !== undefined) databases.system[DEPLOYMENT_TABLE] = prior;
+			installed = installMockDeploymentTable();
+		}
 	});
 });
 

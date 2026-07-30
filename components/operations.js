@@ -39,6 +39,7 @@ const { server } = require('../server/Server.ts');
 const {
 	DeploymentRecorder,
 	awaitDeploymentRow,
+	getDeploymentRow,
 	markDeploymentTerminal,
 	normalizePeerResult,
 	pruneProjectPayloads,
@@ -845,6 +846,29 @@ async function deployPhaseActivate(req) {
  */
 async function deployComponentActivateExisting(req, credentialReferences) {
 	const stagingId = req.deployment_id;
+	// An activate-by-id call carries no `package` — `harper activate` sends only project + deployment_id,
+	// and the docs describe this path as fetching/installing nothing — so recover the staged deployment's
+	// package identifier and credential references from its row. Without this, a component staged as a
+	// `package` deploy and activated later would never persist its root-config entry: not on the origin
+	// (writeComponentRootConfig is gated on `req.package`) and not on any peer either, since the fanned-out
+	// sub-op copies `package`/`credentials` from this same `req`. The package reference and the credential
+	// references that cold reinstalls and newly-joined peers depend on would be silently lost, leaving the
+	// component recorded as a plain directory. Explicit values on the request always win.
+	if (!req.package) {
+		const stagedRow = await getDeploymentRow(stagingId).catch((err) => {
+			log.warn(`Could not read deployment ${stagingId} to recover its package identifier`, err);
+			return undefined;
+		});
+		if (stagedRow?.package_identifier) {
+			req.package = stagedRow.package_identifier;
+			// The row stores credential REFERENCES (tokens were never persisted), which is exactly what
+			// root config should carry. Only fall back to them when the caller supplied none.
+			if (!req.credentials?.length && Array.isArray(stagedRow.credentials) && stagedRow.credentials.length) {
+				req.credentials = stagedRow.credentials;
+			}
+			credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
+		}
+	}
 	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
 	const emitter = req.progress ?? new ProgressEmitter();
 	if (!req.progress) req.progress = emitter;
@@ -1261,6 +1285,14 @@ async function enforceActivatePeerGate({ req, application, emit, failed, totalPe
 			emit('phase', { phase: 'revert', status: 'start' });
 			// The origin activated, so revert it.
 			await revertApplication(application);
+			// With `restart: true` the origin's workers already reloaded onto the new (failed-cluster)
+			// version — the origin restart runs before this gate — so the directory rollback above is not
+			// picked up on its own. The peers' revert op carries `restart`, so they DO come back on the
+			// previous version; without this the origin would be the one node left serving the new version,
+			// the exact opposite of the reconvergence revert_on_failure exists to provide. A rolling restart
+			// arrives here with `restart` already normalized to false and its peers likewise un-restarted,
+			// so origin and peers stay consistent in that case without a second restart.
+			if (req.restart === true) manageThreads.restartWorkers('http');
 			// Revert ONLY the peers that successfully activated (see selectRevertTargets): every known
 			// node minus the ones that failed to activate (still on the correct version) and minus this
 			// node (already reverted directly above; a second bidirectional revert would flip it back).

@@ -456,6 +456,22 @@ export class DeploymentRecorder {
 }
 
 /**
+ * Point-read a deployment row by id, or undefined when the row (or the table) is absent.
+ *
+ * Distinct from `awaitDeploymentRow`, which polls for a row to arrive by replication AND to carry a
+ * `payload_blob`: this is for reading a row the caller already owns locally — e.g. recovering a staged
+ * deployment's `package_identifier` when it is activated later by `deployment_id`. A row whose payload
+ * has been reclaimed by retention is a valid result here, which is exactly what awaitDeploymentRow
+ * would refuse to return.
+ */
+export async function getDeploymentRow(deploymentId: string): Promise<Record<string, any> | undefined> {
+	if (!deploymentId) return undefined;
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	if (!table) return undefined;
+	return table.get(deploymentId);
+}
+
+/**
  * Best-effort terminal-status update for an existing deployment row by id, used when a later operation
  * finishes a deployment the current process didn't record with a live DeploymentRecorder — e.g.
  * `deploy_component({ deployment_id })` activating a build that an earlier stage-and-stop left in the
