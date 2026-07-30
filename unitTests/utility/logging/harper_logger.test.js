@@ -1139,6 +1139,50 @@ describe('Test harper_logger module', () => {
 			assert.ok(result.includes('step 2 ok'));
 		});
 
+		it("never invokes a Proxy prototype's trap while checking whether a branded prototype is safe to wear (#1994 review)", () => {
+			// The branded-prototype safety check above (`inspect(result)` on the empty clone) used to
+			// run against ANY non-null, non-Object.prototype prototype, including a live Proxy - so a
+			// hostile trap (e.g. `get() { while (true) {} }`) would run during what is supposed to be a
+			// passive safety probe on the error-logging path, wedging the worker while it tries to log
+			// and rethrow the original operation failure. A Proxy prototype must be rejected outright,
+			// the same way types.isProxy already gates every other reflection in this file.
+			let trap_calls = 0;
+			const hostile_proto = new Proxy(
+				{},
+				{
+					get(target, prop) {
+						trap_calls++;
+						return Reflect.get(target, prop);
+					},
+				}
+			);
+			const hostile = Object.create(hostile_proto);
+			hostile.detail = 'fine';
+			const result = render({ hostile }, { depth: 8 });
+			assert.strictEqual(trap_calls, 0, 'a Proxy prototype must never be probed, only rejected');
+			assert.ok(result.includes('fine'));
+		});
+
+		it("invokes a nested value's custom inspect hook (reached via its branded prototype) at most once - not once during the internal safety probe and again for the real render (#1994 review)", () => {
+			// Before the fix, the safety probe called plain `inspect(result)`, which - like any
+			// util.inspect call - invokes `[util.inspect.custom]` if the prototype defines one. That ran
+			// the class's custom inspector once here (silently, on an empty, still-mid-construction
+			// clone) and once more later for the actual render, corrupting a stateful/one-shot
+			// inspector's real output on its second call.
+			let calls = 0;
+			class OneShot {
+				[util.inspect.custom]() {
+					calls++;
+					if (calls > 1) throw new Error('called twice');
+					return 'one-shot-rendered';
+				}
+			}
+			const value = { branded: Object.create(OneShot.prototype) };
+			const result = render(value, { depth: 8 });
+			assert.strictEqual(calls, 1, 'the custom inspector must be invoked exactly once, not probed separately');
+			assert.ok(result.includes('one-shot-rendered'));
+		});
+
 		it('never invokes an accessor-backed array entry, and never resolves an overridden Map/Set iterator', () => {
 			let array_getter_calls = 0;
 			const hostile_array = [];
@@ -1391,6 +1435,26 @@ describe('Test harper_logger module', () => {
 
 			render({ boxed_string: makeBoxedString() }, { depth: 8 });
 			assert.strictEqual(invoked, baseline);
+		});
+
+		it('never invokes a hostile `Symbol.toStringTag` getter while picking a safe-summary tag for an opaque built-in that actually carries an expando (#1994 review)', () => {
+			// The classification test above only exercises an expando-free boxed String, which returns
+			// raw before safeOpaqueBuiltinSummary is ever reached. Adding an expando routes it through
+			// safeOpaqueBuiltinSummary's tag detection instead, which used to call
+			// Object.prototype.toString.call(value) - the exact same class of getter-invocation bug the
+			// classification fix above already closed, just in the other place it was still present.
+			let invoked = 0;
+			const boxed_string = new String('hi');
+			Object.defineProperty(boxed_string, Symbol.toStringTag, {
+				get() {
+					invoked++;
+					return 'String';
+				},
+			});
+			boxed_string.detail = 'fine'; // the expando that routes this into safeOpaqueBuiltinSummary
+			const result = render({ boxed_string }, { depth: 8 });
+			assert.strictEqual(invoked, 0, 'safeOpaqueBuiltinSummary must not read Symbol.toStringTag while picking a label');
+			assert.ok(result.includes('String with own properties omitted for safety'));
 		});
 
 		it('sanitizes a function’s secret-bearing expando instead of handing the raw function to inspect() (#1734)', () => {
