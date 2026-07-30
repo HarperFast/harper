@@ -1109,6 +1109,67 @@ describe('test MQTT connections and commands', function () {
 		}
 	});
 
+	it('secure-port UDS metadata carries the certificates when the same socket() call also registers a plain TCP port', async function () {
+		// Regression for #1998's surviving symptom: MQTT registers `{ port, securePort }` in ONE
+		// server.socket() call. onSocket built the TLS server into the function-scoped `socketServer`
+		// binding, the metadata-write closure captured that binding, and the plain-TCP branch then
+		// reassigned it to the port-only server — so every secure-port metadata write read
+		// `secureContexts` off the TCP server (undefined) and published an EMPTY `certificates:`
+		// list. A fronting SNI proxy (Symphony on 8883) then served the node certificate for every
+		// custom-domain SNI, fleet-wide, deterministically. The selector itself was always healthy,
+		// which is why selector-level tests (which drive createTLSSelector with a pseudo-server and
+		// never go through onSocket with both ports) missed it four review rounds in a row — this
+		// test goes through the real wiring and asserts the artifact a proxy actually consumes.
+		this.timeout(10000);
+		const { existsSync, readFileSync: readFile, unlinkSync } = await import('node:fs');
+		const { join } = await import('node:path');
+		const preexistingServers = { ...SERVERS };
+		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
+		const preexistingUds = env_get('tls_unixDomainSockets');
+		setProperty('tls_unixDomainSockets', true);
+		const securePort = 28887;
+		const socketsDir = join(environmentManager.getHdbBasePath(), 'sockets');
+		try {
+			global.server.socket(() => {}, { port: 21887, securePort });
+			// The yaml is written when the TLS selector's `.ready` resolves (or on a later rebuild);
+			// poll for a yaml for our securePort that actually carries certificates.
+			const deadline = Date.now() + 8000;
+			let yamlPath;
+			let content = '';
+			while (Date.now() < deadline) {
+				const candidates = existsSync(socketsDir)
+					? (await import('node:fs')).readdirSync(socketsDir).filter((name) => name.endsWith(`-${securePort}.yaml`))
+					: [];
+				if (candidates.length > 0) {
+					yamlPath = join(socketsDir, candidates[0]);
+					content = readFile(yamlPath, 'utf8');
+					if (content.includes('BEGIN CERTIFICATE')) break;
+				}
+				await delay(100);
+			}
+			assert.ok(yamlPath, `a <worker>-${securePort}.yaml should be written to ${socketsDir}`);
+			assert.ok(
+				content.includes('BEGIN CERTIFICATE'),
+				'the secure-port UDS metadata must carry the certificate list even when the same socket() call ' +
+					'also registered a plain TCP port — an empty `certificates:` list here is exactly what makes an ' +
+					`SNI-routing proxy fall back to the node certificate (got:\n${content.slice(0, 200)})`
+			);
+		} finally {
+			setProperty('tls_unixDomainSockets', preexistingUds);
+			for (const name of existsSync(socketsDir)
+				? (await import('node:fs')).readdirSync(socketsDir).filter((n) => n.includes(`-${securePort}.`))
+				: []) {
+				try {
+					unlinkSync(join(socketsDir, name));
+				} catch {}
+			}
+			for (const key of Object.keys(SERVERS)) delete SERVERS[key];
+			Object.assign(SERVERS, preexistingServers);
+			portServer.clear();
+			for (const [key, servers] of preexistingPortServer) portServer.set(key, servers);
+		}
+	});
+
 	after(() => {
 		clientV4?.end();
 		clientV5?.end();

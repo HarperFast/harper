@@ -494,7 +494,13 @@ function onSocket(listener, options) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		const SNICallback = createTLSSelector('server', options.mtls);
 		const tlsConfig = env.get('tls');
-		socketServer = createSecureSocketServer(
+		// Own const, NOT the shared `socketServer` binding: a caller registering both ports (MQTT's
+		// port + securePort) reaches the plain-TCP branch below, which reassigns `socketServer` to
+		// the 1883 server. The writeMetadata closure below outlives this function, so capturing the
+		// mutable binding made every secure-port metadata write read `secureContexts` off the plain
+		// TCP server (undefined) and publish an empty `certificates:` list — the #1998 bug that let
+		// an SNI-routing proxy (Symphony) fall back to the node certificate on 8883.
+		const secureSocketServer = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
@@ -508,14 +514,15 @@ function onSocket(listener, options) {
 			},
 			listener
 		);
-		SNICallback.initialize(socketServer);
+		socketServer = secureSocketServer;
+		SNICallback.initialize(secureSocketServer);
 		// Only opt out of reusePort on macOS, which doesn't reliably support SO_REUSEPORT on all
 		// socket types (ENOTSUP). Everywhere else, sharing the port lets every worker accept
 		// connections for this listener (e.g. MQTT), matching how HTTP servers are bound; without
 		// it only the first worker to bind serves the port and every sibling's listen() fails with
 		// a silently-swallowed EADDRINUSE.
-		if (process.platform === 'darwin') socketServer.noReusePort = true;
-		SERVERS[options.securePort] = socketServer;
+		if (process.platform === 'darwin') secureSocketServer.noReusePort = true;
+		SERVERS[options.securePort] = secureSocketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
 		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
@@ -539,9 +546,9 @@ function onSocket(listener, options) {
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, socketServer);
+			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
 			SNICallback.ready.then(writeMetadata);
-			socketServer.secureContextsListeners.push(writeMetadata);
+			secureSocketServer.secureContextsListeners.push(writeMetadata);
 		}
 	}
 	if (options.port) {
