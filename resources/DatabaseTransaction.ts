@@ -32,11 +32,13 @@ const MAX_RETRIES = 40;
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
 let outstandingCommit, outstandingCommitStart;
-// Identity of the transaction that armed `outstandingCommit`, captured for the one-time
-// checkOverloaded() log below (harper#2001) — `outstandingCommit` itself is otherwise anonymous,
-// so a stuck commit gives no indication of which database/table/resource to investigate.
-let outstandingCommitIdentity:
-	{ database?: string; table?: string; resourceName?: string; method?: string; transactionId?: unknown } | undefined;
+// References (not a pre-built identity) for the transaction that armed `outstandingCommit`, kept
+// for the one-time checkOverloaded() log below (harper#2001) — `outstandingCommit` itself is
+// otherwise anonymous, so a stuck commit gives no indication of which database/table/resource to
+// investigate. Storing references instead of assembling the identity string here keeps the common
+// (non-wedged) commit path down to two assignments instead of an object allocation.
+let outstandingCommitTxn: DatabaseTransaction | undefined;
+let outstandingCommitNativeTransaction: any;
 // Ensures the checkOverloaded() rejection is logged once per stuck commit, not once per rejected
 // request — under load a wedged thread can reject hundreds of requests per second.
 let outstandingCommitLogged = false;
@@ -382,16 +384,18 @@ export class DatabaseTransaction implements Transaction {
 				// thread otherwise logs nothing at all server-side while rejecting every write with a
 				// 503, which was the single biggest obstacle to root-causing a recurrence.
 				outstandingCommitLogged = true;
-				const identity = outstandingCommitIdentity;
+				const writtenStore = outstandingCommitTxn?.writes[0]?.store;
+				const startedFrom = outstandingCommitTxn?.startedFrom;
+				const nativeTransactionId = outstandingCommitNativeTransaction?.id;
 				harperLogger.error(
 					`Rejecting writes on this thread: a commit has been outstanding for ` +
 						`${Math.round(performance.now() - outstandingCommitStart)}ms (exceeds the ` +
-						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${identity?.database ?? '?'}.${identity?.table ?? '?'}` +
-						(identity?.transactionId !== undefined ? ` (transaction ${identity.transactionId})` : '') +
-						(identity?.resourceName
-							? `, started from ${identity.resourceName}${identity.method ? '.' + identity.method : ''}`
+						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${writtenStore?.rootStore?.databaseName ?? '?'}.${writtenStore?.name ?? '?'}` +
+						(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
+						(startedFrom?.resourceName
+							? `, started from ${startedFrom.resourceName}${startedFrom.method ? '.' + startedFrom.method : ''}`
 							: '') +
-						`. Further record writes and publishes from application requests on this thread will be ` +
+						`. Further writes and publishes from new application requests on this thread will be ` +
 						`rejected with 503 until the commit settles or the process is restarted (writes applied ` +
 						`from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
@@ -567,8 +571,10 @@ export class DatabaseTransaction implements Transaction {
 							// metric. This is the same clock the overload check uses (outstandingCommitStart is
 							// stamped at submit), so a rising p99/p999 is the leading indicator for the
 							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
-							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
-							// re-arms per attempt, so recording per attempt matches the overload semantics.
+							// conflict retry rejects this promise and issues a fresh commit(), but outstandingCommit
+							// only re-arms for the backoff path (retries > 2, below) — the coordinated-retry and
+							// retries<=2 paths re-commit synchronously while outstandingCommit is still set, so
+							// recording per attempt here counts more attempts than the overload check ever arms for.
 							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
 							// Promise<void> here because the widening union defeats flow analysis on the prior
 							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
@@ -610,23 +616,14 @@ export class DatabaseTransaction implements Transaction {
 					if (!outstandingCommit) {
 						outstandingCommit = commitResolution;
 						outstandingCommitStart = performance.now();
-						// Read the table off the write itself (not this.db, which is whichever table first
-						// claimed this per-database transaction in txnForContext, and so can name the wrong
-						// table when a transaction spans more than one table in the same database).
-						// commitResolution here is always transaction.commit()'s Promise, never abort()'s
-						// (rocksdb-js's abort() is synchronous and returns void, so it can't reach this
-						// `if (commitResolution)` branch) — and both commit() call sites are themselves
-						// guarded on this.writes.length > 0, so writtenStore is always defined.
-						const writtenStore = this.writes[0].store;
-						outstandingCommitIdentity = {
-							database: writtenStore.rootStore?.databaseName,
-							table: writtenStore.name,
-							resourceName: this.startedFrom?.resourceName,
-							method: this.startedFrom?.method,
-							// Lets an operator correlate this log with the coordinated-retry debug line and
-							// rocksdb-level diagnostics, which are keyed on the same native transaction id.
-							transactionId: (transaction as any)?.id,
-						};
+						// Keep references only, no allocation — the identity (table off this.writes[0].store,
+						// not this.db, which is whichever table first claimed this per-database transaction in
+						// txnForContext and so can name the wrong table when a transaction spans more than one
+						// table in the same database) is assembled lazily in checkOverloaded(), only on the 45s
+						// wedge path. Safe to defer: a stuck commit means the resolve handler below never runs,
+						// so this.writes is never cleared while outstandingCommit still references it.
+						outstandingCommitTxn = this;
+						outstandingCommitNativeTransaction = transaction;
 						outstandingCommitLogged = false;
 						outstandingCommit
 							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
@@ -635,7 +632,8 @@ export class DatabaseTransaction implements Transaction {
 							.catch(() => {})
 							.finally(() => {
 								outstandingCommit = null;
-								outstandingCommitIdentity = undefined;
+								outstandingCommitTxn = undefined;
+								outstandingCommitNativeTransaction = undefined;
 								outstandingCommitLogged = false;
 							});
 					}
