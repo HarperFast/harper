@@ -1351,6 +1351,34 @@ describe('Test harper_logger module', () => {
 			expect(result).to.not.include('Authorization');
 		});
 
+		it('does not additionally invoke a hostile `Symbol.toStringTag` getter on a boxed String while classifying it - only util.inspect’s own native rendering does', () => {
+			// util.inspect itself reads Symbol.toStringTag on every value it renders (to decide the
+			// display tag), so the getter firing once, from inspect's own native formatting of the
+			// final sanitized value, is unavoidable and not what this guards against. What the fix at
+			// hasEnumerableOwnProps (types.isStringObject instead of Object.prototype.toString.call)
+			// removes is a SECOND invocation from our own classification logic, reached before inspect
+			// ever sees the value - i.e. running a hostile getter as a side effect of merely deciding
+			// how to sanitize, not of rendering.
+			let invoked = 0;
+			const makeBoxedString = () => {
+				const boxed_string = new String('hi');
+				Object.defineProperty(boxed_string, Symbol.toStringTag, {
+					get() {
+						invoked++;
+						return 'String';
+					},
+				});
+				return boxed_string;
+			};
+
+			util.inspect(makeBoxedString());
+			const baseline = invoked;
+			invoked = 0;
+
+			render({ boxed_string: makeBoxedString() }, { depth: 8 });
+			expect(invoked).to.equal(baseline);
+		});
+
 		it('sanitizes a function’s secret-bearing expando instead of handing the raw function to inspect() (#1734)', () => {
 			const secret_error = new Error('request failed');
 			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
@@ -1610,6 +1638,19 @@ describe('Test harper_logger module', () => {
 			revoke();
 			expect(() => logger.error('operation failed', proxy)).to.not.throw();
 			expect(lines.join('\n')).to.include('operation failed');
+		});
+
+		it('does not leak a secret through a live (non-revoked) Proxy wrapping an Error (#1734)', () => {
+			const { logger, lines } = createCapturingLogger();
+			const error = new Error('origin fetch failed');
+			error.hdb_secret = 'Bearer super-secret-token';
+			const proxy = new Proxy(error, {});
+			logger.error(proxy);
+			logger.dir(proxy);
+			logger.table([proxy]);
+			const output = lines.join('\n');
+			expect(output).to.not.include('super-secret-token');
+			expect(output).to.not.include('hdb_secret');
 		});
 
 		it('does not throw when a revoked Proxy appears as a cause', () => {
