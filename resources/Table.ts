@@ -4798,30 +4798,24 @@ export function makeTable(options) {
 						if (definition) {
 							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
 								const ids = object[relationship.from];
-								if (ids === undefined) return undefined;
+								if (ids == null) return ids;
 								if (attribute.elements) {
-									let hasPromises;
-									const results = ids?.map((id) => {
-										const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](id, {
-											transaction: txnForContext(context).getReadTxn(),
-										});
-										if (value?.then) hasPromises = true;
-										// for now, we shouldn't be getting promises until rocksdb
+									// getSync (not get): relationship accessors are a synchronous contract (as in v4);
+									// on RocksDB get() returns a Promise on a block-cache miss, which would leak an
+									// intermittent MaybePromise into user code
+									const store = definition.tableClass.primaryStore;
+									const method = returnEntry ? 'getEntry' : 'getSync';
+									const options = { transaction: txnForContext(context).getReadTxn() };
+									const results = ids.map((id) => {
+										const value = store[method](id, options);
 										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 										return value;
 									});
-									return relationship.filterMissing
-										? hasPromises
-											? Promise.all(results).then((results) => results.filter(exists))
-											: results.filter(exists)
-										: hasPromises
-											? Promise.all(results)
-											: results;
+									return relationship.filterMissing ? results.filter(exists) : results;
 								}
 								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'getSync'](ids, {
 									transaction: txnForContext(context).getReadTxn(),
 								});
-								// for now, we shouldn't be getting promises until rocksdb
 								if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 								return value;
 							};
