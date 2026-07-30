@@ -107,8 +107,9 @@ async function fileSet(dir: string): Promise<Set<string>> {
 		let entries;
 		try {
 			entries = await readdir(d, { withFileTypes: true });
-		} catch {
-			return;
+		} catch (err: any) {
+			if (err?.code === 'ENOENT') return; // dir not created yet, or already removed
+			throw err; // EMFILE/EACCES/etc must not be reported as "no files"
 		}
 		for (const e of entries) {
 			const p = join(d, e.name);
@@ -314,12 +315,20 @@ suite(
 				)
 				.flat();
 			log(`[overwrite] read_audit_log Blob attribute shapes seen: ${JSON.stringify(contentShapes)}`);
+			// Pin the actual contract (a diagnostic log alone would let a regression that leaked raw
+			// blob bytes -- or any other non-placeholder shape -- into the JSON response pass unnoticed):
+			// this HTTP surface must NEVER attempt a file read, so every Blob-valued entry (including
+			// the stale v1/v2 ones) must come back as the placeholder description object, never bytes.
+			const nonPlaceholderShapes = contentShapes.filter(
+				(c: any) => !(c && typeof c === 'object' && typeof c.description === 'string')
+			);
+			strictEqual(
+				nonPlaceholderShapes.length,
+				0,
+				`read_audit_log must return a PLACEHOLDER description object (never raw blob bytes) for every Blob-valued audit entry, got non-placeholder shape(s): ${JSON.stringify(nonPlaceholderShapes)}`
+			);
 			log(
-				`>>> OPS-API SURFACE FINDING: read_audit_log's plain JSON response ${
-					contentShapes.some((c: any) => c && c.description)
-						? 'returns a PLACEHOLDER description object for the Blob attribute (never attempts a file read, so it can neither serve stale bytes nor surface an ENOENT for a reclaimed file via this surface)'
-						: 'did not show the expected placeholder shape — see raw body above'
-				}`
+				`>>> OPS-API SURFACE: read_audit_log's plain JSON response returns a PLACEHOLDER description object for the Blob attribute (never attempts a file read, so it can neither serve stale bytes nor surface an ENOENT for a reclaimed file via this surface)`
 			);
 		});
 

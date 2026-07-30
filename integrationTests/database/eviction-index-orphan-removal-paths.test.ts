@@ -224,23 +224,33 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					while (!heartbeatStop) {
 						const bucket = HEARTBEAT_BUCKETS[heartbeatRound % HEARTBEAT_BUCKETS.length];
 						const tags = [`${bucket}-tag${heartbeatRound % 3}`, `${bucket}-tagX`];
-						await postJSON('/Heartbeat/', { table: 'Expiring', ids: HEARTBEAT_IDS, bucket, tags });
+						const res = await postJSON('/Heartbeat/', { table: 'Expiring', ids: HEARTBEAT_IDS, bucket, tags });
+						const text = await res.text();
+						if (res.status !== 200) {
+							throw new Error(`Heartbeat round ${heartbeatRound} failed: ${res.status} ${text}`);
+						}
 						heartbeatRound++;
 						await sleep(400);
 					}
 				})();
 
-				// Poll until the non-heartbeat rows have fully drained (sweep settled), capped at 60s.
-				const deadline = Date.now() + 60_000;
-				let base = await primaryDump('Expiring');
-				while (Date.now() < deadline && base.rows.length > HEARTBEAT_IDS.length) {
+				// try/finally: if primaryDump() or an assertion below throws, the loop must still be
+				// stopped and awaited here -- otherwise it keeps firing past teardown and can reject as
+				// an unhandled request failure once the instance is gone.
+				try {
+					// Poll until the non-heartbeat rows have fully drained (sweep settled), capped at 60s.
+					const deadline = Date.now() + 60_000;
+					let base = await primaryDump('Expiring');
+					while (Date.now() < deadline && base.rows.length > HEARTBEAT_IDS.length) {
+						await sleep(1000);
+						base = await primaryDump('Expiring');
+					}
+					// A couple more heartbeat rounds after settle, then stop.
 					await sleep(1000);
-					base = await primaryDump('Expiring');
+				} finally {
+					heartbeatStop = true;
+					await heartbeatLoop;
 				}
-				// A couple more heartbeat rounds after settle, then stop.
-				await sleep(1000);
-				heartbeatStop = true;
-				await heartbeatLoop;
 				await sleep(500); // let the last heartbeat write's index update land
 
 				const bucketConsistency = await checkConsistency('Expiring', 'bucket');

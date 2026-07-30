@@ -93,8 +93,9 @@ async function diskFiles(dir: string): Promise<{ files: number; bytes: number; p
 		let entries;
 		try {
 			entries = await readdir(d, { withFileTypes: true });
-		} catch {
-			return;
+		} catch (err: any) {
+			if (err?.code === 'ENOENT') return; // dir not created yet, or already removed
+			throw err; // EMFILE/EACCES/etc must not be reported as "no files"
 		}
 		for (const e of entries) {
 			const p = join(d, e.name);
@@ -104,8 +105,8 @@ async function diskFiles(dir: string): Promise<{ files: number; bytes: number; p
 				try {
 					bytes += (await stat(p)).size;
 					paths.push(p);
-				} catch {
-					/* raced with unlink */
+				} catch (err: any) {
+					if (err?.code !== 'ENOENT') throw err; // only a real unlink race is expected here
 				}
 			}
 		}

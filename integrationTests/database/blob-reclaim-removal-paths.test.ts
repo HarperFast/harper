@@ -74,8 +74,9 @@ async function diskUsage(dir: string): Promise<{ files: number; bytes: number }>
 		let entries;
 		try {
 			entries = await readdir(d, { withFileTypes: true });
-		} catch {
-			return; // dir not created yet, or already removed
+		} catch (err: any) {
+			if (err?.code === 'ENOENT') return; // dir not created yet, or already removed
+			throw err; // EMFILE/EACCES/etc must not be reported as "no files"
 		}
 		for (const e of entries) {
 			const p = join(d, e.name);
@@ -84,14 +85,40 @@ async function diskUsage(dir: string): Promise<{ files: number; bytes: number }>
 				try {
 					bytes += (await stat(p)).size;
 					files++;
-				} catch {
-					/* raced with unlink */
+				} catch (err: any) {
+					if (err?.code !== 'ENOENT') throw err; // only a real unlink race is expected here
 				}
 			}
 		}
 	}
 	await walk(dir);
 	return { files, bytes };
+}
+
+/**
+ * Full set of backing file paths under `dir`. A total-count compare alone can't distinguish
+ * "this removal path reclaimed exactly its own files" from "it deleted someone else's live file
+ * while leaking one of its own" when both cancel out to the same number -- Arm A below uses this
+ * for a path-identity check against Arm D's still-live survivor row in the same shared directory.
+ */
+async function diskPaths(dir: string): Promise<Set<string>> {
+	const out = new Set<string>();
+	async function walk(d: string) {
+		let entries;
+		try {
+			entries = await readdir(d, { withFileTypes: true });
+		} catch (err: any) {
+			if (err?.code === 'ENOENT') return;
+			throw err;
+		}
+		for (const e of entries) {
+			const p = join(d, e.name);
+			if (e.isDirectory()) await walk(p);
+			else out.add(p);
+		}
+	}
+	await walk(dir);
+	return out;
 }
 
 /**
@@ -367,6 +394,11 @@ suite(
 		// ── Arm A: drop_table ────────────────────────────────────────────────────────────────────────
 		test("Arm A: drop_table reclaims its own table's blob files (no cleanup_orphan_blobs call needed)", async () => {
 			const before = await dataUsage();
+			// Path identity, not just a total count: the shared `data` blob directory already holds
+			// Arm D's still-live survivor file at this point in the run. A pure count compare can't
+			// tell "drop_table reclaimed exactly its own N files" apart from "it deleted Arm D's live
+			// file while leaking one of its own" if both happen to cancel out to the same total.
+			const beforePaths = await diskPaths(dataBlobRoot);
 			const N = 12;
 			await storeN('data', 'DropMeTable', 'dmt', N);
 			const afterStore = await dataUsage();
@@ -403,6 +435,20 @@ suite(
 				settled.files,
 				before.files,
 				"drop_table must reclaim all of its table's backing blob files on its own, without a manual cleanup_orphan_blobs call"
+			);
+
+			const settledPaths = await diskPaths(dataBlobRoot);
+			const missingSurvivors = [...beforePaths].filter((p) => !settledPaths.has(p));
+			const unexpectedPaths = [...settledPaths].filter((p) => !beforePaths.has(p));
+			strictEqual(
+				missingSurvivors.length,
+				0,
+				`drop_table must not delete any pre-existing (non-DropMeTable) blob file, missing: ${JSON.stringify(missingSurvivors)}`
+			);
+			strictEqual(
+				unexpectedPaths.length,
+				0,
+				`drop_table must leave no file behind beyond the pre-existing set, unexpected: ${JSON.stringify(unexpectedPaths)}`
 			);
 		});
 

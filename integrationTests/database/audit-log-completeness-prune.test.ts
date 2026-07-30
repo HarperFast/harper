@@ -141,7 +141,7 @@ async function readHistories(ctx: ContextWithHarper, ids: string[]): Promise<Rec
  * "armed oracle" assertion observed the pre-prune entry count because the job hadn't
  * executed yet). We poll get_job to a terminal status before trusting any downstream read.
  */
-async function pruneBefore(ctx: ContextWithHarper, timestamp: number): Promise<{ status: number; body: any }> {
+async function submitPrune(ctx: ContextWithHarper, timestamp: number): Promise<string> {
 	const submitted = await rawOp(ctx, {
 		operation: 'delete_transaction_logs_before',
 		schema: SCHEMA,
@@ -154,18 +154,27 @@ async function pruneBefore(ctx: ContextWithHarper, timestamp: number): Promise<{
 	);
 	const jobId = submitted.body?.createdJob?.id ?? submitted.body?.job_id;
 	ok(jobId, `delete_transaction_logs_before did not return a job id: ${JSON.stringify(submitted.body)}`);
+	return jobId;
+}
 
-	const deadline = Date.now() + 30_000;
+async function pollJobTerminal(ctx: ContextWithHarper, jobId: string, timeoutMs = 30_000): Promise<any> {
+	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		const r = await rawOp(ctx, { operation: 'get_job', id: jobId });
 		const job = Array.isArray(r.body) ? r.body[0] : r.body;
 		if (job?.status === 'COMPLETE' || job?.status === 'ERROR') {
 			ok(job.status === 'COMPLETE', `delete_transaction_logs_before job ended in ERROR: ${JSON.stringify(job)}`);
-			return { status: 200, body: job };
+			return job;
 		}
 		await sleep(100);
 	}
-	throw new Error(`delete_transaction_logs_before job ${jobId} did not reach terminal status within 30s`);
+	throw new Error(`delete_transaction_logs_before job ${jobId} did not reach terminal status within ${timeoutMs}ms`);
+}
+
+async function pruneBefore(ctx: ContextWithHarper, timestamp: number): Promise<{ status: number; body: any }> {
+	const jobId = await submitPrune(ctx, timestamp);
+	const job = await pollJobTerminal(ctx, jobId);
+	return { status: 200, body: job };
 }
 
 async function insert(ctx: ContextWithHarper, records: any[]): Promise<void> {
@@ -426,11 +435,34 @@ function defineSuite(threadCount: number, engineOverride?: 'lmdb' | 'rocksdb') {
 			// ---- Q3: concurrent seam — prune racing fresh writes ----------------------------------
 			test('Q3: writes landing concurrently with a prune pass are never destroyed', async () => {
 				const concurrentIds = Array.from({ length: 20 }, (_, i) => `q3-${threadCount}-${i}`);
-				const cutoff = Date.now(); // prune everything up to right now, fired concurrently with fresh writes below
-				const [pruneRes] = await Promise.all([
-					pruneBefore(ctx, cutoff),
-					burst(ctx, `q3-${threadCount}`, 20).then(() => undefined),
-				]);
+				const cutoff = Date.now(); // prune everything up to right now
+				const jobId = await submitPrune(ctx, cutoff);
+
+				// Promise.all([submit+poll, burst]) would only prove two independent requests were
+				// issued -- delete_transaction_logs_before is a queued job, so it could finish before
+				// burst() sends a single request, or not even start until after burst() is done, and
+				// this test would pass either way having proven nothing about actual overlap. Poll for
+				// the job's own IN_PROGRESS status (persisted by jobRunner.ts's runJob() BEFORE it
+				// invokes the delete operation) as an observable barrier, so the burst below is only
+				// issued once the prune is known to be genuinely mid-flight.
+				const runningDeadline = Date.now() + 10_000;
+				let observedRunning = false;
+				while (Date.now() < runningDeadline) {
+					const r = await rawOp(ctx, { operation: 'get_job', id: jobId });
+					const job = Array.isArray(r.body) ? r.body[0] : r.body;
+					if (job?.status === 'IN_PROGRESS') {
+						observedRunning = true;
+						break;
+					}
+					if (job?.status === 'COMPLETE' || job?.status === 'ERROR') break; // too fast to observe
+					await sleep(20);
+				}
+				console.log(
+					`[QA-725 Q3 threads=${threadCount}] prune job observedRunning=${observedRunning} before issuing the concurrent burst`
+				);
+
+				await burst(ctx, `q3-${threadCount}`, 20);
+				const pruneRes = { status: 200, body: await pollJobTerminal(ctx, jobId) };
 				ok(
 					pruneRes.status === 200,
 					`delete_transaction_logs_before expected 200, got ${pruneRes.status}: ${JSON.stringify(pruneRes.body)}`
