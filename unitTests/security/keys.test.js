@@ -621,6 +621,57 @@ describe('Test keys module', () => {
 					'bootstrap flow that creates the first replication cert depends on this resolving falsy'
 			);
 		});
+
+		it('retries on a LATER rebuild that transiently resolves zero certificates — a prior success must not disarm the guard', async function () {
+			// The guard must key off "did THIS pass produce anything", not the persistent
+			// `defaultContext` closure variable: that is never reset (a transient zero-cert pass keeps
+			// serving the prior default while retrying), so it is truthy forever after the first
+			// successful pass. Keyed off it, a post-boot rebuild that transiently sees zero certs (key
+			// not yet synced, row missing mid-copy) would skip the retry and publish an empty
+			// certificates list — the #1998 symptom, reintroduced on the live-rebuild path that a
+			// long-running node is far more likely to hit than the boot race.
+			this.timeout(15000);
+			searchStub.restore(); // healthy baseline first — this describe stubs search empty by default
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'baseline must be healthy before the transient outage');
+			const publishedSizes = [];
+			pseudoServer.secureContextsListeners.push(() => publishedSizes.push(pseudoServer.secureContexts.size));
+
+			// Make the next pass transiently see zero certs, and trigger that pass through a real
+			// cert-table write (the selector's live subscription).
+			searchStub = sandbox.stub(databases.system.hdb_certificate, 'search').returns([]);
+			const triggerCertName = 'transient-zero-trigger-' + Date.now();
+			await databases.system.hdb_certificate.put({
+				name: triggerCertName,
+				certificate: test_cert,
+				uses: [],
+				is_authority: false,
+				private_key_name: actual_cert.private_key_name,
+				is_self_signed: true,
+			});
+			try {
+				// The transient pass is observable via the warn latch it sets on the server object.
+				await waitFor(() => pseudoServer.tlsSelectorWarnedZeroCerts === true, {
+					timeout: 6000,
+					message: 'the transient zero-cert rebuild never ran (or never took the retry path)',
+				});
+
+				searchStub.restore(); // certs are "back"; the pending retry must republish
+				await waitFor(() => publishedSizes.length > 0, {
+					timeout: 6000,
+					message: 'the selector never republished after certificates became visible again',
+				});
+				assert.ok(
+					publishedSizes.every((size) => size > 0),
+					'a transient zero-cert rebuild must never publish an empty certificates list; published sizes: ' +
+						publishedSizes.join(',')
+				);
+			} finally {
+				await databases.system.hdb_certificate.delete(triggerCertName).catch(() => {});
+			}
+		});
 	});
 
 	describe('createTLSSelector when the hdb_certificate table object is swapped out', () => {
