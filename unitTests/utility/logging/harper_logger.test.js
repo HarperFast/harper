@@ -1082,6 +1082,21 @@ describe('Test harper_logger module', () => {
 			assert.ok(result.includes('custom-nested-render'));
 		});
 
+		it('sanitizes what a preserved custom inspect hook RETURNS, not just what it is called with - a hook returning a secret-bearing Error must not leak it (#1994 review)', () => {
+			// The hook itself runs at real render time, entirely outside this walk, so its return value
+			// has never been through deepSanitizeErrors. A hook that hands back a closure-captured Error
+			// carrying a secret must still have that Error sanitized before the final util.inspect call
+			// renders whatever the hook returned.
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const custom_rendered = { [util.inspect.custom]: () => secret_error };
+			const value = { inner: custom_rendered };
+			const result = render(value, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Error: request failed'));
+		});
+
 		it('sanitizes a secret-carrying Error reached a second time through a cycle', () => {
 			const nested_error = new Error('request failed');
 			nested_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
@@ -1397,6 +1412,31 @@ describe('Test harper_logger module', () => {
 			assert.match(result, /\/abc\/gi/);
 		});
 
+		it("reconstructs an expando-bearing RegExp's flags via individual internal-slot getters, never the combined `flags` getter, so a hostile flag-property expando is never invoked (#1994 review)", () => {
+			// RegExp.prototype.flags is specified to synthesize its result by reading `this.global`,
+			// `this.ignoreCase`, etc as ordinary [[Get]]s on the RegExp instance - unlike the individual
+			// flag getters (`global`, `ignoreCase`, ...), which read the internal [[OriginalFlags]] slot
+			// directly. A RegExp carrying an expando that shadows one of those names with a hostile
+			// getter would have the combined getter invoke it while merely trying to reconstruct a safe
+			// copy for logging.
+			let trap_calls = 0;
+			const hostile_regexp = /abc/gi;
+			hostile_regexp.detail = 'fine'; // the expando that routes this into safeOpaqueBuiltinSummary
+			Object.defineProperty(hostile_regexp, 'global', {
+				get() {
+					trap_calls++;
+					return true;
+				},
+			});
+			const result = render({ hostile_regexp }, { depth: 8 });
+			assert.strictEqual(
+				trap_calls,
+				0,
+				"reconstructing the flags must never read the instance's own `global` property"
+			);
+			assert.match(result, /\/abc\/gi/);
+		});
+
 		it('falls back to a bounded, safe summary (not the raw value) for a Buffer/boxed-primitive carrying a secret-bearing expando (#1734)', () => {
 			const secret_error = new Error('request failed');
 			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
@@ -1617,6 +1657,27 @@ describe('Test harper_logger module', () => {
 			assert.strictEqual(isErrorLike(hostile), false);
 			assert.strictEqual(trap_calls, 0, 'isErrorLike must classify a Proxy without reflecting on it at all');
 		});
+
+		it("never invokes a Proxy ANCESTOR's getPrototypeOf trap either, even when the argument itself is an ordinary (non-Proxy) object (#1994 review)", () => {
+			// types.isProxy(arg) alone only rejects `arg` itself being a Proxy. `arg instanceof Error`
+			// walks the FULL prototype chain via [[GetPrototypeOf]] - for
+			// `Object.create(Object.create(proxyAncestor))`, `arg` is an ordinary object, but the walk
+			// still reaches `proxyAncestor` a couple of levels up and invokes its trap.
+			let trap_calls = 0;
+			const proxy_ancestor = new Proxy(Error.prototype, {
+				getPrototypeOf(target) {
+					trap_calls++;
+					return Reflect.getPrototypeOf(target);
+				},
+			});
+			const hostile = Object.create(Object.create(proxy_ancestor));
+			assert.strictEqual(isErrorLike(hostile), false);
+			assert.strictEqual(
+				trap_calls,
+				0,
+				'isErrorLike must not walk the prototype chain at all - a Proxy anywhere in it must never be reflected on'
+			);
+		});
 	});
 
 	describe('Test logger auto-wrap of Error args (#1734)', () => {
@@ -1751,6 +1812,24 @@ describe('Test harper_logger module', () => {
 			const error = new Error('origin fetch failed', { cause: hostileCause });
 			expect(() => logger.error(error)).to.not.throw();
 			expect(lines.join('\n')).to.include('Error: origin fetch failed');
+		});
+
+		it("does not throw when a cause's stack getter throws a revoked Proxy instead of a normal value (#1994 review)", () => {
+			// `err instanceof Error`/`String(err)` (the old catch-block rendering) both throw on a
+			// revoked Proxy - so if the value thrown by a hostile getter here IS one, the old code's own
+			// error-recovery path would itself throw, escaping renderErrorLine entirely.
+			const { logger, lines } = createCapturingLogger();
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			const hostileCause = {};
+			Object.defineProperty(hostileCause, 'stack', {
+				get() {
+					throw proxy;
+				},
+			});
+			const error = new Error('origin fetch failed', { cause: hostileCause });
+			assert.doesNotThrow(() => logger.error(error));
+			assert.ok(lines.join('\n').includes('Error: origin fetch failed'));
 		});
 	});
 });
