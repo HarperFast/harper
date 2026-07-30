@@ -1198,7 +1198,7 @@ describe('test MQTT connections and commands', function () {
 		// never go through onSocket with both ports) missed it four review rounds in a row — this
 		// test goes through the real wiring and asserts the artifact a proxy actually consumes.
 		this.timeout(10000);
-		const { existsSync, readFileSync: readFile, unlinkSync } = await import('node:fs');
+		const { existsSync, readFileSync: readFile, readdirSync, unlinkSync } = await import('node:fs');
 		const { join } = await import('node:path');
 		const preexistingServers = { ...SERVERS };
 		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
@@ -1207,6 +1207,17 @@ describe('test MQTT connections and commands', function () {
 		const securePort = 28887;
 		const socketsDir = join(environmentManager.getHdbBasePath(), 'sockets');
 		try {
+			// Clear any yaml a crashed prior run left behind — a stale populated file would false-pass
+			// the poll below even if the current write regressed.
+			if (existsSync(socketsDir)) {
+				for (const name of readdirSync(socketsDir).filter((n) => n.includes(`-${securePort}.`))) {
+					try {
+						unlinkSync(join(socketsDir, name));
+					} catch {}
+				}
+			}
+			// Note: like the sibling socket tests above, this leaves the selector's liveReload
+			// registration in keys.ts's module-global rebuild set — onSocket exposes no teardown.
 			global.server.socket(() => {}, { port: 21887, securePort });
 			// The yaml is written when the TLS selector's `.ready` resolves (or on a later rebuild);
 			// poll for a yaml for our securePort that actually carries certificates.
@@ -1215,7 +1226,7 @@ describe('test MQTT connections and commands', function () {
 			let content = '';
 			while (Date.now() < deadline) {
 				const candidates = existsSync(socketsDir)
-					? (await import('node:fs')).readdirSync(socketsDir).filter((name) => name.endsWith(`-${securePort}.yaml`))
+					? readdirSync(socketsDir).filter((name) => name.endsWith(`-${securePort}.yaml`))
 					: [];
 				if (candidates.length > 0) {
 					yamlPath = join(socketsDir, candidates[0]);
@@ -1234,7 +1245,7 @@ describe('test MQTT connections and commands', function () {
 		} finally {
 			setProperty('tls_unixDomainSockets', preexistingUds);
 			for (const name of existsSync(socketsDir)
-				? (await import('node:fs')).readdirSync(socketsDir).filter((n) => n.includes(`-${securePort}.`))
+				? readdirSync(socketsDir).filter((n) => n.includes(`-${securePort}.`))
 				: []) {
 				try {
 					unlinkSync(join(socketsDir, name));
