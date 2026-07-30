@@ -791,6 +791,17 @@ describe('Querying through Resource API', () => {
 			}
 		});
 
+		it('array-of-FK relationship tolerates a scalar stored id and normalizes single-record sets', async function () {
+			const scalar_stored = many_to_many_attribute.resolve({ manyToManyIds: 3 });
+			assert(Array.isArray(scalar_stored), 'scalar stored id resolves to an array');
+			assert.equal(scalar_stored.length, 1);
+			assert.equal(scalar_stored[0].name, 'many-to-many entry 3');
+
+			const object = {};
+			many_to_many_attribute.set(object, { id: 7 });
+			assert.deepEqual(object.manyToManyIds, [7], 'single record set on an elements attribute stores an array');
+		});
+
 		it('Query by join with many-to-many (reverse)', async function () {
 			let results = [];
 			for await (let record of ManyToMany.search({
