@@ -14,8 +14,22 @@ const { handleApplication } = require('#src/server/mqtt');
 describe('mqtt.ts handleApplication raw-socket registration', () => {
 	function recordingServer() {
 		const calls = [];
-		return { socket: (...args) => calls.push(args), calls };
+		// handleApplication stores server.socket()'s return value (serverInstances.push(...)), so
+		// the recorder returns an object rather than calls.push()'s length to match that shape.
+		return { socket: (...args) => (calls.push(args), {}), calls };
 	}
+
+	it('registers no listener when neither port nor securePort is configured', () => {
+		const server = recordingServer();
+		const scope = {
+			options: { getAll: () => ({ network: {} }) },
+			server,
+		};
+
+		handleApplication(scope);
+
+		assert.strictEqual(server.calls.length, 0);
+	});
 
 	it("registers the raw TCP/TLS listener with usageType 'mqtt'", () => {
 		const server = recordingServer();

@@ -474,40 +474,88 @@ describe('Test keys module', () => {
 	describe('threadServer onSocket — usageType handoff (regression for #2003 review)', () => {
 		// The two describe blocks above cover each END of the usageType contract: mqtt.ts emits
 		// `usageType: 'mqtt'` (unitTests/server/mqtt.test.js), and createTLSSelector('mqtt', ...)
-		// honors it (above). The SEAM — threadServer.js's `const usageType = options.usageType ??
-		// 'server'`, which feeds BOTH createTLSSelector and getEffectiveTlsCiphers — had no
-		// coverage; a revert to a hardcoded 'server' there left every other test green (confirmed
-		// by mutation during review). This drives the real onSocket() (exported as `server.socket`)
-		// and observes getEffectiveTlsCiphers' config-layer output: only 'operations-api' picks up
-		// the operationsApi.tls layer, so a distinct effective cipher string per usageType proves
-		// the SAME local variable that reaches getEffectiveTlsCiphers is also what createTLSSelector
-		// receives — they are not independently computed.
+		// honors it (above, via the `keys` module this file `rewire()`s). The SEAM —
+		// threadServer.js's `const usageType = options.usageType ?? 'server'`, which feeds BOTH
+		// createTLSSelector and getEffectiveTlsCiphers — had no coverage; a revert to a hardcoded
+		// 'server' there left every other test green (confirmed by mutation during review).
+		//
+		// `server/threads/threadServer.js` imports security/keys.ts via a plain `require`, NOT
+		// this file's `rewire()`'d instance — those are two separate module instances with their
+		// own `privateKeys` maps. Calling the plain-required instance's own `loadCertificates()`
+		// (below) populates *its* map from the same on-disk test key file the rewired instance
+		// already uses (same `config_utils.getConfigFromFile` stub, shared across both instances),
+		// so `onSocket`'s real `createTLSSelector` call can actually build secure contexts instead
+		// of every candidate throwing "Missing private key" and being silently swallowed.
 		const { server } = require('#src/server/Server');
 		require('#src/server/threads/threadServer'); // side effect: registers server.socket = onSocket
+		const { databases } = require('#src/resources/databases');
+		const { SERVERS, portServer } = require('#src/server/serverRegistry');
+		const realKeys = require('#src/security/keys');
 		// tls.createServer validates `ciphers` against OpenSSL's real cipher list at construction
 		// time, so these must be distinct, valid suite names, not arbitrary strings.
 		const rootCiphers = 'AES128-SHA';
 		const opsCiphers = 'AES256-SHA';
+		const seamHost = 'mqtt-2003-seam.invalid';
 		let nextPort = 40000 + (process.pid % 1000);
+		const createdServers = [];
+		let previousTls;
+		let previousOpsTls;
 
-		before(() => {
-			env_mgr.setProperty('tls', { ciphers: rootCiphers });
-			env_mgr.setProperty('operationsApi_tls', { ciphers: opsCiphers });
+		before(async () => {
+			await realKeys.loadCertificates();
+			previousTls = env_mgr.get('tls');
+			previousOpsTls = env_mgr.get('operationsApi_tls');
+			env_mgr.setProperty('tls', { ...previousTls, ciphers: rootCiphers });
+			env_mgr.setProperty('operationsApi_tls', { ...previousOpsTls, ciphers: opsCiphers });
 		});
 
 		after(() => {
-			env_mgr.setProperty('tls', undefined);
-			env_mgr.setProperty('operationsApi_tls', undefined);
+			env_mgr.setProperty('tls', previousTls);
+			env_mgr.setProperty('operationsApi_tls', previousOpsTls);
+			for (const created of createdServers) {
+				created.close();
+				delete SERVERS[created.securePort];
+				portServer.delete(created.securePort);
+			}
 		});
 
+		function socket(options) {
+			const securePort = nextPort++;
+			const socketServer = server.socket(() => {}, { securePort, ...options });
+			createdServers.push({ close: () => socketServer.close?.(), securePort });
+			return socketServer;
+		}
+
 		it("applies the operationsApi.tls layer only when usageType is 'operations-api'", () => {
-			const socketServer = server.socket(() => {}, { securePort: nextPort++, usageType: 'operations-api' });
-			expect(socketServer.appliedCiphers).to.equal(opsCiphers);
+			expect(socket({ usageType: 'operations-api' }).appliedCiphers).to.equal(opsCiphers);
 		});
 
 		it("falls back to the root tls layer for a non-operations-api usageType (e.g. 'mqtt')", () => {
-			const socketServer = server.socket(() => {}, { securePort: nextPort++, usageType: 'mqtt' });
-			expect(socketServer.appliedCiphers).to.equal(rootCiphers);
+			expect(socket({ usageType: 'mqtt' }).appliedCiphers).to.equal(rootCiphers);
+		});
+
+		it('threads usageType into createTLSSelector too — an mqtt-tagged cert outranks a server-tagged one on the real listener', async () => {
+			const certs = [
+				{ name: 'seam-mqtt-' + Date.now(), uses: ['mqtt'], hostnames: [seamHost] },
+				{ name: 'seam-server-' + Date.now(), uses: ['server'], hostnames: [seamHost] },
+			];
+			try {
+				for (const cert of certs) {
+					await databases.system.hdb_certificate.put({
+						certificate: test_cert,
+						is_authority: false,
+						private_key_name: actual_cert.private_key_name,
+						is_self_signed: false,
+						...cert,
+					});
+				}
+				const socketServer = socket({ usageType: 'mqtt' });
+				const winner = socketServer.secureContexts.get(seamHost);
+				expect(winner?.name).to.include('seam-mqtt-');
+				expect(winner?.quality).to.equal(6);
+			} finally {
+				for (const cert of certs) await databases.system.hdb_certificate.delete(cert.name).catch(() => {});
+			}
 		});
 	});
 
