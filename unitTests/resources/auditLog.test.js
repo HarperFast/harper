@@ -52,9 +52,11 @@ describe('Audit log', () => {
 			results.push(entry);
 		}
 		assert.equal(results.length, 4);
-		// Poll for the subscription events instead of a fixed 20ms delay, which is too short
-		// on a loaded CI runner and made this assertion flaky.
-		for (let i = 0; i < 20 && events.length <= 2; i++) {
+		// Poll for the subscription events instead of a fixed delay, which is too short on a loaded
+		// CI runner and made this assertion flaky (observed failing on the Node 22 runner while the
+		// same commit passed on Node 24/26 and locally). The loop exits as soon as the events arrive,
+		// so a healthy run pays nothing for the wider ceiling.
+		for (let i = 0; i < 200 && events.length <= 2; i++) {
 			await delay(10);
 		}
 		assert(events.length > 2, 'Should have at least a couple of update events');
@@ -62,8 +64,9 @@ describe('Audit log', () => {
 		setAuditRetention(0.001, 1);
 		AuditedTable.auditStore.scheduleAuditCleanup(1);
 		await AuditedTable.put(3, { name: 'three' });
-		// Poll until cleanup completes (was a fixed 20ms which is too short on a loaded CI runner)
-		for (let i = 0; i < 20; i++) {
+		// Poll until cleanup completes (a fixed short delay is too short on a loaded CI runner); the
+		// loop breaks as soon as the history is empty, so the wider ceiling is free on a healthy run.
+		for (let i = 0; i < 200; i++) {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			results = [];
 			for await (let entry of AuditedTable.getHistory()) {
