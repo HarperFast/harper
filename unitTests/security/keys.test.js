@@ -1048,6 +1048,20 @@ describe('Test keys module', () => {
 			);
 		});
 
+		it("applies a 'server'-tagged legacy record only for the explicit LEGACY_SERVER_FALLBACK_TYPES allowlist (mqtt), not for any other listener type", () => {
+			// 'server' was onSocket()'s raw-socket callers' usage type (and the plain-http default)
+			// before per-caller usageType existed — a cert tagged uses: ['server'] must keep applying
+			// to mqtt now that it passes its own specific type. This is an ALLOWLIST, not a denylist:
+			// every other existing type (operations-api, replication, ...) has always had its own
+			// dedicated identity and never defaulted to 'server', so none of them should newly start
+			// accepting a ['server']-tagged record's ciphers/@SECLEVEL just because 'server' gained
+			// legacy-generic status for mqtt's migration.
+			const records = [{ name: 'legacy-server', uses: ['server'], ciphers: RELAXED }];
+			expect(resolve(layers({}), records, 'mqtt', false)).to.equal(RELAXED);
+			expect(resolve(layers({}), records, 'operations-api', false)).to.be.undefined;
+			expect(resolve(layers({}), records, 'replication', false)).to.be.undefined;
+		});
+
 		it('normalizes a legacy scalar uses value', () => {
 			const records = [{ name: 'cert', uses: 'server', ciphers: RELAXED }];
 			expect(resolve(layers({}), records, 'server', false)).to.equal(RELAXED);
