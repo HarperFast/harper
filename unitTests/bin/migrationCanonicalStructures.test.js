@@ -54,13 +54,23 @@ describe('migration: records still decode after the canonical-structures change 
 		// Open the migrated primary CF the same way the v5 runtime would and read records back.
 		// With the canonical structures persisted, every migrated record (including the bare
 		// structure-id references after the first of each shape) must decode, not null out.
-		const cf = RocksDatabase.open(targetPath, { name: 'CacheStruct/', sharedStructuresKey: Symbol.for('structures') });
+		// PrimaryRocksDatabase + RecordEncoder are required since #2012: migrated records carry
+		// the version/metadata prefix again, which a plain msgpackr decoder cannot strip.
+		const { RecordEncoder } = require('#src/resources/RecordEncoder');
+		const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+		const root = RocksDatabase.open(targetPath, {});
+		const cf = new PrimaryRocksDatabase(targetPath, {
+			name: 'CacheStruct/',
+			sharedStructuresKey: Symbol.for('structures'),
+			encoder: { Encoder: RecordEncoder },
+		}).open();
+		cf.initStore(root);
 		try {
 			const failures = [];
 			for (const id of ['a', 'b', 'c']) {
 				let rec;
 				try {
-					rec = cf.get(id);
+					rec = cf.getSync(id);
 				} catch (e) {
 					rec = { __threw: e.message };
 				}
@@ -74,6 +84,7 @@ describe('migration: records still decode after the canonical-structures change 
 			);
 		} finally {
 			cf.close();
+			root.close();
 		}
 	});
 });

@@ -20,7 +20,13 @@ import {
 	encodeBlobsWithFilePath,
 	endPendingMigrationBlobSaves,
 } from '../resources/blob.ts';
-import { RecordEncoder, setNextEncoding, lastMetadata, METADATA } from '../resources/RecordEncoder.ts';
+import {
+	RecordEncoder,
+	setNextEncoding,
+	clearNextEncoding,
+	lastMetadata,
+	METADATA,
+} from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
 	hdbLogger.notify('Running compact on start');
@@ -527,7 +533,29 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			copyStructures(sourceDbi, key);
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
-			await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder);
+			const firstVersioned = await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder);
+			if (firstVersioned !== undefined) {
+				// Invariant tripwire (#2012): a versioned record must round-trip with its 8-byte
+				// version prefix. The full big-endian float64 is compared to the source version —
+				// a first-byte check alone is ambiguous, since a prefix-less classic record can
+				// also lead with 0x42 (structure ref id 2). Failing here keeps the migration
+				// incomplete (LMDB source intact, migrateOnStart flag retained) instead of
+				// shipping a database whose records silently lost versions and record prototypes.
+				await firstVersioned.written;
+				await written;
+				const roundTrip = targetDbi.getBinarySync(firstVersioned.key);
+				const roundTripVersion =
+					roundTrip && roundTrip.length >= 8
+						? new DataView(roundTrip.buffer, roundTrip.byteOffset, roundTrip.byteLength).getFloat64(0)
+						: undefined;
+				if (roundTripVersion !== firstVersioned.version) {
+					throw new Error(
+						`Migration of ${sourceDatabase} wrote record ${JSON.stringify(firstVersioned.key)} without its ` +
+							`version/metadata prefix (expected version ${firstVersioned.version}, read back ${roundTripVersion}) — ` +
+							`records would lose versions and prototypes`
+					);
+				}
+			}
 
 			// Persist the canonical v5 classic structures the observer built, so every v5 runtime worker
 			// adopts one agreed dictionary on startup instead of minting its own from an empty durable and
@@ -598,6 +626,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder?) {
 		let recordsCopied = 0;
 		let skippedRecord = 0;
+		let firstVersioned;
 		const MAX_RETRIES = 1000;
 		let retries = MAX_RETRIES;
 		let start = null;
@@ -626,18 +655,30 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 							// lastMetadata is set by RecordEncoder.decode for unpatched stores;
 							// entry fields are set by handleLocalTimeForGets for patched stores
 							const sourceMeta = lastMetadata;
-							setNextEncoding(
-								version,
-								entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
-								entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
-								entryNodeId ?? sourceMeta?.nodeId ?? -1,
-								entryResidencyId ?? sourceMeta?.residencyId ?? 0
-							);
+							if (version) {
+								setNextEncoding(
+									version,
+									entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
+									entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
+									entryNodeId ?? sourceMeta?.nodeId ?? -1,
+									entryResidencyId ?? sourceMeta?.residencyId ?? 0
+								);
+							} else {
+								// A flags-word-only prefix (no leading timestamp) is misparsed by the RocksDB
+								// decode heuristic (8 bytes consumed as a timestamp), so a version-less source
+								// record must be encoded plain; the read path repairs its prototype (#2012).
+								// Cleared even though the plain-encode hook would not consume stale globals:
+								// they may have leaked from a prior record whose encode was skipped or threw.
+								clearNextEncoding();
+							}
 							written = encodeBlobsWithFilePath(
 								() => targetDbi.put(key, value, version),
 								typeof key === 'number' ? key : recordsCopied,
 								sourceRootStore
 							);
+							// Capture the put promise so the tripwire awaits THIS record's write, not
+							// an ordering assumption about later puts in the batch.
+							if (version) firstVersioned ??= { key, version, written };
 							// Feed only the record's SHAPE to the observer so it accumulates the canonical
 							// classic structure (key list) for this shape; the encoded output is discarded.
 							// A classic/named structure depends only on the keys, so we stub every leaf value
@@ -694,7 +735,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 					}
 				}
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
-				return;
+				return firstVersioned;
 			} catch (err) {
 				console.error(
 					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retries} retries left):`,
