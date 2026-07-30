@@ -305,6 +305,133 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			socket.emit('timeout'); // an unrelated later timeout must be a no-op post-handoff
 			assert.strictEqual(socket.destroy.called, false);
 		});
+
+		it('uninstalls its wrapper and restores the original listeners once the header resolves', async () => {
+			// The wrapper must not outlive the header decision: Node's HTTP upgrade path
+			// removes the parser's 'data' listener by reference before ws takes over, so a
+			// lingering wrapper would keep feeding the freed (re-poolable) parser.
+			const socket = createSocket();
+			const server = new EventEmitter();
+			enableProxyProtocol(server);
+			const parserListener = () => {};
+			socket.on('data', parserListener);
+			server.emit('connection', socket);
+			await new Promise((resolve) => process.nextTick(resolve));
+			socket.emit('data', Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\nHELLO'));
+			assert.deepStrictEqual(socket.listeners('data'), [parserListener]);
+		});
+	});
+
+	// ─── WS upgrade through the UDS mirror path (real sockets) ────────────────
+
+	describe('WebSocket upgrade over a proxy-protocol UDS server', () => {
+		// End-to-end regression for the two defects that silently killed WS on the UDS
+		// mirrors: a mirror with no 'upgrade' listener destroys the socket with a
+		// zero-byte close, and the old enableProxyProtocol wrapper kept forwarding
+		// post-upgrade frames into the freed HTTP parser (which the pool can re-issue
+		// to another connection, corrupting it).
+		const http = require('node:http');
+		const net = require('node:net');
+		const crypto = require('node:crypto');
+		const os = require('node:os');
+		const { WebSocketServer } = require('ws');
+
+		// Short path: sun_path is limited to ~104 bytes on macOS
+		const sockPath = path.join(os.tmpdir(), `hdb-ws-uds-${process.pid}.sock`);
+		let server, wss;
+
+		before(async () => {
+			try {
+				fs.unlinkSync(sockPath);
+			} catch {}
+			server = http.createServer((request, response) => response.end('ok'));
+			wss = new WebSocketServer({ noServer: true });
+			wss.on('connection', (ws) => ws.on('message', (msg) => ws.send(`echo:${msg}`)));
+			server.on('upgrade', (request, socket, head) => {
+				wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
+			});
+			enableProxyProtocol(server);
+			await new Promise((resolve) => server.listen(sockPath, resolve));
+		});
+
+		after(async () => {
+			wss?.close();
+			server.closeAllConnections?.();
+			await new Promise((resolve) => server.close(resolve));
+			try {
+				fs.unlinkSync(sockPath);
+			} catch {}
+		});
+
+		function maskedTextFrame(text) {
+			const payload = Buffer.from(text);
+			const mask = crypto.randomBytes(4);
+			const masked = Buffer.from(payload.map((byte, i) => byte ^ mask[i % 4]));
+			return Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]);
+		}
+
+		function httpRequest() {
+			return new Promise((resolve, reject) => {
+				const client = net.connect(sockPath);
+				let data = '';
+				client.on('connect', () => {
+					client.write('PROXY TCP4 9.9.9.9 5.6.7.8 3333 2222\r\n');
+					client.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
+				});
+				client.on('data', (chunk) => (data += chunk));
+				client.on('close', () => resolve(data.split('\r\n')[0]));
+				client.on('error', reject);
+			});
+		}
+
+		it('completes the handshake, echoes frames, and leaves pooled parsers intact', async () => {
+			const client = net.connect(sockPath);
+			const key = crypto.randomBytes(16).toString('base64');
+			let clientError = null;
+			server.once('clientError', (error) => (clientError = error));
+
+			const status = await new Promise((resolve, reject) => {
+				let data = Buffer.alloc(0);
+				client.on('connect', () => {
+					client.write('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\n');
+					client.write(
+						`GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
+							`Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n\r\n`
+					);
+				});
+				client.on('data', function onHandshake(chunk) {
+					data = Buffer.concat([data, chunk]);
+					if (data.includes('\r\n\r\n')) {
+						client.removeListener('data', onHandshake);
+						resolve(data.toString().split('\r\n')[0]);
+					}
+				});
+				client.on('error', reject);
+				client.on('close', () => reject(new Error('connection closed before handshake response')));
+			});
+			assert.strictEqual(status, 'HTTP/1.1 101 Switching Protocols');
+
+			// Run another HTTP request first so the freed parser is re-issued from the
+			// pool; frames on the upgraded socket must not reach it.
+			assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
+
+			const echoed = new Promise((resolve, reject) => {
+				let frame = Buffer.alloc(0);
+				client.on('data', (chunk) => {
+					frame = Buffer.concat([frame, chunk]);
+					const length = frame[1] & 0x7f;
+					if (frame.length >= 2 + length) resolve(frame.subarray(2, 2 + length).toString());
+				});
+				setTimeout(() => reject(new Error('no echo received')), 3000).unref();
+			});
+			client.write(maskedTextFrame('hi'));
+			assert.strictEqual(await echoed, 'echo:hi');
+			assert.strictEqual(clientError && clientError.message, null, 'frames must not leak into pooled HTTP parsers');
+
+			// The server must serve plain HTTP cleanly after the upgraded connection exchanged frames
+			assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
+			client.destroy();
+		});
 	});
 
 	// ─── registerUdsCleanupPaths + cleanupUdsFiles ────────────────────────────

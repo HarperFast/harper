@@ -440,3 +440,26 @@ Three consequences worth knowing before touching packaging:
 - The Dockerfile installs the local tarball, so it gets **none** of this: its dependency tree is
   resolved fresh at image-build time against whatever is newest within our semver ranges, meaning the
   image is not reproducible and does not match what npm consumers receive (#1960).
+
+## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
+
+With `tls.unixDomainSockets: true`, every secure port gets a per-worker cleartext mirror
+(`<worker>-<port>.sock`) so a fronting proxy (symphony) can terminate TLS and route to a specific
+worker. The mirror is a **separate** `http.Server` instance registered in `SERVERS[udsPath]` — it is
+_not_ `httpServers[port]` — so anything wired by port key (upgrade listeners, uWS `wsHandler`,
+mTLS flags, socket options) must be explicitly propagated to it. `getHTTPServer()` exposes the
+mirror as `server.udsMirror` (Node) / `server.udsMirrorUwsConfig` (HARPER_UWS_UDS) for exactly this;
+`onWebSocket()` uses those to attach the `'upgrade'` dispatch and uWS `wsHandler`. Two lessons paid
+for in production (WS handshakes died with a zero-byte close on the mirrors while SSE worked):
+
+- A Node HTTP server with **no** `'upgrade'` listener destroys upgrade sockets with no response and
+  no log — a silent per-server default that makes a missing listener look like a network problem.
+- `enableProxyProtocol()`'s data interception must hand the socket **back to the original
+  listeners** once the PROXY header decision is made (it re-attaches them and removes its wrapper).
+  A permanent wrapper breaks protocol handoffs: Node's upgrade path removes its parser's `'data'`
+  listener _by reference_ before ws takes over, so a lingering wrapper keeps feeding the freed HTTP
+  parser — which the parser pool can re-issue to another connection, injecting one connection's
+  WS frames into another's request stream (`Parse Error: Data after 'Connection: close'`).
+
+The h2c mirror (`HARPER_H2C_UDS`) is exempt: HTTP/1.1 `Upgrade` doesn't exist in h2, and the
+fronting proxy routes WS to the h1 mirror by ALPN.
