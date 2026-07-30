@@ -22,9 +22,12 @@ const operations = require('#src/components/operations');
 const { DEPLOY_STAGING_DIR, Application, stageApplication } = require('#src/components/Application');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { server } = require('#src/server/Server');
-const { getConfigPath } = require('#src/config/configUtils');
+const { databases } = require('#src/resources/databases');
+const { SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
+const { getConfigPath, getConfiguration, getConfigFilePath } = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
+const DEPLOYMENT_TABLE = SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 const COMPONENTS_ROOT = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 // Pack a directory's CONTENTS into a gzipped tar Buffer, the shape a deploy payload takes.
@@ -54,6 +57,18 @@ async function makeComponentPayload(marker) {
 }
 
 const readIndex = (dir) => fs.readFile(path.join(dir, 'index.js'), 'utf8');
+
+// componentLoader reaches the private `@harperfast/skills` dependency, which is absent from some local
+// checkouts. Only the `package`-deploy path touches it (via the protected-core-name guard), so probe
+// once and let that one test skip rather than fail on a missing dependency.
+function componentLoaderAvailable() {
+	try {
+		require('#src/components/componentLoader');
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 describe('deploy operations: stage_component / activate_component / deploy_component', function () {
 	this.timeout(30_000);
@@ -160,6 +175,80 @@ describe('deploy operations: stage_component / activate_component / deploy_compo
 			});
 			return staged.deployment_id;
 		}
+
+		// End-to-end cover for the package-identifier recovery: stage a `package` deploy with
+		// `activate: false`, then activate it by id with no `package` on the request (what `harper activate`
+		// sends) and assert root config is persisted AND the recovered identifier reaches peers. A `file:`
+		// tarball package needs no network and no payload blob — extraction reads the tarball directly — so
+		// a mock deployment table is enough to drive the whole path.
+		it('recovers a staged package deploy: persists root config and fans the package out to peers', async function () {
+			// Unlike the payload deploys used elsewhere in this file, a `package` deploy runs the
+			// protected-core-name guard, which requires componentLoader and so pulls in the private
+			// `@harperfast/skills` dependency. That isn't installed in every local checkout, so skip there
+			// instead of failing on the environment; CI installs it and runs this for real.
+			if (!componentLoaderAvailable()) return this.skip();
+			const name = freshName();
+			const tgzDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-op-pkg-'));
+			const tgzPath = path.join(tgzDir, 'component.tgz');
+			await fs.writeFile(tgzPath, await makeComponentPayload('pkg-staged'));
+			const packageId = `file:${tgzPath}`;
+
+			const rows = new Map();
+			const priorTable = databases.system?.[DEPLOYMENT_TABLE];
+			if (!databases.system) databases.system = {};
+			databases.system[DEPLOYMENT_TABLE] = {
+				async get(id) {
+					return rows.get(id);
+				},
+				async put(row) {
+					rows.set(row.deployment_id, { ...row });
+				},
+				async patch(id, partial) {
+					const existing = rows.get(id);
+					if (existing) rows.set(id, { ...existing, ...partial });
+				},
+				async *search(conditions = []) {
+					for (const row of rows.values()) if (conditions.every((c) => row[c.attribute] === c.value)) yield row;
+				},
+			};
+			const configBackup = await fs.readFile(getConfigFilePath(), 'utf8');
+
+			try {
+				const staged = await operations.deployComponent({ project: name, package: packageId, activate: false });
+				assert.strictEqual(staged.staged, true, 'the package deploy staged without going live');
+				assert.strictEqual(
+					rows.get(staged.deployment_id)?.package_identifier,
+					packageId,
+					'the stage recorded the package identifier on the row — the source the activate recovers from'
+				);
+
+				let fannedOut;
+				priorReplicate = server.replication.replicateOperation;
+				server.replication.replicateOperation = async (op) => {
+					fannedOut = op;
+					return {};
+				};
+
+				// No `package` here — exactly what `harper activate project=… deployment_id=…` sends.
+				await operations.deployComponent({ project: name, deployment_id: staged.deployment_id });
+
+				assert.strictEqual(
+					fannedOut?.package,
+					packageId,
+					'the recovered identifier rides the activate sub-op, so peers persist root config too'
+				);
+				assert.strictEqual(
+					getConfiguration()[name]?.package,
+					packageId,
+					'the origin persisted the package reference to root config'
+				);
+			} finally {
+				await fs.writeFile(getConfigFilePath(), configBackup);
+				if (priorTable === undefined) delete databases.system[DEPLOYMENT_TABLE];
+				else databases.system[DEPLOYMENT_TABLE] = priorTable;
+				await fs.rm(tgzDir, { recursive: true, force: true });
+			}
+		});
 
 		it('rejects (does not report success) when a peer fails to activate', async () => {
 			const name = freshName();
