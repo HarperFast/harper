@@ -16,7 +16,7 @@ import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
+const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
@@ -387,7 +387,9 @@ export class DatabaseTransaction implements Transaction {
 					`Rejecting writes on this thread: a commit has been outstanding for ` +
 						`${Math.round(performance.now() - outstandingCommitStart)}ms (exceeds the ` +
 						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${identity?.database ?? '?'}.${identity?.table ?? '?'}` +
-						(identity?.resourceName ? `, started from ${identity.resourceName}.${identity.method}` : '') +
+						(identity?.resourceName
+							? `, started from ${identity.resourceName}${identity.method ? '.' + identity.method : ''}`
+							: '') +
 						`. Further write transactions started on this thread will be rejected with 503 until the commit settles or the process is restarted.`
 				);
 			}
@@ -595,6 +597,13 @@ export class DatabaseTransaction implements Transaction {
 				}
 
 				if (commitResolution) {
+					// Known gap (pre-existing, not introduced here): this branch only arms when
+					// outstandingCommit is currently unset. A coordinated-retry re-commit (below) or a
+					// chained this.next.commit() runs synchronously inside this same commit's .then
+					// handler, one microtask before the .catch().finally() below clears outstandingCommit
+					// — so a retry or a second store's commit that itself wedges is never armed, and
+					// neither checkOverloaded() nor this log will ever see it. Only the first store's
+					// first commit attempt is covered.
 					if (!outstandingCommit) {
 						outstandingCommit = commitResolution;
 						outstandingCommitStart = performance.now();
