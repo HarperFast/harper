@@ -1,12 +1,5 @@
-// Regression fixture for #1419 — per-row allowRead must filter subscription delivery.
-//
-// The recommended composition pattern for a record-scoped override:
-//   - Gate on the base table/RBAC grant via `super.allowRead(...)` first, so a user who loses the
-//     role's table-read is denied — at request entry, and (for a live subscription) when the #1414
-//     re-auth recheck re-runs this same override against the fresh user.
-//   - At collection scope (no record loaded — a whole-table subscribe, or the re-auth recheck),
-//     return the base grant so the connection opens; per-row filtering happens during delivery.
-//   - Per record (a loaded row), additionally require the requesting user to own the row.
+// Explicit application authorization fixture: operation overrides make the admission decision
+// before delegating, then attach rowFilter to collection reads/subscriptions.
 //
 // Super users always pass so that seed writes and setup ops succeed.
 
@@ -15,16 +8,27 @@ function isSuper(user) {
 }
 
 export class Vault extends tables.Vault {
-	allowRead(user, target, context) {
-		if (isSuper(user)) return true;
-		// Base table/RBAC grant — composes with the override so revoking the role's read terminates
-		// (at entry and via #1414 re-auth), rather than the override standing in for RBAC.
-		if (!super.allowRead(user, target, context)) return false;
-		const owner = this?.owner;
-		// Collection subscribe / no loaded record: RBAC passed, allow the connection to open.
-		if (owner === undefined || owner === null) return true;
-		// Per-row: only the owner can read this specific record.
-		return owner === user?.username;
+	get(target) {
+		const context = this.getContext();
+		if (isSuper(context.user)) return super.get(target);
+		if (target.isCollection) {
+			target.rowFilter = (record, liveContext) => record.owner === liveContext.user?.username;
+		} else if (this.owner !== context.user?.username) {
+			const error = new Error('Not authorized to read this record');
+			error.statusCode = 403;
+			throw error;
+		}
+		return super.get(target);
+	}
+
+	search(target) {
+		target.rowFilter = (record, context) => isSuper(context.user) || record.owner === context.user?.username;
+		return super.search(target);
+	}
+
+	subscribe(request) {
+		request.rowFilter = (record, context) => isSuper(context.user) || record.owner === context.user?.username;
+		return super.subscribe(request);
 	}
 
 	allowUpdate(user, _record, _context) {

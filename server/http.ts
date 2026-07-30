@@ -68,9 +68,26 @@ export const uwsServeConfigs: Record<string, any> = {};
 // them out of SERVERS is what prevents a competing Node server from binding the same port.
 const fallbackServers: Record<string | number, any> = {};
 const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
+// Sockets whose listen() has failed (see threadServer.js's fail-soft UDS handling). A TLS mirror's
+// YAML metadata is written on its own schedule (SNICallback readiness / cert reload), independent of
+// whether the mirror socket ever actually bound, so a failed bind must both cancel any metadata write
+// still pending and remove one already on disk — otherwise a fronting proxy keeps advertising a socket
+// nothing is listening on.
+const failedUdsPaths = new Set<string>();
 
 export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
 	udsCleanupPaths.push({ socketPath, yamlPath });
+}
+
+/** Mark a Unix domain socket's listen() as failed: suppress its metadata and remove any already written. */
+export function markUdsBindFailed(socketPath: string) {
+	failedUdsPaths.add(socketPath);
+	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
+	if (entry) {
+		try {
+			unlinkSync(entry.yamlPath);
+		} catch {}
+	}
 }
 
 export function cleanupUdsFiles() {
@@ -775,7 +792,13 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			}
 			registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+			// Skip (and don't re-arm) the write if this mirror's listen() already failed — see
+			// markUdsBindFailed(). SNICallback readiness and cert reloads are independent of the
+			// socket's bind outcome, so without this check a failed mirror could still get advertised.
+			const writeMetadata = () => {
+				if (!failedUdsPaths.has(udsPath))
+					writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+			};
 			options.SNICallback.ready.then(writeMetadata);
 			server.secureContextsListeners.push(writeMetadata);
 
@@ -812,7 +835,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				SERVERS[udsPathH2] = h2Front;
 				registerUdsCleanupPaths(udsPathH2, yamlPathH2);
 
-				const writeMetadataH2 = () => writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				const writeMetadataH2 = () => {
+					if (!failedUdsPaths.has(udsPathH2)) writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				};
 				options.SNICallback.ready.then(writeMetadataH2);
 				server.secureContextsListeners.push(writeMetadataH2);
 			}

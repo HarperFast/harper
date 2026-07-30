@@ -7,9 +7,8 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { logger } = require('#src/utility/logging/logger');
 require('#src/server/serverHelpers/serverUtilities');
 
-// #1786 review (heskew): a subscription's `previousCount` history backfill filters denied rows
-// BEFORE decrementing `count` (the AUTHORIZED-event budget), so an all-deny row-level allowRead
-// override removes count's work bound entirely — the scan would otherwise walk the full retained
+// A subscription's `previousCount` history backfill filters rows before decrementing `count`, so
+// an all-deny rowFilter removes count's work bound — the scan would otherwise walk the full retained
 // audit log. Table.ts now also bounds entries INSPECTED, independent of `count`, and logs once
 // when that independent cap is what stopped the scan.
 //
@@ -18,7 +17,7 @@ require('#src/server/serverHelpers/serverUtilities');
 // subscriptionReplay.test.js.
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-describe('Subscription previousCount backfill scan bound (#1786)', () => {
+describe('Subscription previousCount backfill scan bound', () => {
 	if (!isLMDB) return;
 
 	let ScanBoundTable;
@@ -35,13 +34,6 @@ describe('Subscription previousCount backfill scan bound (#1786)', () => {
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 			audit: true,
 		});
-		// A record-scoped, sync, ALWAYS-DENYING override. Table.prototype.subscribe only gates its
-		// row-level filter on `request.rowLevelAuthChecked` and this not being the framework default
-		// — it doesn't require going through the full Resource.subscribe entry-check wrapper, so
-		// setting rowLevelAuthChecked directly on the request (below) is sufficient to arm it here.
-		ScanBoundTable.prototype.allowRead = function () {
-			return false;
-		};
 	});
 
 	beforeEach(function () {
@@ -54,9 +46,9 @@ describe('Subscription previousCount backfill scan bound (#1786)', () => {
 		logger.warn = originalWarn;
 	});
 
-	it('an all-deny override stops the backfill at the inspected-entry cap, not a full log walk', async function () {
+	it('an all-deny rowFilter stops the backfill at the inspected-entry cap, not a full log walk', async function () {
 		this.timeout(0);
-		// #1786's MAX_PREVIOUS_COUNT_SCAN cap in Table.ts — kept in sync here rather than exported,
+		// MAX_PREVIOUS_COUNT_SCAN in Table.ts — kept in sync here rather than exported,
 		// matching this file's other magic numbers being test-local constants.
 		const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 		const N = MAX_PREVIOUS_COUNT_SCAN + 250; // comfortably past the cap
@@ -68,7 +60,7 @@ describe('Subscription previousCount backfill scan bound (#1786)', () => {
 		const subscription = await ScanBoundTable.subscribe({
 			previousCount: 5,
 			isCollection: true,
-			rowLevelAuthChecked: true,
+			rowFilter: () => false,
 		});
 		const events = [];
 		subscription.on('data', (e) => events.push(e));
@@ -81,7 +73,7 @@ describe('Subscription previousCount backfill scan bound (#1786)', () => {
 		const elapsedMs = Date.now() - start;
 		subscription.return?.();
 
-		assert.equal(events.length, 0, `an all-deny override must not deliver any history events, got ${events.length}`);
+		assert.equal(events.length, 0, `an all-deny rowFilter must not deliver any history events, got ${events.length}`);
 		assert.ok(
 			warnings.length > 0,
 			'expected the "stopped after inspecting" diagnostic to fire — the scan either walked the whole log or never bounded'
@@ -96,6 +88,27 @@ describe('Subscription previousCount backfill scan bound (#1786)', () => {
 		assert.ok(
 			elapsedMs < 10_000,
 			`backfill took ${elapsedMs}ms — expected it to stop well before scanning all ${N} records`
+		);
+	});
+
+	it('single-record previousCount counts accepted history entries, not rejected entries', async function () {
+		await ScanBoundTable.put('filtered-single', { name: 'allow-one' });
+		await ScanBoundTable.put('filtered-single', { name: 'allow-two' });
+		await ScanBoundTable.put('filtered-single', { name: 'deny-newest' });
+
+		const subscription = await ScanBoundTable.subscribe({
+			id: 'filtered-single',
+			isCollection: false,
+			previousCount: 2,
+			rowFilter: (record) => record.name !== 'deny-newest',
+		});
+		const events = [];
+		subscription.on('data', (event) => events.push(event));
+		subscription.return?.();
+
+		assert.deepStrictEqual(
+			events.map((event) => event.value.name),
+			['allow-one', 'allow-two']
 		);
 	});
 });

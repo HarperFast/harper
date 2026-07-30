@@ -10,6 +10,7 @@ const {
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
+const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
 	let AuditedTable;
@@ -52,25 +53,34 @@ describe('Audit log', () => {
 			results.push(entry);
 		}
 		assert.equal(results.length, 4);
-		// Poll for the subscription events instead of a fixed 20ms delay, which is too short
-		// on a loaded CI runner and made this assertion flaky.
-		for (let i = 0; i < 20 && events.length <= 2; i++) {
-			await delay(10);
-		}
-		assert(events.length > 2, 'Should have at least a couple of update events');
+		// Subscription events are delivered off the commit path; nothing orders them against this
+		// assertion, so wait for them rather than sleeping a fixed 20ms and hoping.
+		await waitFor(() => events.length > 2, {
+			timeout: 5000,
+			message: 'Should have at least a couple of update events',
+		});
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
 		setAuditRetention(0.001, 1);
-		AuditedTable.auditStore.scheduleAuditCleanup(1);
+		// scheduleAuditCleanup() resolves once the pass serving the call has committed its deletions.
+		// This first one races the put below, so it may or may not see record 3's audit entry.
+		const firstPass = AuditedTable.auditStore.scheduleAuditCleanup(1);
 		await AuditedTable.put(3, { name: 'three' });
-		// Poll until cleanup completes (was a fixed 20ms which is too short on a loaded CI runner)
-		for (let i = 0; i < 20; i++) {
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			results = [];
-			for await (let entry of AuditedTable.getHistory()) {
-				results.push(entry);
-			}
-			if (results.length === 0) break;
-		}
+		await firstPass;
+		// Drive passes until the log is drained. Every iteration awaits a whole pass, so it makes real
+		// progress rather than hoping a background timer landed inside a fixed wall-clock budget — which
+		// is what the previous 20 x 10ms poll did. More than one iteration is only needed if the store
+		// holds more than MAX_DELETES_PER_CLEANUP stale entries, since a pass stops at that cap.
+		results = await waitFor(
+			async () => {
+				await AuditedTable.auditStore.scheduleAuditCleanup(1);
+				const remaining = [];
+				for await (let entry of AuditedTable.getHistory()) {
+					remaining.push(entry);
+				}
+				return remaining.length === 0 ? remaining : false;
+			},
+			{ timeout: 10000, interval: 0, message: 'audit log was not pruned' }
+		);
 
 		assert.equal(results.length, 0);
 		assert.equal(AuditedTable.primaryStore.getEntry(1), undefined); // verify that the delete entry was removed
@@ -112,6 +122,74 @@ describe('Audit log', () => {
 		assert.deepEqual(history[1].id, key);
 		assert.equal(history[0].user, key.toString());
 		assert.deepEqual(history[0].value.id, key);
+	});
+	it('audit entries chain to the real prior audit-store key, not a placeholder flag', async () => {
+		const id = 'previous-version-chain';
+		await AuditedTable.put(id, { name: 'v1' });
+		await AuditedTable.put(id, { name: 'v2' });
+		await AuditedTable.put(id, { name: 'v3' });
+		const entries = [];
+		for (const entry of AuditedTable.auditStore.getRange({ start: 1 })) {
+			if (entry.tableId === AuditedTable.tableId && entry.recordId === id) entries.push(entry);
+		}
+		entries.sort((a, b) => a.version - b.version);
+		assert.equal(entries.length, 3);
+		// The first write has no prior entry, so previousVersion is falsy.
+		assert(!entries[0].previousVersion);
+		// Each later entry's previousVersion must point at the actual prior entry's own audit-store
+		// key (localTime on LMDB; RocksDB's version field already *is* its key), not a 0/1 placeholder
+		// flag substituted from a shared per-environment register. Resolving it through the audit
+		// store proves the chain is walkable, not just numerically similar.
+		assert.equal(entries[1].previousVersion, entries[0].localTime ?? entries[0].version);
+		assert.equal(entries[2].previousVersion, entries[1].localTime ?? entries[1].version);
+		assert(
+			AuditedTable.auditStore.get(entries[1].previousVersion, AuditedTable.tableId, id),
+			'previousVersion must resolve back to the actual prior audit entry'
+		);
+	});
+	// LMDB assigns each record's own localTime via lmdb-js's native monotonic clock, independent of
+	// the application-supplied `version` (e.g. a replicated/out-of-order write's origin timestamp,
+	// which can be backdated relative to this node's clock). previousVersion must point at the prior
+	// entry's localTime (the actual audit-store key space getHistoryOfRecord pages through), not its
+	// origin version, or a replicated record's history becomes unwalkable once entries are more than
+	// the 100 ms audit window apart.
+	it('previousVersion resolves correctly even when a write carries a backdated/replicated version', async () => {
+		const id = 'replicated-version-chain';
+		const originVersion = Date.now() - 100_000;
+		await AuditedTable.put(id, { name: 'first' }, { timestamp: originVersion });
+		await AuditedTable.put(id, { name: 'second' }, { timestamp: originVersion + 1 });
+		const secondEntry = AuditedTable.primaryStore.getEntry(id);
+		const secondAudit = AuditedTable.auditStore.get(secondEntry.localTime, AuditedTable.tableId, id);
+		const resolvedFirst = AuditedTable.auditStore.get(secondAudit.previousVersion, AuditedTable.tableId, id);
+		assert(resolvedFirst, 'previousVersion must resolve to the actual first audit entry');
+		assert.equal(resolvedFirst.version, originVersion);
+	});
+	// Same scenario driven through the real production consumer: Table.getHistoryOfRecord pages
+	// backward through the audit log in 100 ms windows, using each entry's previousVersion as the
+	// next window's boundary. With backdated/replicated-style origin versions spaced well beyond that
+	// window, a previousVersion in the wrong (origin-version) key space would jump the walk past the
+	// prior entry's real audit-store key and truncate the history.
+	it('getHistoryOfRecord walks the full chain for out-of-order writes spaced beyond the audit window', async () => {
+		const id = 'replicated-history-chain';
+		// Each write's *origin* version is deliberately backdated far from real time (simulating a
+		// replicated/out-of-order apply), while the *real* delay between writes spans multiple 100 ms
+		// audit windows in the actual local-time key space. A previousVersion pinned to the backdated
+		// origin version (instead of the real local audit-store key) would have getHistoryOfRecord's
+		// window walk search near the backdated timestamp, find nothing, and truncate the chain.
+		const origin = Date.now() - 100_000;
+		await AuditedTable.put(id, { name: 'v1' }, { timestamp: origin });
+		await delay(150);
+		await AuditedTable.put(id, { name: 'v2' }, { timestamp: origin + 1 });
+		await delay(150);
+		await AuditedTable.put(id, { name: 'v3' }, { timestamp: origin + 2 });
+		await delay(150);
+		await AuditedTable.put(id, { name: 'v4' }, { timestamp: origin + 3 });
+		const history = await AuditedTable.getHistoryOfRecord(id);
+		assert.equal(history.length, 4);
+		assert.deepEqual(
+			history.map((entry) => entry.value.name),
+			['v1', 'v2', 'v3', 'v4']
+		);
 	});
 	it('dynamically add new transaction logs to iterator', async function () {
 		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // only for rocksdb

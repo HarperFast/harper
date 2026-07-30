@@ -1,9 +1,10 @@
 import { EventEmitter } from 'events';
 
 export class IterableEventQueue<Event extends object = any> extends EventEmitter {
-	resolveNext: null | ((args: { value: Event }) => void) = null;
+	resolveNext: null | ((args: IteratorResult<Event>) => void) = null;
 	queue: any[];
 	hasDataListeners: boolean;
+	closed = false;
 	drainCloseListener: boolean;
 	currentDrainResolver: null | ((draining: boolean) => void) = null;
 	[Symbol.asyncIterator](): AsyncIterator<Event> {
@@ -13,11 +14,12 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 		return iterator;
 	}
 	push(message: Event) {
-		this.send(message);
+		return this.send(message);
 	}
 	send(message: Event) {
+		if (this.closed) return false;
 		if (this.resolveNext) {
-			this.resolveNext({ value: message });
+			this.resolveNext({ value: message, done: false });
 			this.resolveNext = null;
 		} else if (this.hasDataListeners) {
 			this.emit('data', message);
@@ -25,6 +27,22 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 			if (!this.queue) this.queue = [];
 			this.queue.push(message);
 		}
+		return true;
+	}
+	/**
+	 * Permanently close the queue. A final message is delivered before iteration ends when supplied.
+	 */
+	close(finalMessage?: Event) {
+		if (this.closed) return;
+		// Closing is authoritative: buffered events must not leak after revocation or policy failure.
+		if (this.queue) this.queue.length = 0;
+		if (finalMessage !== undefined) this.send(finalMessage);
+		this.closed = true;
+		if (this.resolveNext) {
+			this.resolveNext({ value: undefined, done: true });
+			this.resolveNext = null;
+		}
+		this.emit('close');
 	}
 	getNextMessage() {
 		const message = this.queue?.shift();
@@ -37,7 +55,8 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 	 */
 	waitForDrain(): Promise<boolean> {
 		return new Promise((resolve) => {
-			if (!this.queue || this.queue.length === 0) resolve(true);
+			if (this.closed) resolve(false);
+			else if (!this.queue || this.queue.length === 0) resolve(true);
 			else {
 				// The queue can also empty through paths that never emit 'drained' (the on('data')
 				// attach loop and the resolveNext bypass), so a waiter relying on the event alone
@@ -93,27 +112,30 @@ class EventQueueIterator<Event extends object = any> implements AsyncIterator<Ev
 		this.queue.send(message);
 	}
 	// @ts-expect-error TypeScript is wrong, the JS engine accepts MaybePromise<...>
-	next(): { value: Event } | Promise<{ value: Event }> {
+	next(): IteratorResult<Event> | Promise<IteratorResult<Event>> {
 		const message = this.queue.getNextMessage();
-		if (message) {
+		if (message !== undefined) {
 			return {
 				value: message,
+				done: false,
 			};
+		} else if (this.queue.closed) {
+			return { value: undefined, done: true };
 		} else {
 			return new Promise((resolve) => (this.queue.resolveNext = resolve));
 		}
 	}
 	// @ts-expect-error TypeScript is wrong, the JS engine accepts MaybePromise<...>
 	return(value: Event): { value: Event; done: true } {
-		this.queue.emit('close');
+		this.queue.close();
 		return {
 			value,
 			done: true,
 		};
 	}
 	// @ts-expect-error TypeScript is wrong, the JS engine accepts MaybePromise<...>
-	throw(error) {
-		this.queue.emit('close', error);
+	throw(_error) {
+		this.queue.close();
 		return {
 			done: true,
 			value: undefined,

@@ -1,5 +1,5 @@
 import type { UserRoleDatabasePermissions } from '../security/user.ts';
-import type { Conditions, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
+import type { Conditions, Context, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
 import { parseQuery } from './search.ts';
 
 export class RequestTarget extends URLSearchParams {
@@ -75,6 +75,13 @@ export class RequestTarget extends URLSearchParams {
 	 * never parsed from a REST query string (no eval of user-supplied code over HTTP).
 	 */
 	declare vectorFilter?: (record: any) => boolean;
+
+	/**
+	 * Application-supplied row predicate applied during query execution and against the final
+	 * materialized record. JavaScript API only; never parsed from REST input. The predicate must be
+	 * synchronous and side-effect free. Prefer adding indexed conditions when possible.
+	 */
+	declare rowFilter?: (record: any, context: Context) => boolean;
 
 	/**
 	 * When `false`, the query reads against the latest committed data without holding a consistent

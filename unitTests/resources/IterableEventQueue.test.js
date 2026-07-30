@@ -59,4 +59,27 @@ describe('IterableEventQueue', () => {
 		assert.equal(result, true, 'waiter must observe the queue emptying through the attach path');
 		assert.equal(q.listenerCount('drained'), 0, 'poll-path settle must remove the drained listener');
 	});
+
+	it('close is terminal, discards buffered events, and completes pending iteration', async () => {
+		const q = new IterableEventQueue();
+		q.send({ stale: true });
+		q.close();
+		assert.equal(q.closed, true);
+		assert.equal(q.send({ late: true }), false, 'no event can be queued after close');
+		assert.deepEqual(await q[Symbol.asyncIterator]().next(), { value: undefined, done: true });
+
+		const waiting = new IterableEventQueue();
+		const next = waiting[Symbol.asyncIterator]().next();
+		waiting.close();
+		assert.deepEqual(await next, { value: undefined, done: true }, 'a waiting consumer is released');
+	});
+
+	it('close can deliver one terminal error before completing iteration', async () => {
+		const q = new IterableEventQueue();
+		const error = new Error('policy failed');
+		q.close(error);
+		const iterator = q[Symbol.asyncIterator]();
+		assert.deepEqual(await iterator.next(), { value: error, done: false });
+		assert.deepEqual(await iterator.next(), { value: undefined, done: true });
+	});
 });

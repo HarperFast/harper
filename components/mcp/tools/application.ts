@@ -794,7 +794,7 @@ function verbDescription(verb: Verb, ctx: VerbDescriptionContext): string {
 	const prefix = ctx.tableDoc ? `${ctx.tableDoc}\n\n` : '';
 	const sentence = VERB_SENTENCES[verb](ctx);
 	const allowMethod = VERB_TO_RBAC_METHOD[verb];
-	return `${prefix}${sentence} Runtime RBAC (${allowMethod}) enforces per-record access at call time.`;
+	return `${prefix}${sentence} Runtime RBAC (${allowMethod}) enforces operation access at call time.`;
 }
 
 /**
