@@ -124,7 +124,7 @@ describe('operation-scoped write authorization', () => {
 			const deleteCalls = [];
 			const readTargets = [];
 			let internalScanTarget;
-			let concurrentRead;
+			let concurrentReadError;
 			const target = new RequestTarget('?kind=false-delete');
 			target.select = ['owner'];
 			class CollectionDelete extends Docs {
@@ -139,7 +139,13 @@ describe('operation-scoped write authorization', () => {
 				}
 				search(scanTarget) {
 					internalScanTarget = scanTarget;
-					concurrentRead = fromAsync(super.search(target));
+					// The caller target is still armed, so this concurrent read runs the operation gate
+					// and is denied outright — allowRead is an admission check, not a row filter.
+					try {
+						fromAsync(super.search(target)).catch((error) => (concurrentReadError = error));
+					} catch (error) {
+						concurrentReadError = error;
+					}
 					return super.search(scanTarget);
 				}
 			}
@@ -148,7 +154,10 @@ describe('operation-scoped write authorization', () => {
 			assert.strictEqual(deleteCalls[0].target, target);
 			assert.strictEqual(deleteCalls[0].isCollection, true);
 			assert.strictEqual(deleteCalls[0].owner, undefined);
-			assert.deepStrictEqual(await concurrentRead, []);
+			assert.ok(
+				concurrentReadError && isAccessViolation(concurrentReadError),
+				'the concurrent read is denied by allowRead'
+			);
 			assert.ok(readTargets.length > 0, 'the concurrent read must still execute allowRead');
 			assert.notStrictEqual(internalScanTarget, target);
 			assert.strictEqual(internalScanTarget.checkPermission, false);

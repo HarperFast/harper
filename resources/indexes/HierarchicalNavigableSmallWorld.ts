@@ -943,8 +943,8 @@ export class HierarchicalNavigableSmallWorld {
 		context: any,
 		// Predicate-aware traversal (#1241). When provided, only nodes for which `filter(primaryKey)`
 		// returns true are admitted to the result list at layer 0; routing is unaffected. Composed by
-		// search.ts from companion AND conditions, a caller-supplied `vectorFilter`, and record-level
-		// RBAC. Must be synchronous and side-effect free. JS-API only (never from a REST query string).
+		// search.ts from companion AND conditions and caller-supplied vector/row filters. Must be
+		// synchronous and side-effect free. JS-API only (never from a REST query string).
 		filter?: (primaryKey: Id) => boolean
 	) {
 		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
