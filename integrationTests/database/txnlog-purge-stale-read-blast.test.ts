@@ -302,14 +302,8 @@ async function assertPresentEverywhere(
 	const sqlHits = await sqlByBucket(ctx, bucket);
 	const sqlIds = new Set(sqlHits.map((r) => r.id));
 	for (const id of ids) {
-		ok(
-			queryIds.has(id),
-			`[${label}] REST-QUERY bucket=${bucket} must include ${id}, got ${queryHits.length} hits`
-		);
-		ok(
-			sbvIds.has(id),
-			`[${label}] SEARCH-BY-VALUE bucket=${bucket} must include ${id}, got ${sbvHits.length} hits`
-		);
+		ok(queryIds.has(id), `[${label}] REST-QUERY bucket=${bucket} must include ${id}, got ${queryHits.length} hits`);
+		ok(sbvIds.has(id), `[${label}] SEARCH-BY-VALUE bucket=${bucket} must include ${id}, got ${sbvHits.length} hits`);
 		ok(sqlIds.has(id), `[${label}] SQL bucket=${bucket} must include ${id}, got ${sqlHits.length} hits`);
 	}
 
