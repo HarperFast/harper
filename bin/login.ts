@@ -178,6 +178,31 @@ export async function login(
  * That's also why the explanatory comments go to stderr rather than riding along as `#` lines:
  * every consumer of this block reads it as data.
  */
+/**
+ * Strips any userinfo from a target URL. `normalizeTarget` round-trips through `URL.toString()`,
+ * which preserves it — so `harper login https://admin:hunter2@host --for-ci` would otherwise write
+ * the admin password into the `HARPER_CLI_TARGET` secret and onto the terminal, which is exactly
+ * the exposure this flag exists to avoid. Credentials are dropped rather than masked, since the
+ * emitted value has to stay usable as a target.
+ *
+ * The result is re-normalized because `normalizeTarget` only appends the default port when it finds
+ * no `:` after the scheme — a heuristic the `:` in `user:password` defeats, which would otherwise
+ * emit a port-less target that CI resolves to 443 instead of 9925. Re-running it on the
+ * credential-free URL gets the port right without changing `normalizeTarget` for every other caller
+ * (its output keys the saved credentials file, so changing it would invalidate existing logins).
+ */
+function targetWithoutCredentials(target: string): string {
+	try {
+		const url = new URL(target);
+		if (!url.username && !url.password) return target;
+		url.username = '';
+		url.password = '';
+		return normalizeTarget(url.toString());
+	} catch {
+		return target;
+	}
+}
+
 function printCiCdEnv(target: string, refreshToken: string): void {
 	if (!refreshToken) {
 		// Fail loudly instead of emitting a half-block: a silent empty stdout would be piped
@@ -198,6 +223,6 @@ function printCiCdEnv(target: string, refreshToken: string): void {
 				'# token is long-lived; the CLI mints a fresh operation token from it on each run.\n'
 		)
 	);
-	process.stdout.write(`HARPER_CLI_TARGET=${target}\n`);
+	process.stdout.write(`HARPER_CLI_TARGET=${targetWithoutCredentials(target)}\n`);
 	process.stdout.write(`HARPER_CLI_REFRESH_TOKEN=${refreshToken}\n`);
 }

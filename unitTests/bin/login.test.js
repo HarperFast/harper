@@ -391,6 +391,18 @@ describe('Login', () => {
 			assert.ok(!err.includes('ref-tok'), err);
 		});
 
+		// normalizeTarget round-trips through URL.toString(), which preserves userinfo — so a target
+		// given with embedded credentials would otherwise write the password into the emitted secret
+		// and onto the terminal, the exact exposure this flag exists to prevent.
+		it('strips credentials embedded in the target URL', async () => {
+			await captureLogin('https://admin:hunter2@example.com', 'mockuser', { forCi: true });
+
+			const out = stdout.join('');
+			assert.ok(!out.includes('hunter2'), out);
+			assert.ok(!out.includes('admin:'), out);
+			assert.ok(out.includes('HARPER_CLI_TARGET=https://example.com:9925/'), out);
+		});
+
 		it('prints nothing at all without the flag (default login is unchanged)', async () => {
 			await captureLogin('example.com', 'mockuser');
 

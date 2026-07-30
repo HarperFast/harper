@@ -450,12 +450,20 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		const transportCredentials = target ? resolveTransportCredentials(req, urlCredentials) : undefined;
 		if (transportCredentials) {
 			options.headers.Authorization = basicAuthHeader(transportCredentials.username, transportCredentials.password);
-		} else {
-			// Bearer-token auth. Env-var tokens (for CI/CD — see `harper login`) take precedence
-			// over the stored ~/.harperdb/credentials.json entry: they're an explicit per-invocation
-			// override that needs no prior `harper login` on the runner. A token refreshed from env
-			// vars is used in-memory only (there's no file to write back to); a token refreshed from
-			// the credentials file is persisted as before.
+		} else if (target) {
+			// Bearer-token auth, for remote targets ONLY. A local operation goes over the domain
+			// socket, which the server trusts via `bypassLocalAuth` — but that bypass is an
+			// `else if` on "no Authorization header present" (security/auth.ts), so attaching a
+			// Bearer token to a local request opts out of the trust and gets validated instead,
+			// 401ing on a token minted for some other cluster. Since these env vars are meant to
+			// persist across a whole CI job (or a developer's shell), an ungated read here would
+			// break every local `harper` command run in that environment.
+			//
+			// Env-var tokens (for CI/CD — see `harper login --for-ci`) take precedence over the
+			// stored ~/.harperdb/credentials.json entry: they're an explicit per-invocation override
+			// that needs no prior `harper login` on the runner. A token refreshed from env vars is
+			// used in-memory only (there's no file to write back to); a token refreshed from the
+			// credentials file is persisted as before.
 			const envOperationToken = (
 				process.env.HARPER_CLI_OPERATION_TOKEN || process.env.CLI_TARGET_OPERATION_TOKEN
 			)?.trim();
@@ -465,7 +473,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			let persistKey: string | null = null; // non-null => persist a refreshed operation token back to the file
 			if (envOperationToken || envRefreshToken) {
 				tokens = { operation_token: envOperationToken, refresh_token: envRefreshToken };
-			} else if (target && allCredentials?.targets) {
+			} else if (allCredentials?.targets) {
 				persistKey = target.resolvedTarget;
 				tokens = allCredentials.targets[persistKey] ?? null;
 			}

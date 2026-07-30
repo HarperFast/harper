@@ -152,6 +152,44 @@ describe('cliOperations', () => {
 			assert.strictEqual(result.success, true);
 		});
 
+		// These env vars are meant to persist for a whole CI job (or a developer's shell), so they
+		// must not bleed onto local operations. The domain socket is trusted via `bypassLocalAuth`,
+		// but that bypass only applies when NO Authorization header is present (security/auth.ts) —
+		// attaching a Bearer token opts out of the trust and 401s on a token minted for a different
+		// cluster, breaking commands that worked before these vars existed.
+		it('does not attach a Bearer token to a local (no-target) operation', async () => {
+			process.env.HARPER_CLI_REFRESH_TOKEN = 'env-refresh';
+			process.env.HARPER_CLI_OPERATION_TOKEN = 'env-op-token';
+			tokenAuthModule.isJWTExpired = () => false;
+
+			const originalGetHdbPid = processManagementModule.getHdbPid;
+			const originalInitConfig = configUtilsModule.initConfig;
+			const originalGetConfigPath = configUtilsModule.getConfigPath;
+			const socketPath = path.join(testDir, 'local-auth-check.sock');
+			fs.ensureFileSync(socketPath);
+			configUtilsModule.initConfig = () => {};
+			processManagementModule.getHdbPid = () => 12345;
+			configUtilsModule.getConfigPath = () => socketPath;
+
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			try {
+				// No `target` — this goes over the local domain socket.
+				await cliOperationsModule.cliOperations({ operation: 'test' }, true);
+			} finally {
+				processManagementModule.getHdbPid = originalGetHdbPid;
+				configUtilsModule.initConfig = originalInitConfig;
+				configUtilsModule.getConfigPath = originalGetConfigPath;
+			}
+
+			assert.strictEqual(requested.length, 1, 'should not have fired a refresh_operation_token call');
+			assert.strictEqual(requested[0].auth, undefined);
+		});
+
 		it('mints an operation token from HARPER_CLI_REFRESH_TOKEN alone, without persisting it', async () => {
 			process.env.HARPER_CLI_REFRESH_TOKEN = 'env-refresh';
 			tokenAuthModule.isJWTExpired = () => true;
