@@ -591,7 +591,13 @@ function onSocket(listener, options) {
 		// The listener-level string is therefore the only one honored — resolve it from every configured
 		// source (see resolveEffectiveTlsCiphers in keys.ts).
 		const effectiveCiphers = getEffectiveTlsCiphers('server', options.mtls);
-		socketServer = createSecureSocketServer(
+		// Own const, NOT the shared `socketServer` binding: a caller registering both ports (MQTT's
+		// port + securePort) reaches the plain-TCP branch below, which reassigns `socketServer` to
+		// the 1883 server. The writeMetadata closure below outlives this function, so capturing the
+		// mutable binding made every secure-port metadata write read `secureContexts` off the plain
+		// TCP server (undefined) and publish an empty `certificates:` list — the #1998 bug that let
+		// an SNI-routing proxy (Symphony) fall back to the node certificate on 8883.
+		const secureSocketServer = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
@@ -601,22 +607,23 @@ function onSocket(listener, options) {
 			},
 			listener
 		);
-		socketServer.appliedCiphers = effectiveCiphers ?? null;
-		socketServer.verifiesClientCerts = Boolean(options.mtls);
-		socketServer.mtlsRequired = Boolean(options.mtls?.required);
-		SNICallback.initialize(socketServer);
+		socketServer = secureSocketServer;
+		secureSocketServer.appliedCiphers = effectiveCiphers ?? null;
+		secureSocketServer.verifiesClientCerts = Boolean(options.mtls);
+		secureSocketServer.mtlsRequired = Boolean(options.mtls?.required);
+		SNICallback.initialize(secureSocketServer);
 		// Only opt out of reusePort on macOS, which doesn't reliably support SO_REUSEPORT on all
 		// socket types (ENOTSUP). Everywhere else, sharing the port lets every worker accept
 		// connections for this listener (e.g. MQTT), matching how HTTP servers are bound; without
 		// it only the first worker to bind serves the port and every sibling's listen() fails with
 		// a silently-swallowed EADDRINUSE.
-		if (process.platform === 'darwin') socketServer.noReusePort = true;
+		if (process.platform === 'darwin') secureSocketServer.noReusePort = true;
 		// Unlike HTTP/operations ports, these component listeners are never bound by the main
 		// thread (components don't run handleApplication there), so a worker owns them. Marking
 		// them lets listenOnPorts() give an exclusive (non-reusePort) one a single deterministic
 		// owner worker, which makes any EADDRINUSE on it unambiguously an external process.
-		socketServer.dedicatedListener = true;
-		SERVERS[options.securePort] = socketServer;
+		secureSocketServer.dedicatedListener = true;
+		SERVERS[options.securePort] = secureSocketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
 		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
@@ -637,9 +644,9 @@ function onSocket(listener, options) {
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, socketServer);
+			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
 			SNICallback.ready.then(writeMetadata);
-			socketServer.secureContextsListeners.push(writeMetadata);
+			secureSocketServer.secureContextsListeners.push(writeMetadata);
 		}
 	}
 	if (options.port) {
