@@ -1119,6 +1119,25 @@ describe('Test harper_logger module', () => {
 			expect(result).to.include('Diagnostic');
 		});
 
+		it('renders the rest of a structured payload instead of losing it all when a nested value carries a branded prototype (e.g. URL) the clone cannot safely wear', () => {
+			// URL's own properties (href, protocol, ...) are getters on URL.prototype backed by a
+			// #private internal slot the sanitized clone never has - restoring URL.prototype onto a
+			// stateless clone makes util.inspect throw once it tries to render it via those getters.
+			// Without a per-node fallback, that throw happens inside inspectForLog's OWN try/catch,
+			// which then replaces the ENTIRE payload with "[Unrenderable value]" - not just the URL
+			// field - losing phase/install_output/deployment_id for one nested URL anywhere in the tree.
+			const value = {
+				phase: 'install',
+				target: new URL('https://example.com/path'),
+				install_output: { lines: ['step 1 ok', 'step 2 ok'] },
+			};
+			const result = render(value, { depth: 8 });
+			expect(result).to.not.include('Unrenderable value');
+			expect(result).to.include('install');
+			expect(result).to.include('step 1 ok');
+			expect(result).to.include('step 2 ok');
+		});
+
 		it('never invokes an accessor-backed array entry, and never resolves an overridden Map/Set iterator', () => {
 			let array_getter_calls = 0;
 			const hostile_array = [];
