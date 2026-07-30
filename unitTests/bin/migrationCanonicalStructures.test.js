@@ -77,7 +77,7 @@ describe('migration: records still decode after the canonical-structures change 
 				console.log(`record ${id}:`, JSON.stringify(rec));
 				if (!rec || rec.__threw || rec.content === undefined || rec.headers === undefined) failures.push(id);
 			}
-			assert.equal(
+			assert.strictEqual(
 				failures.length,
 				0,
 				`migrated records ${failures.join(',')} did not decode after reopen (structures did not resolve)`
