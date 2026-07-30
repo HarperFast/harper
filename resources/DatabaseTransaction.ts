@@ -16,7 +16,7 @@ import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
+const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
@@ -31,7 +31,60 @@ const MAX_RETRIES = 40;
 // Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
-let outstandingCommit, outstandingCommitStart;
+// Every native write commit currently outstanding on this worker thread, oldest first.
+// checkOverloaded() sheds new application writes once the OLDEST of these has been outstanding
+// past MAX_OUTSTANDING_TXN_DURATION, so a commit whose promise never settles (harper#2001) is
+// detected whichever transaction submitted it. A linked list rather than a Set because the write
+// path reads the oldest on every write and must not allocate an iterator to do it, and because
+// commits settle out of order and so have to unlink in constant time.
+interface OutstandingCommit {
+	start: number;
+	prev: OutstandingCommit | undefined;
+	next: OutstandingCommit | undefined;
+}
+let oldestOutstandingCommit: OutstandingCommit | undefined;
+let newestOutstandingCommit: OutstandingCommit | undefined;
+let outstandingCommitCount = 0;
+
+// Track a submitted commit until it settles. Every attempt is tracked unconditionally: a
+// coordinated retry round and a chained second-store commit are both issued from inside the
+// preceding commit's own resolve handler, which runs before any reaction that could release a
+// single shared slot — so anything conditional on "is something already outstanding" skips them
+// and leaves a wedged retry or chain invisible to checkOverloaded() forever. Each attempt is timed
+// from its own submission, keeping the overload window per-attempt rather than cumulative over a
+// retry ladder. `.then(untrack, untrack)` also marks an ERR_BUSY rejection handled, so this
+// tracking never surfaces as an unhandled rejection alongside the caller's own handler.
+// Exported only so unit tests can drive the list with controllable promises: the unlink order that
+// matters (a middle or tail node settling first) cannot be forced through real writes, and a node
+// left linked would 503 every write on this thread forever. commit() below is the sole caller.
+export function trackOutstandingCommit(commitResolution: Promise<number | void>): void {
+	const outstanding: OutstandingCommit = { start: performance.now(), prev: newestOutstandingCommit, next: undefined };
+	if (newestOutstandingCommit) newestOutstandingCommit.next = outstanding;
+	else oldestOutstandingCommit = outstanding;
+	newestOutstandingCommit = outstanding;
+	outstandingCommitCount++;
+	const untrack = () => {
+		if (outstanding.prev) outstanding.prev.next = outstanding.next;
+		else oldestOutstandingCommit = outstanding.next;
+		if (outstanding.next) outstanding.next.prev = outstanding.prev;
+		else newestOutstandingCommit = outstanding.prev;
+		outstandingCommitCount--;
+	};
+	commitResolution.then(untrack, untrack);
+}
+
+/**
+ * How many write commits are outstanding on this thread and how long the oldest has been waiting
+ * (`oldestAgeMs` is undefined when none is). `oldestAgeMs` is exactly the value checkOverloaded()
+ * rejects on, exposed so a commit that never settles (harper#2001) can be observed directly rather
+ * than inferred from the 503s it eventually produces.
+ */
+export function getOutstandingCommits(): { count: number; oldestAgeMs: number | undefined } {
+	return {
+		count: outstandingCommitCount,
+		oldestAgeMs: oldestOutstandingCommit ? performance.now() - oldestOutstandingCommit.start : undefined,
+	};
+}
 
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
@@ -365,9 +418,9 @@ export class DatabaseTransaction implements Transaction {
 
 	checkOverloaded() {
 		if (
-			outstandingCommit &&
+			oldestOutstandingCommit &&
 			!this.overloadChecked &&
-			performance.now() - outstandingCommitStart > MAX_OUTSTANDING_TXN_DURATION
+			performance.now() - oldestOutstandingCommit.start > MAX_OUTSTANDING_TXN_DURATION
 		) {
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
@@ -523,6 +576,12 @@ export class DatabaseTransaction implements Transaction {
 						// re-staged the writes into it
 						commitResolution = transaction.commit() as Promise<void>;
 						recordCommitLatency(commitResolution, performance.now());
+						// Same accounting as the ordinary commit path below — this replay is a real native
+						// commit handed to the storage engine. Omitting it left write-transaction-queue-depth,
+						// the one metric that can observe a commit that never settles (harper#2001), reading
+						// zero for exactly this path.
+						enterWriteQueue();
+						commitResolution.then(leaveWriteQueue, leaveWriteQueue);
 					}
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
@@ -537,11 +596,11 @@ export class DatabaseTransaction implements Transaction {
 							// Promise<number | void>; it is handled in the resolve callback below.
 							commitResolution = transaction.commit();
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
-							// metric. This is the same clock the overload check uses (outstandingCommitStart is
-							// stamped at submit), so a rising p99/p999 is the leading indicator for the
+							// metric. This is the same clock the overload check uses (trackOutstandingCommit
+							// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
 							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
-							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
-							// re-arms per attempt, so recording per attempt matches the overload semantics.
+							// conflict retry rejects this promise and issues a fresh commit(), which is tracked as
+							// its own attempt, so recording per attempt matches the overload semantics.
 							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
 							// Promise<void> here because the widening union defeats flow analysis on the prior
 							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
@@ -573,18 +632,7 @@ export class DatabaseTransaction implements Transaction {
 				}
 
 				if (commitResolution) {
-					if (!outstandingCommit) {
-						outstandingCommit = commitResolution;
-						outstandingCommitStart = performance.now();
-						outstandingCommit
-							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
-							// will correct course, but the reject will still be propagated on the
-							// `outstandingCommit` promise and needs to be caught and silenced
-							.catch(() => {})
-							.finally(() => {
-								outstandingCommit = null;
-							});
-					}
+					trackOutstandingCommit(commitResolution);
 					const completions = [];
 					return commitResolution.then(
 						(commitResult) => {
