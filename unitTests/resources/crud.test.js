@@ -346,3 +346,48 @@ describe('transactional argument normalization with RequestTarget', () => {
 		assert.equal(record.stamped, true);
 	});
 });
+
+describe('instance post on a collection target', () => {
+	let PostBase, PostSub;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		PostBase = table({
+			table: 'InstancePostTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }, { name: 'stamped' }],
+		});
+		// Subclass that overrides instance post and delegates to super.post(record)
+		PostSub = class extends PostBase {
+			async post(data) {
+				data.stamped = true;
+				return super.post(data);
+			}
+		};
+		Object.defineProperty(PostSub, 'name', { value: 'PostSub' });
+	});
+
+	it('super.post(record) from a bare collection target creates the record', async function () {
+		const target = new RequestTarget('');
+		const id = await PostSub.post(target, { title: 'created' });
+		assert.ok(id != null, 'create should return the new id');
+		const record = await PostSub.get(id);
+		assert.strictEqual(record.title, 'created');
+		assert.strictEqual(record.stamped, true, 'instance override should have run');
+	});
+
+	it('an argless RequestTarget (unconfigured, undefined id) still rejects post', async function () {
+		await assert.rejects(
+			async () => PostSub.post(new RequestTarget(), { title: 'nope' }),
+			/does not have a post method/
+		);
+	});
+
+	it('instance post on an identified resource still 405s', async function () {
+		await PostSub.put('existing-1', { title: 'x' });
+		await assert.rejects(
+			async () => PostSub.post(new RequestTarget('/existing-1'), { title: 'y' }),
+			/does not have a post method/
+		);
+	});
+});

@@ -169,4 +169,97 @@ describe('Login', () => {
 			assert.strictEqual(envContent, 'EXISTING_VAR=value\n\nHARPER_CLI_TARGET=https://example.com:9925/\n');
 		});
 	});
+
+	describe('credential sources', () => {
+		const testDir = path.join(os.tmpdir(), `harper-test-login-creds-${Date.now()}`);
+		const cliOperationsModule = require('#src/bin/cliOperations');
+		let originalCwd;
+		let originalExit;
+		let originalStdoutWrite;
+		let originalPrompt;
+		let originalCliOperations;
+		let loginRequest;
+
+		before(() => {
+			fs.mkdirSync(testDir, { recursive: true });
+			originalCwd = process.cwd;
+			process.cwd = () => testDir;
+			originalExit = process.exit;
+			process.exit = (code) => {
+				if (code !== 0) throw new Error('process.exit:' + code);
+			};
+			originalStdoutWrite = process.stdout.write;
+			process.stdout.write = () => {};
+			originalPrompt = inquirer.prompt;
+			inquirer.prompt = async (questions) => {
+				const q = Array.isArray(questions) ? questions[0] : questions;
+				return { [q.name]: `prompted-${q.name}` };
+			};
+			originalCliOperations = cliOperationsModule.cliOperations;
+			cliOperationsModule.cliOperations = async (req) => {
+				loginRequest = req;
+				return { operation_token: 'mock-token', refresh_token: 'mock-refresh', target: req.target };
+			};
+		});
+
+		after(() => {
+			process.cwd = originalCwd;
+			process.exit = originalExit;
+			process.stdout.write = originalStdoutWrite;
+			inquirer.prompt = originalPrompt;
+			cliOperationsModule.cliOperations = originalCliOperations;
+			fs.rmSync(testDir, { recursive: true, force: true });
+		});
+
+		beforeEach(() => {
+			loginRequest = undefined;
+			for (const name of [
+				'CLI_TARGET',
+				'HARPER_CLI_TARGET',
+				'CLI_TARGET_USERNAME',
+				'CLI_TARGET_PASSWORD',
+				'HARPER_CLI_USERNAME',
+				'HARPER_CLI_PASSWORD',
+			]) {
+				delete process.env[name];
+			}
+			fs.rmSync(path.join(testDir, '.env'), { force: true });
+		});
+
+		// Mixing namespaces would log in as one identity using another identity's secret.
+		it('never pairs a username from one env namespace with a password from the other', async () => {
+			process.env.HARPER_CLI_USERNAME = 'harper-admin';
+			process.env.CLI_TARGET_PASSWORD = 'legacy-secret';
+
+			await login('example.com');
+
+			assert.strictEqual(loginRequest.username, 'harper-admin');
+			assert.strictEqual(loginRequest.password, 'prompted-password');
+		});
+
+		it('uses the CLI_TARGET_* pair when it is the only namespace set', async () => {
+			process.env.CLI_TARGET_USERNAME = 'legacy-admin';
+			process.env.CLI_TARGET_PASSWORD = 'legacy-secret';
+
+			await login('example.com');
+
+			assert.strictEqual(loginRequest.username, 'legacy-admin');
+			assert.strictEqual(loginRequest.password, 'legacy-secret');
+		});
+
+		// Login's credentials ARE the caller's credentials, so they must ride as dedicated
+		// transport auth — otherwise a re-login after expiry tries to refresh the very token it is
+		// replacing and exits with "please run harper login".
+		it('sends the credentials as dedicated transport auth as well as payload fields', async () => {
+			process.env.HARPER_CLI_USERNAME = 'harper-admin';
+			process.env.HARPER_CLI_PASSWORD = 'harper-secret';
+
+			await login('example.com');
+
+			assert.strictEqual(loginRequest.auth_username, 'harper-admin');
+			assert.strictEqual(loginRequest.auth_password, 'harper-secret');
+			assert.strictEqual(loginRequest.username, 'harper-admin');
+			assert.strictEqual(loginRequest.password, 'harper-secret');
+		});
+	});
 });

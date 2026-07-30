@@ -27,10 +27,12 @@ const {
 } = require('../../components/shutdownDrain.ts');
 const { realExit } = require('./workerProcessGuard.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
+const { getDomainSocketPathMaxBytes, isDomainSocketPathTooLong } = require('../../utility/domainSocket.ts');
 const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/keys.ts');
 const { startupLog } = require('../../bin/run.ts');
 const { SERVERS, setPortServerMap, portServer, socketOptionDefaults } = require('../serverRegistry.ts');
 const httpComponent = require('../http.ts');
+const { withProxyProtocol } = require('../serverHelpers/proxyProtocol.ts');
 const globals = require('../../globals.js');
 const { whenScopesClosed } = require('../../components/scopeShutdown.ts');
 
@@ -94,6 +96,7 @@ process.on('unhandledRejection', (reason) => {
 });
 env.initSync();
 exports.globals = globals;
+exports.listenOnDomainSocket = listenOnDomainSocket;
 exports.listenOnPorts = listenOnPorts;
 exports.startServers = startServers;
 exports.closeServers = closeServers;
@@ -252,6 +255,39 @@ function startServers() {
 	});
 	return loaded;
 }
+/**
+ * An overlong path is the only condition that can skip a domain-socket listener. Check before
+ * listen() because supported Node versions differ: some reject the path while others truncate and
+ * bind it somewhere clients cannot reach using the configured path.
+ */
+function listenOnDomainSocket(port, server) {
+	if (isDomainSocketPathTooLong(port)) {
+		httpComponent.markUdsBindFailed(port);
+		harperLogger.error(
+			`Not binding domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: the ${Buffer.byteLength(port)}-byte path exceeds the platform limit of ${getDomainSocketPathMaxBytes()} bytes. Continuing without this domain socket.`
+		);
+		return Promise.resolve({ port, failed: true });
+	}
+	if (existsSync(port)) unlinkSync(port);
+	return new Promise((resolve, reject) => {
+		function onError(error) {
+			reject(error);
+		}
+		function onListening() {
+			server.removeListener('error', onError);
+			harperLogger.info('Domain socket listening on ' + port);
+			resolve({ port, name: server.name, protocol_name: server.protocol_name });
+		}
+		try {
+			server.once('error', onError);
+			server.listen({ path: port }, onListening);
+		} catch (error) {
+			server.removeListener('error', onError);
+			reject(error);
+		}
+	});
+}
+
 let listening;
 function listenOnPorts() {
 	if (isBun) return listenOnPortsBun();
@@ -262,17 +298,7 @@ function listenOnPorts() {
 
 		// If server is unix domain socket
 		if (port.includes?.('/')) {
-			if (existsSync(port)) unlinkSync(port);
-			listening.push(
-				new Promise((resolve, reject) => {
-					server
-						.listen({ path: port }, () => {
-							resolve({ port, name: server.name, protocol_name: server.protocol_name });
-							harperLogger.info('Domain socket listening on ' + port);
-						})
-						.on('error', reject);
-				})
-			);
+			listening.push(listenOnDomainSocket(port, server));
 			continue;
 		}
 		let listen_on;
@@ -509,17 +535,7 @@ async function listenOnPortsBun() {
 		if (server?.stop || bunServeConfigs[port]) continue;
 		if (server?.listen) {
 			if (port.includes?.('/')) {
-				if (existsSync(port)) unlinkSync(port);
-				listening.push(
-					new Promise((resolve, reject) => {
-						server
-							.listen({ path: port }, () => {
-								resolve({ port });
-								harperLogger.info('Domain socket listening on ' + port);
-							})
-							.on('error', reject);
-					})
-				);
+				listening.push(listenOnDomainSocket(port, server));
 			} else {
 				const lastColon = String(port).lastIndexOf(':');
 				const rawHostname = lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : null;
@@ -587,6 +603,7 @@ function onSocket(listener, options) {
 		);
 		socketServer.appliedCiphers = effectiveCiphers ?? null;
 		socketServer.verifiesClientCerts = Boolean(options.mtls);
+		socketServer.mtlsRequired = Boolean(options.mtls?.required);
 		SNICallback.initialize(socketServer);
 		// Only opt out of reusePort on macOS, which doesn't reliably support SO_REUSEPORT on all
 		// socket types (ENOTSUP). Everywhere else, sharing the port lets every worker accept
@@ -609,13 +626,14 @@ function onSocket(listener, options) {
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
-			const udsServer = createSocketServer({ ...socketOptionDefaults }, listener);
+			// Strip the PROXY header (v1 or v2) a fronting proxy (e.g. symphony) prepends,
+			// BEFORE invoking the listener: raw-protocol handlers (MQTT) read
+			// socket.authorized/remoteAddress at connection time, so the data-interception
+			// approach the HTTP UDS mirror uses (enableProxyProtocol) would apply the
+			// forwarded mTLS identity too late.
+			const udsServer = createSocketServer({ ...socketOptionDefaults }, withProxyProtocol(listener));
 
 			udsServer.isPerThreadSocket = true;
-			// Strip the PROXY v1 header a fronting proxy (e.g. symphony) prepends, same as the
-			// HTTP UDS mirror. Without this the header is fed to the protocol parser (e.g. MQTT),
-			// corrupting the first packet.
-			httpComponent.enableProxyProtocol(udsServer);
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 

@@ -1,6 +1,6 @@
 require('../testUtils');
 const assert = require('assert');
-const { RecordEncoder, isMissingStructureError } = require('#src/resources/RecordEncoder');
+const { RecordEncoder, RecordObject, isMissingStructureError } = require('#src/resources/RecordEncoder');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { Encoder } = require('msgpackr');
 
@@ -48,6 +48,23 @@ describe('RecordEncoder struct-mode gating', () => {
 		assert.notStrictEqual(enc._writeStruct, undefined, 'struct write hook should be set for primary DBIs');
 		const bytes = enc.encode(record);
 		assert.ok(bytes[0] >= 0x20 && bytes[0] < 0x40, `expected struct header byte, got 0x${bytes[0].toString(16)}`);
+	});
+
+	it('promoted classic msgpackr and structon records share the runtime base without sharing prototypes', () => {
+		const classicEncoder = makeEncoder(false, sharedStore());
+		const structEncoder = makeEncoder(true, sharedStore());
+		const classicDecoded = classicEncoder.decode(Buffer.from(classicEncoder.encode(record)));
+		const classicRecord = new classicEncoder.structPrototype.constructor();
+		Object.assign(classicRecord, classicDecoded); // getEntry promotes classic decoded objects this way
+		const structRecord = structEncoder.decode(Buffer.from(structEncoder.encode(record)));
+
+		assert.ok(classicRecord instanceof RecordObject, 'classic msgpackr records must be identifiable at runtime');
+		assert.ok(structRecord instanceof RecordObject, 'structon records must be identifiable at runtime');
+		assert.notStrictEqual(
+			classicEncoder.structPrototype,
+			structEncoder.structPrototype,
+			'per-encoder prototypes must remain isolated for table-specific computed getters'
+		);
 	});
 
 	it('records-mode output decodes on a struct-unaware msgpackr decoder (downgrade-safe)', () => {

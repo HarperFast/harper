@@ -132,6 +132,9 @@ function translateRolePermissions(role, schema) {
 	const perms = role.permission;
 	finalPermissions[terms.SYSTEM_SCHEMA_NAME] = perms[terms.SYSTEM_SCHEMA_NAME];
 	finalPermissions.structure_user = perms.structure_user;
+	// Preserve cluster_user like the other named flags so a translated role keeps
+	// what it declared, rather than silently dropping it (harper#1016).
+	finalPermissions.cluster_user = perms.cluster_user;
 	// Preserve operations allowlist and its pre-expanded Set so the gate check in
 	// verifyPerms still has access after role.permission is replaced with fullRolePerms.
 	finalPermissions.operations = perms.operations;

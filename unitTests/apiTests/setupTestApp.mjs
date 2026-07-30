@@ -116,9 +116,9 @@ export async function setupTestApp() {
 
 	if (serverStarted) {
 		// if already started, clear out any previous records and recreate them. Table.clear() resolves
-		// asynchronously, so it must be awaited — otherwise a clear can land after the records below have
-		// been written and silently wipe them, which shows up much later as an unrelated-looking empty
-		// result in whichever suite reads the table next.
+		// asynchronously (on RocksDB it's an unsynchronized native range-delete with no coordination
+		// with in-flight commits), so it must be awaited — otherwise a clear can land after the records
+		// below have been written and silently wipe them out from under them.
 		await Promise.all([
 			tables.VariedProps.clear(),
 			tables.FourProp.clear(),

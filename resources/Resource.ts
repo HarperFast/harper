@@ -21,6 +21,7 @@ import { when, promiseNormalize } from '../utility/when.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
+import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
@@ -150,7 +151,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const elementResource = resourceClass.getResource(target, request, {
 						async: true,
 					});
-					if (elementResource.then) results.push(elementResource.then((resource) => resource.put(element, request)));
+					if (typeof elementResource.then === 'function')
+						results.push(elementResource.then((resource) => resource.put(element, request)));
 					else results.push(elementResource.put(element, query));
 				}
 				return Promise.all(results);
@@ -408,7 +410,14 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				// handle path.json, path.cbor, etc. for requesting a specific content type using just the URL
 				context.requestedContentType = requestedContentType;
 				path = path.slice(0, dotIndex); // remove the property from the path
-			} else if ((this as any).attributes?.find((attribute) => attribute.name === property)) {
+			} else if (
+				(this as any).attributes?.find((attribute) => attribute.name === property) ||
+				// A programmatic Resource may declare `static properties` (a Record keyed by attribute
+				// name) without an `attributes` Array. Use an OWN-key check (not `properties[property]`,
+				// which would match inherited Object.prototype members like `constructor`/`toString`) —
+				// O(1), so no per-request projection on this path.
+				(this.properties != null && Object.hasOwn(this.properties, property))
+			) {
 				// handle path.attribute for requesting a specific attribute using just the URL
 				path = path.slice(0, dotIndex); // remove the property from the path
 				if (query) query.property = property;
@@ -715,6 +724,8 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
+			if (isCollection && options.method === 'put' && Array.isArray(data) && this.loadAsInstance === false)
+				query.isCollection = true;
 		}
 		if (options.method === 'query' && data && typeof data === 'object') {
 			// QUERY executes the independently parsed body target. Make its requested projection part of
@@ -724,23 +735,18 @@ function transactional(
 			if (Object.prototype.hasOwnProperty.call(data, 'select')) query.select = data.select;
 		}
 		isCollection = query.isCollection;
-		if (
-			options.method === 'post' &&
-			query.id === null &&
-			!isCollection &&
-			this.prototype.post === Resource.prototype.post
-		) {
-			// the matched path had nothing left to resolve into a collection or a specific record —
-			// i.e. it exactly matched a resource's base path without the required trailing slash
-			// (harper#678). This only matters for the base/default post() dispatch: it reads
-			// this.#isCollection (set from this same query) and falls back to missingMethod() for
-			// this state anyway, so rejecting early here just gives a clearer, purpose-built message.
-			// A resource with its own post() override (e.g. a component doing a bulk import via
-			// POST to its collection root, like the redirector template's Redirect.post()) is
-			// trusted to handle a null-id/non-collection target itself — it may not use id/isCollection
-			// at all, and forcing the trailing slash on it would break a currently-supported no-slash
-			// bulk-POST convention. See harper#678's regression on PR #1807.
-			throw new ClientError(`A trailing slash is required to POST to the ${this.name} collection`, 404);
+		if (options.method === 'post' && query.id === null && !isCollection) {
+			if (this.prototype.post === Resource.prototype.post) {
+				// exact base-path match with no trailing slash (harper#678): the default post dispatch
+				// has nothing to address, so reject with a purpose-built message
+				throw new ClientError(`A trailing slash is required to POST to the ${this.name} collection`, 404);
+			}
+			if (this.loadAsInstance !== false) {
+				// a custom instance post() override accepts the no-slash collection POST (redirector-style
+				// bulk import); normalize it so authorization and dispatch use collection semantics
+				query.isCollection = true;
+				isCollection = true;
+			}
 		}
 		let resourceOptions;
 		if (!context) {
@@ -812,6 +818,10 @@ function transactional(
 				// Capture the complete target after the initial allowRead has narrowed it, but before
 				// subscribe/connect implementations can mutate it. Every later recheck gets a fresh clone.
 				const admittedTarget = isSubscribeAction ? cloneRequestTarget(query) : undefined;
+				// getResource creates a fresh receiver for this dispatch. Marking that receiver, rather
+				// than caller-owned target identity, preserves the static (target, message) signature when
+				// an override copies the target or delegates asynchronously after its own return settles.
+				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) => {

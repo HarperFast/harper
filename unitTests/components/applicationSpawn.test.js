@@ -8,14 +8,22 @@
 // `npm install` line streaming.
 
 const assert = require('node:assert');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { nonInteractiveSpawn } = require('#src/components/Application');
+const {
+	nonInteractiveSpawn,
+	terminateProcessTree,
+	waitForConfirmedTermination,
+	waitForWindowsTreeTermination,
+} = require('#src/components/Application');
 
 // Write `script` to a temp .js file and return its path; auto-removed in `after`.
 let workDir;
@@ -121,5 +129,134 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		const result = await nonInteractiveSpawn('test-app', 'node', [script], workDir, 30_000);
 		assert.strictEqual(result.code, 0);
 		assert.match(result.stdout, /hello world/);
+	});
+
+	it('terminates descendant processes before a timed-out spawn rejects', async () => {
+		const writesPath = join(workDir, 'descendant-writes');
+		const writer = writeScript(
+			'descendant-writer.js',
+			`const fs = require('node:fs');
+			setInterval(() => fs.appendFileSync(${JSON.stringify(writesPath)}, 'x'), 10);`
+		);
+		const parent = writeScript(
+			'descendant-parent.js',
+			`require('node:child_process').spawn(process.execPath, [${JSON.stringify(writer)}], { stdio: 'ignore' });
+			setInterval(() => {}, 1000);`
+		);
+
+		await assert.rejects(nonInteractiveSpawn('test-app', 'node', [parent], workDir, 200), /timed out after 200ms/);
+		const sizeAfterTimeout = (await require('node:fs/promises').stat(writesPath)).size;
+		assert.ok(sizeAfterTimeout > 0, 'descendant writer should have started before the timeout');
+		await delay(150); // asserting the non-event: no descendant may keep writing after rejection
+		assert.equal((await require('node:fs/promises').stat(writesPath)).size, sizeAfterTimeout);
+	});
+
+	it('kills a lingering same-group descendant even when the direct child already exited', async () => {
+		const writesPath = join(workDir, 'orphaned-descendant-writes');
+		const writer = writeScript(
+			'orphaned-writer.js',
+			`const fs = require('node:fs');
+			setInterval(() => fs.appendFileSync(${JSON.stringify(writesPath)}, 'x'), 10);`
+		);
+		const parent = writeScript(
+			'orphaned-parent.js',
+			// Not detached: this descendant inherits the parent's process group. Unref'd so the
+			// parent can exit without waiting on it — the pattern a custom installer's daemonizing
+			// install script would use.
+			`require('node:child_process').spawn(process.execPath, [${JSON.stringify(writer)}], { stdio: 'ignore' }).unref();
+			process.exit(0);`
+		);
+		const childProcess = spawn(process.execPath, [parent], { stdio: 'ignore', detached: true });
+		await once(childProcess, 'exit');
+		// The direct child has already exited (exitCode is set) before termination is ever attempted —
+		// exactly the state that let the old exitCode/signalCode check skip probing the process group.
+		assert.notStrictEqual(childProcess.exitCode, null);
+
+		await delay(50);
+		const sizeBeforeTermination = (await require('node:fs/promises').stat(writesPath)).size;
+		assert.ok(sizeBeforeTermination > 0, 'descendant writer should have started before termination');
+
+		await terminateProcessTree(childProcess, Promise.resolve());
+
+		const sizeAfterTermination = (await require('node:fs/promises').stat(writesPath)).size;
+		await delay(150); // asserting the non-event: the orphaned descendant must be gone, not still writing
+		assert.equal((await require('node:fs/promises').stat(writesPath)).size, sizeAfterTermination);
+	});
+
+	it('does not resolve a successful install until a lingering same-group descendant is confirmed gone', async () => {
+		// The successful-close counterpart to the test above: the direct child here exits 0 (not a
+		// timeout), so this exercises spawnWithEnv's 'close' handler rather than terminateProcessTree
+		// called directly. Before this fix, a successful close resolved immediately without probing
+		// the process group, so this orphan could keep mutating node_modules after the caller (and
+		// the component preparation lock) considered the install done. The descendant's pid is
+		// printed (not written to a file on an interval) so the assertion doesn't race against
+		// whether it got a chance to run before termination — termination is expected to be prompt.
+		const writer = writeScript('success-orphan-writer.js', `setInterval(() => {}, 1000);`);
+		const parent = writeScript(
+			'success-orphan-parent.js',
+			`const child = require('node:child_process').spawn(process.execPath, [${JSON.stringify(writer)}], { stdio: 'ignore' });
+			child.unref();
+			console.log(child.pid);
+			process.exit(0);`
+		);
+
+		const result = await nonInteractiveSpawn('test-app', process.execPath, [parent], workDir, 30_000);
+		assert.strictEqual(result.code, 0, `expected exit 0, got ${result.code}; stderr=${result.stderr}`);
+		const descendantPid = Number(result.stdout.trim());
+		assert.ok(Number.isInteger(descendantPid) && descendantPid > 0, `expected a pid, got ${result.stdout}`);
+
+		assert.throws(() => process.kill(descendantPid, 0), /ESRCH/, 'descendant must already be gone by resolve');
+	});
+
+	it('does not report termination until the process tree is confirmed gone', async () => {
+		let alive = true;
+		let settled = false;
+		const confirmation = waitForConfirmedTermination(() => alive, 5).then(() => {
+			settled = true;
+		});
+
+		await delay(30);
+		assert.equal(settled, false, 'an unsuccessful termination attempt must keep the deployment lock held');
+		alive = false;
+		await confirmation;
+		assert.equal(settled, true);
+	});
+
+	it('accepts a Windows taskkill miss only when the process tree is independently gone', async () => {
+		let attempts = 0;
+		await waitForWindowsTreeTermination(
+			() => {
+				attempts++;
+				return false;
+			},
+			() => false,
+			5
+		);
+		assert.equal(attempts, 1);
+	});
+
+	it('terminates a detached process tree when its owning worker is force-terminated', async () => {
+		const writesPath = join(workDir, 'worker-descendant-writes');
+		const writer = writeScript(
+			'worker-descendant-writer.js',
+			`const fs = require('node:fs');
+			setInterval(() => fs.appendFileSync(${JSON.stringify(writesPath)}, 'x'), 10);`
+		);
+		const harness = spawn(process.execPath, [require.resolve('./fixtures/processGroupHarness.js')], {
+			stdio: ['ignore', 'pipe', 'inherit'],
+			env: {
+				...process.env,
+				HARPER_TEST_PROCESS_GROUP_WRITER: writer,
+				HARPER_TEST_PROCESS_GROUP_OUTPUT: writesPath,
+			},
+		});
+		let output = '';
+		harness.stdout.on('data', (chunk) => (output += chunk));
+		await once(harness, 'close');
+		assert.match(output, /terminated/);
+
+		const sizeAfterTermination = (await require('node:fs/promises').stat(writesPath)).size;
+		await delay(150); // asserting the non-event: the worker's detached child must be gone
+		assert.equal((await require('node:fs/promises').stat(writesPath)).size, sizeAfterTermination);
 	});
 });

@@ -32,6 +32,7 @@ describe('test REST calls with cache table', () => {
 		let data = response.data;
 		data.name = 'name change';
 		delete data.nameTitle; // don't send a computed property
+		delete data.ageInMonths; // harper#1484: computed scalars now also surface on default reads
 		response = await axios.put(`${baseUrl}/FourProp/3`, data);
 		assert.equal(response.status, 204);
 		await delay(20);

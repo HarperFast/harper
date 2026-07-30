@@ -1,0 +1,65 @@
+# harper#1484 — default-read computed-scalar surfacing + cyclic-enumerable serialization guard.
+#
+#  Fix A: a @computed *scalar* must appear on the default (no-select) REST read, even though its
+#         getter is non-enumerable. A @computed whose type is a table must stay lazy (edge guard).
+#  Fix B: @enumerable relationships that form a cycle must serialize as { primaryKey } reference
+#         stubs instead of overflowing the stack.
+
+type Author @table @export {
+	id: ID @primaryKey
+	name: String
+	# Fix A: computed SCALAR — surfaced by default.
+	displayName: String @computed(from: "name")
+	# Fix B: enumerable side of a mutual cycle (Author.books -> Book.author -> Author ...).
+	books: [Book] @relationship(to: authorId) @enumerable
+}
+
+type Book @table @export {
+	id: ID @primaryKey
+	authorId: ID @indexed
+	title: String
+	author: Author @relationship(from: authorId) @enumerable
+}
+
+# Self-referential tree: enumerable parent pointing back at the same table (a self-loop cycle).
+type Category @table @export {
+	id: ID @primaryKey
+	name: String
+	parentId: ID @indexed
+	parent: Category @relationship(from: parentId) @enumerable
+}
+
+# Unconstrained (`Any`) @computed whose resolver (resources.js) returns a live entity. The static edge
+# graph can't see this, so `linked` forces the guarded serialization path; two Nodes linking each other
+# must not overflow. This is the "new exposure" the cross-model review flagged for computed-scalar tables.
+type Node @table @export {
+	id: ID @primaryKey
+	linkId: ID
+	linked: Any @computed
+}
+
+# Review follow-up (cb1kenobi): a @computed declared with a concrete SCALAR type whose resolver
+# nonetheless returns a live entity. JS can't enforce the declared return type, so before the fix this
+# took the raw fast path (only `Any`/untyped computeds were guarded) and overflowed on a runtime cycle.
+# Any surfaced non-table @computed now routes through the guarded path.
+type Ref @table @export {
+	id: ID @primaryKey
+	linkId: ID
+	linked: String @computed
+}
+
+# Both record encodings must preserve nested native Date/Bytes values on the guarded path.
+# NativeValues exercises msgpackr's default classic structures; NativeStructValues opts into structon.
+type NativeValues @table @export {
+	id: ID @primaryKey
+	name: String
+	details: Any
+	displayName: String @computed(from: "name")
+}
+
+type NativeStructValues @table(randomAccessFields: true) @export {
+	id: ID @primaryKey
+	name: String
+	details: Any
+	displayName: String @computed(from: "name")
+}

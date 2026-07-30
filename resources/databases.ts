@@ -9,9 +9,14 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
-import { makeTable } from './Table.ts';
+import { makeTable, ignoreAlreadyDropped } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
-import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
+import {
+	CONFIG_PARAMS,
+	LEGACY_DATABASES_DIR_NAME,
+	DATABASES_DIR_NAME,
+	RESERVED_DATABASE_NAMES,
+} from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
@@ -215,6 +220,55 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
+// How many times the schema load will try to finish a tombstoned drop before
+// giving up for the rest of this process's lifetime. A drop that fails once
+// almost always fails identically forever - the usual cause is a RocksDB
+// environment that latched a background error and now rejects every write it
+// receives - and the schema load re-runs on every resetDatabases(), so an
+// unbounded retry turns one broken table into a per-reload log flood in every
+// worker thread.
+const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
+// physical store path + table -> drop generation -> consecutive failed
+// completion attempts in this thread. Keyed by the physical store path
+// rather than the database alias name: multiple database names can point at
+// the same directory (config-level aliasing), and readMetaDb/readRocksMetaDb
+// reconcile each alias's schema independently, so a table shared by N
+// aliases would otherwise be attempted (and give up) N times over - once per
+// alias - on top of the once-per-worker duplication. Keying by path
+// collapses all of that back down to one budget, and one give-up log via the
+// worker-0 gate below, per physical table.
+//
+// Nested by generation (Table.ts stamps a fresh id on every dropping
+// tombstone) rather than a single flat count per path+table: a worker can
+// exhaust one drop's budget, then observe the table recreated and dropped
+// again without ever seeing an intermediate non-tombstoned row to reset on.
+// A fresh generation always gets a fresh inner-map key, independent of what
+// any worker last observed. Tombstones written before this field existed
+// fall back to a shared 'legacy' bucket. Nesting (rather than a flat map
+// keyed by a combined string) also makes "clear every generation for this
+// path+table" an O(1) delete of the outer entry instead of a scan - a live
+// (non-tombstoned) row never carries the dropGeneration of whatever drop it
+// resolved, so a resolution can only ever identify the outer path+table key,
+// never the specific spent generation to target.
+const interruptedDropAttempts = new Map<string, Map<string, number>>();
+const interruptedDropTableKey = (storePath: string, tableName: string) => `${storePath}\0${tableName}`;
+function getInterruptedDropAttempts(storePath: string, tableName: string, generation?: string): number {
+	return interruptedDropAttempts.get(interruptedDropTableKey(storePath, tableName))?.get(generation ?? 'legacy') ?? 0;
+}
+function setInterruptedDropAttempts(
+	storePath: string,
+	tableName: string,
+	generation: string | undefined,
+	attempts: number
+) {
+	const tableKey = interruptedDropTableKey(storePath, tableName);
+	let generations = interruptedDropAttempts.get(tableKey);
+	if (!generations) interruptedDropAttempts.set(tableKey, (generations = new Map()));
+	generations.set(generation ?? 'legacy', attempts);
+}
+function clearInterruptedDropEntries(storePath: string, tableName: string) {
+	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
+}
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -537,16 +591,53 @@ function initStores(
 	// partway, the tombstone survives alongside the catalog rows. Without this
 	// reconcile, those rows would silently resurrect the table below
 	// (recreating any missing column families as empty stores).
+	// The attempt budget is deliberately scoped to this reconcile: the create path
+	// calls completeInterruptedDrop under the exclusive lock and must never skip
+	// it, because creating over a half-dropped table would resurrect its catalog
+	// rows. There a failure propagates to the caller as its own single error.
 	for (const [tableName, tableDef] of tablesToLoad) {
-		if (!tableDef.primary?.dropping) continue;
-		try {
-			completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
-			definedTables?.delete(tableName);
-		} catch (error) {
-			logger.error(
-				`Failed to complete interrupted drop of table ${databaseName}.${tableName}; will retry on next start`,
-				error
-			);
+		if (!tableDef.primary?.dropping) {
+			// No tombstone, so any budget this table spent belongs to a drop that
+			// has since been resolved - by the create path, which completes
+			// interrupted drops itself and never passes through here. Leaving the
+			// budget spent would permanently skip cleanup for the table's NEXT
+			// interrupted drop. Checked (and, on the common all-live path, skipped)
+			// before touching the generation or the map at all, since this runs for
+			// every table on every reconcile pass.
+			clearInterruptedDropEntries(path, tableName);
+			continue;
+		}
+		const generation = tableDef.primary?.dropGeneration;
+		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
+		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
+			try {
+				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				// Sweep every generation this worker has ever tracked for this table, not
+				// just the one just resolved: if a prior generation was exhausted here,
+				// then resolved+recreated+re-dropped by another worker as this generation
+				// without this worker ever observing a live row in between (the only other
+				// place that sweeps), the prior generation's entry would otherwise never
+				// be cleared.
+				clearInterruptedDropEntries(path, tableName);
+				definedTables?.delete(tableName);
+			} catch (error) {
+				const attempt = failedAttempts + 1;
+				setInterruptedDropAttempts(path, tableName, generation, attempt);
+				const dropLabel = `${databaseName}.${tableName}`;
+				if (attempt < MAX_INTERRUPTED_DROP_ATTEMPTS) {
+					logger.debug(`Failed to complete interrupted drop of table ${dropLabel}, attempt ${attempt}`, error);
+				} else if (manageThreads.getWorkerIndex() === 0) {
+					// The attempt budget (and this failure) is independently tracked per worker
+					// thread, and the failure isn't transient, so every worker converges on the
+					// same give-up outcome. Only worker 0 - which exists in every threading mode,
+					// including threads:0 where the main thread acts as worker 0 - logs it, so one
+					// stuck table produces one actionable error instead of one per worker.
+					logger.error(
+						`Unable to complete the interrupted drop of table ${dropLabel} after ${attempt} attempts; giving up until this worker restarts (a full node restart also resets this). ${tableName} stays unloaded, with its catalog rows and column families left in place. An "Invalid column family specified in write batch" cause means the storage environment for ${databaseName} has latched a background error and will reject every write to every table in it until this node restarts.`,
+						error
+					);
+				}
+			}
 		}
 		// whether or not cleanup succeeded, never load a table that was being dropped
 		tablesToLoad.delete(tableName);
@@ -1089,6 +1180,16 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		cacheControl,
 	} = tableDefinition;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
+	// Reject reserved names here too, not only at the operations API: a database
+	// is also created by schema authoring — a `schema.graphql` `@table(database:)`
+	// or a programmatic `table()` call — which bypasses the create_schema
+	// validation. A reserved name collides with a role permission flag (harper#1016).
+	// Deliberately on this authoring path only, NOT in `database()`/`makeTable`: those
+	// are also the load and drop paths, so a reserved-name database created before this
+	// fix still loads (data stays accessible) and can be dropped to remediate.
+	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
+		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
+	}
 	const rootStore = database({ database: databaseName, table: tableName });
 	const tables = databases[databaseName];
 	logger.trace(`Defining ${tableName} in ${databaseName}`);
@@ -1229,6 +1330,15 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// entry as an existing table would recurse forever on the stale
 				// catalog row.
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				// This resolves the drop without ever going through the schema-load
+				// reconcile below, which is the only other place that returns a spent
+				// budget. Without clearing it here too, a table that gets dropped again
+				// before any reconcile observes it live in between would have its NEXT
+				// interrupted drop inherit this one's spent attempts. Generation-scoped
+				// keying (see interruptedDropAttempts) already makes that impossible, but
+				// clearing it here too avoids leaving a dead entry behind - for every
+				// generation this table has ever spent, not just the one on this row.
+				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
@@ -1827,20 +1937,27 @@ async function runIndexing(Table, attributes, indicesToRemove) {
  * catalog rows. Called from the boot-time schema load and from the create
  * path when a same-named table is created over a tombstoned entry. Callers
  * are expected to hold the database's exclusive lock or be in single-threaded
- * startup; the per-store drops tolerate races (another worker may be
- * completing the same drop concurrently).
+ * startup; a redundant drop of an already-gone store (another worker may be
+ * completing the same drop concurrently) is tolerated, but any other
+ * per-store failure propagates so the catalog rows are NOT removed - a store
+ * that failed to drop must keep its tombstone, or a same-name recreate could
+ * reuse (LMDB) or resurrect (RocksDB) the old store's data. Logged only at
+ * debug: the caller's retry loop is what decides when a failure is
+ * actionable, and logging here on every attempt would flood at the same
+ * volume this function's callers are bounding.
  */
 function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
-	logger.warn(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 	if (rootStore instanceof RocksDatabase) {
 		for (const columnName of (rootStore as any).columns) {
 			if (columnName.startsWith(tableName + '/')) {
+				const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
 				try {
-					const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
 					columnStore.dropSync();
-					columnStore.close();
 				} catch (error) {
-					logger.warn(`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`, error);
+					ignoreAlreadyDropped(error);
+				} finally {
+					columnStore.close();
 				}
 			}
 		}
@@ -1849,20 +1966,41 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		// be dropped too; removing only the catalog rows would let a same-name
 		// recreate silently inherit the previous table's records.
 		for (const { key, value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			const objectStorage =
+				value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
+			const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
 			try {
-				const objectStorage =
-					value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
-				const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
-				// lmdb drop commits with the env's next transaction
-				store.drop?.();
+				// dropSync (not drop): this function is synchronous, and its callers rely on
+				// a thrown error to count against the retry budget below - the async drop()
+				// resolves/rejects after this try/catch has already returned, so a failure
+				// there would silently bypass the retry accounting entirely.
+				store.dropSync?.();
 			} catch (error) {
-				logger.warn(`Failed dropping store ${key} of ${databaseName}.${tableName}`, error);
+				ignoreAlreadyDropped(error);
 			}
 		}
 	}
+	// The primary catalog row (the `dropping` tombstone itself, keyed at exactly
+	// `tableName + '/'`) sorts first among these keys and so would be removed
+	// before the attribute rows that follow it. Removing it last instead means a
+	// removeSync failure partway through leaves the tombstone in place alongside
+	// whatever attribute rows didn't get removed yet, so a later retry still
+	// recognizes the table as mid-drop - instead of the tombstone vanishing
+	// first and stranding orphaned attribute rows that the next load would
+	// misread as a live (non-dropping) table.
+	const primaryCatalogKey = tableName + '/';
+	let removePrimaryLast = false;
 	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
-		attributesDbi.remove(key);
+		if (key === primaryCatalogKey) {
+			removePrimaryLast = true;
+			continue;
+		}
+		// removeSync (not remove): same reasoning as dropSync above - the async
+		// remove() rejects after this function has already returned, so a
+		// catalog-removal failure would bypass the retry accounting entirely.
+		(attributesDbi as any).removeSync(key);
 	}
+	if (removePrimaryLast) (attributesDbi as any).removeSync(primaryCatalogKey);
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {

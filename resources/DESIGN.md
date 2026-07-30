@@ -100,6 +100,8 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 
 **Async false-mode read gates preserve the streaming contract.** `Table.search` returns an `ExtendedIterable` carrying the internal `SEARCH_AUTHORIZATION` promise. Static `Resource.search` and `query` await that verdict before returning a response; on success the wrapper initializes the real search before the transaction settles so its normal read snapshot stays reserved until iteration completes. The marker follows supported iterable transforms and retains `selectApplied`/`getColumns`, so async or mapped delegation cannot turn a denial into a truncated successful response.
 
+**False-mode collection write gates stay per dispatch.** Built-in array PUT, query DELETE, and publish perform one request-scoped `allowUpdate`, `allowDelete`, or `allowCreate` verdict respectively. After query DELETE authorizes, it scans with a private cloned target whose permission check is disabled; the caller target stays untouched, and concurrent reads using it still run `allowRead`. Static publish overload routing marks the fresh per-dispatch resource receiver in `staticResourceDispatch.ts`, so copied targets and delayed delegation retain the `(target, message)` signature without putting reusable state on caller objects.
+
 ---
 
 ## Path routing & parameterised routes
@@ -164,6 +166,9 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 
 - **Never** remove `transactional()` from a static method on `Resource` — it owns transaction context lifetime.
 - New `Resource` subclasses should override **instance** methods (`get`, `put`, ...) for behavior; static methods are the protocol entry points and stay generic.
+- **Overriding a static entry point takes over its whole contract.** Assigning `static post`/`put`/`patch` on a subclass shadows the `transactional()`-wrapped static, so none of that wrapper runs — including the `when(data, ...)` that resolves `data` and the `allowCreate`/`allowUpdate` gate. That is by design (it is how `login.ts` implements a deliberately pre-authentication endpoint), and it means an override owns two obligations the wrapper would otherwise have met:
+  - **`data` is a `MaybePromise` — `await` it.** Protocol callers pass `request.data` through unresolved; over REST that is the streaming deserializer's pending promise (`server/REST.ts` → `getDeserializer(…, true)`). A promise has no own enumerable properties, so skipping the `await` fails silently rather than loudly: `JSON.stringify(body) === '{}'` and every field reads `undefined`.
+  - **The override makes the access-control decision.** No `allow*` predicate runs for it. An override that is not meant to be public must check authorization itself.
 - When adding a new early-return path inside a commit handler in `_writeUpdate`, follow the blob-cleanup protocol documented in `../DESIGN.md` ("Blob orphan cleanup").
 - If you add a new top-level section to `Table.ts`, drop a `// #section: <name>` marker at its start and add a row to the section map above.
 - Tests for this layer live in `../unitTests/resources/`.

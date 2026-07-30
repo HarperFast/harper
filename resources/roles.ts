@@ -2,8 +2,12 @@ import { getDatabases } from './databases.ts';
 import { alterRole, addRole } from '../security/role.ts';
 import { parseDocument } from 'yaml';
 import { isEqual } from 'lodash';
+import { RESERVED_DATABASE_NAMES } from '../utility/hdbTerms.ts';
 
-const USERS_NOT_DBS = ['super_user', 'structure_user'];
+// Named permission flags are keyed alongside per-database permissions in a role's
+// `permission` object; skip them when walking database permissions. This is the
+// same reserved set that database names are rejected from (harper#1016).
+const USERS_NOT_DBS: readonly string[] = RESERVED_DATABASE_NAMES;
 
 /**
  * This is the component for handling role declarations in the Harper system. This will read roles.yaml for role
