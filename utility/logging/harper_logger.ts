@@ -208,22 +208,43 @@ export function isErrorLike(arg: any): boolean {
 }
 
 /**
+ * True when `arg` needs sanitizeErrorArg's replacement before reaching Console's raw formatting:
+ * either it's error-like, or it's a live Proxy that isErrorLike deliberately reports as false (see
+ * isErrorLike above) but that Console's default inspect would still reflect on directly - which,
+ * if the Proxy happens to wrap an Error, dumps its own-enumerable properties unsanitized (#1734).
+ */
+function needsSanitizing(arg: any): boolean {
+	return types.isProxy(arg) || isErrorLike(arg);
+}
+
+/**
+ * Replaces an Error (or a Proxy - live-or-revoked, whatever it wraps) with a safe placeholder
+ * before it reaches Console's util.inspect formatting; same Proxy-first ordering and rationale as
+ * deepSanitizeErrors' `types.isProxy` check (see there) - reflecting on a Proxy at all, even just
+ * to classify it, risks running a hostile trap on the shallow logging path too.
+ */
+function sanitizeErrorArg(arg: any) {
+	if (types.isProxy(arg)) return labelPlaceholder('[Proxy]');
+	return isErrorLike(arg) ? errorForLog(arg) : arg;
+}
+
+/**
  * Replaces every Error argument with its log-safe errorForLog wrapper before the args reach
  * Console's util.inspect formatting, which would otherwise dump the error's own-enumerable
  * properties — where libraries and app code stash credentials (axios config headers, an
  * hdb_secret for an outbound Authorization header) — into hdb.log (see #1734 and errorForLog).
  * Called inside each level gate so filtered-out log calls pay nothing beyond the arg scan,
- * and only allocates when an Error is actually present. Deliberately shallow: an Error nested
- * inside a logged object/array is not rewritten (deep-walking every logged structure is not
- * worth the per-call cost, and the #1734 threat is raw thrown errors).
+ * and only allocates when an Error (or Proxy needing the same treatment) is actually present.
+ * Deliberately shallow: an Error nested inside a logged object/array is not rewritten (deep-
+ * walking every logged structure is not worth the per-call cost, and the #1734 threat is raw
+ * thrown errors).
  */
 function sanitizeErrorArgs(args: any[]) {
 	for (let i = 0; i < args.length; i++) {
-		if (isErrorLike(args[i])) {
+		if (needsSanitizing(args[i])) {
 			const sanitized = args.slice(0, i);
 			for (let j = i; j < args.length; j++) {
-				const arg = args[j];
-				sanitized[j] = isErrorLike(arg) ? errorForLog(arg) : arg;
+				sanitized[j] = sanitizeErrorArg(args[j]);
 			}
 			return sanitized;
 		}
@@ -307,10 +328,10 @@ class HarperLogger extends Console {
 		super.log(...sanitizeErrorArgs(args));
 	}
 	dir(item, options?) {
-		super.dir(isErrorLike(item) ? errorForLog(item) : item, options);
+		super.dir(sanitizeErrorArg(item), options);
 	}
 	table(data, columns?) {
-		super.table(Array.isArray(data) ? sanitizeErrorArgs(data) : isErrorLike(data) ? errorForLog(data) : data, columns);
+		super.table(Array.isArray(data) ? sanitizeErrorArgs(data) : sanitizeErrorArg(data), columns);
 	}
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);
@@ -1181,8 +1202,10 @@ const MAX_INDEXED_EXPANDO_CHECK_LENGTH = 10_000;
  * exactly like any other array - `Object.keys(Buffer.from('hi'))` is `['0', '1']` - so those don't
  * count as expandos here; only a key beyond `[0, length)` does. A boxed String has the same shape
  * (`Object.keys(new String('hi'))` is the same `['0', '1']`) and gets the same carve-out; detected
- * via the intrinsic `Object.prototype.toString` tag rather than `instanceof String` (realm/hijack-
- * safe, same technique safeOpaqueBuiltinSummary's fallback tag uses). DataView has no such index
+ * via `types.isStringObject` (an internal-slot check, like `isOpaqueBuiltin`'s `types.is*` checks
+ * above) rather than `Object.prototype.toString.call`, which reads the value's own
+ * `Symbol.toStringTag` property - a hostile value defining that as a getter would have it run
+ * during this supposedly passive classification. DataView has no such index
  * properties (its data is accessed only via get/set methods), so it's excluded from the carve-out
  * and goes through the plain `Object.keys(value).length > 0` check like any ordinary object.
  *
@@ -1203,7 +1226,7 @@ const MAX_INDEXED_EXPANDO_CHECK_LENGTH = 10_000;
 function hasEnumerableOwnProps(value: object): boolean {
 	try {
 		const isTypedArray = ArrayBuffer.isView(value) && !types.isDataView(value);
-		const isBoxedString = types.isBoxedPrimitive(value) && Object.prototype.toString.call(value) === '[object String]';
+		const isBoxedString = types.isStringObject(value);
 		if (isTypedArray || isBoxedString) {
 			// The typed-array getter is bound explicitly (see TYPED_ARRAY_PROTO above) to survive a
 			// shadowed own `length`; a boxed String's `length` is a non-configurable, non-writable own
