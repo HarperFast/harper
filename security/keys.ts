@@ -1013,6 +1013,13 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					secureContexts.clear();
 					caCerts.clear();
 					let bestQuality = 0;
+					// Whether THIS pass produced a default context. The `defaultContext` closure variable
+					// is deliberately never reset (a transient zero-cert pass must keep serving the prior
+					// default while the retry below waits for certs to come back), so it can't be used to
+					// ask "did this pass find anything?" — after the first successful pass it is truthy
+					// forever, which would let a later transient zero-cert rebuild skip the retry and
+					// publish an empty certificates list (the #1998 symptom) on the post-boot path.
+					let defaultContextSetThisPass = false;
 					// Track the actual table instance, not just whether we've ever subscribed: resetDatabases()
 					// (copy_db, ITC restart handling) replaces databases.system.hdb_certificate with a new
 					// table object, and a boolean flag would never re-subscribe to it, permanently losing
@@ -1141,6 +1148,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							if (quality > bestQuality /* && hasIpAddress*/) {
 								// we use this certificate as the default if it has a higher quality than the existing one
 								(SNICallback as any).defaultContext = defaultContext = secureContext;
+								defaultContextSetThisPass = true;
 								bestQuality = quality;
 								if (server) {
 									server.defaultContext = secureContext;
@@ -1154,7 +1162,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							logger.error?.('Error applying TLS for', cert.name, error);
 						}
 					}
-					if (liveReload && secureContexts.size === 0 && !defaultContext) {
+					if (liveReload && secureContexts.size === 0 && !defaultContextSetThisPass) {
 						// The not-loaded-yet guard above only covers the table object being absent, not the
 						// table being present but every row failing to apply (e.g. a private key not yet
 						// available on this thread, caught above per-cert). Resolving here would still write
@@ -1164,10 +1172,13 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						// almost certainly still coming on a normal boot, and this just avoids a window where
 						// we'd otherwise publish empty in the meantime.
 						//
-						// `!defaultContext` because an empty hostname map is not the same as "no TLS available":
-						// a cert whose hostnames resolve to [] (no usable SANs and no CN) builds no per-hostname
-						// entry but still sets a serviceable default context — that listener must resolve and
-						// serve via the default rather than retry forever for hostname entries that can't exist.
+						// `!defaultContextSetThisPass` because an empty hostname map is not the same as "no TLS
+						// available": a cert whose hostnames resolve to [] (no usable SANs and no CN) builds no
+						// per-hostname entry but still sets a serviceable default context — that listener must
+						// resolve and serve via the default rather than retry forever for hostname entries that
+						// can't exist. It must be the per-pass flag, not the persistent `defaultContext` (see its
+						// declaration note): keying off the closure variable would disarm this retry for every
+						// pass after the first success, reopening the publish-empty window on live rebuilds.
 						//
 						// Gated on liveReload: transient, single-use selectors (getReplicationCert) legitimately
 						// resolve empty — e.g. the bootstrap check `if (!(await getReplicationCert())) { create
