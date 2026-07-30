@@ -275,6 +275,12 @@ describe('server.status', function () {
 
 			// Check restart flag
 			assert.equal(result.restartRequired, true);
+
+			// Check hierarchy - built from the same aggregated statuses as componentStatus
+			assert.ok(result.hierarchy, 'hierarchy should be defined');
+			assert.equal(result.hierarchy['test-component'].status, 'healthy');
+			assert.equal(result.hierarchy['another-component'].status, 'error');
+			assert.equal(result.hierarchy['another-component'].message, 'Failed to start');
 		});
 
 		it('includes middlewareChains only when middleware:true is requested (#1573)', async function () {
@@ -309,6 +315,9 @@ describe('server.status', function () {
 
 			// Restart should be false
 			assert.equal(result.restartRequired, false);
+
+			// Hierarchy should be an empty object, not undefined
+			assert.deepStrictEqual(result.hierarchy, {});
 		});
 
 		it('should continue working if component status functions are unavailable', async function () {

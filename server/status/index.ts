@@ -4,6 +4,7 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { validateStatus } from '../../validation/statusValidator.ts';
 import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
 import { internal as statusInternal, type AggregatedComponentStatus } from '../../components/status/index.ts';
+import { buildHierarchy, type StatusNode } from '../../components/status/hierarchy.ts';
 import { restartNeeded } from '../../components/requestRestart.ts';
 import { sendItcEvent } from '../threads/itc.js';
 import { onMessageByType, workers } from '../threads/manageThreads.js';
@@ -81,6 +82,7 @@ interface AggregatedComponentStatusWithName extends AggregatedComponentStatus {
 interface AllStatusSummary {
 	systemStatus: Promise<AsyncIterable<StatusRecord>>;
 	componentStatus: AggregatedComponentStatusWithName[];
+	hierarchy: Record<string, StatusNode>;
 	restartRequired: boolean;
 	// Only present when the request opts in with `middleware: true`.
 	middlewareChains?: MiddlewareChainsSummary | null;
@@ -157,12 +159,16 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 		})
 	);
 
+	// Build hierarchical view
+	const hierarchy = buildHierarchy(aggregatedStatuses);
+
 	// Get restart flag status
 	const restartRequired = restartNeeded();
 
 	const summary: AllStatusSummary = {
 		systemStatus: statusRecords as Promise<AsyncIterable<StatusRecord>>,
 		componentStatus: componentStatusArray,
+		hierarchy,
 		restartRequired,
 	};
 	if (includeMiddleware) summary.middlewareChains = await getMiddlewareChains();

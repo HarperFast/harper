@@ -667,7 +667,9 @@ function initStores(
 					}
 				}
 			} catch (error) {
-				logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
+				logger
+					.status({ problem: 'database.attribute-update' })
+					.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
 			}
 		}
 		// Collect removals first; splicing while iterating `existingAttributes` skips adjacent
@@ -678,18 +680,20 @@ function initStores(
 			const attribute = attributes.find((attribute) => attribute.name === existingAttribute.name);
 			if (!attribute) {
 				if (existingAttribute.isPrimaryKey) {
-					logger.error(
-						new Error('Unable to remove existing primary key attribute'),
-						existingAttribute,
-						'from attributes',
-						existingAttributes,
-						'in',
-						tableName,
-						'requesting new attribute list',
-						attributes,
-						'full metadata list',
-						Array.from(attributesDbi.getRange({ start: false }))
-					);
+					logger
+						.status({ problem: 'database.primary-key' })
+						.error(
+							new Error('Unable to remove existing primary key attribute'),
+							existingAttribute,
+							'from attributes',
+							existingAttributes,
+							'in',
+							tableName,
+							'requesting new attribute list',
+							attributes,
+							'full metadata list',
+							Array.from(attributesDbi.getRange({ start: false }))
+						);
 					continue;
 				}
 				if (existingAttribute.indexed) {

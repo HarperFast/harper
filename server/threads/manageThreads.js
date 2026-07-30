@@ -408,7 +408,9 @@ function startWorker(path, options = {}) {
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
 		// way)
-		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
+		harperLogger
+			.status({ problem: 'threads.worker-error', expires: 120 })
+			.error(`Worker index ${options.workerIndex} error:`, error);
 	});
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
@@ -417,7 +419,10 @@ function startWorker(path, options = {}) {
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
 				startWorker(path, options);
-			} else harperLogger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
+			} else
+				harperLogger
+					.status({ problem: 'threads.restart-limit' })
+					.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
 		}
 	});
 	workers.push(worker);
@@ -452,7 +457,7 @@ async function restartWorkers(
 			// some reason, so we need to reset it to the correct path.
 			process.chdir(process.cwd());
 		} catch (e) {
-			harperLogger.error('Unable to reestablish current working directory', e);
+			harperLogger.status({ problem: 'threads.cwd' }).error('Unable to reestablish current working directory', e);
 		}
 		// problematic cyclic dependency, bind late
 		const { resetRestartNeeded } = require('../../components/requestRestart.ts');
