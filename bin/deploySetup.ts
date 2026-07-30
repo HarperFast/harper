@@ -132,9 +132,18 @@ export async function deploySetup(req: any): Promise<void> {
 		credentialKey = host;
 		if (!token) {
 			const ghToken = tryCommand('gh', ['auth', 'token']);
-			const choices: Array<{ name: string; value: string }> = [];
-			if (ghToken) choices.push({ name: 'Use your gh CLI session token (gh auth token)', value: 'gh' });
-			choices.push({ name: 'Paste a fine-grained PAT (Contents: Read-only on this repo)', value: 'paste' });
+			// A fine-grained PAT is offered FIRST, and is therefore the default selection. What gets
+			// sealed here is durable and replayed on every cold deploy and rollback, so it should be
+			// the narrowest credential that does the job — one repo, Contents: Read-only. A `gh` CLI
+			// session token is one keypress cheaper but typically carries repo/read:org/gist/workflow
+			// across the whole account, so offering it first would make least privilege the path of
+			// most resistance.
+			const choices: Array<{ name: string; value: string }> = [
+				{ name: 'Paste a fine-grained PAT (Contents: Read-only on this repo) — recommended', value: 'paste' },
+			];
+			if (ghToken) {
+				choices.push({ name: 'Use your gh CLI session token (broad account scopes)', value: 'gh' });
+			}
 			const how =
 				choices.length === 1
 					? 'paste'
@@ -147,6 +156,13 @@ export async function deploySetup(req: any): Promise<void> {
 							})
 						).how;
 			if (how === 'gh') {
+				console.log(
+					chalk.yellow(
+						'Note: your gh CLI token usually carries broad account scopes (repo, read:org, gist,\n' +
+							'  workflow) and is long-lived. It will be stored encrypted and reused for future\n' +
+							'  deploys and rollbacks of this component. A fine-grained PAT is the safer choice.'
+					)
+				);
 				token = ghToken;
 			} else {
 				console.log(
