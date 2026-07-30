@@ -812,6 +812,12 @@ describe('Querying through Resource API', () => {
 			);
 		});
 
+		it('array-of-FK relationship with no stored ids resolves to an empty array without reading', async function () {
+			// id-0 was written with manyToManyIds: [] (see `before`)
+			const record = await QueryTable.get('id-0');
+			assert.deepEqual(record.manyToMany, [], 'no ids to resolve, so no related records');
+		});
+
 		it('Query by join with many-to-many (reverse)', async function () {
 			let results = [];
 			for await (let record of ManyToMany.search({
