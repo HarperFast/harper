@@ -1109,6 +1109,7 @@ describe('test MQTT connections and commands', function () {
 		}
 	});
 
+<<<<<<< HEAD
 	it('secure-port UDS metadata carries the certificates when the same socket() call also registers a plain TCP port', async function () {
 		// Regression for #1998's surviving symptom: MQTT registers `{ port, securePort }` in ONE
 		// server.socket() call. onSocket built the TLS server into the function-scoped `socketServer`
@@ -1123,6 +1124,128 @@ describe('test MQTT connections and commands', function () {
 		this.timeout(10000);
 		const { existsSync, readFileSync: readFile, readdirSync, unlinkSync } = await import('node:fs');
 		const { join } = await import('node:path');
+=======
+	it('installs the ws handler on a uWS-served UDS mirror config (HARPER_UWS_UDS)', async function () {
+		// The HARPER_UWS_UDS mirror is served by uWS from uwsServeConfigs, not a Node http.Server;
+		// server.ws() must install its wsHandler (and maxPayload) on that mirror config too.
+		const { uwsServeConfigs } = await import('#src/server/http');
+		const preexistingServers = { ...SERVERS };
+		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
+		const preexistingUds = env_get('tls_unixDomainSockets');
+		setProperty('tls_unixDomainSockets', true);
+		process.env.HARPER_UWS_UDS = '1';
+		const preexistingCfgs = new Set(Object.keys(uwsServeConfigs));
+		try {
+			global.server.ws(() => {}, { securePort: 28887, maxPayload: 12345 });
+			const mirrorCfgKey = Object.keys(uwsServeConfigs).find(
+				(key) => key.endsWith('.sock') && !preexistingCfgs.has(key)
+			);
+			assert.ok(mirrorCfgKey, 'securePort ws listener should create a uWS UDS mirror config');
+			assert.equal(typeof uwsServeConfigs[mirrorCfgKey].wsHandler, 'function', 'mirror config must get the wsHandler');
+			assert.equal(uwsServeConfigs[mirrorCfgKey].wsMaxPayload, 12345, 'mirror config must carry maxPayload');
+		} finally {
+			delete process.env.HARPER_UWS_UDS;
+			setProperty('tls_unixDomainSockets', preexistingUds);
+			for (const key of Object.keys(uwsServeConfigs)) if (!preexistingCfgs.has(key)) delete uwsServeConfigs[key];
+			for (const key of Object.keys(SERVERS)) delete SERVERS[key];
+			Object.assign(SERVERS, preexistingServers);
+			portServer.clear();
+			for (const [key, servers] of preexistingPortServer) portServer.set(key, servers);
+		}
+	});
+
+	it('wires WebSocket upgrade handling onto the UDS mirror (WS died with a zero-byte close there)', async function () {
+		// server.ws() attaches the upgrade dispatch to the port-keyed server; the UDS mirror is a
+		// separate http.Server and historically got no 'upgrade' listener, so Node destroyed WS
+		// handshakes on it silently. Exercise a real handshake + echo through the mirror socket,
+		// PROXY header included, exactly as a fronting proxy sends it.
+		const { unlinkSync } = await import('node:fs');
+		const { connect: netConnect } = await import('node:net');
+		const { randomBytes } = await import('node:crypto');
+		const { tmpdir } = await import('node:os');
+		const { join } = await import('node:path');
+		const preexistingServers = { ...SERVERS };
+		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
+		const preexistingUds = env_get('tls_unixDomainSockets');
+		setProperty('tls_unixDomainSockets', true);
+		// Short path — sun_path is limited to ~104 bytes on macOS
+		const sockPath = join(tmpdir(), `hdb-ws-mirror-${process.pid}.sock`);
+		let mirror;
+		try {
+			global.server.ws((ws) => ws.on('message', (message) => ws.send(`echo:${message}`)), { securePort: 28886 });
+			const udsMirrorKey = Object.keys(SERVERS).find((key) => key.endsWith('.sock') && !preexistingServers[key]);
+			assert.ok(udsMirrorKey, 'securePort ws listener should create a UDS mirror when tls_unixDomainSockets is on');
+			mirror = SERVERS[udsMirrorKey];
+			assert.equal(mirror.listenerCount('upgrade'), 1, 'the UDS mirror must dispatch upgrade requests');
+
+			try {
+				unlinkSync(sockPath);
+			} catch {}
+			await new Promise((resolve, reject) => {
+				mirror.once('error', reject);
+				mirror.listen(sockPath, resolve);
+			});
+
+			const client = netConnect(sockPath);
+			const key = randomBytes(16).toString('base64');
+			const status = await new Promise((resolve, reject) => {
+				let data = Buffer.alloc(0);
+				client.on('connect', () => {
+					client.write('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\n');
+					client.write(
+						`GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
+							`Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n\r\n`
+					);
+				});
+				client.on('data', function onHandshake(chunk) {
+					data = Buffer.concat([data, chunk]);
+					if (data.includes('\r\n\r\n')) {
+						client.removeListener('data', onHandshake);
+						resolve(data.toString().split('\r\n')[0]);
+					}
+				});
+				client.on('error', reject);
+				client.on('close', () => reject(new Error('connection closed before handshake response')));
+				setTimeout(() => reject(new Error('no handshake response')), 3000).unref();
+			});
+			assert.equal(status, 'HTTP/1.1 101 Switching Protocols');
+
+			// Post-upgrade data must flow both ways through the proxy-protocol handoff
+			const echoed = new Promise((resolve, reject) => {
+				let frame = Buffer.alloc(0);
+				client.on('data', (chunk) => {
+					frame = Buffer.concat([frame, chunk]);
+					const length = frame[1] & 0x7f;
+					if (frame.length >= 2 + length) resolve(frame.subarray(2, 2 + length).toString());
+				});
+				setTimeout(() => reject(new Error('no echo received')), 3000).unref();
+			});
+			const payload = Buffer.from('hi');
+			const mask = randomBytes(4);
+			const masked = Buffer.from(payload.map((byte, i) => byte ^ mask[i % 4]));
+			client.write(Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]));
+			assert.equal(await echoed, 'echo:hi');
+			client.destroy();
+		} finally {
+			setProperty('tls_unixDomainSockets', preexistingUds);
+			if (mirror?.listening) await new Promise((resolve) => mirror.close(resolve));
+			try {
+				unlinkSync(sockPath);
+			} catch {}
+			for (const key of Object.keys(SERVERS)) delete SERVERS[key];
+			Object.assign(SERVERS, preexistingServers);
+			portServer.clear();
+			for (const [key, servers] of preexistingPortServer) portServer.set(key, servers);
+		}
+	});
+
+	it('socket listeners actually apply noDelay/keepAlive socket options', function () {
+		// net.createServer(listener, options) silently ignores the options object — options must be
+		// the first argument. Assert the servers onSocket creates carry the socket options, so an
+		// arg-order regression fails here. Node stores keepAliveInitialDelay in whole seconds
+		// (~~(ms / 1000)), so the configured 600_000 ms surfaces as 600; the old value of 600 ms
+		// floored to 0 and never yielded the intended 10-minute delay.
+>>>>>>> a057bca24 (fix(http): dispatch WebSocket upgrades on the UDS mirror listeners)
 		const preexistingServers = { ...SERVERS };
 		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
 		const preexistingUds = env_get('tls_unixDomainSockets');

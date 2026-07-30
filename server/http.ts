@@ -571,6 +571,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
+<<<<<<< HEAD
 			// Create a plain HTTP server (no TLS) with the same request handler
 			const udsServer = createServer(
 				{
@@ -584,6 +585,73 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 				},
 				(nodeRequest: IncomingMessage, nodeResponse: any) => {
+=======
+			if (process.env.HARPER_UWS_UDS) {
+				// uWS backend (#914): serve the UDS mirror with uWebSockets.js instead of a Node http
+				// server. threadServer.js consumes uwsServeConfigs and calls createUwsServer(). uWS does
+				// not parse the PROXY protocol, so symphony must use sourceAddressHeader: 'xForwardedFor'
+				// for this socket (the same mode it uses for the Bun path).
+				uwsServeConfigs[udsPath] = {
+					socketPath: udsPath,
+					secure: true,
+					handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
+				};
+				// Let onWebSocket() install its wsHandler on this mirror too
+				server.udsMirrorUwsConfig = uwsServeConfigs[udsPath];
+			} else {
+				// Create a plain HTTP server (no TLS) with the same request handler
+				const udsServer = createServer(
+					{
+						keepAliveTimeout,
+						headersTimeout,
+						requestTimeout,
+						highWaterMark: 128 * 1024,
+						...socketOptionDefaults,
+						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
+					},
+					(nodeRequest: IncomingMessage, nodeResponse: any) => {
+						const method = nodeRequest.method;
+						if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD')
+							requestHandler(nodeRequest, nodeResponse);
+						else throttledRequestHandler(nodeRequest, nodeResponse);
+					}
+				);
+
+				udsServer.isPerThreadSocket = true;
+				// Mirror the secure server's mTLS config so a client cert forwarded by the
+				// fronting proxy (PROXY v2 TLVs) authenticates exactly like one this worker
+				// terminated itself.
+				udsServer.verifiesClientCerts = server.verifiesClientCerts;
+				udsServer.mtlsRequired = server.mtlsRequired;
+				if (mtls) udsServer.mtlsConfig = mtls;
+				enableProxyProtocol(udsServer);
+				SERVERS[udsPath] = udsServer;
+				// Let onWebSocket() attach its 'upgrade' dispatch to this mirror too — a Node
+				// HTTP server with no 'upgrade' listener destroys upgrade sockets with no
+				// response and no log.
+				server.udsMirror = udsServer;
+			}
+			registerUdsCleanupPaths(udsPath, yamlPath);
+
+			// Skip (and don't re-arm) the write if this mirror's listen() already failed — see
+			// markUdsBindFailed(). SNICallback readiness and cert reloads are independent of the
+			// socket's bind outcome, so without this check a failed mirror could still get advertised.
+			const writeMetadata = () => {
+				if (!failedUdsPaths.has(udsPath))
+					writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+			};
+			options.SNICallback.ready.then(writeMetadata);
+			server.secureContextsListeners.push(writeMetadata);
+
+			// Optional cleartext HTTP/2 mirror (spike: HARPER_H2C_UDS=1). A separate socket
+			// (`<worker>-<port>-h2.sock`) so a fronting proxy can route by negotiated ALPN:
+			// h2 connections here, http/1.1 to the plain mirror above. The metadata yaml
+			// carries `protocol: h2` so the proxy can discover which socket speaks what.
+			if (process.env.HARPER_H2C_UDS) {
+				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
+				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
+				const h2Server = createH2CServer({}, (nodeRequest: any, nodeResponse: any) => {
+>>>>>>> a057bca24 (fix(http): dispatch WebSocket upgrades on the UDS mirror listeners)
 					const method = nodeRequest.method;
 					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
 					else throttledRequestHandler(nodeRequest, nodeResponse);
@@ -965,7 +1033,43 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 
 		const server = getHTTPServer(port, secure, options);
 
+<<<<<<< HEAD
 		if (!websocketServers[port]) {
+=======
+		const installUwsWsHandler = (cfg: any) => {
+			if (!cfg || cfg.wsHandler) return;
+			// Honor a configured WebSocket maxPayload on the uWS transport too (else it defaults to 100 MiB).
+			if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
+			cfg.wsHandler = (ws: any, upgrade: any) => {
+				try {
+					const request: any = new UwsRequest({
+						method: 'GET',
+						url: upgrade.url,
+						headers: upgrade.headers,
+						secure,
+						ip: upgrade.ip,
+					});
+					request.isWebSocket = true;
+					const chainCompletion = httpChain[port](request);
+					websocketChains[port](ws, request, chainCompletion);
+				} catch (error) {
+					harperLogger.warn('Error in handling WS connection', error);
+					try {
+						ws.close();
+					} catch {}
+				}
+			};
+		};
+		// A uWS-served UDS mirror (HARPER_UWS_UDS) needs the wsHandler regardless of whether the
+		// port itself is uWS- or Node-backed.
+		installUwsWsHandler((server as any)?.udsMirrorUwsConfig);
+		if ((server as any)?.uws) {
+			// uWS-backed port (HARPER_UWS_HTTP): uWS owns the socket, so route upgrades through uWS's
+			// native app.ws() rather than the Node ws.WebSocketServer + server 'upgrade' event. We wire a
+			// wsHandler into the shared uwsServeConfig; createUwsServer registers app.ws() when it listens.
+			installUwsWsHandler(uwsServeConfigs[port]);
+		} else if (!websocketServers[port]) {
+>>>>>>> a057bca24 (fix(http): dispatch WebSocket upgrades on the UDS mirror listeners)
 			websocketServers[port] = new WebSocketServer({
 				noServer: true,
 				// TODO: this should be a global config and not per ws listener
@@ -1004,11 +1108,16 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			);
 
 			// Call the upgrade middleware chain
-			server.on('upgrade', (request, socket, head) => {
+			const dispatchUpgrade = (request, socket, head) => {
 				if (upgradeChains[port]) {
 					upgradeChains[port](request, socket, head);
 				}
-			});
+			};
+			server.on('upgrade', dispatchUpgrade);
+			// The UDS mirror is a separate http.Server; without its own 'upgrade' listener
+			// Node destroys upgrade sockets silently (zero-byte close), so WS worked on the
+			// TCP port but died on the mirror.
+			(server as any).udsMirror?.on('upgrade', dispatchUpgrade);
 		}
 
 		servers.push(server);
@@ -1056,11 +1165,11 @@ export function enableProxyProtocol(httpServer) {
 				for (const listener of dataListeners) listener.call(socket, chunk);
 			};
 
-			let headerHandled = false;
 			// Accumulates a possibly-split PROXY header. Raw protocols (MQTT/replication) can't
 			// recover from a corrupted first packet, so we must not forward a partial header —
 			// the line can arrive across multiple data events.
 			let pending: Buffer | null = null;
+<<<<<<< HEAD
 			socket.on('data', (chunk: Buffer) => {
 				if (headerHandled) return forward(chunk);
 				if (pending) chunk = Buffer.concat([pending, chunk]);
@@ -1071,6 +1180,35 @@ export function enableProxyProtocol(httpServer) {
 					// Not a PROXY v1 header — forward everything unchanged.
 					headerHandled = true;
 					pending = null;
+=======
+			// Bounds how long a stalled peer can hold the pending-header buffer, matching
+			// withProxyProtocol's prehandoffTimeout for the same threat on the raw-socket path.
+			// Cleared (not just disabled) once the header resolves, so it can't fire on a later,
+			// unrelated keep-alive timeout.
+			const onPrehandoffTimeout = () => socket.destroy();
+			socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
+			const onData = (chunk: Buffer) => {
+				if (pending) chunk = Buffer.concat([pending, chunk]);
+
+				const decision = decodeProxyHeader(chunk);
+				if (decision.kind === 'incomplete') {
+					pending = chunk;
+					return;
+				}
+				pending = null;
+				socket.setTimeout(0);
+				socket.removeListener('timeout', onPrehandoffTimeout);
+				// Hand the socket back to its original listeners before forwarding. The wrapper
+				// must not outlive the header decision: protocol handoffs assume the listener
+				// they registered is the one attached (e.g. Node's HTTP upgrade path removes its
+				// parser's 'data' listener before ws takes over — with a lingering wrapper, WS
+				// frames would keep feeding the freed, re-poolable HTTP parser and corrupt
+				// whichever connection it is issued to next).
+				socket.removeListener('data', onData);
+				for (const listener of dataListeners) socket.on('data', listener);
+				if (decision.kind === 'none') {
+					// Not a PROXY header — forward everything unchanged.
+>>>>>>> a057bca24 (fix(http): dispatch WebSocket upgrades on the UDS mirror listeners)
 					return forward(chunk);
 				}
 
@@ -1100,7 +1238,8 @@ export function enableProxyProtocol(httpServer) {
 				// Forward only the bytes after the PROXY header to the protocol parser.
 				const rest = chunk.subarray(eol + 2);
 				if (rest.length > 0) forward(rest);
-			});
+			};
+			socket.on('data', onData);
 		});
 	});
 }
