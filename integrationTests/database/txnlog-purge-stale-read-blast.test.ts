@@ -202,17 +202,22 @@ async function seedRange(ctx: ContextWithHarper, start: number, count: number, b
 	}
 }
 
-async function flush(ctx: ContextWithHarper): Promise<void> {
+async function flush(ctx: ContextWithHarper, engine: 'rocksdb' | 'lmdb'): Promise<void> {
 	const r = await fetch(`${ctx.harper.httpURL}/Flush/`, {
 		method: 'POST',
 		headers: { Authorization: authHeader(ctx) },
 	});
 	ok(r.status === 200, `/Flush/ should succeed, got ${r.status}`);
 	const body = await r.json();
-	ok(
-		body.flushed === true,
-		`/Flush/ must actually flush the primary store (data would stay in the memtable), got ${JSON.stringify(body)}`
-	);
+	// Only meaningful on rocksdb: LMDB has no memtable to force to disk, so the fixture's
+	// Flush resource legitimately reports flushed=false there (primaryStore.flush is not a
+	// function) -- that is not the "silently did nothing" gap this assertion exists to catch.
+	if (engine === 'rocksdb') {
+		ok(
+			body.flushed === true,
+			`/Flush/ must actually flush the primary store (data would stay in the memtable), got ${JSON.stringify(body)}`
+		);
+	}
 }
 
 // ---- Per-surface probes --------------------------------------------------------------------
@@ -442,17 +447,17 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 			test('1. seed DEL (6000) + KEEP (6000) ranges, force flushes between waves', { timeout: 300_000 }, async () => {
 				// Flush every 2000 rows so data is genuinely on disk, not just resident in the memtable.
 				await seedRange(ctx, 0, 2000, 'DEL');
-				await flush(ctx);
+				await flush(ctx, engine);
 				await seedRange(ctx, 2000, 2000, 'DEL');
-				await flush(ctx);
+				await flush(ctx, engine);
 				await seedRange(ctx, 4000, 2000, 'DEL');
-				await flush(ctx);
+				await flush(ctx, engine);
 				await seedRange(ctx, 6000, 2000, 'KEEP');
-				await flush(ctx);
+				await flush(ctx, engine);
 				await seedRange(ctx, 8000, 2000, 'KEEP');
-				await flush(ctx);
+				await flush(ctx, engine);
 				await seedRange(ctx, 10000, 2000, 'KEEP');
-				await flush(ctx);
+				await flush(ctx, engine);
 
 				cutoffTimestamp = Date.now();
 				await sleep(250);
@@ -470,7 +475,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					ctrlRes.status === 200,
 					`control insert should succeed, got ${ctrlRes.status}: ${ctrlRes.text.slice(0, 300)}`
 				);
-				await flush(ctx);
+				await flush(ctx, engine);
 
 				const diskStats = txnLogStats(dataRootDir);
 				findings.push(
