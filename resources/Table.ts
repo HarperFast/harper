@@ -4806,7 +4806,9 @@ export function makeTable(options) {
 									const store = definition.tableClass.primaryStore;
 									const method = returnEntry ? 'getEntry' : 'getSync';
 									const options = { transaction: txnForContext(context).getReadTxn() };
-									const results = ids.map((id) => {
+									// tolerate a scalar id in an array-typed FK field (legacy data written
+									// before attribute.set normalized single records to a one-element array)
+									const results = (Array.isArray(ids) ? ids : [ids]).map((id) => {
 										const value = store[method](id, options);
 										if (TableResource.loadAsInstance === false) freezeRecord(returnEntry ? value?.value : value);
 										return value;
@@ -4827,7 +4829,9 @@ export function makeTable(options) {
 									object[relationship.from] = targetIds;
 								} else {
 									const targetId = related.getId?.() || related[definition.tableClass.primaryKey];
-									object[relationship.from] = targetId;
+									// an elements attribute always stores an array of ids, so a single
+									// composite (array) id is not misread as multiple scalar ids
+									object[relationship.from] = attribute.elements ? [targetId] : targetId;
 								}
 							};
 							attribute.resolve.definition = attribute.definition || attribute.elements?.definition;
