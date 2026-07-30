@@ -305,15 +305,28 @@ async function assertPresentEverywhere(
 	}
 
 	const queryHits = await restQueryBucket(ctx, bucket);
-	const queryIds = new Set(queryHits.map((r) => r.id));
+	const queryById = new Map(queryHits.map((r) => [r.id, r]));
 	const sbvHits = await searchByBucket(ctx, bucket);
-	const sbvIds = new Set(sbvHits.map((r) => r.id));
+	const sbvById = new Map(sbvHits.map((r) => [r.id, r]));
 	const sqlHits = await sqlByBucket(ctx, bucket);
-	const sqlIds = new Set(sqlHits.map((r) => r.id));
+	const sqlById = new Map(sqlHits.map((r) => [r.id, r]));
 	for (const id of ids) {
-		ok(queryIds.has(id), `[${label}] REST-QUERY bucket=${bucket} must include ${id}, got ${queryHits.length} hits`);
-		ok(sbvIds.has(id), `[${label}] SEARCH-BY-VALUE bucket=${bucket} must include ${id}, got ${sbvHits.length} hits`);
-		ok(sqlIds.has(id), `[${label}] SQL bucket=${bucket} must include ${id}, got ${sqlHits.length} hits`);
+		const seq = seqOf(id);
+		const queryHit = queryById.get(id);
+		ok(
+			queryHit && queryHit.payload === expectedPayload(seq),
+			`[${label}] REST-QUERY bucket=${bucket} must include ${id} present+correct, got ${JSON.stringify(queryHit)} (${queryHits.length} hits)`
+		);
+		const sbvHit = sbvById.get(id);
+		ok(
+			sbvHit && sbvHit.payload === expectedPayload(seq),
+			`[${label}] SEARCH-BY-VALUE bucket=${bucket} must include ${id} present+correct, got ${JSON.stringify(sbvHit)} (${sbvHits.length} hits)`
+		);
+		const sqlHit = sqlById.get(id);
+		ok(
+			sqlHit && sqlHit.payload === expectedPayload(seq),
+			`[${label}] SQL bucket=${bucket} must include ${id} present+correct, got ${JSON.stringify(sqlHit)} (${sqlHits.length} hits)`
+		);
 	}
 
 	const fs = await fullScan(ctx, ids);
@@ -623,6 +636,32 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				'5. CONTRAST ARM (known-reproducing): audit purge in the SAME process -- does the F-225 phantom appear here too?',
 				{ timeout: 120_000 },
 				async () => {
+					const sampleId = `k${DEL_SAMPLE_IDX[0]}`; // k0 -- inserted well before cutoffTimestamp
+
+					// WARM the transaction-log cache for this key BEFORE the purge, mirroring the WARM
+					// step used for the other four surfaces (test 2). QA-781 root-caused F-225 to a
+					// stale WeakRef cache (`TransactionLog._logBuffers`) that outlives a purge -- a
+					// cache that was never populated can't go stale, so reading only AFTER the purge
+					// (as this arm previously did) can pass "clean" for having nothing to go stale,
+					// not because the purge correctly invalidated a live cache entry. That would make
+					// the "known-reproducing" claim vacuous.
+					const preWarm = await rawOp(ctx, {
+						operation: 'read_audit_log',
+						schema: SCHEMA,
+						table: TABLE,
+						search_type: 'hash_value',
+						search_values: [sampleId],
+					});
+					ok(
+						preWarm.status === 200,
+						`WARM read_audit_log(${sampleId}) expected 200, got ${preWarm.status}: ${preWarm.text.slice(0, 300)}`
+					);
+					const preWarmEntries = Array.isArray(preWarm.body?.[sampleId]) ? preWarm.body[sampleId] : [];
+					ok(
+						preWarmEntries.some((e: any) => Number(e.timestamp) < cutoffTimestamp),
+						`NON-VACUOUS PRECONDITION: WARM read_audit_log(${sampleId}) must see the pre-cutoff insert entry before the purge, got ${JSON.stringify(preWarmEntries)}`
+					);
+
 					const ack = await rawOp(ctx, {
 						operation: 'delete_transaction_logs_before',
 						schema: SCHEMA,
@@ -645,7 +684,6 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						`NON-VACUOUS PRECONDITION: audit purge job must report entries_deleted > 0, got ${entriesDeleted}`
 					);
 
-					const sampleId = `k${DEL_SAMPLE_IDX[0]}`; // k0 -- inserted well before cutoffTimestamp
 					const r = await rawOp(ctx, {
 						operation: 'read_audit_log',
 						schema: SCHEMA,
