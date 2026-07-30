@@ -11,18 +11,20 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { get: envGet } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS, MIGRATING_DIR_SUFFIX } = require('#src/utility/hdbTerms');
+const { setupTestDBPath } = require('../testUtils');
+const copyDB = require('#src/bin/copyDb');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RecordEncoder, RecordObject } = require('#src/resources/RecordEncoder');
+const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+
+const isLMDB = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) === 'lmdb';
 
 describe('migration: staging directory recovery (#2012)', function () {
-	if ((process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb') return;
-	const { setupTestDBPath } = require('../testUtils');
-	const copyDB = require('#src/bin/copyDb');
-	const { RocksDatabase } = require('@harperfast/rocksdb-js');
-	const { RecordEncoder, RecordObject } = require('#src/resources/RecordEncoder');
-	const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
-
 	let rootPath, baseDir, targetPath, stagingPath, Tbl;
 
 	before(async function () {
+		// this.skip() (not a bare return in the describe body) so the gate is visible as pending
+		if (!isLMDB) return this.skip();
 		rootPath = setupTestDBPath();
 		setMainIsWorker(true);
 		Tbl = table({
@@ -40,7 +42,27 @@ describe('migration: staging directory recovery (#2012)', function () {
 	});
 
 	after(async function () {
-		await fs.remove(baseDir);
+		if (baseDir) await fs.remove(baseDir);
+	});
+
+	it('a failed migration removes its staging dir and leaves no artifact at the target path', async function () {
+		// A source whose dbi iteration throws immediately — the staging dir is created before the
+		// copy loop starts, so the catch path must clean it up and leave targetPath absent.
+		const brokenSource = {
+			dbisDb: {
+				useReadTransaction() {
+					throw new Error('injected migration failure');
+				},
+			},
+		};
+		await assert.rejects(
+			() => copyDB.migrateDatabaseToRocks(brokenSource, 'stagetest', targetPath),
+			/injected migration failure/
+		);
+		assert.strictEqual(fs.existsSync(stagingPath), false, 'staging dir must be removed on failure');
+		assert.strictEqual(fs.existsSync(targetPath), false, 'no artifact may appear at the target path on failure');
+		// the LMDB source is untouched and still serves reads
+		assert.strictEqual((await Tbl.get('a')).name, 'alpha');
 	});
 
 	it('promotion replaces stale staging and a stale partial RocksDB at the target path', async function () {
@@ -50,11 +72,7 @@ describe('migration: staging directory recovery (#2012)', function () {
 		await fs.outputFile(path.join(targetPath, 'CURRENT'), 'MANIFEST-000001\n');
 		await fs.outputFile(path.join(targetPath, 'MANIFEST-000001'), 'partial');
 
-		// The promotion sequence migrateOnStart runs per database.
-		await fs.remove(stagingPath);
-		await copyDB.copyDbToRocks(Tbl.primaryStore.rootStore, 'stagetest', stagingPath);
-		await fs.remove(targetPath);
-		await fs.rename(stagingPath, targetPath);
+		await copyDB.migrateDatabaseToRocks(Tbl.primaryStore.rootStore, 'stagetest', targetPath);
 
 		assert.strictEqual(fs.existsSync(stagingPath), false, 'staging dir must not survive promotion');
 
@@ -78,6 +96,11 @@ describe('migration: staging directory recovery (#2012)', function () {
 			cf.close();
 			root.close();
 		}
+	});
+
+	it('verifyMigratedDatabase reports zero unversioned records for a clean migration', function () {
+		const report = copyDB.verifyMigratedDatabase(targetPath);
+		assert.deepStrictEqual(report['StagedRec/'], { records: 2, unversioned: 0 });
 	});
 
 	it('database discovery ignores *.migrating staging directories', async function () {

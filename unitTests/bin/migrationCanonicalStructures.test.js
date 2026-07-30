@@ -20,15 +20,18 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 // concern: it requires the runtime's multi-column-family open + per-worker encoder wiring, which this
 // single-handle unit harness can't replicate. The observer's captured dictionary is verified in-process
 // during the migration; cross-process adoption is validated by the cluster repro.
-describe('migration: records still decode after the canonical-structures change (#1453)', function () {
-	if ((process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb') return;
-	const { setupTestDBPath } = require('../testUtils');
-	const copyDB = require('#src/bin/copyDb');
-	const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { setupTestDBPath } = require('../testUtils');
+const copyDB = require('#src/bin/copyDb');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 
+const isLMDB = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) === 'lmdb';
+
+describe('migration: records still decode after the canonical-structures change (#1453)', function () {
 	let rootPath, targetPath, Tbl;
 
 	before(async function () {
+		// this.skip() (not a bare return in the describe body) so the gate is visible as pending
+		if (!isLMDB) return this.skip();
 		rootPath = setupTestDBPath();
 		setMainIsWorker(true);
 		Tbl = table({
@@ -47,7 +50,7 @@ describe('migration: records still decode after the canonical-structures change 
 	});
 
 	after(async function () {
-		await fs.remove(path.join(rootPath, 'rocks-migrated-cstruct'));
+		if (rootPath) await fs.remove(path.join(rootPath, 'rocks-migrated-cstruct'));
 	});
 
 	it('migrated records decode after reopen (structures resolve)', function () {

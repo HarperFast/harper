@@ -11,18 +11,21 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { get: envGet } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
-describe('migration: records carry the version/metadata prefix (#2012)', function () {
-	if ((process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb') return;
-	const { setupTestDBPath } = require('../testUtils');
-	const copyDB = require('#src/bin/copyDb');
-	const { RocksDatabase } = require('@harperfast/rocksdb-js');
-	const { RecordEncoder, RecordObject } = require('#src/resources/RecordEncoder');
-	const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+const { setupTestDBPath } = require('../testUtils');
+const copyDB = require('#src/bin/copyDb');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RecordEncoder, RecordObject } = require('#src/resources/RecordEncoder');
+const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
+const isLMDB = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) === 'lmdb';
+
+describe('migration: records carry the version/metadata prefix (#2012)', function () {
 	let rootPath, targetPath, Tbl;
 	const sourceVersions = new Map();
 
 	before(async function () {
+		// this.skip() (not a bare return in the describe body) so the gate is visible as pending
+		if (!isLMDB) return this.skip();
 		rootPath = setupTestDBPath();
 		setMainIsWorker(true);
 		Tbl = table({
@@ -43,7 +46,7 @@ describe('migration: records carry the version/metadata prefix (#2012)', functio
 	});
 
 	after(async function () {
-		await fs.remove(path.join(rootPath, 'rocks-migrated-prefix'));
+		if (rootPath) await fs.remove(path.join(rootPath, 'rocks-migrated-prefix'));
 	});
 
 	it('migrated record bytes start with the 8-byte version prefix', function () {
