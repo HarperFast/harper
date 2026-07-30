@@ -389,7 +389,12 @@ describe('Test keys module', () => {
 						certificate: test_cert,
 						is_authority: false,
 						private_key_name: actual_cert.private_key_name,
-						is_self_signed: false, // matches actual_cert's tier so quality differs only by `uses`
+						// is_self_signed: true (base quality 1) for the `hostname`-scoped candidates below,
+						// vs. `decoy()`'s false (base quality 3) — deliberately different tiers so the
+						// decoy's superiority over the intended winner doesn't depend on the +0.1
+						// hostname-match bonus (getHost() case-sensitivity makes that bonus environment-
+						// dependent; verified during review that it can silently vanish on another host).
+						is_self_signed: true,
 						...cert,
 					});
 				}
@@ -412,11 +417,13 @@ describe('Test keys module', () => {
 			});
 		}
 
-		// Globally the best-quality certificate in the whole table (real SANs, so it picks up the
-		// getHost() hostname-match bonus none of the `hostname`-scoped candidates below get),
-		// but never registered under `hostname` — it must never win a lookup for `hostname`. If it
-		// does, the SNICallback fell through to `defaultContext` instead of using the per-hostname
-		// SNI map, which is exactly the failure mode a broken `hostnames` assignment would produce.
+		// Globally the best-quality certificate in the whole table — is_self_signed: false (base 3,
+		// vs. the hostname-scoped candidates' 1) plus the exact-match bonus (+3) gives it quality 6,
+		// unambiguously ahead of the highest possible `hostname`-scoped quality (4) regardless of
+		// whether the +0.1 getHost() bonus also applies. Real test_cert SANs, so it never registers
+		// under the synthetic `hostname` — it must never win a lookup for `hostname`. If it does, the
+		// SNICallback fell through to `defaultContext` instead of using the per-hostname SNI map,
+		// which is exactly the failure mode a broken `hostnames` assignment would produce.
 		function decoy(name) {
 			return { name, uses: ['mqtt'], is_self_signed: false };
 		}
@@ -438,17 +445,15 @@ describe('Test keys module', () => {
 					await selector.initialize(null);
 					const chosen = await chosenCert(selector, hostname);
 					expect(chosen.name).to.include('sel-mqtt-tagged-');
-					// base quality 3 (is_self_signed: false) + 3 for the uses:['mqtt'] exact match, no
+					// base quality 1 (is_self_signed: true) + 3 for the uses:['mqtt'] exact match, no
 					// hostname bonus (this candidate's `hostnames` is the synthetic one, not test_cert's
 					// real SANs) — asserting the value, not just the winning name, means a future tie
 					// reads as a failure here too.
-					expect(chosen.quality).to.equal(6);
-					// Confirm the decoy is genuinely the whole table's best-quality cert (asserted
-					// directly, not inferred from a quality margin the environment doesn't guarantee —
-					// the decoy's own +0.1 hostname-match bonus depends on getHost() case-matching
-					// hostnamesFromCert's SANs, which this test doesn't control). This is what makes
-					// the assertion above meaningful: if the per-hostname map fell through to
-					// defaultContext, `chosen` would be the decoy, not the mqtt-tagged winner.
+					expect(chosen.quality).to.equal(4);
+					// Confirm the decoy (quality 6, deterministically > 4 regardless of environment — see
+					// withCerts) is genuinely the whole table's defaultContext. This is what makes the
+					// assertion above meaningful: if the per-hostname map fell through to defaultContext,
+					// `chosen` would be the decoy, not the mqtt-tagged winner.
 					expect(selector.defaultContext?.name).to.include('sel-decoy-');
 				}
 			);
@@ -470,12 +475,12 @@ describe('Test keys module', () => {
 					await selector.initialize(null);
 					const chosen = await chosenCert(selector, hostname);
 					expect(chosen.name).to.include('sel-server-fallback-');
-					// base quality 3 + 0.5 legacy-fallback credit, strictly ahead of the generic
-					// candidate's 3.
-					expect(chosen.quality).to.equal(3.5);
-					// See the test above: the decoy (quality >= 6, always ahead of 3.5) is asserted as
-					// defaultContext directly, so a per-hostname-map fall-through is distinguishable
-					// from a real SNI-map hit regardless of the decoy's own hostname-bonus margin.
+					// base quality 1 + 0.5 legacy-fallback credit, strictly ahead of the generic
+					// candidate's 1.
+					expect(chosen.quality).to.equal(1.5);
+					// See the test above: the decoy (quality 6, deterministically > 1.5) is asserted as
+					// defaultContext directly, so a per-hostname-map fall-through is distinguishable from
+					// a real SNI-map hit.
 					expect(selector.defaultContext?.name).to.include('sel-decoy-2-');
 				}
 			);
@@ -513,6 +518,7 @@ describe('Test keys module', () => {
 		const createdServers = [];
 		let previousTls;
 		let previousOpsTls;
+		let previousUds;
 
 		before(async () => {
 			({ server } = require('#src/server/Server'));
@@ -523,13 +529,19 @@ describe('Test keys module', () => {
 			await realKeys.loadCertificates();
 			previousTls = env_mgr.get('tls');
 			previousOpsTls = env_mgr.get('operationsApi_tls');
+			previousUds = env_mgr.get('tls_unixDomainSockets');
 			env_mgr.setProperty('tls', { ...previousTls, ciphers: rootCiphers });
 			env_mgr.setProperty('operationsApi_tls', { ...previousOpsTls, ciphers: opsCiphers });
+			// onSocket takes a second, UDS-mirror code path when this is enabled (creates and
+			// registers a second live server per call, with its own cleanup this block doesn't do).
+			// Forcing it off keeps this describe's cleanup exhaustive regardless of the host's config.
+			env_mgr.setProperty('tls_unixDomainSockets', false);
 		});
 
 		after(() => {
 			env_mgr.setProperty('tls', previousTls);
 			env_mgr.setProperty('operationsApi_tls', previousOpsTls);
+			env_mgr.setProperty('tls_unixDomainSockets', previousUds);
 			for (const created of createdServers) {
 				created.close();
 				delete SERVERS[created.securePort];

@@ -31,17 +31,18 @@ describe('mqtt.ts handleApplication raw-socket registration', () => {
 		assert.strictEqual(server.calls.length, 0);
 	});
 
-	it("registers the raw TCP/TLS listener with usageType 'mqtt'", () => {
+	it("registers the raw TCP/TLS listener with securePort, mtls, and usageType 'mqtt' forwarded", () => {
 		const server = recordingServer();
+		const mtls = { required: true };
 		const scope = {
-			options: { getAll: () => ({ network: { securePort: 8883 } }) },
+			options: { getAll: () => ({ network: { securePort: 8883, mtls } }) },
 			server,
 		};
 
 		handleApplication(scope);
 
 		assert.strictEqual(server.calls.length, 1);
-		assert.strictEqual(server.calls[0][1].usageType, 'mqtt');
+		assert.deepStrictEqual(server.calls[0][1], { port: undefined, securePort: 8883, mtls, usageType: 'mqtt' });
 	});
 
 	it('registers the listener from a plain (non-TLS) port alone, without requiring securePort', () => {
@@ -57,6 +58,11 @@ describe('mqtt.ts handleApplication raw-socket registration', () => {
 		handleApplication(scope);
 
 		assert.strictEqual(server.calls.length, 1);
-		assert.strictEqual(server.calls[0][1].usageType, 'mqtt');
+		assert.deepStrictEqual(server.calls[0][1], {
+			port: 1883,
+			securePort: undefined,
+			mtls: undefined,
+			usageType: 'mqtt',
+		});
 	});
 });
