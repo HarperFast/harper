@@ -34,8 +34,12 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 				restart: true,
 			});
 		} catch (e: any) {
-			// Log the full error (not just the message) so a genuine deploy failure — bad
-			// package, invalid operation — is debuggable when the readiness poll below times out.
+			// `fetch` rejects with a TypeError for a transport-level failure (e.g. the lost
+			// response from a restart-triggering deploy) — tolerate only that. `sendOperation`
+			// throws an AssertionError for a non-200 response, which is a genuine break in the
+			// Operations API response contract and must still fail the test, not be swallowed
+			// here and silently pass on the strength of the readiness poll below.
+			if (!(e instanceof TypeError)) throw e;
 			console.log('[early-hints] deploy response not received; relying on readiness poll', e);
 		}
 		if (deployBody) {
