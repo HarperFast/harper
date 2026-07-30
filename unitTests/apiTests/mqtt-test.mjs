@@ -1167,6 +1167,15 @@ describe('test MQTT connections and commands', function () {
 			);
 		} finally {
 			setProperty('tls_unixDomainSockets', preexistingUds);
+			// Close the servers this call created (TLS 28887, TCP 21887, and the UDS mirror) before
+			// dropping them from the registry, so they can't exert timing pressure on later tests in
+			// this mocha process even if something bound them.
+			for (const key of Object.keys(SERVERS)) {
+				if (preexistingServers[key]) continue;
+				try {
+					SERVERS[key]?.close?.(() => {});
+				} catch {}
+			}
 			for (const name of existsSync(socketsDir)
 				? readdirSync(socketsDir).filter((n) => n.includes(`-${securePort}.`))
 				: []) {
