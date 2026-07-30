@@ -36,7 +36,7 @@ let outstandingCommit, outstandingCommitStart;
 // checkOverloaded() log below (harper#2001) — `outstandingCommit` itself is otherwise anonymous,
 // so a stuck commit gives no indication of which database/table/resource to investigate.
 let outstandingCommitIdentity:
-	{ database?: string; table?: string; resourceName?: string; method?: string } | undefined;
+	{ database?: string; table?: string; resourceName?: string; method?: string; transactionId?: unknown } | undefined;
 // Ensures the checkOverloaded() rejection is logged once per stuck commit, not once per rejected
 // request — under load a wedged thread can reject hundreds of requests per second.
 let outstandingCommitLogged = false;
@@ -387,6 +387,7 @@ export class DatabaseTransaction implements Transaction {
 					`Rejecting writes on this thread: a commit has been outstanding for ` +
 						`${Math.round(performance.now() - outstandingCommitStart)}ms (exceeds the ` +
 						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${identity?.database ?? '?'}.${identity?.table ?? '?'}` +
+						(identity?.transactionId !== undefined ? ` (transaction ${identity.transactionId})` : '') +
 						(identity?.resourceName
 							? `, started from ${identity.resourceName}${identity.method ? '.' + identity.method : ''}`
 							: '') +
@@ -607,21 +608,22 @@ export class DatabaseTransaction implements Transaction {
 					if (!outstandingCommit) {
 						outstandingCommit = commitResolution;
 						outstandingCommitStart = performance.now();
-						// Only a real write commit (this.writes.length > 0, above) identifies the wedge;
-						// an abort() flowing through this same arming branch has no writes and would
-						// otherwise mis-attribute the identity to an uninvolved read-only store. Read the
-						// table off the write itself (not this.db, which is whichever table first claimed
-						// this per-database transaction in txnForContext, and so can name the wrong table
-						// when a transaction spans more than one table in the same database).
+						// Read the table off the write itself (not this.db, which is whichever table first
+						// claimed this per-database transaction in txnForContext, and so can name the wrong
+						// table when a transaction spans more than one table in the same database). An
+						// abort() flowing through this same arming branch has no writes (this.writes.length
+						// === 0, above) — its table is unknowable, but the database and the request that
+						// started it are still accurate and worth keeping rather than blanking entirely.
 						const writtenStore = this.writes[0]?.store;
-						outstandingCommitIdentity = writtenStore
-							? {
-									database: writtenStore.rootStore?.databaseName,
-									table: writtenStore.name,
-									resourceName: this.startedFrom?.resourceName,
-									method: this.startedFrom?.method,
-								}
-							: undefined;
+						outstandingCommitIdentity = {
+							database: writtenStore ? writtenStore.rootStore?.databaseName : (this.db as any)?.rootStore?.databaseName,
+							table: writtenStore?.name,
+							resourceName: this.startedFrom?.resourceName,
+							method: this.startedFrom?.method,
+							// Lets an operator correlate this log with the coordinated-retry debug line and
+							// rocksdb-level diagnostics, which are keyed on the same native transaction id.
+							transactionId: (transaction as any)?.id,
+						};
 						outstandingCommitLogged = false;
 						outstandingCommit
 							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
