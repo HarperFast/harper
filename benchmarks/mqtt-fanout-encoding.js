@@ -19,7 +19,11 @@
 const { performance } = require('node:perf_hooks');
 const { generate } = require('mqtt-packet');
 const { serializeMessage } = require('#src/server/serverHelpers/contentTypes');
-const { getSharedMessageEncoding, getSharedFrame } = require('#src/server/serverHelpers/sharedMessageEncoding');
+const {
+	getSharedMessageEncoding,
+	getSharedFrame,
+	setSharedFrame,
+} = require('#src/server/serverHelpers/sharedMessageEncoding');
 
 const MESSAGES = parseInt(process.argv[2]) || 200;
 const CONTENT_TYPE = process.argv[3] || 'application/json';
@@ -75,9 +79,16 @@ function sharedEncoding(message, subscribers, qos) {
 		if (qos > 0) {
 			bytes += generate({ cmd: 'publish', topic: TOPIC, payload, messageId: i + 1, qos }, MQTT_OPTIONS).length;
 		} else {
-			bytes += getSharedFrame(encoding, PROTOCOL_VERSION + ' ' + TOPIC, () =>
-				generate({ cmd: 'publish', topic: TOPIC, payload, qos: 0 }, MQTT_OPTIONS)
-			).length;
+			// same lookup-then-generate shape as the outbound listener in server/mqtt.ts
+			let packet = getSharedFrame(encoding, PROTOCOL_VERSION, TOPIC);
+			if (packet === undefined)
+				packet = setSharedFrame(
+					encoding,
+					PROTOCOL_VERSION,
+					TOPIC,
+					generate({ cmd: 'publish', topic: TOPIC, payload, qos: 0 }, MQTT_OPTIONS)
+				);
+			bytes += packet.length;
 		}
 	}
 	return bytes;

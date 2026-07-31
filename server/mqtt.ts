@@ -4,7 +4,7 @@ import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.ts';
 import { getSuperUser } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
-import { getSharedMessageEncoding, getSharedFrame } from './serverHelpers/sharedMessageEncoding.ts';
+import { getSharedMessageEncoding, getSharedFrame, setSharedFrame } from './serverHelpers/sharedMessageEncoding.ts';
 import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write.ts';
 import { server } from '../server/Server.ts';
 import { get } from '../utility/environment/environmentManager.ts';
@@ -355,9 +355,15 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								// A QoS 0 PUBLISH carries no message identifier, so the whole packet depends only on
 								// the payload, the topic, and the protocol version (v5 emits a properties field that
 								// v3.1.1 omits) — share it across every QoS 0 subscriber that matches on those.
-								const packet = getSharedFrame(encoding, mqttOptions.protocolVersion + ' ' + topic, () =>
-									generate({ cmd: 'publish', topic, payload, qos: 0, dup: false, retain: false }, mqttOptions)
-								);
+								const protocolVersion = mqttOptions.protocolVersion;
+								let packet = getSharedFrame(encoding, protocolVersion, topic);
+								if (packet === undefined)
+									packet = setSharedFrame(
+										encoding,
+										protocolVersion,
+										topic,
+										generate({ cmd: 'publish', topic, payload, qos: 0, dup: false, retain: false }, mqttOptions)
+									);
 								sendEncodedPacket(packet, 'publish', generalTopic);
 							}
 							// wait if there is back-pressure

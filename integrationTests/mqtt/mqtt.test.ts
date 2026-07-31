@@ -621,6 +621,69 @@ suite(
 			}
 		});
 
+		// The strongest of the fan-out tests: byte equality holds whether or not the encoding is
+		// shared, so it cannot detect a regression back to one serialization per subscriber. The
+		// fixture registers a content type that stamps the server's serialization counter into the
+		// payload, which makes the count observable from outside the process.
+		test('fan-out: the server serializes once per publish, not once per subscriber', async () => {
+			const COUNTING_TYPE = 'application/x-count-serializations';
+			const SUBSCRIBERS = 4;
+			const pub = freshUser('publisher');
+			const pubClient = await connect(MQTT_URL, jwtOpts(mintRS256Jwt(pub), pub));
+			const subscribers: MqttClient[] = [];
+			try {
+				for (let i = 0; i < SUBSCRIBERS; i++) {
+					const client = await connect(
+						MQTT_URL,
+						baseOpts({ clientId: '', wsOptions: { headers: { accept: COUNTING_TYPE } } })
+					);
+					subscribers.push(client);
+					await subscribe(client, 'broadcast/#', { qos: 0 });
+				}
+				const collected = subscribers.map((client) => collectPackets(client, 'broadcast/#'));
+
+				const firstMarker = randomUUID();
+				await publish(pubClient, 'broadcast/news', JSON.stringify({ marker: firstMarker }));
+				ok(
+					await waitFor(() => collected.every((c) => matching(c, firstMarker).length > 0)),
+					'expected every subscriber to receive the first message'
+				);
+
+				const secondMarker = randomUUID();
+				await publish(pubClient, 'broadcast/news', JSON.stringify({ marker: secondMarker }));
+				ok(
+					await waitFor(() => collected.every((c) => matching(c, secondMarker).length > 0)),
+					'expected every subscriber to receive the second message'
+				);
+				for (const c of collected) c.stop();
+
+				const countsFor = (marker: string) =>
+					collected.map((c) => JSON.parse(matching(c, marker)[0].payload.toString()).serialization);
+				const firstCounts = countsFor(firstMarker);
+				const secondCounts = countsFor(secondMarker);
+
+				strictEqual(
+					new Set(firstCounts).size,
+					1,
+					`all ${SUBSCRIBERS} subscribers must share one serialization, got counts ${firstCounts.join(', ')}`
+				);
+				strictEqual(
+					new Set(secondCounts).size,
+					1,
+					`all ${SUBSCRIBERS} subscribers must share one serialization, got counts ${secondCounts.join(', ')}`
+				);
+				strictEqual(
+					secondCounts[0] - firstCounts[0],
+					1,
+					`two publishes to ${SUBSCRIBERS} subscribers must cost exactly two serializations, ` +
+						`counter went ${firstCounts[0]} -> ${secondCounts[0]}`
+				);
+			} finally {
+				await endQuiet(pubClient);
+				for (const client of subscribers) await endQuiet(client);
+			}
+		});
+
 		test('fan-out: a subscriber joining mid-stream gets subsequent messages only', async () => {
 			const pub = freshUser('publisher');
 			const pubClient = await connect(MQTT_URL, jwtOpts(mintRS256Jwt(pub), pub));

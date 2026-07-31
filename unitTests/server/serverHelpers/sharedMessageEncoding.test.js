@@ -9,7 +9,18 @@ const { WebSocketServer } = require('ws');
 const WebSocket = require('ws');
 
 const { contentTypes, asyncSerialization } = require('#src/server/serverHelpers/contentTypes');
-const { getSharedMessageEncoding, getSharedFrame } = require('#src/server/serverHelpers/sharedMessageEncoding');
+const {
+	getSharedMessageEncoding,
+	getSharedFrame,
+	setSharedFrame,
+} = require('#src/server/serverHelpers/sharedMessageEncoding');
+
+/** Mirrors the QoS 0 lookup-then-generate in server/mqtt.ts's outbound listener. */
+function shareFrame(encoding, version, topic, generateFrame) {
+	const existing = getSharedFrame(encoding, version, topic);
+	if (existing !== undefined) return existing;
+	return setSharedFrame(encoding, version, topic, generateFrame());
+}
 
 // Content types registered only for these tests, so serializer invocations can be counted exactly.
 // The registered serializer function is what getSharedMessageEncoding keys on.
@@ -156,6 +167,78 @@ describe('sharedMessageEncoding – payload sharing', function () {
 	});
 });
 
+describe('sharedMessageEncoding – pass-through messages', function () {
+	// A message that already carries its own encoding is delivered verbatim, so content negotiation
+	// must never run for it — an Accept header naming only unsupported types throws 406, which in
+	// the MQTT listener disconnects the session.
+	it('delivers a message that carries its own content type without negotiating', function () {
+		const message = { contentType: 'application/octet-stream', data: Buffer.from([1, 2, 3]) };
+		const unsatisfiable = subscriberRequest('application/x-not-registered');
+
+		const encoding = getSharedMessageEncoding(message, unsatisfiable);
+
+		assert.strictEqual(encoding.payload, message.data);
+	});
+
+	it('shares one entry across subscribers regardless of what each negotiated', function () {
+		const message = { contentType: 'application/octet-stream', data: Buffer.from('shared') };
+
+		const viaCounted = getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE));
+		const viaAlt = getSharedMessageEncoding(message, subscriberRequest(ALT_TYPE));
+
+		assert.strictEqual(viaCounted, viaAlt, 'pass-through messages are content-type independent');
+		assert.strictEqual(countedCalls, 0, 'no serializer should have been invoked');
+		assert.strictEqual(altCalls, 0);
+	});
+
+	it('still negotiates normally for a message with a content type but no data', function () {
+		const message = { contentType: 'application/octet-stream', id: 11 };
+
+		const encoding = getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE));
+
+		assert.strictEqual(countedCalls, 1);
+		assert.strictEqual(encoding.payload.toString(), 'counted:' + JSON.stringify(message));
+	});
+});
+
+describe('sharedMessageEncoding – a failed serialization is retried, not memoized', function () {
+	const FAILING_TYPE = 'application/x-shared-encoding-failing';
+
+	afterEach(function () {
+		contentTypes.delete(FAILING_TYPE);
+	});
+
+	it('clears the payload so the next subscriber re-encodes after an async rejection', async function () {
+		let attempts = 0;
+		let failNext = true;
+		contentTypes.set(FAILING_TYPE, {
+			serialize(message) {
+				attempts++;
+				if (failNext) {
+					// model a blob read that must complete before the message can be serialized
+					asyncSerialization(Promise.reject(new Error('transient serialization failure')));
+					return undefined;
+				}
+				return Buffer.from('recovered:' + JSON.stringify(message));
+			},
+			q: 1,
+		});
+		const message = { id: 12 };
+		const request = subscriberRequest(FAILING_TYPE);
+
+		const failing = getSharedMessageEncoding(message, request);
+		await assert.rejects(failing.payload, /transient serialization failure/);
+		assert.strictEqual(failing.payload, undefined, 'the rejected promise must not stay memoized');
+
+		// the failure has cleared; a later subscriber (or a later delivery of the same message) must
+		// get a fresh attempt rather than inheriting the rejection
+		failNext = false;
+		const recovered = getSharedMessageEncoding(message, request);
+		assert.strictEqual(recovered.payload.toString(), 'recovered:{"id":12}');
+		assert.strictEqual(attempts, 2);
+	});
+});
+
 describe('sharedMessageEncoding – frame sharing', function () {
 	it('generates a frame once per key and reuses it', function () {
 		const encoding = getSharedMessageEncoding({ id: 8 }, subscriberRequest(COUNTED_TYPE));
@@ -165,19 +248,27 @@ describe('sharedMessageEncoding – frame sharing', function () {
 			return Buffer.from('frame');
 		};
 
-		const first = getSharedFrame(encoding, '4 topic/a', generateFrame);
-		const second = getSharedFrame(encoding, '4 topic/a', generateFrame);
+		const first = shareFrame(encoding, 4, 'topic/a', generateFrame);
+		const second = shareFrame(encoding, 4, 'topic/a', generateFrame);
 
 		assert.strictEqual(generated, 1);
 		assert.strictEqual(first, second);
 	});
 
-	it('keeps frames distinct per key', function () {
+	it('reports a miss without allocating, so the caller only builds the frame once', function () {
+		const encoding = getSharedMessageEncoding({ id: 8.5 }, subscriberRequest(COUNTED_TYPE));
+
+		assert.strictEqual(getSharedFrame(encoding, 4, 'topic/a'), undefined);
+		const stored = setSharedFrame(encoding, 4, 'topic/a', Buffer.from('frame'));
+		assert.strictEqual(getSharedFrame(encoding, 4, 'topic/a'), stored);
+	});
+
+	it('keeps frames distinct per protocol version and topic', function () {
 		const encoding = getSharedMessageEncoding({ id: 9 }, subscriberRequest(COUNTED_TYPE));
 
-		const v4 = getSharedFrame(encoding, '4 topic/a', () => Buffer.from('v4'));
-		const v5 = getSharedFrame(encoding, '5 topic/a', () => Buffer.from('v5'));
-		const otherTopic = getSharedFrame(encoding, '4 topic/b', () => Buffer.from('other'));
+		const v4 = shareFrame(encoding, 4, 'topic/a', () => Buffer.from('v4'));
+		const v5 = shareFrame(encoding, 5, 'topic/a', () => Buffer.from('v5'));
+		const otherTopic = shareFrame(encoding, 4, 'topic/b', () => Buffer.from('other'));
 
 		assert.strictEqual(v4.toString(), 'v4');
 		assert.strictEqual(v5.toString(), 'v5');
@@ -189,8 +280,8 @@ describe('sharedMessageEncoding – frame sharing', function () {
 		const counted = getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE));
 		const alt = getSharedMessageEncoding(message, subscriberRequest(ALT_TYPE));
 
-		const countedFrame = getSharedFrame(counted, '4 topic/a', () => Buffer.from('counted-frame'));
-		const altFrame = getSharedFrame(alt, '4 topic/a', () => Buffer.from('alt-frame'));
+		const countedFrame = shareFrame(counted, 4, 'topic/a', () => Buffer.from('counted-frame'));
+		const altFrame = shareFrame(alt, 4, 'topic/a', () => Buffer.from('alt-frame'));
 
 		assert.strictEqual(countedFrame.toString(), 'counted-frame');
 		assert.strictEqual(altFrame.toString(), 'alt-frame');
@@ -230,7 +321,7 @@ describe('sharedMessageEncoding – mqtt-packet assumptions behind QoS 0 sharing
 describe('sharedMessageEncoding – shared buffers are not mutated by the send path', function () {
 	it('is byte-identical after being sent to multiple WebSocket subscribers', async function () {
 		const encoding = getSharedMessageEncoding({ temperature: 21.5 }, subscriberRequest(COUNTED_TYPE));
-		const shared = getSharedFrame(encoding, '4 sensors/room-1', () =>
+		const shared = shareFrame(encoding, 4, 'sensors/room-1', () =>
 			generate(
 				{ cmd: 'publish', topic: 'sensors/room-1/temperature', payload: encoding.payload, qos: 0 },
 				{ protocolVersion: 4 }
@@ -239,6 +330,7 @@ describe('sharedMessageEncoding – shared buffers are not mutated by the send p
 		const original = Buffer.from(shared); // independent copy to compare against afterwards
 
 		const wss = new WebSocketServer({ port: 0 });
+		const clients = [];
 		try {
 			await new Promise((resolve) => wss.once('listening', resolve));
 			const { port } = wss.address();
@@ -253,7 +345,6 @@ describe('sharedMessageEncoding – shared buffers are not mutated by the send p
 				});
 			});
 
-			const clients = [];
 			const allReceived = [];
 			for (let i = 0; i < SUBSCRIBERS; i++) {
 				const client = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -278,8 +369,10 @@ describe('sharedMessageEncoding – shared buffers are not mutated by the send p
 			for (const bytes of received) {
 				assert.deepStrictEqual(bytes, original, 'every subscriber must receive the identical bytes');
 			}
-			for (const client of clients) client.close();
 		} finally {
+			// close in finally, otherwise an assertion failure leaves sockets open and surfaces as a
+			// mocha timeout instead of the real error
+			for (const client of clients) client.close();
 			await new Promise((resolve) => wss.close(resolve));
 		}
 	});
