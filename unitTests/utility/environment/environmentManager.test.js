@@ -230,7 +230,13 @@ describe('Test environmentManager module', () => {
 
 		it('reapplyAllOverrides replays every override applied on this thread through setProperty', () => {
 			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
-			env_rw.__set__('appliedOverrides', new Map([['foo', 'bar'], ['baz', 42]]));
+			env_rw.__set__(
+				'appliedOverrides',
+				new Map([
+					['foo', 'bar'],
+					['baz', 42],
+				])
+			);
 			const reapply_all_overrides = env_rw.__get__('reapplyAllOverrides');
 
 			reapply_all_overrides();
