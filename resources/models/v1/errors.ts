@@ -7,6 +7,7 @@
  */
 
 import { ModelBackendNotFoundError } from '../backendRegistry.ts';
+import { ModelCapabilityError } from '../Models.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
 
 type OpenAIErrorType =
@@ -40,6 +41,16 @@ export function toOpenAIError(err: unknown): OpenAIErrorResponse {
 		status = 404;
 		type = 'invalid_request_error';
 		code = 'model_not_found';
+	} else if (err instanceof ModelCapabilityError) {
+		// Caller-driven mismatch (e.g. `tools` or streaming against a backend that
+		// doesn't support it): the request is what's wrong, not the server. It extends
+		// ServerError (statusCode 500), so this must precede the statusCode branch —
+		// falling through would report a generic sanitized 500 for a client-actionable
+		// condition. The message is safe to pass through: it names only the backend and
+		// the capability the caller asked for.
+		status = 400;
+		type = 'invalid_request_error';
+		code = 'capability_unsupported';
 	} else if (err instanceof Error && typeof (err as any).statusCode === 'number') {
 		status = (err as any).statusCode;
 		if (status === 401) {
