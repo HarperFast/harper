@@ -39,6 +39,16 @@ export async function login(
 	);
 	say(chalk.gray('your cluster, which will be saved inside ~/.harperdb/credentials.json\n'));
 
+	if (forCi) {
+		say(
+			chalk.yellow(
+				'Harper stores one refresh token per user, so this login replaces whatever refresh token\n' +
+					'that user already holds — including one a CI runner may be using right now. Log in as a\n' +
+					'user created for this single consumer, not your personal account.\n'
+			)
+		);
+	}
+
 	const defaultTarget = process.env.HARPER_CLI_TARGET || process.env.CLI_TARGET;
 	let target = targetArg || defaultTarget;
 
@@ -80,8 +90,24 @@ export async function login(
 			({ username: targetUsername } = await ask({
 				type: 'input',
 				name: 'username',
-				message: 'Cluster Username:',
+				message: forCi ? 'CI Username (a user dedicated to this consumer):' : 'Cluster Username:',
 			}));
+		}
+	}
+
+	// The CLI cannot verify that a user is dedicated to CI, but it can refuse to rotate that user's
+	// only refresh token silently: name the user and make someone say yes. Skipped when stdin is not
+	// a TTY — a runner has already committed to this and there is nobody to ask.
+	if (forCi && process.stdin.isTTY) {
+		const { confirmed } = await ask({
+			type: 'confirm',
+			name: 'confirmed',
+			message: `Mint a CI refresh token for '${targetUsername}'? This revokes any refresh token it already holds.`,
+			default: false,
+		});
+		if (!confirmed) {
+			console.error(chalk.red('Aborted. Create a user dedicated to this CI consumer and log in as that user.'));
+			process.exit(1);
 		}
 	}
 
@@ -154,7 +180,7 @@ export async function login(
 
 		say(`Successfully logged in to ${resolvedTarget} and saved credentials.`);
 
-		if (forCi) printCiCdEnv(resolvedTarget, response.refresh_token);
+		if (forCi) printCiCdEnv(resolvedTarget, response.refresh_token, targetUsername);
 
 		process.exit(0);
 	} else {
@@ -177,33 +203,11 @@ export async function login(
  *
  * That's also why the explanatory comments go to stderr rather than riding along as `#` lines:
  * every consumer of this block reads it as data.
- */
-/**
- * Strips any userinfo from a target URL. `normalizeTarget` round-trips through `URL.toString()`,
- * which preserves it — so `harper login https://admin:hunter2@host --for-ci` would otherwise write
- * the admin password into the `HARPER_CLI_TARGET` secret and onto the terminal, which is exactly
- * the exposure this flag exists to avoid. Credentials are dropped rather than masked, since the
- * emitted value has to stay usable as a target.
  *
- * The result is re-normalized because `normalizeTarget` only appends the default port when it finds
- * no `:` after the scheme — a heuristic the `:` in `user:password` defeats, which would otherwise
- * emit a port-less target that CI resolves to 443 instead of 9925. Re-running it on the
- * credential-free URL gets the port right without changing `normalizeTarget` for every other caller
- * (its output keys the saved credentials file, so changing it would invalidate existing logins).
+ * `target` needs no sanitizing here: `normalizeTarget` guarantees a credential-free target, which is
+ * the same value already stored, echoed and written to `.env`.
  */
-function targetWithoutCredentials(target: string): string {
-	try {
-		const url = new URL(target);
-		if (!url.username && !url.password) return target;
-		url.username = '';
-		url.password = '';
-		return normalizeTarget(url.toString());
-	} catch {
-		return target;
-	}
-}
-
-function printCiCdEnv(target: string, refreshToken: string): void {
+function printCiCdEnv(target: string, refreshToken: string, username: string): void {
 	if (!refreshToken) {
 		// Fail loudly instead of emitting a half-block: a silent empty stdout would be piped
 		// straight into a secret store and "succeed" at storing nothing.
@@ -223,6 +227,24 @@ function printCiCdEnv(target: string, refreshToken: string): void {
 				'# token is long-lived; the CLI mints a fresh operation token from it on each run.\n'
 		)
 	);
-	process.stdout.write(`HARPER_CLI_TARGET=${targetWithoutCredentials(target)}\n`);
+	process.stderr.write(chalk.yellow(rotationWarning(username)));
+	process.stdout.write(`HARPER_CLI_TARGET=${target}\n`);
 	process.stdout.write(`HARPER_CLI_REFRESH_TOKEN=${refreshToken}\n`);
+}
+
+/**
+ * Harper stores exactly one refresh-token hash per user (`createTokens` overwrites
+ * `hdb_user.refresh_token`, and refresh validation accepts only that hash), so minting a refresh
+ * token revokes that user's previous one. There is no way to hold two live refresh credentials for
+ * one user, which makes rotation — not concurrency — the property a CI credential has to be built
+ * around, and it is invisible until a second holder's next refresh 401s. Until the server grows
+ * named, independently revocable credentials (HarperFast/harper#2018), the CLI's job is to make
+ * that unmissable and to push each consumer onto its own user.
+ */
+function rotationWarning(username: string): string {
+	return (
+		`\nOne refresh token per user: this replaced any refresh token '${username}' already held.\n` +
+		`Anything still using an older one — another runner, another machine, an earlier\n` +
+		`'harper login' — will fail on its next refresh. Give each CI consumer its own user.\n`
+	);
 }

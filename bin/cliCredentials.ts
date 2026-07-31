@@ -16,20 +16,49 @@ interface Tokens {
 	refresh_token: string;
 }
 
+function withScheme(target: string): string {
+	return target.startsWith('http://') || target.startsWith('https://') ? target : 'https://' + target;
+}
+
 /**
- * Normalizes a target operations API URL to a canonical form (with trailing slash).
+ * Reads the userinfo out of a raw, pre-normalization target URL. `normalizeTarget` strips it, so a
+ * caller that authenticates with `https://user:password@host` has to take it from the raw string
+ * before normalizing. Absent userinfo yields empty strings.
+ */
+export function extractTargetCredentials(target: string): { username: string; password: string } {
+	if (target) {
+		try {
+			const url = new URL(withScheme(target));
+			return { username: url.username, password: url.password };
+		} catch {
+			// Not a valid URL — there is no userinfo to extract, and the target itself will fail later.
+		}
+	}
+	return { username: '', password: '' };
+}
+
+/**
+ * Normalizes a target operations API URL to a canonical form (with trailing slash), free of any
+ * embedded credentials.
+ *
+ * A normalized target is an identity, not a credential: it keys ~/.harperdb/credentials.json, is
+ * echoed by the "Connecting to ..." line, written to `.env`, and emitted by `harper login --for-ci`.
+ * Userinfo riding along would put the password in all four, so it is dropped here rather than at
+ * each of those sites — use `extractTargetCredentials` to read it for transport authentication.
  */
 export function normalizeTarget(target: string): string {
 	if (!target) return target;
-	let normalized = target;
-	if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
-		normalized = 'https://' + normalized;
-	}
+	let normalized = withScheme(target);
 	try {
 		const url = new URL(normalized);
-		if (!url.port && !normalized.includes(':', normalized.indexOf('://') + 3)) {
-			url.port = '9925';
-		}
+		// Whether a port was written out explicitly. `url.port` is empty for a default port
+		// (`https://host:443`), hence the fallback to the raw authority — with any `user:password`
+		// removed first, since that colon is userinfo, not a port.
+		const authority = normalized.slice(normalized.indexOf('://') + 3).split(/[/?#]/)[0];
+		const hasExplicitPort = !!url.port || authority.slice(authority.lastIndexOf('@') + 1).includes(':');
+		url.username = '';
+		url.password = '';
+		if (!hasExplicitPort) url.port = '9925';
 		normalized = url.toString();
 	} catch {
 		// If it's not a valid URL yet, we'll let it be handled later or it will fail

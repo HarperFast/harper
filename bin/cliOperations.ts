@@ -1,6 +1,6 @@
 'use strict';
 
-import { loadCredentials, saveCredentials, normalizeTarget } from './cliCredentials.ts';
+import { loadCredentials, saveCredentials, normalizeTarget, extractTargetCredentials } from './cliCredentials.ts';
 import { isJWTExpired } from '../security/tokenAuthentication.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
@@ -393,9 +393,12 @@ async function cliOperations(req: any, skipResponseLog = false) {
 	require('dotenv').config();
 
 	const allCredentials = loadCredentials();
-	req.target = normalizeTarget(resolveTarget(req, allCredentials));
+	const rawTarget = resolveTarget(req, allCredentials);
+	// Userinfo is a transport credential, and `normalizeTarget` strips it so the resolved target can
+	// be logged, stored and emitted freely — so read it off the raw value first.
+	const urlCredentials = extractTargetCredentials(rawTarget);
+	req.target = normalizeTarget(rawTarget);
 	let target;
-	let urlCredentials = { username: '', password: '' };
 	if (req.target) {
 		let parsedTarget;
 		try {
@@ -408,7 +411,6 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			}
 		}
 		const resolvedTarget = req.target;
-		urlCredentials = { username: parsedTarget.username, password: parsedTarget.password };
 		target = {
 			protocol: parsedTarget.protocol,
 			hostname: parsedTarget.hostname,
@@ -464,10 +466,25 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			// that needs no prior `harper login` on the runner. A token refreshed from env vars is
 			// used in-memory only (there's no file to write back to); a token refreshed from the
 			// credentials file is persisted as before.
-			const envOperationToken = (
-				process.env.HARPER_CLI_OPERATION_TOKEN || process.env.CLI_TARGET_OPERATION_TOKEN
-			)?.trim();
-			const envRefreshToken = (process.env.HARPER_CLI_REFRESH_TOKEN || process.env.CLI_TARGET_REFRESH_TOKEN)?.trim();
+			//
+			// Whichever namespace supplies a token owns both halves. Resolving them independently
+			// would let `HARPER_CLI_OPERATION_TOKEN` from one user pair with
+			// `CLI_TARGET_REFRESH_TOKEN` from another: commands would run as the first identity
+			// until its operation token expired, then silently continue as the second. `login.ts`
+			// selects its username/password namespace as a unit for exactly this reason.
+			const tokenPrefix = ['HARPER_CLI', 'CLI_TARGET'].find(
+				(prefix) =>
+					process.env[`${prefix}_OPERATION_TOKEN`] !== undefined || process.env[`${prefix}_REFRESH_TOKEN`] !== undefined
+			);
+			const envOperationToken = tokenPrefix ? process.env[`${tokenPrefix}_OPERATION_TOKEN`]?.trim() : undefined;
+			const envRefreshToken = tokenPrefix ? process.env[`${tokenPrefix}_REFRESH_TOKEN`]?.trim() : undefined;
+			// A namespace that is set but blank is a broken CI secret, not a request to fall back to
+			// whatever the developer last logged in as — say so rather than switching identity silently.
+			if (tokenPrefix && !envOperationToken && !envRefreshToken) {
+				console.error(
+					`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved login credentials.`
+				);
+			}
 
 			let tokens: { operation_token?: string; refresh_token?: string } | null = null;
 			let persistKey: string | null = null; // non-null => persist a refreshed operation token back to the file

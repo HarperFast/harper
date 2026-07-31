@@ -42,6 +42,11 @@ login [target] [username]       - Login to a remote or local Harper instance
                                    refresh token) to stdout in dotenv format, and everything else
                                    to stderr, so it pipes without the token hitting your screen:
                                      harper login --for-ci | gh secret set --env-file -
+                                   Log in as a user dedicated to that one CI consumer: Harper
+                                   stores a single refresh token per user, so this revokes any
+                                   refresh token that user already holds — another runner, another
+                                   machine, or an earlier 'harper login' will 401 on its next
+                                   refresh. Two consumers cannot share a user.
 logout [target]                 - Logout from Harper and clear saved JWT
 mcp [subcommand]                - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
 register                        - Register harperdb

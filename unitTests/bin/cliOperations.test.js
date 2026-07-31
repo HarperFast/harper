@@ -251,6 +251,79 @@ describe('cliOperations', () => {
 			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
 			assert.strictEqual(seenAuth, 'Bearer alias-op-token');
 		});
+
+		// Resolving the two variables independently would let an operation token from one namespace
+		// pair with a refresh token from the other. Since the two can belong to different users, the
+		// command would run as the first identity until its operation token expired and then, at an
+		// arbitrary moment mid-job, silently continue as the second.
+		it('takes both tokens from one namespace, never mixing HARPER_CLI_* with CLI_TARGET_*', async () => {
+			process.env.HARPER_CLI_OPERATION_TOKEN = 'user-a-op-token';
+			process.env.CLI_TARGET_REFRESH_TOKEN = 'user-b-refresh';
+			// The chosen namespace's operation token is expired, so a refresh WOULD fire if the
+			// other namespace's refresh token were reachable.
+			tokenAuthModule.isJWTExpired = () => true;
+
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			// HARPER_CLI_* is selected as a unit: its operation token is used and its (unset) refresh
+			// token means no refresh, rather than reaching into CLI_TARGET_REFRESH_TOKEN.
+			assert.deepStrictEqual(
+				requested.map((r) => r.operation),
+				['test']
+			);
+			assert.strictEqual(requested[0].auth, 'Bearer user-a-op-token');
+		});
+
+		// A blank value is a CI secret that failed to populate. Falling through to the developer's
+		// saved login would run the job as the wrong identity instead of failing where it broke.
+		it('does not fall back to the other namespace when the selected one is set but empty', async () => {
+			process.env.HARPER_CLI_REFRESH_TOKEN = '';
+			process.env.CLI_TARGET_REFRESH_TOKEN = 'other-namespace-refresh';
+			saveCredentials(target, { operation_token: 'file-token', refresh_token: 'file-refresh' });
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let seenAuth;
+			commonUtilsModule.httpRequest = async (options) => {
+				seenAuth = options.headers.Authorization;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(seenAuth, 'Bearer file-token');
+		});
+	});
+
+	// The resolved target is an identity, not a credential: it keys ~/.harperdb/credentials.json, is
+	// echoed by "Connecting to ...", written to .env, and emitted by `harper login --for-ci`.
+	// Userinfo is stripped once, in normalizeTarget, so none of those sites can leak a password.
+	describe('target userinfo is transport-only', () => {
+		it('authenticates with embedded userinfo but keys credentials off the credential-free target', async () => {
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let seen;
+			commonUtilsModule.httpRequest = async (options) => {
+				seen = options;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			const req = { operation: 'test', target: 'https://admin:hunter2@example.com' };
+			const result = await cliOperationsModule.cliOperations(req, true);
+
+			// The password still authenticates the request...
+			assert.strictEqual(seen.headers.Authorization, `Basic ${Buffer.from('admin:hunter2').toString('base64')}`);
+			// ...but never survives into the resolved target, which is what gets stored and printed.
+			assert.strictEqual(req.target, 'https://example.com:9925/');
+			assert.strictEqual(result.resolvedTarget, 'https://example.com:9925/');
+			// The `:` in `user:password` used to defeat the default-port heuristic, so this target
+			// was contacted on 443 while being emitted as :9925.
+			assert.strictEqual(seen.port, '9925');
+		});
 	});
 
 	describe('deploy_component cross-version compatibility', () => {
@@ -1245,7 +1318,7 @@ describe('cliOperations', () => {
 			});
 		});
 
-		it('masks a password embedded in the target URL in the connection log', async () => {
+		it('keeps a password embedded in the target URL out of the connection log', async () => {
 			const originalConsoleError = console.error;
 			const consoleErrors = [];
 			console.error = (...args) => consoleErrors.push(args.join(' '));
@@ -1259,14 +1332,14 @@ describe('cliOperations', () => {
 				console.error = originalConsoleError;
 			}
 
-			// The credentials still authenticate the request; only the printed form is masked.
+			// The credentials still authenticate the request; the resolved target they were taken from
+			// carries no userinfo at all, so there is nothing left to mask by the time it is printed.
 			assert.strictEqual(
 				calls[0].options.headers.Authorization,
 				`Basic ${Buffer.from('admin:url-secret').toString('base64')}`
 			);
 			const connecting = consoleErrors.find((line) => line.startsWith('Connecting to'));
-			assert.ok(!connecting.includes('url-secret'), connecting);
-			assert.ok(connecting.includes('admin:***@example.com'), connecting);
+			assert.strictEqual(connecting, 'Connecting to https://example.com:9925/');
 		});
 	});
 

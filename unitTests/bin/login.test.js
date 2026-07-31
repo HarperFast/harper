@@ -39,6 +39,26 @@ describe('Login', () => {
 		it('should handle existing paths', () => {
 			assert.strictEqual(normalizeTarget('example.com/api'), 'https://example.com:9925/api/');
 		});
+
+		// A normalized target keys the credentials file, is echoed in status output, written to .env
+		// and emitted by `harper login --for-ci`. Userinfo riding along would put the password in all
+		// four, so it is dropped here rather than at each of those sites.
+		it('should strip embedded credentials', () => {
+			assert.strictEqual(normalizeTarget('https://admin:hunter2@example.com:9925'), 'https://example.com:9925/');
+			assert.strictEqual(normalizeTarget('admin@example.com:1234'), 'https://example.com:1234/');
+		});
+
+		// The default port is applied by looking for a `:` in the authority, which the `:` in
+		// `user:password` used to satisfy — so a userinfo target came out port-less and resolved to
+		// 443 instead of 9925.
+		it('should still apply the default port when credentials contain a colon', () => {
+			assert.strictEqual(normalizeTarget('https://admin:hunter2@example.com'), 'https://example.com:9925/');
+		});
+
+		it('should preserve an explicitly written default port', () => {
+			assert.strictEqual(normalizeTarget('https://example.com:443'), 'https://example.com/');
+			assert.strictEqual(normalizeTarget('http://example.com:80'), 'http://example.com/');
+		});
 	});
 
 	describe('function arguments', () => {
@@ -278,6 +298,7 @@ describe('Login', () => {
 		let originalStdoutWrite;
 		let originalStderrWrite;
 		let originalCliOperations;
+		let originalIsTty;
 		let stdout;
 		let stderr;
 		let refreshToken;
@@ -327,12 +348,17 @@ describe('Login', () => {
 			refreshToken = 'ref-tok';
 			// Password from env so login needs no interactive prompt.
 			process.env.HARPER_CLI_PASSWORD = 'password';
+			// Non-TTY by default: the dedicated-CI-user confirmation only fires when there is a human
+			// to ask, and these cases assert the unattended (runner) path.
+			originalIsTty = process.stdin.isTTY;
+			process.stdin.isTTY = false;
 		});
 
 		afterEach(() => {
 			delete process.env.HARPER_CLI_PASSWORD;
 			delete process.env.HARPER_CLI_TARGET;
 			delete process.env.CLI_TARGET;
+			process.stdin.isTTY = originalIsTty;
 		});
 
 		// Captures the streams only for the duration of the call — leaving them patched would also
@@ -391,16 +417,102 @@ describe('Login', () => {
 			assert.ok(!err.includes('ref-tok'), err);
 		});
 
-		// normalizeTarget round-trips through URL.toString(), which preserves userinfo — so a target
-		// given with embedded credentials would otherwise write the password into the emitted secret
-		// and onto the terminal, the exact exposure this flag exists to prevent.
-		it('strips credentials embedded in the target URL', async () => {
+		// A target given with embedded credentials must not put the password anywhere the resolved
+		// target goes. Sanitizing only the emitted line would still leave it on the terminal, in
+		// ~/.harperdb/credentials.json and in .env — so the strip happens once, in normalizeTarget,
+		// and this asserts every one of those destinations.
+		it('keeps credentials embedded in the target URL out of stdout, stderr, and everything persisted', async () => {
+			fs.writeFileSync(path.join(testDir, '.env'), 'EXISTING=1\n');
 			await captureLogin('https://admin:hunter2@example.com', 'mockuser', { forCi: true });
 
 			const out = stdout.join('');
-			assert.ok(!out.includes('hunter2'), out);
-			assert.ok(!out.includes('admin:'), out);
 			assert.ok(out.includes('HARPER_CLI_TARGET=https://example.com:9925/'), out);
+
+			const err = stderr.join('');
+			const credentialsFile = fs.readFileSync(path.join(testDir, '.harperdb', 'credentials.json'), 'utf8');
+			const envFile = fs.readFileSync(path.join(testDir, '.env'), 'utf8');
+			for (const [name, contents] of [
+				['stdout', out],
+				['stderr', err],
+				['credentials.json', credentialsFile],
+				['.env', envFile],
+			]) {
+				assert.ok(!contents.includes('hunter2'), `${name} leaked the password: ${contents}`);
+				assert.ok(!contents.includes('admin@'), `${name} leaked the username: ${contents}`);
+			}
+			// The credentials-file key and the emitted target are the same value, so a later
+			// `harper deploy` against the emitted target finds the entry this login wrote.
+			assert.ok(JSON.parse(credentialsFile).targets['https://example.com:9925/'], credentialsFile);
+			fs.rmSync(path.join(testDir, '.env'), { force: true });
+		});
+
+		// Harper stores one refresh-token hash per user, so this credential is a rotation, not an
+		// addition: any refresh token the user already held is now dead. That is invisible until some
+		// other holder's next refresh 401s, so the command has to say it out loud.
+		it("warns on stderr that the user's previous refresh token was revoked", async () => {
+			await captureLogin('example.com', 'ci-deploy', { forCi: true });
+
+			const err = stderr.join('');
+			assert.ok(err.includes('One refresh token per user'), err);
+			assert.ok(err.includes("'ci-deploy'"), err);
+			assert.ok(err.includes('Give each CI consumer its own user'), err);
+			// The warning is human-facing, so it must not disturb the pipe.
+			const lines = stdout
+				.join('')
+				.split('\n')
+				.filter((line) => line.length > 0);
+			assert.deepStrictEqual(lines, [
+				'HARPER_CLI_TARGET=https://example.com:9925/',
+				'HARPER_CLI_REFRESH_TOKEN=ref-tok',
+			]);
+		});
+
+		it('does not warn about rotation on a default login, which mints nothing durable for CI', async () => {
+			await captureLogin('example.com', 'mockuser');
+
+			assert.ok(!stderr.join('').includes('One refresh token per user'), stderr.join(''));
+		});
+
+		// The CLI cannot verify that a user is dedicated to CI, but it can refuse to rotate that
+		// user's only refresh token without someone saying yes.
+		describe('dedicated-CI-user confirmation (interactive)', () => {
+			let originalCreatePromptModule;
+			let confirmAnswer;
+			let confirmMessage;
+
+			beforeEach(() => {
+				process.stdin.isTTY = true;
+				confirmMessage = undefined;
+				originalCreatePromptModule = inquirer.createPromptModule;
+				inquirer.createPromptModule = () => async (questions) => {
+					const q = Array.isArray(questions) ? questions[0] : questions;
+					if (q.type === 'confirm') {
+						confirmMessage = q.message;
+						return { [q.name]: confirmAnswer };
+					}
+					return { [q.name]: 'mock-response' };
+				};
+			});
+
+			afterEach(() => {
+				inquirer.createPromptModule = originalCreatePromptModule;
+			});
+
+			it('names the user and proceeds when confirmed', async () => {
+				confirmAnswer = true;
+				await captureLogin('example.com', 'ci-deploy', { forCi: true });
+
+				assert.ok(confirmMessage.includes("'ci-deploy'"), confirmMessage);
+				assert.ok(confirmMessage.includes('revokes any refresh token it already holds'), confirmMessage);
+				assert.ok(stdout.join('').includes('HARPER_CLI_REFRESH_TOKEN=ref-tok'), stdout.join(''));
+			});
+
+			it('exits without minting anything when declined', async () => {
+				confirmAnswer = false;
+
+				await assert.rejects(() => captureLogin('example.com', 'ci-deploy', { forCi: true }), /process\.exit:1/);
+				assert.strictEqual(stdout.join(''), '');
+			});
 		});
 
 		it('prints nothing at all without the flag (default login is unchanged)', async () => {
