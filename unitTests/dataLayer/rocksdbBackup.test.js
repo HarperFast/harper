@@ -28,6 +28,7 @@ const {
 	createBackupStream,
 } = require('#src/dataLayer/rocksdbBackup');
 const { blobSnapshotDir } = require('#src/dataLayer/blobBackup');
+const { deleteBackupManifest, isBackupComplete } = require('#src/dataLayer/backupManifest');
 const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 
 // managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
@@ -143,12 +144,12 @@ describe('rocksdbBackup', function () {
 
 			// the exposed list is snake_case (backup_id/file_count), not the binding's camelCase
 			const exposed = await listBackupsOffline(DB_NAME);
-			assert.deepStrictEqual(Object.keys(exposed[0]).sort(), ['backup_id', 'file_count', 'size', 'timestamp']);
+			assert.deepStrictEqual(Object.keys(exposed[0]).sort(), ['backup_id', 'blobs', 'file_count', 'size', 'timestamp']);
 			assert.strictEqual(exposed[0].backup_id, 1);
 			assert.ok(exposed[0].file_count >= 1, 'file_count should be mapped from numberFiles');
 
 			const verified = await verifyBackupOffline(DB_NAME, 1, true);
-			assert.deepStrictEqual(verified, { database: DB_NAME, backup_id: 1, ok: true });
+			assert.deepStrictEqual(verified, { database: DB_NAME, backup_id: 1, ok: true, blobs: true });
 
 			// restore the first backup into a separate target database directory
 			const restored = await restoreBackupOffline(DB_NAME, 1, `${DB_NAME}-restored`);
@@ -429,6 +430,42 @@ describe('rocksdbBackup', function () {
 				!existsSync(blobSnapshotDir(backupDir, second.backup_id)),
 				'purge_backups must drop remaining snapshots'
 			);
+		});
+	});
+
+	describe('completion manifest', function () {
+		const MDB = `${DB_NAME}-manifest`;
+		const mdbDir = () => join(storageDir, MDB);
+
+		afterEach(function () {
+			rmSync(backupDirForDatabase(MDB), { recursive: true, force: true });
+			rmSync(mdbDir(), { recursive: true, force: true });
+			for (const root of getBlobPathsForDatabaseName(MDB)) rmSync(root, { recursive: true, force: true });
+		});
+
+		it('marks a finished backup complete, and hides / refuses one whose manifest is missing', async function () {
+			this.timeout(30000);
+			const db = RocksDatabase.open(mdbDir());
+			try {
+				db.putSync('k', 1);
+			} finally {
+				db.close();
+			}
+			const created = await createBackupOffline(MDB);
+			const backupDir = backupDirForDatabase(MDB);
+			assert.ok(isBackupComplete(backupDir, created.backup_id), 'a finished backup must have a manifest');
+			assert.strictEqual((await listBackupsOffline(MDB)).length, 1);
+
+			// simulate a failed/mid-flight create: the engine backup exists but the manifest does not
+			await deleteBackupManifest(backupDir, created.backup_id);
+
+			// hidden from the usable listing...
+			assert.strictEqual((await listBackupsOffline(MDB)).length, 0, 'an incomplete backup must not be listed');
+			// ...rejected as incomplete (409) by verify and by restoring that specific id...
+			await assert.rejects(verifyBackupOffline(MDB, created.backup_id, false), (error) => error.statusCode === 409);
+			await assert.rejects(restoreBackupOffline(MDB, created.backup_id), (error) => error.statusCode === 409);
+			// ...and restoring "latest" finds no complete backup (404)
+			await assert.rejects(restoreBackupOffline(MDB), (error) => error.statusCode === 404);
 		});
 	});
 

@@ -460,6 +460,23 @@ engine-only backup):
   skipped) — Harper does not freeze blob writes for a backup, the same tradeoff the engine makes for
   the transaction log.
 
+**Completion manifest (`dataLayer/backupManifest.ts`).** `create_backup` is two-phase: the engine
+backup (`rootStore.backup()`) resolves — and is immediately visible to `list_backups`/`verify_backup`/
+`restore_backup` — before the blob snapshot is copied. Without a completion record, a blob-snapshot
+failure (or a crash between the phases) would leave an engine backup that lists and verifies as
+healthy while silently missing its blobs, and a concurrent restore could pick a backup id whose
+snapshot is still being written and treat it as intentionally engine-only. So a manifest at
+`<backupDir>/manifests/<backupId>.json` — recording the blob-inclusion policy — is written
+(atomically, temp + rename) only after _both_ phases are durable, and a graceful blob-snapshot
+failure rolls back the just-created engine backup + partial snapshot. Consumers treat a backup id
+with no manifest as incomplete: `list_backups` hides it, `verify_backup`/`restore_backup` reject it
+(409 for a specific id, "no complete backups" for `latest`), and restore uses the manifest's `blobs`
+flag — not the mere presence of a snapshot dir — to decide whether to restore blobs (so an engine-only
+backup leaves live blobs untouched, and a manifest that claims blobs but has no snapshot is flagged
+corrupt by verify). This closes the "healthy-looking but incomplete" and concurrent-restore races;
+the remaining engine/blob point-in-time skew (a blob unlinked between the engine cut and the blob
+walk) is the documented best-effort limitation above.
+
 ## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
 
 The built-in `scheduler` plugin (#951) runs config-declared jobs "exactly once per cluster." The

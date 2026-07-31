@@ -21,12 +21,21 @@ import { SchemaEventMsg } from '../server/threads/itc.js';
 import { beginRestore, completeRestore, abandonRestore, checkRestoreState, type RestoreLock } from './restoreMarker.ts';
 import {
 	assertBlobSnapshotRestorable,
+	blobSnapshotDir,
 	blobsReadmeContent,
 	deleteBlobSnapshot,
 	purgeBlobSnapshots,
 	restoreBlobSnapshot,
 	snapshotBlobs,
 } from './blobBackup.ts';
+import {
+	deleteBackupManifest,
+	purgeBackupManifests,
+	readAllManifests,
+	readBackupManifest,
+	writeBackupManifest,
+	type BackupManifest,
+} from './backupManifest.ts';
 import logger from '../utility/logging/harper_logger.ts';
 
 /**
@@ -189,14 +198,103 @@ async function findBackup(backupDir: string, backupId: number, databaseName: str
 /**
  * Shape a rocksdb-js BackupInfo into the snake_case response the Operations API exposes — the
  * binding's fields are camelCase, and `appMetadata` is internal, so it is not passed through.
+ * `blobs` reflects the completion manifest's recorded blob-inclusion policy.
  */
-function toBackupResponse(info: BackupInfo): {
+function toBackupResponse(
+	info: BackupInfo,
+	blobs: boolean
+): {
 	backup_id: number;
 	timestamp: number;
 	size: number;
 	file_count: number;
+	blobs: boolean;
 } {
-	return { backup_id: info.backupId, timestamp: info.timestamp, size: info.size, file_count: info.numberFiles };
+	return {
+		backup_id: info.backupId,
+		timestamp: info.timestamp,
+		size: info.size,
+		file_count: info.numberFiles,
+		blobs,
+	};
+}
+
+/**
+ * The engine backups in a directory that have a completion manifest — i.e. whose creation finished
+ * successfully. An engine backup without a manifest is incomplete (still being written, or a failed
+ * create) and is never listed or restored, so a blob snapshot that is mid-copy or absent-after-
+ * failure can't be mistaken for a healthy or intentionally-engine-only backup.
+ */
+async function listCompleteBackups(backupDir: string): Promise<Array<BackupInfo & { blobs: boolean }>> {
+	const [engineBackups, manifests] = await Promise.all([listBackupsInDir(backupDir), readAllManifests(backupDir)]);
+	const complete: Array<BackupInfo & { blobs: boolean }> = [];
+	for (const info of engineBackups) {
+		const manifest = manifests.get(info.backupId);
+		if (manifest) complete.push({ ...info, blobs: manifest.blobs });
+	}
+	return complete;
+}
+
+/**
+ * Load a specific backup's completion manifest, rejecting it as incomplete (409) when the engine
+ * backup exists but has no manifest — its creation did not finish, or is still in progress.
+ */
+async function requireBackupComplete(
+	backupDir: string,
+	backupId: number,
+	databaseName: string
+): Promise<BackupManifest> {
+	const manifest = await readBackupManifest(backupDir, backupId);
+	if (!manifest) {
+		throw new BackupInProgressError(
+			`Backup ${backupId} of database '${databaseName}' is incomplete (its creation did not finish or is still in progress); it cannot be restored or verified`
+		);
+	}
+	return manifest;
+}
+
+/**
+ * Resolve which backup id a restore/verify should act on and load its completion manifest. A
+ * specific id that exists in the engine but has no manifest is rejected as incomplete; without a
+ * requested id, the latest *complete* backup is chosen.
+ */
+async function resolveCompleteBackup(
+	backupDir: string,
+	requestedId: number | undefined,
+	databaseName: string
+): Promise<{ backupId: number; manifest: BackupManifest }> {
+	if (requestedId !== undefined) {
+		await findBackup(backupDir, requestedId, databaseName); // validates id + engine presence
+		return { backupId: requestedId, manifest: await requireBackupComplete(backupDir, requestedId, databaseName) };
+	}
+	const complete = await listCompleteBackups(backupDir);
+	if (complete.length === 0) {
+		throw new BackupNotFoundError(`No complete backups found for database '${databaseName}'`);
+	}
+	const latest = complete.reduce((a, b) => (b.backupId > a.backupId ? b : a));
+	return { backupId: latest.backupId, manifest: { backupId: latest.backupId, blobs: latest.blobs, completedAt: 0 } };
+}
+
+/**
+ * Publish a backup's completion manifest after the engine backup and (when included) blob snapshot
+ * are durable. On failure, best-effort roll back the just-created engine backup, its partial blob
+ * snapshot, and any manifest so an incomplete backup never lingers as usable.
+ */
+async function finalizeBackup(
+	backupDir: string,
+	backupId: number,
+	databaseName: string,
+	blobs: boolean
+): Promise<void> {
+	try {
+		if (blobs) await snapshotBlobs(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
+		await writeBackupManifest(backupDir, backupId, blobs);
+	} catch (error) {
+		await deleteBackupManifest(backupDir, backupId).catch(() => {});
+		await deleteBlobSnapshot(backupDir, backupId).catch(() => {});
+		await backups.delete(backupDir, backupId).catch(() => {});
+		throw error;
+	}
 }
 
 // --- synchronous operations ---
@@ -206,7 +304,9 @@ export async function listBackups(request: any) {
 	const databaseName = getDatabaseName(request);
 	logger.info(`Listing backups for database '${databaseName}'`);
 	requireRocksRootStore(databaseName, OPERATIONS_ENUM.LIST_BACKUPS);
-	return (await listBackupsInDir(backupDirForDatabase(databaseName))).map(toBackupResponse);
+	return (await listCompleteBackups(backupDirForDatabase(databaseName))).map((backup) =>
+		toBackupResponse(backup, backup.blobs)
+	);
 }
 
 export async function deleteBackup(request: any) {
@@ -221,8 +321,9 @@ export async function deleteBackup(request: any) {
 	} catch (error) {
 		throw mapLockedError(error, databaseName);
 	}
-	// the engine's delete leaves the (Harper-managed) blob snapshot behind — remove it too
+	// the engine's delete leaves the (Harper-managed) blob snapshot + manifest behind — remove them too
 	await deleteBlobSnapshot(backupDir, backupId);
+	await deleteBackupManifest(backupDir, backupId);
 	return { ok: true };
 }
 
@@ -245,8 +346,10 @@ export async function purgeBackups(request: any) {
 		throw mapLockedError(error, databaseName);
 	}
 	const remainingBackups = await listBackupsInDir(backupDir);
-	// drop blob snapshots for every id the engine purged (keep only the survivors')
-	await purgeBlobSnapshots(backupDir, new Set(remainingBackups.map((backup) => backup.backupId)));
+	// drop blob snapshots + manifests for every id the engine purged (keep only the survivors')
+	const keepIds = new Set(remainingBackups.map((backup) => backup.backupId));
+	await purgeBlobSnapshots(backupDir, keepIds);
+	await purgeBackupManifests(backupDir, keepIds);
 	// clamp: a concurrent create between the two lists can otherwise make this negative
 	return { deleted: Math.max(0, before.length - remainingBackups.length), remaining: remainingBackups.length };
 }
@@ -274,9 +377,8 @@ export async function createBackup(request: any) {
 	} catch (error) {
 		throw mapLockedError(error, databaseName);
 	}
-	if (!excludeBlobs) {
-		await snapshotBlobs(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
-	}
+	// snapshot blobs (unless excluded) then publish the completion manifest; rolls back on failure
+	await finalizeBackup(backupDir, backupId, databaseName, !excludeBlobs);
 	await writeBackupReadme(backupDir, databaseName);
 	return {
 		database: databaseName,
@@ -356,7 +458,10 @@ export async function validateVerifyBackup(request: any) {
 	const databaseName = getDatabaseName(request);
 	requireRocksRootStore(databaseName, OPERATIONS_ENUM.VERIFY_BACKUP);
 	requireBooleanOption(request.verify_checksum, 'verify_checksum');
-	await findBackup(backupDirForDatabase(databaseName), requireBackupId(request.backup_id), databaseName);
+	const backupDir = backupDirForDatabase(databaseName);
+	const backupId = requireBackupId(request.backup_id);
+	await findBackup(backupDir, backupId, databaseName);
+	await requireBackupComplete(backupDir, backupId, databaseName);
 }
 
 export async function verifyBackup(request: any) {
@@ -366,8 +471,16 @@ export async function verifyBackup(request: any) {
 	const verifyWithChecksum = requireBooleanOption(request.verify_checksum, 'verify_checksum');
 	const backupDir = backupDirForDatabase(databaseName);
 	await findBackup(backupDir, backupId, databaseName);
+	const manifest = await requireBackupComplete(backupDir, backupId, databaseName);
 	await backups.verify(backupDir, backupId, { verifyWithChecksum });
-	return { database: databaseName, backup_id: backupId, ok: true };
+	// verification covers the declared blob snapshot: a backup that recorded blobs must still have its
+	// snapshot directory (a manifest without its blobs is a corrupt backup)
+	if (manifest.blobs && !existsSync(blobSnapshotDir(backupDir, backupId))) {
+		throw new ClientError(
+			`Backup ${backupId} of database '${databaseName}' declares captured blobs but its blob snapshot is missing (corrupt backup)`
+		);
+	}
+	return { database: databaseName, backup_id: backupId, ok: true, blobs: manifest.blobs };
 }
 
 export async function validateRestoreBackup(request: any) {
@@ -387,9 +500,11 @@ export async function validateRestoreBackup(request: any) {
 	}
 	const backupDir = backupDirForDatabase(databaseName);
 	if (request.backup_id !== undefined) {
-		await findBackup(backupDir, requireBackupId(request.backup_id), databaseName);
-	} else if ((await listBackupsInDir(backupDir)).length === 0) {
-		throw new BackupNotFoundError(`No backups found for database '${databaseName}'`);
+		const backupId = requireBackupId(request.backup_id);
+		await findBackup(backupDir, backupId, databaseName);
+		await requireBackupComplete(backupDir, backupId, databaseName);
+	} else if ((await listCompleteBackups(backupDir)).length === 0) {
+		throw new BackupNotFoundError(`No complete backups found for database '${databaseName}'`);
 	}
 	// Only a loaded database that actually has tables can be validated as a single-root RocksDB
 	// store here (an empty/tableless database has no table to resolve a root store from, and an
@@ -419,17 +534,13 @@ export async function restoreBackup(request: any) {
 		);
 	}
 	const backupDir = backupDirForDatabase(databaseName);
-	const available = await listBackupsInDir(backupDir);
-	if (available.length === 0) {
-		throw new BackupNotFoundError(`No backups found for database '${databaseName}'`);
-	}
-	let backupId;
-	if (request.backup_id !== undefined) {
-		backupId = requireBackupId(request.backup_id);
-		await findBackup(backupDir, backupId, databaseName);
-	} else {
-		backupId = available.reduce((latest, backup) => Math.max(latest, backup.backupId), 0);
-	}
+	// choose the latest complete backup (or the requested id, rejected if incomplete); the manifest
+	// tells us whether blobs were captured so we restore them only when they were
+	const { backupId, manifest } = await resolveCompleteBackup(
+		backupDir,
+		request.backup_id === undefined ? undefined : requireBackupId(request.backup_id),
+		databaseName
+	);
 	// a loaded database *with tables* knows its real directory via its root store (which can differ
 	// from the computed default, e.g. legacy layouts); fall back to the computed path when the
 	// database is unloaded (recovering an interrupted restore) or empty (no table to resolve a root
@@ -455,7 +566,12 @@ export async function restoreBackup(request: any) {
 		await verifyDatabaseClosed(databaseDir, databaseName);
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
-		await restoreBlobSnapshot(backupDir, backupId, databaseName, getBlobPathsForDatabaseName(databaseName));
+		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
+		// blob roots untouched); the manifest, not the mere presence of a snapshot dir, is the source
+		// of truth so a mid-copy or absent snapshot can't be misread
+		if (manifest.blobs) {
+			await restoreBlobSnapshot(backupDir, backupId, databaseName, getBlobPathsForDatabaseName(databaseName));
+		}
 	} catch (error: any) {
 		// Leave the marker (so startup/rescan detection reports an incomplete restore until a rerun
 		// succeeds) when either the destructive purge has begun, OR this attempt was itself a recovery
@@ -818,9 +934,7 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 		} catch (error) {
 			throw mapLockedError(error, databaseName);
 		}
-		if (!excludeBlobs) {
-			await snapshotBlobs(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
-		}
+		await finalizeBackup(backupDir, backupId, databaseName, !excludeBlobs);
 		await writeBackupReadme(backupDir, databaseName);
 		return {
 			database: databaseName,
@@ -842,15 +956,10 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 export async function restoreBackupOffline(databaseName: string, backupId?: number, targetDatabase?: string) {
 	validateDatabaseName(databaseName);
 	const backupDir = backupDirForDatabase(databaseName);
-	const available = await listBackupsInDir(backupDir);
-	if (available.length === 0) {
-		throw new BackupNotFoundError(`No backups found for database '${databaseName}'`);
-	}
-	if (backupId !== undefined) {
-		await findBackup(backupDir, backupId, databaseName);
-	} else {
-		backupId = available.reduce((latest, backup) => Math.max(latest, backup.backupId), 0);
-	}
+	// resolve to the latest complete backup (or the requested id, rejected if incomplete)
+	const resolved = await resolveCompleteBackup(backupDir, backupId, databaseName);
+	backupId = resolved.backupId;
+	const manifest = resolved.manifest;
 	if (targetDatabase !== undefined) validateDatabaseName(targetDatabase);
 	const databaseDir = resolveDatabasePath(targetDatabase ?? databaseName);
 	if (targetDatabase !== undefined && targetDatabase !== databaseName && !isMissingOrEmptyDir(databaseDir)) {
@@ -891,12 +1000,15 @@ export async function restoreBackupOffline(databaseName: string, backupId?: numb
 		}
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
-		await restoreBlobSnapshot(
-			backupDir,
-			backupId,
-			databaseName,
-			getBlobPathsForDatabaseName(targetDatabase ?? databaseName)
-		);
+		// restore blobs only for a backup that captured them (per the manifest, not snapshot presence)
+		if (manifest.blobs) {
+			await restoreBlobSnapshot(
+				backupDir,
+				backupId,
+				databaseName,
+				getBlobPathsForDatabaseName(targetDatabase ?? databaseName)
+			);
+		}
 	} catch (error: any) {
 		// Preserve the marker on a destructive failure or a recovery over a pre-existing marker (see
 		// the online restoreBackup for the rationale); otherwise clear the fresh marker so an intact,
@@ -931,7 +1043,9 @@ function isMissingOrEmptyDir(path: string): boolean {
 export async function listBackupsOffline(databaseName: string) {
 	validateDatabaseName(databaseName);
 	// map to the same snake_case response shape as the online list_backups operation
-	return (await listBackupsInDir(backupDirForDatabase(databaseName))).map(toBackupResponse);
+	return (await listCompleteBackups(backupDirForDatabase(databaseName))).map((backup) =>
+		toBackupResponse(backup, backup.blobs)
+	);
 }
 
 export async function verifyBackupOffline(databaseName: string, backupId: number, verifyChecksum?: boolean) {
@@ -939,8 +1053,14 @@ export async function verifyBackupOffline(databaseName: string, backupId: number
 	const verifyWithChecksum = requireBooleanOption(verifyChecksum, 'verify_checksum');
 	const backupDir = backupDirForDatabase(databaseName);
 	await findBackup(backupDir, backupId, databaseName);
+	const manifest = await requireBackupComplete(backupDir, backupId, databaseName);
 	await backups.verify(backupDir, backupId, { verifyWithChecksum });
-	return { database: databaseName, backup_id: backupId, ok: true };
+	if (manifest.blobs && !existsSync(blobSnapshotDir(backupDir, backupId))) {
+		throw new ClientError(
+			`Backup ${backupId} of database '${databaseName}' declares captured blobs but its blob snapshot is missing (corrupt backup)`
+		);
+	}
+	return { database: databaseName, backup_id: backupId, ok: true, blobs: manifest.blobs };
 }
 
 export async function deleteBackupOffline(databaseName: string, backupId: number) {
@@ -953,6 +1073,7 @@ export async function deleteBackupOffline(databaseName: string, backupId: number
 		throw mapLockedError(error, databaseName);
 	}
 	await deleteBlobSnapshot(backupDir, backupId);
+	await deleteBackupManifest(backupDir, backupId);
 	return { ok: true };
 }
 
@@ -972,6 +1093,8 @@ export async function purgeBackupsOffline(databaseName: string, keepCount: numbe
 		throw mapLockedError(error, databaseName);
 	}
 	const remainingBackups = await listBackupsInDir(backupDir);
-	await purgeBlobSnapshots(backupDir, new Set(remainingBackups.map((backup) => backup.backupId)));
+	const keepIds = new Set(remainingBackups.map((backup) => backup.backupId));
+	await purgeBlobSnapshots(backupDir, keepIds);
+	await purgeBackupManifests(backupDir, keepIds);
 	return { deleted: Math.max(0, before.length - remainingBackups.length), remaining: remainingBackups.length };
 }
