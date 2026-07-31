@@ -343,6 +343,10 @@ export class DatabaseTransaction implements Transaction {
 	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
 	// consumed by a commit round; iterator references are consumed only by doneReadTxn().
 	declare baseReadRefConsumed?: boolean;
+	// Set when a final commit/abort wanted to release the context's back-reference (see
+	// releaseContext()) but outstanding read iterators were still using this transaction —
+	// doneReadTxn() completes the release once the last iterator drains.
+	declare pendingContextRelease?: boolean;
 	declare startedFrom?: {
 		resourceName: string;
 		method: string;
@@ -429,6 +433,7 @@ export class DatabaseTransaction implements Transaction {
 			trackedTxns.delete(this);
 			this.transaction?.abort();
 			this.transaction = null;
+			this.completeDeferredContextRelease();
 		}
 	}
 
@@ -447,6 +452,19 @@ export class DatabaseTransaction implements Transaction {
 			harperLogger.debug?.('releasing timed-out read transaction', error);
 		}
 		this.transaction = null;
+		this.completeDeferredContextRelease();
+	}
+
+	/**
+	 * Complete a context release that releaseContext() deferred because outstanding read iterators
+	 * were still using this transaction (see releaseContext()) — called once the last one drains,
+	 * whether that happens naturally (doneReadTxn()) or is forced by the long-transaction monitor
+	 * (releaseReadTxn()).
+	 */
+	private completeDeferredContextRelease(): void {
+		if (!this.pendingContextRelease) return;
+		this.pendingContextRelease = false;
+		if (this.#context?.transaction === this) this.#context.transaction = null;
 	}
 
 	disregardReadTxn(): void {
@@ -477,6 +495,33 @@ export class DatabaseTransaction implements Transaction {
 	clearWrites(): void {
 		this.writes = [];
 		this.writesByKey = undefined;
+	}
+
+	/**
+	 * Drop this transaction's back-reference from its context once completed (commit or abort),
+	 * so a long-lived context (e.g. an MQTT subscription context held open for the life of a
+	 * suspended delivery loop) doesn't keep pinning a finished transaction in memory. Guarded by
+	 * identity: a context already re-pointed at a different (e.g. reused) transaction is untouched.
+	 *
+	 * `final` must be false for an in-callback explicit `context.transaction.commit()` — the
+	 * "commit in the middle" pattern intentionally keeps recommitting and adding writes to the
+	 * SAME instance (see the comment above about a transaction being "reused and committed
+	 * again"), so releasing here would strand those later writes with no transaction to join.
+	 * Only resources/transaction.ts's own wrapper commit (`{ doneWriting: true }`, once the
+	 * caller's callback has fully returned) and abort() are truly final.
+	 *
+	 * A final commit can still have outstanding read iterators streaming through this.transaction
+	 * (see the outstanding-iterators branch in commit()) — those keep this instance meaningfully
+	 * alive (a fresh write on the same context must not join a DIFFERENT, already-replayed
+	 * transaction) until doneReadTxn() drains the last one, so the release is deferred to there.
+	 */
+	private releaseContext(final: boolean): void {
+		if (!final) return;
+		if (this.readTxnsUsed > 0) {
+			this.pendingContextRelease = true;
+			return;
+		}
+		if (this.#context?.transaction === this) this.#context.transaction = null;
 	}
 
 	checkOverloaded() {
@@ -828,6 +873,7 @@ export class DatabaseTransaction implements Transaction {
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.clearWrites();
+							this.releaseContext(!!options.doneWriting);
 							this.next = null;
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
@@ -919,6 +965,7 @@ export class DatabaseTransaction implements Transaction {
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.clearWrites();
+				this.releaseContext(!!options.doneWriting);
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
@@ -953,6 +1000,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// reset the transaction
 		this.clearWrites();
+		this.releaseContext(true); // abort is always terminal — no reuse-after-abort pattern exists
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link

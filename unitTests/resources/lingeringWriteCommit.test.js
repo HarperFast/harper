@@ -59,12 +59,17 @@ describe('commit with open read iterators commits writes immediately on a replay
 	it('the write is durable when commit resolves, while the iterator is still open', async function () {
 		this.timeout(15000);
 		const { context, iterator } = await commitWithOpenIterator('linger-write');
+		// Captured before the iterator drains: once it does, DatabaseTransaction now releases the
+		// context's own back-reference too (releaseContext(), deferred here until the last iterator
+		// finishes — see doneReadTxn()), so context.transaction itself goes null. Assertions below
+		// that need the specific (now-closed) transaction instance use this captured reference.
+		const closedTxn = context.transaction;
 		assert.equal(
-			context.transaction.open,
+			closedTxn.open,
 			TRANSACTION_STATE.CLOSED,
 			'the commit must close the transaction — no LINGERING deferral'
 		);
-		assert.ok(context.transaction.transaction, 'premise: the open iterator must retain the native read handle');
+		assert.ok(closedTxn.transaction, 'premise: the open iterator must retain the native read handle');
 		// the awaited commit chain includes the replay commit, so the write is already readable —
 		// before the iterator finishes
 		const record = await LingerTable.get('linger-write');
@@ -72,7 +77,8 @@ describe('commit with open read iterators commits writes immediately on a replay
 		assert.equal(record.v, 42);
 		while (!(await iterator.next()).done);
 		await delay(50); // give a released-handle failure a beat to surface as an unhandledRejection
-		assert.equal(context.transaction.transaction, null, 'the drained iterator must release the native handle');
+		assert.equal(closedTxn.transaction, null, 'the drained iterator must release the native handle');
+		assert.equal(context.transaction, null, 'the drained iterator must also release the context’s back-reference');
 		assert.ok(await LingerTable.get('linger-write'), 'releasing the read handle must not disturb the committed write');
 		// audit/txn-log entries batch on the native transaction they were staged into and are only
 		// written by its commit; the replay must re-stage them into ITS transaction — the original
