@@ -129,7 +129,18 @@ describe('Outstanding commit tracking', () => {
 				await TrackB.put(4, { name: 'chain-b-2' }, context);
 				chained = !!context.transaction?.next;
 			});
-			await secondCommitStarted;
+			// Race against a bounded timeout, not a bare await: if a regression means TrackB's commit is
+			// never invoked, `secondCommitStarted` would otherwise never settle. Mocha's own test timeout
+			// doesn't cancel this still-running async function, so an unbounded await here would hang
+			// forever with `Transaction.prototype.commit` left monkeypatched, breaking every later test
+			// that touches RocksDB. This timeout is comfortably inside the 15s test timeout, so `finally`
+			// below still gets to run and restore everything before mocha's own timeout would fire.
+			await Promise.race([
+				secondCommitStarted,
+				new Promise((_resolve, reject) =>
+					setTimeout(() => reject(new Error("TrackB's commit was never invoked (tracking regression?)")), 10000)
+				),
+			]);
 			// TrackA's node is unlinked before `this.next.commit()` runs (see the comment above), so by
 			// this point count===1 can only be TrackB's held commit — no polling/racing required.
 			const outstanding = getOutstandingCommits();
