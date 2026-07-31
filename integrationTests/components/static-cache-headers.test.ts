@@ -94,24 +94,37 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 		await setStaticConfig(yaml);
 		const deadline = Date.now() + timeoutMs;
 		let last: string | null = null;
+		let lastError: string | null = null;
 		let sinceResend = 0;
 		while (Date.now() < deadline) {
 			// A single sample's timeout or a transient non-200 while the plugin is mid-reload
-			// shouldn't abort the whole poll — only the loop's own deadline should.
+			// shouldn't abort the whole poll — only the loop's own deadline should. `last` keeps the
+			// most recent successful sample's value, so a persistently-failing sample (e.g. the
+			// static plugin regresses and starts 404ing) would otherwise report a stale "last seen"
+			// value that points at the reload path instead of the real failure — lastError carries
+			// the failure itself into the timeout message so that doesn't get misdiagnosed.
 			try {
 				const res = await getCss();
 				last = res.headers.get('cache-control');
+				lastError = null;
 				if (last === expected) return res;
-			} catch {
-				/* retry within the poll window */
+			} catch (err: any) {
+				lastError = err?.message ?? String(err);
 			}
 			if (++sinceResend >= 10) {
 				sinceResend = 0;
-				await setStaticConfig(yaml);
+				try {
+					await setStaticConfig(yaml);
+				} catch (err: any) {
+					lastError = err?.message ?? String(err);
+				}
 			}
 			await new Promise((r) => setTimeout(r, 200));
 		}
-		throw new Error(`Cache-Control never became ${JSON.stringify(expected)}; last seen: ${JSON.stringify(last)}`);
+		throw new Error(
+			`Cache-Control never became ${JSON.stringify(expected)}; last seen: ${JSON.stringify(last)}` +
+				(lastError ? `; last error: ${lastError}` : '')
+		);
 	}
 
 	test('default: public, max-age=0 with ETag/Last-Modified', async () => {

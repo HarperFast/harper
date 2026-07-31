@@ -85,7 +85,10 @@ const EXPIRY_POLL_SAMPLE_TIMEOUT_MS = 400;
 // the overall window so a slow/stalled one is abandoned in time for a retry within it.
 const RESET_POLL_INTERVAL_MS = 150;
 const RESET_POLL_TIMEOUT_MS = 300;
-// Safety margin before the reset-expiry deadline, so the last poll isn't racing the sweep itself.
+// Gap between the conservative intermediate-sample deadline and the true reset-expiry. Bounds
+// only the INTERMEDIATE samples in pollForPresent — the final sample deliberately runs all the
+// way to the true expiry (see pollForPresent's docblock), so this no longer describes "the last
+// poll," just how early the intermediate phase backs off to leave room for that final attempt.
 const RESET_CHECK_SAFETY_MS = 200;
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
@@ -581,6 +584,15 @@ suite(
 			);
 			// At least one round should complete cleanly (basic smoke guard).
 			ok(outcomes.cleanReset + outcomes.silentLoss > 0, `No round completed cleanly — environment likely broken`);
+			// transportErr is unbounded by design (a stalled deciding sample routes here rather than
+			// a false resurrection alarm — see pollUntilGone), but if it dominates the rounds, the
+			// resurrection=== 0 assertion above is passing on data that was never actually measured.
+			// Guard against the probe going green while having measured almost nothing.
+			ok(
+				outcomes.transportErr <= ROUNDS / 2,
+				`${outcomes.transportErr}/${ROUNDS} rounds were transport-inconclusive — the F-002 check above didn't ` +
+					`get enough conclusive rounds to be meaningful [${ENGINE}]`
+			);
 		});
 	}
 );
