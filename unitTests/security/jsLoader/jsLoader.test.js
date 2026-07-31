@@ -100,6 +100,24 @@ describe('scopedImport', () => {
 		const lib = await result.load();
 		expect(lib.baz).to.equal('pow');
 	});
+
+	it('records transitive local modules and their resolution edges', async () => {
+		const loadedModules = [];
+		const resolutions = [];
+		const scope = {
+			mode: 'vm-current-context',
+			recordLoadedModule: (url) => loadedModules.push(url),
+			recordModuleResolution: (specifier, referrer, resolvedUrl) =>
+				resolutions.push({ specifier, referrer, resolvedUrl }),
+		};
+
+		const result = await scopedImport(join(__dirname, 'fixtures', 'uses-dynamic-import.cjs'), scope);
+		await result.load();
+
+		expect(loadedModules.some((url) => url.endsWith('/uses-dynamic-import.cjs'))).to.equal(true);
+		expect(loadedModules.some((url) => url.endsWith('/libgood.cjs'))).to.equal(true);
+		expect(resolutions.some(({ specifier }) => specifier === './libgood.cjs')).to.equal(true);
+	});
 });
 
 describe('import.meta compatibility', () => {

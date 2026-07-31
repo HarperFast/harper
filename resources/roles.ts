@@ -15,8 +15,8 @@ const USERS_NOT_DBS: readonly string[] = RESERVED_DATABASE_NAMES;
  */
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	scope.handleEntry(async (entry) => {
-		if (entry.eventType === 'unlink') return;
-		return handleFile((entry as any).contents);
+		if (entry.entryType !== 'file' || entry.eventType === 'unlink') return;
+		return handleFile(entry.contents);
 	});
 }
 

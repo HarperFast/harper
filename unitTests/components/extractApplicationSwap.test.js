@@ -180,13 +180,12 @@ describe('extractApplication directory swap', () => {
 
 		await extractApplication(app);
 		assert.strictEqual(app.isNewComponent, false, 'a pre-existing directory was renamed aside, so this is a redeploy');
-		assert.strictEqual(app.packageMetadataChanged, true, 'changed package metadata requires a restart');
 
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
 
-	it('does not mark byte-identical package metadata as changed', async () => {
+	it('leaves runtime metadata comparison to post-install preparation', async () => {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-identical-'));
 		const dirPath = path.join(componentsRoot, 'web');
 		const packageJSON = '{"name":"web","version":"1.0.0"}\n';
@@ -206,7 +205,7 @@ describe('extractApplication directory swap', () => {
 
 		await extractApplication(app);
 		assert.strictEqual(app.isNewComponent, false);
-		assert.strictEqual(app.packageMetadataChanged, false, 'identical manifests and lockfiles stay restart-free');
+		assert.strictEqual(app.packageMetadataChanged, false, 'extraction alone does not compare pre-install metadata');
 
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		await fs.rm(sourceDir, { recursive: true, force: true });

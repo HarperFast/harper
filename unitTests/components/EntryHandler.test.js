@@ -3,7 +3,7 @@ const { EventEmitter, once } = require('node:events');
 const assert = require('node:assert');
 const { join, basename } = require('node:path');
 const { tmpdir } = require('node:os');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+const { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { writeFile, mkdir } = require('node:fs/promises');
 const { spy } = require('sinon');
 const { waitFor } = require('../waitFor.js');
@@ -423,6 +423,61 @@ describe('EntryHandler', () => {
 			'the superseding update generation retains the deletion diff exactly once'
 		);
 		await entryHandler.close();
+	});
+
+	it('invalidates a pending outgoing read before applying new URL configuration', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, { files: 'a', urlPath: '/old' });
+		await entryHandler.ready;
+
+		const entries = [];
+		entryHandler.on('all', (entry) => entries.push(entry));
+		let resolveRead;
+		const pendingRead = entryHandler._simulateFileReadForTests(
+			'change',
+			'a',
+			new Promise((resolve) => (resolveRead = resolve))
+		);
+		const update = entryHandler.update({ files: 'a', urlPath: '/new' });
+		resolveRead(Buffer.from('stale'));
+
+		await Promise.all([pendingRead, update]);
+		assert.deepEqual(
+			entries.map((entry) => [entry.eventType, entry.urlPath]),
+			[
+				['unlink', '/old/a'],
+				['add', '/new/a'],
+			]
+		);
+		await entryHandler.close();
+	});
+
+	it('preserves a known file when a redeploy scan cannot read it', async () => {
+		if (process.platform === 'win32') return;
+		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		await entryHandler.ready;
+		const pollingReady = once(entryHandler, 'ready');
+		entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('exhausted'), { code: 'ENOSPC' }));
+		await pollingReady;
+
+		const entries = [];
+		const errors = [];
+		entryHandler.on('all', (entry) => entries.push(entry));
+		entryHandler.on('error', (error) => errors.push(error));
+		const filePath = join(this.directory, 'a');
+		entryHandler.pause();
+		chmodSync(filePath, 0o000);
+		try {
+			await entryHandler.resume();
+			await waitFor(() => errors.length === 1);
+			assert.equal(errors[0].code, 'EACCES');
+			assert.equal(
+				entries.some((entry) => entry.eventType === 'unlink'),
+				false
+			);
+		} finally {
+			chmodSync(filePath, 0o600);
+			await entryHandler.close();
+		}
 	});
 
 	it('routes primitive listener throws through error without rejecting the file read', async () => {
@@ -886,6 +941,37 @@ describe('EntryHandler', () => {
 			assert.equal(errorSpy.callCount, 1, 'non-exhaustion error should propagate');
 
 			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('does not treat an exhaustion-shaped consumer exception as a watcher failure', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			const errors = [];
+			entryHandler.on('error', (error) => errors.push(error));
+			entryHandler.on('change', () => {
+				throw Object.assign(new Error('consumer failed'), { code: 'ENOSPC' });
+			});
+
+			await writeFile(join(directory, 'a.txt'), 'changed');
+			await waitFor(() => errors.length === 1);
+			assert.equal(entryHandler._usingPollingForTests, false);
+
+			await entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('rejects a paused readiness latch when the handler closes', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+			entryHandler.pause();
+			const pausedReady = entryHandler.ready;
+
+			await entryHandler.close();
+			await assert.rejects(pausedReady, /closed before becoming ready/);
 			rmSync(directory, { recursive: true, force: true });
 		});
 

@@ -4,6 +4,7 @@ import { forComponent } from '../utility/logging/harper_logger.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { RuntimeModuleTracker } from './RuntimeModuleTracker.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
@@ -24,14 +25,17 @@ export class ApplicationScope {
 	mode?: 'native' | 'vm' | 'vm-current-context' | 'compartment'; // option to set this from the scope
 	dependencyLoader?: 'native' | 'app' | 'auto'; // option to set this from the scope
 	allowedPath?: string;
+	runtimeRoot?: string;
 	config: any;
 	moduleCache: any; // used by the loader to retain a cache of modules, type is an internal detail of the loader
+	#runtimeModules: RuntimeModuleTracker;
 	constructor(name: string, resources: Resources, server: Server, isInternal = false) {
 		this.name = name;
 		this.logger = forComponent(name, !isInternal);
 
 		this.resources = resources;
 		this.server = server;
+		this.#runtimeModules = new RuntimeModuleTracker(() => this.runtimeRoot);
 
 		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_MODULELOADER) ?? 'vm-current-context';
 		this.dependencyLoader = env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYLOADER);
@@ -49,5 +53,25 @@ export class ApplicationScope {
 	 */
 	async import(filePath: string): Promise<unknown> {
 		return scopedImport(filePath, this);
+	}
+
+	recordLoadedModule(moduleUrl: string, source: string | Buffer): void {
+		this.#runtimeModules.recordModule(moduleUrl, source);
+	}
+
+	recordModuleResolution(specifier: string, referrer: string, resolvedUrl: string): void {
+		this.#runtimeModules.recordResolution(specifier, referrer, resolvedUrl);
+	}
+
+	markNativeRuntime(): void {
+		this.#runtimeModules.markNativeRuntime();
+	}
+
+	beginDeploy(): void {
+		this.#runtimeModules.beginDeploy();
+	}
+
+	finishDeploy(): Promise<boolean> {
+		return this.#runtimeModules.finishDeploy();
 	}
 }
