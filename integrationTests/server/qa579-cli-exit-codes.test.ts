@@ -78,7 +78,11 @@ const matrix: MatrixRow[] = [];
 function runCli(args: string[], env: NodeJS.ProcessEnv, homeDir: string): CliResult {
 	const start = Date.now();
 	const result = spawnSync(process.execPath, [HARPER_BIN, ...args], {
-		env: { ...process.env, ...env, HOME: homeDir },
+		// USERPROFILE matches HOME on win32, where CLI credential resolution goes through
+		// os.homedir() -> USERPROFILE — without it this child still reads the real
+		// ~/.harperdb/credentials.json there even with HOME replaced (see harperLifecycle.js's
+		// own HOME/USERPROFILE pairing for the same isolation).
+		env: { ...process.env, ...env, HOME: homeDir, USERPROFILE: homeDir },
 		encoding: 'utf8',
 		timeout: CHILD_PROCESS_TIMEOUT_MS,
 	});
@@ -139,7 +143,9 @@ suite('QA-579 CLI exit-code contract matrix (PR #1801)', (ctx: ContextWithHarper
 
 	after(async () => {
 		await teardownHarper(ctx);
-		await rm(scratchHome, { recursive: true, force: true });
+		// Guard against a before() failure leaving scratchHome unset — rm(undefined, ...) would
+		// throw and mask the original setup error in the test output.
+		if (scratchHome) await rm(scratchHome, { recursive: true, force: true });
 
 		console.log('\n[QA-579] CLI EXIT-CODE MATRIX (PR #1801)');
 		console.log('  cell                    expected     actual-exit   verdict    message');
@@ -183,7 +189,8 @@ suite('QA-579 CLI exit-code contract matrix (PR #1801)', (ctx: ContextWithHarper
 		// Find a free loopback port on the assigned test hostname, then immediately close
 		// the probe socket so nothing is listening on it — guaranteeing ECONNREFUSED.
 		const probe = createServer();
-		const deadPort: number = await new Promise((resolvePort) => {
+		const deadPort: number = await new Promise((resolvePort, reject) => {
+			probe.on('error', reject);
 			probe.listen(0, hostname, () => {
 				const addr = probe.address();
 				const port = typeof addr === 'object' && addr ? addr.port : 0;
@@ -237,52 +244,57 @@ suite('QA-579 CLI exit-code contract matrix (PR #1801)', (ctx: ContextWithHarper
 			});
 			// Intentionally: no response, no close.
 		});
-		const blackholePort: number = await new Promise((resolvePort) => {
+		const blackholePort: number = await new Promise((resolvePort, reject) => {
+			blackhole.on('error', reject);
 			blackhole.listen(0, hostname, () => {
 				const addr = blackhole.address();
 				resolvePort(typeof addr === 'object' && addr ? addr.port : 0);
 			});
 		});
 
-		const CLI_TIMEOUT_MS = 1500;
-		const result = runCli(
-			[
-				'describe_all',
-				`target=http://${hostname}:${blackholePort}`,
-				`username=${DEFAULT_ADMIN_USERNAME}`,
-				`password=${DEFAULT_ADMIN_PASSWORD}`,
-			],
-			{ HARPER_CLI_TIMEOUT_MS: String(CLI_TIMEOUT_MS) },
-			scratchHome
-		);
+		// try/finally: if any assertion below throws, blackhole must still close — otherwise it's
+		// left listening and keeps the event loop (and the whole test runner) alive on CI.
+		try {
+			const CLI_TIMEOUT_MS = 1500;
+			const result = runCli(
+				[
+					'describe_all',
+					`target=http://${hostname}:${blackholePort}`,
+					`username=${DEFAULT_ADMIN_USERNAME}`,
+					`password=${DEFAULT_ADMIN_PASSWORD}`,
+				],
+				{ HARPER_CLI_TIMEOUT_MS: String(CLI_TIMEOUT_MS) },
+				scratchHome
+			);
 
-		await new Promise<void>((r) => blackhole.close(() => r()));
+			const combined = (result.stdout + result.stderr).trim();
+			matrix.push({
+				cell: '3. op-timeout',
+				expectedNonZero: true,
+				status: result.status,
+				verdict: !result.hung && result.status !== 0 ? 'EXPECTED' : result.hung ? 'DEFECT(hang)' : 'DEFECT',
+				message: combined.slice(0, 160).replace(/\n/g, ' '),
+			});
 
-		const combined = (result.stdout + result.stderr).trim();
-		matrix.push({
-			cell: '3. op-timeout',
-			expectedNonZero: true,
-			status: result.status,
-			verdict: !result.hung && result.status !== 0 ? 'EXPECTED' : result.hung ? 'DEFECT(hang)' : 'DEFECT',
-			message: combined.slice(0, 160).replace(/\n/g, ' '),
-		});
-
-		ok(
-			!result.hung,
-			`CLI hung past the ${CHILD_PROCESS_TIMEOUT_MS}ms hard kill instead of respecting HARPER_CLI_TIMEOUT_MS=${CLI_TIMEOUT_MS} — this is the headline regression this PR fixes`
-		);
-		notEqual(
-			result.status,
-			0,
-			`Expected non-zero exit on genuine operation timeout, got ${result.status}. stderr: ${result.stderr}`
-		);
-		// Should fire close to the configured 1.5s idle timeout, not the CHILD_PROCESS_TIMEOUT_MS
-		// hard-kill ceiling — confirms it's the CLI's own timeout firing, not our safety net.
-		ok(
-			result.durationMs < CLI_TIMEOUT_MS + 8_000,
-			`Timeout fired at ${result.durationMs}ms, expected close to configured ${CLI_TIMEOUT_MS}ms (not the ${CHILD_PROCESS_TIMEOUT_MS}ms hard-kill ceiling)`
-		);
-		ok(/timed out|ETIMEDOUT/i.test(combined), `Expected a timeout-flavored message, got: ${combined}`);
+			ok(
+				!result.hung,
+				`CLI hung past the ${CHILD_PROCESS_TIMEOUT_MS}ms hard kill instead of respecting HARPER_CLI_TIMEOUT_MS=${CLI_TIMEOUT_MS} — this is the headline regression this PR fixes`
+			);
+			notEqual(
+				result.status,
+				0,
+				`Expected non-zero exit on genuine operation timeout, got ${result.status}. stderr: ${result.stderr}`
+			);
+			// Should fire close to the configured 1.5s idle timeout, not the CHILD_PROCESS_TIMEOUT_MS
+			// hard-kill ceiling — confirms it's the CLI's own timeout firing, not our safety net.
+			ok(
+				result.durationMs < CLI_TIMEOUT_MS + 8_000,
+				`Timeout fired at ${result.durationMs}ms, expected close to configured ${CLI_TIMEOUT_MS}ms (not the ${CHILD_PROCESS_TIMEOUT_MS}ms hard-kill ceiling)`
+			);
+			ok(/timed out|ETIMEDOUT/i.test(combined), `Expected a timeout-flavored message, got: ${combined}`);
+		} finally {
+			await new Promise<void>((r) => blackhole.close(() => r()));
+		}
 	});
 
 	test('Cell 4: failed operation (describe_table on nonexistent table) -> non-zero exit', async () => {

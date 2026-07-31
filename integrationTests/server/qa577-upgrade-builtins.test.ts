@@ -121,16 +121,20 @@ function seedConfigKey(dataRootDir: string, key: string): void {
  * The activation log line (`hdbLogger.info(...)`) is written through the structured logger, which
  * the test harness routes to hdb.log, NOT the raw process stdout captured in `startupOutput.stdout`
  * — the harness boots with `--LOGGING_STDSTREAMS=false`, so only bare `console.log` banner/status
- * lines (ASCII art, "Harper successfully started") reach `startupOutput.stdout`. Read hdb.log under
- * the per-instance logDir instead (falling back to startupOutput.stdout, best-effort, if no logDir
- * was configured — e.g. HARPER_INTEGRATION_TEST_LOG_DIR unset).
+ * lines (ASCII art, "Harper successfully started") reach `startupOutput.stdout`, never this line.
+ *
+ * `harper.logDir` is only set when HARPER_INTEGRATION_TEST_LOG_DIR is configured (a per-boot
+ * directory, fresh on every startHarper() call); otherwise Harper falls back to its own default
+ * (validation/configValidator.ts's DEFAULT_LOG_FOLDER = 'log', resolved against rootPath) — i.e.
+ * `${dataRootDir}/log/hdb.log`, since this harness passes `--ROOTPATH=${dataRootDir}`.
  */
-function readBootLog(harper: { logDir?: string; startupOutput?: { stdout: string } }): string {
-	if (harper.logDir) {
-		const logPath = join(harper.logDir, 'hdb.log');
-		if (existsSync(logPath)) return readFileSync(logPath, 'utf8');
-	}
-	return harper.startupOutput?.stdout ?? '';
+function bootLogPath(harper: { logDir?: string; dataRootDir: string }): string {
+	return harper.logDir ? join(harper.logDir, 'hdb.log') : join(harper.dataRootDir, 'log', 'hdb.log');
+}
+
+function readBootLog(harper: { logDir?: string; dataRootDir: string }): string {
+	const logPath = bootLogPath(harper);
+	return existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
 }
 
 /**
@@ -193,6 +197,14 @@ suite(
 		});
 
 		test('second boot over same data dir: no re-activation log, no duplicate key, boots clean', async () => {
+			// hdb.log is append-only and (absent HARPER_INTEGRATION_TEST_LOG_DIR) lives at a fixed
+			// path under the unchanged dataRootDir, so it still carries the FIRST boot's activation
+			// line going into this restart. Snapshot where it was before restarting and diff only the
+			// bytes appended after, or the first boot's line would make this assertion fail even when
+			// the second boot correctly did NOT re-log.
+			const priorLogPath = bootLogPath(ctx.harper);
+			const priorLogLen = readBootLog(ctx.harper).length;
+
 			await killHarper(ctx);
 			await startHarper(ctx, {
 				config: {},
@@ -212,10 +224,13 @@ suite(
 				1,
 				`expected still exactly one top-level ${BACKFILL_KEY} key (no duplication)`
 			);
-			const bootLog = readBootLog(ctx.harper);
+			const fullLog = readBootLog(ctx.harper);
+			// If HARPER_INTEGRATION_TEST_LOG_DIR is set, this boot got a fresh logDir (a distinct
+			// file), so there's nothing to diff against — take the whole thing.
+			const bootLog = bootLogPath(ctx.harper) === priorLogPath ? fullLog.slice(priorLogLen) : fullLog;
 			ok(
 				!bootLog.includes(ACTIVATION_LOG_SNIPPET),
-				`expected NO activation log on 2nd boot (key already present, must be idempotent); hdb.log:\n${bootLog}`
+				`expected NO activation log appended by the 2nd boot (key already present, must be idempotent); appended log:\n${bootLog}`
 			);
 		});
 	}

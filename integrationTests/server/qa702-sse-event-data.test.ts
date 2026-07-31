@@ -4,26 +4,32 @@
  * crashes a worker and the connection stays healthy, plus the F-133 mid-stream-throw
  * regression leg + a liveness canary.
  *
- * QA-702 — regression anchor for #1863 "fix: guard SSE writes against undefined event data
+ * QA-702 — companion coverage for #1863 "fix: guard SSE writes against undefined event data
  * (#1724)" (commit 6bcd5cd29, merged 2026-07-21 into HarperFast/harper), PLUS a
  * re-characterization of the open sibling F-133 finding (SSE mid-stream throw hang) on current
  * main.
  *
- * (a) Green anchor for #1863, WITH AN IMPORTANT SCOPE CAVEAT (found empirically, not assumed):
- *     the literal guarded function, server/serverHelpers/progressEmitter.ts's `writeSSE()`, is
- *     wired up ONLY inside serverHandlers.js for the operations-API SSE_PROGRESS_OPERATIONS set
- *     (deploy_component / get_deployment / read_log), none of which let a test inject an
- *     arbitrary `data` value, and jsResource fixtures run from an isolated copied component root
- *     that CANNOT `import` the live repo's internal server/ modules (confirmed: a relative
- *     `../../../server/serverHelpers/progressEmitter.ts` import throws
- *     `ResourceLoadError: Cannot find module ...` — a sandboxing boundary, not a bug). So this
- *     suite instead targets the reachable SIBLING encoder: contentTypes.ts's `text/event-stream`
- *     media-type `serialize()`, invoked via `resource.connect()` — the actual SSE contract any
- *     Harper Resource's client sees. It has a DIFFERENT, pre-existing falsy-data guard
+ * (a) NOT the #1863 regression anchor — that's unitTests/server/serverHelpers/progressEmitter.test.js,
+ *     which imports server/serverHelpers/progressEmitter.ts's `writeSSE()` directly and already
+ *     exercises undefined/null payloads against the actual fixed guard. This suite CANNOT reach
+ *     that function at all: it's wired up ONLY inside serverHandlers.js for the operations-API
+ *     SSE_PROGRESS_OPERATIONS set (deploy_component / get_deployment / read_log), none of which let
+ *     a test inject an arbitrary `data` value, and jsResource fixtures run from an isolated copied
+ *     component root that CANNOT `import` the live repo's internal server/ modules (confirmed: a
+ *     relative `../../../server/serverHelpers/progressEmitter.ts` import throws
+ *     `ResourceLoadError: Cannot find module ...` — a sandboxing boundary, not a bug). Reaching the
+ *     real Operations API progress stream, or unifying it with the encoder below into one shared
+ *     serialization contract, are both real code changes out of scope for this test-only PR.
+ *
+ *     So instead, this suite covers the SIBLING encoder any Harper Resource client actually sees:
+ *     contentTypes.ts's `text/event-stream` media-type `serialize()`, invoked via
+ *     `resource.connect()`. It has a DIFFERENT, pre-existing falsy-data guard
  *     (`if (message.data) { ...emit data: line... }`) that silently OMITS the `data:` field
  *     entirely for any falsy value (undefined/null/''/0/false) rather than crashing OR emitting
  *     an explicit empty/`null` line the way the fixed writeSSE() does — a distinct, worth-flagging
- *     shape of "falsy SSE data" handling, not a crash. See
+ *     shape of "falsy SSE data" handling on a code path #1863 never touched, not a #1863 regression
+ *     check. Flagged rather than fixed here since changing it is a production-code, cross-encoder
+ *     decision (see above), not a test fix. See
  *     integrationTests/qa-scratch/qa702-sse-event-data/resources.js for the full writeup.
  *
  * (b) F-133 re-characterization: does a resource.connect() async generator that throws mid-stream
@@ -75,7 +81,14 @@ async function getProbe(restBase: string, authHeaders: Record<string, string>): 
 	return new Promise((resolvePromise, reject) => {
 		const req = lib.request(
 			url,
-			{ method: 'GET', headers: { ...authHeaders, Accept: 'application/json' }, rejectUnauthorized: false } as any,
+			{
+				method: 'GET',
+				headers: { ...authHeaders, Accept: 'application/json' },
+				rejectUnauthorized: false,
+				// A hung server would otherwise block this readiness poll's while loop indefinitely;
+				// bound it so a stuck request fails fast and the loop can retry or time out cleanly.
+				signal: AbortSignal.timeout(5000),
+			} as any,
 			(res) => {
 				const chunks: Buffer[] = [];
 				res.on('data', (d: Buffer) => chunks.push(d));
@@ -202,7 +215,7 @@ const LARGE_STRING = 'QA702-large-payload-'.repeat(15_000); // must match resour
 // ── Suite ──────────────────────────────────────────────────────────────────────────────────
 
 suite(
-	'QA-702 SSE event-data payload matrix (#1863 anchor) + F-133 throw-path recheck',
+	'QA-702 SSE event-data payload matrix (contentTypes.ts encoder, sibling to the #1863 fix) + F-133 throw-path recheck',
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		let client: Client;
@@ -240,14 +253,16 @@ suite(
 			await teardownHarper(ctx);
 		});
 
-		// ── (a) payload matrix against the reachable SSE encoder (contentTypes.ts's text/event-stream
-		//        serialize(), the #1863-guarded writeSSE()'s client-facing sibling -- see file header
-		//        and resources.js for why this substitution was necessary) ───────────────────────────
+		// ── (a) payload matrix against contentTypes.ts's text/event-stream serialize() -- the sibling
+		//        encoder any Harper Resource client actually sees, NOT the #1863-guarded writeSSE()
+		//        itself (unreachable from here -- see file header for why, and for the actual #1863
+		//        anchor at unitTests/server/serverHelpers/progressEmitter.test.js) ────────────────────
 		//
 		// `hasData: false` cases exercise this encoder's OWN (pre-existing, different) falsy guard
 		// -- `if (message.data) {...}` -- which OMITS the `data:` field entirely for a falsy value,
-		// rather than crashing (the #1863 bug) or emitting an explicit empty/`null` line (writeSSE()'s
-		// fixed behavior). That's the actual, current wire contract; asserted here, not assumed.
+		// rather than crashing (the #1863 bug, on the other encoder) or emitting an explicit
+		// empty/`null` line (writeSSE()'s fixed behavior). That's the actual, current wire contract
+		// on THIS encoder; asserted here, not assumed.
 
 		const cases: Array<{ name: string; path: string; hasData: boolean; expectedData?: string }> = [
 			{ name: 'undefined', path: 'UndefinedPayload', hasData: false },
