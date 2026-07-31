@@ -11,6 +11,9 @@
  * (of unbounded, multi-second duration under some Node/undici builds — see harper#2025) can block
  * this suite's poll loop for tens of seconds and read as the chokidar reload never landing, when
  * it's really the polling request itself that never landed. node:http isn't subject to that stall.
+ * Root cause: nodejs/undici#5600 (unref'd idle-socket-validation setImmediate stalls fetch() on an
+ * otherwise-idle event loop), bundled into Node via undici 8.9.0 (used by 26.5.1); fixed upstream by
+ * nodejs/undici#5609 but not yet in a released undici/Node build as of this writing.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
