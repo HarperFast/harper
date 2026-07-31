@@ -52,6 +52,17 @@ function errorMessage(error: unknown): string {
 	}
 }
 
+// hdbLogger's file-backed transport can itself throw (e.g. ENOSPC/EIO on the underlying
+// fs.appendFileSync) with nothing between it and the caller. A logging call inside a fail-closed
+// catch arm must never be the thing that defeats fail-closed by escaping as a new exception.
+function safeLog(log: ((message: string) => void) | undefined, message: string): void {
+	try {
+		log?.(message);
+	} catch {
+		/* a broken logger must not turn a contained failure into a new one */
+	}
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error(message)), ms);
@@ -81,7 +92,7 @@ const NOOP_HANDLE = { unregister: () => {} };
 // closed catch-arm call (e.g. a logger call that itself throws) would otherwise escape as an
 // unhandled rejection from these fire-and-forget triggers.
 function triggerSweep(): void {
-	void sweep().catch((error) => hdbLogger.error?.(`liveSubscriptionAuth: sweep failed: ${errorMessage(error)}`));
+	void sweep().catch((error) => safeLog(hdbLogger.error, `liveSubscriptionAuth: sweep failed: ${errorMessage(error)}`));
 }
 
 function ensureStarted(): void {
@@ -211,12 +222,18 @@ export function registerLiveSubscription(opts: {
  * that never settles would hold `sweeping` true forever (the `finally` in `sweep()` never runs),
  * silently disabling re-authorization for every subscription on the worker, not just this entry's.
  * `recheck` has the same unbounded-await shape but is registry-controlled Harper code; `revoke` is
- * arbitrary caller code, which is the materially wider exposure this bound closes. A timeout does not
- * cancel the underlying call — `entry.pendingTerminate` caches it, so a retry on the next sweep
- * re-awaits the SAME in-flight attempt instead of invoking `terminate`/`revoke` a second time while
- * the first is still running; the cache clears once that attempt actually settles (success or
- * failure), so a genuinely stuck call is never retried, but a merely slow one gets a fresh invocation
- * next time only after it's actually done.
+ * arbitrary caller code, which is the materially wider exposure this bound closes.
+ *
+ * A timeout does not cancel the underlying call — `entry.pendingTerminate` caches it, so a retry on
+ * the next sweep re-awaits the SAME in-flight attempt instead of invoking `terminate`/`revoke` a
+ * second time while the first is still running. Committing the removal (`registry.delete` + the
+ * success log) happens from a handler attached to that cached attempt directly, NOT from the code
+ * below that raced it with a timeout: a `revoke` that succeeds after this sweep's timeout window
+ * closes, but before the next sweep starts, must still be committed exactly once — reusing it as a
+ * plain resolved value in a later `claimAndTerminate` call would silently discard that success and
+ * invoke `revoke` again next sweep, precisely the double-invocation this cache exists to prevent.
+ * Attaching the commit/failure handler once, at the point the attempt is created, means it fires
+ * whenever the attempt settles, whether or not any sweep is actively awaiting it at that moment.
  */
 function invokeTerminate(entry: LiveSubscription): Promise<void> {
 	try {
@@ -233,22 +250,38 @@ async function claimAndTerminate(entry: LiveSubscription, reason: string): Promi
 		attempt = invokeTerminate(entry);
 		entry.pendingTerminate = attempt;
 		const settledAttempt = attempt;
-		const clearIfCurrent = () => {
-			if (entry.pendingTerminate === settledAttempt) entry.pendingTerminate = undefined;
-		};
-		attempt.then(clearIfCurrent, clearIfCurrent);
+		attempt.then(
+			() => {
+				if (entry.pendingTerminate === settledAttempt) entry.pendingTerminate = undefined;
+				if (registry.delete(entry)) {
+					safeLog(hdbLogger.info, `liveSubscriptionAuth: revoked subscription for ${entry.username} (${reason})`);
+				}
+			},
+			(error) => {
+				if (entry.pendingTerminate === settledAttempt) entry.pendingTerminate = undefined;
+				safeLog(
+					hdbLogger.error,
+					`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}), will retry next sweep: ${errorMessage(error)}`
+				);
+			}
+		);
 	}
 	const timeoutMs = terminateTimeoutMs();
 	try {
 		await withTimeout(attempt, timeoutMs, `terminate timed out after ${timeoutMs}ms`);
-	} catch (error) {
-		hdbLogger.error?.(
-			`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}), will retry next sweep: ${errorMessage(error)}`
-		);
+	} catch {
+		// If the attempt itself already rejected, the handler above already logged the definitive
+		// failure and cleared pendingTerminate — nothing more to do. If it's still pending (this is
+		// our own timeout firing, not a rejection), pendingTerminate still points at it; log that this
+		// sweep is still waiting so a persistently hung revoke doesn't go completely silent.
+		if (entry.pendingTerminate === attempt) {
+			safeLog(
+				hdbLogger.error,
+				`liveSubscriptionAuth: terminate for ${entry.username} (${reason}) still pending after ${timeoutMs}ms, will retry next sweep`
+			);
+		}
 		return false;
 	}
-	registry.delete(entry);
-	hdbLogger.info?.(`liveSubscriptionAuth: revoked subscription for ${entry.username} (${reason})`);
 	return true;
 }
 

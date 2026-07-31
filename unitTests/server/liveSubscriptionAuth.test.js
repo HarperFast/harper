@@ -403,8 +403,18 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				assert.strictEqual(calls, 1, 'a still-pending revoke must not be invoked a second time');
 				assert.strictEqual(_liveSubscriptionCount(), 1);
 
-				resolveRevoke(); // the underlying call finally completes
-				await _sweepNow(); // this sweep observes the (now-settled) same attempt and commits it
+				// Resolve on its own, with no sweep actively awaiting it — models the realistic case where
+				// the underlying call finishes sometime in the ~30s gap between sweeps, not synchronously
+				// adjacent to one. The settle handler must commit the removal on its own; an implementation
+				// that only committed from inside an active sweep's await would miss this and later
+				// re-invoke revoke, discarding the success that already happened.
+				resolveRevoke();
+				await new Promise((resolveTick) => setImmediate(resolveTick));
+
+				assert.strictEqual(calls, 1, 'the late success must be committed without any sweep watching it');
+				assert.strictEqual(_liveSubscriptionCount(), 0, 'the entry must be removed as soon as the attempt settles');
+
+				await _sweepNow(); // a further sweep must not touch it again — already gone
 
 				assert.strictEqual(calls, 1, 'the entry is removed without ever calling revoke a second time');
 				assert.strictEqual(_liveSubscriptionCount(), 0);
