@@ -9,6 +9,12 @@ import { join } from 'path';
 
 const workers = [];
 const workersReady = [];
+// startHTTPThreads() can be called more than once in-process (e.g. a test harness adding more
+// worker threads to an already-running server via addThreads()). The crash-path sweep below must
+// run only on the very first call — a later call happens after real mirrors are already bound, and
+// sweeping the sockets directory then would delete their live files, reintroducing the exact outage
+// this guards against.
+let sweptSocketsDirectory = false;
 
 if (isMainThread) {
 	process.on('uncaughtException', (error) => {
@@ -29,7 +35,10 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	// can bind), so it can only ever clear files nothing is using yet — never a live mirror. The
 	// inode ownership guard in cleanupUdsFiles()/markUdsBindFailed() (see http.ts) is the matching
 	// defense for the in-process rolling-restart case, which this sweep does not cover.
-	if (isMainThread) cleanupSocketsDirectory();
+	if (isMainThread && !sweptSocketsDirectory) {
+		sweptSocketsDirectory = true;
+		cleanupSocketsDirectory();
+	}
 	recordHostname().catch((err) => harperLogger.error?.('Error recording hostname for analytics:', err));
 	// Drive transaction-log cooling from the main thread (the registry is a
 	// process-global singleton; see startTransactionLogCooling). Runs for all

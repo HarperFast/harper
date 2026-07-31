@@ -392,6 +392,9 @@ function listenOnPorts() {
 							callback?.();
 						},
 					};
+					// createUwsServer() only resolves once uWS's own listen_unix() confirms the bind, so
+					// ownership is confirmed now (see http.ts's ownership-aware cleanupUdsFiles()).
+					if (cfg.socketPath) httpComponent.recordUdsBindSuccess(cfg.socketPath);
 					harperLogger.info('uWS listening on ' + (cfg.socketPath ?? cfg.port));
 					return { port: key };
 				})
