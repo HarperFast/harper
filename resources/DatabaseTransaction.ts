@@ -57,6 +57,9 @@ let outstandingCommitCount = 0;
 // Exported only so unit tests can drive the list with controllable promises: the unlink order that
 // matters (a middle or tail node settling first) cannot be forced through real writes, and a node
 // left linked would 503 every write on this thread forever. commit() below is the sole caller.
+// Also the single source for write-queue-depth accounting (getTransactionQueueDepths below): every
+// native commit this function tracks is, by definition, exactly the write-queue backlog — see the
+// comment there for why that used to be a second, separately-maintained counter.
 export function trackOutstandingCommit(commitResolution: Promise<number | void>): void {
 	// Guards against a future caller passing a non-Promise: today commit() always hands this a real
 	// Promise, but an unguarded link here would leave a node permanently wedged in the list (503ing
@@ -67,6 +70,9 @@ export function trackOutstandingCommit(commitResolution: Promise<number | void>)
 	else oldestOutstandingCommit = outstanding;
 	newestOutstandingCommit = outstanding;
 	outstandingCommitCount++;
+	// Doubles as the write-queue-depth high-water mark (see getTransactionQueueDepths): every
+	// outstanding commit is a write-queue entry, so the peak of one is the peak of the other.
+	if (outstandingCommitCount > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = outstandingCommitCount;
 	// Guards against double-untracking the same node: `.then(untrack, untrack)` below means a promise
 	// that both resolves and later has its rejection handler independently triggered (or is tracked via
 	// a shared/misused resolution) could otherwise run the unlink twice, corrupting the list or driving
@@ -129,28 +135,19 @@ function recordCommitLatency(commitResolution: Promise<number | void>, submitted
 
 // Queue-depth gauges surfaced through the analytics pipeline (write-transaction-queue-depth /
 // read-transaction-queue-depth). Per-thread state; the analytics aggregator sums across threads.
-// `writeTxnQueueDepth` counts write commits handed to the storage engine but not yet resolved —
-// this is the backlog that, when it drains too slowly, produces the "Outstanding write transactions
-// have too long of queue" overload error. Read depth is derived from the live `trackedTxns` set
-// (every tracked transaction holds an open read snapshot). We also retain a high-water mark per
-// sampling window because the queue can fill and drain within a single (~1s) analytics period, so an
+// The write depth is `outstandingCommitCount` itself (maintained above by trackOutstandingCommit) —
+// write commits handed to the storage engine but not yet resolved are exactly the same set of native
+// commits the overload check tracks, and keeping one counter instead of two removes the duplicate
+// per-commit bookkeeping (and the drift risk: a code path that updates one but not the other, as the
+// replay path did before this fix). Read depth is derived from the live `trackedTxns` set (every
+// tracked transaction holds an open read snapshot). We also retain a high-water mark per sampling
+// window because the queue can fill and drain within a single (~1s) analytics period, so an
 // instantaneous sample taken at emit time would routinely miss the spike operators need to see.
 // RocksDB-write-path only: LMDB routes through the separate LMDBTransaction.commit()/getReadTxn()
 // overrides (resources/LMDBTransaction.ts), which maintain their own unrelated `trackedTxns` set and
 // do not call into this accounting.
-let writeTxnQueueDepth = 0;
 let writeTxnQueueDepthHighWater = 0;
 let readTxnQueueDepthHighWater = 0;
-
-function enterWriteQueue() {
-	if (++writeTxnQueueDepth > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = writeTxnQueueDepth;
-}
-function leaveWriteQueue() {
-	// Floor at zero: accounting is balanced by construction (every enterWriteQueue has exactly one
-	// matching settlement), but the guard is cheap insurance against a future call-site imbalance
-	// producing a negative depth that would corrupt every subsequent sample.
-	if (writeTxnQueueDepth > 0) writeTxnQueueDepth--;
-}
 
 /**
  * Returns the current write/read transaction queue depths for this thread along with the high-water
@@ -162,12 +159,12 @@ export function getTransactionQueueDepths() {
 	// dominates the current size here — no need to reconcile against `readDepth` before reporting.
 	const readDepth = trackedTxns.size;
 	const depths = {
-		writeDepth: writeTxnQueueDepth,
+		writeDepth: outstandingCommitCount,
 		writeMaxDepth: writeTxnQueueDepthHighWater,
 		readDepth,
 		readMaxDepth: readTxnQueueDepthHighWater,
 	};
-	writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+	writeTxnQueueDepthHighWater = outstandingCommitCount;
 	readTxnQueueDepthHighWater = readDepth;
 	return depths;
 }
@@ -587,17 +584,11 @@ export class DatabaseTransaction implements Transaction {
 						// re-staged the writes into it
 						commitResolution = transaction.commit() as Promise<void>;
 						recordCommitLatency(commitResolution, performance.now());
-						// Same accounting as the ordinary commit path below — this replay is a real native
-						// commit handed to the storage engine. Omitting it left write-transaction-queue-depth,
-						// the one metric that can observe a commit that never settles (harper#2001), reading
-						// zero for exactly this path. Guarded the same way as the ordinary path for
-						// consistency, though commitResolution is always a Promise here in practice.
-						enterWriteQueue();
-						if (typeof (commitResolution as any)?.then === 'function') {
-							commitResolution.then(leaveWriteQueue, leaveWriteQueue);
-						} else {
-							leaveWriteQueue();
-						}
+						// Write-queue-depth accounting for this replay commit happens uniformly below, via
+						// trackOutstandingCommit(commitResolution) — see that function's comment. Omitting
+						// dedicated accounting here (as a prior version of this replay path did) used to leave
+						// write-transaction-queue-depth, the one metric that can observe a commit that never
+						// settles (harper#2001), reading zero for exactly this path.
 					}
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
@@ -621,19 +612,10 @@ export class DatabaseTransaction implements Transaction {
 							// Promise<void> here because the widening union defeats flow analysis on the prior
 							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
 							recordCommitLatency(commitResolution as Promise<void>, performance.now());
-							// Count this commit against the write queue depth until the storage engine
-							// resolves it. A transient-conflict retry rejects this promise and issues a
-							// fresh commit() (re-entering here), so the enter/leave stays balanced. leaveWriteQueue
-							// never throws, so the settled promise resolves and needs no rejection handling of its own.
-							// The thenable guard protects against a future caller passing a non-Promise
-							// `commitResolution` (today it is always rocksdb-js's async Transaction.commit()
-							// result, guaranteed to be a Promise).
-							enterWriteQueue();
-							if (commitResolution && typeof (commitResolution as any).then === 'function') {
-								commitResolution.then(leaveWriteQueue, leaveWriteQueue);
-							} else {
-								leaveWriteQueue();
-							}
+							// Write-queue-depth accounting for this commit happens uniformly below, via
+							// trackOutstandingCommit(commitResolution) — see that function's comment. A
+							// transient-conflict retry rejects this promise and issues a fresh commit()
+							// (re-entering here), which trackOutstandingCommit tracks as its own attempt.
 						} else {
 							try {
 								commitResolution = transaction.abort();

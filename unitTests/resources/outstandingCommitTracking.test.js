@@ -96,7 +96,6 @@ describe('Outstanding commit tracking', () => {
 	it('tracks the second (chained) commit while it is pending, not just the first', async function () {
 		if (isLMDB) return;
 		this.timeout(15000);
-		await TrackA.put(4, { name: 'chain-a-2' });
 		let chained = false;
 		const context = {};
 		const { Transaction } = require('@harperfast/rocksdb-js');
@@ -109,9 +108,15 @@ describe('Outstanding commit tracking', () => {
 			const realCommit = originalCommit.apply(this, args);
 			return held.then(() => realCommit);
 		};
+		let done;
 		try {
-			const done = transaction(context, async () => {
-				await TrackA.get(4, context);
+			done = transaction(context, async () => {
+				// A real write on TrackA (not just a read) gives the head link its own native commit, so
+				// TrackB's commit is issued from INSIDE that commit's resolve handler — the re-entrant path
+				// this test exists to cover. A read-only head aborts synchronously with no commitResolution,
+				// so TrackB's commit would start through the ordinary top-level path instead, and this test
+				// would pass even against the old single-slot implementation.
+				await TrackA.put(4, { name: 'chain-a-2' }, context);
 				await TrackB.put(4, { name: 'chain-b-2' }, context);
 				chained = !!context.transaction?.next;
 			});
@@ -123,10 +128,12 @@ describe('Outstanding commit tracking', () => {
 			assert.ok(chained, 'the two databases should have produced a chained transaction');
 			assert.equal(outstanding.count, 1, 'the chained second-database commit should be tracked while pending');
 			assert.equal(typeof outstanding.oldestAgeMs, 'number', 'the pending chained commit should report an age');
-			releaseHold();
-			await done;
 		} finally {
+			// Always restore the prototype and release the held commit, even if an assertion above threw —
+			// otherwise `done`'s chained commit stays pending forever and poisons every later test's count.
 			Transaction.prototype.commit = originalCommit;
+			releaseHold();
+			if (done) await done.catch(() => {});
 		}
 		assert.deepEqual(getOutstandingCommits(), { count: 0, oldestAgeMs: undefined });
 		assert.equal((await TrackA.get(4))?.name, 'chain-a-2');
