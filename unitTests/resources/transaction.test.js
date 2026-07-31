@@ -708,6 +708,31 @@ describe('Transactions', () => {
 			assert.equal((await TxnTest.get(92)).name, 'first txn on shared context');
 			assert.equal((await TxnTest.get(93)).name, 'second txn on shared context');
 		});
+		// The release must not strand a later write on an uncommitted transaction. It doesn't, and the
+		// reason is worth pinning: resources/transaction.ts:35 only REUSES a context's transaction when
+		// it is still OPEN, so a retained CLOSED one was never reused for a subsequent write anyway —
+		// line 39 minted a fresh DatabaseTransaction either way. Nulling it therefore changes only what
+		// stays reachable, not how the next write is serviced: it still goes through the transaction()
+		// wrapper, which commits in onComplete (or aborts in onError) by construction.
+		it('keeps post-completion writes on a reused context durable, with nothing left staged', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(94, { name: 'inside txn' }, context);
+			});
+			assert.strictEqual(context.transaction, null);
+			// Writes made with the SAME context after its transaction completed must still commit.
+			await TxnTest.put(95, { name: 'after commit' }, context);
+			await TxnTest.get(95, context); // a read in between, which also re-enters the dispatcher
+			await TxnTest.put(96, { name: 'after commit again' }, context);
+			assert.equal((await TxnTest.get(94)).name, 'inside txn');
+			assert.equal((await TxnTest.get(95)).name, 'after commit');
+			assert.equal((await TxnTest.get(96)).name, 'after commit again');
+			assert.equal(
+				context.transaction?.writes?.length ?? 0,
+				0,
+				'no write may be left staged on an uncommitted transaction attached to the reused context'
+			);
+		});
 		// #1411: a timeout-poisoned abort must NOT release the context's back-reference. Resource.ts's
 		// dispatcher deliberately keeps joining a `timedOut` transaction (context?.transaction?.timedOut)
 		// so the rest of the logical operation fails atomically, instead of silently starting a fresh
