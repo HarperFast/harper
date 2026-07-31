@@ -68,6 +68,15 @@ const CHECK_RESET_MS = TTL_MS + 200; // 2200ms — past original expiry, before 
 // Note: the "record is GONE" check anchors on the measured update time (updateAt + TTL_MS + slack),
 // not a seed-relative constant, so it accounts for real scheduling/HTTP drift in when the update lands.
 
+// The reset-presence check's window is inherently tight (order RESET_CHECK_SAFETY_MS +
+// RESET_POLL_TIMEOUT_MS wide) because it has to fit between the original expiry and the
+// reset-expiry. On a loaded runner, server latency alone can exceed that window even when TTL
+// reset worked correctly — no per-sample budget tuning fixes that, since the window's width is
+// bounded by TTL_S, not by how the samples inside it are scheduled. Retrying the whole
+// seed→update→check scenario on INCONCLUSIVE (fresh id, fresh timing) is what actually
+// distinguishes "this window was unlucky" from "TTL reset doesn't work."
+const MAX_PROBE_ATTEMPTS = 3;
+
 // Max extra slack for expiry (one background-sweep leeway).
 const EXPIRY_POLL_MS = 5_000;
 const EXPIRY_POLL_INTERVAL_MS = 200;
@@ -351,18 +360,19 @@ suite(
 
 		// ── generic harness ───────────────────────────────────────────────────────
 
-		async function probeSurface(
+		/** One attempt at the seed→update→check scenario. Does not retry. */
+		async function probeSurfaceOnce(
 			label: string,
-			idSuffix: string,
+			id: string,
 			doUpdate: (id: string) => Promise<number | 'error'>
-		): Promise<void> {
-			const id = `qa269-${idSuffix}`;
+		): Promise<{ result: SurfaceResult; inconclusive: boolean }> {
 			const result: SurfaceResult = {
 				surface: label,
 				resetObserved: 'not-checked',
 				goneObserved: 'not-checked',
 				finding: '',
 			};
+			let inconclusive = false;
 
 			try {
 				// t=0: seed
@@ -409,6 +419,7 @@ suite(
 					// Never a clean read (200 or 404) within the window — a transport hiccup, not a
 					// TTL data signal either way. Reported distinctly so it isn't mistaken for a
 					// TTL-reset defect.
+					inconclusive = true;
 					result.finding =
 						'INCONCLUSIVE — no clean read within the reset-check window (transport issue, not a TTL defect)';
 				} else if (goneResult.inconclusive) {
@@ -417,6 +428,7 @@ suite(
 					// earlier in the window (see pollUntilGone's docblock). Without this branch a
 					// stalled/unmeasured gone-check reads as goneObserved=false and gets reported as
 					// F-002 stale resurrection.
+					inconclusive = true;
 					result.finding =
 						'INCONCLUSIVE — no clean read within the gone-check window (transport issue, not a TTL defect)';
 				} else if (result.resetObserved && result.goneObserved) {
@@ -434,9 +446,34 @@ suite(
 				await deleteRecord(id);
 			}
 
-			matrix.push(result);
+			return { result, inconclusive };
+		}
+
+		/**
+		 * Runs probeSurfaceOnce, retrying (fresh id, fresh timing) up to MAX_PROBE_ATTEMPTS times
+		 * while the result is INCONCLUSIVE. The reset-check window is inherently tight (see
+		 * MAX_PROBE_ATTEMPTS above), so a single unlucky window shouldn't fail the suite this change
+		 * exists to stabilize — but an attempt that's genuinely RESET/NO-RESET/DID-NOT-EXPIRE is
+		 * conclusive and is never retried or discarded.
+		 */
+		async function probeSurface(
+			label: string,
+			idSuffix: string,
+			doUpdate: (id: string) => Promise<number | 'error'>
+		): Promise<void> {
+			let outcome: { result: SurfaceResult; inconclusive: boolean } | undefined;
+			for (let attempt = 1; attempt <= MAX_PROBE_ATTEMPTS; attempt++) {
+				const id = attempt === 1 ? `qa269-${idSuffix}` : `qa269-${idSuffix}-r${attempt}`;
+				outcome = await probeSurfaceOnce(label, id, doUpdate);
+				if (!outcome.inconclusive) break;
+				if (attempt < MAX_PROBE_ATTEMPTS) {
+					console.log(`[QA-269:${ENGINE}] ${label}: attempt ${attempt} inconclusive, retrying`);
+				}
+			}
+
+			matrix.push(outcome!.result);
 			console.log(
-				`[QA-269:${ENGINE}] ${label}: reset=${result.resetObserved} gone=${result.goneObserved} → ${result.finding}`
+				`[QA-269:${ENGINE}] ${label}: reset=${outcome!.result.resetObserved} gone=${outcome!.result.goneObserved} → ${outcome!.result.finding}`
 			);
 		}
 
@@ -584,14 +621,19 @@ suite(
 			);
 			// At least one round should complete cleanly (basic smoke guard).
 			ok(outcomes.cleanReset + outcomes.silentLoss > 0, `No round completed cleanly — environment likely broken`);
-			// transportErr is unbounded by design (a stalled deciding sample routes here rather than
-			// a false resurrection alarm — see pollUntilGone), but if it dominates the rounds, the
-			// resurrection=== 0 assertion above is passing on data that was never actually measured.
-			// Guard against the probe going green while having measured almost nothing.
+			// Only cleanReset and resurrection rounds actually exercise the F-002 property —
+			// silentLoss and updateError both `continue` before the resurrection check ever runs.
+			// A first version of this guard capped transportErr alone, which missed that: a probe
+			// where every round lands in silentLoss (a legitimate outcome of the exact race this
+			// probe induces) would pass resurrection===0 having measured the property in zero
+			// rounds. Assert on the measured set directly instead of capping the unmeasured one.
 			ok(
-				outcomes.transportErr <= ROUNDS / 2,
-				`${outcomes.transportErr}/${ROUNDS} rounds were transport-inconclusive — the F-002 check above didn't ` +
-					`get enough conclusive rounds to be meaningful [${ENGINE}]`
+				outcomes.cleanReset + outcomes.resurrection >= ROUNDS / 2,
+				`only ${outcomes.cleanReset + outcomes.resurrection}/${ROUNDS} rounds actually measured the F-002 ` +
+					`property (cleanReset=${outcomes.cleanReset}, resurrection=${outcomes.resurrection}, ` +
+					`silentLoss=${outcomes.silentLoss}, updateError=${outcomes.updateError}, ` +
+					`transportErr=${outcomes.transportErr}) — the resurrection===0 check above isn't meaningful ` +
+					`with this little coverage [${ENGINE}]`
 			);
 		});
 	}
