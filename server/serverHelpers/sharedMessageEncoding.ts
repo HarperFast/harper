@@ -45,6 +45,11 @@ const PASS_THROUGH = function passThrough() {};
 // while sharing is only ever needed for the duration of one fan-out. Two generations are kept so a
 // fan-out spanning a rotation still hits; dropping a generation releases all of it at once.
 const ROTATE_INTERVAL_MS = 10_000;
+// Time alone bounds how LONG an entry is retained, not how MUCH: at high throughput on
+// single-subscriber topics the interval's worth of payloads would all be live at once, for no
+// benefit. The byte budget puts a ceiling on that, at the cost of a fan-out that spans an early
+// rotation falling back to re-encoding — slower, never wrong.
+const MAX_RETAINED_BYTES = 4_000_000;
 let currentGeneration = new WeakMap<object, SharedMessageEncoding>();
 let previousGeneration = new WeakMap<object, SharedMessageEncoding>();
 // Rotation runs on a timer, not on a delivery counter: the bound has to hold when traffic stops,
@@ -52,6 +57,7 @@ let previousGeneration = new WeakMap<object, SharedMessageEncoding>();
 // when the timer can stop — a WeakMap can not be asked whether it is empty.
 let rotationTimer: ReturnType<typeof setInterval> | undefined;
 let currentInserts = 0;
+let currentBytes = 0;
 
 /** Retire the older generation. Exported for the rotation timer and for tests. */
 export function rotateSharedEncodings() {
@@ -59,6 +65,7 @@ export function rotateSharedEncodings() {
 	currentGeneration = new WeakMap();
 	const rotatedInserts = currentInserts;
 	currentInserts = 0;
+	currentBytes = 0;
 	if (rotatedInserts === 0 && rotationTimer !== undefined) {
 		// nothing is retained in either generation, so stop ticking until the next insert
 		clearInterval(rotationTimer);
@@ -66,9 +73,21 @@ export function rotateSharedEncodings() {
 	}
 }
 
+/** Whether the rotation timer is currently armed. Introspection for tests. */
+export function isRotationScheduled(): boolean {
+	return rotationTimer !== undefined;
+}
+
+function retainedSize(payload: SharedMessageEncoding['payload']): number {
+	if (typeof payload === 'string') return payload.length;
+	return (payload as Buffer)?.byteLength ?? 0; // a pending promise is accounted for on resolution
+}
+
 function retain(message: object, encoding: SharedMessageEncoding) {
+	if (currentBytes >= MAX_RETAINED_BYTES) rotateSharedEncodings();
 	currentGeneration.set(message, encoding);
 	currentInserts++;
+	currentBytes += retainedSize(encoding.payload);
 	if (rotationTimer === undefined) {
 		rotationTimer = setInterval(rotateSharedEncodings, ROTATE_INTERVAL_MS);
 		rotationTimer.unref?.();
@@ -77,14 +96,22 @@ function retain(message: object, encoding: SharedMessageEncoding) {
 
 function fill(encoding: SharedMessageEncoding, message: any, request: any) {
 	encoding.frames = undefined;
-	encoding.failed = false;
+	// Pessimistic: an entry is only valid once a payload is actually in hand. Set optimistically,
+	// a synchronous throw here would leave an already-retained entry claiming success with no
+	// payload, and every later subscriber would send an empty PUBLISH instead of erroring.
+	encoding.failed = true;
+	encoding.payload = undefined;
 	const payload = serializeMessage(message, request);
 	encoding.payload = payload;
+	encoding.failed = false;
 	if ((payload as any)?.then)
 		// collapse an async serialization in place so later subscribers, and frame sharing, see the
 		// finished buffer rather than re-entering the async path
 		encoding.payload = (payload as Promise<Buffer | string>).then(
-			(resolved) => (encoding.payload = resolved),
+			(resolved) => {
+				currentBytes += retainedSize(resolved);
+				return (encoding.payload = resolved);
+			},
 			(error) => {
 				// mark for retry rather than memoize the failure: a shared rejected promise would turn
 				// one transient serialization error into a permanent one for every later subscriber
@@ -144,6 +171,27 @@ export function getSharedMessageEncoding(message: any, request?: any): SharedMes
 }
 
 /**
+ * Resolve a still-pending shared serialization, retrying once through a fresh lookup if it failed.
+ * Every subscriber currently in the fan-out awaits the same promise, so without this one transient
+ * failure would disconnect all of them, where before the encoding was shared each subscriber
+ * serialized — and so retried — on its own.
+ */
+export async function resolveSharedPayload(
+	encoding: SharedMessageEncoding,
+	message: any,
+	request: any
+): Promise<Buffer | string> {
+	try {
+		return await (encoding.payload as Promise<Buffer | string>);
+	} catch {
+		// The entry is marked for retry, or a peer in this same wave has already refilled it — either
+		// way, ask again. The first subscriber here re-encodes and the rest share that attempt; if it
+		// fails too, that rejection propagates and the caller handles it as it did before sharing.
+		return await getSharedMessageEncoding(message, request).payload;
+	}
+}
+
+/**
  * Look up a fully encoded frame shared across subscribers, or undefined if it has not been
  * generated yet. Split from `setSharedFrame` so a cache hit — the whole point on a fan-out —
  * allocates nothing, not even a generator closure.
@@ -163,5 +211,6 @@ export function setSharedFrame(encoding: SharedMessageEncoding, version: number,
 	let byTopic = frames.get(version);
 	if (byTopic === undefined) frames.set(version, (byTopic = new Map()));
 	byTopic.set(topic, frame);
+	currentBytes += frame.byteLength;
 	return frame;
 }

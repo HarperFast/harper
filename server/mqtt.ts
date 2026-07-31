@@ -4,7 +4,12 @@ import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.ts';
 import { getSuperUser } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
-import { getSharedMessageEncoding, getSharedFrame, setSharedFrame } from './serverHelpers/sharedMessageEncoding.ts';
+import {
+	getSharedMessageEncoding,
+	getSharedFrame,
+	setSharedFrame,
+	resolveSharedPayload,
+} from './serverHelpers/sharedMessageEncoding.ts';
 import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write.ts';
 import { server } from '../server/Server.ts';
 import { get } from '../utility/environment/environmentManager.ts';
@@ -337,7 +342,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							// only pay for a microtask when the serialization is genuinely still pending
 							const payload =
 								typeof (encoded as any)?.then === 'function'
-									? await (encoded as Promise<Buffer | string>)
+									? await resolveSharedPayload(encoding, message, request)
 									: (encoded as Buffer | string);
 							if (qos > 0) {
 								// mqtt-packet requires a numeric message identifier once qos is non-zero

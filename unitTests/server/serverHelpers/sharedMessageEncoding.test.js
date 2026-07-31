@@ -14,6 +14,8 @@ const {
 	getSharedFrame,
 	setSharedFrame,
 	rotateSharedEncodings,
+	isRotationScheduled,
+	resolveSharedPayload,
 } = require('#src/server/serverHelpers/sharedMessageEncoding');
 
 /** Mirrors the QoS 0 lookup-then-generate in server/mqtt.ts's outbound listener. */
@@ -238,6 +240,55 @@ describe('sharedMessageEncoding – a failed serialization is retried, not memoi
 		assert.strictEqual(recovered.payload.toString(), 'recovered:{"id":12}');
 		assert.strictEqual(attempts, 2);
 	});
+
+	it('lets a whole fan-out recover from one shared failure rather than all failing together', async function () {
+		let failNext = true;
+		contentTypes.set(FAILING_TYPE, {
+			serialize(message) {
+				if (failNext) {
+					failNext = false; // transient: the retry succeeds
+					asyncSerialization(Promise.reject(new Error('transient serialization failure')));
+					return undefined;
+				}
+				return Buffer.from('recovered:' + JSON.stringify(message));
+			},
+			q: 1,
+		});
+		const message = { id: 13 };
+		const request = subscriberRequest(FAILING_TYPE);
+
+		// the whole wave is already awaiting the one shared promise when it rejects
+		const encoding = getSharedMessageEncoding(message, request);
+		const wave = [
+			resolveSharedPayload(encoding, message, request),
+			resolveSharedPayload(encoding, message, request),
+			resolveSharedPayload(encoding, message, request),
+		];
+
+		const payloads = await Promise.all(wave);
+		for (const payload of payloads) {
+			assert.strictEqual(payload.toString(), 'recovered:{"id":13}', 'every subscriber must recover');
+		}
+	});
+
+	it('propagates a failure that a retry cannot fix', async function () {
+		contentTypes.set(FAILING_TYPE, {
+			serialize() {
+				asyncSerialization(Promise.reject(new Error('persistent serialization failure')));
+				return undefined;
+			},
+			q: 1,
+		});
+		const message = { id: 14 };
+		const request = subscriberRequest(FAILING_TYPE);
+
+		const encoding = getSharedMessageEncoding(message, request);
+		await assert.rejects(
+			resolveSharedPayload(encoding, message, request),
+			/persistent serialization failure/,
+			'a retry that fails again must surface, not hang or deliver empty bytes'
+		);
+	});
 });
 
 describe('sharedMessageEncoding – retention is bounded by rotation', function () {
@@ -283,6 +334,27 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 
 		assert.strictEqual(getSharedMessageEncoding('primitive', request).hits, 0);
 		assert.strictEqual(getSharedMessageEncoding('primitive', request).hits, 0);
+	});
+
+	it('arms the rotation timer on the first retained entry, and stops it once nothing is retained', function () {
+		// drain whatever earlier tests retained so this starts from a known state
+		rotateSharedEncodings();
+		rotateSharedEncodings();
+		assert.strictEqual(isRotationScheduled(), false, 'an idle broker must not keep a timer armed');
+
+		getSharedMessageEncoding({ id: 23 }, subscriberRequest(COUNTED_TYPE));
+		assert.strictEqual(isRotationScheduled(), true, 'retaining an entry must arm rotation');
+
+		// the first rotation still has the entry to release, so the timer keeps running
+		rotateSharedEncodings();
+		assert.strictEqual(isRotationScheduled(), true);
+		// the second finds nothing was retained since, so it stops
+		rotateSharedEncodings();
+		assert.strictEqual(isRotationScheduled(), false, 'rotation must stop when there is nothing left to release');
+
+		// and re-arms rather than leaving retention unbounded after a quiet period
+		getSharedMessageEncoding({ id: 24 }, subscriberRequest(COUNTED_TYPE));
+		assert.strictEqual(isRotationScheduled(), true, 'rotation must re-arm after stopping');
 	});
 
 	it('does not treat a serializer that legitimately returns undefined as a failure', function () {
