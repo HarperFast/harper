@@ -143,8 +143,15 @@ export class Resources extends Map<string, ResourceEntry> {
 		const existingEntry = super.get(path);
 		if (
 			existingEntry &&
+			existingEntry.Resource !== resource &&
 			(existingEntry.Resource.databaseName !== resource.databaseName ||
-				existingEntry.Resource.tableName !== resource.tableName) &&
+				existingEntry.Resource.tableName !== resource.tableName ||
+				// Reserved paths (e.g. the /v1 gateway's fixed routes): two non-table Resources
+				// both have undefined databaseName/tableName, so without this a later app
+				// registration would silently replace the reserved entry — and its auth gate —
+				// with no startup error. The identity check above keeps same-class
+				// re-registration idempotent.
+				existingEntry.Resource.reservedPath === true) &&
 			!force
 		) {
 			// there was a conflict in endpoint paths. We don't want this to be ignored, so we log it

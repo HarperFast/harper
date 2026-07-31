@@ -138,3 +138,65 @@ suite('control: the same table IS reachable once REST is configured', (ctx: Cont
 		assert.equal(status, 200, 'if this stops returning 200 the regression guard above has gone vacuous');
 	});
 });
+
+/**
+ * Route reservation (#1616 review): the gateway's fixed routes are non-table
+ * Resources, and `Resources.set` compares databaseName/tableName (both undefined)
+ * for conflict identity — so before `reservedPath`, an app registering its own
+ * Resource at `v1/models` silently replaced the gateway endpoint and its
+ * super_user gate, with no startup error. Now it must be a loud conflict: the
+ * path serves an ErrorResource (500), never the app's payload, and the rest of
+ * the gateway keeps working.
+ */
+suite('an app claiming a reserved /v1 route is a loud conflict, not a silent takeover', (ctx: ContextWithHarper) => {
+	before(async () => {
+		await setupHarperWithFixture(ctx, resolvePath(__dirname, 'v1-gateway-collision-app'), {
+			config: {
+				rest: { webSocket: true },
+				modelsGateway: { enabled: true },
+				models: {
+					generative: { default: { backend: ECHO_BACKEND_PATH } },
+					embedding: { default: { backend: ECHO_BACKEND_PATH } },
+				},
+			},
+			env: {},
+		});
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('the contested path never serves the imposter payload', async () => {
+		const res = await fetch(`${ctx.harper.httpURL}/v1/models`, {
+			headers: { Authorization: authHeader(ctx) },
+			signal: AbortSignal.timeout(5_000),
+		});
+		const text = await res.text();
+		assert.ok(
+			!text.includes('imposter'),
+			`app resource must not take over a reserved route, got: ${text.slice(0, 200)}`
+		);
+		// Loud conflict: the reserved path serves the conflict ErrorResource (500),
+		// which is the same behavior table-path conflicts have always had.
+		assert.equal(res.status, 500, `expected the conflict ErrorResource, got ${res.status}: ${text.slice(0, 200)}`);
+	});
+
+	test('the rest of the gateway still serves (conflict is contained to the contested path)', async () => {
+		const res = await fetch(`${ctx.harper.httpURL}/v1/embeddings`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': authHeader(ctx) },
+			body: JSON.stringify({ model: 'default', input: 'hello' }),
+			signal: AbortSignal.timeout(5_000),
+		});
+		assert.equal(res.status, 200, 'uncontested gateway routes must be unaffected');
+	});
+
+	test('the app itself still loads and serves its legitimately-named resource', async () => {
+		const res = await fetch(`${ctx.harper.httpURL}/Legit/`, {
+			headers: { Authorization: authHeader(ctx) },
+			signal: AbortSignal.timeout(5_000),
+		});
+		assert.equal(res.status, 200, 'the collision must not break the rest of the app');
+	});
+});

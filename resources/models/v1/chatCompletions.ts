@@ -32,6 +32,11 @@ const sseHandler = contentTypes.get('text/event-stream') as SseHandler;
 
 // @ts-ignore — Resource base class is not typed for static dispatch; pattern mirrors login.ts
 export class V1ChatCompletions extends Resource {
+	// Reserve this fixed route: a later app registration at the same path becomes a
+	// loud conflict (ErrorResource) instead of silently replacing the gateway and its
+	// super_user gate. See Resources.set.
+	static reservedPath = true;
+
 	static async post(_target: unknown, body: unknown, request: unknown) {
 		const authError = authorizeV1Request(request as any);
 		if (authError) return authError;
