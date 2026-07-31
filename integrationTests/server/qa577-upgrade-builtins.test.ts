@@ -276,9 +276,12 @@ suite('QA-577: fresh-install control (built-in key already present)', { skip }, 
 		ok(Object.prototype.hasOwnProperty.call(doc, BACKFILL_KEY));
 		strictEqual(countTopLevelKey(raw, BACKFILL_KEY), 1, 'must not duplicate the key');
 		const bootLog = readBootLog(ctx.harper);
-		// Positive control (as qa702 does): prove hdb.log actually captured real boot content at
-		// 'info' level before trusting its ABSENCE below — otherwise a missing/misrouted log file
-		// would make the negative assertion pass vacuously regardless of what the backfill did.
+		// Positive control (as qa702 does): prove hdb.log actually captured real boot content
+		// before trusting its ABSENCE below — otherwise a missing/misrouted log file would make
+		// the negative assertion pass vacuously regardless of what the backfill did. The explicit
+		// `logging.level: 'info'` above isn't what makes content appear here (the integration
+		// harness already forces `--LOGGING_LEVEL=debug`, which is a superset); it's pinned so
+		// this suite doesn't depend on that harness default remaining as verbose as it is today.
 		ok(
 			bootLog.length > 0,
 			`positive control: expected hdb.log to have real boot content at ${bootLogPath(ctx.harper)} -- ` +
@@ -318,9 +321,12 @@ suite('QA-577: OSS-core control (no HARPER_BUILTIN_COMPONENTS registered)', { sk
 			`OSS core with no built-ins registered must not get ${BACKFILL_KEY} backfilled; config keys were: ${Object.keys(doc)}`
 		);
 		const bootLog = readBootLog(ctx.harper);
-		// Positive control (as qa702 does): prove hdb.log actually captured real boot content at
-		// 'info' level before trusting its ABSENCE below — otherwise an empty/missing hdb.log
-		// (path drift, log never created) would make the negative assertion pass vacuously.
+		// Positive control (as qa702 does): prove hdb.log actually captured real boot content
+		// before trusting its ABSENCE below — otherwise an empty/missing hdb.log (path drift,
+		// log never created) would make the negative assertion pass vacuously. The explicit
+		// `logging.level: 'info'` above isn't what makes content appear here (the integration
+		// harness already forces `--LOGGING_LEVEL=debug`, which is a superset); it's pinned so
+		// this suite doesn't depend on that harness default remaining as verbose as it is today.
 		ok(
 			bootLog.length > 0,
 			`positive control: expected hdb.log to have real boot content at ${bootLogPath(ctx.harper)} -- ` +
