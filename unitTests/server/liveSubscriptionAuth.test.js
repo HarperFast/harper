@@ -5,19 +5,24 @@ testUtils.preTestPrep();
 
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
-const sinon = require('sinon');
 
-const {
-	registerLiveSubscription,
-	_liveSubscriptionCount,
-	_sweepNow,
-} = require('#src/server/liveSubscriptionAuth');
+const { registerLiveSubscription, _liveSubscriptionCount, _sweepNow } = require('#src/server/liveSubscriptionAuth');
+
+// A bare call-recording function: `.calls` is the arg list of each invocation, in order.
+function spyFn(impl) {
+	function spy(...args) {
+		spy.calls.push(args);
+		return impl ? impl(...args) : undefined;
+	}
+	spy.calls = [];
+	return spy;
+}
 
 // A minimal stand-in for the SSE/WS/MQTT subscription object: an EventEmitter (for the 'close'
 // self-wiring path) with an end() the registry can wrap.
 function fakeSubscription() {
 	const subscription = new EventEmitter();
-	subscription.end = sinon.stub();
+	subscription.end = spyFn();
 	return subscription;
 }
 
@@ -53,12 +58,12 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			await _sweepNow();
 
-			assert.strictEqual(originalEnd.callCount, 1);
+			assert.strictEqual(originalEnd.calls.length, 1);
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
 		it('falls back to close() when end() is absent', async () => {
-			const subscription = { close: sinon.stub() };
+			const subscription = { close: spyFn() };
 			register({
 				subscription,
 				username: 'bob',
@@ -69,13 +74,18 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			await _sweepNow();
 
-			assert.strictEqual(subscription.close.callCount, 1);
+			assert.strictEqual(subscription.close.calls.length, 1);
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
 		it("falls back to emit('close') when end() and close() are both absent", async () => {
 			const subscription = new EventEmitter();
-			const emitSpy = sinon.spy(subscription, 'emit');
+			const originalEmit = subscription.emit.bind(subscription);
+			const emitCalls = [];
+			subscription.emit = (...args) => {
+				emitCalls.push(args);
+				return originalEmit(...args);
+			};
 			register({
 				subscription,
 				username: 'carol',
@@ -86,7 +96,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			await _sweepNow();
 
-			assert.ok(emitSpy.calledWith('close'));
+			assert.ok(emitCalls.some((args) => args[0] === 'close'));
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
@@ -108,8 +118,8 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			subscription.end('arg');
 
-			assert.strictEqual(originalEnd.callCount, 1);
-			assert.deepStrictEqual(originalEnd.firstCall.args, ['arg']);
+			assert.strictEqual(originalEnd.calls.length, 1);
+			assert.deepStrictEqual(originalEnd.calls[0], ['arg']);
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 			handles.pop(); // already unregistered by end()
 		});
@@ -118,7 +128,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 	describe('revoke supplied (new seam)', () => {
 		it('uses revoke as terminate instead of end()/close()/emit', async () => {
 			const subscription = fakeSubscription();
-			const revoke = sinon.stub();
+			const revoke = spyFn();
 			register({
 				subscription,
 				username: 'frank',
@@ -130,8 +140,8 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			await _sweepNow();
 
-			assert.strictEqual(revoke.callCount, 1);
-			assert.strictEqual(subscription.end.callCount, 0, 'revoke must be used instead of end()');
+			assert.strictEqual(revoke.calls.length, 1);
+			assert.strictEqual(subscription.end.calls.length, 0, 'revoke must be used instead of end()');
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
@@ -140,20 +150,16 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			const originalEnd = subscription.end;
 			const listenersBefore = subscription.listenerCount('close');
 
-			register({ subscription, username: 'grace', recheck: async () => true, revoke: sinon.stub() });
+			register({ subscription, username: 'grace', recheck: async () => true, revoke: spyFn() });
 
 			assert.strictEqual(subscription.end, originalEnd, 'subscription.end must not be replaced');
-			assert.strictEqual(
-				subscription.listenerCount('close'),
-				listenersBefore,
-				"no 'close' listener should be added"
-			);
+			assert.strictEqual(subscription.listenerCount('close'), listenersBefore, "no 'close' listener should be added");
 		});
 
 		it('returns an unregister handle that removes only its own entry', () => {
 			const subscription = fakeSubscription();
-			const a = register({ subscription, username: 'a', recheck: async () => true, revoke: sinon.stub() });
-			register({ subscription, username: 'b', recheck: async () => true, revoke: sinon.stub() });
+			const a = register({ subscription, username: 'a', recheck: async () => true, revoke: spyFn() });
+			register({ subscription, username: 'b', recheck: async () => true, revoke: spyFn() });
 			assert.strictEqual(_liveSubscriptionCount(), 2);
 
 			a.unregister();
@@ -164,10 +170,15 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 		it('revoking one of N entries sharing one subscription object invokes only that revoke, leaves the rest registered, and never touches the shared subscription', async () => {
 			const subscription = fakeSubscription();
-			const emitSpy = sinon.spy(subscription, 'emit');
-			const revokeA = sinon.stub();
-			const revokeB = sinon.stub();
-			const revokeC = sinon.stub();
+			const originalEmit = subscription.emit.bind(subscription);
+			const emitCalls = [];
+			subscription.emit = (...args) => {
+				emitCalls.push(args);
+				return originalEmit(...args);
+			};
+			const revokeA = spyFn();
+			const revokeB = spyFn();
+			const revokeC = spyFn();
 			register({ subscription, username: 'a', authExpiresAt: 0, recheck: async () => true, revoke: revokeA });
 			register({ subscription, username: 'b', recheck: async () => true, revoke: revokeB });
 			register({ subscription, username: 'c', recheck: async () => true, revoke: revokeC });
@@ -175,19 +186,19 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			await _sweepNow();
 
-			assert.strictEqual(revokeA.callCount, 1, 'the expired subscriber should be revoked');
-			assert.strictEqual(revokeB.callCount, 0, 'other subscribers must not be revoked');
-			assert.strictEqual(revokeC.callCount, 0, 'other subscribers must not be revoked');
+			assert.strictEqual(revokeA.calls.length, 1, 'the expired subscriber should be revoked');
+			assert.strictEqual(revokeB.calls.length, 0, 'other subscribers must not be revoked');
+			assert.strictEqual(revokeC.calls.length, 0, 'other subscribers must not be revoked');
 			assert.strictEqual(_liveSubscriptionCount(), 2, 'the other two entries must remain registered');
-			assert.strictEqual(subscription.end.callCount, 0, 'the shared subscription must not be ended');
-			assert.strictEqual(emitSpy.called, false, 'the shared subscription must not be closed');
+			assert.strictEqual(subscription.end.calls.length, 0, 'the shared subscription must not be ended');
+			assert.strictEqual(emitCalls.length, 0, 'the shared subscription must not be closed');
 		});
 
 		it('a throwing recheck among several sharing one subscription revokes only that entry (fail-closed)', async () => {
 			const subscription = fakeSubscription();
-			const revokeThrows = sinon.stub();
-			const revokeOkA = sinon.stub();
-			const revokeOkB = sinon.stub();
+			const revokeThrows = spyFn();
+			const revokeOkA = spyFn();
+			const revokeOkB = spyFn();
 			register({
 				subscription,
 				username: 'throws',
@@ -202,24 +213,79 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			await _sweepNow();
 
-			assert.strictEqual(revokeThrows.callCount, 1);
-			assert.strictEqual(revokeOkA.callCount, 0);
-			assert.strictEqual(revokeOkB.callCount, 0);
+			assert.strictEqual(revokeThrows.calls.length, 1);
+			assert.strictEqual(revokeOkA.calls.length, 0);
+			assert.strictEqual(revokeOkB.calls.length, 0);
 			assert.strictEqual(_liveSubscriptionCount(), 2);
-			assert.strictEqual(subscription.end.callCount, 0);
+			assert.strictEqual(subscription.end.calls.length, 0);
 		});
 
 		it('revokes on token expiry without consulting recheck', async () => {
 			const subscription = fakeSubscription();
-			const revoke = sinon.stub();
-			const recheck = sinon.stub().rejects(new Error('recheck must not be called for an expired token'));
+			const revoke = spyFn();
+			const recheck = spyFn(() => Promise.reject(new Error('recheck must not be called for an expired token')));
 			register({ subscription, username: 'expired', authExpiresAt: 0, recheck, revoke });
 			handles.pop();
 
 			await _sweepNow();
 
-			assert.strictEqual(recheck.callCount, 0);
-			assert.strictEqual(revoke.callCount, 1);
+			assert.strictEqual(recheck.calls.length, 0);
+			assert.strictEqual(revoke.calls.length, 1);
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('a throwing revoke is invoked exactly once, and its entry is still removed exactly once (no double-terminate)', async () => {
+			const subscription = fakeSubscription();
+			let throwingCalls = 0;
+			const revokeThrows = () => {
+				throwingCalls++;
+				throw new Error('revoke failed mid-teardown (e.g. a shared-feed refcount decrement)');
+			};
+			const revokeOther = spyFn();
+			register({
+				subscription,
+				username: 'throws-on-revoke',
+				authExpiresAt: 0,
+				recheck: async () => true,
+				revoke: revokeThrows,
+			});
+			register({ subscription, username: 'other', recheck: async () => true, revoke: revokeOther });
+			assert.strictEqual(_liveSubscriptionCount(), 2);
+
+			await _sweepNow();
+
+			assert.strictEqual(throwingCalls, 1, 'a throwing revoke must not be invoked a second time');
+			assert.strictEqual(revokeOther.calls.length, 0, 'other subscribers sharing the object must not be revoked');
+			assert.strictEqual(_liveSubscriptionCount(), 1, 'the throwing entry must still be removed exactly once');
+		});
+
+		it('does not terminate an entry the caller already unregistered while its recheck was still in flight', async () => {
+			const subscription = fakeSubscription();
+			const revoke = spyFn();
+			let releaseRecheck;
+			const recheckGate = new Promise((resolveGate) => {
+				releaseRecheck = resolveGate;
+			});
+			const handle = register({
+				subscription,
+				username: 'racer',
+				recheck: async () => {
+					await recheckGate;
+					return false; // resolves "no longer authorized" only after the caller has already torn down
+				},
+				revoke,
+			});
+			handles.pop(); // this test manages the handle itself
+
+			const sweepPromise = _sweepNow();
+			await new Promise((resolveTick) => setImmediate(resolveTick)); // let sweep reach the awaited recheck
+			handle.unregister(); // the caller (e.g. a client disconnect) tears down mid-recheck
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+
+			releaseRecheck();
+			await sweepPromise;
+
+			assert.strictEqual(revoke.calls.length, 0, 'revoke must not fire for an entry the caller already unregistered');
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 	});

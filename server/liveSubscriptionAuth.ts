@@ -32,6 +32,8 @@ let sweepTimer: any = null;
 let itcListenerInstalled = false;
 let sweeping = false;
 
+const NOOP_HANDLE = { unregister: () => {} };
+
 function ensureStarted(): void {
 	if (!sweepTimer) {
 		sweepTimer = setInterval(() => void sweep(), RECHECK_INTERVAL_MS);
@@ -81,8 +83,7 @@ export function registerLiveSubscription(opts: {
 	revoke?: () => void;
 }): { unregister: () => void } {
 	const { subscription, username, authExpiresAt, recheck, revoke } = opts;
-	const noop = { unregister: () => {} };
-	if (!subscription || typeof subscription !== 'object' || subscription.closed) return noop;
+	if (!subscription || typeof subscription !== 'object' || subscription.closed) return NOOP_HANDLE;
 
 	const entry: LiveSubscription = {
 		username,
@@ -128,6 +129,23 @@ export function registerLiveSubscription(opts: {
 	return { unregister };
 }
 
+/**
+ * Delete `entry` and run its terminate/revoke, but only if this call is the one that actually
+ * removes it from the registry. `Set.delete`'s boolean return is a lock-free claim token: it's
+ * false if the entry was already removed — by a caller's `unregister()` racing an in-flight
+ * `recheck()`, or by another sweep path — so terminate/revoke runs at most once per entry, and
+ * never for one the caller has already torn down itself.
+ */
+function claimAndTerminate(entry: LiveSubscription): boolean {
+	if (!registry.delete(entry)) return false;
+	try {
+		entry.terminate();
+	} catch (error) {
+		hdbLogger.warn?.(`liveSubscriptionAuth: terminate failed for ${entry.username}: ${(error as Error).message}`);
+	}
+	return true;
+}
+
 async function sweep(): Promise<void> {
 	if (sweeping) return; // a slow recheck must not overlap with the next tick/event
 	sweeping = true;
@@ -137,22 +155,14 @@ async function sweep(): Promise<void> {
 			try {
 				const expired = entry.authExpiresAt != null && now >= entry.authExpiresAt * 1000;
 				const stillAuthorized = expired ? false : await entry.recheck();
-				const revoke = expired || !stillAuthorized;
-				if (revoke) {
-					registry.delete(entry);
-					entry.terminate();
-				}
+				if (expired || !stillAuthorized) claimAndTerminate(entry);
 			} catch (error) {
 				// fail closed: if authorization can't be confirmed, revoke
-				registry.delete(entry);
-				try {
-					entry.terminate();
-				} catch {
-					/* ignore */
+				if (claimAndTerminate(entry)) {
+					hdbLogger.warn?.(
+						`liveSubscriptionAuth: revoked subscription for ${entry.username} after recheck error: ${(error as Error).message}`
+					);
 				}
-				hdbLogger.warn?.(
-					`liveSubscriptionAuth: revoked subscription for ${entry.username} after recheck error: ${(error as Error).message}`
-				);
 			}
 		}
 	} finally {
