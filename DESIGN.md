@@ -625,6 +625,7 @@ runs pre-handshake there (auth is unaffected — it runs in the WS connection ch
 matching Node's upgrade-then-authorize order). No core component registers custom upgrade
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
+
 ## Deploy watcher generations preserve logical entry events
 
 Component deploys pause each scope's `EntryHandler` while the component directory is replaced. A
@@ -647,6 +648,40 @@ snapshot and therefore retains its cold-load `add` behavior; deploy resume, conf
 and polling recovery compare against the last completed generation. This keeps file identity intact
 when watcher recovery could otherwise replay stale modules as new and ensures an update racing a
 deploy scan cannot discard its removals. New component deploys still use `Application#isNewComponent`
-to mark a restart as required for #674; package metadata changes outside consumer globs are tracked by
-the deploy operation, and other existing-component redeploys request a restart only when their logical
-entry or configuration changes require one.
+to mark a restart as required for #674; other existing-component redeploys request a restart only when
+their logical entry, loaded runtime, or configuration changes require one.
+
+## Restart-free deploys require proof of runtime equivalence
+
+`EntryHandler` intentionally observes only the files a component declares in its `files` option. It
+cannot prove that the JavaScript runtime is unchanged: a watched `resources.js` can import an
+unwatched `lib/db.js`, and installed dependencies live under the watcher's ignored `node_modules`
+tree. Conversely, hashing the entire extracted tree treats unused source and generated caches as
+runtime changes and collapses restart-free deploys back into unconditional restarts.
+
+Runtime equivalence is therefore layered. A deploy can remain restart-free only when all three
+layers it uses are proven equivalent:
+
+- `EntryHandler` compares consumer-visible watched entries.
+- `ApplicationScope` records the file URL and load-time digest of every application-local module
+  that Harper's VM or compartment loader reads, together with the local resolution candidates for
+  extensionless relative imports. After a deploy, those exact logical paths and resolution inputs
+  are compared with the installed replacement tree; adding a higher-priority `foo.js` ahead of a
+  previously resolved `foo.json` is therefore a runtime change even when `foo.json` itself is
+  byte-identical.
+- The deploy pipeline compares dependency metadata at the same preparation stage: the previous
+  installed tree before extraction versus the replacement tree after installation.
+
+Loader or installer paths that Harper cannot observe are conservative. Full native module loading,
+custom install commands, enabled install scripts, and installs without deterministic lock evidence
+mark the runtime opaque; an existing component using an opaque path requires a restart on redeploy.
+Npm dependencies delegated from the default VM loader to Node's native loader are instead covered
+by the installed package/lock comparison—otherwise the default `dependencyLoader: auto` mode would
+make nearly every application opaque. `package.json` is compared as parsed JSON so formatting and
+key order are irrelevant, while lockfiles remain exact installed-tree evidence. A module first
+loaded while a deploy is in flight also invalidates the old runtime rather than letting a mixed
+generation appear equivalent. This is deliberately proof-oriented: an unused new local file need
+not restart a fully observed runtime, but a changed or missing imported helper, changed resolution
+input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
+remain consumer-directed: the static plugin applies asset changes incrementally, while executable
+consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.

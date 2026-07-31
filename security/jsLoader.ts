@@ -105,6 +105,7 @@ async function importScoped(moduleUrl: string, scope?: ApplicationScope) {
 				return await loadModuleWithVM(moduleUrl, scope, true);
 			}
 		}
+		if (scope) scope.markNativeRuntime?.();
 		// important! we need to await the import, otherwise the error will not be caught
 		return await import(moduleUrl);
 	} catch (err) {
@@ -286,7 +287,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		try {
 			const resolved = createRequire(resolveReferrer).resolve(specifier);
 			if (isAbsolute(resolved)) {
-				return pathToFileURL(resolved).toString();
+				const resolvedUrl = pathToFileURL(resolved).toString();
+				scope.recordModuleResolution?.(specifier, referrer, resolvedUrl);
+				return resolvedUrl;
 			}
 			return resolved;
 		} catch (err) {
@@ -298,7 +301,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 					? dirname(fileURLToPath(resolveReferrer))
 					: dirname(resolveReferrer);
 				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
-				if (esmResolved) return esmResolved;
+				if (esmResolved) {
+					scope.recordModuleResolution?.(specifier, referrer, esmResolved);
+					return esmResolved;
+				}
 			}
 			throw err;
 		}
@@ -337,6 +343,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			}
 			if (resolvedUrl.startsWith('file://')) {
 				const source = readFileSync(new URL(resolvedUrl), { encoding: 'utf-8' });
+				scope.recordLoadedModule?.(resolvedUrl, source);
 				return loadCJS(resolvedUrl, source).exports;
 			}
 			return require(resolvedUrl);
@@ -639,6 +646,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		if (url.startsWith('file://') && usePrivateGlobal) {
 			checkAllowedModulePath(url, scope.allowedPath);
 			const source = readFileSync(new URL(url), { encoding: 'utf-8' });
+			scope.recordLoadedModule?.(url, source);
 			return createModuleFromSource(url, source, usePrivateGlobal);
 		}
 
@@ -679,6 +687,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 				const resolved = createRequire(moduleReferrer).resolve(moduleSpecifier);
 				if (isAbsolute(resolved)) {
 					const resolvedURL = pathToFileURL(resolved).toString();
+					scope.recordModuleResolution?.(moduleSpecifier, moduleReferrer, resolvedURL);
 					return resolvedURL;
 				}
 				return moduleSpecifier;
@@ -695,6 +704,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 					};
 				} else if (moduleSpecifier.startsWith('file:') && !moduleSpecifier.includes('node_modules')) {
 					let moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
+					scope.recordLoadedModule?.(moduleSpecifier, moduleText);
 					// Handle JSON files in compartment mode the same way as in VM mode
 					if (moduleSpecifier.endsWith('.json')) {
 						const jsonData = parseJsonModule(moduleText, moduleSpecifier);

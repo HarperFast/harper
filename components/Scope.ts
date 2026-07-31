@@ -307,6 +307,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#onDeployStart(componentName: string): void {
 		this.#deployInFlight = true;
 		this.#restartRequestedDuringDeploy = false;
+		this.applicationScope?.beginDeploy();
 		// Pause each EntryHandler so it stops emitting events for the
 		// intermediate filesystem state the deploy is writing, and so it
 		// releases its inotify handles while npm install is unpacking
@@ -337,6 +338,15 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			void entryHandler.resume().catch(() => {});
 		}
 		if (restartRequestedDuringDeploy) this.requestRestart();
+		void this.applicationScope
+			?.finishDeploy()
+			.then((runtimeChanged) => {
+				if (runtimeChanged) this.requestRestart();
+			})
+			.catch((error) => {
+				this.#logger.error?.(`Could not verify the loaded runtime after deploying ${this.#appName}:`, error);
+				this.requestRestart();
+			});
 
 		this.#safeEmit('deploy:end', componentName);
 	}

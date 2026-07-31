@@ -146,7 +146,40 @@ export function handleApplication(scope: Scope) {
 	// in-memory map of static files
 	// keys are the URL paths relative to the mount base, values are the absolute paths to the files
 	const staticFiles = new Map<string, string>();
-	const indexEntries = new Map<string, string>();
+	const indexEntries = new Map<string, string | null>();
+	const staticFileOwners = new Map<string, Map<string, string>>();
+	const indexEntryOwners = new Map<string, Map<string, string | null>>();
+
+	function setOwnedPath<Path>(
+		paths: Map<string, Path>,
+		ownersByURL: Map<string, Map<string, Path>>,
+		urlPath: string,
+		owner: string,
+		path: Path
+	) {
+		let owners = ownersByURL.get(urlPath);
+		if (!owners) ownersByURL.set(urlPath, (owners = new Map()));
+		owners.delete(owner);
+		owners.set(owner, path);
+		paths.set(urlPath, path);
+	}
+
+	function removeOwnedPath<Path>(
+		paths: Map<string, Path>,
+		ownersByURL: Map<string, Map<string, Path>>,
+		urlPath: string,
+		owner: string
+	) {
+		const owners = ownersByURL.get(urlPath);
+		if (!owners?.delete(owner)) return;
+		const replacement = [...owners.values()].at(-1);
+		if (replacement === undefined) {
+			ownersByURL.delete(urlPath);
+			paths.delete(urlPath);
+		} else {
+			paths.set(urlPath, replacement);
+		}
+	}
 
 	// The HTTP route below is registered once, with the urlPath in effect at load time; the mount
 	// cannot be re-registered at runtime. Capture the matching base once so map keys always agree
@@ -223,38 +256,37 @@ export function handleApplication(scope: Scope) {
 			case 'addDir':
 				// Handle `index.html` for directories for if/when the user enables the `index` option
 				const indexPath = join(entry.absolutePath, 'index.html');
-				if (existsSync(indexPath)) indexEntries.set(urlPath, indexPath);
+				if (existsSync(indexPath)) setOwnedPath(indexEntries, indexEntryOwners, urlPath, entry.absolutePath, indexPath);
 				break;
 			case 'unlinkDir':
-				// A config update can add a new absolute directory at this same URL before the old
-				// directory's synthesized unlink arrives. Remove only the identity being unlinked.
-				const removedIndexPath = join(entry.absolutePath, 'index.html');
-				if (indexEntries.get(urlPath) === removedIndexPath) indexEntries.delete(urlPath);
+				removeOwnedPath(indexEntries, indexEntryOwners, urlPath, entry.absolutePath);
 				break;
 			// Otherwise, user must specify pattern to match individual files
 			case 'add':
 				// Store the file in memory for serving
-				staticFiles.set(urlPath, entry.absolutePath);
+				setOwnedPath(staticFiles, staticFileOwners, urlPath, entry.absolutePath, entry.absolutePath);
 				// If the file is an index.html, also store it in the index entries
 				if (urlPath.endsWith('index.html')) {
 					// Without trailing slash; null -> 301 redirect to trailing slash
 					let lastSlashIndex = urlPath.lastIndexOf('/');
-					indexEntries.set(urlPath.slice(0, lastSlashIndex), null);
+					setOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex), entry.absolutePath, null);
 					// With trailing slash; serves the index.html file
-					indexEntries.set(urlPath.slice(0, lastSlashIndex + 1), entry.absolutePath);
+					setOwnedPath(
+						indexEntries,
+						indexEntryOwners,
+						urlPath.slice(0, lastSlashIndex + 1),
+						entry.absolutePath,
+						entry.absolutePath
+					);
 				}
 				break;
 			case 'unlink':
-				// Additions are emitted while scanning, before removals synthesized at ready. When a files
-				// update re-roots two absolute files to the same URL, do not let the old unlink delete the
-				// replacement that was just added.
-				if (staticFiles.get(urlPath) !== entry.absolutePath) break;
-				staticFiles.delete(urlPath);
+				removeOwnedPath(staticFiles, staticFileOwners, urlPath, entry.absolutePath);
 				// If the file is an index.html, remove it from the index entries as well
 				if (urlPath.endsWith('index.html')) {
 					let lastSlashIndex = urlPath.lastIndexOf('/');
-					indexEntries.delete(urlPath.slice(0, lastSlashIndex));
-					indexEntries.delete(urlPath.slice(0, lastSlashIndex + 1));
+					removeOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex), entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex + 1), entry.absolutePath);
 				}
 				break;
 		}

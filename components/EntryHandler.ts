@@ -2,7 +2,7 @@ import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
-import { EventEmitter, once } from 'node:events';
+import { EventEmitter } from 'node:events';
 import { Component, FileAndURLPathConfig } from './Component.ts';
 import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
 import { join } from 'node:path';
@@ -83,6 +83,8 @@ type RedeployScan = {
 	previousEntries: Map<string, EntrySnapshot>;
 	currentEntries: Map<string, EntrySnapshot>;
 	removalsEmitted: Set<string>;
+	readFailures: Set<string>;
+	readErrors: unknown[];
 };
 
 export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
@@ -130,10 +132,39 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		this.#pendingFileReads = new Set();
 		this.#pendingFileReadsByGeneration = new Map();
 		this.#isInitialScanComplete = false;
-		this.ready = once(this, 'ready');
+		this.ready = this.#createReadyLatch();
 		// Fire-and-forget: the returned readiness latch rejects if the first generation emits
 		// `error` before `ready`, and consumers observe that through the 'error' event instead.
 		this.#watch().catch(() => {});
+	}
+
+	#createReadyLatch(): Promise<any[]> {
+		const ready = new Promise<any[]>((resolve, reject) => {
+			const cleanup = () => {
+				this.off('ready', handleReady);
+				this.off('error', handleError);
+				this.off('close', handleClose);
+			};
+			const handleReady = () => {
+				cleanup();
+				resolve([]);
+			};
+			const handleError = (error: unknown) => {
+				cleanup();
+				reject(error);
+			};
+			const handleClose = () => {
+				cleanup();
+				reject(new Error(`Entry handler for ${this.name} closed before becoming ready`));
+			};
+			this.once('ready', handleReady);
+			this.once('error', handleError);
+			this.once('close', handleClose);
+		});
+		// Keep a fire-and-forget watcher lifecycle from producing an unhandled rejection while
+		// preserving rejection for callers that await this same promise.
+		void ready.catch(() => {});
+		return ready;
 	}
 
 	get name(): string {
@@ -209,26 +240,37 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		this.#latestPathSequence.set(absolutePath, sequence);
 
 		const fileReadPromise = contentsPromise
-			.then((contents) => {
-				if (generation !== this.#watchGeneration || this.#latestPathSequence.get(absolutePath) !== sequence) return;
-				const entry: AddFileEvent | ChangeFileEvent = {
-					eventType: event,
-					entryType: 'file',
-					contents,
-					stats,
-					absolutePath,
-					urlPath: deriveURLPath(this.#component, path, 'file'),
-				};
-				this.#handleAddedEntry(generation, entry, this.#snapshot(entry));
-			})
-			.catch((error) => {
-				if (
-					generation !== this.#watchGeneration ||
-					(error as NodeJS.ErrnoException | null | undefined)?.code === 'ENOENT'
-				)
-					return;
-				this.#handleError(error);
-			})
+			.then(
+				(contents) => {
+					if (generation !== this.#watchGeneration || this.#latestPathSequence.get(absolutePath) !== sequence) return;
+					const entry: AddFileEvent | ChangeFileEvent = {
+						eventType: event,
+						entryType: 'file',
+						contents,
+						stats,
+						absolutePath,
+						urlPath: deriveURLPath(this.#component, path, 'file'),
+					};
+					try {
+						this.#handleAddedEntry(generation, entry, this.#snapshot(entry));
+					} catch (error) {
+						this.#reportConsumerError(error);
+					}
+				},
+				(error) => {
+					if (
+						generation !== this.#watchGeneration ||
+						(error as NodeJS.ErrnoException | null | undefined)?.code === 'ENOENT'
+					)
+						return;
+					if (this.#redeployScan?.generation === generation) {
+						this.#redeployScan.readFailures.add(absolutePath);
+						this.#redeployScan.readErrors.push(error);
+					} else {
+						this.#handleWatcherError(error);
+					}
+				}
+			)
 			.finally(() => {
 				if (this.#latestPathSequence.get(absolutePath) === sequence) this.#latestPathSequence.delete(absolutePath);
 				this.#pendingFileReads.delete(fileReadPromise);
@@ -285,7 +327,11 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			return;
 		}
 		if (previousEntry.entryType !== snapshot.entryType || previousEntry.urlPath !== snapshot.urlPath) {
-			this.#emitRemoval(previousEntry, entry.absolutePath);
+			try {
+				this.#emitRemoval(previousEntry, entry.absolutePath);
+			} catch (error) {
+				this.#reportConsumerError(error);
+			}
 			this.#emitAddition(entry);
 			return;
 		}
@@ -347,7 +393,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		}
 	}
 
-	#handleError(error: unknown): void {
+	#handleWatcherError(error: unknown): void {
 		if (isWatcherExhaustionError(error)) {
 			// Swallow every exhaustion error — chokidar can emit several before the
 			// failed native watcher closes, and we don't want a flurry of ENOSPC to
@@ -367,6 +413,10 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			}
 			return;
 		}
+		this.#reportConsumerError(error);
+	}
+
+	#reportConsumerError(error: unknown): void {
 		this.emit('error', error);
 	}
 
@@ -389,18 +439,23 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			!this.#pendingFileReadsByGeneration.has(generation)
 		) {
 			this.#readyGeneration = generation;
-			const listenerErrors = this.#finishRedeployScan(generation);
+			const { listenerErrors, readErrors } = this.#finishRedeployScan(generation);
 			this.emit('ready');
-			// `events.once(this, 'ready')` rejects if `error` is emitted first. Surface consumer failures only
+			// The readiness latch rejects if `error` is emitted first. Surface consumer failures only
 			// after resolving the generation's ready latch so one bad removal listener cannot strand startup.
-			for (const error of listenerErrors) this.#handleError(error);
+			for (const error of listenerErrors) this.#reportConsumerError(error);
+			for (const error of readErrors) this.#handleWatcherError(error);
 		}
 	}
 
-	#finishRedeployScan(generation: number): unknown[] {
+	#finishRedeployScan(generation: number): { listenerErrors: unknown[]; readErrors: unknown[] } {
 		const scan = this.#redeployScan;
-		if (!scan || scan.generation !== generation) return [];
+		if (!scan || scan.generation !== generation) return { listenerErrors: [], readErrors: [] };
 		const listenerErrors: unknown[] = [];
+		for (const absolutePath of scan.readFailures) {
+			const previousEntry = scan.previousEntries.get(absolutePath);
+			if (previousEntry) scan.currentEntries.set(absolutePath, previousEntry);
+		}
 		const missingEntries = [...scan.previousEntries].filter(
 			([absolutePath]) => !scan.currentEntries.has(absolutePath) && !scan.removalsEmitted.has(absolutePath)
 		);
@@ -417,7 +472,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				listenerErrors.push(error);
 			}
 		}
-		return listenerErrors;
+		return { listenerErrors, readErrors: scan.readErrors };
 	}
 
 	#observedEntries(): Map<string, EntrySnapshot> {
@@ -496,6 +551,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			previousEntries,
 			currentEntries: new Map(),
 			removalsEmitted: new Set(),
+			readFailures: new Set(),
+			readErrors: [],
 		};
 
 		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
@@ -538,7 +595,9 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				},
 			})
 			.on('all', (...args) => this.#handleAll(generation, ...args))
-			.on('error', this.#handleError.bind(this))
+			.on('error', (error) => {
+				if (generation === this.#watchGeneration) this.#handleWatcherError(error);
+			})
 			.on('ready', () => this.#handleReady(generation)));
 		this.#liveWatchers.add(watcher);
 	}
@@ -547,7 +606,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	// Exposed so the polling-fallback path can be exercised without triggering a
 	// real ENOSPC/EMFILE on the host.
 	_simulateWatcherErrorForTests(error: unknown): void {
-		this.#handleError(error);
+		this.#handleWatcherError(error);
 	}
 
 	// Test-only: enqueue a controllable file read through the same generation checks as chokidar events.
@@ -608,7 +667,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	 * Idempotent. Awaiting `ready` while paused will not resolve until resume().
 	 */
 	pause(): void {
-		if (this.#paused) return;
+		if (this.#paused || this.#closed) return;
 		// Invalidate callbacks and reads already queued by the watcher being paused. They belong to the
 		// pre-deploy tree and must not be mistaken for events from the resumed generation.
 		this.#watchGeneration++;
@@ -617,7 +676,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		// ready while paused will not resolve until resume()" contract holds even
 		// when the watcher had already become ready before pause(). The next
 		// 'ready' emit will come from the chokidar instance installed by resume().
-		this.ready = once(this, 'ready');
+		this.ready = this.#createReadyLatch();
 		if (this.#watcher) {
 			// Retain the close promise so resume()→#watch() can await full
 			// teardown before opening a new watcher.
@@ -649,11 +708,13 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	update(config: FilesOption | FileAndURLPathConfig) {
+		if (this.#closed) return this.ready;
+		this.#watchGeneration++;
 		this.#component = new Component(this.name, this.directory, castConfig(config));
 		// Re-arm the readiness latch for parity with pause(). Without this, awaiting update() on an
 		// already-ready handler resolves against the outgoing generation's 'ready' — before the
 		// replacement generation has scanned, digested, and emitted its logical events.
-		if (!this.#closed) this.ready = once(this, 'ready');
+		this.ready = this.#createReadyLatch();
 
 		return this.#watch();
 	}

@@ -405,6 +405,7 @@ export async function loadComponent(
 		appName,
 		mount,
 	} = options;
+	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	try {

@@ -487,8 +487,7 @@ const MAX_INSTALL_COMMANDS = 2;
 // module (both in source and in dist), holds no secret, and is inert without a live session.
 export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.js');
 
-const PACKAGE_METADATA_FILES = [
-	'package.json',
+const PACKAGE_LOCK_FILES = [
 	'package-lock.json',
 	'npm-shrinkwrap.json',
 	'pnpm-lock.yaml',
@@ -497,26 +496,86 @@ const PACKAGE_METADATA_FILES = [
 	'bun.lockb',
 ];
 
-async function readPackageMetadata(directory: string): Promise<Map<string, Buffer>> {
-	const metadata = new Map<string, Buffer>();
-	await Promise.all(
-		PACKAGE_METADATA_FILES.map(async (filename) => {
+type InstalledPackageMetadata = {
+	files: Map<string, Buffer>;
+	readable: boolean;
+	hasLockfile: boolean;
+	hasInstallableDependencies: boolean;
+};
+
+export async function readInstalledPackageMetadata(directory: string): Promise<InstalledPackageMetadata> {
+	const files = new Map<string, Buffer>();
+	let readable = true;
+	let packageJSON: any;
+	await Promise.all([
+		(async () => {
 			try {
-				metadata.set(filename, await readFile(join(directory, filename)));
+				const contents = await readFile(join(directory, 'package.json'));
+				try {
+					packageJSON = JSON.parse(contents.toString());
+					files.set('package.json', Buffer.from(JSON.stringify(canonicalizeJSON(packageJSON))));
+				} catch {
+					files.set('package.json', contents);
+				}
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') readable = false;
 			}
-		})
-	);
-	return metadata;
+		})(),
+		...PACKAGE_LOCK_FILES.map(async (filename) => {
+			try {
+				files.set(filename, await readFile(join(directory, filename)));
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') readable = false;
+			}
+		}),
+	]);
+	return {
+		files,
+		readable,
+		hasLockfile: PACKAGE_LOCK_FILES.some((filename) => files.has(filename)),
+		hasInstallableDependencies: ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].some(
+			(field) => {
+				const dependencies = packageJSON?.[field];
+				return (
+					typeof dependencies === 'object' &&
+					dependencies !== null &&
+					!Array.isArray(dependencies) &&
+					Object.keys(dependencies).length > 0
+				);
+			}
+		),
+	};
 }
 
-function packageMetadataEqual(previous: Map<string, Buffer>, current: Map<string, Buffer>): boolean {
-	if (previous.size !== current.size) return false;
-	for (const [filename, contents] of previous) {
-		if (!current.get(filename)?.equals(contents)) return false;
+export function installedPackageMetadataEqual(
+	previous: InstalledPackageMetadata,
+	current: InstalledPackageMetadata
+): boolean {
+	if (!previous.readable || !current.readable || previous.files.size !== current.files.size) return false;
+	for (const [filename, contents] of previous.files) {
+		if (!current.files.get(filename)?.equals(contents)) return false;
 	}
 	return true;
+}
+
+export function installedRuntimeChanged(
+	previous: InstalledPackageMetadata,
+	current: InstalledPackageMetadata,
+	installationIsOpaque: boolean
+): boolean {
+	return (
+		installationIsOpaque ||
+		(current.hasInstallableDependencies && !current.hasLockfile) ||
+		!installedPackageMetadataEqual(previous, current)
+	);
+}
+
+function canonicalizeJSON(value: any): any {
+	if (Array.isArray(value)) return value.map(canonicalizeJSON);
+	if (!value || typeof value !== 'object') return value;
+	const canonical: Record<string, any> = Object.create(null);
+	for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeJSON(value[key]);
+	return canonical;
 }
 
 /**
@@ -539,8 +598,6 @@ export async function extractApplication(application: Application) {
 	if (application.payload && application.packageIdentifier) {
 		throw new Error('Both payload and package cannot be provided');
 	}
-	const previousPackageMetadata = await readPackageMetadata(application.dirPath);
-
 	// Resolve the tarball from the input
 	let tarballPath: string;
 	let tarball: Readable;
@@ -609,6 +666,7 @@ export async function extractApplication(application: Application) {
 			// not have, so this gates the pack step regardless of whether a credential happens to be in
 			// play.
 			const allowScripts = !!application.install?.allowInstallScripts;
+			if (allowScripts) application.installationIsOpaque = true;
 			// `--ignore-scripts` alone isn't a reliable way to enforce that: pacote's DirFetcher runs a
 			// git source's `prepare` unconditionally on npm versions before 11.0.0 (see
 			// packGitReferenceWithoutScripts), which is exactly what Node 22's bundled npm ships. For a
@@ -702,13 +760,6 @@ export async function extractApplication(application: Application) {
 		// Finally, remove the temp dir
 		await rm(tempDirPath, { recursive: true, force: true });
 	}
-	if (didRenameAside) {
-		application.packageMetadataChanged = !packageMetadataEqual(
-			previousPackageMetadata,
-			await readPackageMetadata(application.dirPath)
-		);
-	}
-
 	// Clean up the original tarball
 	if (shouldDeleteTarball && tarballPath) {
 		await rm(tarballPath, { force: true });
@@ -751,6 +802,7 @@ export async function installApplication(application: Application) {
 		// Does node_modules exist?
 		await access(join(application.dirPath, 'node_modules'), constants.F_OK);
 		application.logger.info(`Application ${application.name} already has node_modules; skipping install`);
+		application.installationIsOpaque = true;
 		return;
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;
@@ -774,6 +826,7 @@ export async function installApplication(application: Application) {
 		);
 		// if it succeeds, return
 		if (code === 0) {
+			application.installationIsOpaque = true;
 			return;
 		}
 		if (stdout) {
@@ -836,6 +889,7 @@ export async function installApplication(application: Application) {
 
 		// if it succeeds, return
 		if (code === 0) {
+			if (application.install?.allowInstallScripts) application.installationIsOpaque = true;
 			return;
 		}
 
@@ -893,6 +947,7 @@ export async function installApplication(application: Application) {
 
 	// if it succeeds, return
 	if (code === 0) {
+		if (application.install?.allowInstallScripts) application.installationIsOpaque = true;
 		return;
 	}
 
@@ -959,9 +1014,10 @@ export class Application {
 	// that independently requests a restart if the redeploy actually needs one.
 	isNewComponent: boolean = true;
 	// Package metadata is intentionally outside most plugin `files` globs, but changing it can replace
-	// dependencies or module entry points underneath already-imported code. extractApplication compares
-	// manifests and lockfiles across the atomic swap so deployComponent can request the required restart.
+	// dependencies or module entry points underneath already-imported code. prepareApplication compares
+	// normalized manifests and lockfiles after installation so deployComponent can request the required restart.
 	packageMetadataChanged: boolean = false;
+	installationIsOpaque: boolean = false;
 
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;
@@ -1113,6 +1169,7 @@ export async function prepareApplication(application: Application) {
 		await withComponentPreparationLock(
 			application.dirPath,
 			async () => {
+				const previousPackageMetadata = await readInstalledPackageMetadata(application.dirPath);
 				try {
 					// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
 					// `npm install` authenticate against the private registry; always remove it afterward.
@@ -1128,6 +1185,14 @@ export async function prepareApplication(application: Application) {
 						await application.cleanupGitCredentialSession();
 					}
 					await installApplication(application);
+					if (!application.isNewComponent) {
+						const currentPackageMetadata = await readInstalledPackageMetadata(application.dirPath);
+						application.packageMetadataChanged = installedRuntimeChanged(
+							previousPackageMetadata,
+							currentPackageMetadata,
+							application.installationIsOpaque
+						);
+					}
 				} finally {
 					await application.cleanupTransientNpmrc();
 				}

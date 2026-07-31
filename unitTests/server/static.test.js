@@ -231,6 +231,47 @@ describe('static plugin ordering live reload', () => {
 		}
 	});
 
+	it('restores a surviving colliding file when the active file unlinks', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-collision-'));
+		const oldPath = join(directory, 'web', 'index.html');
+		const newPath = join(directory, 'dist', 'index.html');
+		mkdirSync(join(directory, 'web'), { recursive: true });
+		mkdirSync(join(directory, 'dist'), { recursive: true });
+		writeFileSync(oldPath, 'old');
+		writeFileSync(newPath, 'new');
+
+		try {
+			const { scope, state } = fakeScope();
+			handleApplication(scope);
+			const entry = (eventType, absolutePath) =>
+				state.entryCallback({ eventType, entryType: 'file', absolutePath, urlPath: '/index.html' });
+			entry('add', oldPath);
+			entry('add', newPath);
+			entry('unlink', newPath);
+
+			const request = {
+				method: 'GET',
+				isWebSocket: false,
+				pathname: '/index.html',
+				url: '/index.html',
+				headers: {},
+			};
+			const fallthrough = Symbol('fallthrough');
+			assert.notStrictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+
+			entry('unlink', oldPath);
+			assert.strictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('requests a restart when before or after changes', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);
