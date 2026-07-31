@@ -60,6 +60,14 @@ export function normalizeTarget(target: string): string {
 		url.password = '';
 		if (!hasExplicitPort) url.port = '9925';
 		normalized = url.toString();
+		// `URL` serializes a default port away, so `https://host:443` would come back port-less and a
+		// second pass — login normalizes, then cliOperations normalizes again — would read that as
+		// "no port given" and append 9925, silently retargeting. Writing the port back keeps this
+		// idempotent, which every caller assumes since the output is also the credentials-file key.
+		if (hasExplicitPort && !url.port) {
+			const defaultPort = url.protocol === 'https:' ? '443' : '80';
+			normalized = normalized.replace(`//${url.host}`, `//${url.host}:${defaultPort}`);
+		}
 	} catch {
 		// If it's not a valid URL yet, we'll let it be handled later or it will fail
 	}

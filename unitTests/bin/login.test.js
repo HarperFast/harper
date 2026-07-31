@@ -56,8 +56,25 @@ describe('Login', () => {
 		});
 
 		it('should preserve an explicitly written default port', () => {
-			assert.strictEqual(normalizeTarget('https://example.com:443'), 'https://example.com/');
-			assert.strictEqual(normalizeTarget('http://example.com:80'), 'http://example.com/');
+			assert.strictEqual(normalizeTarget('https://example.com:443'), 'https://example.com:443/');
+			assert.strictEqual(normalizeTarget('http://example.com:80'), 'http://example.com:80/');
+		});
+
+		// login normalizes, then cliOperations normalizes again. `URL` serializes a default port away,
+		// so without writing it back the second pass would read `https://host:443` as port-less and
+		// append 9925 — silently sending the request somewhere else than the user asked for.
+		it('should be idempotent', () => {
+			for (const target of [
+				'example.com',
+				'https://example.com:443',
+				'http://example.com:80',
+				'https://admin:hunter2@example.com',
+				'example.com:1234',
+				'example.com/api',
+			]) {
+				const once = normalizeTarget(target);
+				assert.strictEqual(normalizeTarget(once), once, target);
+			}
 		});
 	});
 
