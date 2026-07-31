@@ -1163,8 +1163,12 @@ describe('test MQTT connections and commands', function () {
 				(key) => key.endsWith('.sock') && !preexistingCfgs.has(key)
 			);
 			assert.ok(mirrorCfgKey, 'securePort ws listener should create a uWS UDS mirror config');
-			assert.equal(typeof uwsServeConfigs[mirrorCfgKey].wsHandler, 'function', 'mirror config must get the wsHandler');
-			assert.equal(uwsServeConfigs[mirrorCfgKey].wsMaxPayload, 12345, 'mirror config must carry maxPayload');
+			assert.strictEqual(
+				typeof uwsServeConfigs[mirrorCfgKey].wsHandler,
+				'function',
+				'mirror config must get the wsHandler'
+			);
+			assert.strictEqual(uwsServeConfigs[mirrorCfgKey].wsMaxPayload, 12345, 'mirror config must carry maxPayload');
 		} finally {
 			delete process.env.HARPER_UWS_UDS;
 			setProperty('tls_unixDomainSockets', preexistingUds);
@@ -1193,12 +1197,13 @@ describe('test MQTT connections and commands', function () {
 		// Short path — sun_path is limited to ~104 bytes on macOS
 		const sockPath = join(tmpdir(), `hdb-ws-mirror-${process.pid}.sock`);
 		let mirror;
+		let client;
 		try {
 			global.server.ws((ws) => ws.on('message', (message) => ws.send(`echo:${message}`)), { securePort: 28886 });
 			const udsMirrorKey = Object.keys(SERVERS).find((key) => key.endsWith('.sock') && !preexistingServers[key]);
 			assert.ok(udsMirrorKey, 'securePort ws listener should create a UDS mirror when tls_unixDomainSockets is on');
 			mirror = SERVERS[udsMirrorKey];
-			assert.equal(mirror.listenerCount('upgrade'), 1, 'the UDS mirror must dispatch upgrade requests');
+			assert.strictEqual(mirror.listenerCount('upgrade'), 1, 'the UDS mirror must dispatch upgrade requests');
 
 			try {
 				unlinkSync(sockPath);
@@ -1208,7 +1213,7 @@ describe('test MQTT connections and commands', function () {
 				mirror.listen(sockPath, resolve);
 			});
 
-			const client = netConnect(sockPath);
+			client = netConnect(sockPath);
 			const key = randomBytes(16).toString('base64');
 			const status = await new Promise((resolve, reject) => {
 				let data = Buffer.alloc(0);
@@ -1230,7 +1235,7 @@ describe('test MQTT connections and commands', function () {
 				client.on('close', () => reject(new Error('connection closed before handshake response')));
 				setTimeout(() => reject(new Error('no handshake response')), 3000).unref();
 			});
-			assert.equal(status, 'HTTP/1.1 101 Switching Protocols');
+			assert.strictEqual(status, 'HTTP/1.1 101 Switching Protocols');
 
 			// Post-upgrade data must flow both ways through the proxy-protocol handoff
 			const echoed = new Promise((resolve, reject) => {
@@ -1246,9 +1251,9 @@ describe('test MQTT connections and commands', function () {
 			const mask = randomBytes(4);
 			const masked = Buffer.from(payload.map((byte, i) => byte ^ mask[i % 4]));
 			client.write(Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]));
-			assert.equal(await echoed, 'echo:hi');
-			client.destroy();
+			assert.strictEqual(await echoed, 'echo:hi');
 		} finally {
+			client?.destroy();
 			setProperty('tls_unixDomainSockets', preexistingUds);
 			if (mirror?.listening) await new Promise((resolve) => mirror.close(resolve));
 			try {
