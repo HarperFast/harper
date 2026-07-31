@@ -33,6 +33,13 @@ interface LiveSubscription {
 	recheck: () => Promise<boolean>;
 	/** Stop delivery and tear down the subscription. May be async (e.g. a shared-feed refcount release). */
 	terminate: () => void | Promise<void>;
+	/**
+	 * The in-flight `terminate()` call, if a prior attempt is still pending (timed out, not settled).
+	 * Reused rather than calling `terminate` again, so a hung `revoke` is never invoked twice for the
+	 * same entry — the seam's documented idempotency invariant is enforced here rather than merely
+	 * assumed of caller code.
+	 */
+	pendingTerminate?: Promise<void>;
 }
 
 function errorMessage(error: unknown): string {
@@ -70,9 +77,16 @@ let sweeping = false;
 
 const NOOP_HANDLE = { unregister: () => {} };
 
+// sweep()'s own try/finally protects its recheck body, but a throw from claimAndTerminate's fail-
+// closed catch-arm call (e.g. a logger call that itself throws) would otherwise escape as an
+// unhandled rejection from these fire-and-forget triggers.
+function triggerSweep(): void {
+	void sweep().catch((error) => hdbLogger.error?.(`liveSubscriptionAuth: sweep failed: ${errorMessage(error)}`));
+}
+
 function ensureStarted(): void {
 	if (!sweepTimer) {
-		sweepTimer = setInterval(() => void sweep(), RECHECK_INTERVAL_MS);
+		sweepTimer = setInterval(triggerSweep, RECHECK_INTERVAL_MS);
 		// don't keep the worker alive solely for the recheck timer
 		sweepTimer.unref?.();
 	}
@@ -82,7 +96,7 @@ function ensureStarted(): void {
 			// user/role cache before invoking listeners, so recheck() observes the new permissions.
 			const handlers = require('./itc/serverHandlers.js');
 			if (handlers?.userHandler?.addListener) {
-				handlers.userHandler.addListener(() => void sweep());
+				handlers.userHandler.addListener(triggerSweep);
 				itcListenerInstalled = true;
 			}
 		} catch (error) {
@@ -130,7 +144,11 @@ export function registerLiveSubscription(opts: {
 	revoke?: () => void | Promise<void>;
 }): { unregister: () => void } {
 	const { subscription, username, authExpiresAt, recheck, revoke } = opts;
-	if (!subscription || typeof subscription !== 'object' || subscription.closed) return NOOP_HANDLE;
+	// The registry-owned teardown path needs a live, mutable subscription object to wrap; the
+	// caller-owned `revoke` path never touches `subscription` at all (see below), so a caller with no
+	// meaningful subscription object to hand over — the expected shape for a shared feed — isn't held
+	// to that requirement.
+	if (!revoke && (!subscription || typeof subscription !== 'object' || subscription.closed)) return NOOP_HANDLE;
 
 	const entry: LiveSubscription = {
 		username,
@@ -193,16 +211,36 @@ export function registerLiveSubscription(opts: {
  * that never settles would hold `sweeping` true forever (the `finally` in `sweep()` never runs),
  * silently disabling re-authorization for every subscription on the worker, not just this entry's.
  * `recheck` has the same unbounded-await shape but is registry-controlled Harper code; `revoke` is
- * arbitrary caller code, which is the materially wider exposure this bound closes.
+ * arbitrary caller code, which is the materially wider exposure this bound closes. A timeout does not
+ * cancel the underlying call — `entry.pendingTerminate` caches it, so a retry on the next sweep
+ * re-awaits the SAME in-flight attempt instead of invoking `terminate`/`revoke` a second time while
+ * the first is still running; the cache clears once that attempt actually settles (success or
+ * failure), so a genuinely stuck call is never retried, but a merely slow one gets a fresh invocation
+ * next time only after it's actually done.
  */
+function invokeTerminate(entry: LiveSubscription): Promise<void> {
+	try {
+		return Promise.resolve(entry.terminate());
+	} catch (error) {
+		return Promise.reject(error);
+	}
+}
+
 async function claimAndTerminate(entry: LiveSubscription, reason: string): Promise<boolean> {
 	if (!registry.has(entry)) return false; // the caller already unregistered this entry itself
+	let attempt = entry.pendingTerminate;
+	if (!attempt) {
+		attempt = invokeTerminate(entry);
+		entry.pendingTerminate = attempt;
+		const settledAttempt = attempt;
+		const clearIfCurrent = () => {
+			if (entry.pendingTerminate === settledAttempt) entry.pendingTerminate = undefined;
+		};
+		attempt.then(clearIfCurrent, clearIfCurrent);
+	}
+	const timeoutMs = terminateTimeoutMs();
 	try {
-		await withTimeout(
-			Promise.resolve(entry.terminate()),
-			terminateTimeoutMs(),
-			`terminate timed out after ${terminateTimeoutMs()}ms`
-		);
+		await withTimeout(attempt, timeoutMs, `terminate timed out after ${timeoutMs}ms`);
 	} catch (error) {
 		hdbLogger.error?.(
 			`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}), will retry next sweep: ${errorMessage(error)}`

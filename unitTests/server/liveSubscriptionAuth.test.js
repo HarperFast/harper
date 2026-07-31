@@ -156,6 +156,45 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(subscription.listenerCount('close'), listenersBefore, "no 'close' listener should be added");
 		});
 
+		it('registers successfully with revoke supplied even when subscription is null/undefined/closed', async () => {
+			const revokeForNull = spyFn();
+			const revokeForUndefined = spyFn();
+			const revokeForClosed = spyFn();
+			register({
+				subscription: null,
+				username: 'null-sub',
+				authExpiresAt: 0,
+				recheck: async () => true,
+				revoke: revokeForNull,
+			});
+			register({
+				subscription: undefined,
+				username: 'undefined-sub',
+				authExpiresAt: 0,
+				recheck: async () => true,
+				revoke: revokeForUndefined,
+			});
+			register({
+				subscription: { closed: true },
+				username: 'closed-sub',
+				authExpiresAt: 0,
+				recheck: async () => true,
+				revoke: revokeForClosed,
+			});
+			assert.strictEqual(
+				_liveSubscriptionCount(),
+				3,
+				'revoke-supplied callers must not need a live subscription object'
+			);
+
+			await _sweepNow();
+
+			assert.strictEqual(revokeForNull.calls.length, 1);
+			assert.strictEqual(revokeForUndefined.calls.length, 1);
+			assert.strictEqual(revokeForClosed.calls.length, 1);
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
 		it('returns an unregister handle that removes only its own entry', () => {
 			const subscription = fakeSubscription();
 			const a = register({ subscription, username: 'a', recheck: async () => true, revoke: spyFn() });
@@ -334,6 +373,41 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 					1,
 					'the hung entry stays registered for retry; the other is revoked'
 				);
+			} finally {
+				if (originalTimeout === undefined) delete process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
+				else process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = originalTimeout;
+			}
+		});
+
+		it('does not re-invoke a still-pending revoke on retry, and commits once it eventually resolves', async () => {
+			const originalTimeout = process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
+			process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '20';
+			try {
+				const subscription = fakeSubscription();
+				let calls = 0;
+				let resolveRevoke;
+				const revoke = () => {
+					calls++;
+					return new Promise((resolveP) => {
+						resolveRevoke = resolveP;
+					});
+				};
+				register({ subscription, username: 'slow-revoke', authExpiresAt: 0, recheck: async () => true, revoke });
+				handles.pop();
+
+				await _sweepNow(); // times out (revoke hasn't settled yet); invoked once
+				assert.strictEqual(calls, 1);
+				assert.strictEqual(_liveSubscriptionCount(), 1);
+
+				await _sweepNow(); // still pending; must reuse the in-flight call, not invoke revoke again
+				assert.strictEqual(calls, 1, 'a still-pending revoke must not be invoked a second time');
+				assert.strictEqual(_liveSubscriptionCount(), 1);
+
+				resolveRevoke(); // the underlying call finally completes
+				await _sweepNow(); // this sweep observes the (now-settled) same attempt and commits it
+
+				assert.strictEqual(calls, 1, 'the entry is removed without ever calling revoke a second time');
+				assert.strictEqual(_liveSubscriptionCount(), 0);
 			} finally {
 				if (originalTimeout === undefined) delete process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
 				else process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = originalTimeout;
