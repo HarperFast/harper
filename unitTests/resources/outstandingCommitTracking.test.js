@@ -135,12 +135,23 @@ describe('Outstanding commit tracking', () => {
 			// forever with `Transaction.prototype.commit` left monkeypatched, breaking every later test
 			// that touches RocksDB. This timeout is comfortably inside the 15s test timeout, so `finally`
 			// below still gets to run and restore everything before mocha's own timeout would fire.
-			await Promise.race([
-				secondCommitStarted,
-				new Promise((_resolve, reject) =>
-					setTimeout(() => reject(new Error("TrackB's commit was never invoked (tracking regression?)")), 10000)
-				),
-			]);
+			let timeoutHandle;
+			try {
+				await Promise.race([
+					secondCommitStarted,
+					new Promise(
+						(_resolve, reject) =>
+							(timeoutHandle = setTimeout(
+								() => reject(new Error("TrackB's commit was never invoked (tracking regression?)")),
+								10000
+							))
+					),
+				]);
+			} finally {
+				// Otherwise the successful path leaves this timer referenced, keeping a targeted run of
+				// this file alone alive for ~10s after the result is already known.
+				clearTimeout(timeoutHandle);
+			}
 			// TrackA's node is unlinked before `this.next.commit()` runs (see the comment above), so by
 			// this point count===1 can only be TrackB's held commit — no polling/racing required.
 			const outstanding = getOutstandingCommits();
