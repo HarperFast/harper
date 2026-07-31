@@ -318,9 +318,16 @@ export class Resources extends Map<string, ResourceEntry> {
 		if (!foundEntry && path.indexOf('.') > -1) {
 			foundEntry = this.get(path.split('.')[0]);
 		}
-		if (foundEntry && (!exportType || foundEntry.exportTypes?.[exportType] !== false)) {
+		// An entry whose exportTypes disables this protocol is invisible to it — treat as
+		// not-found and keep searching. Previously the check only gated relativeURL and the
+		// blocked entry was still returned (the MCP layer re-checks exportTypes.mcp itself
+		// to work around exactly this).
+		if (foundEntry && exportType && foundEntry.exportTypes?.[exportType] === false) {
+			foundEntry = undefined;
+		}
+		if (foundEntry) {
 			foundEntry.relativeURL = searchIndex > -1 ? url.slice(searchIndex) : '';
-		} else if (!foundEntry) {
+		} else {
 			// no static resource matched; try parameterised routes before falling back to an explicit root resource
 			if (this.paramRoutes.length) {
 				const paramMatch = this.matchParamRoute(url, exportType);
@@ -328,7 +335,11 @@ export class Resources extends Map<string, ResourceEntry> {
 			}
 			// still not found, see if there is an explicit root path
 			foundEntry = this.get('');
-			if (foundEntry && (!exportType || foundEntry.exportTypes?.[exportType] !== false)) {
+			if (foundEntry && exportType && foundEntry.exportTypes?.[exportType] === false) {
+				// root resource not exported for this protocol either
+				foundEntry = undefined;
+			}
+			if (foundEntry) {
 				if (url.charAt(0) !== '/') url = '/' + url;
 				foundEntry.relativeURL = url;
 			}

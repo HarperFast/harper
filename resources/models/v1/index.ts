@@ -59,7 +59,14 @@ export function handleApplication(scope: Scope): void {
 			'modelsGateway is enabled but no `rest` section is configured; /v1/* endpoints are only served when REST is active'
 		);
 	}
-	scope.resources.set('v1/models', V1Models);
-	scope.resources.set('v1/embeddings', V1Embeddings);
-	scope.resources.set('v1/chat/completions', V1ChatCompletions);
+	// Explicit protocol visibility: these are REST-only wire-protocol endpoints. Without a
+	// policy, the shared registry matches them for every protocol lookup — WS dispatch could
+	// reach V1ChatCompletions.connect() and then fail iterating its non-iterable badRequest
+	// envelope, and they would surface through MQTT/GraphQL/MCP enumeration too. `sse` stays
+	// enabled for chat only: an explicit `Accept: text/event-stream` POST is dispatched via
+	// the sse lookup (REST.ts) and is a supported streaming client shape (see connect()).
+	const restOnly = { rest: true, sse: false, ws: false, mqtt: false, graphql: false, mcp: false };
+	scope.resources.set('v1/models', V1Models, restOnly);
+	scope.resources.set('v1/embeddings', V1Embeddings, restOnly);
+	scope.resources.set('v1/chat/completions', V1ChatCompletions, { ...restOnly, sse: true });
 }
