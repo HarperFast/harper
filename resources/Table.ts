@@ -4893,7 +4893,10 @@ export function makeTable(options) {
 									// tolerate a scalar id in an array-typed FK field (legacy data written
 									// before attribute.set normalized single records to a one-element array)
 									const normalizedIds = Array.isArray(ids) ? ids : [ids];
-									if (normalizedIds.length === 0) return normalizedIds;
+									// a fresh array, not `normalizedIds` itself: when ids was already an array,
+									// normalizedIds === ids is the record's own stored FK array, and returning it
+									// would let a caller's mutation (e.g. record.manyToMany.push(x)) alias into it
+									if (normalizedIds.length === 0) return [];
 									// getSync (not get): relationship accessors are a synchronous contract (as in v4);
 									// on RocksDB get() returns a Promise on a block-cache miss, which would leak an
 									// intermittent MaybePromise into user code
