@@ -785,8 +785,11 @@ describe('Querying through Resource API', () => {
 				assert(Array.isArray(many_to_many), 'array-of-foreign-keys resolves synchronously to an array');
 				assert.equal(many_to_many.length, 3);
 				assert.equal(many_to_many[0].name, 'many-to-many entry 3');
+				// childrenOfSelf resolves via relatedTable.search(...).asArray, not primaryStore.get, so the
+				// stub above doesn't pin this branch — it only demonstrates the local (non-caching) case, and
+				// the known revalidation gap for caching tables (see DESIGN.md) is untouched by this test.
 				const children = related.childrenOfSelf;
-				assert(Array.isArray(children), 'one-to-many resolves synchronously to an array');
+				assert(Array.isArray(children), 'one-to-many resolves synchronously to an array on a local table');
 			} finally {
 				stores.forEach((store, i) => (store.get = original_gets[i]));
 			}
