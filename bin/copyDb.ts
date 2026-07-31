@@ -458,9 +458,14 @@ export function verifyMigratedDatabase(databasePath: string): Record<string, { r
 		handles.push(dbisDb);
 		for (const { key, value: attribute } of dbisDb.getRange({})) {
 			if (typeof key === 'symbol' || !attribute?.isPrimaryKey) continue;
+			// per-table handles close per-iteration so a many-table sweep does not hold every CF
+			// handle open at once; only the two pre-loop opens need the leak-safety array
 			const rawDbi = RocksDatabase.open(databasePath, { name: key, encoding: false });
-			handles.push(rawDbi);
-			report[key] = countRecords(rawDbi);
+			try {
+				report[key] = countRecords(rawDbi);
+			} finally {
+				rawDbi.close();
+			}
 		}
 	} finally {
 		for (const handle of handles.reverse()) {
