@@ -379,47 +379,50 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			let clientError = null;
 			server.once('clientError', (error) => (clientError = error));
 
-			const status = await new Promise((resolve, reject) => {
-				let data = Buffer.alloc(0);
-				client.on('connect', () => {
-					client.write('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\n');
-					client.write(
-						`GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
-							`Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n\r\n`
-					);
+			try {
+				const status = await new Promise((resolve, reject) => {
+					let data = Buffer.alloc(0);
+					client.on('connect', () => {
+						client.write('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\n');
+						client.write(
+							`GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
+								`Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n\r\n`
+						);
+					});
+					client.on('data', function onHandshake(chunk) {
+						data = Buffer.concat([data, chunk]);
+						if (data.includes('\r\n\r\n')) {
+							client.removeListener('data', onHandshake);
+							resolve(data.toString().split('\r\n')[0]);
+						}
+					});
+					client.on('error', reject);
+					client.on('close', () => reject(new Error('connection closed before handshake response')));
 				});
-				client.on('data', function onHandshake(chunk) {
-					data = Buffer.concat([data, chunk]);
-					if (data.includes('\r\n\r\n')) {
-						client.removeListener('data', onHandshake);
-						resolve(data.toString().split('\r\n')[0]);
-					}
+				assert.strictEqual(status, 'HTTP/1.1 101 Switching Protocols');
+
+				// Run another HTTP request first so the freed parser is re-issued from the
+				// pool; frames on the upgraded socket must not reach it.
+				assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
+
+				const echoed = new Promise((resolve, reject) => {
+					let frame = Buffer.alloc(0);
+					client.on('data', (chunk) => {
+						frame = Buffer.concat([frame, chunk]);
+						const length = frame[1] & 0x7f;
+						if (frame.length >= 2 + length) resolve(frame.subarray(2, 2 + length).toString());
+					});
+					setTimeout(() => reject(new Error('no echo received')), 3000).unref();
 				});
-				client.on('error', reject);
-				client.on('close', () => reject(new Error('connection closed before handshake response')));
-			});
-			assert.strictEqual(status, 'HTTP/1.1 101 Switching Protocols');
+				client.write(maskedTextFrame('hi'));
+				assert.strictEqual(await echoed, 'echo:hi');
+				assert.strictEqual(clientError, null, 'frames must not leak into pooled HTTP parsers');
 
-			// Run another HTTP request first so the freed parser is re-issued from the
-			// pool; frames on the upgraded socket must not reach it.
-			assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
-
-			const echoed = new Promise((resolve, reject) => {
-				let frame = Buffer.alloc(0);
-				client.on('data', (chunk) => {
-					frame = Buffer.concat([frame, chunk]);
-					const length = frame[1] & 0x7f;
-					if (frame.length >= 2 + length) resolve(frame.subarray(2, 2 + length).toString());
-				});
-				setTimeout(() => reject(new Error('no echo received')), 3000).unref();
-			});
-			client.write(maskedTextFrame('hi'));
-			assert.strictEqual(await echoed, 'echo:hi');
-			assert.strictEqual(clientError && clientError.message, null, 'frames must not leak into pooled HTTP parsers');
-
-			// The server must serve plain HTTP cleanly after the upgraded connection exchanged frames
-			assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
-			client.destroy();
+				// The server must serve plain HTTP cleanly after the upgraded connection exchanged frames
+				assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
+			} finally {
+				client.destroy();
+			}
 		});
 >>>>>>> a057bca24 (fix(http): dispatch WebSocket upgrades on the UDS mirror listeners)
 	});
