@@ -24,11 +24,17 @@
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/ttlResetOnWrite.test.ts"
  *   HARPER_STORAGE_ENGINE=lmdb npm run test:integration -- "integrationTests/database/ttlResetOnWrite.test.ts"
+ *
+ * Uses node:http directly rather than fetch()/undici: this suite's whole premise is measuring
+ * request-to-request timing against a TTL clock, and a global-fetch client stall (of unbounded,
+ * multi-second duration under some Node/undici builds — see harper#2025) reads as a false
+ * NO-RESET no matter how the check windows are computed. node:http isn't subject to that stall.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import http from 'node:http';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
@@ -55,6 +61,15 @@ const CHECK_RESET_MS = TTL_MS + 200; // 2200ms — past original expiry, before 
 // Max extra slack for expiry (one background-sweep leeway).
 const EXPIRY_POLL_MS = 5_000;
 const EXPIRY_POLL_INTERVAL_MS = 200;
+
+// The "record is RESET" check polls across the whole valid window (past the original expiry, up
+// to just before the reset-expiry) rather than sampling a single instant. A single check is
+// vulnerable to its own request latency: if that one GET happens to be slow, it can land after
+// the reset-expiry has *also* passed and misread a genuine reset as NO-RESET. Polling means only
+// a single sample within the window needs to land on time.
+const RESET_POLL_INTERVAL_MS = 150;
+// Safety margin before the reset-expiry deadline, so the last poll isn't racing the sweep itself.
+const RESET_CHECK_SAFETY_MS = 200;
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
@@ -93,12 +108,8 @@ suite(
 			const deadline = Date.now() + 30_000;
 			while (Date.now() < deadline) {
 				try {
-					const r = await fetch(`${httpURL}/Expiry/`, {
-						method: 'GET',
-						headers: { Authorization: auth },
-						signal: AbortSignal.timeout(3_000),
-					});
-					if (r.status !== 503) break;
+					const { status } = await httpRequest('GET', `${httpURL}/Expiry/`);
+					if (status !== 503) break;
 				} catch {
 					/* not ready */
 				}
@@ -119,21 +130,42 @@ suite(
 		});
 
 		// ── low-level helpers ─────────────────────────────────────────────────────
+		// All requests go through node:http directly (see the file-header note on why fetch()
+		// isn't used here).
 
-		const jsonHeaders = () => ({
-			'Content-Type': 'application/json',
-			'Authorization': auth,
-		});
+		function httpRequest(
+			method: string,
+			url: string,
+			body?: string,
+			timeoutMs = 5_000
+		): Promise<{ status: number; body: string }> {
+			return new Promise((resolvePromise, reject) => {
+				const u = new URL(url);
+				const headers: Record<string, string> = { Authorization: auth };
+				if (body !== undefined) {
+					headers['Content-Type'] = 'application/json';
+					headers['Content-Length'] = String(Buffer.byteLength(body));
+				}
+				const req = http.request(
+					{ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers, timeout: timeoutMs },
+					(res) => {
+						const chunks: Buffer[] = [];
+						res.on('data', (chunk) => chunks.push(chunk));
+						res.on('end', () =>
+							resolvePromise({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') })
+						);
+					}
+				);
+				req.on('timeout', () => req.destroy(new Error(`request to ${url} timed out after ${timeoutMs}ms`)));
+				req.on('error', reject);
+				req.end(body);
+			});
+		}
 
 		async function restPut(id: string, body: Record<string, unknown>): Promise<number | 'error'> {
 			try {
-				const r = await fetch(`${httpURL}/Expiry/${id}`, {
-					method: 'PUT',
-					headers: jsonHeaders(),
-					body: JSON.stringify({ id, ...body }),
-					signal: AbortSignal.timeout(5_000),
-				});
-				return r.status;
+				const { status } = await httpRequest('PUT', `${httpURL}/Expiry/${id}`, JSON.stringify({ id, ...body }));
+				return status;
 			} catch {
 				return 'error';
 			}
@@ -141,13 +173,8 @@ suite(
 
 		async function restPatch(id: string, body: Record<string, unknown>): Promise<number | 'error'> {
 			try {
-				const r = await fetch(`${httpURL}/Expiry/${id}`, {
-					method: 'PATCH',
-					headers: jsonHeaders(),
-					body: JSON.stringify(body),
-					signal: AbortSignal.timeout(5_000),
-				});
-				return r.status;
+				const { status } = await httpRequest('PATCH', `${httpURL}/Expiry/${id}`, JSON.stringify(body));
+				return status;
 			} catch {
 				return 'error';
 			}
@@ -155,18 +182,12 @@ suite(
 
 		async function opsUpdate(id: string, fields: Record<string, unknown>): Promise<number | 'error'> {
 			try {
-				const r = await fetch(opsURL, {
-					method: 'POST',
-					headers: jsonHeaders(),
-					body: JSON.stringify({
-						operation: 'update',
-						schema: 'data',
-						table: 'Expiry',
-						records: [{ id, ...fields }],
-					}),
-					signal: AbortSignal.timeout(5_000),
-				});
-				return r.status;
+				const { status } = await httpRequest(
+					'POST',
+					opsURL,
+					JSON.stringify({ operation: 'update', schema: 'data', table: 'Expiry', records: [{ id, ...fields }] })
+				);
+				return status;
 			} catch {
 				return 'error';
 			}
@@ -176,16 +197,12 @@ suite(
 		// parse errors, so we use `SET n = <number>` which parses cleanly.
 		async function sqlUpdate(id: string, newN: number): Promise<number | 'error'> {
 			try {
-				const r = await fetch(opsURL, {
-					method: 'POST',
-					headers: jsonHeaders(),
-					body: JSON.stringify({
-						operation: 'sql',
-						sql: `UPDATE data.Expiry SET n = ${newN} WHERE id = '${id}'`,
-					}),
-					signal: AbortSignal.timeout(5_000),
-				});
-				return r.status;
+				const { status } = await httpRequest(
+					'POST',
+					opsURL,
+					JSON.stringify({ operation: 'sql', sql: `UPDATE data.Expiry SET n = ${newN} WHERE id = '${id}'` })
+				);
+				return status;
 			} catch {
 				return 'error';
 			}
@@ -193,13 +210,8 @@ suite(
 
 		async function addTo(id: string, delta = 1): Promise<number | 'error'> {
 			try {
-				const r = await fetch(`${httpURL}/AddToCounter/`, {
-					method: 'POST',
-					headers: jsonHeaders(),
-					body: JSON.stringify({ id, delta }),
-					signal: AbortSignal.timeout(5_000),
-				});
-				return r.status;
+				const { status } = await httpRequest('POST', `${httpURL}/AddToCounter/`, JSON.stringify({ id, delta }));
+				return status;
 			} catch {
 				return 'error';
 			}
@@ -207,20 +219,16 @@ suite(
 
 		async function getRecord(id: string): Promise<{ status: number | 'error'; body: any }> {
 			try {
-				const r = await fetch(`${httpURL}/Expiry/${id}`, {
-					method: 'GET',
-					headers: { Authorization: auth },
-					signal: AbortSignal.timeout(5_000),
-				});
+				const { status, body: rawBody } = await httpRequest('GET', `${httpURL}/Expiry/${id}`);
 				let body: any = null;
-				if (r.status === 200) {
+				if (status === 200) {
 					try {
-						body = await r.json();
+						body = JSON.parse(rawBody);
 					} catch {
 						/* ignore */
 					}
 				}
-				return { status: r.status, body };
+				return { status, body };
 			} catch {
 				return { status: 'error', body: null };
 			}
@@ -228,11 +236,7 @@ suite(
 
 		async function deleteRecord(id: string): Promise<void> {
 			try {
-				await fetch(`${httpURL}/Expiry/${id}`, {
-					method: 'DELETE',
-					headers: { Authorization: auth },
-					signal: AbortSignal.timeout(5_000),
-				});
+				await httpRequest('DELETE', `${httpURL}/Expiry/${id}`);
 			} catch {
 				/* best-effort */
 			}
@@ -250,6 +254,21 @@ suite(
 				await sleep(EXPIRY_POLL_INTERVAL_MS);
 			}
 			return false;
+		}
+
+		/**
+		 * Poll for the record being present (200) up until deadlineAt, then take one final sample.
+		 * Returns true as soon as any sample observes it present. See RESET_POLL_INTERVAL_MS above
+		 * for why a single point-in-time check isn't reliable here.
+		 */
+		async function pollForPresent(id: string, deadlineAt: number): Promise<boolean> {
+			while (Date.now() < deadlineAt) {
+				const { status } = await getRecord(id);
+				if (status === 200) return true;
+				await sleep(RESET_POLL_INTERVAL_MS);
+			}
+			const { status } = await getRecord(id);
+			return status === 200;
 		}
 
 		// ── generic harness ───────────────────────────────────────────────────────
@@ -283,13 +302,14 @@ suite(
 					`[${label}] update returned ${updateStatus} (expected 200/204)`
 				);
 
-				// Wait until the ORIGINAL expiry has passed, then check.
+				// Wait until the ORIGINAL expiry has passed, then poll for presence up until just
+				// before the reset-expiry would fire (see pollForPresent/RESET_POLL_INTERVAL_MS).
 				const checkResetAt = seedAt + CHECK_RESET_MS;
 				const waitForCheck = checkResetAt - Date.now();
 				if (waitForCheck > 0) await sleep(waitForCheck);
 
-				const { status: resetStatus } = await getRecord(id);
-				result.resetObserved = resetStatus === 200;
+				const resetDeadline = updateAt + TTL_MS - RESET_CHECK_SAFETY_MS;
+				result.resetObserved = await pollForPresent(id, resetDeadline);
 
 				// Now wait until well past the RESET expiry window (update_time + TTL_MS + slack).
 				const checkGoneAt = updateAt + TTL_MS + 1500;

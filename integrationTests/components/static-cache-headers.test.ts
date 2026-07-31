@@ -6,10 +6,16 @@
  * set_component_file and poll until the next request reflects the new policy.
  *
  * Run: npm run test:integration -- "integrationTests/components/static-cache-headers.test.ts"
+ *
+ * Polling GETs use node:http directly rather than fetch()/undici: a global-fetch client stall
+ * (of unbounded, multi-second duration under some Node/undici builds — see harper#2025) can block
+ * this suite's poll loop for tens of seconds and read as the chokidar reload never landing, when
+ * it's really the polling request itself that never landed. node:http isn't subject to that stall.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
+import http from 'node:http';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
@@ -29,14 +35,31 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 		await teardownHarper(ctx);
 	});
 
-	async function getPath(path: string): Promise<Response> {
-		const res = await fetch(new URL(path, ctx.harper.httpURL));
-		strictEqual(res.status, 200);
-		await res.text(); // drain
-		return res;
+	interface SimpleResponse {
+		status: number;
+		headers: { get(name: string): string | null };
 	}
 
-	async function getCss(): Promise<Response> {
+	function getPath(path: string): Promise<SimpleResponse> {
+		return new Promise((resolvePromise, reject) => {
+			const u = new URL(path, ctx.harper.httpURL);
+			const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname }, (res) => {
+				res.on('data', () => {}); // drain
+				res.on('end', () => {
+					strictEqual(res.statusCode, 200);
+					const headers = res.headers;
+					resolvePromise({
+						status: res.statusCode!,
+						headers: { get: (name: string) => (headers[name.toLowerCase()] as string) ?? null },
+					});
+				});
+			});
+			req.on('error', reject);
+			req.end();
+		});
+	}
+
+	function getCss(): Promise<SimpleResponse> {
 		return getPath('/test.css');
 	}
 
