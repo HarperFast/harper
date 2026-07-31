@@ -4,7 +4,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const { contextStorage } = require('#src/resources/transaction');
-const { TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
+const { TRANSACTION_STATE, DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 
 // Regression coverage for a transaction-context leak exposed by issue #1591/#1592 (ambient user
 // context for operation handlers) and confirmed against a real 2-node cluster-formation scenario
@@ -136,36 +136,51 @@ describe('Ambient operation context must not couple independent writes (transact
 	// even though the same coalescing was proven to silently drop a write in the live 4-node cluster
 	// integration test (harper-pro's replicationTopology.test.mjs) that originally caught this.
 	//
-	// This test originally asserted the mechanism directly, via the leftover `.transaction`
-	// reference each write left attached to the shared ambient context after it completed:
-	// distinct instances proved each independent write got its own transaction rather than
-	// coalescing into a prior, already-completed one. That leftover reference no longer exists —
+	// This test originally proved the mechanism via the leftover `.transaction` reference each
+	// write left attached to the shared ambient context after it completed: distinct instances
+	// proved each independent write got its own transaction rather than coalescing into a prior,
+	// already-completed one. That leftover reference no longer survives past completion —
 	// DatabaseTransaction now releases the context's back-reference the instant it completes
 	// (commit or abort; see DatabaseTransaction.ts's releaseContext(), added so a long-lived
 	// context, e.g. an MQTT subscription context, can't keep pinning a finished transaction in
-	// memory). That is a strictly stronger guarantee than this test originally checked: a
-	// completed transaction is never left attached for a later write to (re)observe or reuse at
-	// all, independent of whether resources/transaction.ts's join-vs-fresh check is the fixed
-	// `.open === TRANSACTION_STATE.OPEN` or the old, buggy bare-truthiness `if (context?.transaction)` —
-	// both see a falsy `null` once the prior write's commit has released it, so both take the
-	// "start a fresh transaction" branch.
-	it('releases each independent no-explicit-context write’s transaction from the ambient context once it completes (mechanism-level)', async () => {
+	// memory). A bare null check alone would NOT still discriminate the #1591 fix from a revert,
+	// though: both the fixed `.open === TRANSACTION_STATE.OPEN` check and the old, buggy
+	// bare-truthiness `if (context?.transaction)` check see the SAME falsy `null` once the prior
+	// write's commit has released it, so both take the "start a fresh transaction" branch by the
+	// time this test reads the ambient context after each write — the discriminating power has to
+	// come from OBSERVING that a fresh instance really was minted, not from what's left behind
+	// afterward. resources/transaction.ts:44's `transaction.setContext(context)` runs exactly once,
+	// synchronously, whenever the "start a transaction" branch actually constructs a new
+	// DatabaseTransaction — never on the "already in a transaction, proceed" branch — so hooking it
+	// captures the same instance the original leftover-reference check relied on, before this PR's
+	// own release can clear it.
+	it('releases each independent no-explicit-context write’s transaction from the ambient context once it completes, and each is a genuinely fresh instance (mechanism-level)', async () => {
 		const transactionsSeenAfterEachWrite = [];
-		await serverUtilities.processLocalTransaction(
-			{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
-			async () => {
-				await LeakTable.put('mech-first', { name: 'first' });
-				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+		const transactionsStarted = [];
+		const originalSetContext = DatabaseTransaction.prototype.setContext;
+		DatabaseTransaction.prototype.setContext = function (context) {
+			transactionsStarted.push(this);
+			return originalSetContext.call(this, context);
+		};
+		try {
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
+				async () => {
+					await LeakTable.put('mech-first', { name: 'first' });
+					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
 
-				await LeakTable.put('mech-second', { name: 'second' });
-				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+					await LeakTable.put('mech-second', { name: 'second' });
+					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
 
-				await LeakTable.put('mech-third', { name: 'third' });
-				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+					await LeakTable.put('mech-third', { name: 'third' });
+					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
 
-				return { message: 'ok' };
-			}
-		);
+					return { message: 'ok' };
+				}
+			);
+		} finally {
+			DatabaseTransaction.prototype.setContext = originalSetContext;
+		}
 
 		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
 		assert.strictEqual(
@@ -182,6 +197,25 @@ describe('Ambient operation context must not couple independent writes (transact
 			afterThird,
 			null,
 			"the third write's transaction must likewise be released, for the same reason"
+		);
+
+		assert.strictEqual(
+			transactionsStarted.length,
+			3,
+			'each independent write must start its own transaction() call — none may join an existing OPEN transaction'
+		);
+		assert.notStrictEqual(
+			transactionsStarted[0],
+			transactionsStarted[1],
+			'the second write must not join the first write’s transaction instance: each independent, ' +
+				'no-explicit-context write must run in its own DatabaseTransaction, not a stale one left over ' +
+				'from a prior, already-completed call on the shared ambient context — this is the #1591 ' +
+				'dispatcher fix (resources/transaction.ts:35’s `.open === OPEN` check), not this PR’s release'
+		);
+		assert.notStrictEqual(
+			transactionsStarted[1],
+			transactionsStarted[2],
+			'the third write must not join the second write’s transaction instance, for the same reason'
 		);
 	});
 });

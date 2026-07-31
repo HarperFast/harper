@@ -779,6 +779,24 @@ describe('Transactions', () => {
 			assert.equal((await TxnTest.get(92)).name, 'first txn on shared context');
 			assert.equal((await TxnTest.get(93)).name, 'second txn on shared context');
 		});
+		// #1411: a timeout-poisoned abort must NOT release the context's back-reference. Resource.ts's
+		// dispatcher deliberately keeps joining a `timedOut` transaction (context?.transaction?.timedOut)
+		// so the rest of the logical operation fails atomically, instead of silently starting a fresh
+		// transaction for a write made after the timeout fired (see integrationTests/resources/
+		// txn-overtime-atomicity.test.ts for the end-to-end regression this guards).
+		it('keeps a timeout-poisoned transaction attached to its context so later writes still fail atomically', async function () {
+			const context = {};
+			const txn = new DatabaseTransaction();
+			txn.setContext(context);
+			context.transaction = txn;
+			txn.abortDueToTimeout();
+			assert.strictEqual(
+				context.transaction,
+				txn,
+				'a timed-out transaction must remain attached as a poison tombstone'
+			);
+			assert.strictEqual(context.transaction.timedOut, true);
+		});
 	});
 	describe('Testing updates with extended class with loadAsInstance=false', () => {
 		before(() => {
