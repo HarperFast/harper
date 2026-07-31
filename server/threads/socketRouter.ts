@@ -3,7 +3,6 @@ import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
-import { cleanupSocketsDirectory } from '../http.ts';
 import { isMainThread } from 'worker_threads';
 import { join } from 'path';
 
@@ -35,9 +34,14 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	// can bind), so it can only ever clear files nothing is using yet — never a live mirror. The
 	// inode ownership guard in cleanupUdsFiles()/markUdsBindFailed() (see http.ts) is the matching
 	// defense for the in-process rolling-restart case, which this sweep does not cover.
+	// Lazy dynamic import (not a top-level one), matching server/status/index.ts's own lazy import of
+	// http.ts: http.ts's module graph reaches security/auth.ts, whose module-scope table() call needs
+	// config already initialized — pulling that graph in at this file's own top level (which
+	// bin/run.ts imports before parsing argv / initializing config) breaks startup with "Unable to
+	// determine database storage path" before main() ever runs.
 	if (isMainThread && !sweptSocketsDirectory) {
 		sweptSocketsDirectory = true;
-		cleanupSocketsDirectory();
+		(await import('../http.ts')).cleanupSocketsDirectory();
 	}
 	recordHostname().catch((err) => harperLogger.error?.('Error recording hostname for analytics:', err));
 	// Drive transaction-log cooling from the main thread (the registry is a
