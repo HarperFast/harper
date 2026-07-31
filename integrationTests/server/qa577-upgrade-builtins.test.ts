@@ -265,7 +265,7 @@ suite('QA-577: fresh-install control (built-in key already present)', { skip }, 
 		// even starts, so the backfill must see it and no-op.
 		seedConfigKey(ctx.harper.dataRootDir, BACKFILL_KEY);
 		await startHarper(ctx, {
-			config: {},
+			config: { logging: { level: 'info' } },
 			env: { HARPER_BUILTIN_COMPONENTS: BACKFILL_KEY_REGISTRATION },
 		});
 
@@ -276,6 +276,14 @@ suite('QA-577: fresh-install control (built-in key already present)', { skip }, 
 		ok(Object.prototype.hasOwnProperty.call(doc, BACKFILL_KEY));
 		strictEqual(countTopLevelKey(raw, BACKFILL_KEY), 1, 'must not duplicate the key');
 		const bootLog = readBootLog(ctx.harper);
+		// Positive control (as qa702 does): prove hdb.log actually captured real boot content at
+		// 'info' level before trusting its ABSENCE below — otherwise a missing/misrouted log file
+		// would make the negative assertion pass vacuously regardless of what the backfill did.
+		ok(
+			bootLog.length > 0,
+			`positive control: expected hdb.log to have real boot content at ${bootLogPath(ctx.harper)} -- ` +
+				`if this is empty, the activation-log assertion below can't detect anything, regardless of what it shows`
+		);
 		ok(
 			!bootLog.includes(ACTIVATION_LOG_SNIPPET),
 			`key already present at boot must not log a backfill activation; hdb.log:\n${bootLog}`
@@ -294,7 +302,7 @@ suite('QA-577: OSS-core control (no HARPER_BUILTIN_COMPONENTS registered)', { sk
 
 	test('real OSS core boot path never backfills the Pro-only key', async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			config: {},
+			config: { logging: { level: 'info' } },
 			// Pin '' rather than omitting the key: the harness spawns with `{ ...process.env, ...env }`,
 			// so an ambient HARPER_BUILTIN_COMPONENTS (e.g. this suite run under harper-pro's own CI)
 			// would otherwise flow straight through and register a built-in this control asserts is not.
@@ -309,6 +317,15 @@ suite('QA-577: OSS-core control (no HARPER_BUILTIN_COMPONENTS registered)', { sk
 			!Object.prototype.hasOwnProperty.call(doc, BACKFILL_KEY),
 			`OSS core with no built-ins registered must not get ${BACKFILL_KEY} backfilled; config keys were: ${Object.keys(doc)}`
 		);
-		ok(!readBootLog(ctx.harper).includes(ACTIVATION_LOG_SNIPPET));
+		const bootLog = readBootLog(ctx.harper);
+		// Positive control (as qa702 does): prove hdb.log actually captured real boot content at
+		// 'info' level before trusting its ABSENCE below — otherwise an empty/missing hdb.log
+		// (path drift, log never created) would make the negative assertion pass vacuously.
+		ok(
+			bootLog.length > 0,
+			`positive control: expected hdb.log to have real boot content at ${bootLogPath(ctx.harper)} -- ` +
+				`if this is empty, the activation-log assertion below can't detect anything, regardless of what it shows`
+		);
+		ok(!bootLog.includes(ACTIVATION_LOG_SNIPPET));
 	});
 });
