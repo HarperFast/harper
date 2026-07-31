@@ -459,6 +459,21 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 	// files (the production bug this test suite guards against).
 
 	describe('registerUdsCleanupPaths + recordUdsBindSuccess + cleanupUdsFiles', () => {
+		it('recordUdsBindSuccess logs a warning instead of failing silently when statSync throws', () => {
+			const harperLogger = require('#src/utility/logging/harper_logger');
+			const warnStub = sandbox.stub(harperLogger, 'warn');
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'stat-fails.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'stat-fails.yaml');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			// Nothing was ever created at sockPath, so the stat inside recordUdsBindSuccess throws —
+			// standing in for the "just bound but statSync still fails" case this guards against.
+
+			recordUdsBindSuccess(sockPath);
+
+			assert.ok(warnStub.calledOnce, 'should log a warning instead of leaving no trace');
+			assert.ok(warnStub.firstCall.args[0].includes(sockPath));
+		});
+
 		it('normal shutdown: removes the socket and yaml this worker bound and recorded', () => {
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'test.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'test.yaml');
@@ -528,7 +543,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			assert.ok(fs.existsSync(yamlPath), "a later generation's yaml must survive the second cleanup pass");
 		});
 
-		it('a bind that never succeeded does not unlink anything', () => {
+		it('an unconfirmed bind does not unlink a live file left by someone else at that path', () => {
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'never-bound.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'never-bound.yaml');
 			// Some other, unrelated process/state left files at this path; this worker registered
@@ -541,6 +556,26 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 
 			assert.ok(fs.existsSync(sockPath), 'an unconfirmed bind must not be treated as owned');
 			assert.ok(fs.existsSync(yamlPath), 'an unconfirmed bind must not be treated as owned');
+		});
+
+		it('retracts a stale yaml when nothing at all is at the socket path (a non-path-too-long bind failure)', () => {
+			// SNICallback.ready writes the yaml independently of whether listen() ever succeeds (see
+			// the module-level comment on failedUdsPaths). A bind failure other than the overlong-path
+			// precheck — the only one markUdsBindFailed() covers, see its doc comment — leaves no
+			// socket file and no recorded identity for this entry. With nothing on disk to protect,
+			// this is the same "no live owner" case markUdsBindFailed() already treats as safe to
+			// retract, so cleanupUdsFiles() must not leak it either.
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.yaml');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			cleanupUdsFiles();
+
+			assert.ok(
+				!fs.existsSync(yamlPath),
+				'a yaml with no live socket anywhere should be retracted, not leaked forever'
+			);
 		});
 
 		it('cleanupUdsFiles does not throw when files are already gone (ENOENT)', () => {
