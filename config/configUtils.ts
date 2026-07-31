@@ -711,7 +711,12 @@ export function updateConfigObject(param: string, value: any) {
 			else if (typeof node[segment] !== 'object' || node[segment] === null) return;
 			node = node[segment];
 		}
-		node[pathSegments[pathSegments.length - 1]] = value;
+		// Match squashObj's own convention (below) of never writing an `undefined` value as an
+		// enumerable key: several root-config readers (e.g. bin/run.ts) iterate configObj's own
+		// keys and assume every one holds a real value.
+		const leaf = pathSegments[pathSegments.length - 1];
+		if (value === undefined) delete node[leaf];
+		else node[leaf] = value;
 	}
 }
 

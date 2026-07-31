@@ -254,5 +254,23 @@ describe('Test environmentManager module', () => {
 
 			expect(update_config_object.called).to.be.false;
 		});
+
+		it('syncs installProps HDB_ROOT from config AFTER replaying overrides, not from the pre-replay disk read', () => {
+			// Regression test for a bug the round-2 canonical-keying fix introduced: setProperty()
+			// records a rootPath override under its canonical name, not HDB_ROOT_KEY, so replaying it
+			// doesn't retrigger the installProps side effect in setProperty() itself — getHdbBasePath()
+			// only tracks an isolated rootPath override if this sync in initSync() runs after replay.
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
+			sandbox.stub(config_utils, 'initConfig');
+			const get_config_value = sandbox.stub(config_utils, 'getConfigValue').returns('/isolated/root');
+			env_rw.__set__('propFileExists', true);
+			env_rw.__set__('inheritedOverridesApplied', true);
+			env_rw.__set__('appliedOverrides', new Map([['rootPath', '/isolated/root']]));
+
+			env_rw.initSync(true);
+
+			expect(get_config_value.calledAfter(update_config_object)).to.be.true;
+			expect(env_rw.getHdbBasePath()).to.equal('/isolated/root');
+		});
 	});
 });

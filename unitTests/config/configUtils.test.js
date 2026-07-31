@@ -1000,6 +1000,19 @@ describe('Test configUtils module', () => {
 			expect(nested_config).to.eql({ threads: 4 });
 			config_obj_rw();
 		});
+
+		it('deletes rather than writing an undefined value into the nested tree', () => {
+			// squashObj (below) never writes an undefined value as an enumerable key either; several
+			// root-config readers iterate configObj's own keys and assume every one holds a real value.
+			const nested_config = { databases: { data: { path: '/old' } } };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
+
+			expect(nested_config.hasOwnProperty('databases')).to.be.false;
+			config_obj_rw();
+		});
 	});
 
 	describe('Test updateConfigValue function', () => {
