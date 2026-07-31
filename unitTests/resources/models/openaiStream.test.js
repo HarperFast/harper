@@ -193,6 +193,21 @@ describe('openaiStream', () => {
 		assert.ok(!msgs.some((m) => m.data === '[DONE]'), 'must not emit [DONE] after overflow');
 	});
 
+	it('charges JSON syntax overhead so tiny-entry floods cannot outgrow the nominal budget', async () => {
+		// 150 calls x 1024 one-char values: raw key+value chars total ~755K (under the
+		// 1,048,576 budget), but the serialized JSON — quotes, colons, commas, per-call
+		// envelope — is ~1.4M. Charging syntax per entry makes the budget an upper bound
+		// on the real serialization, so this must trip while staying under both count caps.
+		const wide = {};
+		for (let i = 0; i < 1024; i++) wide[`k${i}`] = 1;
+		const deltas = Array.from({ length: 150 }, (_, i) => ({
+			deltaToolCalls: [{ id: `c${i}`, name: 'fn', arguments: wide }],
+		}));
+		const msgs = await collect(openaiStream(gen(...deltas)));
+		const last = msgs[msgs.length - 1].data;
+		assert.ok(last.error, 'expected a terminal error frame');
+	});
+
 	it('charges replacements of an existing key against the budget, not just new keys', async () => {
 		// The key count stays 1 the whole time — only the budget can catch this.
 		const big = 'y'.repeat(300_000);

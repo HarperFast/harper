@@ -35,11 +35,15 @@ export interface OpenAIStreamOptions {
 const MAX_TOOL_CALLS_PER_STREAM = 256;
 const MAX_TOOL_ARGUMENT_KEYS = 1024;
 // Cumulative serialized-character budget across the WHOLE stream's assembly (ids, names,
-// and every argument value as it arrives). Call/key counts alone don't bound memory — one
-// key can hold an arbitrarily large value, and the final JSON.stringify duplicates the
-// retained allocation — so the budget is charged per delta (O(delta), no re-serialization
-// of the accumulator) and monotonically: replacing an existing key charges the new value
-// too, so churn cannot smuggle unbounded values under a stable key count.
+// and every argument value as it arrives, plus per-entry JSON syntax so the count is an
+// upper bound on `JSON.stringify(arguments)`, not just the raw content). Call/key counts
+// alone don't bound memory — one key can hold an arbitrarily large value, and the final
+// JSON.stringify duplicates the retained allocation — so the budget is charged per delta
+// (O(delta), no re-serialization of the accumulator) and monotonically: replacing an
+// existing key charges the new value too, so churn cannot smuggle unbounded values under
+// a stable key count. The SSE frame that flushes the calls adds only a bounded constant
+// envelope per call plus string-escaping of the arguments blob (< 2x), so the frame size
+// is bounded by a small multiple of this budget.
 const MAX_TOOL_ASSEMBLY_CHARS = 1_048_576;
 
 /** Signals that a stream exceeded the tool-assembly bounds; surfaced as an SSE error frame. */
@@ -49,8 +53,12 @@ class ToolAssemblyOverflowError extends Error {
 
 /**
  * Merge `source` into `target`, returning the keys added and the serialized characters
- * charged (key length on first add; value length every assignment, replacements included).
- * Keeps accumulation O(delta), not O(total).
+ * charged. Charging over-approximates `JSON.stringify(target).length`: each first add
+ * charges the key plus 4 chars of JSON syntax (`"key":` quotes and colon, plus the
+ * comma/brace share), and every assignment — replacements included — charges the
+ * serialized value. Since a replacement's earlier charge is never refunded, the
+ * cumulative total stays an upper bound on the retained serialization while keeping
+ * accumulation O(delta), not O(total).
  */
 function assignCountingNewKeys(target: object, source: object): { addedKeys: number; addedChars: number } {
 	let addedKeys = 0;
@@ -58,7 +66,7 @@ function assignCountingNewKeys(target: object, source: object): { addedKeys: num
 	for (const key in source) {
 		if (!(key in target)) {
 			addedKeys++;
-			addedChars += key.length;
+			addedChars += key.length + 4;
 		}
 		const value = (source as Record<string, unknown>)[key];
 		// `?? ''`: JSON.stringify returns undefined for undefined/function/symbol values —
@@ -165,7 +173,10 @@ export async function* openaiStream(
 						// setter and silently drop the field (the previous spread did not).
 						existing = { index: toolAssembly.size, arguments: Object.create(null), argumentCount: 0 };
 						toolAssembly.set(incoming.id, existing);
-						assemblyChars += incoming.id.length;
+						// + 96: the flush frame's fixed per-call envelope (index/id/type/function
+						// syntax and the argument object's braces), so 256 calls of envelope are
+						// inside the budget too, not on top of it.
+						assemblyChars += incoming.id.length + 96;
 					}
 					if (incoming.name && incoming.name !== existing.name) {
 						assemblyChars += incoming.name.length;
