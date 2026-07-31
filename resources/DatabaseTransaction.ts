@@ -57,6 +57,11 @@ interface OutstandingCommit {
 let oldestOutstandingCommit: OutstandingCommit | undefined;
 let newestOutstandingCommit: OutstandingCommit | undefined;
 let outstandingCommitCount = 0;
+// Caps the stuck-commit log (checkOverloaded() below) to at most one line per this interval across
+// the whole thread, regardless of how many distinct commits individually cross the threshold — see
+// the comment at the log site for why a per-commit-only dedup isn't enough under sustained overload.
+const OVERLOAD_LOG_MIN_INTERVAL_MS = 1000;
+let lastOverloadLogAt = -Infinity;
 
 // Track a submitted commit until it settles. Every attempt is tracked unconditionally: a
 // coordinated retry round and a chained second-store commit are both issued from inside the
@@ -457,19 +462,28 @@ export class DatabaseTransaction implements Transaction {
 			!this.overloadChecked &&
 			performance.now() - oldestOutstandingCommit.start > MAX_OUTSTANDING_TXN_DURATION
 		) {
-			if (!oldestOutstandingCommit.logged) {
+			const now = performance.now();
+			// Also rate-limited across the whole overload episode (not just deduped per commit): under
+			// sustained heavy load, many distinct commits can each individually age past the limit in
+			// quick succession as earlier ones finally settle, which without this cap would turn one
+			// overload episode into a growing stream of ERROR lines — the same "flood" harper#2001's
+			// original per-request log was fixed to avoid, just shifted from per-request to per-commit.
+			// A commit skipped by the cooldown is NOT marked `logged`, so it still gets a log later if
+			// it's still the oldest once the cooldown clears, rather than going silent forever.
+			if (!oldestOutstandingCommit.logged && now - lastOverloadLogAt > OVERLOAD_LOG_MIN_INTERVAL_MS) {
 				// Log once per stuck commit (not once per rejected request, harper#2001): a wedged
 				// thread otherwise logs nothing at all server-side while rejecting every write with a
 				// 503, which was the single biggest obstacle to root-causing a recurrence. The flag lives
 				// on the node itself, so if THIS commit settles while still over the limit and a
 				// different one is now oldest, that one logs too instead of staying silent forever.
 				oldestOutstandingCommit.logged = true;
+				lastOverloadLogAt = now;
 				const nativeTransactionId = oldestOutstandingCommit.nativeTransaction?.id;
 				const store = oldestOutstandingCommit.store;
 				const startedFrom = oldestOutstandingCommit.startedFrom;
 				harperLogger.error(
 					`Rejecting writes on this thread: a commit has been outstanding for ` +
-						`${Math.round(performance.now() - oldestOutstandingCommit.start)}ms (exceeds the ` +
+						`${Math.round(now - oldestOutstandingCommit.start)}ms (exceeds the ` +
 						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${store?.rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
 						(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
 						(startedFrom?.resourceName
