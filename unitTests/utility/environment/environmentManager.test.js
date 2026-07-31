@@ -7,6 +7,7 @@ const config_utils = require('#src/config/configUtils');
 const common_utils = require('#src/utility/common_utils');
 const rewire = require('rewire');
 const fs = require('fs');
+const hdbTerms = require('#src/utility/hdbTerms');
 const env_rw = rewire('#src/utility/environment/environmentManager');
 const log = require('#src/utility/logging/harper_logger');
 
@@ -213,6 +214,18 @@ describe('Test environmentManager module', () => {
 			env_rw.setProperty('foo', 'first');
 			env_rw.setProperty('foo', 'second');
 			expect(env_rw.getConfigOverrides()).to.eql({ foo: 'second' });
+		});
+
+		it('collapses two different legacy aliases for the same canonical param onto one Map entry', () => {
+			// SERVER_PORT_KEY ('SERVER_PORT') and OPERATIONSAPI_NETWORK_PORT both canonicalize to
+			// 'operationsApi_network_port' (CONFIG_PARAM_MAP). Without canonical keying these would
+			// land in two separate Map entries, and replay order (Map insertion order) wouldn't
+			// guarantee the later call wins — a worker could end up on a stale alias's value even
+			// though its parent had already moved past it.
+			sandbox.stub(config_utils, 'updateConfigObject');
+			env_rw.setProperty(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, 9925);
+			env_rw.setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9926);
+			expect(env_rw.getConfigOverrides()).to.eql({ operationsApi_network_port: 9926 });
 		});
 
 		it('reapplyAllOverrides replays every override applied on this thread through setProperty', () => {
