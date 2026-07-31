@@ -964,6 +964,42 @@ describe('Test configUtils module', () => {
 			);
 			logger_trace_stub.restore();
 		});
+
+		it('mirrors the override into the nested configObj tree at the corresponding path', () => {
+			const nested_config = { operationsApi: { network: { port: 9925, securePort: 9925 } } };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, null);
+
+			expect(nested_config.operationsApi.network.securePort).to.equal(null);
+			config_obj_rw();
+		});
+
+		it('does not initialize configObj — that would permanently short-circuit getConfigObj()s lazy initConfig()', () => {
+			// getConfigObj() treats a falsy configObj as "not yet initialized" and calls initConfig();
+			// creating configObj as {} here (before any real config has been loaded, e.g. during
+			// install before the config file exists) would make that check pass on an empty tree
+			// forever, and componentLoader's root-component load would see zero components.
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', undefined);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, null);
+
+			expect(config_utils_rw.__get__('configObj')).to.be.undefined;
+			config_obj_rw();
+		});
+
+		it('does not clobber an existing scalar value (legacy shorthand) while descending the nested path', () => {
+			const nested_config = { threads: 4 };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.THREADS_COUNT, 2);
+
+			expect(nested_config).to.eql({ threads: 4 });
+			config_obj_rw();
+		});
 	});
 
 	describe('Test updateConfigValue function', () => {

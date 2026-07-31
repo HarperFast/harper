@@ -150,10 +150,17 @@ describe('Test environmentManager module', () => {
 
 	describe('Test initTestEnvironment function', () => {
 		let set_property_stub;
+		let set_property_rw;
 
 		before(() => {
 			set_property_stub = sandbox.stub();
-			env_rw.__set__('setProperty', set_property_stub);
+			set_property_rw = env_rw.__set__('setProperty', set_property_stub);
+		});
+
+		// Without this, the stubbed internal setProperty binding leaks into every describe block
+		// that runs later in this file (rewire's __set__ isn't reverted by sandbox.restore()).
+		after(() => {
+			set_property_rw();
 		});
 
 		afterEach(() => {
@@ -179,6 +186,73 @@ describe('Test environmentManager module', () => {
 
 			expect(set_property_stub.called).to.be.true;
 			expect(set_property_stub.callCount).to.equal(31);
+		});
+	});
+
+	describe('Test config-override tracking and replay (worker-thread inheritance)', () => {
+		afterEach(() => {
+			sandbox.restore();
+			env_rw.__set__('appliedOverrides', new Map());
+			env_rw.__set__('inheritedOverridesApplied', false);
+		});
+
+		it('getConfigOverrides returns undefined when nothing has been overridden on this thread', () => {
+			env_rw.__set__('appliedOverrides', new Map());
+			expect(env_rw.getConfigOverrides()).to.be.undefined;
+		});
+
+		it('getConfigOverrides reflects every setProperty call on this thread, in order', () => {
+			sandbox.stub(config_utils, 'updateConfigObject');
+			env_rw.setProperty('foo', 'bar');
+			env_rw.setProperty('baz', 42);
+			expect(env_rw.getConfigOverrides()).to.eql({ foo: 'bar', baz: 42 });
+		});
+
+		it('a later setProperty for the same param overwrites the value replayed to workers', () => {
+			sandbox.stub(config_utils, 'updateConfigObject');
+			env_rw.setProperty('foo', 'first');
+			env_rw.setProperty('foo', 'second');
+			expect(env_rw.getConfigOverrides()).to.eql({ foo: 'second' });
+		});
+
+		it('reapplyAllOverrides replays every override applied on this thread through setProperty', () => {
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
+			env_rw.__set__('appliedOverrides', new Map([['foo', 'bar'], ['baz', 42]]));
+			const reapply_all_overrides = env_rw.__get__('reapplyAllOverrides');
+
+			reapply_all_overrides();
+
+			expect(update_config_object.calledWith('foo', 'bar')).to.be.true;
+			expect(update_config_object.calledWith('baz', 42)).to.be.true;
+		});
+
+		it('a forced initSync() reapplies overrides instead of silently dropping them after the disk re-read', () => {
+			// Regression test: initConfig(force) rebuilds configObj/flatConfigObj from disk, which
+			// would otherwise discard anything setProperty() had layered on top of it (e.g. after a
+			// component RESTART calls initSync(true) — see security/keys.ts).
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
+			sandbox.stub(config_utils, 'initConfig');
+			sandbox.stub(config_utils, 'getConfigValue');
+			env_rw.__set__('propFileExists', true);
+			env_rw.__set__('inheritedOverridesApplied', true);
+			env_rw.__set__('appliedOverrides', new Map([['locally_set_key', 'should-survive-reload']]));
+
+			env_rw.initSync(true);
+
+			expect(update_config_object.calledWith('locally_set_key', 'should-survive-reload')).to.be.true;
+		});
+
+		it('a non-forced initSync() does not replay local overrides a second time', () => {
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
+			sandbox.stub(config_utils, 'initConfig');
+			sandbox.stub(config_utils, 'getConfigValue');
+			env_rw.__set__('propFileExists', true);
+			env_rw.__set__('inheritedOverridesApplied', true);
+			env_rw.__set__('appliedOverrides', new Map([['locally_set_key', 'value']]));
+
+			env_rw.initSync(false);
+
+			expect(update_config_object.called).to.be.false;
 		});
 	});
 });
