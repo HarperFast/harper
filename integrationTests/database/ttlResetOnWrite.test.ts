@@ -69,7 +69,6 @@ const EXPIRY_POLL_INTERVAL_MS = 200;
 // whole window on one slow response and get misread as the record surviving past its TTL (F-002
 // stale resurrection).
 const EXPIRY_POLL_SAMPLE_TIMEOUT_MS = 400;
-const EXPIRY_POLL_MIN_REMAINING_MS = 50;
 
 // The "record is RESET" check polls across the whole valid window (past the original expiry, up
 // to just before the reset-expiry) rather than sampling a single instant. Polling only helps if
@@ -259,20 +258,23 @@ suite(
 
 		interface AbsenceResult {
 			observed: boolean;
-			// true only if every sample that completed returned neither 200 nor 404 (timeout or
-			// transport error) — i.e. we never got a clean read at all. Mirrors
-			// PresenceResult.inconclusive: without it, a stalled response consuming the whole window
-			// reads as "still present" and gets reported as F-002 stale resurrection, when it's
-			// really "couldn't measure."
+			// true only if the LAST full-budget sample admitted within the window returned neither
+			// 200 nor 404 (timeout or transport error) — not "every sample ever," since a 200 goes
+			// stale: it proves the record hadn't expired *yet*, not that it's still present now.
+			// Without this, a stalled response on the deciding sample reads as "still present" and
+			// gets reported as F-002 stale resurrection, when it's really "couldn't measure."
 			inconclusive: boolean;
 		}
 
 		/**
-		 * Poll until the record is absent (404), bounding every attempt and sleep to what's left
-		 * before the deadline so no sample can start once the window has closed. Returns as soon as
-		 * any sample observes it absent. Each attempt is capped at EXPIRY_POLL_SAMPLE_TIMEOUT_MS —
-		 * and further capped to the remaining time near the deadline — so one slow/stalled response
-		 * can't consume the whole window on its own.
+		 * Poll until the record is absent (404), bounding every attempt to what's left before the
+		 * deadline so no sample can start once the window has closed. Returns as soon as any sample
+		 * observes it absent. A sample is only admitted — and only gets to decide conclusiveness —
+		 * once it can run with the FULL EXPIRY_POLL_SAMPLE_TIMEOUT_MS budget: since conclusiveness
+		 * comes from the last completed sample (see below), a window with a fixed size always has a
+		 * final admitted sample, and admitting one with a shortened, clamped budget would make that
+		 * structurally-doomed sample the one deciding "still present" vs "couldn't measure" — gating
+		 * the suite's loudest data-integrity alarm on its least reliable measurement.
 		 */
 		async function pollUntilGone(id: string, maxMs: number): Promise<AbsenceResult> {
 			const deadline = Date.now() + maxMs;
@@ -283,9 +285,8 @@ suite(
 			// make every later stall in the rest of the window read as conclusive "still present",
 			// which is exactly the stall-reads-as-defect failure this poll exists to prevent.
 			let lastSampleClean = false;
-			while (deadline - Date.now() >= EXPIRY_POLL_MIN_REMAINING_MS) {
-				const remainingMs = deadline - Date.now();
-				const { status } = await getRecord(id, Math.min(EXPIRY_POLL_SAMPLE_TIMEOUT_MS, remainingMs));
+			while (deadline - Date.now() >= EXPIRY_POLL_SAMPLE_TIMEOUT_MS) {
+				const { status } = await getRecord(id, EXPIRY_POLL_SAMPLE_TIMEOUT_MS);
 				if (status === 404) return { observed: true, inconclusive: false };
 				lastSampleClean = status === 200;
 				const sleepBudgetMs = deadline - Date.now();
