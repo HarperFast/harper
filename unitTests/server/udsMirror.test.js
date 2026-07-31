@@ -492,6 +492,42 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			assert.ok(fs.existsSync(yamlPath), "the replacement's yaml must survive too — it owns the pair");
 		});
 
+		it('is idempotent across the two real-world calls per worker, even if a later generation reuses the exact recorded inode number', () => {
+			// cleanupUdsFiles() runs twice per worker (threadServer.js's SHUTDOWN handler, then
+			// again from process.on('exit') once closeServers() has released this worker's own
+			// socket). Inode numbers get reused once freed, so by the time the second call runs, an
+			// unrelated later generation can coincidentally occupy this path with the SAME inode
+			// number this worker originally recorded — the exact production race, replayed within
+			// one process. A hard link pins the original inode alive across the first cleanup call
+			// (standing in for the outgoing worker's own still-open fd in production) so the
+			// "later generation" file below is deterministically given that identical inode back,
+			// rather than depending on the OS's actual allocator timing.
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'reused-inode.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'reused-inode.yaml');
+			const pinPath = path.join(TEST_SOCKETS_DIR, 'reused-inode.sock.pin');
+			fs.writeFileSync(sockPath, 'generation 1');
+			fs.writeFileSync(yamlPath, 'generation 1 metadata\n');
+			fs.linkSync(sockPath, pinPath);
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+
+			cleanupUdsFiles(); // first pass (SHUTDOWN): owned, deletes both
+			assert.ok(!fs.existsSync(sockPath), 'first pass should remove the socket it owns');
+			assert.ok(!fs.existsSync(yamlPath), 'first pass should remove the yaml it owns');
+
+			// A later generation binds the same path and — per the scenario above — is handed the
+			// identical inode number this worker originally recorded (simulated deterministically
+			// via the pinned hard link rather than left to chance).
+			fs.renameSync(pinPath, sockPath);
+			fs.writeFileSync(yamlPath, 'later generation metadata\n');
+
+			cleanupUdsFiles(); // second pass (process.on('exit')): must be a no-op
+
+			assert.ok(fs.existsSync(sockPath), "a later generation's socket must survive the second cleanup pass");
+			assert.ok(fs.existsSync(yamlPath), "a later generation's yaml must survive the second cleanup pass");
+		});
+
 		it('a bind that never succeeded does not unlink anything', () => {
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'never-bound.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'never-bound.yaml');
@@ -593,21 +629,24 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 	// ─── cleanupSocketsDirectory ──────────────────────────────────────────────
 
 	describe('cleanupSocketsDirectory', () => {
-		it('removes all files in the sockets directory when enabled', () => {
+		it('removes all files in the sockets directory', () => {
 			const socketsDir = path.join(env.getHdbBasePath(), 'sockets');
 			fs.mkdirSync(socketsDir, { recursive: true });
 			fs.writeFileSync(path.join(socketsDir, '0-9926.sock'), '');
 			fs.writeFileSync(path.join(socketsDir, '0-9926.yaml'), '');
 			fs.writeFileSync(path.join(socketsDir, '1-9926.sock'), '');
 
-			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(true);
 			cleanupSocketsDirectory();
 
 			assert.strictEqual(fs.readdirSync(socketsDir).length, 0, 'sockets dir should be empty');
 			fs.rmdirSync(socketsDir);
 		});
 
-		it('does nothing when tls.unixDomainSockets is not enabled', () => {
+		it('sweeps crash-stale files even when this boot has since disabled UDS', () => {
+			// The sockets directory is Harper-owned and only ever holds mirror files, so a crash
+			// that left files behind while UDS was enabled must still be cleared even if the
+			// operator has since turned the feature off (including disabling it *because of* a
+			// mirror problem) — the sweep must not inherit the current config's gate.
 			const socketsDir = path.join(env.getHdbBasePath(), 'sockets');
 			fs.mkdirSync(socketsDir, { recursive: true });
 			fs.writeFileSync(path.join(socketsDir, '0-9926.sock'), '');
@@ -615,12 +654,15 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(undefined);
 			cleanupSocketsDirectory();
 
-			assert.strictEqual(fs.readdirSync(socketsDir).length, 1, 'file should remain when feature is disabled');
-			fs.rmSync(socketsDir, { recursive: true });
+			assert.strictEqual(
+				fs.readdirSync(socketsDir).length,
+				0,
+				'stale files should be swept regardless of the current UDS setting'
+			);
+			fs.rmdirSync(socketsDir);
 		});
 
 		it('does not throw when the sockets directory does not exist', () => {
-			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(true);
 			assert.doesNotThrow(() => cleanupSocketsDirectory());
 		});
 	});
