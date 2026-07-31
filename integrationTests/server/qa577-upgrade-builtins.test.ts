@@ -58,7 +58,8 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa577-upgrade-builtins');
 
-// Matches UPGRADE_BACKFILL_BUILTIN_KEYS in config/configUtils.ts — the only backfilled key today.
+// Matches UPGRADE_BACKFILL_BUILTIN_KEYS in config/configUtils.ts — one of two backfilled keys today
+// (the other, 'waf', is exercised the same way this suite exercises 'secretCustody').
 const BACKFILL_KEY = 'secretCustody';
 const ACTIVATION_LOG_SNIPPET = 'Activated built-in component(s) absent from an upgraded config';
 
@@ -248,8 +249,11 @@ suite('QA-577: fresh-install control (built-in key already present)', { skip }, 
 
 	test('key already present at boot: no activation log, no duplicate', async () => {
 		// Step 1: plain install/boot (no HARPER_BUILTIN_COMPONENTS) — produces an ordinary config
-		// file with no secretCustody key, same as any OSS-core boot.
-		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
+		// file with no secretCustody key, same as any OSS-core boot. Pin the var to '' rather than
+		// just omitting it from `env`: the harness spawns with `{ ...process.env, ...env }`, so an
+		// AMBIENT HARPER_BUILTIN_COMPONENTS (e.g. this suite running inside harper-pro's own CI,
+		// which sets it for the embedded core checkout) would otherwise flow straight through.
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: { HARPER_BUILTIN_COMPONENTS: '' } });
 		await killHarper(ctx);
 
 		// Step 2: seed the key directly (emulating "a real defaultConfig.yaml already provided
@@ -288,7 +292,10 @@ suite('QA-577: OSS-core control (no HARPER_BUILTIN_COMPONENTS registered)', { sk
 	test('real OSS core boot path never backfills the Pro-only key', async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {},
-			env: {},
+			// Pin '' rather than omitting the key: the harness spawns with `{ ...process.env, ...env }`,
+			// so an ambient HARPER_BUILTIN_COMPONENTS (e.g. this suite run under harper-pro's own CI)
+			// would otherwise flow straight through and register a built-in this control asserts is not.
+			env: { HARPER_BUILTIN_COMPONENTS: '' },
 		});
 
 		const client = createApiClient(ctx.harper);

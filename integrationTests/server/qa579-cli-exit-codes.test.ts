@@ -85,6 +85,10 @@ function runCli(args: string[], env: NodeJS.ProcessEnv, homeDir: string): CliRes
 		env: { ...process.env, ...env, HOME: homeDir, USERPROFILE: homeDir },
 		encoding: 'utf8',
 		timeout: CHILD_PROCESS_TIMEOUT_MS,
+		// spawnSync's default killSignal (SIGTERM) is not a hard ceiling -- a hang regression that
+		// installs (or ignores) a TERM handler would never actually die at this timeout. SIGKILL
+		// makes this safety net's whole reason for existing (surviving a hang regression) hold.
+		killSignal: 'SIGKILL',
 	});
 	const durationMs = Date.now() - start;
 	return {
@@ -183,6 +187,9 @@ suite('QA-579 CLI exit-code contract matrix (PR #1801)', (ctx: ContextWithHarper
 			`Expected non-zero exit for malformed config, got ${result.status}. stderr: ${result.stderr}`
 		);
 		ok(combined.length > 0, 'Expected a non-empty error message for bad config');
+		// A non-empty message alone can't distinguish "config rejected" from "connected to something
+		// else and failed for an unrelated reason" -- pin the actual, deterministic parse-error shape.
+		ok(/Error parsing.*YAMLParseError/.test(combined), `Expected a YAML parse error, got: ${combined}`);
 	});
 
 	test('Cell 2: unreachable instance (nothing listening) -> non-zero exit, no hang', async () => {

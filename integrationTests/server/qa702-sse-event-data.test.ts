@@ -26,9 +26,12 @@
  *     `resource.connect()`. It has a DIFFERENT, pre-existing falsy-data guard
  *     (`if (message.data) { ...emit data: line... }`) that silently OMITS the `data:` field
  *     entirely for any falsy value (undefined/null/''/0/false) rather than crashing OR emitting
- *     an explicit empty/`null` line the way the fixed writeSSE() does — a distinct, worth-flagging
- *     shape of "falsy SSE data" handling on a code path #1863 never touched, not a #1863 regression
- *     check. Flagged rather than fixed here since changing it is a production-code, cross-encoder
+ *     an explicit empty/`null` line the way the fixed writeSSE() does — a KNOWN DEFECT on this code
+ *     path (harper#2026: `EventSource` never dispatches a frame with an empty data buffer, so a
+ *     legitimate falsy payload like `data: false` is silently never seen by the client), not a
+ *     #1863 regression check and not an intended contract. Pinned deliberately so the fix in
+ *     harper#2026 shows up here as an expected assertion update, not a surprise regression. Flagged
+ *     rather than fixed in THIS PR since changing the encoder is a production-code, cross-encoder
  *     decision (see above), not a test fix. See
  *     integrationTests/qa-scratch/qa702-sse-event-data/resources.js for the full writeup.
  *
@@ -225,7 +228,7 @@ suite(
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: { threads: { count: 1 }, logging: { console: true, level: 'error' } },
+				config: { threads: { count: 1 }, logging: { level: 'error' } },
 				env: {},
 			});
 			client = createApiClient(ctx.harper);
@@ -297,7 +300,10 @@ suite(
 		for (const c of cases) {
 			test(
 				`a: event.data = ${c.name} -- valid SSE frame, no crash, connection stays healthy`,
-				{ timeout: 20_000 },
+				// Two sequential consumeSse() calls below, each bounded at 15s, plus a 200ms log-settle
+				// sleep -- 20s was tighter than that combined budget and could kill an otherwise-correct
+				// slow-runner case as a false red before its own diagnostics could fire.
+				{ timeout: 35_000 },
 				async () => {
 					const logBefore = readLogSafe(logPath);
 					const uncaughtBefore = countUncaught(logBefore);
@@ -323,7 +329,7 @@ suite(
 						strictEqual(
 							'data' in payloadBlock!,
 							false,
-							`expected NO data: field for falsy value ${c.name} (current contract silently omits it); got: ${JSON.stringify(payloadBlock)}`
+							`expected NO data: field for falsy value ${c.name} -- pinning a KNOWN DEFECT (harper#2026: EventSource never dispatches an empty-data frame, so a client silently never sees a legitimate falsy payload), not an intended contract; got: ${JSON.stringify(payloadBlock)}`
 						);
 					}
 
@@ -401,6 +407,14 @@ suite(
 				ok(
 					dataBlocks.length >= 1 && dataBlocks.length <= 2,
 					`expected 1-2 events yielded before the throw, got ${dataBlocks.length}. raw:\n${r.raw}`
+				);
+				// Pin the actual shipped shape, not just "didn't hang": the connection closes abruptly
+				// (no clean SSE terminator) rather than ending gracefully. A client currently cannot
+				// distinguish this from a generator that simply finished -- if that's ever fixed (e.g. a
+				// terminal `event: error` frame), this assertion should change too, deliberately.
+				ok(
+					r.closed && !r.ended,
+					`expected an abrupt close (closed=true, ended=false) for the mid-stream throw, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
 				);
 			}
 		);
