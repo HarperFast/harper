@@ -259,6 +259,33 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 1, 'the throwing entry must still be removed exactly once');
 		});
 
+		it('an async revoke that rejects is contained (no unhandled rejection) and its entry is still removed', async () => {
+			const subscription = fakeSubscription();
+			let rejectingCalls = 0;
+			const revokeRejects = async () => {
+				rejectingCalls++;
+				throw new Error('shared-feed release failed (e.g. backing store timeout)');
+			};
+			const revokeOther = spyFn();
+			register({
+				subscription,
+				username: 'async-revoke-throws',
+				authExpiresAt: 0,
+				recheck: async () => true,
+				revoke: revokeRejects,
+			});
+			register({ subscription, username: 'other', recheck: async () => true, revoke: revokeOther });
+			assert.strictEqual(_liveSubscriptionCount(), 2);
+
+			// If the rejection escaped as an unhandled rejection, testUtils' handler would throw and
+			// fail this test — awaiting here alone proves it stayed contained inside claimAndTerminate.
+			await _sweepNow();
+
+			assert.strictEqual(rejectingCalls, 1, 'a rejecting async revoke must not be invoked a second time');
+			assert.strictEqual(revokeOther.calls.length, 0, 'other subscribers sharing the object must not be revoked');
+			assert.strictEqual(_liveSubscriptionCount(), 1, 'the rejecting entry must still be removed exactly once');
+		});
+
 		it('does not terminate an entry the caller already unregistered while its recheck was still in flight', async () => {
 			const subscription = fakeSubscription();
 			const revoke = spyFn();

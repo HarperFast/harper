@@ -23,8 +23,12 @@ interface LiveSubscription {
 	authExpiresAt?: number;
 	/** Returns true if the principal is still authorized for this subscription. */
 	recheck: () => Promise<boolean>;
-	/** Stop delivery and tear down the subscription. */
-	terminate: () => void;
+	/** Stop delivery and tear down the subscription. May be async (e.g. a shared-feed refcount release). */
+	terminate: () => void | Promise<void>;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 const registry = new Set<LiveSubscription>();
@@ -74,13 +78,21 @@ function stopIfIdle(): void {
  * returned handle instead. This is the seam a feed shared by many subscribers needs: revocation must
  * stay per subscriber even once feed delivery is shared, so the registry can't assume it owns the
  * subscription object or that only one registrant will ever mutate it.
+ *
+ * Two invariants a `revoke` caller must uphold, not enforced by this module: (1) it owns the entry's
+ * lifetime end-to-end — nothing here detects a leaked registration, so a caller that forgets
+ * `unregister()` on some teardown path degrades sweep latency for every other tracked subscriber, not
+ * just its own; (2) if it shares one feed (and one `recheck`) across subscribers, `recheck` must not
+ * mutate state shared across them — `registerLiveSubscriptionForContext` in resources/Resource.ts
+ * mutates `context.user` to the freshly-rechecked principal, which is safe only because each context
+ * today belongs to exactly one subscriber.
  */
 export function registerLiveSubscription(opts: {
 	subscription: any;
 	username: string;
 	authExpiresAt?: number;
 	recheck: () => Promise<boolean>;
-	revoke?: () => void;
+	revoke?: () => void | Promise<void>;
 }): { unregister: () => void } {
 	const { subscription, username, authExpiresAt, recheck, revoke } = opts;
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return NOOP_HANDLE;
@@ -134,14 +146,16 @@ export function registerLiveSubscription(opts: {
  * removes it from the registry. `Set.delete`'s boolean return is a lock-free claim token: it's
  * false if the entry was already removed — by a caller's `unregister()` racing an in-flight
  * `recheck()`, or by another sweep path — so terminate/revoke runs at most once per entry, and
- * never for one the caller has already torn down itself.
+ * never for one the caller has already torn down itself. `terminate` is awaited (it may be async,
+ * e.g. a shared-feed refcount release) so a rejection is caught here rather than becoming an
+ * unhandled rejection on the worker.
  */
-function claimAndTerminate(entry: LiveSubscription): boolean {
+async function claimAndTerminate(entry: LiveSubscription): Promise<boolean> {
 	if (!registry.delete(entry)) return false;
 	try {
-		entry.terminate();
+		await entry.terminate();
 	} catch (error) {
-		hdbLogger.warn?.(`liveSubscriptionAuth: terminate failed for ${entry.username}: ${(error as Error).message}`);
+		hdbLogger.warn?.(`liveSubscriptionAuth: terminate failed for ${entry.username}: ${errorMessage(error)}`);
 	}
 	return true;
 }
@@ -155,12 +169,12 @@ async function sweep(): Promise<void> {
 			try {
 				const expired = entry.authExpiresAt != null && now >= entry.authExpiresAt * 1000;
 				const stillAuthorized = expired ? false : await entry.recheck();
-				if (expired || !stillAuthorized) claimAndTerminate(entry);
+				if (expired || !stillAuthorized) await claimAndTerminate(entry);
 			} catch (error) {
 				// fail closed: if authorization can't be confirmed, revoke
-				if (claimAndTerminate(entry)) {
+				if (await claimAndTerminate(entry)) {
 					hdbLogger.warn?.(
-						`liveSubscriptionAuth: revoked subscription for ${entry.username} after recheck error: ${(error as Error).message}`
+						`liveSubscriptionAuth: revoked subscription for ${entry.username} after recheck error: ${errorMessage(error)}`
 					);
 				}
 			}
