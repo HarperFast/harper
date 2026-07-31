@@ -1,5 +1,7 @@
-# QA-702 — regression anchor for #1863 ("fix: guard SSE writes against undefined event data
-# (#1724)") plus a re-characterization of F-133 (SSE mid-stream throw hang) on current main.
+# QA-702 — companion coverage for #1863 ("fix: guard SSE writes against undefined event data
+# (#1724)") plus a re-characterization of F-133 (SSE mid-stream throw hang) on current main. NOT
+# the #1863 regression anchor -- see resources.js's file header for why, and
+# unitTests/server/serverHelpers/progressEmitter.test.js for the actual anchor.
 #
 # No table backing is needed for the Resources under test, but a jsResource fixture requires
 # at least one @table/@export type to be a valid component, so this is a minimal placeholder.

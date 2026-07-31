@@ -88,9 +88,8 @@ describe('Audit log', () => {
 			() => lastEventById().get(1)?.type === 'delete' && lastEventById().get(2)?.value?.name === 'two-changed',
 			{ timeout: 2000, message: "Should have received id 1's delete and id 2's latest put" }
 		);
-		// Snapshot once the wait resolved rather than recomputing lastEventById() again below — no
-		// further writes happen in this window today, but asserting against the exact state the wait
-		// succeeded on (not a fresh recomputation) is correct regardless.
+		// Compute the map once here rather than calling lastEventById() again in each assertion below
+		// (still a recomputation over `events`, just a single one instead of two).
 		const finalEventById = lastEventById();
 		assert.equal(finalEventById.get(1)?.type, 'delete', "id 1's final delivered event should be its delete");
 		assert.equal(
