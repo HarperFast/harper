@@ -3,7 +3,8 @@
 import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.ts';
 import { getSuperUser } from '../security/user.ts';
-import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes.ts';
+import { getDeserializer } from './serverHelpers/contentTypes.ts';
+import { getSharedMessageEncoding, getSharedFrame } from './serverHelpers/sharedMessageEncoding.ts';
 import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write.ts';
 import { server } from '../server/Server.ts';
 import { get } from '../utility/environment/environmentManager.ts';
@@ -328,16 +329,37 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
 							const slashIndex = topic.indexOf('/', 1);
 							const generalTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
-							sendPacket(
-								{
-									cmd: 'publish',
-									topic,
-									payload: await serialize(message),
-									messageId: messageId || Math.floor(Math.random() * 100000000),
-									qos: subscription.qos,
-								},
-								generalTopic
-							);
+							const qos = subscription.qos || 0;
+							// Every subscriber of a topic serializes the same message to the same bytes, so the
+							// payload is encoded once per (message, content type) and reused across all of them.
+							const encoding = getSharedMessageEncoding(message, request);
+							const encoded = encoding.payload;
+							// only pay for a microtask when the serialization is genuinely still pending
+							const payload =
+								typeof (encoded as any)?.then === 'function'
+									? await (encoded as Promise<Buffer | string>)
+									: (encoded as Buffer | string);
+							if (qos > 0) {
+								// mqtt-packet requires a numeric message identifier once qos is non-zero
+								sendPacket(
+									{
+										cmd: 'publish',
+										topic,
+										payload,
+										messageId: messageId || Math.floor(Math.random() * 100000000),
+										qos,
+									},
+									generalTopic
+								);
+							} else {
+								// A QoS 0 PUBLISH carries no message identifier, so the whole packet depends only on
+								// the payload, the topic, and the protocol version (v5 emits a properties field that
+								// v3.1.1 omits) — share it across every QoS 0 subscriber that matches on those.
+								const packet = getSharedFrame(encoding, mqttOptions.protocolVersion + ' ' + topic, () =>
+									generate({ cmd: 'publish', topic, payload, qos: 0, dup: false, retain: false }, mqttOptions)
+								);
+								sendEncodedPacket(packet, 'publish', generalTopic);
+							}
 							// wait if there is back-pressure
 							const rawSocket = socket._socket ?? socket;
 							if (rawSocket.writableNeedDrain) {
@@ -489,15 +511,15 @@ function onSocket(socket, send, request, user, mqttSettings) {
 			});
 		}
 		function sendPacket(packetData, path?) {
-			const send_packet = generate(packetData, mqttOptions);
-			send(send_packet);
-			recordAction(send_packet.length, 'bytes-sent', path, packetMethodName(packetData), 'mqtt');
+			sendEncodedPacket(generate(packetData, mqttOptions), packetMethodName(packetData), path);
+		}
+		// analytics stay per subscriber even when the packet itself is shared across them
+		function sendEncodedPacket(packet, methodName, path?) {
+			send(packet);
+			recordAction(packet.length, 'bytes-sent', path, methodName, 'mqtt');
 		}
 		function packetMethodName(packet) {
 			return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
-		}
-		function serialize(data) {
-			return serializeMessage(data, request);
 		}
 	});
 	parser.on('error', (error) => {

@@ -12,12 +12,13 @@
  * Relates to: https://github.com/HarperFast/harper/issues/1188
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual, ok, deepStrictEqual, notDeepStrictEqual } from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID, createSign } from 'node:crypto';
 import { resolve } from 'node:path';
 
 import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
+import { decode as decodeCbor } from 'cbor-x';
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -227,6 +228,30 @@ function collectMessages(client: MqttClient, filter: string) {
 	};
 	client.on('message', handler);
 	return { messages, stop: () => client.removeListener('message', handler) };
+}
+
+interface CollectedPacket {
+	topic: string;
+	payload: Buffer;
+	qos: number;
+	messageId: number;
+}
+
+/** Like collectMessages, but keeps the raw payload bytes and the PUBLISH packet fields. */
+function collectPackets(client: MqttClient, filter: string) {
+	const packets: CollectedPacket[] = [];
+	const handler = (topic: string, payload: Buffer, packet: any) => {
+		if (topicMatches(filter, topic)) {
+			packets.push({ topic, payload: Buffer.from(payload), qos: packet.qos, messageId: packet.messageId });
+		}
+	};
+	client.on('message', handler);
+	return { packets, stop: () => client.removeListener('message', handler) };
+}
+
+/** The published payloads are JSON objects carrying a unique marker, so deliveries can be told apart. */
+function matching(collected: { packets: CollectedPacket[] }, marker: string): CollectedPacket[] {
+	return collected.packets.filter((entry) => entry.payload.includes(marker));
 }
 
 async function waitFor(
@@ -485,6 +510,153 @@ suite(
 			} finally {
 				await endQuiet(pubClient);
 				await endQuiet(anonClient);
+			}
+		});
+
+		// ---- fan-out encoding sharing -----------------------------------------
+		// server/serverHelpers/sharedMessageEncoding.ts computes the serialized payload once per
+		// (message, content type) and, for QoS 0, the whole PUBLISH packet once per topic. These
+		// pin the per-subscriber behaviour that must survive that sharing.
+
+		test('fan-out: two subscribers on one topic receive byte-identical payloads', async () => {
+			const pub = freshUser('publisher');
+			const pubClient = await connect(MQTT_URL, jwtOpts(mintRS256Jwt(pub), pub));
+			const first = await connect(MQTT_URL, baseOpts({ clientId: '' }));
+			const second = await connect(MQTT_URL, baseOpts({ clientId: '' }));
+			try {
+				await subscribe(first, 'broadcast/#', { qos: 0 });
+				await subscribe(second, 'broadcast/#', { qos: 0 });
+				const firstMessages = collectPackets(first, 'broadcast/#');
+				const secondMessages = collectPackets(second, 'broadcast/#');
+
+				const marker = randomUUID();
+				await publish(pubClient, 'broadcast/news', JSON.stringify({ marker }));
+
+				const arrived = await waitFor(
+					() => matching(firstMessages, marker).length > 0 && matching(secondMessages, marker).length > 0
+				);
+				firstMessages.stop();
+				secondMessages.stop();
+				ok(arrived, 'expected both subscribers to receive the message');
+
+				const [a] = matching(firstMessages, marker);
+				const [b] = matching(secondMessages, marker);
+				deepStrictEqual(a.payload, b.payload, 'both subscribers must receive the identical serialized payload');
+				strictEqual(JSON.parse(a.payload.toString()).marker, marker);
+			} finally {
+				await endQuiet(pubClient);
+				await endQuiet(first);
+				await endQuiet(second);
+			}
+		});
+
+		test('fan-out: subscribers negotiating different content types get their own payloads', async () => {
+			const pub = freshUser('publisher');
+			const pubClient = await connect(MQTT_URL, jwtOpts(mintRS256Jwt(pub), pub));
+			const jsonSub = await connect(MQTT_URL, baseOpts({ clientId: '' }));
+			// content type is negotiated from the WebSocket upgrade request's Accept header
+			const cborSub = await connect(
+				MQTT_URL,
+				baseOpts({ clientId: '', wsOptions: { headers: { accept: 'application/cbor' } } })
+			);
+			try {
+				await subscribe(jsonSub, 'broadcast/#', { qos: 0 });
+				await subscribe(cborSub, 'broadcast/#', { qos: 0 });
+				const jsonMessages = collectPackets(jsonSub, 'broadcast/#');
+				const cborMessages = collectPackets(cborSub, 'broadcast/#');
+
+				const marker = randomUUID();
+				await publish(pubClient, 'broadcast/news', JSON.stringify({ marker }));
+
+				const arrived = await waitFor(() => jsonMessages.packets.length > 0 && cborMessages.packets.length > 0);
+				jsonMessages.stop();
+				cborMessages.stop();
+				ok(arrived, 'expected both subscribers to receive the message');
+
+				const jsonPayload = jsonMessages.packets.at(-1)!.payload;
+				const cborPayload = cborMessages.packets.at(-1)!.payload;
+				notDeepStrictEqual(jsonPayload, cborPayload, 'a shared payload must not cross content types');
+				strictEqual(JSON.parse(jsonPayload.toString()).marker, marker);
+				strictEqual((decodeCbor(cborPayload) as any).marker, marker);
+			} finally {
+				await endQuiet(pubClient);
+				await endQuiet(jsonSub);
+				await endQuiet(cborSub);
+			}
+		});
+
+		test('fan-out: QoS 1 subscribers receive distinct message identifiers', async () => {
+			const pub = freshUser('publisher');
+			const pubClient = await connect(MQTT_URL, jwtOpts(mintRS256Jwt(pub), pub));
+			const first = await connect(MQTT_URL, baseOpts({ clientId: '' }));
+			const second = await connect(MQTT_URL, baseOpts({ clientId: '' }));
+			try {
+				await subscribe(first, 'broadcast/#', { qos: 1 });
+				await subscribe(second, 'broadcast/#', { qos: 1 });
+				const firstMessages = collectPackets(first, 'broadcast/#');
+				const secondMessages = collectPackets(second, 'broadcast/#');
+
+				const marker = randomUUID();
+				await publish(pubClient, 'broadcast/news', JSON.stringify({ marker }));
+
+				const arrived = await waitFor(
+					() => matching(firstMessages, marker).length > 0 && matching(secondMessages, marker).length > 0
+				);
+				firstMessages.stop();
+				secondMessages.stop();
+				ok(arrived, 'expected both QoS 1 subscribers to receive the message');
+
+				const [a] = matching(firstMessages, marker);
+				const [b] = matching(secondMessages, marker);
+				strictEqual(a.qos, 1);
+				strictEqual(b.qos, 1);
+				ok(a.messageId > 0 && b.messageId > 0, `expected non-zero message ids, got ${a.messageId} / ${b.messageId}`);
+				ok(a.messageId !== b.messageId, `expected distinct message ids, both were ${a.messageId}`);
+				// the payload is still shared even though the packets are not
+				deepStrictEqual(a.payload, b.payload);
+			} finally {
+				await endQuiet(pubClient);
+				await endQuiet(first);
+				await endQuiet(second);
+			}
+		});
+
+		test('fan-out: a subscriber joining mid-stream gets subsequent messages only', async () => {
+			const pub = freshUser('publisher');
+			const pubClient = await connect(MQTT_URL, jwtOpts(mintRS256Jwt(pub), pub));
+			const early = await connect(MQTT_URL, baseOpts({ clientId: '' }));
+			let late: MqttClient | undefined;
+			try {
+				await subscribe(early, 'broadcast/#', { qos: 0 });
+				const earlyMessages = collectPackets(early, 'broadcast/#');
+
+				const beforeJoin = randomUUID();
+				await publish(pubClient, 'broadcast/news', JSON.stringify({ marker: beforeJoin }));
+				ok(await waitFor(() => matching(earlyMessages, beforeJoin).length > 0), 'expected the first message');
+
+				late = await connect(MQTT_URL, baseOpts({ clientId: '' }));
+				await subscribe(late, 'broadcast/#', { qos: 0 });
+				const lateMessages = collectPackets(late, 'broadcast/#');
+
+				const afterJoin = randomUUID();
+				await publish(pubClient, 'broadcast/news', JSON.stringify({ marker: afterJoin }));
+				const arrived = await waitFor(
+					() => matching(earlyMessages, afterJoin).length > 0 && matching(lateMessages, afterJoin).length > 0
+				);
+				earlyMessages.stop();
+				lateMessages.stop();
+				ok(arrived, 'expected the mid-stream subscriber to receive the second message');
+
+				strictEqual(matching(lateMessages, beforeJoin).length, 0, 'the late subscriber must not replay history');
+				deepStrictEqual(
+					matching(earlyMessages, afterJoin)[0].payload,
+					matching(lateMessages, afterJoin)[0].payload,
+					'the mid-stream subscriber must share the same encoding as the existing one'
+				);
+			} finally {
+				await endQuiet(pubClient);
+				await endQuiet(early);
+				await endQuiet(late);
 			}
 		});
 
