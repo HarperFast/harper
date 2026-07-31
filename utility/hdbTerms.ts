@@ -157,6 +157,9 @@ export const HDB_FILE_PERMISSIONS = 0o700;
 
 /** Database directory */
 export const DATABASES_DIR_NAME = 'database';
+/** Suffix for in-progress LMDB→RocksDB migration staging directories: excluded from database
+ * discovery, atomically renamed into place only after the migration fully verifies (harper#2012) */
+export const MIGRATING_DIR_SUFFIX = '.migrating';
 /** Legacy Database directory */
 export const LEGACY_DATABASES_DIR_NAME = 'schema';
 /** Transaction directory */

@@ -20,49 +20,46 @@ With no command, harper will simply run Harper (in the foreground)
 
 Documentation: https://docs.harperdb.io/
 
-By default, the CLI also supports certain Operation APIs. Specify the operation name and any
-required parameters, and omit the 'operation' command.
+By default, the CLI also supports certain Operation APIs. Specify the operation name and any required parameters, and omit the 'operation' command.
 
 Commands:
-
-Server
-  start                     - Starts a separate background process for harperdb and CLI will exit
-  stop                      - Stop the harperdb background process
-  restart                   - Restart the harperdb background process
-  status                    - Print the status of Harper
-
-Applications
-  run <path>                - Run the application in the specified path
-  dev <path>                - Run the application in dev mode with debugging, foreground logging, no auth
-  deploy                    - Deploy the application locally or remotely with target=<remote url>
-
-Install & maintenance
-  install                   - Install harperdb
-  upgrade                   - Upgrade harperdb
-  register                  - Register harperdb
-  renew-certs               - Generate a new set of self-signed certificates
-  copy-db <source> <target> - Copies a database from source path to target path
-  version                   - Print the version
-  help                      - Display this output
-
-Accounts
-  login [target] [username] - Login to a remote or local Harper instance
-  logout [target]           - Logout from Harper and clear saved JWT
-
-Assistants
-  agent [message]           - Chat with the built-in agent (interactive, or one-shot with a message; alias: chat)
-  mcp [subcommand]          - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
-
-Operations API
-  <api-operation> <param>=<value>
-    Run an API operation and return the result to the CLI (not all operations are supported). See
-    the full list of operations at: https://docs.harperdb.io/reference/v5/operations-api/operations
-    To authenticate as a different user than the one being operated on (e.g. add_user/alter_user),
-    set HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD or run 'harper login'. The equivalent
-    auth_username=<value> auth_password=<value> args also work, but a password passed as an
-    argument is exposed in shell history, process listings and CI logs. A saved login token always
-    outranks username=/password=, so a stale token that fails to refresh will 401 rather than
-    falling back to them — run 'harper logout' or pass auth_username=/auth_password= to override it.
+agent [message]                 - Chat with the built-in agent (interactive, or one-shot with a message; alias: chat)
+copy-db <source> <target>       - Copies a database from source path to target path
+dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
+install                         - Install harperdb
+<api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
+                                   To authenticate as a different user than the one being operated on
+                                   (e.g. add_user/alter_user), set HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD
+                                   or run 'harper login'. The equivalent auth_username=<value>
+                                   auth_password=<value> args also work, but a password passed as an
+                                   argument is exposed in shell history, process listings and CI logs.
+                                   A saved login token always outranks username=/password=, so a
+                                   stale token that fails to refresh will 401 rather than falling
+                                   back to them — run 'harper logout' or pass auth_username=/
+                                   auth_password= to override it.
+login [target] [username]       - Login to a remote or local Harper instance
+                                   --for-ci prints the CI/CD credentials (target + long-lived
+                                   refresh token) to stdout in dotenv format, and everything else
+                                   to stderr, so it pipes without the token hitting your screen:
+                                     harper login --for-ci | gh secret set --env-file -
+                                   Log in as a user dedicated to that one CI consumer: Harper
+                                   stores a single refresh token per user, so this revokes any
+                                   refresh token that user already holds — another runner, another
+                                   machine, or an earlier 'harper login' will 401 on its next
+                                   refresh. Two consumers cannot share a user.
+logout [target]                 - Logout from Harper and clear saved JWT
+mcp [subcommand]                - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
+register                        - Register harperdb
+renew-certs                     - Generate a new set of self-signed certificates
+restart                         - Restart the harperdb background process
+run <path>                      - Run the application in the specified path
+start                           - Starts a separate background process for harperdb and CLI will exit
+status                          - Print the status of Harper
+stop                            - Stop the harperdb background process
+help                            - Display this output
+upgrade                         - Upgrade harperdb
+version                         - Print the version
+deploy                          - Deploy the application locally or remotely with target=<remote url>
 `;
 
 async function harper() {
@@ -109,10 +106,13 @@ async function harper() {
 		case SERVICE_ACTIONS_ENUM.STATUS:
 			return (require('./status').default || require('./status'))();
 		case SERVICE_ACTIONS_ENUM.LOGIN: {
-			const target = process.argv[3];
-			const username = process.argv[4];
+			const args = process.argv.slice(3);
+			const forCi = args.includes('--for-ci');
+			// Flags are filtered out so they can appear anywhere without being mistaken for the
+			// positional target/username.
+			const [target, username] = args.filter((arg) => !arg.startsWith('-'));
 			const { login } = require('./login');
-			return login(target, username);
+			return login(target, username, { forCi });
 		}
 		case SERVICE_ACTIONS_ENUM.LOGOUT: {
 			const target = process.argv[3];

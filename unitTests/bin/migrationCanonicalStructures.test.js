@@ -20,15 +20,18 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 // concern: it requires the runtime's multi-column-family open + per-worker encoder wiring, which this
 // single-handle unit harness can't replicate. The observer's captured dictionary is verified in-process
 // during the migration; cross-process adoption is validated by the cluster repro.
-describe('migration: records still decode after the canonical-structures change (#1453)', function () {
-	if ((process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb') return;
-	const { setupTestDBPath } = require('../testUtils');
-	const copyDB = require('#src/bin/copyDb');
-	const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { setupTestDBPath } = require('../testUtils');
+const copyDB = require('#src/bin/copyDb');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 
+const isLMDB = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) === 'lmdb';
+
+describe('migration: records still decode after the canonical-structures change (#1453)', function () {
 	let rootPath, targetPath, Tbl;
 
 	before(async function () {
+		// this.skip() (not a bare return in the describe body) so the gate is visible as pending
+		if (!isLMDB) return this.skip();
 		rootPath = setupTestDBPath();
 		setMainIsWorker(true);
 		Tbl = table({
@@ -47,33 +50,44 @@ describe('migration: records still decode after the canonical-structures change 
 	});
 
 	after(async function () {
-		await fs.remove(path.join(rootPath, 'rocks-migrated-cstruct'));
+		if (rootPath) await fs.remove(path.join(rootPath, 'rocks-migrated-cstruct'));
 	});
 
 	it('migrated records decode after reopen (structures resolve)', function () {
 		// Open the migrated primary CF the same way the v5 runtime would and read records back.
 		// With the canonical structures persisted, every migrated record (including the bare
 		// structure-id references after the first of each shape) must decode, not null out.
-		const cf = RocksDatabase.open(targetPath, { name: 'CacheStruct/', sharedStructuresKey: Symbol.for('structures') });
+		// PrimaryRocksDatabase + RecordEncoder are required since #2012: migrated records carry
+		// the version/metadata prefix again, which a plain msgpackr decoder cannot strip.
+		const { RecordEncoder } = require('#src/resources/RecordEncoder');
+		const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+		const root = RocksDatabase.open(targetPath, {});
+		const cf = new PrimaryRocksDatabase(targetPath, {
+			name: 'CacheStruct/',
+			sharedStructuresKey: Symbol.for('structures'),
+			encoder: { Encoder: RecordEncoder },
+		}).open();
+		cf.initStore(root);
 		try {
 			const failures = [];
 			for (const id of ['a', 'b', 'c']) {
 				let rec;
 				try {
-					rec = cf.get(id);
+					rec = cf.getSync(id);
 				} catch (e) {
 					rec = { __threw: e.message };
 				}
 				console.log(`record ${id}:`, JSON.stringify(rec));
 				if (!rec || rec.__threw || rec.content === undefined || rec.headers === undefined) failures.push(id);
 			}
-			assert.equal(
+			assert.strictEqual(
 				failures.length,
 				0,
 				`migrated records ${failures.join(',')} did not decode after reopen (structures did not resolve)`
 			);
 		} finally {
 			cf.close();
+			root.close();
 		}
 	});
 });

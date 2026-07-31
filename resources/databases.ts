@@ -15,6 +15,7 @@ import {
 	CONFIG_PARAMS,
 	LEGACY_DATABASES_DIR_NAME,
 	DATABASES_DIR_NAME,
+	MIGRATING_DIR_SUFFIX,
 	RESERVED_DATABASE_NAMES,
 } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
@@ -326,6 +327,8 @@ export function getDatabases(): Databases {
 		const entries = readdirSync(databasePath, { withFileTypes: true });
 		const blockedByRestore = databasesBlockedByRestore(databasePath);
 		for (const databaseEntry of entries) {
+			// in-progress migration staging dirs are not databases until atomically renamed into place
+			if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
 			// the restore-metadata directory is reserved: never load it as a database, even if a
 			// (out-of-band) RocksDB directory happens to occupy that reserved name — the API can't
 			// create it (schemaRegex forbids the backtick), but the scan opens any CURRENT+MANIFEST dir
@@ -392,6 +395,7 @@ export function getDatabases(): Databases {
 				const entries = readdirSync(databasePath, { withFileTypes: true });
 				const blockedByRestore = databasesBlockedByRestore(databasePath);
 				for (const databaseEntry of entries) {
+					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {

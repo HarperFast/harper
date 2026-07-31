@@ -15,7 +15,7 @@
  */
 
 import * as readline from 'node:readline';
-import { loadCredentials, normalizeTarget } from './cliCredentials.ts';
+import { loadCredentials, normalizeTarget, extractTargetCredentials } from './cliCredentials.ts';
 import { refreshExpiredOperationToken } from './cliOperations.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
@@ -149,6 +149,8 @@ async function resolveConnection(opts: CliOptions): Promise<Connection> {
 
 	if (rawTarget) {
 		const resolved = normalizeTarget(rawTarget);
+		// `resolved` is credential-free by construction, so userinfo has to come off the raw target.
+		const urlCredentials = extractTargetCredentials(rawTarget);
 		let url: URL;
 		try {
 			url = new URL(resolved);
@@ -158,9 +160,17 @@ async function resolveConnection(opts: CliOptions): Promise<Connection> {
 			url = new URL(`https://${withPort}`);
 		}
 		const username =
-			opts.username || url.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME || '';
+			opts.username ||
+			urlCredentials.username ||
+			process.env.HARPER_CLI_USERNAME ||
+			process.env.CLI_TARGET_USERNAME ||
+			'';
 		const password =
-			opts.password || url.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD || '';
+			opts.password ||
+			urlCredentials.password ||
+			process.env.HARPER_CLI_PASSWORD ||
+			process.env.CLI_TARGET_PASSWORD ||
+			'';
 		const options: any = {
 			protocol: url.protocol,
 			hostname: url.hostname,
@@ -168,7 +178,7 @@ async function resolveConnection(opts: CliOptions): Promise<Connection> {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 		};
-		if (opts.username || opts.password || url.username) {
+		if (opts.username || opts.password || urlCredentials.username) {
 			options.headers.Authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 		} else {
 			const tokens = credentials?.targets?.[resolved];
