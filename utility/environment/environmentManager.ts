@@ -25,15 +25,17 @@ const installPropsToSave = {
 let installProps: any = {};
 export { BOOT_PROPS_FILE_PATH };
 
-// Every param ever passed to setProperty() on this thread, in call order (so a later override
-// of the same param wins on replay). This is how a worker thread inherits its parent's in-process
-// config overrides — see applyInheritedConfigOverrides()/reapplyAllOverrides() and the
-// workerDataProvider registration in server/threads/manageThreads.js. setProperty() isn't only
-// installer/unit-test code despite its docstring — dataLayer/harperBridge/lmdbBridge's
-// initializePaths.js and utility/lmdb/environmentUtility.ts call it at runtime with the resolved
-// `databases`/`storage.path` config on an LMDB-engine install, so this map (and the workerData
-// payload cloned from it on every worker/job spawn) can hold that full tree, not just test/install
-// bootstrap keys.
+// Every param ever passed to setProperty() on this thread, keyed by its canonical config param
+// (so aliases for the same param, and repeated overrides of the same param, replay as a single
+// last-write-wins entry rather than several conflicting ones). This is how a worker thread
+// inherits its parent's in-process config overrides — see applyInheritedConfigOverrides()/
+// reapplyAllOverrides() and the workerDataProvider registration in server/threads/manageThreads.js.
+// setProperty() is for operator/harness *intent* — an override that should survive a config reload
+// and propagate to every worker. Code caching a value it derived from config it just read (e.g.
+// dataLayer/harperBridge/lmdbBridge's initializePaths.js, utility/lmdb/environmentUtility.ts) must
+// call configUtils.updateConfigObject() directly instead: going through setProperty() here would
+// make that derived value outlive a config reload and get shipped to every worker as if it were an
+// override, pinning it even after the on-disk config the derivation was based on changes.
 const appliedOverrides = new Map<string, any>();
 let inheritedOverridesApplied = false;
 
@@ -80,7 +82,12 @@ export function get(propName: string): any {
  * @param value
  */
 export function setProperty(propName: string, value: any) {
-	appliedOverrides.set(propName, value);
+	// Key by the canonical param name, not the raw alias passed in: CONFIG_PARAM_MAP is
+	// many-to-one (e.g. SERVER_PORT_KEY and OPERATIONSAPI_NETWORK_PORT both canonicalize to
+	// 'operationsApi_network_port'), so two callers overriding the "same" param through
+	// different aliases must land on one Map entry — otherwise replay can apply a stale alias
+	// after the canonical one, reintroducing the parent/worker skew this map exists to prevent.
+	appliedOverrides.set((hdbTerms.CONFIG_PARAM_MAP as any)[propName.toLowerCase()] ?? propName, value);
 
 	if (installPropsToSave[propName]) {
 		installProps[propName] = value;
