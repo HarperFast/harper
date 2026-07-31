@@ -373,7 +373,8 @@ function registerWsBehavior(
 	maxPayload: number
 ): void {
 	app.ws('/*', {
-		maxPayload,
+		// uWS's option key — a plain `maxPayload` is silently ignored (default 16 KiB cap)
+		maxPayloadLength: maxPayload,
 		// Capture the upgrade request synchronously (uWS's HttpRequest is only valid here) and upgrade.
 		// Auth runs after open() in the ws chain, matching the Node path (which upgrades then authorizes).
 		upgrade: (res: UwsResponse, req: UwsRequestRaw, context: unknown) => {
