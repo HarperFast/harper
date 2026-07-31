@@ -704,7 +704,7 @@ export function updateConfigObject(param: string, value: any) {
 	// configObj's falsiness as "not yet initialized" and lazily calls initConfig(), so creating
 	// an empty configObj here (before install writes the config file / initConfig ever runs)
 	// would permanently short-circuit that lazy init to an empty tree.
-	if (configObj !== undefined && !NON_NESTED_CONFIG_PARAMS.has(configObjKey)) {
+	if (configObj != null && !NON_NESTED_CONFIG_PARAMS.has(configObjKey)) {
 		const pathSegments = configObjKey.split('_');
 		let node = configObj;
 		for (let i = 0; i < pathSegments.length - 1; i++) {
