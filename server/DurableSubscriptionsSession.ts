@@ -155,7 +155,7 @@ type Acknowledgement = {
 };
 
 class SubscriptionsSession {
-	listener: (message, subscription, timestamp, qos) => any;
+	listener: (topic, message, messageId, subscription, version?) => any;
 	sessionId: any;
 	user: any;
 	request: any;
@@ -303,7 +303,16 @@ class SubscriptionsSession {
 						let path = update.id;
 						if (Array.isArray(path)) path = keyArrayToString(path);
 						if (path == null) path = '';
-						const result = await this.listener(resourcePath + '/' + path, update.value, messageId, subscriptionRequest);
+						// the version is forwarded so the delivery side can tell a store-sourced event (whose
+						// value is a fresh object per version) from an app-yielded one that may be a reused
+						// mutable envelope — only the former is safe to encode once and share
+						const result = await this.listener(
+							resourcePath + '/' + path,
+							update.value,
+							messageId,
+							subscriptionRequest,
+							update.version
+						);
 						if (result === false) break;
 						if (this.awaitingAcks?.size > AWAITING_ACKS_HIGH_WATER_MARK) {
 							// slow it down if we are getting too far ahead in acks
@@ -372,7 +381,7 @@ class SubscriptionsSession {
 		}
 		return context;
 	}
-	setListener(listener: (message) => any) {
+	setListener(listener: (topic, message, messageId, subscription, version?) => any) {
 		this.listener = listener;
 	}
 	disconnect(clientTerminated) {

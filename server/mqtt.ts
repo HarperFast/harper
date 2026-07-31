@@ -329,7 +329,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						reasonCode: 0,
 						returnCode: 0, // success
 					});
-					const listener = async (topic, message, messageId, subscription) => {
+					const listener = async (topic, message, messageId, subscription, version) => {
 						try {
 							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
 							const slashIndex = topic.indexOf('/', 1);
@@ -337,12 +337,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							const qos = subscription.qos || 0;
 							// Every subscriber of a topic serializes the same message to the same bytes, so the
 							// payload is encoded once per (message, content type) and reused across all of them.
-							const encoding = getSharedMessageEncoding(message, request);
+							const encoding = getSharedMessageEncoding(message, request, version);
 							const encoded = encoding.payload;
 							// only pay for a microtask when the serialization is genuinely still pending
 							const payload =
 								typeof (encoded as any)?.then === 'function'
-									? await resolveSharedPayload(encoding, message, request)
+									? await resolveSharedPayload(encoding, message, request, version)
 									: (encoded as Buffer | string);
 							if (qos > 0) {
 								// mqtt-packet requires a numeric message identifier once qos is non-zero
@@ -383,7 +383,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							return false;
 						}
 					};
-					session.setListener(listener as any);
+					session.setListener(listener);
 					if (session.sessionWasPresent) await session.resume();
 					break;
 				case 'subscribe':

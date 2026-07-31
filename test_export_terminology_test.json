@@ -1,0 +1,23 @@
+[
+	{
+		"id": null,
+		"__createdtime__": null,
+		"__updatedtime__": null,
+		"address": null,
+		"city": null,
+		"companyname": null,
+		"contactname": null,
+		"contacttitle": null,
+		"country": null,
+		"fax": null,
+		"homepage": null,
+		"image": null,
+		"name": null,
+		"phone": null,
+		"postalcode": null,
+		"region": null,
+		"section": null,
+		"supplierid": null,
+		"task": null
+	}
+]

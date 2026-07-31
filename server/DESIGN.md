@@ -62,10 +62,14 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 > reuses the bytes for every subscriber of the topic, keyed on the message object's identity. That is
 > sound for every internal producer because each yields a fresh object per version — `transactionBroadcast`
 > hands one `auditRecord` to every subscription, `auditStore`'s `getValue` memoizes the decode in its
-> closure, and `primaryStore.getEntry` is version-guarded — so identity implies equal content.
-> A custom Resource must therefore **send a new object per message** rather than mutating and re-sending
-> one envelope; reusing a mutable envelope would deliver the earlier message's bytes. Pinned by
+> closure, and `primaryStore.getEntry` is version-guarded — so identity implies equal content. Pinned by
 > `unitTests/resources/subscriptionValueIdentity.test.js`.
+>
+> Rather than leave that as a rule custom Resources have to know, sharing is **gated on provenance**:
+> `DurableSubscriptionsSession` forwards the event's record `version` to the delivery listener, and only
+> events carrying one are shared. A Resource yielding its own envelope has no version, so it falls back
+> to per-subscriber serialization and can mutate and re-send one object safely — it just does not get
+> the fan-out saving.
 
 ### Threads
 

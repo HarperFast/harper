@@ -20,6 +20,14 @@ const {
 } = require('#src/server/serverHelpers/sharedMessageEncoding');
 
 /**
+ * Sharing is gated on the event carrying a record version, which every store-sourced event does.
+ * These tests are about the encoding itself, so they pass one; the gate has its own suite below.
+ */
+function share(message, request) {
+	return getSharedMessageEncoding(message, request, 1);
+}
+
+/**
  * Mirrors the QoS 0 lookup-then-generate in server/mqtt.ts's outbound listener, including its
  * `hits > 0` gate — a frame is only retained once a second subscriber has actually arrived.
  */
@@ -77,8 +85,8 @@ describe('sharedMessageEncoding – payload sharing', function () {
 	it('serializes once for two subscribers negotiating the same content type', function () {
 		const message = { id: 1, temperature: 21.5 };
 
-		const first = getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE));
-		const second = getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE));
+		const first = share(message, subscriberRequest(COUNTED_TYPE));
+		const second = share(message, subscriberRequest(COUNTED_TYPE));
 
 		assert.strictEqual(countedCalls, 1, 'the message should be serialized exactly once for both subscribers');
 		assert.strictEqual(first, second, 'both subscribers should get the same encoding');
@@ -89,8 +97,8 @@ describe('sharedMessageEncoding – payload sharing', function () {
 	it('gives subscribers negotiating different content types their own correct payloads', function () {
 		const message = { id: 2, status: 'ok' };
 
-		const counted = getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE));
-		const alt = getSharedMessageEncoding(message, subscriberRequest(ALT_TYPE));
+		const counted = share(message, subscriberRequest(COUNTED_TYPE));
+		const alt = share(message, subscriberRequest(ALT_TYPE));
 
 		assert.strictEqual(countedCalls, 1);
 		assert.strictEqual(altCalls, 1);
@@ -102,8 +110,8 @@ describe('sharedMessageEncoding – payload sharing', function () {
 	it('does not share across distinct messages', function () {
 		const request = subscriberRequest(COUNTED_TYPE);
 
-		const first = getSharedMessageEncoding({ id: 3 }, request);
-		const second = getSharedMessageEncoding({ id: 4 }, request);
+		const first = share({ id: 3 }, request);
+		const second = share({ id: 4 }, request);
 
 		assert.strictEqual(countedCalls, 2);
 		assert.notStrictEqual(first.payload, second.payload);
@@ -115,9 +123,9 @@ describe('sharedMessageEncoding – payload sharing', function () {
 		const message = { id: 5 };
 		const request = subscriberRequest(COUNTED_TYPE);
 
-		const early = getSharedMessageEncoding(message, request);
-		getSharedMessageEncoding(message, request);
-		const late = getSharedMessageEncoding(message, request);
+		const early = share(message, request);
+		share(message, request);
+		const late = share(message, request);
 
 		assert.strictEqual(countedCalls, 1);
 		assert.strictEqual(late.payload, early.payload);
@@ -126,8 +134,8 @@ describe('sharedMessageEncoding – payload sharing', function () {
 	it('falls back to per-subscriber serialization for a primitive message', function () {
 		const request = subscriberRequest(COUNTED_TYPE);
 
-		const first = getSharedMessageEncoding('a string message', request);
-		const second = getSharedMessageEncoding('a string message', request);
+		const first = share('a string message', request);
+		const second = share('a string message', request);
 
 		// primitives can not key a WeakMap, so they are simply not shared — still correct, just not memoized
 		assert.strictEqual(countedCalls, 2);
@@ -138,8 +146,8 @@ describe('sharedMessageEncoding – payload sharing', function () {
 	it('serializes to JSON, once, when there is no request (raw TCP MQTT)', function () {
 		const message = { id: 6, name: 'sensor' };
 
-		const first = getSharedMessageEncoding(message, null);
-		const second = getSharedMessageEncoding(message, undefined);
+		const first = share(message, null);
+		const second = share(message, undefined);
 
 		assert.strictEqual(first, second, 'requestless subscribers all share the default JSON serializer');
 		assert.strictEqual(first.payload, '{"id":6,"name":"sensor"}');
@@ -161,8 +169,8 @@ describe('sharedMessageEncoding – payload sharing', function () {
 		});
 		const message = { id: 7 };
 
-		const first = getSharedMessageEncoding(message, subscriberRequest(ASYNC_TYPE));
-		const second = getSharedMessageEncoding(message, subscriberRequest(ASYNC_TYPE));
+		const first = share(message, subscriberRequest(ASYNC_TYPE));
+		const second = share(message, subscriberRequest(ASYNC_TYPE));
 
 		assert.strictEqual(first, second);
 		assert.strictEqual(typeof first.payload.then, 'function', 'the pending serialization is shared, not re-entered');
@@ -170,9 +178,52 @@ describe('sharedMessageEncoding – payload sharing', function () {
 		assert.strictEqual(resolved.toString(), 'async:{"id":7}');
 		// the resolved buffer replaces the promise in place, so subscribers arriving after it settles
 		// take the synchronous path
-		assert.strictEqual(getSharedMessageEncoding(message, subscriberRequest(ASYNC_TYPE)).payload, resolved);
+		assert.strictEqual(share(message, subscriberRequest(ASYNC_TYPE)).payload, resolved);
 		// two attempts (the initial one that requested async work, and the retry), never four
 		assert.strictEqual(asyncCalls, 2);
+	});
+});
+
+// Sharing is only sound because the producer yields a fresh object per version. Store-sourced
+// events carry a record version and satisfy that; an app-authored Resource yielding its own
+// envelope does not, and could otherwise mutate one object, re-send it, and have every subscriber
+// receive the first message's bytes. Gating on the version makes the contract enforced, not merely
+// documented — so this is the test that a mutated-and-resent envelope is never served stale.
+describe('sharedMessageEncoding – sharing is gated on store provenance', function () {
+	it('does not share an event with no record version', function () {
+		const message = { id: 30, reading: 1 };
+		const request = subscriberRequest(COUNTED_TYPE);
+
+		const first = getSharedMessageEncoding(message, request);
+		const second = getSharedMessageEncoding(message, request);
+
+		assert.strictEqual(countedCalls, 2, 'an unversioned event must be encoded per subscriber');
+		assert.notStrictEqual(first, second);
+	});
+
+	it('serves the current contents when an app mutates and re-sends one envelope', function () {
+		// the shape the contract warns about: a module-level object reused for every publish
+		const envelope = { seq: 0 };
+		const request = subscriberRequest(COUNTED_TYPE);
+
+		envelope.seq = 1;
+		const firstPublish = getSharedMessageEncoding(envelope, request);
+		envelope.seq = 2;
+		const secondPublish = getSharedMessageEncoding(envelope, request);
+
+		assert.strictEqual(firstPublish.payload.toString(), 'counted:{"seq":1}');
+		assert.strictEqual(secondPublish.payload.toString(), 'counted:{"seq":2}', 'must never deliver stale bytes');
+	});
+
+	it('shares an event that carries a record version', function () {
+		const message = { id: 31, reading: 1 };
+		const request = subscriberRequest(COUNTED_TYPE);
+
+		const first = getSharedMessageEncoding(message, request, 42);
+		const second = getSharedMessageEncoding(message, request, 42);
+
+		assert.strictEqual(countedCalls, 1);
+		assert.strictEqual(first, second);
 	});
 });
 
@@ -184,7 +235,7 @@ describe('sharedMessageEncoding – pass-through messages', function () {
 		const message = { contentType: 'application/octet-stream', data: Buffer.from([1, 2, 3]) };
 		const unsatisfiable = subscriberRequest('application/x-not-registered');
 
-		const encoding = getSharedMessageEncoding(message, unsatisfiable);
+		const encoding = share(message, unsatisfiable);
 
 		assert.strictEqual(encoding.payload, message.data);
 	});
@@ -192,8 +243,8 @@ describe('sharedMessageEncoding – pass-through messages', function () {
 	it('shares one entry across subscribers regardless of what each negotiated', function () {
 		const message = { contentType: 'application/octet-stream', data: Buffer.from('shared') };
 
-		const viaCounted = getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE));
-		const viaAlt = getSharedMessageEncoding(message, subscriberRequest(ALT_TYPE));
+		const viaCounted = share(message, subscriberRequest(COUNTED_TYPE));
+		const viaAlt = share(message, subscriberRequest(ALT_TYPE));
 
 		assert.strictEqual(viaCounted, viaAlt, 'pass-through messages are content-type independent');
 		assert.strictEqual(countedCalls, 0, 'no serializer should have been invoked');
@@ -203,7 +254,7 @@ describe('sharedMessageEncoding – pass-through messages', function () {
 	it('still negotiates normally for a message with a content type but no data', function () {
 		const message = { contentType: 'application/octet-stream', id: 11 };
 
-		const encoding = getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE));
+		const encoding = share(message, subscriberRequest(COUNTED_TYPE));
 
 		assert.strictEqual(countedCalls, 1);
 		assert.strictEqual(encoding.payload.toString(), 'counted:' + JSON.stringify(message));
@@ -235,14 +286,14 @@ describe('sharedMessageEncoding – a failed serialization is retried, not memoi
 		const message = { id: 12 };
 		const request = subscriberRequest(FAILING_TYPE);
 
-		const failing = getSharedMessageEncoding(message, request);
+		const failing = share(message, request);
 		await assert.rejects(failing.payload, /transient serialization failure/);
 		assert.strictEqual(failing.payload, undefined, 'the rejected promise must not stay memoized');
 
 		// the failure has cleared; a later subscriber (or a later delivery of the same message) must
 		// get a fresh attempt rather than inheriting the rejection
 		failNext = false;
-		const recovered = getSharedMessageEncoding(message, request);
+		const recovered = share(message, request);
 		assert.strictEqual(recovered.payload.toString(), 'recovered:{"id":12}');
 		assert.strictEqual(attempts, 2);
 	});
@@ -264,11 +315,11 @@ describe('sharedMessageEncoding – a failed serialization is retried, not memoi
 		const request = subscriberRequest(FAILING_TYPE);
 
 		// the whole wave is already awaiting the one shared promise when it rejects
-		const encoding = getSharedMessageEncoding(message, request);
+		const encoding = share(message, request);
 		const wave = [
-			resolveSharedPayload(encoding, message, request),
-			resolveSharedPayload(encoding, message, request),
-			resolveSharedPayload(encoding, message, request),
+			resolveSharedPayload(encoding, message, request, 1),
+			resolveSharedPayload(encoding, message, request, 1),
+			resolveSharedPayload(encoding, message, request, 1),
 		];
 
 		const payloads = await Promise.all(wave);
@@ -288,9 +339,9 @@ describe('sharedMessageEncoding – a failed serialization is retried, not memoi
 		const message = { id: 14 };
 		const request = subscriberRequest(FAILING_TYPE);
 
-		const encoding = getSharedMessageEncoding(message, request);
+		const encoding = share(message, request);
 		await assert.rejects(
-			resolveSharedPayload(encoding, message, request),
+			resolveSharedPayload(encoding, message, request, 1),
 			/persistent serialization failure/,
 			'a retry that fails again must surface, not hang or deliver empty bytes'
 		);
@@ -305,23 +356,23 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 		const message = { id: 20 };
 		const request = subscriberRequest(COUNTED_TYPE);
 
-		const original = getSharedMessageEncoding(message, request);
+		const original = share(message, request);
 		assert.strictEqual(countedCalls, 1);
 
 		// one rotation: the entry is in the previous generation, still reachable
 		rotateSharedEncodings();
-		assert.strictEqual(getSharedMessageEncoding(message, request), original, 'a fan-out may span a rotation');
+		assert.strictEqual(share(message, request), original, 'a fan-out may span a rotation');
 		assert.strictEqual(countedCalls, 1);
 
 		// the lookup above promoted it back into the current generation, so it survives again
 		rotateSharedEncodings();
-		assert.strictEqual(getSharedMessageEncoding(message, request), original);
+		assert.strictEqual(share(message, request), original);
 		assert.strictEqual(countedCalls, 1);
 
 		// two rotations with no intervening lookup releases it, and the next subscriber re-encodes
 		rotateSharedEncodings();
 		rotateSharedEncodings();
-		assert.notStrictEqual(getSharedMessageEncoding(message, request), original, 'the entry must be released');
+		assert.notStrictEqual(share(message, request), original, 'the entry must be released');
 		assert.strictEqual(countedCalls, 2);
 	});
 
@@ -329,17 +380,17 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 		const message = { id: 21 };
 		const request = subscriberRequest(COUNTED_TYPE);
 
-		const first = getSharedMessageEncoding(message, request);
+		const first = share(message, request);
 		assert.strictEqual(first.hits, 0, 'the first subscriber has no one to share with yet');
-		assert.strictEqual(getSharedMessageEncoding(message, request).hits, 1);
-		assert.strictEqual(getSharedMessageEncoding(message, request).hits, 2);
+		assert.strictEqual(share(message, request).hits, 1);
+		assert.strictEqual(share(message, request).hits, 2);
 	});
 
 	it('never reports a hit for an unshareable primitive message', function () {
 		const request = subscriberRequest(COUNTED_TYPE);
 
-		assert.strictEqual(getSharedMessageEncoding('primitive', request).hits, 0);
-		assert.strictEqual(getSharedMessageEncoding('primitive', request).hits, 0);
+		assert.strictEqual(share('primitive', request).hits, 0);
+		assert.strictEqual(share('primitive', request).hits, 0);
 	});
 
 	// Time alone bounds how long an entry is held, not how much is held at once. Without the byte
@@ -354,14 +405,14 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 			rotateSharedEncodings();
 			const request = subscriberRequest(BULKY_TYPE);
 			const first = { id: 'bulky-first' };
-			const firstEncoding = getSharedMessageEncoding(first, request);
+			const firstEncoding = share(first, request);
 
 			// two budgets' worth of new messages forces two early rotations, which releases the first
 			const needed = Math.ceil((MAX_RETAINED_BYTES * 2) / CHUNK) + 2;
-			for (let i = 0; i < needed; i++) getSharedMessageEncoding({ id: 'bulky-' + i }, request);
+			for (let i = 0; i < needed; i++) share({ id: 'bulky-' + i }, request);
 
 			assert.notStrictEqual(
-				getSharedMessageEncoding(first, request),
+				share(first, request),
 				firstEncoding,
 				'byte pressure must release earlier entries rather than holding a whole interval'
 			);
@@ -393,9 +444,9 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 			const message = { id: 'refill-budget' };
 
 			// a synchronous throw on the first encode must leave nothing charged and nothing retained
-			assert.throws(() => getSharedMessageEncoding(message, request), /first attempt fails/);
+			assert.throws(() => share(message, request), /first attempt fails/);
 
-			const encoding = getSharedMessageEncoding(message, request);
+			const encoding = share(message, request);
 			assert.strictEqual(encoding.failed, false);
 			assert.strictEqual(encoding.bytes, CHUNK, 'the entry accounts for exactly what it holds');
 		} finally {
@@ -411,7 +462,7 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 		rotateSharedEncodings();
 		assert.strictEqual(isRotationScheduled(), false, 'an idle broker must not keep a timer armed');
 
-		getSharedMessageEncoding({ id: 23 }, subscriberRequest(COUNTED_TYPE));
+		share({ id: 23 }, subscriberRequest(COUNTED_TYPE));
 		assert.strictEqual(isRotationScheduled(), true, 'retaining an entry must arm rotation');
 
 		// the first rotation still has the entry to release, so the timer keeps running
@@ -422,7 +473,7 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 		assert.strictEqual(isRotationScheduled(), false, 'rotation must stop when there is nothing left to release');
 
 		// and re-arms rather than leaving retention unbounded after a quiet period
-		getSharedMessageEncoding({ id: 24 }, subscriberRequest(COUNTED_TYPE));
+		share({ id: 24 }, subscriberRequest(COUNTED_TYPE));
 		assert.strictEqual(isRotationScheduled(), true, 'rotation must re-arm after stopping');
 	});
 
@@ -440,8 +491,8 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 			const message = { id: 22 };
 			const request = subscriberRequest(UNDEFINED_TYPE);
 
-			const first = getSharedMessageEncoding(message, request);
-			const second = getSharedMessageEncoding(message, request);
+			const first = share(message, request);
+			const second = share(message, request);
 
 			assert.strictEqual(first, second);
 			assert.strictEqual(first.failed, false);
@@ -467,21 +518,21 @@ describe('sharedMessageEncoding – frame sharing', function () {
 			return Buffer.from('frame');
 		};
 
-		const first = shareFrame(getSharedMessageEncoding(message, request), 4, 'topic/a', generateFrame);
+		const first = shareFrame(share(message, request), 4, 'topic/a', generateFrame);
 		assert.strictEqual(generated, 1);
-		assert.strictEqual(getSharedFrame(getSharedMessageEncoding(message, request), 4, 'topic/a'), undefined);
+		assert.strictEqual(getSharedFrame(share(message, request), 4, 'topic/a'), undefined);
 
-		const second = shareFrame(getSharedMessageEncoding(message, request), 4, 'topic/a', generateFrame);
+		const second = shareFrame(share(message, request), 4, 'topic/a', generateFrame);
 		assert.strictEqual(generated, 2, 'a fan-out of one must not have retained anything');
 
-		const third = shareFrame(getSharedMessageEncoding(message, request), 4, 'topic/a', generateFrame);
+		const third = shareFrame(share(message, request), 4, 'topic/a', generateFrame);
 		assert.strictEqual(generated, 2, 'from the third subscriber on the frame is shared');
 		assert.strictEqual(third, second);
 		assert.deepStrictEqual(first, second);
 	});
 
 	it('reports a miss without allocating, so the caller only builds the frame once', function () {
-		const encoding = getSharedMessageEncoding({ id: 8.5 }, subscriberRequest(COUNTED_TYPE));
+		const encoding = share({ id: 8.5 }, subscriberRequest(COUNTED_TYPE));
 
 		assert.strictEqual(getSharedFrame(encoding, 4, 'topic/a'), undefined);
 		const stored = setSharedFrame(encoding, 4, 'topic/a', Buffer.from('frame'));
@@ -489,7 +540,7 @@ describe('sharedMessageEncoding – frame sharing', function () {
 	});
 
 	it('keeps frames distinct per protocol version and topic', function () {
-		const encoding = getSharedMessageEncoding({ id: 9 }, subscriberRequest(COUNTED_TYPE));
+		const encoding = share({ id: 9 }, subscriberRequest(COUNTED_TYPE));
 
 		const v4 = shareFrame(encoding, 4, 'topic/a', () => Buffer.from('v4'));
 		const v5 = shareFrame(encoding, 5, 'topic/a', () => Buffer.from('v5'));
@@ -502,8 +553,8 @@ describe('sharedMessageEncoding – frame sharing', function () {
 
 	it('frames are scoped to the encoding, so a different content type gets its own', function () {
 		const message = { id: 10 };
-		const counted = getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE));
-		const alt = getSharedMessageEncoding(message, subscriberRequest(ALT_TYPE));
+		const counted = share(message, subscriberRequest(COUNTED_TYPE));
+		const alt = share(message, subscriberRequest(ALT_TYPE));
 
 		const countedFrame = shareFrame(counted, 4, 'topic/a', () => Buffer.from('counted-frame'));
 		const altFrame = shareFrame(alt, 4, 'topic/a', () => Buffer.from('alt-frame'));
@@ -545,7 +596,7 @@ describe('sharedMessageEncoding – mqtt-packet assumptions behind QoS 0 sharing
 // property the whole optimization rests on, so assert it against the real ws send path.
 describe('sharedMessageEncoding – shared buffers are not mutated by the send path', function () {
 	it('is byte-identical after being sent to multiple WebSocket subscribers', async function () {
-		const encoding = getSharedMessageEncoding({ temperature: 21.5 }, subscriberRequest(COUNTED_TYPE));
+		const encoding = share({ temperature: 21.5 }, subscriberRequest(COUNTED_TYPE));
 		const shared = shareFrame(encoding, 4, 'sensors/room-1', () =>
 			generate(
 				{ cmd: 'publish', topic: 'sensors/room-1/temperature', payload: encoding.payload, qos: 0 },
