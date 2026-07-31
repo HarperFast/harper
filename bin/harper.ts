@@ -62,6 +62,18 @@ version                         - Print the version
 deploy                          - Deploy the application locally or remotely with target=<remote url>
 `;
 
+/**
+ * Format a CLI error for the terminal. Expected, user-facing errors (a `ClientError` from an
+ * operation — bad args, not found, a locked backup repo — which carry a numeric `statusCode`) get
+ * just their message, not a Node stack trace. A genuinely unexpected error keeps its stack so a bug
+ * is still debuggable. Mirrors the clean `error: <message>` output of a forwarded operation.
+ */
+export function formatCliError(error: any): string {
+	const message = `error: ${error?.message ?? error}`;
+	if (error?.stack && typeof error?.statusCode !== 'number') return `${message}\n${error.stack}`;
+	return message;
+}
+
 async function harper() {
 	let nodeResults = checkNode();
 
@@ -209,10 +221,7 @@ if (require.main === module) {
 			// it continues to run.
 		})
 		.catch((error) => {
-			if (error) {
-				console.error(error);
-				logger.error(error);
-			}
+			if (error) console.error(formatCliError(error));
 			process.exit(1);
 		});
 }
