@@ -3,6 +3,7 @@ import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
+import { cleanupSocketsDirectory } from '../http.ts';
 import { isMainThread } from 'worker_threads';
 import { join } from 'path';
 
@@ -23,6 +24,12 @@ if (isMainThread) {
 }
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
+	// Crash-path defense: a hard crash can skip a worker's exit-time UDS cleanup and leave stale
+	// mirror files behind. This runs before any worker below can start (and thus before any mirror
+	// can bind), so it can only ever clear files nothing is using yet — never a live mirror. The
+	// inode ownership guard in cleanupUdsFiles()/markUdsBindFailed() (see http.ts) is the matching
+	// defense for the in-process rolling-restart case, which this sweep does not cover.
+	if (isMainThread) cleanupSocketsDirectory();
 	recordHostname().catch((err) => harperLogger.error?.('Error recording hostname for analytics:', err));
 	// Drive transaction-log cooling from the main thread (the registry is a
 	// process-global singleton; see startTransactionLogCooling). Runs for all

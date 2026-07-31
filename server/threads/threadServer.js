@@ -275,6 +275,11 @@ function listenOnDomainSocket(port, server) {
 		}
 		function onListening() {
 			server.removeListener('error', onError);
+			// Record ownership of the inode we just bound, so cleanupUdsFiles()/markUdsBindFailed()
+			// (see http.ts) can tell this worker's own file apart from a replacement's later rebind
+			// at the same path (see registerUdsCleanupPaths). A no-op for domain sockets that aren't
+			// UDS mirrors (e.g. the operations API's primary socket), which were never registered.
+			httpComponent.recordUdsBindSuccess(port);
 			harperLogger.info('Domain socket listening on ' + port);
 			resolve({ port, name: server.name, protocol_name: server.protocol_name });
 		}
@@ -517,6 +522,9 @@ async function listenOnPortsBun() {
 				});
 				SERVERS[udsPath] = udsServer;
 				httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
+				// Bun.serve() above already succeeded (a bind failure throws synchronously into the
+				// surrounding catch), so this worker's ownership of udsPath is confirmed now.
+				httpComponent.recordUdsBindSuccess(udsPath);
 
 				const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, port, config.pseudoServer);
 				config.tlsSelector.ready.then(writeMetadata);

@@ -28,7 +28,7 @@ import {
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable, Writable, pipeline } from 'node:stream';
-import { mkdirSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
@@ -67,7 +67,11 @@ export const uwsServeConfigs: Record<string, any> = {};
 // backends that don't register their own Node http server (Bun, and the uWS HTTP path). Keeping
 // them out of SERVERS is what prevents a competing Node server from binding the same port.
 const fallbackServers: Record<string | number, any> = {};
-const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
+// `ino` is set once this worker's own bind is confirmed (see recordUdsBindSuccess) and is what makes
+// cleanupUdsFiles/markUdsBindFailed ownership-aware: on an overlapping restart (see restartWorkers()),
+// the replacement worker rebinds this exact path before the outgoing worker exits, so by the time the
+// outgoing worker cleans up, the inode on disk may already belong to the replacement, not to it.
+const udsCleanupPaths: { socketPath: string; yamlPath: string; ino?: number }[] = [];
 // Sockets whose listen() has failed (see threadServer.js's fail-soft UDS handling). A TLS mirror's
 // YAML metadata is written on its own schedule (SNICallback readiness / cert reload), independent of
 // whether the mirror socket ever actually bound, so a failed bind must both cancel any metadata write
@@ -79,24 +83,55 @@ export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
 	udsCleanupPaths.push({ socketPath, yamlPath });
 }
 
-/** Mark a Unix domain socket's listen() as failed: suppress its metadata and remove any already written. */
-export function markUdsBindFailed(socketPath: string) {
-	failedUdsPaths.add(socketPath);
+/**
+ * Record that this worker's own bind at `socketPath` succeeded, capturing the inode that proves
+ * ownership. Call right after a mirror socket starts listening (see the bind sites in threadServer.js
+ * and http.ts's own Node HTTP/H2 mirror setup). A no-op if `socketPath` was never registered.
+ */
+export function recordUdsBindSuccess(socketPath: string) {
 	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
-	if (entry) {
-		try {
-			unlinkSync(entry.yamlPath);
-		} catch {}
+	if (!entry) return;
+	try {
+		entry.ino = statSync(socketPath).ino;
+	} catch {}
+}
+
+/**
+ * True when the inode this worker recorded at bind time still matches what's on disk — i.e. nothing
+ * has rebound `entry.socketPath` since. An absent `ino` (bind never confirmed) is treated as not
+ * owned, so a failed or never-attempted bind can never delete a working mirror.
+ */
+function stillOwnsSocket(entry: { socketPath: string; ino?: number }): boolean {
+	if (entry.ino === undefined) return false;
+	try {
+		return statSync(entry.socketPath).ino === entry.ino;
+	} catch {
+		return false; // already gone
 	}
 }
 
+/**
+ * Mark a Unix domain socket's listen() as failed: suppress its metadata and remove any already
+ * written, but only for the pair this worker itself owns (see stillOwnsSocket) — a replacement worker
+ * may already have rebound this same path and be relying on the yaml this call would otherwise delete.
+ */
+export function markUdsBindFailed(socketPath: string) {
+	failedUdsPaths.add(socketPath);
+	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
+	if (!entry || !stillOwnsSocket(entry)) return;
+	try {
+		unlinkSync(entry.yamlPath);
+	} catch {}
+}
+
 export function cleanupUdsFiles() {
-	for (const { socketPath, yamlPath } of udsCleanupPaths) {
+	for (const entry of udsCleanupPaths) {
+		if (!stillOwnsSocket(entry)) continue;
 		try {
-			unlinkSync(socketPath);
+			unlinkSync(entry.socketPath);
 		} catch {}
 		try {
-			unlinkSync(yamlPath);
+			unlinkSync(entry.yamlPath);
 		} catch {}
 	}
 }
