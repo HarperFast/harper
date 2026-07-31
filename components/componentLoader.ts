@@ -677,11 +677,19 @@ export async function loadComponent(
 				// urlPath composes into its route prefix; here neither composes, so both are rejected).
 				// Refuse rather than imply an isolation the hook can't honor; contained to this
 				// component by the loader's per-component try/catch.
-				if (mount && (typeof extensionModule.start === 'function' || typeof extensionModule.startOnMainThread === 'function')) {
+				if (
+					mount &&
+					(typeof extensionModule.start === 'function' || typeof extensionModule.startOnMainThread === 'function')
+				) {
 					const error = new Error(
-						`Component '${componentName}' is mounted (${[mount.host && `host '${mount.host}'`, mount.urlPath && `urlPath '${mount.urlPath}'`]
+						`Component '${componentName}' is mounted (${[
+							mount.host && `host '${mount.host}'`,
+							mount.urlPath && `urlPath '${mount.urlPath}'`,
+						]
 							.filter(Boolean)
-							.join(', ')}), but its deprecated 'start'/'startOnMainThread' extension API receives the bare, unmounted server — routes registered there would stay reachable unconstrained. Upgrade to the new Plugin API (handleApplication(scope)) or drop the mount.`
+							.join(
+								', '
+							)}), but its deprecated 'start'/'startOnMainThread' extension API receives the bare, unmounted server — routes registered there would stay reachable unconstrained. Upgrade to the new Plugin API (handleApplication(scope)) or drop the mount.`
 					);
 					componentLifecycle.failed(componentStatusName, error, `Component '${componentStatusName}' failed to load`);
 					throw error;
