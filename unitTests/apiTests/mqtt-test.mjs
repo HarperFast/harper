@@ -1109,55 +1109,6 @@ describe('test MQTT connections and commands', function () {
 		}
 	});
 
-<<<<<<< HEAD
-	it('secure-port UDS metadata carries the certificates when the same socket() call also registers a plain TCP port', async function () {
-		// Regression for #1998's surviving symptom: MQTT registers `{ port, securePort }` in ONE
-		// server.socket() call. onSocket built the TLS server into the function-scoped `socketServer`
-		// binding, the metadata-write closure captured that binding, and the plain-TCP branch then
-		// reassigned it to the port-only server — so every secure-port metadata write read
-		// `secureContexts` off the TCP server (undefined) and published an EMPTY `certificates:`
-		// list. A fronting SNI proxy (Symphony on 8883) then served the node certificate for every
-		// custom-domain SNI, fleet-wide, deterministically. The selector itself was always healthy,
-		// which is why selector-level tests (which drive createTLSSelector with a pseudo-server and
-		// never go through onSocket with both ports) missed it four review rounds in a row — this
-		// test goes through the real wiring and asserts the artifact a proxy actually consumes.
-		this.timeout(10000);
-		const { existsSync, readFileSync: readFile, readdirSync, unlinkSync } = await import('node:fs');
-		const { join } = await import('node:path');
-=======
-	it('installs the ws handler on a uWS-served UDS mirror config (HARPER_UWS_UDS)', async function () {
-		// The HARPER_UWS_UDS mirror is served by uWS from uwsServeConfigs, not a Node http.Server;
-		// server.ws() must install its wsHandler (and maxPayload) on that mirror config too.
-		const { uwsServeConfigs } = await import('#src/server/http');
-		const preexistingServers = { ...SERVERS };
-		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
-		const preexistingUds = env_get('tls_unixDomainSockets');
-		setProperty('tls_unixDomainSockets', true);
-		process.env.HARPER_UWS_UDS = '1';
-		const preexistingCfgs = new Set(Object.keys(uwsServeConfigs));
-		try {
-			global.server.ws(() => {}, { securePort: 28887, maxPayload: 12345 });
-			const mirrorCfgKey = Object.keys(uwsServeConfigs).find(
-				(key) => key.endsWith('.sock') && !preexistingCfgs.has(key)
-			);
-			assert.ok(mirrorCfgKey, 'securePort ws listener should create a uWS UDS mirror config');
-			assert.strictEqual(
-				typeof uwsServeConfigs[mirrorCfgKey].wsHandler,
-				'function',
-				'mirror config must get the wsHandler'
-			);
-			assert.strictEqual(uwsServeConfigs[mirrorCfgKey].wsMaxPayload, 12345, 'mirror config must carry maxPayload');
-		} finally {
-			delete process.env.HARPER_UWS_UDS;
-			setProperty('tls_unixDomainSockets', preexistingUds);
-			for (const key of Object.keys(uwsServeConfigs)) if (!preexistingCfgs.has(key)) delete uwsServeConfigs[key];
-			for (const key of Object.keys(SERVERS)) delete SERVERS[key];
-			Object.assign(SERVERS, preexistingServers);
-			portServer.clear();
-			for (const [key, servers] of preexistingPortServer) portServer.set(key, servers);
-		}
-	});
-
 	it('wires WebSocket upgrade handling onto the UDS mirror (WS died with a zero-byte close there)', async function () {
 		// server.ws() attaches the upgrade dispatch to the port-keyed server; the UDS mirror is a
 		// separate http.Server and historically got no 'upgrade' listener, so Node destroyed WS
@@ -1244,13 +1195,20 @@ describe('test MQTT connections and commands', function () {
 		}
 	});
 
-	it('socket listeners actually apply noDelay/keepAlive socket options', function () {
-		// net.createServer(listener, options) silently ignores the options object — options must be
-		// the first argument. Assert the servers onSocket creates carry the socket options, so an
-		// arg-order regression fails here. Node stores keepAliveInitialDelay in whole seconds
-		// (~~(ms / 1000)), so the configured 600_000 ms surfaces as 600; the old value of 600 ms
-		// floored to 0 and never yielded the intended 10-minute delay.
->>>>>>> a057bca24 (fix(http): dispatch WebSocket upgrades on the UDS mirror listeners)
+	it('secure-port UDS metadata carries the certificates when the same socket() call also registers a plain TCP port', async function () {
+		// Regression for #1998's surviving symptom: MQTT registers `{ port, securePort }` in ONE
+		// server.socket() call. onSocket built the TLS server into the function-scoped `socketServer`
+		// binding, the metadata-write closure captured that binding, and the plain-TCP branch then
+		// reassigned it to the port-only server — so every secure-port metadata write read
+		// `secureContexts` off the TCP server (undefined) and published an EMPTY `certificates:`
+		// list. A fronting SNI proxy (Symphony on 8883) then served the node certificate for every
+		// custom-domain SNI, fleet-wide, deterministically. The selector itself was always healthy,
+		// which is why selector-level tests (which drive createTLSSelector with a pseudo-server and
+		// never go through onSocket with both ports) missed it four review rounds in a row — this
+		// test goes through the real wiring and asserts the artifact a proxy actually consumes.
+		this.timeout(10000);
+		const { existsSync, readFileSync: readFile, readdirSync, unlinkSync } = await import('node:fs');
+		const { join } = await import('node:path');
 		const preexistingServers = { ...SERVERS };
 		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
 		const preexistingUds = env_get('tls_unixDomainSockets');
