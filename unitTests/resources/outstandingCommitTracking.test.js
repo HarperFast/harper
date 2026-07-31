@@ -103,9 +103,18 @@ describe('Outstanding commit tracking', () => {
 		const targetDb = TrackB.primaryStore.store.db;
 		let releaseHold;
 		const held = new Promise((resolve) => (releaseHold = resolve));
+		let signalSecondCommitStarted;
+		// TrackA's own native commit is also tracked (briefly — it settles and untracks itself before
+		// `this.next.commit()` even runs, since `untrack` is attached ahead of the resolve handler that
+		// calls it). Without this signal, the poll loop below could observe THAT transient count>0 and
+		// stop before TrackB's commit is even submitted, letting the assertions pass without ever
+		// actually exercising the re-entrant path this test exists to cover. Only start asserting once
+		// TrackB's (patched) commit has definitely been invoked.
+		const secondCommitStarted = new Promise((resolve) => (signalSecondCommitStarted = resolve));
 		Transaction.prototype.commit = function (...args) {
 			if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
 			const realCommit = originalCommit.apply(this, args);
+			signalSecondCommitStarted();
 			return held.then(() => realCommit);
 		};
 		let done;
@@ -120,11 +129,10 @@ describe('Outstanding commit tracking', () => {
 				await TrackB.put(4, { name: 'chain-b-2' }, context);
 				chained = !!context.transaction?.next;
 			});
-			let outstanding;
-			for (let i = 0; i < 100 && !(outstanding?.count > 0); i++) {
-				outstanding = getOutstandingCommits();
-				if (outstanding.count === 0) await new Promise((resolve) => setImmediate(resolve));
-			}
+			await secondCommitStarted;
+			// TrackA's node is unlinked before `this.next.commit()` runs (see the comment above), so by
+			// this point count===1 can only be TrackB's held commit — no polling/racing required.
+			const outstanding = getOutstandingCommits();
 			assert.ok(chained, 'the two databases should have produced a chained transaction');
 			assert.equal(outstanding.count, 1, 'the chained second-database commit should be tracked while pending');
 			assert.equal(typeof outstanding.oldestAgeMs, 'number', 'the pending chained commit should report an age');
