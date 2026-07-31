@@ -11,6 +11,7 @@ import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
+import { composeMountedUrlPath, type ScopeMount } from './scopeMount.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
 import {
 	getSecretsForComponent,
@@ -81,6 +82,18 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	// process-global side effects should validate fully but skip activation.
 	isTransientValidation?: boolean;
 
+	/**
+	 * Routing the operator declared for this application in the root config. Applied automatically
+	 * to handlers registered through `scope.server`, so plugins normally don't touch it — the
+	 * router strips the mount before a handler runs and everything inside the application
+	 * addresses itself mount-relative.
+	 *
+	 * Read it only when a plugin emits an absolute URL back to the client (e.g. a redirect
+	 * `Location`, via `externalBasePath()`) or bypasses the routed chain entirely (legacy
+	 * fastify routes register on the bare server).
+	 */
+	mount?: ScopeMount;
+
 	constructor(
 		appName: string,
 		pluginName: string,
@@ -88,10 +101,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		configFilePath: string,
 		applicationScope: ApplicationScope,
 		origin: string = appName,
-		isRootConfig?: boolean
+		isRootConfig?: boolean,
+		mount?: ScopeMount
 	) {
 		super();
 
+		this.mount = mount;
 		this.#appName = appName;
 		this.#pluginName = pluginName;
 		this.#origin = typeof origin === 'string' ? origin : appName;
@@ -117,14 +132,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 					const method = Reflect.get(target, prop, receiver);
 					if (typeof method === 'function') {
 						return (listener: any, options?: any) => {
-							const scopeConfig = (scopeRef.options?.getAll() as any) ?? {};
 							return method.call(target, listener, {
 								name: pluginName,
-								// resolve to the same base the entry pipeline uses ('assets' -> '/assets/',
-								// './x' -> '/<name>/x/') so route matching sees a real pathname prefix (#1583)
-								urlPath: scopeConfig.urlPath ? resolveBaseURLPath(pluginName, scopeConfig.urlPath) : undefined,
-								host: scopeConfig.host || undefined,
 								...options,
+								...scopeRef.routeFor(options),
 							});
 						};
 					}
@@ -182,6 +193,41 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	get pluginName(): string {
 		return this.#pluginName;
+	}
+
+	/**
+	 * Turns a mount-relative base path into the absolute path a client sees, by prefixing the
+	 * application's mount. Use it for anything sent back to the client — a redirect `Location`, a
+	 * generated link — since the router strips the mount before a handler runs and a handler's own
+	 * view of the path therefore excludes it.
+	 */
+	externalBasePath(baseURLPath: string): string {
+		return this.mount?.urlPath ? `${this.mount.urlPath}${baseURLPath}` : baseURLPath;
+	}
+
+	/**
+	 * The route a handler registered through `scope.server` with these options will answer on — the
+	 * single place the application mount is applied. `scope.server` uses it, and a plugin that must
+	 * identify its own route (e.g. REST deduplicating registration per mount) calls it rather than
+	 * recomposing the parts, so there is one definition of "which route is this".
+	 *
+	 * An explicit call option wins over config, but either way `urlPath` is *resolved* rather than
+	 * passed through: plugins that spread their whole config section into these options (REST does)
+	 * would otherwise hand the router a raw value — './' became the literal, unmatchable route '/.'.
+	 */
+	routeFor(options?: { urlPath?: string; host?: string }): { host?: string; urlPath?: string } {
+		const scopeConfig = (this.options?.getAll() as any) ?? {};
+		const rawUrlPath = options?.urlPath ?? scopeConfig.urlPath;
+		// resolve to the same base the entry pipeline uses ('assets' -> '/assets/', './x' ->
+		// '/<name>/x/') so route matching sees a real pathname prefix (#1583), then prefix the
+		// application's mount. The mount is applied ONLY here, at the routing boundary: the router
+		// strips it before the handler runs, so entry URL paths — and the resource paths
+		// graphqlSchema/jsResource derive from them — stay mount-relative.
+		const pluginUrlPath = rawUrlPath ? resolveBaseURLPath(this.#pluginName, rawUrlPath) : undefined;
+		return {
+			host: this.mount?.host || options?.host || scopeConfig.host || undefined,
+			urlPath: composeMountedUrlPath(this.mount?.urlPath, this.#pluginName, pluginUrlPath) || undefined,
+		};
 	}
 
 	get directory(): string {

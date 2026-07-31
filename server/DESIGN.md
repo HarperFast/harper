@@ -119,6 +119,22 @@ Components register listeners with optional `before: 'name'` / `after: 'name'` o
 
 The default WebSocket upgrade handler is registered automatically inside `onWebSocket()` the first time it runs for a given port.
 
+### Application mounts (`host` / `urlPath` in the root config)
+
+An operator mounts an application by putting `host`/`urlPath` on its entry in the **root** config; `components/scopeMount.ts` models it and the loader threads it into every `Scope` for that application (both load paths — the root-config `package` recursion and the components-root directory scan).
+
+**The mount is applied at exactly one place: `Scope.routeFor()`, used by the `scope.server` proxy.** Do not push it anywhere else. In particular, do not compose it into the plugin config the entry pipeline reads: `entry.urlPath` is what `graphqlSchema` and `jsResource` derive **resource** paths from, and the router strips the mount _before_ REST resolves them. Composing it there registers a table at `/v1/Thing` while REST looks up `Thing`, and every mounted REST route 404s. A single-app `static` test will not catch it — static de-prefixes its own map keys, so it stays self-consistent either way.
+
+Consequences worth knowing:
+
+- Everything inside an application addresses itself **mount-relative**. Only two things need the absolute path: code that emits a URL back to the client (use `Scope.externalBasePath()` — static's redirect `Location`), and code that bypasses the routed chain (legacy fastify registers on the bare server, so its route prefix must be the full external path). `static.ts`'s mount-root redirect gates on the _external_ base path, not the plugin-local one — a root-level static plugin (`baseURLPath === '/'`) still needs the redirect when the application itself carries a mount, since the client-visible mount root is then `externalBaseURLPath`, not `/`.
+- A plugin registering per-mount state must key it on `Scope.routeFor()`'s resolved route, not on the parts it composes from — distinct `(mount, pluginUrlPath)` pairs can flatten to the same string (`/a`+`bc` and `/ab`+`c`). `REST.ts`'s `startedMounts` does this; it replaced a process-global `started` flag that silently 404'd the second mounted application's REST API. `handleApplication` also closes over `resources`/`httpOptions` per call rather than a module-level var, and skips deploy pre-flight validation scopes (`scope.isTransientValidation`) entirely — registering handlers from a throwaway validation scope would splice a validation run into the live request path and permanently mark that mount started, silently skipping the real scope's later registration.
+- A mount is routing, **not** isolation: exported resources stay instance-wide, and a `host` mount cannot constrain legacy fastify routes — `fastifyRoutes.ts` refuses to load (throws) rather than warn when a `host` mount is configured, since the fallback really is reachable on every host.
+- An invalid mount (unparseable `host`/`urlPath`) fails the application **closed**: `componentLoader.tryRootConfigMount` skips loading it entirely rather than falling back to unmounted access — loading unconstrained would silently drop the isolation the operator asked for, which is worse than not loading at all.
+- Two applications mounted at different routes can register same-named middleware (e.g. both enable `rest`) without colliding: `middlewareChain.resolveRoutedChains` resolves `before`/`after` name references against a registry scoped to that route's own group, falling back to a _global_ registry that only holds genuinely unmounted entries (e.g. `authentication`) — never another mounted route's entries.
+- `host` matching reads `request.host` (Harper's `Request.host` getter), not the raw `Host` header — HTTP/2 clients send `:authority`, never `Host`, so reading the header directly silently 404s every host-mounted app under h2 while h1 keeps working. `hostnameFromHeader` also strips a trailing dot (`api.example.com.`, the absolute-FQDN form some resolvers emit) since it names the same origin.
+- `scopeMount.normalizeMountHost` validates against the same grammar as the `deploy_component` operation's `host` field (bare DNS hostname or IPv6 literal) and throws otherwise, so a hand-typed root-config `host` with a port/scheme/path fails the application closed too, instead of loading it unreachably. `nestScopeMount` logs a warning when a child's `host` is discarded by the parent-authority rule, so that isn't silent.
+
 ---
 
 ## Resource ↔ HTTP boundary

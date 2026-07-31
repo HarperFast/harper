@@ -1,0 +1,11 @@
+# The app declares only its own internal structure. Where it is served is the operator's
+# call, declared on this app's entry in the root config — see app-root-mount.test.ts.
+static:
+  files: 'web/**'
+  urlPath: 'assets'
+# Exercises the mount-relative invariant: graphqlSchema registers resources from entry URL
+# paths, and the router strips the mount before REST resolves them, so those paths must NOT
+# carry the mount or REST would look up a path nothing registered.
+rest: true
+graphqlSchema:
+  files: 'schema.graphql'

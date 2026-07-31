@@ -553,4 +553,194 @@ describe('Scope', () => {
 			);
 		});
 	});
+
+	// The `server` proxy is what turns config into routing: it names every middleware entry after
+	// the plugin and resolves the plugin's `urlPath`/`host` into the route the dispatcher matches.
+	describe('server proxy routing injection', () => {
+		const registerAndCapture = async (config, options, mount) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: config }));
+			const http = spy();
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			scope.server.http(() => {}, options);
+			await scope.close();
+			return http.getCall(0).args[1];
+		};
+
+		it('names the entry after the plugin and resolves the configured urlPath', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' });
+			assert.equal(injected.name, this.pluginName);
+			assert.equal(injected.urlPath, '/assets/');
+		});
+
+		it('resolves a plugin-name-relative urlPath rather than passing it through raw', async () => {
+			// A plugin that spreads its whole config section into these options (REST does) used to
+			// hand the router the literal './', which normalized to the unmatchable route '/.'
+			const injected = await registerAndCapture({ urlPath: './' }, { urlPath: './' });
+			assert.equal(injected.urlPath, `/${this.pluginName}/`);
+		});
+
+		it('lets an explicit call option override the configured urlPath, still resolved', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' }, { urlPath: 'other' });
+			assert.equal(injected.urlPath, '/other/');
+		});
+
+		it('carries the configured host', async () => {
+			const injected = await registerAndCapture({ host: 'api.example.com' });
+			assert.equal(injected.host, 'api.example.com');
+		});
+
+		it('leaves routing undefined when nothing configures it', async () => {
+			const injected = await registerAndCapture({ files: 'test.js' });
+			assert.equal(injected.urlPath, undefined);
+			assert.equal(injected.host, undefined);
+		});
+
+		it('routes by the application mount declared in the root config', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' }, undefined, {
+				host: 'api.example.com',
+				urlPath: '/v1',
+			});
+			assert.equal(injected.host, 'api.example.com');
+			assert.equal(injected.urlPath, '/v1/assets/');
+		});
+
+		it('mount host wins over a host the application shipped', async () => {
+			const injected = await registerAndCapture({ host: 'www.shipped.example' }, undefined, {
+				host: 'api.example.com',
+			});
+			assert.equal(injected.host, 'api.example.com');
+		});
+
+		// The mount is applied ONLY at the routing boundary. The router strips it before a handler
+		// runs, so entry URL paths — and the resource paths graphqlSchema/jsResource derive from
+		// them — must stay mount-relative or REST would look up a path nothing registered.
+		it('does not leak the mount into the config the entry pipeline reads', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js', urlPath: 'assets' } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				{ urlPath: '/v1' }
+			);
+			await scope.ready;
+			assert.equal(scope.options.getAll().urlPath, 'assets', 'plugin config stays as authored');
+			await scope.close();
+		});
+	});
+
+	// REST deduplicates its registration per route, so the route identity must be injective: two
+	// configurations that resolve to different routes must not produce the same one. Composing the
+	// mount with the plugin's *raw* urlPath collided (mount '/a' + 'bc' and mount '/ab' + 'c' both
+	// gave '/abc'), which would silently skip the second application's REST registration.
+	describe('routeFor', () => {
+		const routeFor = async (config, mount, options) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: config }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			const route = scope.routeFor(options);
+			await scope.close();
+			return route;
+		};
+
+		it('distinguishes routes that a raw concatenation would collide', async () => {
+			const a = await routeFor({ urlPath: 'bc' }, { urlPath: '/a' });
+			const b = await routeFor({ urlPath: 'c' }, { urlPath: '/ab' });
+			assert.equal(a.urlPath, '/a/bc/');
+			assert.equal(b.urlPath, '/ab/c/');
+			assert.notEqual(a.urlPath, b.urlPath);
+		});
+
+		it('resolves the same route for configurations that are genuinely the same mount', async () => {
+			// A mount of '/api' with no plugin path and a plugin path of '/api' with no mount both
+			// answer on '/api' — the same chain, so REST should register once.
+			const mounted = await routeFor({}, { urlPath: '/api' });
+			const pluginOnly = await routeFor({ urlPath: '/api' }, undefined);
+			assert.equal(mounted.urlPath, pluginOnly.urlPath);
+		});
+
+		it('keeps host and path separable', async () => {
+			const route = await routeFor({}, { host: 'api.example.com', urlPath: '/v1' });
+			assert.deepEqual(route, { host: 'api.example.com', urlPath: '/v1/' });
+		});
+
+		it('matches what the server proxy injects', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { urlPath: 'assets' } }));
+			const http = spy();
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http }),
+				undefined,
+				undefined,
+				{ host: 'api.example.com', urlPath: '/v1' }
+			);
+			await scope.ready;
+			const expected = scope.routeFor(undefined);
+			scope.server.http(() => {});
+			const injected = http.getCall(0).args[1];
+			assert.equal(injected.urlPath, expected.urlPath);
+			assert.equal(injected.host, expected.host);
+			await scope.close();
+		});
+	});
+
+	describe('externalBasePath', () => {
+		const scopeWithMount = async (mount) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			return scope;
+		};
+
+		it('prefixes the mount so a client-facing path points inside the mount', async () => {
+			const scope = await scopeWithMount({ urlPath: '/v1' });
+			assert.equal(scope.externalBasePath('/assets/'), '/v1/assets/');
+			assert.equal(scope.externalBasePath('/'), '/v1/');
+			await scope.close();
+		});
+
+		it('is identity when the application has no path mount', async () => {
+			const scope = await scopeWithMount(undefined);
+			assert.equal(scope.externalBasePath('/assets/'), '/assets/');
+			await scope.close();
+
+			const hostOnly = await scopeWithMount({ host: 'api.example.com' });
+			assert.equal(hostOnly.externalBasePath('/assets/'), '/assets/');
+			await hostOnly.close();
+		});
+	});
 });

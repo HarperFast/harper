@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
@@ -1000,6 +1001,685 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test inspectForLog function (harper#1982)', () => {
+		const util = require('util');
+		const { inspectForLog } = harperLoggerModule;
+		// inspectForLog returns a lazy wrapper; render it the same way the logger does.
+		const render = (value, options) => util.inspect(inspectForLog(value, options));
+
+		it('renders past Console default depth/array/string limits when given explicit options', () => {
+			const value = {
+				install_output: {
+					lines: [{ manager: 'npm', stream: 'stderr', line: 'npm error boom' }],
+				},
+			};
+			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
+			assert.ok(!result.includes('[Object]'));
+			assert.ok(result.includes('npm error boom'));
+		});
+
+		it('defers rendering until actually stringified (does not compute eagerly)', () => {
+			let rendered = false;
+			const hostile = {
+				get [util.inspect.custom]() {
+					rendered = true;
+					return () => 'rendered-on-demand';
+				},
+			};
+			const wrapper = inspectForLog(hostile, { depth: 8 });
+			assert.strictEqual(rendered, false, 'inspectForLog should not have touched the value yet');
+			assert.strictEqual(util.inspect(wrapper), 'rendered-on-demand');
+			assert.strictEqual(rendered, true);
+		});
+
+		it('never throws, even if the value has a hostile custom inspect hook', () => {
+			const hostile = {
+				[util.inspect.custom]() {
+					throw new Error('formatter boom');
+				},
+			};
+			assert.doesNotThrow(() => render(hostile));
+			assert.ok(render(hostile).includes('Unrenderable value'));
+			assert.ok(render(hostile).includes('formatter boom'));
+		});
+
+		it('never throws on a revoked Proxy', () => {
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			assert.doesNotThrow(() => render(proxy));
+		});
+
+		it('never throws when the custom inspect hook throws a hostile value (a revoked Proxy) instead of an Error', () => {
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			const hostile = {
+				[util.inspect.custom]() {
+					throw proxy; // `err instanceof Error` and `String(err)` both throw on a revoked Proxy
+				},
+			};
+			assert.doesNotThrow(() => render(hostile));
+			assert.ok(render(hostile).includes('Unrenderable value'));
+		});
+
+		it('sanitizes a nested Error at depth instead of exposing its own-enumerable properties raw (#1734)', () => {
+			// http_resp_msg is a generic field - a future caller could embed a raw Error several
+			// levels deep in it, unlike the known deployComponent shape this was written for.
+			const nested_error = new Error('request failed');
+			nested_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const value = { detail: { cause: { error: nested_error } }, other: 'fine' };
+
+			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Error: request failed'));
+			assert.ok(result.includes('fine'));
+		});
+
+		it('preserves an enumerable symbol property (e.g. a nested value’s own custom inspect hook)', () => {
+			const custom_rendered = { [util.inspect.custom]: () => 'custom-nested-render' };
+			const value = { inner: custom_rendered };
+			const result = render(value, { depth: 8 });
+			assert.ok(result.includes('custom-nested-render'));
+		});
+
+		it('sanitizes what a preserved custom inspect hook RETURNS, not just what it is called with - a hook returning a secret-bearing Error must not leak it (#1994 review)', () => {
+			// The hook itself runs at real render time, entirely outside this walk, so its return value
+			// has never been through deepSanitizeErrors. A hook that hands back a closure-captured Error
+			// carrying a secret must still have that Error sanitized before the final util.inspect call
+			// renders whatever the hook returned.
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const custom_rendered = { [util.inspect.custom]: () => secret_error };
+			const value = { inner: custom_rendered };
+			const result = render(value, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Error: request failed'));
+		});
+
+		it('sanitizes a secret-carrying Error reached a second time through a cycle', () => {
+			const nested_error = new Error('request failed');
+			nested_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const value = { error: nested_error };
+			value.self = value; // cycle: the second path to `value` must not bypass sanitization
+
+			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: request failed'));
+		});
+
+		it('sanitizes a secret-carrying Error nested inside a Map or Set instead of leaving it raw', () => {
+			const nested_error = new Error('request failed');
+			nested_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const value = {
+				map: new Map([['cause', nested_error]]),
+				set: new Set([nested_error]),
+			};
+			const result = render(value, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: request failed'));
+		});
+
+		it('sanitizes a secret-carrying Error held by a class/custom-prototype instance, preserving its class name', () => {
+			const nested_error = new Error('request failed');
+			nested_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			class Diagnostic {
+				constructor(cause) {
+					this.cause = cause;
+				}
+			}
+			const value = { diagnostic: new Diagnostic(nested_error) };
+			const result = render(value, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: request failed'));
+			assert.ok(result.includes('Diagnostic'));
+		});
+
+		it('renders the rest of a structured payload instead of losing it all when a nested value carries a branded prototype (e.g. URL) the clone cannot safely wear', () => {
+			// URL's own properties (href, protocol, ...) are getters on URL.prototype backed by a
+			// #private internal slot the sanitized clone never has - restoring URL.prototype onto a
+			// stateless clone makes util.inspect throw once it tries to render it via those getters.
+			// Without a per-node fallback, that throw happens inside inspectForLog's OWN try/catch,
+			// which then replaces the ENTIRE payload with "[Unrenderable value]" - not just the URL
+			// field - losing phase/install_output/deployment_id for one nested URL anywhere in the tree.
+			const value = {
+				phase: 'install',
+				target: new URL('https://example.com/path'),
+				install_output: { lines: ['step 1 ok', 'step 2 ok'] },
+			};
+			const result = render(value, { depth: 8 });
+			assert.ok(!result.includes('Unrenderable value'));
+			assert.ok(result.includes('install'));
+			assert.ok(result.includes('step 1 ok'));
+			assert.ok(result.includes('step 2 ok'));
+		});
+
+		it("never invokes a Proxy prototype's trap while checking whether a branded prototype is safe to wear (#1994 review)", () => {
+			// The branded-prototype safety check above (`inspect(result)` on the empty clone) used to
+			// run against ANY non-null, non-Object.prototype prototype, including a live Proxy - so a
+			// hostile trap (e.g. `get() { while (true) {} }`) would run during what is supposed to be a
+			// passive safety probe on the error-logging path, wedging the worker while it tries to log
+			// and rethrow the original operation failure. A Proxy prototype must be rejected outright,
+			// the same way types.isProxy already gates every other reflection in this file.
+			let trap_calls = 0;
+			const hostile_proto = new Proxy(
+				{},
+				{
+					get(target, prop) {
+						trap_calls++;
+						return Reflect.get(target, prop);
+					},
+				}
+			);
+			const hostile = Object.create(hostile_proto);
+			hostile.detail = 'fine';
+			const result = render({ hostile }, { depth: 8 });
+			assert.strictEqual(trap_calls, 0, 'a Proxy prototype must never be probed, only rejected');
+			assert.ok(result.includes('fine'));
+		});
+
+		it("invokes a nested value's custom inspect hook (reached via its branded prototype) at most once - not once during the internal safety probe and again for the real render (#1994 review)", () => {
+			// Before the fix, the safety probe called plain `inspect(result)`, which - like any
+			// util.inspect call - invokes `[util.inspect.custom]` if the prototype defines one. That ran
+			// the class's custom inspector once here (silently, on an empty, still-mid-construction
+			// clone) and once more later for the actual render, corrupting a stateful/one-shot
+			// inspector's real output on its second call.
+			let calls = 0;
+			class OneShot {
+				[util.inspect.custom]() {
+					calls++;
+					if (calls > 1) throw new Error('called twice');
+					return 'one-shot-rendered';
+				}
+			}
+			const value = { branded: Object.create(OneShot.prototype) };
+			const result = render(value, { depth: 8 });
+			assert.strictEqual(calls, 1, 'the custom inspector must be invoked exactly once, not probed separately');
+			assert.ok(result.includes('one-shot-rendered'));
+		});
+
+		it('never invokes an accessor-backed array entry, and never resolves an overridden Map/Set iterator', () => {
+			let array_getter_calls = 0;
+			const hostile_array = [];
+			Object.defineProperty(hostile_array, 0, {
+				enumerable: true,
+				get() {
+					array_getter_calls++;
+					return 'should not be called';
+				},
+			});
+			hostile_array.length = 1;
+
+			let iterator_calls = 0;
+			const hostile_map = new Map([['key', 'value']]);
+			hostile_map[Symbol.iterator] = function* () {
+				iterator_calls++;
+				yield ['poisoned', 'should not appear'];
+			};
+			const hostile_set = new Set(['value']);
+			hostile_set[Symbol.iterator] = function* () {
+				iterator_calls++;
+				yield 'poisoned';
+			};
+
+			const result = render({ hostile_array, hostile_map, hostile_set }, { depth: 8 });
+			assert.strictEqual(array_getter_calls, 0);
+			assert.strictEqual(iterator_calls, 0);
+			assert.ok(result.includes('[Getter]'));
+			assert.ok(!result.includes('should not be called'));
+			assert.ok(result.includes("'key' => 'value'"));
+			assert.ok(result.includes("'value'"));
+			assert.ok(!result.includes('poisoned'));
+		});
+
+		it('bounds sanitization breadth instead of visiting every index of a huge sparse array', () => {
+			const huge_sparse_array = new Array(0xffffffff - 1); // length only - no actual elements
+			const start = process.hrtime.bigint();
+			const result = render({ huge_sparse_array }, { depth: 8, maxArrayLength: 250 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			assert.ok(elapsed_ms < 2000, 'sanitizing a huge sparse array should stay bounded, not scan its full length');
+			assert.ok(result.includes('sanitize budget'));
+		});
+
+		it('bounds sanitization breadth for a large Map/Set rather than cloning every entry', () => {
+			const huge_map = new Map(Array.from({ length: 10_000 }, (_, i) => [i, i]));
+			const huge_set = new Set(Array.from({ length: 10_000 }, (_, i) => i));
+			const result = render({ huge_map, huge_set }, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.includes('sanitize budget'));
+		});
+
+		it('creates own properties via defineProperty instead of assignment, so an inherited setter or an own `__proto__` key cannot run during sanitization', () => {
+			let setter_calls = 0;
+			class WithSetter {
+				set detail(_v) {
+					setter_calls++;
+				}
+			}
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const with_setter = new WithSetter();
+			// Object.defineProperty (unlike `with_setter.detail = secret_error`, which would just
+			// invoke the class's setter above) creates an OWN data property that shadows it - the
+			// exact shape a real diagnostic payload could produce and the one this test needs.
+			Object.defineProperty(with_setter, 'detail', {
+				value: secret_error,
+				enumerable: true,
+				writable: true,
+				configurable: true,
+			});
+
+			const proto_bomb = {};
+			Object.defineProperty(proto_bomb, '__proto__', {
+				value: { own_marker: 'PROTO_BOMB_SURVIVED' },
+				enumerable: true,
+			});
+
+			const result = render({ with_setter, proto_bomb }, { depth: 8 });
+			assert.strictEqual(setter_calls, 0);
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: request failed'));
+			// If sanitization used plain assignment instead of defineProperty, `result['__proto__'] =`
+			// would reparent the CLONE instead of creating an own property, silently dropping this
+			// marker from the render (a reparented plain object shows no inherited properties).
+			assert.ok(result.includes('PROTO_BOMB_SURVIVED'));
+		});
+
+		it('leaves built-in container types (Date, Map, Buffer) rendered natively instead of corrupting them', () => {
+			const date = new Date('2024-01-01T00:00:00.000Z');
+			const map = new Map([['key', 'value']]);
+			const buffer = Buffer.from('hi');
+			const result = render({ date, map, buffer }, { depth: 8 });
+			assert.ok(result.includes('2024-01-01T00:00:00.000Z'));
+			assert.ok(result.includes('Map(1)'));
+			assert.ok(result.includes('key'));
+			assert.match(result, /Buffer\.from\(|<Buffer/);
+		});
+
+		it('omits a field whose getter throws instead of letting it fail the whole render', () => {
+			const hostile = {};
+			Object.defineProperty(hostile, 'poison', {
+				enumerable: true,
+				get() {
+					throw new Error('getter boom');
+				},
+			});
+			const value = { hostile, fine: 'still here' };
+			const result = render(value, { depth: 8 });
+			assert.ok(!result.includes('Unrenderable value'));
+			assert.ok(result.includes('still here'));
+		});
+
+		it('never invokes a getter while sanitizing — describes it as [Getter] instead, same as util.inspect’s default', () => {
+			let call_count = 0;
+			const value = {};
+			Object.defineProperty(value, 'lazy', {
+				enumerable: true,
+				get() {
+					call_count++;
+					return 'should not be called';
+				},
+			});
+			const result = render({ value, fine: 'still here' }, { depth: 8 });
+			assert.strictEqual(call_count, 0);
+			assert.ok(result.includes('[Getter]'));
+			assert.ok(!result.includes('should not be called'));
+			assert.ok(result.includes('still here'));
+		});
+
+		it('sanitizes a secret-carrying Error nested inside a VM cross-realm plain object, Map, and Set', () => {
+			const vm = require('vm');
+			const context = vm.createContext();
+			const vm_error = vm.runInContext('new Error("vm request failed")', context);
+			vm_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const vm_plain_object = vm.runInContext('({})', context);
+			vm_plain_object.cause = vm_error;
+			const vm_map = vm.runInContext('new Map()', context);
+			vm_map.set('cause', vm_error);
+			const vm_set = vm.runInContext('new Set()', context);
+			vm_set.add(vm_error);
+
+			assert.strictEqual(vm_plain_object instanceof Object, false); // different realm's Object constructor
+			assert.strictEqual(vm_map instanceof Map, false); // different realm's Map constructor
+
+			const result = render({ vm_plain_object, vm_map, vm_set }, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(result.includes('Error: vm request failed'));
+		});
+
+		it('bounds sanitization breadth for a plain object with a huge number of own properties', () => {
+			const huge_object = {};
+			for (let i = 0; i < 200_000; i++) huge_object[`key_${i}`] = i;
+			const start = process.hrtime.bigint();
+			const result = render({ huge_object }, { depth: 8, maxArrayLength: 250 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			assert.ok(elapsed_ms < 2000, 'sanitizing a wide plain object should stay bounded, not clone every property');
+			assert.ok(result.includes('sanitize budget'));
+		});
+
+		it('never hands a Promise to inspect() raw, even one resolved with a secret-carrying Error (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const value = { pending_check: Promise.resolve(secret_error) };
+			const result = render(value, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Promise'));
+		});
+
+		it('bounds total sanitize work (containers + primitive leaves), not just container count', () => {
+			// Each object has 1 container + 250 primitive fields; the global node budget must count
+			// leaves too, or 250 containers * 250 fields could walk ~62,500 values while only
+			// registering as 250 against MAX_SANITIZE_NODES.
+			const many_small_objects = {};
+			for (let i = 0; i < 250; i++) {
+				const child = {};
+				for (let j = 0; j < 250; j++) child[`f${j}`] = j;
+				many_small_objects[`child_${i}`] = child;
+			}
+			const start = process.hrtime.bigint();
+			const result = render(many_small_objects, { depth: 8, maxArrayLength: 250 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			assert.ok(elapsed_ms < 2000, 'leaf values must count against the shared node budget too');
+			assert.ok(result.includes('sanitize budget'));
+		});
+
+		it('never hands a Date, RegExp, WeakMap, or WeakSet to inspect() raw once it carries a secret-bearing expando (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+
+			const hostile_date = new Date('2024-01-01T00:00:00.000Z');
+			hostile_date.cause = secret_error;
+			const hostile_regexp = /abc/gi;
+			hostile_regexp.cause = secret_error;
+			const hostile_weakmap = new WeakMap();
+			hostile_weakmap.cause = secret_error;
+			const hostile_weakset = new WeakSet();
+			hostile_weakset.cause = secret_error;
+
+			const result = render({ hostile_date, hostile_regexp, hostile_weakmap, hostile_weakset }, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			// The expando-free common case is untouched: native rendering is still preserved.
+			assert.ok(result.includes('2024-01-01T00:00:00.000Z'));
+			assert.match(result, /\/abc\/gi/);
+		});
+
+		it('still renders a Date/RegExp/WeakMap/WeakSet exactly natively when it has no expando (fast path unaffected)', () => {
+			const date = new Date('2024-01-01T00:00:00.000Z');
+			const regexp = /abc/gi;
+			const result = render({ date, regexp }, { depth: 8 });
+			assert.ok(result.includes('2024-01-01T00:00:00.000Z'));
+			assert.match(result, /\/abc\/gi/);
+		});
+
+		it("reconstructs an expando-bearing RegExp's flags via individual internal-slot getters, never the combined `flags` getter, so a hostile flag-property expando is never invoked (#1994 review)", () => {
+			// RegExp.prototype.flags is specified to synthesize its result by reading `this.global`,
+			// `this.ignoreCase`, etc as ordinary [[Get]]s on the RegExp instance - unlike the individual
+			// flag getters (`global`, `ignoreCase`, ...), which read the internal [[OriginalFlags]] slot
+			// directly. A RegExp carrying an expando that shadows one of those names with a hostile
+			// getter would have the combined getter invoke it while merely trying to reconstruct a safe
+			// copy for logging.
+			let trap_calls = 0;
+			const hostile_regexp = /abc/gi;
+			hostile_regexp.detail = 'fine'; // the expando that routes this into safeOpaqueBuiltinSummary
+			Object.defineProperty(hostile_regexp, 'global', {
+				get() {
+					trap_calls++;
+					return true;
+				},
+			});
+			const result = render({ hostile_regexp }, { depth: 8 });
+			assert.strictEqual(
+				trap_calls,
+				0,
+				"reconstructing the flags must never read the instance's own `global` property"
+			);
+			assert.match(result, /\/abc\/gi/);
+		});
+
+		it('falls back to a bounded, safe summary (not the raw value) for a Buffer/boxed-primitive carrying a secret-bearing expando (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const hostile_buffer = Buffer.from('hi');
+			hostile_buffer.cause = secret_error;
+			const hostile_boxed_number = Object.assign(new Number(5), { cause: secret_error });
+
+			const result = render({ hostile_buffer, hostile_boxed_number }, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+		});
+
+		it('does not additionally invoke a hostile `Symbol.toStringTag` getter on a boxed String while classifying it - only util.inspect’s own native rendering does', () => {
+			// util.inspect itself reads Symbol.toStringTag on every value it renders (to decide the
+			// display tag), so the getter firing once, from inspect's own native formatting of the
+			// final sanitized value, is unavoidable and not what this guards against. What the fix at
+			// hasEnumerableOwnProps (types.isStringObject instead of Object.prototype.toString.call)
+			// removes is a SECOND invocation from our own classification logic, reached before inspect
+			// ever sees the value - i.e. running a hostile getter as a side effect of merely deciding
+			// how to sanitize, not of rendering.
+			let invoked = 0;
+			const makeBoxedString = () => {
+				const boxed_string = new String('hi');
+				Object.defineProperty(boxed_string, Symbol.toStringTag, {
+					get() {
+						invoked++;
+						return 'String';
+					},
+				});
+				return boxed_string;
+			};
+
+			util.inspect(makeBoxedString());
+			const baseline = invoked;
+			invoked = 0;
+
+			render({ boxed_string: makeBoxedString() }, { depth: 8 });
+			assert.strictEqual(invoked, baseline);
+		});
+
+		it('never invokes a hostile `Symbol.toStringTag` getter while picking a safe-summary tag for an opaque built-in that actually carries an expando (#1994 review)', () => {
+			// The classification test above only exercises an expando-free boxed String, which returns
+			// raw before safeOpaqueBuiltinSummary is ever reached. Adding an expando routes it through
+			// safeOpaqueBuiltinSummary's tag detection instead, which used to call
+			// Object.prototype.toString.call(value) - the exact same class of getter-invocation bug the
+			// classification fix above already closed, just in the other place it was still present.
+			let invoked = 0;
+			const boxed_string = new String('hi');
+			Object.defineProperty(boxed_string, Symbol.toStringTag, {
+				get() {
+					invoked++;
+					return 'String';
+				},
+			});
+			boxed_string.detail = 'fine'; // the expando that routes this into safeOpaqueBuiltinSummary
+			const result = render({ boxed_string }, { depth: 8 });
+			assert.strictEqual(invoked, 0, 'safeOpaqueBuiltinSummary must not read Symbol.toStringTag while picking a label');
+			assert.ok(result.includes('String with own properties omitted for safety'));
+		});
+
+		it('sanitizes a function’s secret-bearing expando instead of handing the raw function to inspect() (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			function hostile_function() {}
+			hostile_function.cause = secret_error;
+
+			const result = render({ hostile_function }, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Error: request failed'));
+		});
+
+		it('still renders a plain function raw when it has no expando (fast path unaffected)', () => {
+			function plain_function(a, b) {
+				return a + b;
+			}
+			const result = render({ plain_function }, { depth: 8 });
+			assert.ok(result.includes('[Function: plain_function]'));
+		});
+
+		it('fails closed for a Proxy whose `ownKeys` trap throws - caught by the isProxy gate before the trap ever runs (#1734)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			// types.isProxy now recognizes `hostile` and returns a placeholder before any reflection,
+			// so the `ownKeys` trap never actually runs (see the dedicated trap-count test below) -
+			// this just pins the end-to-end secret-safety outcome for this shape.
+			const hostile = new Proxy(
+				{ error: secret_error },
+				{
+					ownKeys() {
+						throw new Error('ownKeys boom');
+					},
+				}
+			);
+			const result = render({ hostile }, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+		});
+
+		it('never invokes ANY trap on a nested Proxy - not just a throwing one - and never leaks its target', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			let trap_calls = 0;
+			const hostile = new Proxy(
+				{ error: secret_error },
+				{
+					ownKeys() {
+						trap_calls++;
+						return Reflect.ownKeys({ error: secret_error });
+					},
+					getPrototypeOf() {
+						trap_calls++;
+						return Object.prototype;
+					},
+					get(target, prop) {
+						trap_calls++;
+						return Reflect.get(target, prop);
+					},
+				}
+			);
+			const result = render({ hostile }, { depth: 8 });
+			assert.strictEqual(trap_calls, 0, 'no Proxy trap should ever be invoked while sanitizing');
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+			assert.ok(result.includes('Proxy'));
+		});
+
+		it('clamps an unbounded/huge caller-requested maxArrayLength to a hard ceiling instead of scanning the full array', () => {
+			const huge_array = new Array(1_000_000).fill(0);
+			const start = process.hrtime.bigint();
+			const result = render({ huge_array }, { depth: 8, maxArrayLength: Infinity });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			assert.ok(
+				elapsed_ms < 2000,
+				'an unbounded requested maxArrayLength must not defeat the sanitize breadth ceiling'
+			);
+			assert.ok(result.includes('sanitize budget'));
+		});
+
+		it('never returns a nested Error unsanitized once the sanitize depth cap is hit (requires a caller-requested depth beyond the cap)', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			let value = secret_error;
+			for (let i = 0; i < 25; i++) value = { nested: value };
+			const result = render(value, { depth: 30 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+		});
+
+		it('fails closed to a bounded, quick placeholder for a huge Buffer/boxed-String instead of scanning every index - even when expando-free', () => {
+			// Above MAX_INDEXED_EXPANDO_CHECK_LENGTH, hasEnumerableOwnProps can't cheaply verify "no
+			// expando" (that's the whole point of the size cap - see its doc comment), so it fails
+			// CLOSED: a huge Buffer/boxed-String is treated as if it has an expando even when it does
+			// not, trading native-format fidelity (only above this size) for never scanning it and
+			// never guessing "clean" on data it didn't actually check.
+			const huge_buffer = Buffer.alloc(1_000_000);
+			const huge_boxed_string = new String('x'.repeat(1_000_000));
+			const start = process.hrtime.bigint();
+			const result = render({ huge_buffer, huge_boxed_string }, { depth: 8 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			assert.ok(elapsed_ms < 500, 'failing closed above the size cap must not scan every element/character');
+			assert.ok(!/Buffer\.from\(|<Buffer/.test(result));
+			assert.ok(result.includes('with own properties omitted for safety'));
+		});
+
+		it('still resolves a small expando-free Buffer/boxed-String natively (below the size cap, fast path unaffected)', () => {
+			const small_buffer = Buffer.from('hi');
+			const small_boxed_string = new String('hi');
+			const result = render({ small_buffer, small_boxed_string }, { depth: 8 });
+			assert.match(result, /Buffer\.from\(|<Buffer/);
+			assert.ok(result.includes('hi'));
+		});
+
+		it('fails closed (safe summary, not raw) for a Buffer just over the size cap that actually carries an expando', () => {
+			const secret_error = new Error('request failed');
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const hostile_buffer = Buffer.alloc(10_001);
+			hostile_buffer.cause = secret_error;
+			const result = render({ hostile_buffer }, { depth: 8 });
+			assert.ok(!result.includes('super-secret-token'));
+			assert.ok(!result.includes('Authorization'));
+		});
+	});
+
+	describe('Test isErrorLike function (harper#1982)', () => {
+		const { isErrorLike } = harperLoggerModule;
+
+		it('recognizes a same-realm Error', () => {
+			assert.strictEqual(isErrorLike(new Error('boom')), true);
+		});
+
+		it('recognizes a cross-realm (VM-created) Error', () => {
+			const vm = require('vm');
+			const vmError = vm.runInNewContext('new Error("vm boom")');
+			assert.strictEqual(vmError instanceof Error, false); // different realm's Error constructor
+			assert.strictEqual(isErrorLike(vmError), true);
+		});
+
+		it('does not recognize a plain object', () => {
+			assert.strictEqual(isErrorLike({ message: 'not an error' }), false);
+		});
+
+		it('does not throw and returns false for a revoked Proxy', () => {
+			const { proxy, revoke } = Proxy.revocable(new Error('gone'), {});
+			revoke();
+			assert.doesNotThrow(() => isErrorLike(proxy));
+			assert.strictEqual(isErrorLike(proxy), false);
+		});
+
+		it("never invokes a live (non-revoked) Proxy's getPrototypeOf trap - `instanceof` would otherwise trigger it", () => {
+			let trap_calls = 0;
+			const hostile = new Proxy(new Error('gone'), {
+				getPrototypeOf(target) {
+					trap_calls++;
+					return Reflect.getPrototypeOf(target);
+				},
+			});
+			assert.strictEqual(isErrorLike(hostile), false);
+			assert.strictEqual(trap_calls, 0, 'isErrorLike must classify a Proxy without reflecting on it at all');
+		});
+
+		it("never invokes a Proxy ANCESTOR's getPrototypeOf trap either, even when the argument itself is an ordinary (non-Proxy) object (#1994 review)", () => {
+			// types.isProxy(arg) alone only rejects `arg` itself being a Proxy. `arg instanceof Error`
+			// walks the FULL prototype chain via [[GetPrototypeOf]] - for
+			// `Object.create(Object.create(proxyAncestor))`, `arg` is an ordinary object, but the walk
+			// still reaches `proxyAncestor` a couple of levels up and invokes its trap.
+			let trap_calls = 0;
+			const proxy_ancestor = new Proxy(Error.prototype, {
+				getPrototypeOf(target) {
+					trap_calls++;
+					return Reflect.getPrototypeOf(target);
+				},
+			});
+			const hostile = Object.create(Object.create(proxy_ancestor));
+			assert.strictEqual(isErrorLike(hostile), false);
+			assert.strictEqual(
+				trap_calls,
+				0,
+				'isErrorLike must not walk the prototype chain at all - a Proxy anywhere in it must never be reflected on'
+			);
+		});
+	});
+
 	describe('Test logger auto-wrap of Error args (#1734)', () => {
 		// The HarperLogger level methods route every Error argument through errorForLog before
 		// Console formatting, so raw `logger.error(error)` calls anywhere in the codebase (or in
@@ -1099,6 +1779,19 @@ describe('Test harper_logger module', () => {
 			expect(lines.join('\n')).to.include('operation failed');
 		});
 
+		it('does not leak a secret through a live (non-revoked) Proxy wrapping an Error (#1734)', () => {
+			const { logger, lines } = createCapturingLogger();
+			const error = new Error('origin fetch failed');
+			error.hdb_secret = 'Bearer super-secret-token';
+			const proxy = new Proxy(error, {});
+			logger.error(proxy);
+			logger.dir(proxy);
+			logger.table([proxy]);
+			const output = lines.join('\n');
+			assert.ok(!output.includes('super-secret-token'));
+			assert.ok(!output.includes('hdb_secret'));
+		});
+
 		it('does not throw when a revoked Proxy appears as a cause', () => {
 			const { logger, lines } = createCapturingLogger();
 			const { proxy, revoke } = Proxy.revocable(new Error('root cause'), {});
@@ -1119,6 +1812,24 @@ describe('Test harper_logger module', () => {
 			const error = new Error('origin fetch failed', { cause: hostileCause });
 			expect(() => logger.error(error)).to.not.throw();
 			expect(lines.join('\n')).to.include('Error: origin fetch failed');
+		});
+
+		it("does not throw when a cause's stack getter throws a revoked Proxy instead of a normal value (#1994 review)", () => {
+			// `err instanceof Error`/`String(err)` (the old catch-block rendering) both throw on a
+			// revoked Proxy - so if the value thrown by a hostile getter here IS one, the old code's own
+			// error-recovery path would itself throw, escaping renderErrorLine entirely.
+			const { logger, lines } = createCapturingLogger();
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			const hostileCause = {};
+			Object.defineProperty(hostileCause, 'stack', {
+				get() {
+					throw proxy;
+				},
+			});
+			const error = new Error('origin fetch failed', { cause: hostileCause });
+			assert.doesNotThrow(() => logger.error(error));
+			assert.ok(lines.join('\n').includes('Error: origin fetch failed'));
 		});
 	});
 });

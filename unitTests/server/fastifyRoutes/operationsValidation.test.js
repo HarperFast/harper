@@ -442,6 +442,63 @@ describe('Test operationsValidation module', () => {
 			expect(result).to.be.ok;
 		});
 
+		it('accepts host alongside package', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: '@scope/pkg',
+				host: 'api.example.com',
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('accepts host and urlPath together', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: '@scope/pkg',
+				host: 'api.example.com',
+				urlPath: '/v1',
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects host without package', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', host: 'api.example.com' });
+			expect(result).to.be.ok;
+			expect(result.message).to.include('host');
+		});
+
+		it('rejects a host carrying a port or path — it would never match the router host compare', () => {
+			for (const host of ['api.example.com:9926', 'api.example.com/v1', 'https://api.example.com']) {
+				const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', host });
+				expect(result, host).to.be.ok;
+				expect(result.message, host).to.include('host');
+			}
+		});
+
+		it('accepts a bare IPv6 literal but rejects the bracketed form the router cannot match', () => {
+			expect(validator.deployComponentValidator({ project: 'my-app', package: 'pkg', host: '::1' })).to.be.undefined;
+			const bracketed = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', host: '[::1]' });
+			expect(bracketed).to.be.ok;
+			expect(bracketed.message).to.include('host');
+		});
+
+		it('rejects a dot-segment urlPath — clients strip them, so the mount would be unreachable', () => {
+			for (const urlPath of ['.', './v1', '/v1/./x']) {
+				const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', urlPath });
+				expect(result, urlPath).to.be.ok;
+				expect(result.message, urlPath).to.include('urlPath');
+			}
+		});
+
+		it('still accepts a dotfile-style segment name', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: 'pkg',
+				urlPath: '/.well-known',
+			});
+			expect(result).to.be.undefined;
+		});
+
 		it('rejects missing project', () => {
 			const result = validator.deployComponentValidator({ package: 'pkg' });
 			expect(result).to.be.ok;
