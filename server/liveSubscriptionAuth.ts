@@ -142,21 +142,29 @@ export function registerLiveSubscription(opts: {
 }
 
 /**
- * Delete `entry` and run its terminate/revoke, but only if this call is the one that actually
- * removes it from the registry. `Set.delete`'s boolean return is a lock-free claim token: it's
- * false if the entry was already removed — by a caller's `unregister()` racing an in-flight
- * `recheck()`, or by another sweep path — so terminate/revoke runs at most once per entry, and
- * never for one the caller has already torn down itself. `terminate` is awaited (it may be async,
- * e.g. a shared-feed refcount release) so a rejection is caught here rather than becoming an
+ * Remove `entry` and run its terminate/revoke, but only commit the removal once terminate actually
+ * succeeds — and only if the caller hasn't already unregistered this entry itself (checked via
+ * `registry.has`, not a delete-then-restore, so a failed attempt never revisits the entry within the
+ * same sweep pass; it's simply left in place for the next one). This makes revocation genuinely
+ * fail-closed: a `revoke` that throws or rejects (e.g. a shared-feed refcount release hitting a
+ * transient backing-store error) leaves the entry registered instead of being forgotten, so the next
+ * sweep retries — recheck fails the same way, so the retry converges once teardown succeeds. It also
+ * means a `revoke`/default-terminate failure never masquerades as a successful revocation in the log.
+ * `terminate` is awaited (it may be async) so a rejection is caught here rather than becoming an
  * unhandled rejection on the worker.
  */
-async function claimAndTerminate(entry: LiveSubscription): Promise<boolean> {
-	if (!registry.delete(entry)) return false;
+async function claimAndTerminate(entry: LiveSubscription, reason: string): Promise<boolean> {
+	if (!registry.has(entry)) return false; // the caller already unregistered this entry itself
 	try {
 		await entry.terminate();
 	} catch (error) {
-		hdbLogger.warn?.(`liveSubscriptionAuth: terminate failed for ${entry.username}: ${errorMessage(error)}`);
+		hdbLogger.error?.(
+			`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}), will retry next sweep: ${errorMessage(error)}`
+		);
+		return false;
 	}
+	registry.delete(entry);
+	hdbLogger.info?.(`liveSubscriptionAuth: revoked subscription for ${entry.username} (${reason})`);
 	return true;
 }
 
@@ -169,14 +177,12 @@ async function sweep(): Promise<void> {
 			try {
 				const expired = entry.authExpiresAt != null && now >= entry.authExpiresAt * 1000;
 				const stillAuthorized = expired ? false : await entry.recheck();
-				if (expired || !stillAuthorized) await claimAndTerminate(entry);
+				if (expired || !stillAuthorized) {
+					await claimAndTerminate(entry, expired ? 'token expired' : 'no longer authorized');
+				}
 			} catch (error) {
 				// fail closed: if authorization can't be confirmed, revoke
-				if (await claimAndTerminate(entry)) {
-					hdbLogger.warn?.(
-						`liveSubscriptionAuth: revoked subscription for ${entry.username} after recheck error: ${errorMessage(error)}`
-					);
-				}
+				await claimAndTerminate(entry, `recheck error: ${errorMessage(error)}`);
 			}
 		}
 	} finally {

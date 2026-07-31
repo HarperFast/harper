@@ -234,45 +234,50 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
-		it('a throwing revoke is invoked exactly once, and its entry is still removed exactly once (no double-terminate)', async () => {
+		it('a throwing revoke leaves the entry registered for retry (fail-closed), and converges once revoke succeeds', async () => {
 			const subscription = fakeSubscription();
-			let throwingCalls = 0;
-			const revokeThrows = () => {
-				throwingCalls++;
-				throw new Error('revoke failed mid-teardown (e.g. a shared-feed refcount decrement)');
+			let calls = 0;
+			const revoke = () => {
+				calls++;
+				if (calls === 1) throw new Error('revoke failed mid-teardown (e.g. a shared-feed refcount decrement)');
 			};
 			const revokeOther = spyFn();
 			register({
 				subscription,
-				username: 'throws-on-revoke',
+				username: 'throws-once-on-revoke',
 				authExpiresAt: 0,
 				recheck: async () => true,
-				revoke: revokeThrows,
+				revoke,
 			});
 			register({ subscription, username: 'other', recheck: async () => true, revoke: revokeOther });
 			assert.strictEqual(_liveSubscriptionCount(), 2);
 
-			await _sweepNow();
+			await _sweepNow(); // revoke throws; fail-closed must not silently drop tracking
 
-			assert.strictEqual(throwingCalls, 1, 'a throwing revoke must not be invoked a second time');
+			assert.strictEqual(calls, 1);
 			assert.strictEqual(revokeOther.calls.length, 0, 'other subscribers sharing the object must not be revoked');
-			assert.strictEqual(_liveSubscriptionCount(), 1, 'the throwing entry must still be removed exactly once');
+			assert.strictEqual(_liveSubscriptionCount(), 2, 'a failed revoke must leave the entry registered');
+
+			await _sweepNow(); // the next sweep retries; this time revoke succeeds
+
+			assert.strictEqual(calls, 2, 'the next sweep must retry a previously failed revoke');
+			assert.strictEqual(_liveSubscriptionCount(), 1, 'the entry is removed once revoke actually succeeds');
 		});
 
-		it('an async revoke that rejects is contained (no unhandled rejection) and its entry is still removed', async () => {
+		it('an async revoke that rejects is contained (no unhandled rejection), leaves the entry registered for retry, and converges once it succeeds', async () => {
 			const subscription = fakeSubscription();
-			let rejectingCalls = 0;
-			const revokeRejects = async () => {
-				rejectingCalls++;
-				throw new Error('shared-feed release failed (e.g. backing store timeout)');
+			let calls = 0;
+			const revoke = async () => {
+				calls++;
+				if (calls === 1) throw new Error('shared-feed release failed (e.g. backing store timeout)');
 			};
 			const revokeOther = spyFn();
 			register({
 				subscription,
-				username: 'async-revoke-throws',
+				username: 'async-revoke-throws-once',
 				authExpiresAt: 0,
 				recheck: async () => true,
-				revoke: revokeRejects,
+				revoke,
 			});
 			register({ subscription, username: 'other', recheck: async () => true, revoke: revokeOther });
 			assert.strictEqual(_liveSubscriptionCount(), 2);
@@ -281,9 +286,14 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			// fail this test — awaiting here alone proves it stayed contained inside claimAndTerminate.
 			await _sweepNow();
 
-			assert.strictEqual(rejectingCalls, 1, 'a rejecting async revoke must not be invoked a second time');
+			assert.strictEqual(calls, 1);
 			assert.strictEqual(revokeOther.calls.length, 0, 'other subscribers sharing the object must not be revoked');
-			assert.strictEqual(_liveSubscriptionCount(), 1, 'the rejecting entry must still be removed exactly once');
+			assert.strictEqual(_liveSubscriptionCount(), 2, 'a rejected revoke must leave the entry registered');
+
+			await _sweepNow(); // the next sweep retries; this time revoke succeeds
+
+			assert.strictEqual(calls, 2, 'the next sweep must retry a previously rejected revoke');
+			assert.strictEqual(_liveSubscriptionCount(), 1, 'the entry is removed once the async revoke actually succeeds');
 		});
 
 		it('does not terminate an entry the caller already unregistered while its recheck was still in flight', async () => {
