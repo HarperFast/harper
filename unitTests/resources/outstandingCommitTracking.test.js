@@ -86,6 +86,53 @@ describe('Outstanding commit tracking', () => {
 		assert.equal((await TrackB.get(3))?.name, 'chain-b');
 	});
 
+	// The test above only proves the chain finishes clean at count 0 — that also passes if
+	// `this.next.commit()`'s tracking were silently omitted, since the untouched slot was never
+	// incremented in the first place. Hold the second (chained) link's native commit open through a
+	// narrow test seam (patching Transaction.prototype.commit, scoped to TrackB's store, the same
+	// idiom lingeringWriteCommit.test.js uses) so we can observe the count while ONLY that link is
+	// outstanding: TrackA's own commit has already settled and untracked itself by the time
+	// `this.next.commit()` even runs, so a nonzero count here can only come from the second link.
+	it('tracks the second (chained) commit while it is pending, not just the first', async function () {
+		if (isLMDB) return;
+		this.timeout(15000);
+		await TrackA.put(4, { name: 'chain-a-2' });
+		let chained = false;
+		const context = {};
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const targetDb = TrackB.primaryStore.store.db;
+		let releaseHold;
+		const held = new Promise((resolve) => (releaseHold = resolve));
+		Transaction.prototype.commit = function (...args) {
+			if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+			const realCommit = originalCommit.apply(this, args);
+			return held.then(() => realCommit);
+		};
+		try {
+			const done = transaction(context, async () => {
+				await TrackA.get(4, context);
+				await TrackB.put(4, { name: 'chain-b-2' }, context);
+				chained = !!context.transaction?.next;
+			});
+			let outstanding;
+			for (let i = 0; i < 100 && !(outstanding?.count > 0); i++) {
+				outstanding = getOutstandingCommits();
+				if (outstanding.count === 0) await new Promise((resolve) => setImmediate(resolve));
+			}
+			assert.ok(chained, 'the two databases should have produced a chained transaction');
+			assert.equal(outstanding.count, 1, 'the chained second-database commit should be tracked while pending');
+			assert.equal(typeof outstanding.oldestAgeMs, 'number', 'the pending chained commit should report an age');
+			releaseHold();
+			await done;
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+		assert.deepEqual(getOutstandingCommits(), { count: 0, oldestAgeMs: undefined });
+		assert.equal((await TrackA.get(4))?.name, 'chain-a-2');
+		assert.equal((await TrackB.get(4))?.name, 'chain-b-2');
+	});
+
 	it('untracks commits that settle out of order, from the head, middle and tail', async function () {
 		if (isLMDB) return;
 		// Drive the list directly with deferred promises so the settle ORDER is controlled rather

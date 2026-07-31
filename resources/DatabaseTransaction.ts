@@ -58,15 +58,26 @@ let outstandingCommitCount = 0;
 // matters (a middle or tail node settling first) cannot be forced through real writes, and a node
 // left linked would 503 every write on this thread forever. commit() below is the sole caller.
 export function trackOutstandingCommit(commitResolution: Promise<number | void>): void {
+	// Guards against a future caller passing a non-Promise: today commit() always hands this a real
+	// Promise, but an unguarded link here would leave a node permanently wedged in the list (503ing
+	// every write on this thread) with no settlement to ever unlink it.
+	if (typeof commitResolution?.then !== 'function') return;
 	const outstanding: OutstandingCommit = { start: performance.now(), prev: newestOutstandingCommit, next: undefined };
-	if (newestOutstandingCommit) newestOutstandingCommit.next = outstanding;
+	if (newestOutstandingCommit != null) newestOutstandingCommit.next = outstanding;
 	else oldestOutstandingCommit = outstanding;
 	newestOutstandingCommit = outstanding;
 	outstandingCommitCount++;
+	// Guards against double-untracking the same node: `.then(untrack, untrack)` below means a promise
+	// that both resolves and later has its rejection handler independently triggered (or is tracked via
+	// a shared/misused resolution) could otherwise run the unlink twice, corrupting the list or driving
+	// outstandingCommitCount negative.
+	let untracked = false;
 	const untrack = () => {
-		if (outstanding.prev) outstanding.prev.next = outstanding.next;
+		if (untracked) return;
+		untracked = true;
+		if (outstanding.prev != null) outstanding.prev.next = outstanding.next;
 		else oldestOutstandingCommit = outstanding.next;
-		if (outstanding.next) outstanding.next.prev = outstanding.prev;
+		if (outstanding.next != null) outstanding.next.prev = outstanding.prev;
 		else newestOutstandingCommit = outstanding.prev;
 		outstandingCommitCount--;
 	};
@@ -579,9 +590,14 @@ export class DatabaseTransaction implements Transaction {
 						// Same accounting as the ordinary commit path below — this replay is a real native
 						// commit handed to the storage engine. Omitting it left write-transaction-queue-depth,
 						// the one metric that can observe a commit that never settles (harper#2001), reading
-						// zero for exactly this path.
+						// zero for exactly this path. Guarded the same way as the ordinary path for
+						// consistency, though commitResolution is always a Promise here in practice.
 						enterWriteQueue();
-						commitResolution.then(leaveWriteQueue, leaveWriteQueue);
+						if (typeof (commitResolution as any)?.then === 'function') {
+							commitResolution.then(leaveWriteQueue, leaveWriteQueue);
+						} else {
+							leaveWriteQueue();
+						}
 					}
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
