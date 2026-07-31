@@ -3,7 +3,14 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
-const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
+const {
+	table,
+	flushDatabases,
+	dropDatabase,
+	getDatabases,
+	resetDatabases,
+	resolveRocksCompression,
+} = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { beginRestore, completeRestore, RESTORE_META_DIR } = require('#src/dataLayer/restoreMarker');
@@ -51,6 +58,61 @@ describe('table() randomAccessFields directive', () => {
 		const encoder = RafTable.primaryStore.encoder;
 		assert.strictEqual(encoder.randomAccessStructure, true);
 		assert.ok(encoder._writeStruct.length > 0, 'expected the real struct-write hook');
+	});
+});
+
+describe('table() compression', () => {
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('opens the primary store with lz4 under the default config', function () {
+		const CompressionTable = table({
+			table: 'CompressionDefault',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		if (!(CompressionTable.primaryStore instanceof RocksDatabase)) return this.skip();
+		assert.strictEqual(CompressionTable.primaryStore.compression?.algorithm, 'lz4');
+	});
+});
+
+// The default config yields the LMDB descriptor object, which rocksdb-js 2.6.1 already accepts as
+// "unset" - so the table-level test above passes with or without the translation. The inputs that
+// actually throw are `''` (an unset storage.compression, rejected as an unknown algorithm) and the
+// booleans (rejected as a malformed option), and only a direct test reaches them.
+describe('resolveRocksCompression', () => {
+	it("treats an unset storage.compression ('') as unset rather than an algorithm name", () => {
+		assert.strictEqual(resolveRocksCompression(''), undefined);
+		assert.strictEqual(resolveRocksCompression('   '), undefined);
+	});
+
+	it('maps the LMDB descriptor and `true` to unset, taking the rocksdb-js default', () => {
+		assert.strictEqual(resolveRocksCompression({ startingOffset: 32, threshold: 4036 }), undefined);
+		assert.strictEqual(resolveRocksCompression(true), undefined);
+	});
+
+	it('maps `storage.compression: false` to no compression', () => {
+		assert.strictEqual(resolveRocksCompression(false), 'none');
+	});
+
+	it('passes an already-RocksDB-shaped option through untouched', () => {
+		assert.strictEqual(resolveRocksCompression('zstd'), 'zstd');
+		const descriptor = { algorithm: 'zstd', level: 3 };
+		assert.strictEqual(resolveRocksCompression(descriptor), descriptor);
+	});
+
+	it('leaves an omitted option unset', () => {
+		assert.strictEqual(resolveRocksCompression(undefined), undefined);
+		assert.strictEqual(resolveRocksCompression(null), undefined);
+	});
+
+	// the resolver runs on every store open, so a throw here fails startup rather than one table
+	it('never throws, whatever shape the persisted attribute holds', () => {
+		for (const input of [0, 1, [], [6], NaN, Symbol('x'), () => {}]) {
+			assert.doesNotThrow(() => resolveRocksCompression(input));
+		}
 	});
 });
 

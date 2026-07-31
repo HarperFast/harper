@@ -176,8 +176,35 @@ export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>()
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
+/**
+ * Harper's `storage.compression` config - and the `compression` descriptor persisted on a table's
+ * primary attribute - describe LMDB's per-value compression: `{ startingOffset, threshold,
+ * dictionary }`. RocksDB compresses whole SST blocks and blob files itself, and as of rocksdb-js
+ * 2.6 the `compression` store option means that: an algorithm name, or `{ algorithm, level }`.
+ * 2.6.1 accepts an object with no `algorithm` as "unset", but `''` (an unset `storage.compression`)
+ * and the booleans still throw, so the config has to be translated before it reaches the store -
+ * for re-opens of existing tables (whose persisted descriptor is LMDB-shaped) as much as new ones.
+ *
+ * Exported for unit test: every branch here is a startup path, and the ones that throw without it
+ * are exactly the ones a table-level test cannot reach.
+ */
+export function resolveRocksCompression(compression: any) {
+	if (compression == null) return undefined;
+	// a blank string is how an unset `storage.compression` reaches here (it survives the `&&` in
+	// getDefaultCompression), and rocksdb-js rejects it as an unknown algorithm rather than ignoring it
+	if (typeof compression === 'string' && compression.trim() === '') return undefined;
+	// already RocksDB-shaped ('lz4', { algorithm: 'zstd', level: 3 }, ...): pass through
+	if (typeof compression === 'string') return compression;
+	if (typeof compression === 'object' && compression.algorithm != null) return compression;
+	// LMDB descriptor: compression is on, so take the rocksdb-js default (lz4 where the build
+	// supports it) by leaving the option unset - naming lz4 explicitly would instead throw on a
+	// build without it. `storage.compression: false` reaches here as false and disables it.
+	return compression ? undefined : 'none';
+}
+
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
+	(options as any).compression = resolveRocksCompression((options as any).compression);
 	// Apply read-only mode if enabled
 	if (isReadOnlyMode()) {
 		options.readOnly = true;
@@ -745,7 +772,9 @@ function initStores(
 			}
 			const dbiInit = createOpenDBIObject(!primaryAttribute.isPrimaryKey, primaryAttribute.isPrimaryKey);
 			dbiInit.compression = primaryAttribute.compression;
-			if (dbiInit.compression) {
+			// threshold only applies to the LMDB descriptor shape; a RocksDB algorithm name has no
+			// threshold, and assigning a property to a string primitive throws under strict mode
+			if (dbiInit.compression && typeof dbiInit.compression === 'object') {
 				const compressionThreshold =
 					envGet(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
 				dbiInit.compression.threshold = compressionThreshold;
