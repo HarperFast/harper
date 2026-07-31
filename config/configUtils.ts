@@ -50,6 +50,14 @@ let flatDefaultConfigObj;
 let flatConfigObj;
 let configObj;
 
+// Canonical param names that live in CONFIG_PARAM_MAP but do NOT correspond to a path in the
+// harper-config.yaml schema (BOOT_PROP_PARAMS is boot-props-file-only bookkeeping — see its own
+// comment). Splitting one of these on '_' and writing it into the nested configObj tree would
+// silently create a bogus top-level section (e.g. 'settings_path' -> configObj.settings.path),
+// which componentLoader.ts treats as a real component to load, since it iterates every truthy
+// top-level key of the root config.
+const NON_NESTED_CONFIG_PARAMS = new Set<string>(Object.values(hdbTerms.BOOT_PROP_PARAMS));
+
 export function resolvePath(relativePath: string) {
 	if (relativePath?.startsWith('~/')) {
 		return path.join(hdbUtils.getHomeDir(), relativePath.slice(1));
@@ -696,16 +704,23 @@ export function updateConfigObject(param: string, value: any) {
 	// configObj's falsiness as "not yet initialized" and lazily calls initConfig(), so creating
 	// an empty configObj here (before install writes the config file / initConfig ever runs)
 	// would permanently short-circuit that lazy init to an empty tree.
-	if (configObj !== undefined) {
+	if (configObj !== undefined && !NON_NESTED_CONFIG_PARAMS.has(configObjKey)) {
 		const pathSegments = configObjKey.split('_');
 		let node = configObj;
 		for (let i = 0; i < pathSegments.length - 1; i++) {
 			const segment = pathSegments[i];
-			// Only auto-vivify a missing segment. An existing non-object value here is a legacy
-			// scalar shorthand for this key (e.g. `threads: 4`) — descending through it would
-			// silently replace that value with `{}`, discarding it out from under other readers.
-			if (node[segment] === undefined) node[segment] = {};
-			else if (typeof node[segment] !== 'object' || node[segment] === null) return;
+			if (node[segment] === undefined) {
+				// Nothing to delete on a path section that doesn't exist yet — and auto-vivifying it
+				// just to immediately delete the leaf would leave the (now-empty) intermediate
+				// objects behind, which is exactly the bogus-top-level-section risk above.
+				if (value === undefined) return;
+				node[segment] = {};
+			} else if (typeof node[segment] !== 'object' || node[segment] === null) {
+				// An existing non-object value here is a legacy scalar shorthand for this key (e.g.
+				// `threads: 4`) — descending through it would silently replace that value with `{}`,
+				// discarding it out from under other readers.
+				return;
+			}
 			node = node[segment];
 		}
 		// Match squashObj's own convention (below) of never writing an `undefined` value as an

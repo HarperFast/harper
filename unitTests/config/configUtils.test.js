@@ -1013,6 +1013,37 @@ describe('Test configUtils module', () => {
 			expect(nested_config.hasOwnProperty('databases')).to.be.false;
 			config_obj_rw();
 		});
+
+		it('does not auto-vivify missing ancestors when the value being set is undefined', () => {
+			// If it did, the (now-empty) intermediate objects it created on the way to the deleted
+			// leaf would be left behind — and componentLoader.ts treats any truthy top-level config
+			// key as a component to load.
+			const nested_config = {};
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, undefined);
+
+			expect(nested_config).to.eql({});
+			config_obj_rw();
+		});
+
+		it('never mirrors a boot-props-file-only param (not a real config-tree path) into the nested tree', () => {
+			// SETTINGS_PATH_KEY ('settings_path') lives in BOOT_PROP_PARAMS, not the harper-config.yaml
+			// schema — CONFIG_PARAM_MAP still maps it (so the flat map keeps working), but splitting
+			// it on '_' and writing into the nested tree would create a bogus top-level
+			// configObj.settings.path, which componentLoader.ts would try to load as a component
+			// named 'settings'. installer.ts and testUtils.js's initTestEnvironment() both call
+			// setProperty() with this key on every install/test run.
+			const nested_config = { rootPath: '/hdb' };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY, '/hdb/settings.file');
+
+			expect(nested_config).to.eql({ rootPath: '/hdb' });
+			config_obj_rw();
+		});
 	});
 
 	describe('Test updateConfigValue function', () => {
