@@ -136,18 +136,20 @@ describe('Ambient operation context must not couple independent writes (transact
 	// even though the same coalescing was proven to silently drop a write in the live 4-node cluster
 	// integration test (harper-pro's replicationTopology.test.mjs) that originally caught this.
 	//
-	// This test instead asserts the mechanism directly: each independent, no-explicit-context write
-	// must be serviced by its own DatabaseTransaction instance. Resource.ts's dispatcher only ever
-	// assigns a *new* transaction onto the shared ambient context via resources/transaction.ts's
-	// transaction() helper when it takes the "start a transaction" branch; the buggy bare-truthiness
-	// check instead takes the "we are already in a transaction, proceed" branch as soon as
-	// `context.transaction` is set at all, so it never calls transaction() again and the ambient
-	// context's `.transaction` reference never changes for the lifetime of the operation handler —
-	// every subsequent write is coalesced into the exact same instance. With the fix, once the prior
-	// transaction is no longer TRANSACTION_STATE.OPEN, the dispatcher takes the other branch and a
-	// fresh DatabaseTransaction is minted. This invariant fails on the pre-fix code and holds on the
-	// fix, regardless of whether an individual isolated unit test happens to still persist the data.
-	it('services each independent no-explicit-context write with its own DatabaseTransaction instance (mechanism-level)', async () => {
+	// This test originally asserted the mechanism directly, via the leftover `.transaction`
+	// reference each write left attached to the shared ambient context after it completed:
+	// distinct instances proved each independent write got its own transaction rather than
+	// coalescing into a prior, already-completed one. That leftover reference no longer exists —
+	// DatabaseTransaction now releases the context's back-reference the instant it completes
+	// (commit or abort; see DatabaseTransaction.ts's releaseContext(), added so a long-lived
+	// context, e.g. an MQTT subscription context, can't keep pinning a finished transaction in
+	// memory). That is a strictly stronger guarantee than this test originally checked: a
+	// completed transaction is never left attached for a later write to (re)observe or reuse at
+	// all, independent of whether resources/transaction.ts's join-vs-fresh check is the fixed
+	// `.open === TRANSACTION_STATE.OPEN` or the old, buggy bare-truthiness `if (context?.transaction)` —
+	// both see a falsy `null` once the prior write's commit has released it, so both take the
+	// "start a fresh transaction" branch.
+	it('releases each independent no-explicit-context write’s transaction from the ambient context once it completes (mechanism-level)', async () => {
 		const transactionsSeenAfterEachWrite = [];
 		await serverUtilities.processLocalTransaction(
 			{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
@@ -166,20 +168,20 @@ describe('Ambient operation context must not couple independent writes (transact
 		);
 
 		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
-		assert.ok(afterFirst, 'the first write must leave a transaction attached to the ambient context');
-		assert.ok(afterSecond, 'the second write must leave a transaction attached to the ambient context');
-		assert.ok(afterThird, 'the third write must leave a transaction attached to the ambient context');
-		assert.notStrictEqual(
+		assert.strictEqual(
 			afterFirst,
-			afterSecond,
-			'the second write must not join the first write’s transaction instance: each independent, ' +
-				'no-explicit-context write must run in its own DatabaseTransaction, not a stale one left over ' +
-				'from a prior, already-completed call on the shared ambient context'
+			null,
+			"the first write's transaction must be released from the ambient context once its commit completes"
 		);
-		assert.notStrictEqual(
+		assert.strictEqual(
 			afterSecond,
+			null,
+			"the second write's transaction must likewise be released, not left attached for a later write to observe"
+		);
+		assert.strictEqual(
 			afterThird,
-			'the third write must not join the second write’s transaction instance, for the same reason'
+			null,
+			"the third write's transaction must likewise be released, for the same reason"
 		);
 	});
 });
