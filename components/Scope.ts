@@ -145,6 +145,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.options = new OptionsWatcher(pluginName, configFilePath, this.#logger, isRootConfig)
 			.on('error', this.#handleError.bind(this))
 			.on('change', this.#optionsWatcherChangeListener.bind(this)())
+			.on('remove', this.#optionsWatcherRemoveListener())
 			.on('ready', this.#handleOptionsWatcherReady.bind(this));
 
 		// Bridge cross-thread deploy lifecycle events for this component. The
@@ -357,6 +358,23 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			}
 
 			scope.#logger.debug?.(`Options changed: ${key.join('.')}, requesting restart`);
+			scope.requestRestart();
+		};
+	}
+
+	#optionsWatcherRemoveListener() {
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const scope = this;
+		// Deleting a component's config block emits `remove` (not `change`), so without
+		// this listener a running component keeps serving until some unrelated restart —
+		// even though absence is the canonical disabled state for opt-in built-ins like
+		// the /v1 models gateway. Mirrors the change listener: a plugin that registers
+		// its own `remove` handler owns the response and no restart is requested.
+		return function handleOptionsWatcherRemove(this: OptionsWatcher) {
+			if (this.listenerCount('remove') > 1) {
+				return;
+			}
+			scope.#logger.debug?.('Options removed, requesting restart');
 			scope.requestRestart();
 		};
 	}
