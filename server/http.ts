@@ -138,7 +138,16 @@ export function cleanupUdsFiles() {
 		// and rebinds in the gap between them would still lose its files — unavoidable in Node
 		// (no unlink-if-inode-matches primitive), but this narrows that window from the
 		// seconds-wide one this fix closes down to microseconds.
-		if (ownershipOf(entry) !== 'owned') continue;
+		const owned = ownershipOf(entry) === 'owned';
+		// Consume this entry's recorded inode on first use, regardless of outcome. This function
+		// runs twice per worker (threadServer.js's SHUTDOWN handler, while this worker's own
+		// socket is still open, then again from process.on('exit') after closeServers() has
+		// released it) — and a freed inode number can be handed to an unrelated later bind before
+		// the second call runs. Leaving the stale value in place would let that second call
+		// coincidentally re-match a path it no longer has any claim to; clearing it here makes a
+		// repeat call a guaranteed no-op instead of a second chance to delete a stranger's files.
+		entry.ino = undefined;
+		if (!owned) continue;
 		try {
 			unlinkSync(entry.socketPath);
 		} catch {}
@@ -208,9 +217,13 @@ export function writeUdsMetadata(
 	}
 }
 
-/** Clean all files in the sockets directory. Call from main thread on process startup. */
+/**
+ * Clean all files in the sockets directory. Call from main thread on process startup, before any
+ * worker can bind. Unconditional on the current TLS_UNIXDOMAINSOCKETS setting — the directory is
+ * Harper-owned and holds nothing but mirror .sock/.yaml files, so a crash that left stale ones
+ * behind while UDS was enabled must still be swept even if this boot has since disabled it.
+ */
 export function cleanupSocketsDirectory() {
-	if (!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) return;
 	const socketsDir = join(env.getHdbBasePath(), 'sockets');
 	try {
 		for (const file of readdirSync(socketsDir)) {
