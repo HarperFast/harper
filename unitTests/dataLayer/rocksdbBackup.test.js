@@ -27,7 +27,8 @@ const {
 	verifyBackupOffline,
 	createBackupStream,
 } = require('#src/dataLayer/rocksdbBackup');
-const { blobSnapshotDir } = require('#src/dataLayer/blobBackup');
+const blobBackupModule = require('#src/dataLayer/blobBackup');
+const { blobSnapshotDir } = blobBackupModule;
 const { deleteBackupManifest, isBackupComplete } = require('#src/dataLayer/backupManifest');
 const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 
@@ -466,6 +467,29 @@ describe('rocksdbBackup', function () {
 			await assert.rejects(restoreBackupOffline(MDB, created.backup_id), (error) => error.statusCode === 409);
 			// ...and restoring "latest" finds no complete backup (404)
 			await assert.rejects(restoreBackupOffline(MDB), (error) => error.statusCode === 404);
+		});
+
+		it('rolls back the engine backup, blob snapshot, and manifest when the blob snapshot fails', async function () {
+			this.timeout(30000);
+			const db = RocksDatabase.open(mdbDir());
+			try {
+				db.putSync('k', 1);
+			} finally {
+				db.close();
+			}
+			// force the blob-snapshot phase of finalizeBackup to fail
+			const original = blobBackupModule.snapshotBlobs;
+			blobBackupModule.snapshotBlobs = () => Promise.reject(new Error('snapshot boom'));
+			try {
+				await assert.rejects(createBackupOffline(MDB), /snapshot boom/);
+			} finally {
+				blobBackupModule.snapshotBlobs = original;
+			}
+			const backupDir = backupDirForDatabase(MDB);
+			// the incomplete backup must be fully rolled back: no engine backup, no manifest, no snapshot
+			assert.strictEqual((await listBackupsInDir(backupDir)).length, 0, 'engine backup must be rolled back');
+			assert.ok(!isBackupComplete(backupDir, 1), 'no manifest should remain');
+			assert.ok(!existsSync(blobSnapshotDir(backupDir, 1)), 'no partial blob snapshot should remain');
 		});
 	});
 
