@@ -153,6 +153,7 @@ suite(
 					(res) => {
 						const chunks: Buffer[] = [];
 						res.on('data', (chunk) => chunks.push(chunk));
+						res.on('error', reject);
 						res.on('end', () =>
 							resolvePromise({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') })
 						);
@@ -260,31 +261,35 @@ suite(
 
 		interface PresenceResult {
 			observed: boolean;
-			// true only if every sample in the window failed to complete (timeout/transport error) —
-			// i.e. we never got a clean read (200 or 404) at all. Distinguishes "couldn't measure"
-			// from an actual NO-RESET signal, so a transport hiccup doesn't get reported as a TTL
-			// data-integrity defect.
+			// true only if every sample that completed *inside* the window (deadlineAt) failed to
+			// return a clean read (200 or 404) — i.e. we never got an in-window clean read at all.
+			// A 404 that lands after deadlineAt doesn't count as a clean sample: by the time it
+			// completed, the real reset-expiry (deadlineAt + RESET_CHECK_SAFETY_MS) may already have
+			// passed, so that 404 could reflect the record correctly expiring late rather than a
+			// genuine NO-RESET. Distinguishes "couldn't measure" from an actual NO-RESET signal, so a
+			// transport hiccup — or a sample that straddles the deadline — never gets reported as a
+			// TTL data-integrity defect.
 			inconclusive: boolean;
 		}
 
 		/**
-		 * Poll for the record being present (200) up until deadlineAt, then take one final sample.
-		 * Returns as soon as any sample observes it present. Each sample is bound to
-		 * RESET_POLL_TIMEOUT_MS (see its definition above) so one slow/stalled response can't
-		 * consume the whole window — a plain retry loop without that bound would inherit
-		 * httpRequest's full default timeout per sample and gain nothing over a single check.
+		 * Poll for the record being present (200), bounding every attempt and sleep to what's left
+		 * before deadlineAt so no sample can start once the window has closed. Returns as soon as
+		 * any sample observes it present. Each attempt is capped at RESET_POLL_TIMEOUT_MS (see its
+		 * definition above) — and further capped to the remaining time near the deadline — so one
+		 * slow/stalled response can't consume the whole window or run past it.
 		 */
 		async function pollForPresent(id: string, deadlineAt: number): Promise<PresenceResult> {
 			let sawCleanSample = false;
 			while (Date.now() < deadlineAt) {
-				const { status } = await getRecord(id, RESET_POLL_TIMEOUT_MS);
+				const remainingMs = deadlineAt - Date.now();
+				const { status } = await getRecord(id, Math.min(RESET_POLL_TIMEOUT_MS, remainingMs));
 				if (status === 200) return { observed: true, inconclusive: false };
-				if (status === 404) sawCleanSample = true;
-				await sleep(RESET_POLL_INTERVAL_MS);
+				if (status === 404 && Date.now() <= deadlineAt) sawCleanSample = true;
+				const sleepBudgetMs = deadlineAt - Date.now();
+				if (sleepBudgetMs <= 0) break;
+				await sleep(Math.min(RESET_POLL_INTERVAL_MS, sleepBudgetMs));
 			}
-			const { status } = await getRecord(id, RESET_POLL_TIMEOUT_MS);
-			if (status === 200) return { observed: true, inconclusive: false };
-			if (status === 404) sawCleanSample = true;
 			return { observed: false, inconclusive: !sawCleanSample };
 		}
 
