@@ -72,15 +72,17 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 
 	#processEntry(raw: any, id: any): Entry | undefined {
 		if (raw == null) return undefined;
-		if (raw[METADATA]) {
+		// Presence check, not truthiness: a [timestamp][no flags word] record decodes with
+		// metadataFlags === 0, and a falsy gate would hand the metadata wrapper itself back as
+		// the record value (harper#2012).
+		if (raw[METADATA] !== undefined) {
 			raw.metadataFlags = raw[METADATA];
 			return this.#withEntry(raw, id);
 		}
-		const entry = { value: raw, key: id } as Entry;
-		// map metadata-less values too, so getEntry guarantees the value→Entry
-		// mapping for every object value it returns (getSync/get rely on this)
-		if (typeof raw === 'object') entryMap.set(raw, entry);
-		return entry;
+		// Metadata-less values (e.g. records a broken migration stored without the prefix) still
+		// get the prototype repair and value→Entry mapping, matching getRange and the LMDB
+		// wrapper — only the version is unrecoverable (harper#2012).
+		return this.#withEntry({ value: raw } as Entry, id);
 	}
 
 	/**
@@ -155,7 +157,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		if (!this.#enc.isRocksDB) return iterable;
 		const enc = this.#enc;
 		return iterable.map((entry: any) => {
-			if (entry.value?.[METADATA]) {
+			if (entry.value?.[METADATA] !== undefined) {
 				entry.metadataFlags = entry.value[METADATA];
 				Object.assign(entry, entry.value);
 			}

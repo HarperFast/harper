@@ -408,8 +408,8 @@ export function verifyPermsAST(ast, userObject, operation) {
 		throw handleHDBError(new Error());
 	}
 	try {
-		const bucket =
-			require('../sqlTranslator/sql_statement_bucket').default || require('../sqlTranslator/sql_statement_bucket');
+		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
+		const bucket = bucketModule.default || bucketModule;
 		const alasql = require('alasql');
 
 		const permsResponse = new PermissionResponseObject();
@@ -434,6 +434,21 @@ export function verifyPermsAST(ast, userObject, operation) {
 		if (isSuperUser && !isSuSystemOperation) {
 			//admins can do (almost) anything through the hole in sheet!
 			return null;
+		}
+
+		// Fail closed on any table the statement references that did not make it into the
+		// affected-attribute map. hasPermissions() only iterates that map, so a reference missing
+		// from it is never checked — which is how an unqualified `SELECT ... FROM customers` was
+		// authorized against an empty map while the engine resolved the same bare name and read the
+		// table (GHSA-5c29-q62v-jrwf). Checked per reference, not on the map being empty overall:
+		// a statement mixing a resolvable table with an unresolvable one has a non-empty map and
+		// would otherwise slip through on the strength of the table that did resolve.
+		const unauthorizedRefs = parsedAst.getUnauthorizedTableRefs();
+		if (unauthorizedRefs.length > 0) {
+			harperLogger.info(
+				`Unauthorizable table reference(s) in verifyPermsAST(): ${unauthorizedRefs.join(', ')}. Denying operation.`
+			);
+			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 
 		const fullRolePerms = permsTranslator.getRolePermissions(userObject.role);

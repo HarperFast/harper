@@ -15,6 +15,7 @@ import {
 	CONFIG_PARAMS,
 	LEGACY_DATABASES_DIR_NAME,
 	DATABASES_DIR_NAME,
+	MIGRATING_DIR_SUFFIX,
 	RESERVED_DATABASE_NAMES,
 } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
@@ -315,6 +316,8 @@ export function getDatabases(): Databases {
 		// First load all the databases from our main database folder
 		// TODO: Load any databases defined with explicit storage paths from the config
 		for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
+			// in-progress migration staging dirs are not databases until atomically renamed into place
+			if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
 
@@ -374,6 +377,7 @@ export function getDatabases(): Databases {
 			const databasePath = schemaConfig.path;
 			if (existsSync(databasePath)) {
 				for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
+					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
 						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
 					} else {

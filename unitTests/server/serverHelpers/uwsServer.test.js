@@ -378,6 +378,34 @@ try {
 			assert.strictEqual(res.body.length, 0);
 		});
 
+		it('enforces wsMaxPayload by closing a connection that sends an oversized frame', async function () {
+			// Regression: registerWsBehavior passed `maxPayload` to app.ws(), but uWS's option key is
+			// `maxPayloadLength`, so the configured cap was silently ignored (uWS's 16 KiB default applied).
+			const cappedPort = port + 1;
+			const cappedServer = await createUwsServer({
+				port: cappedPort,
+				handler: async () => ({ status: 200, body: 'http' }),
+				wsHandler: (ws) => ws.on('message', (data) => ws.send(data)),
+				wsMaxPayload: 64,
+			});
+			try {
+				const client = new WebSocket(`ws://127.0.0.1:${cappedPort}/`);
+				await new Promise((resolve, reject) => {
+					client.on('open', resolve);
+					client.on('error', reject);
+				});
+				const closed = new Promise((resolve) => client.on('close', (code) => resolve(code)));
+				client.send(Buffer.alloc(1024));
+				const code = await Promise.race([
+					closed,
+					new Promise((resolve) => setTimeout(() => resolve('no-close'), 2000).unref()),
+				]);
+				assert.notStrictEqual(code, 'no-close', 'oversized frame must close the connection');
+			} finally {
+				cappedServer.close();
+			}
+		});
+
 		it('accepts an upgrade, exposes url/headers/ip, and round-trips text and binary frames', function (done) {
 			const client = new WebSocket(`ws://127.0.0.1:${port}/sub?x=1`, { headers: { authorization: 'Bearer t' } });
 			const frames = [];

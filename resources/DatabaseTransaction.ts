@@ -41,6 +41,18 @@ interface OutstandingCommit {
 	start: number;
 	prev: OutstandingCommit | undefined;
 	next: OutstandingCommit | undefined;
+	// Identity for the one-time checkOverloaded() log below (harper#2001) — otherwise a stuck commit
+	// gives no indication of which database/table/resource to investigate. Snapshotted at arm time
+	// (not read from `this.writes`/`this.startedFrom` lazily off the DatabaseTransaction object)
+	// because that object can be reused for a later immediate commit while this native commit is
+	// still wedged — its resolve handler runs clearWrites() on the SAME object, which would blank or
+	// replace the identity out from under a deferred read. Per-node (not a single module-level slot)
+	// so that every outstanding commit carries its own identity and its own `logged` flag: a second
+	// commit that is still stuck once the first settles becomes the new oldest and logs on its own.
+	store: any;
+	startedFrom: { resourceName: string; method: string } | undefined;
+	nativeTransaction: any;
+	logged: boolean;
 }
 let oldestOutstandingCommit: OutstandingCommit | undefined;
 let newestOutstandingCommit: OutstandingCommit | undefined;
@@ -60,12 +72,27 @@ let outstandingCommitCount = 0;
 // Also the single source for write-queue-depth accounting (getTransactionQueueDepths below): every
 // native commit this function tracks is, by definition, exactly the write-queue backlog — see the
 // comment there for why that used to be a second, separately-maintained counter.
-export function trackOutstandingCommit(commitResolution: Promise<number | void>): void {
+// `store`/`startedFrom`/`nativeTransaction` are the identity snapshot for checkOverloaded()'s stuck-
+// commit log (harper#2001); omit them (as the test seam below does) when a caller has none to give.
+export function trackOutstandingCommit(
+	commitResolution: Promise<number | void>,
+	store?: any,
+	startedFrom?: { resourceName: string; method: string },
+	nativeTransaction?: any
+): void {
 	// Guards against a future caller passing a non-Promise: today commit() always hands this a real
 	// Promise, but an unguarded link here would leave a node permanently wedged in the list (503ing
 	// every write on this thread) with no settlement to ever unlink it.
 	if (typeof commitResolution?.then !== 'function') return;
-	const outstanding: OutstandingCommit = { start: performance.now(), prev: newestOutstandingCommit, next: undefined };
+	const outstanding: OutstandingCommit = {
+		start: performance.now(),
+		prev: newestOutstandingCommit,
+		next: undefined,
+		store,
+		startedFrom,
+		nativeTransaction,
+		logged: false,
+	};
 	if (newestOutstandingCommit != null) newestOutstandingCommit.next = outstanding;
 	else oldestOutstandingCommit = outstanding;
 	newestOutstandingCommit = outstanding;
@@ -430,6 +457,29 @@ export class DatabaseTransaction implements Transaction {
 			!this.overloadChecked &&
 			performance.now() - oldestOutstandingCommit.start > MAX_OUTSTANDING_TXN_DURATION
 		) {
+			if (!oldestOutstandingCommit.logged) {
+				// Log once per stuck commit (not once per rejected request, harper#2001): a wedged
+				// thread otherwise logs nothing at all server-side while rejecting every write with a
+				// 503, which was the single biggest obstacle to root-causing a recurrence. The flag lives
+				// on the node itself, so if THIS commit settles while still over the limit and a
+				// different one is now oldest, that one logs too instead of staying silent forever.
+				oldestOutstandingCommit.logged = true;
+				const nativeTransactionId = oldestOutstandingCommit.nativeTransaction?.id;
+				const store = oldestOutstandingCommit.store;
+				const startedFrom = oldestOutstandingCommit.startedFrom;
+				harperLogger.error(
+					`Rejecting writes on this thread: a commit has been outstanding for ` +
+						`${Math.round(performance.now() - oldestOutstandingCommit.start)}ms (exceeds the ` +
+						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${store?.rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
+						(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
+						(startedFrom?.resourceName
+							? `, started from ${startedFrom.resourceName}${startedFrom.method ? '.' + startedFrom.method : ''}`
+							: '') +
+						`. Further record updates and publishes from new application requests on this thread ` +
+						`will be rejected with 503 until the commit settles or the process is restarted (deletes, ` +
+						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
+				);
+			}
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
@@ -630,7 +680,10 @@ export class DatabaseTransaction implements Transaction {
 				}
 
 				if (commitResolution) {
-					trackOutstandingCommit(commitResolution);
+					// Read the table off the write itself, not this.db, which is whichever table first
+					// claimed this per-database transaction in txnForContext and so can name the wrong
+					// table when a transaction spans more than one table in the same database.
+					trackOutstandingCommit(commitResolution, this.writes[0]?.store, this.startedFrom, transaction);
 					const completions = [];
 					return commitResolution.then(
 						(commitResult) => {
