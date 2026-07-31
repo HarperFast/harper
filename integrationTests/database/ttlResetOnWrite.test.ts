@@ -64,9 +64,10 @@ const CHECK_RESET_MS = TTL_MS + 200; // 2200ms — past original expiry, before 
 // Max extra slack for expiry (one background-sweep leeway).
 const EXPIRY_POLL_MS = 5_000;
 const EXPIRY_POLL_INTERVAL_MS = 200;
-// Cap each gone-check sample well under the interval, same reasoning as RESET_POLL_TIMEOUT_MS: a
-// sample bound to httpRequest's full default timeout could consume the whole window on one slow
-// response and get misread as the record surviving past its TTL (F-002 stale resurrection).
+// Cap each gone-check sample well under the overall window, same reasoning as
+// RESET_POLL_TIMEOUT_MS: a sample bound to httpRequest's full default timeout could consume the
+// whole window on one slow response and get misread as the record surviving past its TTL (F-002
+// stale resurrection).
 const EXPIRY_POLL_SAMPLE_TIMEOUT_MS = 400;
 const EXPIRY_POLL_MIN_REMAINING_MS = 50;
 
@@ -75,7 +76,7 @@ const EXPIRY_POLL_MIN_REMAINING_MS = 50;
 // each sample is abandoned quickly: the window itself is a few hundred ms, so a sample bound to
 // httpRequest's full default timeout would consume the whole window on one slow response, same
 // as the single-check version it replaces. RESET_POLL_TIMEOUT_MS keeps each sample well under
-// the poll interval so a slow/stalled one is abandoned in time for a retry within the window.
+// the overall window so a slow/stalled one is abandoned in time for a retry within it.
 const RESET_POLL_INTERVAL_MS = 150;
 const RESET_POLL_TIMEOUT_MS = 300;
 // Safety margin before the reset-expiry deadline, so the last poll isn't racing the sweep itself.
@@ -275,17 +276,23 @@ suite(
 		 */
 		async function pollUntilGone(id: string, maxMs: number): Promise<AbsenceResult> {
 			const deadline = Date.now() + maxMs;
-			let sawCleanSample = false;
+			// Conclusiveness must come from the LAST completed sample, not "any sample, anywhere in
+			// the window": a 200 near the start only proves the record hadn't expired *yet*, and
+			// stays true no matter how stale it gets. If it were sticky, one early 200 (the common
+			// case — pollUntilGone is typically entered right after an immediate present-check) would
+			// make every later stall in the rest of the window read as conclusive "still present",
+			// which is exactly the stall-reads-as-defect failure this poll exists to prevent.
+			let lastSampleClean = false;
 			while (deadline - Date.now() >= EXPIRY_POLL_MIN_REMAINING_MS) {
 				const remainingMs = deadline - Date.now();
 				const { status } = await getRecord(id, Math.min(EXPIRY_POLL_SAMPLE_TIMEOUT_MS, remainingMs));
 				if (status === 404) return { observed: true, inconclusive: false };
-				if (status === 200) sawCleanSample = true;
+				lastSampleClean = status === 200;
 				const sleepBudgetMs = deadline - Date.now();
 				if (sleepBudgetMs <= 0) break;
 				await sleep(Math.min(EXPIRY_POLL_INTERVAL_MS, sleepBudgetMs));
 			}
-			return { observed: false, inconclusive: !sawCleanSample };
+			return { observed: false, inconclusive: !lastSampleClean };
 		}
 
 		interface PresenceResult {
