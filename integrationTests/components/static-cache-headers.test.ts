@@ -46,28 +46,41 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 	function getPath(path: string, timeoutMs = 5_000): Promise<SimpleResponse> {
 		return new Promise((resolvePromise, reject) => {
 			const u = new URL(path, ctx.harper.httpURL);
+			let wallClockTimer: ReturnType<typeof setTimeout>;
+			const settle = (fn: () => void) => {
+				clearTimeout(wallClockTimer);
+				fn();
+			};
 			const req = http.request(
 				{ hostname: u.hostname, port: u.port, path: u.pathname + u.search, timeout: timeoutMs },
 				(res) => {
 					res.on('data', () => {}); // drain
-					res.on('error', reject);
+					res.on('error', (err) => settle(() => reject(err)));
 					res.on('end', () => {
 						try {
 							strictEqual(res.statusCode, 200);
 						} catch (err) {
-							reject(err);
+							settle(() => reject(err));
 							return;
 						}
 						const headers = res.headers;
-						resolvePromise({
-							status: res.statusCode!,
-							headers: { get: (name: string) => (headers[name.toLowerCase()] as string) ?? null },
-						});
+						settle(() =>
+							resolvePromise({
+								status: res.statusCode!,
+								headers: { get: (name: string) => (headers[name.toLowerCase()] as string) ?? null },
+							})
+						);
 					});
 				}
 			);
 			req.on('timeout', () => req.destroy(new Error(`GET ${path} timed out after ${timeoutMs}ms`)));
-			req.on('error', reject);
+			req.on('error', (err) => settle(() => reject(err)));
+			// `timeout` above is socket-*inactivity*, not wall-clock — see ttlResetOnWrite.test.ts's
+			// httpRequest for the same fix and rationale.
+			wallClockTimer = setTimeout(
+				() => req.destroy(new Error(`GET ${path} timed out after ${timeoutMs}ms (wall-clock)`)),
+				timeoutMs
+			);
 			req.end();
 		});
 	}

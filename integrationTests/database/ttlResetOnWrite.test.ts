@@ -175,19 +175,34 @@ suite(
 					headers['Content-Type'] = 'application/json';
 					headers['Content-Length'] = String(Buffer.byteLength(body));
 				}
+				let wallClockTimer: ReturnType<typeof setTimeout>;
+				const settle = (fn: () => void) => {
+					clearTimeout(wallClockTimer);
+					fn();
+				};
 				const req = http.request(
 					{ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers, timeout: timeoutMs },
 					(res) => {
 						const chunks: Buffer[] = [];
 						res.on('data', (chunk) => chunks.push(chunk));
-						res.on('error', reject);
+						res.on('error', (err) => settle(() => reject(err)));
 						res.on('end', () =>
-							resolvePromise({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') })
+							settle(() =>
+								resolvePromise({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') })
+							)
 						);
 					}
 				);
 				req.on('timeout', () => req.destroy(new Error(`request to ${url} timed out after ${timeoutMs}ms`)));
-				req.on('error', reject);
+				req.on('error', (err) => settle(() => reject(err)));
+				// `timeout` above is socket-*inactivity*, not wall-clock: a response that keeps
+				// emitting bytes inside each interval never trips it, so every poller's "one sample
+				// can't run past its budget" invariant isn't actually enforced by that option alone.
+				// This timer is the real absolute per-sample deadline.
+				wallClockTimer = setTimeout(
+					() => req.destroy(new Error(`request to ${url} timed out after ${timeoutMs}ms (wall-clock)`)),
+					timeoutMs
+				);
 				req.end(body);
 			});
 		}
@@ -378,6 +393,14 @@ suite(
 				// t=0: seed
 				const seedStatus = await restPut(id, { tag: 'seed', n: 0 });
 				const seedAt = Date.now();
+				if (seedStatus === 'error') {
+					// A transport failure here carries strictly less information than a half-measured
+					// window — MAX_PROBE_ATTEMPTS exists precisely for this class of bad luck, so this
+					// should retry too, not fail hard. Only a genuine non-2xx status is a real defect.
+					inconclusive = true;
+					result.finding = 'INCONCLUSIVE — seed PUT failed to complete (transport issue, not a TTL defect)';
+					return { result, inconclusive };
+				}
 				ok(seedStatus === 200 || seedStatus === 204, `[${label}] seed PUT returned ${seedStatus}`);
 
 				// t=N/2: update
@@ -390,6 +413,11 @@ suite(
 				const updateIssuedAt = Date.now();
 				const updateStatus = await doUpdate(id);
 				const updateAt = Date.now();
+				if (updateStatus === 'error') {
+					inconclusive = true;
+					result.finding = 'INCONCLUSIVE — update failed to complete (transport issue, not a TTL defect)';
+					return { result, inconclusive };
+				}
 				ok(
 					updateStatus === 200 || updateStatus === 204,
 					`[${label}] update returned ${updateStatus} (expected 200/204)`
@@ -415,27 +443,54 @@ suite(
 				const goneResult = await pollUntilGone(id, EXPIRY_POLL_MS);
 				result.goneObserved = goneResult.inconclusive ? 'not-checked' : goneResult.observed;
 
-				if (resetResult.inconclusive) {
-					// Never a clean read (200 or 404) within the window — a transport hiccup, not a
-					// TTL data signal either way. Reported distinctly so it isn't mistaken for a
-					// TTL-reset defect.
+				// A conclusive negative reading on EITHER axis is already actionable defect evidence
+				// on its own (NO-RESET from the reset axis, DID-NOT-EXPIRE/F-002 from the gone axis) —
+				// it must never be discarded by retrying just because the OTHER axis came back
+				// inconclusive. The retry wrapper only retries when `inconclusive` is true, so gating
+				// that flag on "is there NO conclusive defect to report" (not "is either axis merely
+				// unmeasured") is what keeps a measured defect from being thrown away and silently
+				// replaced by a lucky attempt on a fresh id.
+				const resetIsNoReset = !resetResult.inconclusive && resetResult.observed === false;
+				const goneIsDidNotExpire = !goneResult.inconclusive && goneResult.observed === false;
+
+				if (resetResult.inconclusive && goneResult.inconclusive) {
+					// Never a clean read (200 or 404) on EITHER axis — a transport hiccup, not a TTL
+					// data signal either way.
 					inconclusive = true;
 					result.finding =
-						'INCONCLUSIVE — no clean read within the reset-check window (transport issue, not a TTL defect)';
+						'INCONCLUSIVE — no clean read within either check window (transport issue, not a TTL defect)';
+				} else if (resetResult.inconclusive) {
+					if (goneIsDidNotExpire) {
+						// Reset axis unmeasured, but the gone axis conclusively caught the record
+						// outliving its TTL — that's the suite's loudest defect signal and stands on
+						// its own; don't let the unmeasured reset axis bury it under "INCONCLUSIVE".
+						result.finding =
+							'RESET-UNMEASURED + DID-NOT-EXPIRE (defect) — reset-check window inconclusive, but record conclusively outlived its TTL';
+					} else {
+						// Gone axis is clean (or also unreachable) and shows no defect — nothing to
+						// report, this window genuinely couldn't measure the reset.
+						inconclusive = true;
+						result.finding =
+							'INCONCLUSIVE — no clean read within the reset-check window (transport issue, not a TTL defect)';
+					}
 				} else if (goneResult.inconclusive) {
-					// Same reasoning on the other side: the deciding (last full-budget) sample in the
-					// gone-check window didn't complete cleanly — could follow several clean 200s
-					// earlier in the window (see pollUntilGone's docblock). Without this branch a
-					// stalled/unmeasured gone-check reads as goneObserved=false and gets reported as
-					// F-002 stale resurrection.
-					inconclusive = true;
-					result.finding =
-						'INCONCLUSIVE — no clean read within the gone-check window (transport issue, not a TTL defect)';
-				} else if (result.resetObserved && result.goneObserved) {
+					if (resetIsNoReset) {
+						// Symmetric case: reset axis conclusively measured NO-RESET; the deciding
+						// (last full-budget) sample in the gone-check window didn't complete cleanly —
+						// could follow several clean 200s earlier in the window (see pollUntilGone's
+						// docblock) — but the reset defect is already conclusive regardless.
+						result.finding =
+							'NO-RESET (defect) + GONE-UNMEASURED — reset conclusively did not happen; gone-check window inconclusive';
+					} else {
+						inconclusive = true;
+						result.finding =
+							'INCONCLUSIVE — no clean read within the gone-check window (transport issue, not a TTL defect)';
+					}
+				} else if (result.resetObserved === true && result.goneObserved === true) {
 					result.finding = 'RESET+EXPIRED — correct TTL reset';
-				} else if (!result.resetObserved && result.goneObserved) {
+				} else if (result.resetObserved === false && result.goneObserved === true) {
 					result.finding = 'NO-RESET — expired at original write time (defect if other surfaces reset)';
-				} else if (result.resetObserved && !result.goneObserved) {
+				} else if (result.resetObserved === true && result.goneObserved === false) {
 					result.finding = 'RESET but DID-NOT-EXPIRE — record outlived reset window (defect)';
 				} else {
 					result.finding = 'NEITHER — unexpected state';
@@ -454,7 +509,11 @@ suite(
 		 * while the result is INCONCLUSIVE. The reset-check window is inherently tight (see
 		 * MAX_PROBE_ATTEMPTS above), so a single unlucky window shouldn't fail the suite this change
 		 * exists to stabilize — but an attempt that's genuinely RESET/NO-RESET/DID-NOT-EXPIRE is
-		 * conclusive and is never retried or discarded.
+		 * conclusive and is never retried or discarded. This holds even when only ONE axis measured
+		 * cleanly: probeSurfaceOnce only sets `inconclusive` when there's no conclusive defect signal
+		 * on either axis (see its RESET-UNMEASURED/GONE-UNMEASURED branches) — a mixed
+		 * unmeasured-axis-plus-conclusive-defect result is never retried either, so a real defect
+		 * measured on one axis can't be thrown away just because the other axis stalled.
 		 */
 		async function probeSurface(
 			label: string,
@@ -540,6 +599,13 @@ suite(
 				resurrection: 0, // record survives past the reset TTL (stale resurrection F-002)
 				updateError: 0, // update returned non-2xx
 				transportErr: 0,
+				// The update itself landed at/after the record's natural expiry — this round never
+				// entered the intended "narrow window right before expiry" race at all, regardless of
+				// what the immediate check below would have shown. Excluded from the F-002 coverage
+				// floor's denominator (see the assertion below) rather than counted as any other
+				// outcome, so a loaded runner that keeps missing the window can't manufacture either a
+				// false pass (nothing raced, so nothing could resurrect) or a false coverage failure.
+				windowMissed: 0,
 			};
 
 			for (let round = 0; round < ROUNDS; round++) {
@@ -572,16 +638,32 @@ suite(
 					await deleteRecord(id);
 					continue;
 				}
+				if (updateAt >= seedAt + TTL_MS) {
+					// The update's own round-trip was slow enough that it landed after natural expiry
+					// would already have fired — this round missed the race window it was meant to
+					// probe, independent of whatever the record's state turns out to be.
+					outcomes.windowMissed++;
+					await deleteRecord(id);
+					continue;
+				}
 
 				// Short pause to let the expiry sweep possibly run.
 				await sleep(200);
 
-				// Check immediately after the update.
-				const { status: immediateStatus } = await getRecord(id);
+				// Check immediately after the update, tightly bounded: an unbounded read here could
+				// itself take long enough to cross the natural-expiry boundary, in which case a 404 no
+				// longer distinguishes "the expiry scanner won" from "this GET was just slow" — see the
+				// re-check below.
+				const { status: immediateStatus } = await getRecord(id, EXPIRY_POLL_SAMPLE_TIMEOUT_MS);
 
-				if (immediateStatus === 404) {
+				if (immediateStatus === 404 && Date.now() <= updateAt + TTL_MS) {
 					// The expiry scanner won — update was lost or ran before expiry committed.
 					outcomes.silentLoss++;
+				} else if (immediateStatus === 404) {
+					// A 404 that only completed after the record's natural (reset) expiry could
+					// legitimately reflect it — the GET itself was the slow part, not the write path.
+					// Undecidable from this sample alone.
+					outcomes.transportErr++;
 				} else if (immediateStatus === 200) {
 					// Record present. Now wait to see if it expires at the RESET time or outlives it.
 					const expectedGoneBy = updateAt + TTL_MS + 2000; // reset TTL + 2s slack
@@ -610,7 +692,8 @@ suite(
 					`  silentLoss   = ${outcomes.silentLoss}  ← update ACKed but immediately 404\n` +
 					`  resurrection = ${outcomes.resurrection}  ← F-002 family: stale value outlives reset TTL\n` +
 					`  updateError  = ${outcomes.updateError}\n` +
-					`  transportErr = ${outcomes.transportErr}\n`
+					`  transportErr = ${outcomes.transportErr}\n` +
+					`  windowMissed = ${outcomes.windowMissed}  ← update landed at/after natural expiry, never raced\n`
 			);
 
 			// silentLoss is tolerable (expiry beat the update — a timing race, not a data defect)
@@ -621,19 +704,28 @@ suite(
 			);
 			// At least one round should complete cleanly (basic smoke guard).
 			ok(outcomes.cleanReset + outcomes.silentLoss > 0, `No round completed cleanly — environment likely broken`);
+			// Rounds that never entered the race window (windowMissed) can't tell us anything about
+			// F-002 either way — excluded from the denominator so a loaded runner that keeps missing
+			// the window can't manufacture a coverage failure out of a race that never happened.
+			const racedRounds = ROUNDS - outcomes.windowMissed;
+			ok(
+				racedRounds > 0,
+				`all ${ROUNDS} rounds missed the intended race window (update landed at/after natural expiry) — ` +
+					`environment too slow to run this probe meaningfully [${ENGINE}]`
+			);
 			// Only cleanReset and resurrection rounds actually exercise the F-002 property —
 			// silentLoss and updateError both `continue` before the resurrection check ever runs.
 			// A first version of this guard capped transportErr alone, which missed that: a probe
 			// where every round lands in silentLoss (a legitimate outcome of the exact race this
 			// probe induces) would pass resurrection===0 having measured the property in zero
-			// rounds. Assert on the measured set directly instead of capping the unmeasured one.
+			// rounds. Assert on the measured set directly, over the raced rounds only.
 			ok(
-				outcomes.cleanReset + outcomes.resurrection >= ROUNDS / 2,
-				`only ${outcomes.cleanReset + outcomes.resurrection}/${ROUNDS} rounds actually measured the F-002 ` +
-					`property (cleanReset=${outcomes.cleanReset}, resurrection=${outcomes.resurrection}, ` +
+				outcomes.cleanReset + outcomes.resurrection >= racedRounds / 2,
+				`only ${outcomes.cleanReset + outcomes.resurrection}/${racedRounds} raced rounds actually measured ` +
+					`the F-002 property (cleanReset=${outcomes.cleanReset}, resurrection=${outcomes.resurrection}, ` +
 					`silentLoss=${outcomes.silentLoss}, updateError=${outcomes.updateError}, ` +
-					`transportErr=${outcomes.transportErr}) — the resurrection===0 check above isn't meaningful ` +
-					`with this little coverage [${ENGINE}]`
+					`transportErr=${outcomes.transportErr}, windowMissed=${outcomes.windowMissed}) — the ` +
+					`resurrection===0 check above isn't meaningful with this little coverage [${ENGINE}]`
 			);
 		});
 	}
