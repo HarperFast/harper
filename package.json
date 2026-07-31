@@ -79,6 +79,7 @@
 		"test:unit:logging": "mocha \"unitTests/utility/logging/*.js\"",
 		"test:unit:security": "mocha \"unitTests/security/**/*.js\"",
 		"test:unit:dataLayer": "mocha \"unitTests/dataLayer/**/*.js\" --exclude \"unitTests/dataLayer/harperBridge/**/*\"",
+		"test:unit:backup": "mocha \"unitTests/dataLayer/rocksdbBackup.test.js\" \"unitTests/dataLayer/blobBackup.test.js\" \"unitTests/dataLayer/restoreMarker.test.js\" \"unitTests/bin/backup.test.js\"",
 		"test:unit:utility": "mocha \"unitTests/utility/**/*.js\" --exclude \"unitTests/utility/logging/**/*\"",
 		"test:unit:server": "mocha \"unitTests/server/**/*.js\"",
 		"test:unit:config": "mocha \"unitTests/config/**/*.js\"",
