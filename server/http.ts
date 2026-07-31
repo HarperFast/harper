@@ -85,8 +85,10 @@ export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
 
 /**
  * Record that this worker's own bind at `socketPath` succeeded, capturing the inode that proves
- * ownership. Call right after a mirror socket starts listening (see the bind sites in threadServer.js
- * and http.ts's own Node HTTP/H2 mirror setup). A no-op if `socketPath` was never registered.
+ * ownership. Call right after a mirror socket starts listening (see the bind sites in
+ * threadServer.js — the Node/h2/raw-socket mirrors via listenOnDomainSocket's onListening, the Bun
+ * path right after Bun.serve() returns, and the uWS path once createUwsServer() resolves). A no-op
+ * if `socketPath` was never registered.
  */
 export function recordUdsBindSuccess(socketPath: string) {
 	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
@@ -97,28 +99,34 @@ export function recordUdsBindSuccess(socketPath: string) {
 }
 
 /**
- * True when the inode this worker recorded at bind time still matches what's on disk — i.e. nothing
- * has rebound `entry.socketPath` since. An absent `ino` (bind never confirmed) is treated as not
- * owned, so a failed or never-attempted bind can never delete a working mirror.
+ * 'owned' — the inode this worker recorded at bind time still matches what's on disk.
+ * 'foreign' — a socket exists at the path, but with a different inode (or none was ever recorded):
+ *   something else — almost always a replacement worker — currently owns it.
+ * 'absent' — nothing is on disk at the path at all: there is no live owner to protect.
  */
-function stillOwnsSocket(entry: { socketPath: string; ino?: number }): boolean {
-	if (entry.ino === undefined) return false;
+function ownershipOf(entry: { socketPath: string; ino?: number }): 'owned' | 'foreign' | 'absent' {
+	let currentIno: number;
 	try {
-		return statSync(entry.socketPath).ino === entry.ino;
+		currentIno = statSync(entry.socketPath).ino;
 	} catch {
-		return false; // already gone
+		return 'absent';
 	}
+	return entry.ino !== undefined && currentIno === entry.ino ? 'owned' : 'foreign';
 }
 
 /**
- * Mark a Unix domain socket's listen() as failed: suppress its metadata and remove any already
- * written, but only for the pair this worker itself owns (see stillOwnsSocket) — a replacement worker
- * may already have rebound this same path and be relying on the yaml this call would otherwise delete.
+ * Mark a Unix domain socket's listen() as failed: suppress its metadata, and remove any already
+ * written UNLESS a live socket at this path currently belongs to someone else (a replacement worker
+ * that already rebound it). Unlike cleanupUdsFiles, a failed bind never produced a socket of its own,
+ * so 'absent' here just means no bind ever won this path — not evidence of a live replacement — and
+ * is safe to retract stale metadata for (see server/DESIGN.md's UDS ownership note for why this can't
+ * require 'owned': the only real caller, an overlong path, fails before listen() ever runs, so this
+ * worker's own ino is never recorded).
  */
 export function markUdsBindFailed(socketPath: string) {
 	failedUdsPaths.add(socketPath);
 	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
-	if (!entry || !stillOwnsSocket(entry)) return;
+	if (!entry || ownershipOf(entry) === 'foreign') return;
 	try {
 		unlinkSync(entry.yamlPath);
 	} catch {}
@@ -126,7 +134,11 @@ export function markUdsBindFailed(socketPath: string) {
 
 export function cleanupUdsFiles() {
 	for (const entry of udsCleanupPaths) {
-		if (!stillOwnsSocket(entry)) continue;
+		// ownershipOf() and the unlinks below are separate syscalls, so a replacement that unlinks
+		// and rebinds in the gap between them would still lose its files — unavoidable in Node
+		// (no unlink-if-inode-matches primitive), but this narrows that window from the
+		// seconds-wide one this fix closes down to microseconds.
+		if (ownershipOf(entry) !== 'owned') continue;
 		try {
 			unlinkSync(entry.socketPath);
 		} catch {}

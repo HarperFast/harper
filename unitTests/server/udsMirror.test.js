@@ -540,9 +540,11 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			assert.ok(!fs.existsSync(yamlPath), 'yaml for a bind this worker owns should be removed');
 		});
 
-		it('leaves the yaml in place when this worker never confirmed a bind at that path', () => {
+		it('removes a stale yaml when this worker never confirmed a bind and nothing is on disk', () => {
 			// Mirrors the real caller (threadServer.js's isDomainSocketPathTooLong check): listen()
-			// is skipped entirely, so this worker never owned anything at socketPath.
+			// is skipped entirely, so this worker's own ino is never recorded. But since no socket
+			// exists at this path either, nothing else can be relying on this yaml — it's ours to
+			// retract (e.g. leftover from an earlier writeUdsMetadata() race against the bind check).
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'never-bound-failed.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'never-bound-failed.yaml');
 			fs.writeFileSync(yamlPath, 'stale: metadata\n');
@@ -550,7 +552,22 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 
 			markUdsBindFailed(sockPath);
 
-			assert.ok(fs.existsSync(yamlPath), 'a bind that never succeeded must not delete a yaml it never owned');
+			assert.ok(!fs.existsSync(yamlPath), 'an unclaimed path has no live owner, so its stale yaml should be removed');
+		});
+
+		it('leaves the yaml in place when a live socket at that path belongs to someone else', () => {
+			// A socket already exists at this path (e.g. a replacement worker's live mirror), but
+			// this worker never recorded a matching bind of its own — its failed-bind cleanup must
+			// not delete metadata that live socket depends on.
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'foreign-failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'foreign-failed.yaml');
+			fs.writeFileSync(sockPath, "someone else's socket");
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(fs.existsSync(yamlPath), "a live socket this worker never bound means its yaml isn't ours to delete");
 		});
 
 		it('leaves the yaml in place when a replacement worker now owns the socket at the same path', () => {
