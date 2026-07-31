@@ -16,7 +16,7 @@ import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
+const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
@@ -32,6 +32,21 @@ const MAX_RETRIES = 40;
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
 let outstandingCommit, outstandingCommitStart;
+// Identity references for the commit that armed `outstandingCommit`, kept for the one-time
+// checkOverloaded() log below (harper#2001) — `outstandingCommit` itself is otherwise anonymous, so
+// a stuck commit gives no indication of which database/table/resource to investigate. Snapshotted
+// at arm time (not read from `this.writes`/`this.startedFrom` lazily off the DatabaseTransaction
+// object) because that object can be reused for a later immediate commit while the original native
+// commit is still wedged — its resolve handler runs clearWrites() on the SAME object, which would
+// blank or replace the identity out from under a deferred read. Three reference assignments, no
+// allocation, and no lingering reference to the writes/entries graph (the native transaction handle
+// is retained, but its lifetime is already bounded by the pending outstandingCommit promise).
+let outstandingCommitStore: any;
+let outstandingCommitStartedFrom: { resourceName: string; method: string } | undefined;
+let outstandingCommitNativeTransaction: any;
+// Ensures the checkOverloaded() rejection is logged once per stuck commit, not once per rejected
+// request — under load a wedged thread can reject hundreds of requests per second.
+let outstandingCommitLogged = false;
 
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
@@ -369,6 +384,25 @@ export class DatabaseTransaction implements Transaction {
 			!this.overloadChecked &&
 			performance.now() - outstandingCommitStart > MAX_OUTSTANDING_TXN_DURATION
 		) {
+			if (!outstandingCommitLogged) {
+				// Log once per stuck commit (not once per rejected request, harper#2001): a wedged
+				// thread otherwise logs nothing at all server-side while rejecting every write with a
+				// 503, which was the single biggest obstacle to root-causing a recurrence.
+				outstandingCommitLogged = true;
+				const nativeTransactionId = outstandingCommitNativeTransaction?.id;
+				harperLogger.error(
+					`Rejecting writes on this thread: a commit has been outstanding for ` +
+						`${Math.round(performance.now() - outstandingCommitStart)}ms (exceeds the ` +
+						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${outstandingCommitStore?.rootStore?.databaseName ?? '?'}.${outstandingCommitStore?.name ?? '?'}` +
+						(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
+						(outstandingCommitStartedFrom?.resourceName
+							? `, started from ${outstandingCommitStartedFrom.resourceName}${outstandingCommitStartedFrom.method ? '.' + outstandingCommitStartedFrom.method : ''}`
+							: '') +
+						`. Further record updates and publishes from new application requests on this thread ` +
+						`will be rejected with 503 until the commit settles or the process is restarted (deletes, ` +
+						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
+				);
+			}
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
@@ -540,8 +574,10 @@ export class DatabaseTransaction implements Transaction {
 							// metric. This is the same clock the overload check uses (outstandingCommitStart is
 							// stamped at submit), so a rising p99/p999 is the leading indicator for the
 							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
-							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
-							// re-arms per attempt, so recording per attempt matches the overload semantics.
+							// conflict retry rejects this promise and issues a fresh commit(), but outstandingCommit
+							// only re-arms for the backoff path (retries > 2, below) — the coordinated-retry and
+							// retries<=2 paths re-commit synchronously while outstandingCommit is still set, so
+							// recording per attempt here counts more attempts than the overload check ever arms for.
 							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
 							// Promise<void> here because the widening union defeats flow analysis on the prior
 							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
@@ -573,9 +609,30 @@ export class DatabaseTransaction implements Transaction {
 				}
 
 				if (commitResolution) {
+					// Known gap (pre-existing, not introduced here): this branch only arms when
+					// outstandingCommit is currently unset. A coordinated-retry re-commit (below) or a
+					// chained this.next.commit() runs synchronously inside this same commit's .then
+					// handler, one microtask before the .catch().finally() below clears outstandingCommit
+					// — so a retry or a second store's commit that itself wedges is never armed, and
+					// neither checkOverloaded() nor this log will ever see it. Only the first store's
+					// first commit attempt is covered.
 					if (!outstandingCommit) {
 						outstandingCommit = commitResolution;
 						outstandingCommitStart = performance.now();
+						// Snapshot the store/origin now rather than reading them off `this` lazily in
+						// checkOverloaded(): `this` (a DatabaseTransaction) can be reused for a later immediate
+						// commit while this native commit is still wedged, and that later commit's resolve
+						// handler runs clearWrites() on this SAME object — a lazy read would then blank or
+						// mis-attribute the identity out from under the deferred log. Read the table off the
+						// write itself, not this.db, which is whichever table first claimed this per-database
+						// transaction in txnForContext and so can name the wrong table when a transaction spans
+						// more than one table in the same database. Both are stable references (a Store, and an
+						// object set once and never mutated), so this holds no allocation and no lingering
+						// reference to the transaction/writes/entries graph.
+						outstandingCommitStore = this.writes[0]?.store;
+						outstandingCommitStartedFrom = this.startedFrom;
+						outstandingCommitNativeTransaction = transaction;
+						outstandingCommitLogged = false;
 						outstandingCommit
 							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
 							// will correct course, but the reject will still be propagated on the
@@ -583,6 +640,10 @@ export class DatabaseTransaction implements Transaction {
 							.catch(() => {})
 							.finally(() => {
 								outstandingCommit = null;
+								outstandingCommitStore = undefined;
+								outstandingCommitStartedFrom = undefined;
+								outstandingCommitNativeTransaction = undefined;
+								outstandingCommitLogged = false;
 							});
 					}
 					const completions = [];
