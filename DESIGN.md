@@ -296,3 +296,142 @@ guarded against (in the scan or in tar-fs's own pack walk); that's a pre-existin
 this fix doesn't attempt to solve. `deploy_component`/`package_component` still never validate that
 declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
 other future cause would still report success silently; that's a deferred, separate fix.
+<<<<<<< HEAD
+=======
+
+## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
+
+The built-in `scheduler` plugin (#951) runs config-declared jobs "exactly once per cluster." The
+non-obvious part is what Harper's substrate does and does not offer for that:
+
+- **There is no election, consensus, or cross-node CAS anywhere in harper/harper-pro.** Replication
+  converges concurrent writes by record version (LWW). A lease acquired with a plain `put` therefore
+  cannot be race-free by construction — two nodes writing the lease both succeed locally and
+  converge later. The engine's design accepts this: sticky leadership (a starter defers to a fresh
+  heartbeat), a heartbeat takeover check (a leader seeing a fresher foreign heartbeat steps down),
+  and documented handler idempotency are the mechanisms that ride out transient dual-leadership.
+  Do not "fix" the race with a conditional write — the primitive does not exist.
+- The lease + per-job run state live in the replicating system table `hdb_scheduler_state`
+  (`audit: true` because system-table replication requires auditing; name chosen because `hdb_job`
+  is taken by the legacy jobs subsystem). On constrained/directional replication topologies the
+  lease may not reach every node; that limitation is inherent.
+- The alphabetical node-name tie-break deliberately mirrors replication's deterministic failover
+  convention (sorted node names in `subscriptionManager.ts`); the escalation ladder
+  (`promotionWaitMs`) exists because a dead alphabetically-first node must not deadlock a
+  leaderless cluster (each successive node waits one more `2 × watcher interval` rung).
+- Thread-once vs cluster-once are separate layers: `getWorkerIndex() === 0` gates to one worker per
+  node (correct in every threading mode incl. `threads: 0`); the lease gates across nodes.
+  `handleApplication` holds a cross-thread load lock with a 30s timeout, so the plugin only
+  registers there — election, scheduling, and catch-up run async after.
+- Catch-up fires at most ONE missed occurrence per cron job, and a new job's `firstSeenAt` baseline
+  prevents firing immediately on first deploy. Interval jobs are excluded from the sweep — they
+  self-correct by anchoring to their persisted last run in `scheduleNextRun`.
+- Timer firing is a deliberately thin `setTimeout` layer so the durable timer service (#754) can
+  replace it without touching the config surface, election, or catch-up. Timing thresholds are
+  env-overridable (`HARPER_SCHEDULER_*`) so multi-node tests can exercise failover in seconds.
+
+## `universalHeaders` (`http.securityHeaders`): ownership, precedence, and per-thread scope
+
+`server/http.ts` exports `universalHeaders: [string, string][]`, applied to responses in the
+Node, Bun, and uWS (`#914`, `HARPER_UWS_HTTP`) request handlers alike. `http.securityHeaders`
+config populates it via `applySecurityHeaders()`, called from `handleApplication()` on load and
+on `scope.options.on('change', ...)`. Three invariants to preserve:
+
+- **Ownership tracking.** Other components may push entries onto the same shared array, so a
+  hot-reload can't clear-and-rebuild it. `applySecurityHeaders` tracks the exact `[name, value]`
+  tuples it previously pushed in a module-level `ownedSecurityHeaders` array and splices only
+  those out (by reference, via `indexOf`) before re-adding the new set. Any future feature that
+  pushes into `universalHeaders` from a hot-reloadable source should follow the same "track what
+  I added, only remove what I added" pattern.
+- **Root scope owns the config.** `'http'` is a `TRUSTED_RESOURCE_PLUGINS` key, so an application
+  `config.yaml` with an `http:` block re-invokes `handleApplication`. A module-level guard makes
+  only the _first_ invocation (the root config, which loads before applications) own
+  `applySecurityHeaders` and its change listener; later invocations still refresh `httpOptions`
+  but cannot wipe root-configured headers.
+- **App wins on conflicts.** Universal headers are _defaults_: `applyUniversalHeaders()` (a shared
+  helper used by all three transports) only sets a header when `has(name)` is false, and the
+  direct-to-`nodeResponse` paths (handlesHeaders, error) check `hasHeader` first. A route that sets
+  `X-Frame-Options: DENY` is never loosened by a configured `SAMEORIGIN`. Response paths covered:
+  normal writeHead, `handlesHeaders` streams (e.g. the static component's `send()`, which writes
+  its own headers directly — universal headers are pre-set on `nodeResponse` / the Bun
+  `responseHeaders` shim so the stream can still override its own names), the thrown-error path,
+  and the `status === -1` cascade — on Node via the Fastify `'unhandled'` event bridge, on Bun/uWS
+  via `injectToFastify` (or the bare-404 fallback when no Fastify instance is registered for the
+  port). Each `status === -1` branch builds a **fresh** `Headers` object from the fallback
+  response rather than reusing the request's original `headers`, so `applyUniversalHeaders()` must
+  be called again on whichever object actually gets returned — applying it only once, before the
+  `status === -1` branch, is a trap that silently drops universal headers on every unhandled/404
+  response. CI first caught this on the uWS shard (the integration suite's only unauthenticated
+  404 case landed there); the same bug existed unnoticed on Bun's parallel `status === -1`
+  branches (`getBunHTTPServer`'s bare-404 return and `bunDelegateToNodeServer`'s two `Response`s)
+  and is fixed alongside it in `harper-1568-fix2`.
+
+**Why the operations API doesn't get these headers in normal mode**: ops requests _do_ flow
+through the Harper-native `requestHandler` (`httpServer()` calls `getServer()` for every
+registration, including Fastify's non-function listener) and cascade to Fastify via the
+`status === -1` branch, which copies `response.headers` onto `nodeResponse`. But the ops API runs
+on the **main thread**, and the main thread loads components with `resources.isWorker = false`
+(`server/loadRootComponents.js`), so the componentLoader's `resources.isWorker &&
+extensionModule.handleApplication` gate (`components/componentLoader.ts`) means http's
+`handleApplication` never runs there — the main thread's `universalHeaders` array stays empty.
+`universalHeaders` is per-thread module state, populated only where the http component loads.
+Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
+so ops responses **will** carry the headers there (benign).
+
+## The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)
+
+npm decides whether to honor a dependency's bundled `npm-shrinkwrap.json` from the `_hasShrinkwrap`
+flag in the **registry packument**, metadata the registry sets at publish time — not by looking
+inside the tarball. So `npm install harper` from the registry installs exactly the tree the
+shrinkwrap describes, including honoring _omissions_ (it will not re-resolve an optional dependency
+that has been pruned out). But `npm install ./harper-*.tgz` has no packument, so npm never learns the
+shrinkwrap exists and re-resolves the whole tree from `package.json`. Verified on one published
+5.1.23 artifact: via the registry it honored the pin (fastify 5.8.5), from the tarball it resolved
+fresh (fastify 5.10.0, then-latest).
+
+Three consequences worth knowing before touching packaging:
+
+- `overrides` in harper's `package.json` are **root-only** and do nothing for anyone installing
+  harper. The shrinkwrap is the only lever that reaches consumers, which is why the react-native
+  prune lives in `build-tools/prune-shrinkwrap-react-native.mjs` rather than in `overrides` (#1937).
+- The published shrinkwrap is deliberately _not_ what `npm shrinkwrap` produced — `build.sh`
+  post-processes it (dev prune #1783, react-native prune #1937) to enforce that it describes only the
+  production tree a consumer installs. Anything added there must keep it internally consistent; a
+  pruned entry that something still requires would ship a broken tree to every consumer.
+- The Dockerfile installs the local tarball, so it gets **none** of this: its dependency tree is
+  resolved fresh at image-build time against whatever is newest within our semver ranges, meaning the
+  image is not reproducible and does not match what npm consumers receive (#1960).
+
+## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
+
+With `tls.unixDomainSockets: true`, every secure port gets a per-worker cleartext mirror
+(`<worker>-<port>.sock`) so a fronting proxy (symphony) can terminate TLS and route to a specific
+worker. The mirror is a **separate** `http.Server` instance registered in `SERVERS[udsPath]` — it is
+_not_ `httpServers[port]` — so anything wired by port key (upgrade listeners, uWS `wsHandler`,
+mTLS flags, socket options) must be explicitly propagated to it. `getHTTPServer()` exposes the
+mirror as `server.udsMirror` (Node) / `server.udsMirrorUwsConfig` (HARPER_UWS_UDS) for exactly this;
+`onWebSocket()` uses those to attach the `'upgrade'` dispatch and uWS `wsHandler`. Two lessons paid
+for in production (WS handshakes died with a zero-byte close on the mirrors while SSE worked):
+
+- A Node HTTP server with **no** `'upgrade'` listener destroys upgrade sockets with no response and
+  no log — a silent per-server default that makes a missing listener look like a network problem.
+- `enableProxyProtocol()`'s data interception must hand the socket **back to the original
+  listeners** once the PROXY header decision is made (it re-attaches them and removes its wrapper).
+  A permanent wrapper breaks protocol handoffs: Node's upgrade path removes its parser's `'data'`
+  listener _by reference_ before ws takes over, so a lingering wrapper keeps feeding the freed HTTP
+  parser — which the parser pool can re-issue to another connection, injecting one connection's
+  WS frames into another's request stream (`Parse Error: Data after 'Connection: close'`).
+
+The h2c mirror (`HARPER_H2C_UDS`) is exempt: HTTP/1.1 `Upgrade` doesn't exist in h2, and the
+fronting proxy routes WS to the h1 mirror by ALPN.
+<<<<<<< HEAD
+>>>>>>> a057bca24 (fix(http): dispatch WebSocket upgrades on the UDS mirror listeners)
+=======
+
+Known limitation on uWS-served transports (`HARPER_UWS_HTTP` ports, `HARPER_UWS_UDS` mirrors):
+uWS accepts WebSocket handshakes natively in `app.ws()`, so `server.upgrade()` middleware never
+runs pre-handshake there (auth is unaffected — it runs in the WS connection chain on both paths,
+matching Node's upgrade-then-authorize order). No core component registers custom upgrade
+middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
+port so the gap is visible instead of silent.
+>>>>>>> 16a422840 (warn when server.upgrade() middleware is registered on a uWS-served listener)
