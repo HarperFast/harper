@@ -1095,7 +1095,7 @@ Restores a database in place from a managed backup, as a background [job](#jobs)
 
 ### `get_backup`
 
-Streams a full snapshot of the specified database in the HTTP response for download. For RocksDB <VersionBadge type="changed" version="v5.2.0" />, a `tar` archive of the current state, gzipped by default; for LMDB, the `.mdb` file.
+Streams a full snapshot of the specified database in the HTTP response for download. For RocksDB <VersionBadge type="changed" version="v5.2.0" />, a `tar` archive of the current state (including file-backed blobs unless `exclude_blobs` is set), gzipped by default; for LMDB, the `.mdb` file.
 
 ```json
 { "operation": "get_backup", "database": "dev" }

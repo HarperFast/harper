@@ -33,7 +33,7 @@ Offline invocation matters most for restore: an in-place `restore_backup` of the
 
 Creates an incremental directory backup of the database under the configured backup root ([`storage.backupPath`](../configuration/options.md#storage), default `<rootPath>/backup`). Through a running server this runs as a background [job](../operations-api/operations.md#jobs): the operation returns a `job_id` immediately, and [`get_job`](../operations-api/operations.md#get_job) reports the outcome including the new `backup_id`, `size`, and `timestamp`.
 
-Backups of the same database share unchanged files, so the second and subsequent backups only copy what changed. Use [`purge_backups`](#purge_backups) to manage retention.
+Backups of the same database share unchanged RocksDB data files, so the second and subsequent backups only copy the data that changed. The transaction-log snapshot — and the blob snapshot, if the database has file-backed blobs — is copied in full on every backup, so those portions are not incremental; with a large audit-retention window, frequent backups are not free for them. Pass `exclude_blobs: true` to skip the blob snapshot. Use [`purge_backups`](#purge_backups) to manage retention.
 
 ```json
 { "operation": "create_backup", "database": "data" }
@@ -47,7 +47,14 @@ harper create_backup database=data
 
 <VersionBadge version="v5.2.0" /> <EngineBadge engines="RocksDB" />
 
-Returns the managed backups for a database, each with its `backup_id`, `timestamp`, `size`, and `file_count`. Returns an empty array if no backups have been created yet.
+Returns the managed backups for a database, each with:
+
+- `backup_id` — the monotonic integer identifier.
+- `timestamp` — creation time in seconds since the epoch.
+- `size` — bytes of the backup's RocksDB file payloads.
+- `file_count` — number of RocksDB files (some are shared across backups).
+
+`size` and `file_count` come from the RocksDB backup engine and exclude the transaction-log and blob snapshots, so they undercount the repository's true on-disk footprint. Returns an empty array if no backups have been created yet.
 
 ```json
 { "operation": "list_backups", "database": "data" }
@@ -61,7 +68,7 @@ harper list_backups database=data
 
 <VersionBadge version="v5.2.0" /> <EngineBadge engines="RocksDB" />
 
-Verifies a managed backup's file sizes, and optionally their checksums when `verify_checksum` is `true` (slower). Through a running server this runs as a background [job](../operations-api/operations.md#jobs). `backup_id` is required.
+Verifies a managed backup's RocksDB file sizes — and their checksums when `verify_checksum` is `true` (slower) — together with the framing of its transaction-log snapshot (always checked). The blob snapshot is not verified. Through a running server this runs as a background [job](../operations-api/operations.md#jobs). `backup_id` is required.
 
 ```json
 { "operation": "verify_backup", "database": "data", "backup_id": 1, "verify_checksum": true }
@@ -103,11 +110,13 @@ harper purge_backups database=data keep_count=3
 
 <VersionBadge version="v5.2.0" /> <EngineBadge engines="RocksDB" />
 
-Restores a database in place from a managed backup. `backup_id` defaults to the latest backup. The audit/transaction log is restored alongside the data.
+Restores a database in place from a managed backup. `backup_id` defaults to the latest backup. The audit/transaction log is restored alongside the data, and — for a database with file-backed blobs — the blob roots are purged and rewritten from the backup's blob snapshot.
 
-Through a running server this runs as a background [job](../operations-api/operations.md#jobs): Harper closes the database across all worker threads, restores it, and reloads it. This works only when no loaded component is holding the database open — restoring the `system` database, or a database a component keeps open, requires running the command from the CLI with the server stopped. See [when can a database be restored?](./overview.md#when-can-a-database-be-restored)
+Through a running server this runs as a background [job](../operations-api/operations.md#jobs): Harper closes the database across all worker threads, restores it, and reloads it. This works only when no loaded component is holding the database open — if one does, the job ends in `ERROR` (surfaced by [`get_job`](../operations-api/operations.md#get_job)) telling you to restore offline. Restoring the `system` database is rejected up front, before a job is created, as is `target_database` while the server is running. These cases require running the command from the CLI with the server stopped. See [when can a database be restored?](./overview.md#when-can-a-database-be-restored)
 
-From the CLI with the server stopped, `target_database=<name>` restores into a new database instead of overwriting the source. The target must not already exist; Harper picks the new database up on the next start.
+From the CLI with the server stopped, `target_database=<name>` restores into a separate database instead of overwriting the source. The target must not already exist, or must be an empty directory; Harper picks the new database up on the next start.
+
+If a restore is interrupted before it completes (crash, power loss), Harper marks the database as incompletely restored and refuses to load it on the next start, logging an incomplete-restore error. Recover by rerunning `restore_backup` for the same database and `backup_id` — do not try to load or hand-repair the directory.
 
 ```json
 { "operation": "restore_backup", "database": "data", "backup_id": 1 }
@@ -125,7 +134,7 @@ harper restore_backup database=data backup_id=1 target_database=data_restored
 
 Streams a full snapshot of the specified database in the HTTP response for download — there is no server-side artifact and nothing to clean up. The server must be running; this is the one backup operation with no offline form. Behavior depends on the storage engine:
 
-- **RocksDB** <VersionBadge type="changed" version="v5.2.0" /> — streams a `tar` archive of the current database state (all tables plus the transaction log), gzipped by default (`gzip` is a RocksDB-only option and compresses the snapshot substantially). Pass `"gzip": false` for a plain `tar`. The snapshot is always the current state; downloading a specific historical `backup_id` is not supported — to move a retained backup off-host, copy its backup directory.
+- **RocksDB** <VersionBadge type="changed" version="v5.2.0" /> — streams a `tar` archive of the current database state — all tables, the transaction log, and any file-backed blobs — gzipped by default (`gzip` is a RocksDB-only option and compresses the snapshot substantially). Pass `"gzip": false` for a plain `tar`, or `"exclude_blobs": true` to leave blobs out. The snapshot is always the current state; downloading a specific historical `backup_id` is not supported — to move a retained managed backup off-host, copy its whole per-database backup repository (see [Limitations](./overview.md#limitations)). Restoring a RocksDB snapshot by hand takes an extra step when the database has blobs — see [download a snapshot and restore it manually](./overview.md#example-download-a-snapshot-and-restore-it-manually).
 - **LMDB** — streams the `.mdb` file. Specify `"table"` for a single table or `"tables"` for a set, and `"include_audit": true` to include the audit store. These options are LMDB-only.
 
 ```json
