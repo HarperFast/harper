@@ -1,3 +1,0 @@
-graphqlSchema:
-  files: '*.graphql'
-rest: true
