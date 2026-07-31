@@ -9,6 +9,7 @@ import * as commonUtils from '../common_utils.ts';
 import * as hdbTerms from '../hdbTerms.ts';
 import * as configUtils from '../../config/configUtils.ts';
 import { mkdirSync } from 'node:fs';
+import { workerData } from 'node:worker_threads';
 
 const INIT_ERR = 'Error initializing environment manager';
 const BOOT_PROPS_FILE_PATH = 'BOOT_PROPS_FILE_PATH';
@@ -23,6 +24,14 @@ const installPropsToSave = {
 };
 let installProps: any = {};
 export { BOOT_PROPS_FILE_PATH };
+
+// Every param ever passed to setProperty() on this thread, in call order (so a later override
+// of the same param wins on replay). This is how a worker thread inherits its parent's in-process
+// config overrides — see applyInheritedConfigOverrides() and workerDataProvider registration in
+// server/threads/manageThreads.js. setProperty is installer/unit-test-only (see its docstring), so
+// this map stays small and is never touched on a normal production boot.
+const appliedOverrides = new Map<string, any>();
+let inheritedOverridesApplied = false;
 
 /**
  * The base path of the HDB install is often referenced, but is referenced as a const variable at the top of many
@@ -67,11 +76,38 @@ export function get(propName: string): any {
  * @param value
  */
 export function setProperty(propName: string, value: any) {
+	appliedOverrides.set(propName, value);
+
 	if (installPropsToSave[propName]) {
 		installProps[propName] = value;
 	}
 
 	configUtils.updateConfigObject(propName, value);
+}
+
+/**
+ * Every config override applied on this thread via setProperty(), for propagation to worker
+ * threads spawned from here (see server/threads/manageThreads.js's 'configOverrides'
+ * workerData provider). Returns undefined when nothing has been overridden, so a normal
+ * production boot contributes no extra workerData.
+ */
+export function getConfigOverrides(): Record<string, any> | undefined {
+	return appliedOverrides.size ? Object.fromEntries(appliedOverrides) : undefined;
+}
+
+/**
+ * Replays the parent thread's config overrides (received via workerData) on THIS thread, so a
+ * worker's effective config matches its parent's rather than silently falling back to whatever
+ * is installed on disk. Applied once per thread, right after the on-disk config is read — see
+ * initSync() — but reapplied on a forced re-init since that re-reads the whole config from disk
+ * and would otherwise drop the inherited overrides.
+ */
+function applyInheritedConfigOverrides() {
+	const inherited = (workerData as any)?.configOverrides;
+	if (!inherited) return;
+	for (const propName in inherited) {
+		setProperty(propName, inherited[propName]);
+	}
 }
 
 /**
@@ -112,6 +148,12 @@ export function initSync(force: boolean = false) {
 			// Only overwrite if we actually got a value from config
 			if (configHdbRoot !== undefined) {
 				installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configHdbRoot;
+			}
+			// force implies the on-disk config was just re-read from scratch, which would otherwise
+			// silently drop overrides inherited from the parent thread — reapply them on top.
+			if (force || !inheritedOverridesApplied) {
+				inheritedOverridesApplied = true;
+				applyInheritedConfigOverrides();
 			}
 		}
 	} catch (err) {

@@ -9,6 +9,7 @@ import { callOperation } from './utility.js';
 import { setupTestApp, baseUrl, wsBaseUrl, mqttUrl, mqttsUrl, testHost } from './setupTestApp.mjs';
 import environmentManager from '#src/utility/environment/environmentManager';
 const { get: env_get, setProperty } = environmentManager;
+import { getThisNodeName } from '#src/server/nodeName';
 import { connect, connectAsync } from 'mqtt';
 import { readFileSync } from 'fs';
 import { handleApplication as handleMQTTApplication } from '#src/server/mqtt';
@@ -598,7 +599,7 @@ describe('test MQTT connections and commands', function () {
 		let cert, ca;
 		for await (const certificate of databases.system.hdb_certificate.search([])) {
 			if (certificate.is_authority) ca = certificate.certificate;
-			else if (certificate.name === 'localhost') cert = certificate.certificate;
+			else if (certificate.name === getThisNodeName()) cert = certificate.certificate;
 		}
 		let client = await connectAsync(`mqtts://${testHost}:8884`, {
 			key: readFileSync(private_key_path),
