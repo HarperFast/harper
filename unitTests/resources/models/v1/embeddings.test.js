@@ -62,6 +62,12 @@ describe('V1Embeddings.post', () => {
 		assert.equal(result.status, 401, 'auth must be checked ahead of body validation');
 	});
 
+	it('rejects a non-string model with a 400 instead of silently running the default', async () => {
+		const result = await V1Embeddings.post(undefined, { input: 'hi', model: 7 }, { user: SUPER_USER });
+		assert.equal(result.status, 400);
+		assert.match(result.data.error.message, /'model'/);
+	});
+
 	// Mirrors the chatCompletions case: REST hands over the streaming JSON deserializer's
 	// promise, and a malformed body rejects it. That rejection must be shaped as an OpenAI
 	// 400 rather than escaping to REST's RFC 9457 path as a 500.

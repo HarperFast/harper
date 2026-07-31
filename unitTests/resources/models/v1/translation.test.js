@@ -204,6 +204,31 @@ describe('validateChatRequest', () => {
 		assert.equal(validateChatRequest(ok), null);
 	});
 
+	// Top-level routing/framing fields (review round 3): a non-string model silently ran
+	// the configured default; a truthy non-boolean stream returned SSE the client
+	// didn't ask for.
+	it('rejects a non-string model rather than silently running the default', () => {
+		assert.match(validateChatRequest({ ...ok, model: 7 }), /'model'/);
+		assert.match(validateChatRequest({ ...ok, model: { name: 'x' } }), /'model'/);
+	});
+
+	it('rejects a non-boolean stream rather than treating "false" as truthy SSE', () => {
+		assert.match(validateChatRequest({ ...ok, stream: 'false' }), /'stream'/);
+		assert.match(validateChatRequest({ ...ok, stream: 1 }), /'stream'/);
+		assert.equal(validateChatRequest({ ...ok, stream: true }), null);
+		assert.equal(validateChatRequest({ ...ok, stream: false }), null);
+	});
+
+	it('rejects malformed numeric options instead of ignoring or forwarding them', () => {
+		assert.match(validateChatRequest({ ...ok, temperature: 'hot' }), /'temperature'/);
+		assert.match(validateChatRequest({ ...ok, temperature: NaN }), /'temperature'/);
+		assert.match(validateChatRequest({ ...ok, temperature: 3 }), /between 0 and 2/);
+		assert.match(validateChatRequest({ ...ok, max_tokens: '100' }), /'max_tokens'/);
+		assert.match(validateChatRequest({ ...ok, max_tokens: 0 }), /'max_tokens'/);
+		assert.match(validateChatRequest({ ...ok, max_completion_tokens: 1.5 }), /'max_completion_tokens'/);
+		assert.equal(validateChatRequest({ ...ok, temperature: 0.7, max_tokens: 100 }), null);
+	});
+
 	it('rejects a missing or empty messages array', () => {
 		assert.ok(validateChatRequest({}));
 		assert.ok(validateChatRequest({ messages: [] }));

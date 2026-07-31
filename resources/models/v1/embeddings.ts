@@ -39,6 +39,10 @@ export class V1Embeddings extends Resource {
 			return badRequest('Request body must be a JSON object');
 		const raw = body as Record<string, unknown>;
 
+		// Mirrors validateChatRequest: a non-string model would silently invoke the
+		// configured default rather than being rejected.
+		if (raw.model !== undefined && typeof raw.model !== 'string') return badRequest("'model' must be a string");
+
 		const input = raw.input;
 		if (input === undefined || input === null) return badRequest("'input' is required");
 		if (typeof input !== 'string' && !Array.isArray(input)) {

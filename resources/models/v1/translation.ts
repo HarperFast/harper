@@ -130,6 +130,24 @@ function isRepresentableToolChoice(choice: unknown): boolean {
  */
 export function validateChatRequest(body: OAIChatRequest): string | null {
 	const req = body as any;
+	// Top-level fields that control routing and framing first: a non-string `model`
+	// would silently invoke the configured default model (potentially expensive), and a
+	// truthy non-boolean `stream` ("false") would return SSE the client didn't ask for.
+	if (req.model !== undefined && typeof req.model !== 'string') return "'model' must be a string";
+	if (req.stream !== undefined && typeof req.stream !== 'boolean') return "'stream' must be a boolean";
+	if (req.temperature !== undefined) {
+		if (typeof req.temperature !== 'number' || !Number.isFinite(req.temperature)) {
+			return "'temperature' must be a finite number";
+		}
+		if (req.temperature < 0 || req.temperature > 2) return "'temperature' must be between 0 and 2";
+	}
+	for (const field of ['max_tokens', 'max_completion_tokens']) {
+		const value = req[field];
+		if (value === undefined) continue;
+		if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+			return `'${field}' must be a positive integer`;
+		}
+	}
 	if (!Array.isArray(req.messages) || req.messages.length === 0) return "'messages' must be a non-empty array";
 	for (let i = 0; i < req.messages.length; i++) {
 		const m = req.messages[i];
