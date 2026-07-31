@@ -96,9 +96,15 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 		let last: string | null = null;
 		let sinceResend = 0;
 		while (Date.now() < deadline) {
-			const res = await getCss();
-			last = res.headers.get('cache-control');
-			if (last === expected) return res;
+			// A single sample's timeout or a transient non-200 while the plugin is mid-reload
+			// shouldn't abort the whole poll — only the loop's own deadline should.
+			try {
+				const res = await getCss();
+				last = res.headers.get('cache-control');
+				if (last === expected) return res;
+			} catch {
+				/* retry within the poll window */
+			}
 			if (++sinceResend >= 10) {
 				sinceResend = 0;
 				await setStaticConfig(yaml);

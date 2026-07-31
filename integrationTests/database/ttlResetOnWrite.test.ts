@@ -32,6 +32,13 @@
  * Root cause: nodejs/undici#5600 (unref'd idle-socket-validation setImmediate stalls fetch() on an
  * otherwise-idle event loop), bundled into Node via undici 8.9.0 (used by 26.5.1); fixed upstream by
  * nodejs/undici#5609 but not yet in a released undici/Node build as of this writing.
+ *
+ * The reset/gone checks additionally classify an unmeasurable window as INCONCLUSIVE (see
+ * PresenceResult/AbsenceResult below) so a transport hiccup is never reported as a TTL
+ * data-integrity defect. This is a diagnosis improvement, not a deflaking one, for surfaces 1-5:
+ * an INCONCLUSIVE window still fails its assertion (resetObserved/goneObserved isn't `true`) — it
+ * just fails with an accurate "couldn't measure" message instead of a false RESET/NO-RESET or
+ * F-002 verdict. Only the race probe (surface 6) has a bucket that absorbs INCONCLUSIVE outright.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';
@@ -80,9 +87,6 @@ const RESET_POLL_INTERVAL_MS = 150;
 const RESET_POLL_TIMEOUT_MS = 300;
 // Safety margin before the reset-expiry deadline, so the last poll isn't racing the sweep itself.
 const RESET_CHECK_SAFETY_MS = 200;
-// Below this much time left in the window, a sample is doomed before it starts (its timeout would
-// be clamped to a few ms) — skip it rather than counting a guaranteed failure toward "no clean read".
-const RESET_POLL_MIN_REMAINING_MS = 50;
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
@@ -312,24 +316,32 @@ suite(
 		}
 
 		/**
-		 * Poll for the record being present (200), bounding every attempt and sleep to what's left
-		 * before deadlineAt so no sample can start once the window has closed. Returns as soon as
-		 * any sample observes it present. Each attempt is capped at RESET_POLL_TIMEOUT_MS (see its
-		 * definition above) — and further capped to the remaining time near the deadline — so one
-		 * slow/stalled response can't consume the whole window or run past it. Samples with less
-		 * than RESET_POLL_MIN_REMAINING_MS left are skipped rather than attempted: a timeout clamped
-		 * to a few ms is a guaranteed failure, not a real absence of a clean read.
+		 * Poll for the record being present (200) up to expiresAt (the true reset-expiry), in two
+		 * phases. Intermediate samples are bounded to RESET_POLL_TIMEOUT_MS and only admitted with
+		 * that full budget, and run up to deadlineAt (the conservative cutoff) — mirrors
+		 * pollUntilGone's "don't admit a sample you can't give a fair budget" rule, so one stall
+		 * can't eat the whole window and block a retry. The FINAL sample instead gets whatever time
+		 * remains up to expiresAt: a 200 landing at any point up to the real reset-expiry proves the
+		 * clock reset (the request can't have started before the original expiry), so clamping the
+		 * deciding sample to the intermediate budget would silently discard a valid late response
+		 * under load — the same masking failure this poll exists to avoid, just on the positive
+		 * (200) side of the check instead of the negative (404) side handled by expiresAt below.
 		 */
 		async function pollForPresent(id: string, deadlineAt: number, expiresAt: number): Promise<PresenceResult> {
 			let sawCleanSample = false;
-			while (deadlineAt - Date.now() >= RESET_POLL_MIN_REMAINING_MS) {
-				const remainingMs = deadlineAt - Date.now();
-				const { status } = await getRecord(id, Math.min(RESET_POLL_TIMEOUT_MS, remainingMs));
+			while (deadlineAt - Date.now() >= RESET_POLL_TIMEOUT_MS) {
+				const { status } = await getRecord(id, RESET_POLL_TIMEOUT_MS);
 				if (status === 200) return { observed: true, inconclusive: false };
 				if (status === 404 && Date.now() <= expiresAt) sawCleanSample = true;
 				const sleepBudgetMs = deadlineAt - Date.now();
 				if (sleepBudgetMs <= 0) break;
 				await sleep(Math.min(RESET_POLL_INTERVAL_MS, sleepBudgetMs));
+			}
+			const finalBudgetMs = expiresAt - Date.now();
+			if (finalBudgetMs > 0) {
+				const { status } = await getRecord(id, finalBudgetMs);
+				if (status === 200) return { observed: true, inconclusive: false };
+				if (status === 404 && Date.now() <= expiresAt) sawCleanSample = true;
 			}
 			return { observed: false, inconclusive: !sawCleanSample };
 		}
@@ -397,9 +409,11 @@ suite(
 					result.finding =
 						'INCONCLUSIVE — no clean read within the reset-check window (transport issue, not a TTL defect)';
 				} else if (goneResult.inconclusive) {
-					// Same reasoning on the other side: never a clean read within the gone-check
-					// window. Without this branch a stalled/unmeasured gone-check reads as
-					// goneObserved=false and gets reported as F-002 stale resurrection.
+					// Same reasoning on the other side: the deciding (last full-budget) sample in the
+					// gone-check window didn't complete cleanly — could follow several clean 200s
+					// earlier in the window (see pollUntilGone's docblock). Without this branch a
+					// stalled/unmeasured gone-check reads as goneObserved=false and gets reported as
+					// F-002 stale resurrection.
 					result.finding =
 						'INCONCLUSIVE — no clean read within the gone-check window (transport issue, not a TTL defect)';
 				} else if (result.resetObserved && result.goneObserved) {
