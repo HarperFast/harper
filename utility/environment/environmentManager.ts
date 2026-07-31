@@ -172,11 +172,6 @@ export function initSync(force: boolean = false) {
 	try {
 		if (propFileExists || doesPropFileExist() || commonUtils.noBootFile() || force) {
 			configUtils.initConfig(force);
-			const configHdbRoot = configUtils.getConfigValue(hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
-			// Only overwrite if we actually got a value from config
-			if (configHdbRoot !== undefined) {
-				installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configHdbRoot;
-			}
 			if (!inheritedOverridesApplied) {
 				inheritedOverridesApplied = true;
 				applyInheritedConfigOverrides();
@@ -184,6 +179,18 @@ export function initSync(force: boolean = false) {
 			// force implies the on-disk config was just re-read from scratch, which would otherwise
 			// silently drop every override applied on this thread so far (inherited or local).
 			if (force) reapplyAllOverrides();
+
+			// Sync installProps' HDB_ROOT from the config's rootPath *after* any override replay
+			// above (not before): setProperty() records a rootPath override under its canonical
+			// CONFIG_PARAM_MAP name, not under HDB_ROOT_KEY, so replaying it doesn't retrigger this
+			// same side effect below in setProperty() — this sync is what makes getHdbBasePath()
+			// track an isolated rootPath override instead of staying pinned to whatever the pre-replay
+			// disk read produced.
+			const configHdbRoot = configUtils.getConfigValue(hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
+			// Only overwrite if we actually got a value from config
+			if (configHdbRoot !== undefined) {
+				installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configHdbRoot;
+			}
 		}
 	} catch (err) {
 		log.error(INIT_ERR);
