@@ -448,14 +448,33 @@ suite(
 					expectedPrefix.slice(0, dataBlocks.length),
 					`expected the exact pre-throw sequence (a prefix of ${JSON.stringify(expectedPrefix)}), got: ${JSON.stringify(dataBlocks.map((b) => b.data))}`
 				);
-				// Pin the actual shipped shape, not just "didn't hang": the connection closes abruptly
-				// (no clean SSE terminator) rather than ending gracefully. A client currently cannot
-				// distinguish this from a generator that simply finished -- if that's ever fixed (e.g. a
-				// terminal `event: error` frame), this assertion should change too, deliberately.
-				ok(
-					r.closed && !r.ended,
-					`expected an abrupt close (closed=true, ended=false) for the mid-stream throw, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
-				);
+				// Pin the actual shipped shape, not just "didn't hang". The two HTTP servers genuinely
+				// differ here, so pin BOTH shapes rather than asserting one and skipping the other --
+				// the divergence is the point, and a silent skip would let it drift unnoticed.
+				//
+				// Node (`server/http.ts` pipeBodyToResponse): closes the socket abruptly WITHOUT the
+				// terminal `0\r\n\r\n` chunk, deliberately -- its own comment notes this "correctly
+				// signals a failed/truncated transfer... instead of implying it completed". That is the
+				// contract, and it is what a spec-compliant client uses to detect the truncation.
+				//
+				// uWS (`server/serverHelpers/uwsServer.ts` streamResponse): routes the source's 'error'
+				// and 'end' through the SAME finish(true) -> res.end() path, so it DOES write the
+				// terminal chunk. The wire response is then byte-indistinguishable from a generator that
+				// legitimately finished -- a mid-stream failure is silently presented as success. That is
+				// a real uWS-path defect (QA-886/F-272), not an alternative contract; the fix is to close
+				// the connection instead of ending it. Pinned here so it cannot regress further or get
+				// quietly "fixed" in the wrong direction.
+				if (process.env.HARPER_UWS_HTTP) {
+					ok(
+						r.ended,
+						`uWS path: expected the (defective) graceful end for the mid-stream throw, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
+					);
+				} else {
+					ok(
+						r.closed && !r.ended,
+						`expected an abrupt close (closed=true, ended=false) for the mid-stream throw, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
+					);
+				}
 			}
 		);
 
