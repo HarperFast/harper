@@ -64,6 +64,11 @@ const CHECK_RESET_MS = TTL_MS + 200; // 2200ms — past original expiry, before 
 // Max extra slack for expiry (one background-sweep leeway).
 const EXPIRY_POLL_MS = 5_000;
 const EXPIRY_POLL_INTERVAL_MS = 200;
+// Cap each gone-check sample well under the interval, same reasoning as RESET_POLL_TIMEOUT_MS: a
+// sample bound to httpRequest's full default timeout could consume the whole window on one slow
+// response and get misread as the record surviving past its TTL (F-002 stale resurrection).
+const EXPIRY_POLL_SAMPLE_TIMEOUT_MS = 400;
+const EXPIRY_POLL_MIN_REMAINING_MS = 50;
 
 // The "record is RESET" check polls across the whole valid window (past the original expiry, up
 // to just before the reset-expiry) rather than sampling a single instant. Polling only helps if
@@ -251,18 +256,36 @@ suite(
 			}
 		}
 
+		interface AbsenceResult {
+			observed: boolean;
+			// true only if every sample that completed returned neither 200 nor 404 (timeout or
+			// transport error) — i.e. we never got a clean read at all. Mirrors
+			// PresenceResult.inconclusive: without it, a stalled response consuming the whole window
+			// reads as "still present" and gets reported as F-002 stale resurrection, when it's
+			// really "couldn't measure."
+			inconclusive: boolean;
+		}
+
 		/**
-		 * Poll until the record is absent (404) or timeout.
-		 * Returns true if it went absent within the deadline.
+		 * Poll until the record is absent (404), bounding every attempt and sleep to what's left
+		 * before the deadline so no sample can start once the window has closed. Returns as soon as
+		 * any sample observes it absent. Each attempt is capped at EXPIRY_POLL_SAMPLE_TIMEOUT_MS —
+		 * and further capped to the remaining time near the deadline — so one slow/stalled response
+		 * can't consume the whole window on its own.
 		 */
-		async function pollUntilGone(id: string, maxMs: number): Promise<boolean> {
+		async function pollUntilGone(id: string, maxMs: number): Promise<AbsenceResult> {
 			const deadline = Date.now() + maxMs;
-			while (Date.now() < deadline) {
-				const { status } = await getRecord(id);
-				if (status === 404) return true;
-				await sleep(EXPIRY_POLL_INTERVAL_MS);
+			let sawCleanSample = false;
+			while (deadline - Date.now() >= EXPIRY_POLL_MIN_REMAINING_MS) {
+				const remainingMs = deadline - Date.now();
+				const { status } = await getRecord(id, Math.min(EXPIRY_POLL_SAMPLE_TIMEOUT_MS, remainingMs));
+				if (status === 404) return { observed: true, inconclusive: false };
+				if (status === 200) sawCleanSample = true;
+				const sleepBudgetMs = deadline - Date.now();
+				if (sleepBudgetMs <= 0) break;
+				await sleep(Math.min(EXPIRY_POLL_INTERVAL_MS, sleepBudgetMs));
 			}
-			return false;
+			return { observed: false, inconclusive: !sawCleanSample };
 		}
 
 		interface PresenceResult {
@@ -356,7 +379,8 @@ suite(
 				if (waitForGone > 0) await sleep(waitForGone);
 
 				// Poll for gone (allow one extra sweep cycle).
-				result.goneObserved = await pollUntilGone(id, EXPIRY_POLL_MS);
+				const goneResult = await pollUntilGone(id, EXPIRY_POLL_MS);
+				result.goneObserved = goneResult.inconclusive ? 'not-checked' : goneResult.observed;
 
 				if (resetResult.inconclusive) {
 					// Never a clean read (200 or 404) within the window — a transport hiccup, not a
@@ -364,6 +388,12 @@ suite(
 					// TTL-reset defect.
 					result.finding =
 						'INCONCLUSIVE — no clean read within the reset-check window (transport issue, not a TTL defect)';
+				} else if (goneResult.inconclusive) {
+					// Same reasoning on the other side: never a clean read within the gone-check
+					// window. Without this branch a stalled/unmeasured gone-check reads as
+					// goneObserved=false and gets reported as F-002 stale resurrection.
+					result.finding =
+						'INCONCLUSIVE — no clean read within the gone-check window (transport issue, not a TTL defect)';
 				} else if (result.resetObserved && result.goneObserved) {
 					result.finding = 'RESET+EXPIRED — correct TTL reset';
 				} else if (!result.resetObserved && result.goneObserved) {
@@ -493,8 +523,13 @@ suite(
 				} else if (immediateStatus === 200) {
 					// Record present. Now wait to see if it expires at the RESET time or outlives it.
 					const expectedGoneBy = updateAt + TTL_MS + 2000; // reset TTL + 2s slack
-					const gone = await pollUntilGone(id, expectedGoneBy - Date.now() + 1000);
-					if (gone) {
+					const goneResult = await pollUntilGone(id, expectedGoneBy - Date.now() + 1000);
+					if (goneResult.inconclusive) {
+						// Never a clean read — a transport hiccup, not evidence either way. Counting
+						// this as resurrection would raise the suite's loudest data-integrity alarm
+						// for a stalled GET, which is exactly what this poll exists to avoid.
+						outcomes.transportErr++;
+					} else if (goneResult.observed) {
 						outcomes.cleanReset++;
 					} else {
 						// Still present past reset TTL — stale resurrection?
