@@ -13,6 +13,7 @@ const {
 	getSharedMessageEncoding,
 	getSharedFrame,
 	setSharedFrame,
+	rotateSharedEncodings,
 } = require('#src/server/serverHelpers/sharedMessageEncoding');
 
 /** Mirrors the QoS 0 lookup-then-generate in server/mqtt.ts's outbound listener. */
@@ -236,6 +237,79 @@ describe('sharedMessageEncoding – a failed serialization is retried, not memoi
 		const recovered = getSharedMessageEncoding(message, request);
 		assert.strictEqual(recovered.payload.toString(), 'recovered:{"id":12}');
 		assert.strictEqual(attempts, 2);
+	});
+});
+
+describe('sharedMessageEncoding – retention is bounded by rotation', function () {
+	// Retention has to be bounded by the fan-out, not by the message object: for record events the
+	// message IS the store's cached record, so an entry that outlives the fan-out keeps a serialized
+	// copy (and a whole PUBLISH buffer) alive for as long as that record stays cached.
+	it('keeps an entry across one rotation and drops it after two', function () {
+		const message = { id: 20 };
+		const request = subscriberRequest(COUNTED_TYPE);
+
+		const original = getSharedMessageEncoding(message, request);
+		assert.strictEqual(countedCalls, 1);
+
+		// one rotation: the entry is in the previous generation, still reachable
+		rotateSharedEncodings();
+		assert.strictEqual(getSharedMessageEncoding(message, request), original, 'a fan-out may span a rotation');
+		assert.strictEqual(countedCalls, 1);
+
+		// the lookup above promoted it back into the current generation, so it survives again
+		rotateSharedEncodings();
+		assert.strictEqual(getSharedMessageEncoding(message, request), original);
+		assert.strictEqual(countedCalls, 1);
+
+		// two rotations with no intervening lookup releases it, and the next subscriber re-encodes
+		rotateSharedEncodings();
+		rotateSharedEncodings();
+		assert.notStrictEqual(getSharedMessageEncoding(message, request), original, 'the entry must be released');
+		assert.strictEqual(countedCalls, 2);
+	});
+
+	it('counts reuses so a caller can tell a real fan-out from a single subscriber', function () {
+		const message = { id: 21 };
+		const request = subscriberRequest(COUNTED_TYPE);
+
+		const first = getSharedMessageEncoding(message, request);
+		assert.strictEqual(first.hits, 0, 'the first subscriber has no one to share with yet');
+		assert.strictEqual(getSharedMessageEncoding(message, request).hits, 1);
+		assert.strictEqual(getSharedMessageEncoding(message, request).hits, 2);
+	});
+
+	it('never reports a hit for an unshareable primitive message', function () {
+		const request = subscriberRequest(COUNTED_TYPE);
+
+		assert.strictEqual(getSharedMessageEncoding('primitive', request).hits, 0);
+		assert.strictEqual(getSharedMessageEncoding('primitive', request).hits, 0);
+	});
+
+	it('does not treat a serializer that legitimately returns undefined as a failure', function () {
+		const UNDEFINED_TYPE = 'application/x-shared-encoding-undefined';
+		let calls = 0;
+		contentTypes.set(UNDEFINED_TYPE, {
+			serialize() {
+				calls++;
+				return undefined;
+			},
+			q: 1,
+		});
+		try {
+			const message = { id: 22 };
+			const request = subscriberRequest(UNDEFINED_TYPE);
+
+			const first = getSharedMessageEncoding(message, request);
+			const second = getSharedMessageEncoding(message, request);
+
+			assert.strictEqual(first, second);
+			assert.strictEqual(first.failed, false);
+			// an undefined payload is a legitimate result, not a retry signal — re-encoding here would
+			// make the cache slower than no cache at all
+			assert.strictEqual(calls, 1);
+		} finally {
+			contentTypes.delete(UNDEFINED_TYPE);
+		}
 	});
 });
 

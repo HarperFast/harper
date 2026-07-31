@@ -79,15 +79,13 @@ function sharedEncoding(message, subscribers, qos) {
 		if (qos > 0) {
 			bytes += generate({ cmd: 'publish', topic: TOPIC, payload, messageId: i + 1, qos }, MQTT_OPTIONS).length;
 		} else {
-			// same lookup-then-generate shape as the outbound listener in server/mqtt.ts
+			// same lookup-then-generate shape as the outbound listener in server/mqtt.ts, including
+			// only retaining the packet once a second subscriber has shown up
 			let packet = getSharedFrame(encoding, PROTOCOL_VERSION, TOPIC);
-			if (packet === undefined)
-				packet = setSharedFrame(
-					encoding,
-					PROTOCOL_VERSION,
-					TOPIC,
-					generate({ cmd: 'publish', topic: TOPIC, payload, qos: 0 }, MQTT_OPTIONS)
-				);
+			if (packet === undefined) {
+				packet = generate({ cmd: 'publish', topic: TOPIC, payload, qos: 0 }, MQTT_OPTIONS);
+				if (encoding.hits > 0) setSharedFrame(encoding, PROTOCOL_VERSION, TOPIC, packet);
+			}
 			bytes += packet.length;
 		}
 	}

@@ -357,13 +357,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								// v3.1.1 omits) — share it across every QoS 0 subscriber that matches on those.
 								const protocolVersion = mqttOptions.protocolVersion;
 								let packet = getSharedFrame(encoding, protocolVersion, topic);
-								if (packet === undefined)
-									packet = setSharedFrame(
-										encoding,
-										protocolVersion,
-										topic,
-										generate({ cmd: 'publish', topic, payload, qos: 0, dup: false, retain: false }, mqttOptions)
-									);
+								if (packet === undefined) {
+									packet = generate({ cmd: 'publish', topic, payload, qos: 0, dup: false, retain: false }, mqttOptions);
+									// only worth retaining once a second subscriber has shown up; caching a packet
+									// for a fan-out of one just pins a whole buffer nothing will read
+									if (encoding.hits > 0) setSharedFrame(encoding, protocolVersion, topic, packet);
+								}
 								sendEncodedPacket(packet, 'publish', generalTopic);
 							}
 							// wait if there is back-pressure

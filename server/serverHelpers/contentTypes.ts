@@ -438,8 +438,10 @@ export function serialize(responseData, request, responseObject) {
 let asyncSerializations: Promise<void>[];
 /**
  * Get the message serializer for a request's negotiated content type, memoized on the request.
- * The returned function is the shared per-content-type serializer, so its identity is a valid key
- * for anything caching serialized output across requests.
+ * The returned function is the registered per-content-type serializer, so its identity keys the
+ * content type. Caching serialized output across requests under that key is only valid because the
+ * built-in serializers are pure functions of their argument — a component registering a serializer
+ * into `server.contentTypes` whose output depends on anything else would not be shareable.
  * @param request
  */
 export function getMessageSerializer(request?: Request): (message: any) => Buffer | string {
