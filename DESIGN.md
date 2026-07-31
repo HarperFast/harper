@@ -424,4 +424,14 @@ for in production (WS handshakes died with a zero-byte close on the mirrors whil
 
 The h2c mirror (`HARPER_H2C_UDS`) is exempt: HTTP/1.1 `Upgrade` doesn't exist in h2, and the
 fronting proxy routes WS to the h1 mirror by ALPN.
+<<<<<<< HEAD
 >>>>>>> a057bca24 (fix(http): dispatch WebSocket upgrades on the UDS mirror listeners)
+=======
+
+Known limitation on uWS-served transports (`HARPER_UWS_HTTP` ports, `HARPER_UWS_UDS` mirrors):
+uWS accepts WebSocket handshakes natively in `app.ws()`, so `server.upgrade()` middleware never
+runs pre-handshake there (auth is unaffected — it runs in the WS connection chain on both paths,
+matching Node's upgrade-then-authorize order). No core component registers custom upgrade
+middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
+port so the gap is visible instead of silent.
+>>>>>>> 16a422840 (warn when server.upgrade() middleware is registered on a uWS-served listener)
