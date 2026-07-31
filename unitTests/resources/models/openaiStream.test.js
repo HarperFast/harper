@@ -180,6 +180,43 @@ describe('openaiStream', () => {
 		assert.ok(last.error, 'expected a terminal error frame');
 	});
 
+	it('terminates with an error frame when a single argument value is oversized (review round 3)', async () => {
+		// One key, one value — under both the call cap and the key cap, but past the
+		// cumulative serialized budget (1,048,576 chars). Count-based bounds alone
+		// would retain this and duplicate it in the final JSON.stringify.
+		const huge = 'x'.repeat(1_100_000);
+		const msgs = await collect(
+			openaiStream(gen({ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: { a: huge } }] }))
+		);
+		const last = msgs[msgs.length - 1].data;
+		assert.ok(last.error, 'expected a terminal error frame');
+		assert.ok(!msgs.some((m) => m.data === '[DONE]'), 'must not emit [DONE] after overflow');
+	});
+
+	it('charges replacements of an existing key against the budget, not just new keys', async () => {
+		// The key count stays 1 the whole time — only the budget can catch this.
+		const big = 'y'.repeat(300_000);
+		const deltas = Array.from({ length: 4 }, () => ({
+			deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: { a: big } }],
+		}));
+		const msgs = await collect(openaiStream(gen(...deltas)));
+		const last = msgs[msgs.length - 1].data;
+		assert.ok(last.error, 'expected a terminal error frame');
+	});
+
+	it('completes normally for a large value still under the serialized budget', async () => {
+		const large = 'z'.repeat(500_000);
+		const msgs = await collect(
+			openaiStream(gen({ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: { a: large } }] }))
+		);
+		assert.ok(
+			msgs.some((m) => m.data === '[DONE]'),
+			'under the budget must still complete'
+		);
+		const flush = msgs.find((m) => m.data.choices?.[0]?.delta?.tool_calls);
+		assert.ok(flush.data.choices[0].delta.tool_calls[0].function.arguments.includes('zzz'));
+	});
+
 	it('ignores a contract-violating string arguments value rather than counting characters', async () => {
 		const msgs = await collect(
 			openaiStream(gen({ deltaToolCalls: [{ id: 'c1', name: 'fn', arguments: 'x'.repeat(5000) }] }))
