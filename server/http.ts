@@ -1487,8 +1487,25 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 const upgradeListeners = [],
 	upgradeChains = {};
 
+// uWS-served listeners (HARPER_UWS_HTTP ports, HARPER_UWS_UDS mirrors) accept WebSocket
+// handshakes natively in app.ws() — the Node 'upgrade' event never fires there, so
+// server.upgrade() middleware cannot run pre-handshake (auth still runs in the WS
+// connection chain, matching the Node path's upgrade-then-authorize order). Warn instead
+// of silently skipping the middleware. The default handler onWebSocket() registers is
+// exempt: its job (ws.handleUpgrade) is what uWS performs natively.
+function warnIfUpgradeMiddlewareUnreachable(listener: UpgradeListener, port: number | string) {
+	if ((listener as any).isDefaultWsUpgrade) return;
+	const server: any = httpServers[port];
+	if (server?.uws || server?.udsMirrorUwsConfig) {
+		harperLogger.warn(
+			`Upgrade middleware ('${getComponentName()}') is not applied on uWS-served listeners for port ${port}; uWS accepts WebSocket handshakes natively, so pre-handshake upgrade middleware only runs on Node-served listeners.`
+		);
+	}
+}
+
 function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 	for (const { port } of getPorts(options)) {
+		warnIfUpgradeMiddlewareUnreachable(listener, port);
 		const entry = {
 			listener,
 			port: options?.port || port,
@@ -1537,6 +1554,15 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 
 		const installUwsWsHandler = (cfg: any) => {
 			if (!cfg || cfg.wsHandler) return;
+			// Registration-order complement to warnIfUpgradeMiddlewareUnreachable(): middleware
+			// registered before this uWS transport existed is equally unreachable.
+			for (const entry of upgradeListeners) {
+				if (entry.port == port && !(entry.listener as any).isDefaultWsUpgrade) {
+					harperLogger.warn(
+						`Upgrade middleware ('${entry.name}') is not applied on uWS-served listeners for port ${port}; uWS accepts WebSocket handshakes natively, so pre-handshake upgrade middleware only runs on Node-served listeners.`
+					);
+				}
+			}
 			// Honor a configured WebSocket maxPayload on the uWS transport too (else it defaults to 100 MiB).
 			if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
 			cfg.wsHandler = (ws: any, upgrade: any) => {
@@ -1587,23 +1613,22 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			});
 
 			// Add the default upgrade handler if it doesn't exist.
-			onUpgrade(
-				(request, socket, head, next) => {
-					// If the request has already been upgraded, continue without upgrading
-					if (request.__harperdbRequestUpgraded || request.__harperRequestUpgraded) {
-						return next(request, socket, head);
-					}
+			const defaultUpgradeHandler = (request, socket, head, next) => {
+				// If the request has already been upgraded, continue without upgrading
+				if (request.__harperdbRequestUpgraded || request.__harperRequestUpgraded) {
+					return next(request, socket, head);
+				}
 
-					// Otherwise, upgrade the socket and then continue
-					return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
-						request.__harperdbRequestUpgraded = true;
-						request.__harperRequestUpgraded = true;
-						next(request, socket, head);
-						websocketServers[port].emit('connection', ws, request);
-					});
-				},
-				{ port }
-			);
+				// Otherwise, upgrade the socket and then continue
+				return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
+					request.__harperdbRequestUpgraded = true;
+					request.__harperRequestUpgraded = true;
+					next(request, socket, head);
+					websocketServers[port].emit('connection', ws, request);
+				});
+			};
+			(defaultUpgradeHandler as any).isDefaultWsUpgrade = true;
+			onUpgrade(defaultUpgradeHandler, { port });
 
 			// Call the upgrade middleware chain
 			const dispatchUpgrade = (request, socket, head) => {
