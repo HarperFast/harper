@@ -690,6 +690,21 @@ export function updateConfigObject(param: string, value: any) {
 	}
 
 	flatConfigObj[configObjKey.toLowerCase()] = value;
+
+	// Keep the nested config tree in sync too. componentLoader (root components) and other
+	// nested-path readers derive behavior — e.g. a component's network port/protocol — from
+	// getConfigObj()'s tree, not the flattened map, so an override that only touched
+	// flatConfigObj was invisible to them (the on-disk shape kept winning regardless of
+	// setProperty()).
+	if (configObj === undefined) configObj = {};
+	const pathSegments = configObjKey.split('_');
+	let node = configObj;
+	for (let i = 0; i < pathSegments.length - 1; i++) {
+		const segment = pathSegments[i];
+		if (typeof node[segment] !== 'object' || node[segment] === null) node[segment] = {};
+		node = node[segment];
+	}
+	node[pathSegments[pathSegments.length - 1]] = value;
 }
 
 /**
