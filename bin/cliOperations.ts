@@ -389,9 +389,16 @@ async function refreshExpiredOperationToken(
  * @param skipResponseLog By default, the response is logged to the console. Set this to true to skip logging it, which can be useful for sensitive responses like login calls!
  * @returns {Promise<void>}
  */
-async function cliOperations(req: any, skipResponseLog = false) {
-	require('dotenv').config();
-
+/**
+ * Resolve the transport options for a CLI operation request: a remote target URL (with auth) when
+ * one is configured (`target=`, env, or a saved `last_target`), otherwise the local domain socket.
+ * Returns the `options` object ready for `httpRequest` (method + Content-Type, and an Authorization
+ * header for remote targets, refreshing an expired operation token when possible) plus the resolved
+ * `target` (undefined for a local connection). Exits the process if a local connection is required
+ * but Harper is not running or has no domain socket. Shared by `cliOperations` and the CLI's
+ * streaming `get_backup` download so both reach local and remote servers the same way.
+ */
+export async function resolveRequestOptions(req: any): Promise<{ options: any; target: any }> {
 	const allCredentials = loadCredentials();
 	const rawTarget = resolveTarget(req, allCredentials);
 	// Userinfo is a transport credential, and `normalizeTarget` strips it so the resolved target can
@@ -434,81 +441,93 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			process.exit(1);
 		}
 	}
-	await PREPARE_OPERATION[req.operation]?.(req);
-	try {
-		let options = target ?? {
-			protocol: 'http:',
-			socketPath: getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
-		};
-		options.method = 'POST';
-		options.headers = { 'Content-Type': 'application/json' };
-		options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
-		// Authentication precedence: explicitly configured credentials (dedicated args, URL
-		// userinfo, env vars) beat everything, then env-var tokens, then the saved `harper login`
-		// token, and only then the legacy `username=`/`password=` payload fallback below. The
-		// tokens must outrank that fallback: for add_user/alter_user those args are the credentials
-		// of the user being created/altered, so treating them as auth would authenticate as a user
-		// who doesn't exist yet (or as the wrong identity) instead of using the admin's session.
-		const transportCredentials = target ? resolveTransportCredentials(req, urlCredentials) : undefined;
-		if (transportCredentials) {
-			options.headers.Authorization = basicAuthHeader(transportCredentials.username, transportCredentials.password);
-		} else if (target) {
-			// Bearer-token auth, for remote targets ONLY. A local operation goes over the domain
-			// socket, which the server trusts via `bypassLocalAuth` — but that bypass is an
-			// `else if` on "no Authorization header present" (security/auth.ts), so attaching a
-			// Bearer token to a local request opts out of the trust and gets validated instead,
-			// 401ing on a token minted for some other cluster. Since these env vars are meant to
-			// persist across a whole CI job (or a developer's shell), an ungated read here would
-			// break every local `harper` command run in that environment.
-			//
-			// Env-var tokens (for CI/CD — see `harper login --for-ci`) take precedence over the
-			// stored ~/.harperdb/credentials.json entry: they're an explicit per-invocation override
-			// that needs no prior `harper login` on the runner. A token refreshed from env vars is
-			// used in-memory only (there's no file to write back to); a token refreshed from the
-			// credentials file is persisted as before.
-			//
-			// Whichever namespace supplies a token owns both halves. Resolving them independently
-			// would let `HARPER_CLI_OPERATION_TOKEN` from one user pair with
-			// `CLI_TARGET_REFRESH_TOKEN` from another: commands would run as the first identity
-			// until its operation token expired, then silently continue as the second. `login.ts`
-			// selects its username/password namespace as a unit for exactly this reason.
-			const tokenPrefix = ['HARPER_CLI', 'CLI_TARGET'].find(
-				(prefix) =>
-					process.env[`${prefix}_OPERATION_TOKEN`] !== undefined || process.env[`${prefix}_REFRESH_TOKEN`] !== undefined
+	let options = target ?? {
+		protocol: 'http:',
+		socketPath: getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+	};
+	options.method = 'POST';
+	options.headers = { 'Content-Type': 'application/json' };
+	options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
+	// Authentication precedence: explicitly configured credentials (dedicated args, URL
+	// userinfo, env vars) beat everything, then env-var tokens, then the saved `harper login`
+	// token, and only then the legacy `username=`/`password=` payload fallback below. The
+	// tokens must outrank that fallback: for add_user/alter_user those args are the credentials
+	// of the user being created/altered, so treating them as auth would authenticate as a user
+	// who doesn't exist yet (or as the wrong identity) instead of using the admin's session.
+	const transportCredentials = target ? resolveTransportCredentials(req, urlCredentials) : undefined;
+	if (transportCredentials) {
+		options.headers.Authorization = basicAuthHeader(transportCredentials.username, transportCredentials.password);
+	} else if (target) {
+		// Bearer-token auth, for remote targets ONLY. A local operation goes over the domain
+		// socket, which the server trusts via `bypassLocalAuth` — but that bypass is an
+		// `else if` on "no Authorization header present" (security/auth.ts), so attaching a
+		// Bearer token to a local request opts out of the trust and gets validated instead,
+		// 401ing on a token minted for some other cluster. Since these env vars are meant to
+		// persist across a whole CI job (or a developer's shell), an ungated read here would
+		// break every local `harper` command run in that environment.
+		//
+		// Env-var tokens (for CI/CD — see `harper login --for-ci`) take precedence over the
+		// stored ~/.harperdb/credentials.json entry: they're an explicit per-invocation override
+		// that needs no prior `harper login` on the runner. A token refreshed from env vars is
+		// used in-memory only (there's no file to write back to); a token refreshed from the
+		// credentials file is persisted as before.
+		//
+		// Whichever namespace supplies a token owns both halves. Resolving them independently
+		// would let `HARPER_CLI_OPERATION_TOKEN` from one user pair with
+		// `CLI_TARGET_REFRESH_TOKEN` from another: commands would run as the first identity
+		// until its operation token expired, then silently continue as the second. `login.ts`
+		// selects its username/password namespace as a unit for exactly this reason.
+		const tokenPrefix = ['HARPER_CLI', 'CLI_TARGET'].find(
+			(prefix) =>
+				process.env[`${prefix}_OPERATION_TOKEN`] !== undefined || process.env[`${prefix}_REFRESH_TOKEN`] !== undefined
+		);
+		const envOperationToken = tokenPrefix ? process.env[`${tokenPrefix}_OPERATION_TOKEN`]?.trim() : undefined;
+		const envRefreshToken = tokenPrefix ? process.env[`${tokenPrefix}_REFRESH_TOKEN`]?.trim() : undefined;
+		// A namespace that is set but blank is a broken CI secret, not a request to fall back to
+		// whatever the developer last logged in as — say so rather than switching identity silently.
+		if (tokenPrefix && !envOperationToken && !envRefreshToken) {
+			console.error(
+				`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved login credentials.`
 			);
-			const envOperationToken = tokenPrefix ? process.env[`${tokenPrefix}_OPERATION_TOKEN`]?.trim() : undefined;
-			const envRefreshToken = tokenPrefix ? process.env[`${tokenPrefix}_REFRESH_TOKEN`]?.trim() : undefined;
-			// A namespace that is set but blank is a broken CI secret, not a request to fall back to
-			// whatever the developer last logged in as — say so rather than switching identity silently.
-			if (tokenPrefix && !envOperationToken && !envRefreshToken) {
-				console.error(
-					`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved login credentials.`
-				);
-			}
+		}
 
-			let tokens: { operation_token?: string; refresh_token?: string } | null = null;
-			let persistKey: string | null = null; // non-null => persist a refreshed operation token back to the file
-			if (envOperationToken || envRefreshToken) {
-				tokens = { operation_token: envOperationToken, refresh_token: envRefreshToken };
-			} else if (allCredentials?.targets) {
-				persistKey = target.resolvedTarget;
-				tokens = allCredentials.targets[persistKey] ?? null;
-			}
+		let tokens: { operation_token?: string; refresh_token?: string } | null = null;
+		let persistKey: string | null = null; // non-null => persist a refreshed operation token back to the file
+		if (envOperationToken || envRefreshToken) {
+			tokens = { operation_token: envOperationToken, refresh_token: envRefreshToken };
+		} else if (allCredentials?.targets) {
+			persistKey = target.resolvedTarget;
+			tokens = allCredentials.targets[persistKey] ?? null;
+		}
 
-			if (tokens?.operation_token || tokens?.refresh_token) {
-				await refreshExpiredOperationToken(options, tokens, persistKey);
-				if (tokens.operation_token) {
-					options.headers.Authorization = `Bearer ${tokens.operation_token}`;
-				}
+		if (tokens?.operation_token || tokens?.refresh_token) {
+			await refreshExpiredOperationToken(options, tokens, persistKey);
+			if (tokens.operation_token) {
+				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
 		}
-		// Legacy fallback for operations where `username=`/`password=` genuinely ARE the caller's
-		// credentials (e.g. `create_table username= password=`) and nothing else is configured.
-		// Both are required — a lone `username=` (as in `drop_user username=bob`) is payload, not
-		// a credential.
-		if (target && !options.headers.Authorization && req.username && req.password) {
-			options.headers.Authorization = basicAuthHeader(req.username, req.password);
-		}
+	}
+	// Legacy fallback for operations where `username=`/`password=` genuinely ARE the caller's
+	// credentials (e.g. `create_table username= password=`) and nothing else is configured.
+	// Both are required — a lone `username=` (as in `drop_user username=bob`) is payload, not
+	// a credential.
+	if (target && !options.headers.Authorization && req.username && req.password) {
+		options.headers.Authorization = basicAuthHeader(req.username, req.password);
+	}
+	return { options, target };
+}
+
+async function cliOperations(req: any, skipResponseLog = false) {
+	require('dotenv').config();
+
+	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
+	// `auth_username=`/`auth_password=` pair, which resolveRequestOptions throws on) is mapped to the
+	// same console.error + process.exit(1) as every other failure below, rather than escaping as an
+	// unhandled rejection. `target` is declared out here so the catch can still reference it.
+	let options: any, target: any;
+	try {
+		({ options, target } = await resolveRequestOptions(req));
+		await PREPARE_OPERATION[req.operation]?.(req);
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the
 		// legacy JSON deploy if it predates 5.1. Local (domain-socket) deploys always

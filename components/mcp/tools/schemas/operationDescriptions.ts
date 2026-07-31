@@ -60,6 +60,9 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// list_deployments: components/deploymentOperations.ts:50 — Deployment history with filtering and pagination.
 	list_deployments:
 		'Lists deployments from system.hdb_deployment with optional filtering by project, status, and date range, plus pagination.',
+	// list_backups: dataLayer/rocksdbBackup.ts (listBackups) — Managed RocksDB backup metadata for a database.
+	list_backups:
+		'Lists the managed RocksDB directory backups for a database (id, timestamp, size, file count). Requires super_user; RocksDB databases only.',
 
 	// ─── DEFAULT_ALLOW: search_* ──────────────────────────────────────────
 	// search_by_conditions: dataLayer/search.ts:6 — Multi-condition search with comparators.

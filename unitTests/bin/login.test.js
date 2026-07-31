@@ -9,6 +9,22 @@ const { normalizeTarget } = require('#src/bin/cliCredentials');
 const inquirer = require('inquirer');
 
 describe('Login', () => {
+	// login() persists via saveCredentials() to `${getHomeDir()}/.harperdb/credentials.json`. Isolate
+	// HOME for the whole suite so these tests never write to (or clobber the last_target of) the
+	// developer's real ~/.harperdb/credentials.json.
+	const isolatedHome = path.join(os.tmpdir(), `harper-test-login-home-${Date.now()}`);
+	let savedHome;
+	before(() => {
+		savedHome = process.env.HOME;
+		process.env.HOME = isolatedHome;
+		fs.mkdirSync(path.join(isolatedHome, '.harperdb'), { recursive: true });
+	});
+	after(() => {
+		if (savedHome === undefined) delete process.env.HOME;
+		else process.env.HOME = savedHome;
+		fs.rmSync(isolatedHome, { recursive: true, force: true });
+	});
+
 	describe('url normalization', () => {
 		it('should add https:// and port 9925 to a domain', () => {
 			assert.strictEqual(normalizeTarget('example.com'), 'https://example.com:9925/');
