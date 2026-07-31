@@ -17,6 +17,14 @@ import hdbLogger from '../utility/logging/harper_logger.ts';
 // Backstop interval; also catches token expiry, which is not event-signaled. Overridable for tests.
 const RECHECK_INTERVAL_MS = Number(process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS) || 30_000;
 
+// Bounds how long a caller-supplied terminate/revoke may hold the serialized sweep before being
+// treated as a failure (same fail-closed retry as a throw/rejection). The default terminate settles
+// long before this — it only ever engages for a caller-supplied `revoke` that hangs. Read fresh per
+// call rather than cached at module load, so tests can override it without a require-cache reset.
+function terminateTimeoutMs(): number {
+	return Number(process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS) || 5_000;
+}
+
 interface LiveSubscription {
 	username: string;
 	/** JWT `exp` (seconds since epoch) of the credential the subscription was opened with, if any. */
@@ -28,7 +36,31 @@ interface LiveSubscription {
 }
 
 function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	try {
+		return error instanceof Error ? error.message : String(error);
+	} catch {
+		// a thrown value whose own String()/toString() throws (e.g. Object.create(null)) must not turn
+		// a contained failure into a new one — this runs inside a sweep catch handler with no outer guard.
+		return '<error message unavailable>';
+	}
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(message)), ms);
+		// don't let a pending timeout keep the process alive
+		(timer as any).unref?.();
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			}
+		);
+	});
 }
 
 const registry = new Set<LiveSubscription>();
@@ -79,13 +111,16 @@ function stopIfIdle(): void {
  * stay per subscriber even once feed delivery is shared, so the registry can't assume it owns the
  * subscription object or that only one registrant will ever mutate it.
  *
- * Two invariants a `revoke` caller must uphold, not enforced by this module: (1) it owns the entry's
- * lifetime end-to-end — nothing here detects a leaked registration, so a caller that forgets
+ * Three invariants a `revoke` caller must uphold, not enforced by this module: (1) it owns the
+ * entry's lifetime end-to-end — nothing here detects a leaked registration, so a caller that forgets
  * `unregister()` on some teardown path degrades sweep latency for every other tracked subscriber, not
  * just its own; (2) if it shares one feed (and one `recheck`) across subscribers, `recheck` must not
  * mutate state shared across them — `registerLiveSubscriptionForContext` in resources/Resource.ts
  * mutates `context.user` to the freshly-rechecked principal, which is safe only because each context
- * today belongs to exactly one subscriber.
+ * today belongs to exactly one subscriber; (3) `revoke` must be idempotent and safe to run concurrently
+ * with the caller's own teardown — a failed attempt is retried on the next sweep (see
+ * `claimAndTerminate`), and `unregister()` racing an in-flight `revoke` is only closed up to the point
+ * the await begins, not for the remainder of it.
  */
 export function registerLiveSubscription(opts: {
 	subscription: any;
@@ -143,20 +178,31 @@ export function registerLiveSubscription(opts: {
 
 /**
  * Remove `entry` and run its terminate/revoke, but only commit the removal once terminate actually
- * succeeds — and only if the caller hasn't already unregistered this entry itself (checked via
- * `registry.has`, not a delete-then-restore, so a failed attempt never revisits the entry within the
- * same sweep pass; it's simply left in place for the next one). This makes revocation genuinely
- * fail-closed: a `revoke` that throws or rejects (e.g. a shared-feed refcount release hitting a
- * transient backing-store error) leaves the entry registered instead of being forgotten, so the next
- * sweep retries — recheck fails the same way, so the retry converges once teardown succeeds. It also
- * means a `revoke`/default-terminate failure never masquerades as a successful revocation in the log.
- * `terminate` is awaited (it may be async) so a rejection is caught here rather than becoming an
- * unhandled rejection on the worker.
+ * settles successfully (or times out — see below) — and only if the caller hasn't already
+ * unregistered this entry itself (checked via `registry.has`, not a delete-then-restore, so a failed
+ * attempt never revisits the entry within the same sweep pass; it's simply left in place for the
+ * next one). This makes revocation fail-closed on *tracking*: a `revoke` that throws, rejects, or
+ * never settles (e.g. a shared-feed refcount release hitting a wedged backing store) leaves the entry
+ * registered instead of being forgotten, so the next sweep retries — recheck fails the same way, so
+ * the retry converges once teardown succeeds. The `info` log on success reports that terminate was
+ * *invoked without error*, not that delivery is provably stopped — the default terminate (no `revoke`
+ * supplied) still swallows its own errors internally, unchanged from #1414, so that guarantee is only
+ * as strong as it always was on the legacy path.
+ *
+ * `terminate` is raced against `terminateTimeoutMs()`: without a bound, a caller-supplied `revoke`
+ * that never settles would hold `sweeping` true forever (the `finally` in `sweep()` never runs),
+ * silently disabling re-authorization for every subscription on the worker, not just this entry's.
+ * `recheck` has the same unbounded-await shape but is registry-controlled Harper code; `revoke` is
+ * arbitrary caller code, which is the materially wider exposure this bound closes.
  */
 async function claimAndTerminate(entry: LiveSubscription, reason: string): Promise<boolean> {
 	if (!registry.has(entry)) return false; // the caller already unregistered this entry itself
 	try {
-		await entry.terminate();
+		await withTimeout(
+			Promise.resolve(entry.terminate()),
+			terminateTimeoutMs(),
+			`terminate timed out after ${terminateTimeoutMs()}ms`
+		);
 	} catch (error) {
 		hdbLogger.error?.(
 			`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}), will retry next sweep: ${errorMessage(error)}`

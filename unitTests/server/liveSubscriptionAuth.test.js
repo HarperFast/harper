@@ -296,6 +296,50 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 1, 'the entry is removed once the async revoke actually succeeds');
 		});
 
+		it('bounds a never-settling revoke so it cannot wedge the sweep, and the entry is retried next sweep', async () => {
+			const originalTimeout = process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
+			process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '30';
+			try {
+				const hangingSubscription = fakeSubscription();
+				const otherSubscription = fakeSubscription();
+				let hangingCalls = 0;
+				const hangingRevoke = () => {
+					hangingCalls++;
+					return new Promise(() => {}); // never settles
+				};
+				const otherRevoke = spyFn();
+				register({
+					subscription: hangingSubscription,
+					username: 'hangs-on-revoke',
+					authExpiresAt: 0,
+					recheck: async () => true,
+					revoke: hangingRevoke,
+				});
+				register({
+					subscription: otherSubscription,
+					username: 'other',
+					authExpiresAt: 0,
+					recheck: async () => true,
+					revoke: otherRevoke,
+				});
+				assert.strictEqual(_liveSubscriptionCount(), 2);
+
+				// Without the timeout bound, this await would never resolve — the whole point of the test.
+				await _sweepNow();
+
+				assert.strictEqual(hangingCalls, 1);
+				assert.strictEqual(otherRevoke.calls.length, 1, 'a hung revoke must not block other entries in the same sweep');
+				assert.strictEqual(
+					_liveSubscriptionCount(),
+					1,
+					'the hung entry stays registered for retry; the other is revoked'
+				);
+			} finally {
+				if (originalTimeout === undefined) delete process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
+				else process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = originalTimeout;
+			}
+		});
+
 		it('does not terminate an entry the caller already unregistered while its recheck was still in flight', async () => {
 			const subscription = fakeSubscription();
 			const revoke = spyFn();
