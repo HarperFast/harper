@@ -421,7 +421,9 @@ export async function migrateOnStart() {
 
 /**
  * Count records in a raw (encoding: false) store whose value lacks the 8-byte version prefix
- * (0x42 = first byte of a ms-epoch float64). Symbol keys are internal and skipped.
+ * (0x42 = first byte of a ms-epoch float64). Symbol keys are internal and skipped. First-byte
+ * classification is a heuristic: a prefix-less classic record can also lead with 0x42 (structure
+ * ref id 2) and would be undercounted — fine for the whole-table detection this report serves.
  */
 function countRecords(rawDbi): { records: number; unversioned: number } {
 	let records = 0;
@@ -633,7 +635,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
 			const copied = await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder);
 			if (copied?.firstVersioned !== undefined) {
-				const { firstVersioned, versionlessCount } = copied;
+				const { firstVersioned, versionlessKeys } = copied;
 				// Invariant tripwire (#2012): a versioned record must round-trip with its 8-byte
 				// version prefix. The full big-endian float64 is compared to the source version —
 				// a first-byte check alone is ambiguous, since a prefix-less classic record can
@@ -651,18 +653,26 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 							`records would lose versions and prototypes`
 					);
 				}
-				// Full verification sweep (harper#2012 ask #3): every migrated record must carry the
-				// version prefix except the (counted) version-less source records that were
-				// deliberately encoded plain. A raw first-byte scan needs no decode, so it is a
-				// cheap sequential pass over the freshly written CF.
+				// Full verification sweep (harper#2012 ask #3): every migrated record that had a source
+				// version must carry the prefix. Version-less source records are exempted by KEY, not
+				// by byte inspection — a plain classic body can also lead with 0x42 (structure ref
+				// id 2), so byte sniffing could misclassify them and throw spuriously. For versioned
+				// records the first-byte check suffices: a systemic prefix regression trips on the
+				// very first record (and the exact-header tripwire above already validated one).
 				const rawDbi = openRocksDb(targetPath, { name: key, encoding: false });
 				targetHandles.push(rawDbi);
-				const { unversioned } = countRecords(rawDbi);
-				if (unversioned !== versionlessCount) {
+				let unprefixed = 0;
+				let scanned = 0;
+				for (const { key: recordKey, value } of rawDbi.getRange({})) {
+					if (typeof recordKey === 'symbol') continue;
+					if (versionlessKeys.has(typeof recordKey === 'object' ? JSON.stringify(recordKey) : recordKey)) continue;
+					scanned++;
+					if (!value || value.length < 8 || value[0] !== 0x42) unprefixed++;
+				}
+				if (unprefixed > 0) {
 					throw new Error(
-						`Migration of ${sourceDatabase}/${key} left ${unversioned} record(s) without the version/metadata ` +
-							`prefix (expected ${versionlessCount} version-less source records) — records would lose ` +
-							`versions and prototypes`
+						`Migration of ${sourceDatabase}/${key} left ${unprefixed} of ${scanned} versioned record(s) without ` +
+							`the version/metadata prefix — records would lose versions and prototypes`
 					);
 				}
 			}
@@ -745,7 +755,9 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		let recordsCopied = 0;
 		let skippedRecord = 0;
 		let firstVersioned;
-		let versionlessCount = 0;
+		// keys (normalized for compound keys) of source records with no version, deliberately
+		// encoded plain — the verification sweep exempts them by key, never by byte sniffing
+		const versionlessKeys = new Set();
 		const MAX_RETRIES = 1000;
 		let retries = MAX_RETRIES;
 		let start = null;
@@ -789,7 +801,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								// Cleared even though the plain-encode hook would not consume stale globals:
 								// they may have leaked from a prior record whose encode was skipped or threw.
 								clearNextEncoding();
-								versionlessCount++;
+								versionlessKeys.add(typeof key === 'object' ? JSON.stringify(key) : key);
 							}
 							written = encodeBlobsWithFilePath(
 								() => targetDbi.put(key, value, version),
@@ -855,7 +867,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 					}
 				}
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
-				return { firstVersioned, versionlessCount };
+				return { firstVersioned, versionlessKeys };
 			} catch (err) {
 				console.error(
 					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retries} retries left):`,
