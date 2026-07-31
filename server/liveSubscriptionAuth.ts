@@ -61,32 +61,45 @@ function stopIfIdle(): void {
 }
 
 /**
- * Register a live subscription for continuous re-authorization. The returned subscription's normal
- * teardown (end()/close) automatically unregisters it, so callers don't need to.
+ * Register a live subscription for continuous re-authorization.
+ *
+ * If `revoke` is omitted, behavior matches #1414 exactly: terminate defaults to
+ * end()/close()/emit('close') on `subscription`, and the subscription's own teardown (end()/close)
+ * automatically unregisters it.
+ *
+ * If `revoke` is supplied, it is used as the entry's terminate instead, and the subscription object
+ * is left untouched (no `end` wrapping, no 'close' listener) — the caller unregisters through the
+ * returned handle instead. This is the seam a feed shared by many subscribers needs: revocation must
+ * stay per subscriber even once feed delivery is shared, so the registry can't assume it owns the
+ * subscription object or that only one registrant will ever mutate it.
  */
 export function registerLiveSubscription(opts: {
 	subscription: any;
 	username: string;
 	authExpiresAt?: number;
 	recheck: () => Promise<boolean>;
-}): void {
-	const { subscription, username, authExpiresAt, recheck } = opts;
-	if (!subscription || typeof subscription !== 'object' || subscription.closed) return;
+	revoke?: () => void;
+}): { unregister: () => void } {
+	const { subscription, username, authExpiresAt, recheck, revoke } = opts;
+	const noop = { unregister: () => {} };
+	if (!subscription || typeof subscription !== 'object' || subscription.closed) return noop;
 
 	const entry: LiveSubscription = {
 		username,
 		authExpiresAt,
 		recheck,
-		terminate: () => {
-			// end() removes the subscription from the broadcast loop and closes its iterable queue.
-			try {
-				if (subscription.end) subscription.end();
-				else if (subscription.close) subscription.close();
-				else subscription.emit?.('close');
-			} catch {
-				/* ignore */
-			}
-		},
+		terminate:
+			revoke ??
+			(() => {
+				// end() removes the subscription from the broadcast loop and closes its iterable queue.
+				try {
+					if (subscription.end) subscription.end();
+					else if (subscription.close) subscription.close();
+					else subscription.emit?.('close');
+				} catch {
+					/* ignore */
+				}
+			}),
 	};
 	registry.add(entry);
 
@@ -94,19 +107,25 @@ export function registerLiveSubscription(opts: {
 		registry.delete(entry);
 		stopIfIdle();
 	};
-	// Both transports ultimately call end() on normal teardown (MQTT unsubscribe/disconnect; SSE close
-	// is wired to end()); wrap it so a closed stream never leaks a registry entry. Also listen for
-	// 'close' to cover any iterable that closes without an end().
-	const originalEnd = typeof subscription.end === 'function' ? subscription.end.bind(subscription) : null;
-	if (originalEnd) {
-		subscription.end = function (...args: any[]) {
-			unregister();
-			return originalEnd(...args);
-		};
+
+	if (!revoke) {
+		// Both transports ultimately call end() on normal teardown (MQTT unsubscribe/disconnect; SSE close
+		// is wired to end()); wrap it so a closed stream never leaks a registry entry. Also listen for
+		// 'close' to cover any iterable that closes without an end(). Skipped when `revoke` is supplied:
+		// the caller owns unregistration, and a subscription shared by many subscribers must not be
+		// mutated once per registrant.
+		const originalEnd = typeof subscription.end === 'function' ? subscription.end.bind(subscription) : null;
+		if (originalEnd) {
+			subscription.end = function (...args: any[]) {
+				unregister();
+				return originalEnd(...args);
+			};
+		}
+		subscription.on?.('close', unregister);
 	}
-	subscription.on?.('close', unregister);
 
 	ensureStarted();
+	return { unregister };
 }
 
 async function sweep(): Promise<void> {
@@ -145,4 +164,9 @@ async function sweep(): Promise<void> {
 /** Test-only: current number of tracked subscriptions. */
 export function _liveSubscriptionCount(): number {
 	return registry.size;
+}
+
+/** Test-only: run a sweep synchronously, bypassing the interval/ITC triggers. */
+export function _sweepNow(): Promise<void> {
+	return sweep();
 }
