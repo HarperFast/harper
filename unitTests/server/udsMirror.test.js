@@ -459,21 +459,6 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 	// files (the production bug this test suite guards against).
 
 	describe('registerUdsCleanupPaths + recordUdsBindSuccess + cleanupUdsFiles', () => {
-		it('recordUdsBindSuccess logs a warning instead of failing silently when statSync throws', () => {
-			const harperLogger = require('#src/utility/logging/harper_logger');
-			const warnStub = sandbox.stub(harperLogger, 'warn');
-			const sockPath = path.join(TEST_SOCKETS_DIR, 'stat-fails.sock');
-			const yamlPath = path.join(TEST_SOCKETS_DIR, 'stat-fails.yaml');
-			registerUdsCleanupPaths(sockPath, yamlPath);
-			// Nothing was ever created at sockPath, so the stat inside recordUdsBindSuccess throws —
-			// standing in for the "just bound but statSync still fails" case this guards against.
-
-			recordUdsBindSuccess(sockPath);
-
-			assert.ok(warnStub.calledOnce, 'should log a warning instead of leaving no trace');
-			assert.ok(warnStub.firstCall.args[0].includes(sockPath));
-		});
-
 		it('normal shutdown: removes the socket and yaml this worker bound and recorded', () => {
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'test.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'test.yaml');
@@ -558,13 +543,15 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			assert.ok(fs.existsSync(yamlPath), 'an unconfirmed bind must not be treated as owned');
 		});
 
-		it('retracts a stale yaml when nothing at all is at the socket path (a non-path-too-long bind failure)', () => {
-			// SNICallback.ready writes the yaml independently of whether listen() ever succeeds (see
-			// the module-level comment on failedUdsPaths). A bind failure other than the overlong-path
-			// precheck — the only one markUdsBindFailed() covers, see its doc comment — leaves no
-			// socket file and no recorded identity for this entry. With nothing on disk to protect,
-			// this is the same "no live owner" case markUdsBindFailed() already treats as safe to
-			// retract, so cleanupUdsFiles() must not leak it either.
+		it('leaves a yaml in place when no socket is at that path either, unlike markUdsBindFailed', () => {
+			// Deliberately asymmetric with markUdsBindFailed's "absent is safe to retract": that
+			// function's only caller runs synchronously before any bind attempt, with no window for
+			// anyone else to be mid-flight. This function's second call (process.on('exit')) can land
+			// seconds after the first, while a concurrently-booting replacement (on non-overlapping
+			// restart platforms, started right after this worker's SHUTDOWN) may have already written
+			// its own fresh yaml without having bound its socket yet — 'absent' here doesn't reliably
+			// mean "no live owner." A stale yaml with no bind failure to explain it is left for
+			// markUdsBindFailed or the next full process start's cleanupSocketsDirectory() sweep.
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.yaml');
 			fs.writeFileSync(yamlPath, 'stale: metadata\n');
@@ -572,10 +559,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			registerUdsCleanupPaths(sockPath, yamlPath);
 			cleanupUdsFiles();
 
-			assert.ok(
-				!fs.existsSync(yamlPath),
-				'a yaml with no live socket anywhere should be retracted, not leaked forever'
-			);
+			assert.ok(fs.existsSync(yamlPath), 'an absent socket must not be treated as safe to retract here');
 		});
 
 		it('cleanupUdsFiles does not throw when files are already gone (ENOENT)', () => {
@@ -664,7 +648,12 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 	// ─── cleanupSocketsDirectory ──────────────────────────────────────────────
 
 	describe('cleanupSocketsDirectory', () => {
-		it('removes all files in the sockets directory', () => {
+		it('removes all files in the sockets directory, unconditionally (no TLS_UNIXDOMAINSOCKETS gate)', () => {
+			// The sockets directory is Harper-owned and only ever holds mirror files, so a crash that
+			// left files behind while UDS was enabled must still be cleared even if the operator has
+			// since turned the feature off (including disabling it *because of* a mirror problem) —
+			// the sweep must not inherit the current config's gate. No env stubbing needed to prove
+			// this: the function no longer reads that config at all.
 			const socketsDir = path.join(env.getHdbBasePath(), 'sockets');
 			fs.mkdirSync(socketsDir, { recursive: true });
 			fs.writeFileSync(path.join(socketsDir, '0-9926.sock'), '');
@@ -674,26 +663,6 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			cleanupSocketsDirectory();
 
 			assert.strictEqual(fs.readdirSync(socketsDir).length, 0, 'sockets dir should be empty');
-			fs.rmdirSync(socketsDir);
-		});
-
-		it('sweeps crash-stale files even when this boot has since disabled UDS', () => {
-			// The sockets directory is Harper-owned and only ever holds mirror files, so a crash
-			// that left files behind while UDS was enabled must still be cleared even if the
-			// operator has since turned the feature off (including disabling it *because of* a
-			// mirror problem) — the sweep must not inherit the current config's gate.
-			const socketsDir = path.join(env.getHdbBasePath(), 'sockets');
-			fs.mkdirSync(socketsDir, { recursive: true });
-			fs.writeFileSync(path.join(socketsDir, '0-9926.sock'), '');
-
-			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(undefined);
-			cleanupSocketsDirectory();
-
-			assert.strictEqual(
-				fs.readdirSync(socketsDir).length,
-				0,
-				'stale files should be swept regardless of the current UDS setting'
-			);
 			fs.rmdirSync(socketsDir);
 		});
 

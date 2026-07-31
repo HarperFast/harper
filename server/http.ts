@@ -162,11 +162,16 @@ export function cleanupUdsFiles() {
 		// coincidentally re-match a path it no longer has any claim to; clearing it here makes a
 		// repeat call a guaranteed no-op instead of a second chance to delete a stranger's files.
 		entry.identity = undefined;
-		if (ownership === 'foreign') continue; // a replacement (or later generation) owns this pair now
-		// 'owned' (this worker's own live pair) and 'absent' (nothing currently at this path, e.g.
-		// a bind that failed for a reason markUdsBindFailed doesn't cover — see its doc comment —
-		// after SNICallback.ready had already written the yaml) are both safe to retract: neither
-		// leaves a live owner's files untouched.
+		// Unlike markUdsBindFailed (where 'absent' is genuinely safe — its only caller runs
+		// synchronously before any bind attempt, with no window for anyone else to be mid-flight),
+		// this function's second call (process.on('exit')) can land seconds after the first, while
+		// a concurrently-booting replacement — on the non-overlapping-restart platforms, started
+		// right after this worker's SHUTDOWN, not after it fully exits — may have already written
+		// its own fresh yaml (SNICallback.ready resolves independently of its bind) without having
+		// bound its socket yet. Treating that window's 'absent' as retractable would delete the
+		// replacement's yaml out from under it. Only 'owned' is safe here; a stale yaml this worker
+		// never bound (or no longer owns) is left for markUdsBindFailed or the startup sweep.
+		if (ownership !== 'owned') continue;
 		try {
 			unlinkSync(entry.socketPath);
 		} catch {}
