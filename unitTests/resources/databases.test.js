@@ -54,6 +54,26 @@ describe('table() randomAccessFields directive', () => {
 	});
 });
 
+describe('table() compression', () => {
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	// storage.compression is an LMDB per-value descriptor ({ startingOffset, threshold, ... }).
+	// rocksdb-js takes an algorithm name under the same option name and rejects anything else,
+	// so forwarding the descriptor verbatim fails every table open.
+	it('opens the primary store with lz4, not the LMDB compression descriptor', function () {
+		const CompressionTable = table({
+			table: 'CompressionDefault',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		if (!(CompressionTable.primaryStore instanceof RocksDatabase)) return this.skip();
+		assert.strictEqual(CompressionTable.primaryStore.compression?.algorithm, 'lz4');
+	});
+});
+
 describe('schemaDefined backfill on replicas missing the flag', () => {
 	const TABLE = 'SchemaDefinedBackfillTest';
 	const DB = 'test';
