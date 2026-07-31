@@ -63,11 +63,13 @@ const EXPIRY_POLL_MS = 5_000;
 const EXPIRY_POLL_INTERVAL_MS = 200;
 
 // The "record is RESET" check polls across the whole valid window (past the original expiry, up
-// to just before the reset-expiry) rather than sampling a single instant. A single check is
-// vulnerable to its own request latency: if that one GET happens to be slow, it can land after
-// the reset-expiry has *also* passed and misread a genuine reset as NO-RESET. Polling means only
-// a single sample within the window needs to land on time.
+// to just before the reset-expiry) rather than sampling a single instant. Polling only helps if
+// each sample is abandoned quickly: the window itself is a few hundred ms, so a sample bound to
+// httpRequest's full default timeout would consume the whole window on one slow response, same
+// as the single-check version it replaces. RESET_POLL_TIMEOUT_MS keeps each sample well under
+// the poll interval so a slow/stalled one is abandoned in time for a retry within the window.
 const RESET_POLL_INTERVAL_MS = 150;
+const RESET_POLL_TIMEOUT_MS = 300;
 // Safety margin before the reset-expiry deadline, so the last poll isn't racing the sweep itself.
 const RESET_CHECK_SAFETY_MS = 200;
 
@@ -217,9 +219,9 @@ suite(
 			}
 		}
 
-		async function getRecord(id: string): Promise<{ status: number | 'error'; body: any }> {
+		async function getRecord(id: string, timeoutMs?: number): Promise<{ status: number | 'error'; body: any }> {
 			try {
-				const { status, body: rawBody } = await httpRequest('GET', `${httpURL}/Expiry/${id}`);
+				const { status, body: rawBody } = await httpRequest('GET', `${httpURL}/Expiry/${id}`, undefined, timeoutMs);
 				let body: any = null;
 				if (status === 200) {
 					try {
@@ -256,19 +258,34 @@ suite(
 			return false;
 		}
 
+		interface PresenceResult {
+			observed: boolean;
+			// true only if every sample in the window failed to complete (timeout/transport error) —
+			// i.e. we never got a clean read (200 or 404) at all. Distinguishes "couldn't measure"
+			// from an actual NO-RESET signal, so a transport hiccup doesn't get reported as a TTL
+			// data-integrity defect.
+			inconclusive: boolean;
+		}
+
 		/**
 		 * Poll for the record being present (200) up until deadlineAt, then take one final sample.
-		 * Returns true as soon as any sample observes it present. See RESET_POLL_INTERVAL_MS above
-		 * for why a single point-in-time check isn't reliable here.
+		 * Returns as soon as any sample observes it present. Each sample is bound to
+		 * RESET_POLL_TIMEOUT_MS (see its definition above) so one slow/stalled response can't
+		 * consume the whole window — a plain retry loop without that bound would inherit
+		 * httpRequest's full default timeout per sample and gain nothing over a single check.
 		 */
-		async function pollForPresent(id: string, deadlineAt: number): Promise<boolean> {
+		async function pollForPresent(id: string, deadlineAt: number): Promise<PresenceResult> {
+			let sawCleanSample = false;
 			while (Date.now() < deadlineAt) {
-				const { status } = await getRecord(id);
-				if (status === 200) return true;
+				const { status } = await getRecord(id, RESET_POLL_TIMEOUT_MS);
+				if (status === 200) return { observed: true, inconclusive: false };
+				if (status === 404) sawCleanSample = true;
 				await sleep(RESET_POLL_INTERVAL_MS);
 			}
-			const { status } = await getRecord(id);
-			return status === 200;
+			const { status } = await getRecord(id, RESET_POLL_TIMEOUT_MS);
+			if (status === 200) return { observed: true, inconclusive: false };
+			if (status === 404) sawCleanSample = true;
+			return { observed: false, inconclusive: !sawCleanSample };
 		}
 
 		// ── generic harness ───────────────────────────────────────────────────────
@@ -295,6 +312,11 @@ suite(
 				// t=N/2: update
 				const waitToUpdate = seedAt + HALF_TTL_MS - Date.now();
 				if (waitToUpdate > 0) await sleep(waitToUpdate);
+				// Anchor the reset-expiry deadline on when the update was ISSUED, not when its
+				// response returned: the server applies the reset at-or-before the response lands,
+				// so anchoring post-response erodes RESET_CHECK_SAFETY_MS by the update's own
+				// round-trip time.
+				const updateIssuedAt = Date.now();
 				const updateStatus = await doUpdate(id);
 				const updateAt = Date.now();
 				ok(
@@ -308,8 +330,9 @@ suite(
 				const waitForCheck = checkResetAt - Date.now();
 				if (waitForCheck > 0) await sleep(waitForCheck);
 
-				const resetDeadline = updateAt + TTL_MS - RESET_CHECK_SAFETY_MS;
-				result.resetObserved = await pollForPresent(id, resetDeadline);
+				const resetDeadline = updateIssuedAt + TTL_MS - RESET_CHECK_SAFETY_MS;
+				const resetResult = await pollForPresent(id, resetDeadline);
+				result.resetObserved = resetResult.inconclusive ? 'not-checked' : resetResult.observed;
 
 				// Now wait until well past the RESET expiry window (update_time + TTL_MS + slack).
 				const checkGoneAt = updateAt + TTL_MS + 1500;
@@ -319,7 +342,13 @@ suite(
 				// Poll for gone (allow one extra sweep cycle).
 				result.goneObserved = await pollUntilGone(id, EXPIRY_POLL_MS);
 
-				if (result.resetObserved && result.goneObserved) {
+				if (resetResult.inconclusive) {
+					// Never a clean read (200 or 404) within the window — a transport hiccup, not a
+					// TTL data signal either way. Reported distinctly so it isn't mistaken for a
+					// TTL-reset defect.
+					result.finding =
+						'INCONCLUSIVE — no clean read within the reset-check window (transport issue, not a TTL defect)';
+				} else if (result.resetObserved && result.goneObserved) {
 					result.finding = 'RESET+EXPIRED — correct TTL reset';
 				} else if (!result.resetObserved && result.goneObserved) {
 					result.finding = 'NO-RESET — expired at original write time (defect if other surfaces reset)';

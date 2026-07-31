@@ -40,20 +40,30 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 		headers: { get(name: string): string | null };
 	}
 
-	function getPath(path: string): Promise<SimpleResponse> {
+	function getPath(path: string, timeoutMs = 5_000): Promise<SimpleResponse> {
 		return new Promise((resolvePromise, reject) => {
 			const u = new URL(path, ctx.harper.httpURL);
-			const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname }, (res) => {
-				res.on('data', () => {}); // drain
-				res.on('end', () => {
-					strictEqual(res.statusCode, 200);
-					const headers = res.headers;
-					resolvePromise({
-						status: res.statusCode!,
-						headers: { get: (name: string) => (headers[name.toLowerCase()] as string) ?? null },
+			const req = http.request(
+				{ hostname: u.hostname, port: u.port, path: u.pathname + u.search, timeout: timeoutMs },
+				(res) => {
+					res.on('data', () => {}); // drain
+					res.on('error', reject);
+					res.on('end', () => {
+						try {
+							strictEqual(res.statusCode, 200);
+						} catch (err) {
+							reject(err);
+							return;
+						}
+						const headers = res.headers;
+						resolvePromise({
+							status: res.statusCode!,
+							headers: { get: (name: string) => (headers[name.toLowerCase()] as string) ?? null },
+						});
 					});
-				});
-			});
+				}
+			);
+			req.on('timeout', () => req.destroy(new Error(`GET ${path} timed out after ${timeoutMs}ms`)));
 			req.on('error', reject);
 			req.end();
 		});
@@ -77,7 +87,7 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 		yaml: string,
 		expected: string | null,
 		timeoutMs = 20_000
-	): Promise<Response> {
+	): Promise<SimpleResponse> {
 		await setStaticConfig(yaml);
 		const deadline = Date.now() + timeoutMs;
 		let last: string | null = null;
