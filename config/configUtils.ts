@@ -695,16 +695,24 @@ export function updateConfigObject(param: string, value: any) {
 	// nested-path readers derive behavior — e.g. a component's network port/protocol — from
 	// getConfigObj()'s tree, not the flattened map, so an override that only touched
 	// flatConfigObj was invisible to them (the on-disk shape kept winning regardless of
-	// setProperty()).
-	if (configObj === undefined) configObj = {};
-	const pathSegments = configObjKey.split('_');
-	let node = configObj;
-	for (let i = 0; i < pathSegments.length - 1; i++) {
-		const segment = pathSegments[i];
-		if (typeof node[segment] !== 'object' || node[segment] === null) node[segment] = {};
-		node = node[segment];
+	// setProperty()). Only mirror once a real config has been loaded — getConfigObj() treats
+	// configObj's falsiness as "not yet initialized" and lazily calls initConfig(), so creating
+	// an empty configObj here (before install writes the config file / initConfig ever runs)
+	// would permanently short-circuit that lazy init to an empty tree.
+	if (configObj !== undefined) {
+		const pathSegments = configObjKey.split('_');
+		let node = configObj;
+		for (let i = 0; i < pathSegments.length - 1; i++) {
+			const segment = pathSegments[i];
+			// Only auto-vivify a missing segment. An existing non-object value here is a legacy
+			// scalar shorthand for this key (e.g. `threads: 4`) — descending through it would
+			// silently replace that value with `{}`, discarding it out from under other readers.
+			if (node[segment] === undefined) node[segment] = {};
+			else if (typeof node[segment] !== 'object' || node[segment] === null) return;
+			node = node[segment];
+		}
+		node[pathSegments[pathSegments.length - 1]] = value;
 	}
-	node[pathSegments[pathSegments.length - 1]] = value;
 }
 
 /**

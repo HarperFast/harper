@@ -27,9 +27,13 @@ export { BOOT_PROPS_FILE_PATH };
 
 // Every param ever passed to setProperty() on this thread, in call order (so a later override
 // of the same param wins on replay). This is how a worker thread inherits its parent's in-process
-// config overrides — see applyInheritedConfigOverrides() and workerDataProvider registration in
-// server/threads/manageThreads.js. setProperty is installer/unit-test-only (see its docstring), so
-// this map stays small and is never touched on a normal production boot.
+// config overrides — see applyInheritedConfigOverrides()/reapplyAllOverrides() and the
+// workerDataProvider registration in server/threads/manageThreads.js. setProperty() isn't only
+// installer/unit-test code despite its docstring — dataLayer/harperBridge/lmdbBridge's
+// initializePaths.js and utility/lmdb/environmentUtility.ts call it at runtime with the resolved
+// `databases`/`storage.path` config on an LMDB-engine install, so this map (and the workerData
+// payload cloned from it on every worker/job spawn) can hold that full tree, not just test/install
+// bootstrap keys.
 const appliedOverrides = new Map<string, any>();
 let inheritedOverridesApplied = false;
 
@@ -98,15 +102,32 @@ export function getConfigOverrides(): Record<string, any> | undefined {
 /**
  * Replays the parent thread's config overrides (received via workerData) on THIS thread, so a
  * worker's effective config matches its parent's rather than silently falling back to whatever
- * is installed on disk. Applied once per thread, right after the on-disk config is read — see
- * initSync() — but reapplied on a forced re-init since that re-reads the whole config from disk
- * and would otherwise drop the inherited overrides.
+ * is installed on disk. Applied once per thread, right after the on-disk config is first read —
+ * see initSync(). A later forced re-init is handled separately by reapplyAllOverrides(), since by
+ * then these inherited values are already folded into appliedOverrides.
  */
 function applyInheritedConfigOverrides() {
 	const inherited = (workerData as any)?.configOverrides;
 	if (!inherited) return;
-	for (const propName in inherited) {
+	for (const propName of Object.keys(inherited)) {
 		setProperty(propName, inherited[propName]);
+	}
+}
+
+/**
+ * Replays every override ever applied on this thread (both inherited-from-parent and applied
+ * locally via setProperty) on top of the current config. A forced initSync() re-reads the whole
+ * config from disk, discarding anything setProperty had layered on top; without this, that reload
+ * would silently revert the thread to the on-disk config regardless of any overrides — the same
+ * defect applyInheritedConfigOverrides() closes for a worker's first boot, but for a reload on any
+ * thread, main included.
+ */
+function reapplyAllOverrides() {
+	if (appliedOverrides.size === 0) return;
+	// Snapshot first: setProperty() re-inserts into appliedOverrides as we iterate, and mutating a
+	// Map while iterating it live is unnecessary risk here for no benefit.
+	for (const [propName, value] of [...appliedOverrides]) {
+		setProperty(propName, value);
 	}
 }
 
@@ -149,12 +170,13 @@ export function initSync(force: boolean = false) {
 			if (configHdbRoot !== undefined) {
 				installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configHdbRoot;
 			}
-			// force implies the on-disk config was just re-read from scratch, which would otherwise
-			// silently drop overrides inherited from the parent thread — reapply them on top.
-			if (force || !inheritedOverridesApplied) {
+			if (!inheritedOverridesApplied) {
 				inheritedOverridesApplied = true;
 				applyInheritedConfigOverrides();
 			}
+			// force implies the on-disk config was just re-read from scratch, which would otherwise
+			// silently drop every override applied on this thread so far (inherited or local).
+			if (force) reapplyAllOverrides();
 		}
 	} catch (err) {
 		log.error(INIT_ERR);
