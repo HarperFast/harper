@@ -16,13 +16,19 @@ const {
 	rotateSharedEncodings,
 	isRotationScheduled,
 	resolveSharedPayload,
+	MAX_RETAINED_BYTES,
 } = require('#src/server/serverHelpers/sharedMessageEncoding');
 
-/** Mirrors the QoS 0 lookup-then-generate in server/mqtt.ts's outbound listener. */
+/**
+ * Mirrors the QoS 0 lookup-then-generate in server/mqtt.ts's outbound listener, including its
+ * `hits > 0` gate — a frame is only retained once a second subscriber has actually arrived.
+ */
 function shareFrame(encoding, version, topic, generateFrame) {
 	const existing = getSharedFrame(encoding, version, topic);
 	if (existing !== undefined) return existing;
-	return setSharedFrame(encoding, version, topic, generateFrame());
+	const frame = generateFrame();
+	if (encoding.hits > 0) setSharedFrame(encoding, version, topic, frame);
+	return frame;
 }
 
 // Content types registered only for these tests, so serializer invocations can be counted exactly.
@@ -336,6 +342,69 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 		assert.strictEqual(getSharedMessageEncoding('primitive', request).hits, 0);
 	});
 
+	// Time alone bounds how long an entry is held, not how much is held at once. Without the byte
+	// budget, a high-throughput single-subscriber topic would keep a whole rotation interval's worth
+	// of payloads live.
+	it('rotates early once retained bytes pass the budget', function () {
+		const BULKY_TYPE = 'application/x-shared-encoding-bulky';
+		const CHUNK = 1_000_000;
+		contentTypes.set(BULKY_TYPE, { serialize: () => Buffer.alloc(CHUNK), q: 1 });
+		try {
+			rotateSharedEncodings();
+			rotateSharedEncodings();
+			const request = subscriberRequest(BULKY_TYPE);
+			const first = { id: 'bulky-first' };
+			const firstEncoding = getSharedMessageEncoding(first, request);
+
+			// two budgets' worth of new messages forces two early rotations, which releases the first
+			const needed = Math.ceil((MAX_RETAINED_BYTES * 2) / CHUNK) + 2;
+			for (let i = 0; i < needed; i++) getSharedMessageEncoding({ id: 'bulky-' + i }, request);
+
+			assert.notStrictEqual(
+				getSharedMessageEncoding(first, request),
+				firstEncoding,
+				'byte pressure must release earlier entries rather than holding a whole interval'
+			);
+		} finally {
+			contentTypes.delete(BULKY_TYPE);
+			rotateSharedEncodings();
+			rotateSharedEncodings();
+		}
+	});
+
+	it('gives back an entry’s bytes when it is refilled, so the budget does not leak', function () {
+		const BULKY_TYPE = 'application/x-shared-encoding-bulky-refill';
+		const CHUNK = 1_000_000;
+		let failNext = true;
+		contentTypes.set(BULKY_TYPE, {
+			serialize() {
+				if (failNext) {
+					failNext = false;
+					throw new Error('first attempt fails');
+				}
+				return Buffer.alloc(CHUNK);
+			},
+			q: 1,
+		});
+		try {
+			rotateSharedEncodings();
+			rotateSharedEncodings();
+			const request = subscriberRequest(BULKY_TYPE);
+			const message = { id: 'refill-budget' };
+
+			// a synchronous throw on the first encode must leave nothing charged and nothing retained
+			assert.throws(() => getSharedMessageEncoding(message, request), /first attempt fails/);
+
+			const encoding = getSharedMessageEncoding(message, request);
+			assert.strictEqual(encoding.failed, false);
+			assert.strictEqual(encoding.bytes, CHUNK, 'the entry accounts for exactly what it holds');
+		} finally {
+			contentTypes.delete(BULKY_TYPE);
+			rotateSharedEncodings();
+			rotateSharedEncodings();
+		}
+	});
+
 	it('arms the rotation timer on the first retained entry, and stops it once nothing is retained', function () {
 		// drain whatever earlier tests retained so this starts from a known state
 		rotateSharedEncodings();
@@ -386,19 +455,29 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 });
 
 describe('sharedMessageEncoding – frame sharing', function () {
-	it('generates a frame once per key and reuses it', function () {
-		const encoding = getSharedMessageEncoding({ id: 8 }, subscriberRequest(COUNTED_TYPE));
+	// The retention policy the outbound listener applies: nothing is kept for a fan-out of one, and
+	// from the third subscriber on the frame is served from cache. A fan-out of exactly two pays two
+	// generates — the cost of not knowing the width in advance.
+	it('retains a frame from the second subscriber on, and reuses it thereafter', function () {
+		const message = { id: 8 };
+		const request = subscriberRequest(COUNTED_TYPE);
 		let generated = 0;
 		const generateFrame = () => {
 			generated++;
 			return Buffer.from('frame');
 		};
 
-		const first = shareFrame(encoding, 4, 'topic/a', generateFrame);
-		const second = shareFrame(encoding, 4, 'topic/a', generateFrame);
-
+		const first = shareFrame(getSharedMessageEncoding(message, request), 4, 'topic/a', generateFrame);
 		assert.strictEqual(generated, 1);
-		assert.strictEqual(first, second);
+		assert.strictEqual(getSharedFrame(getSharedMessageEncoding(message, request), 4, 'topic/a'), undefined);
+
+		const second = shareFrame(getSharedMessageEncoding(message, request), 4, 'topic/a', generateFrame);
+		assert.strictEqual(generated, 2, 'a fan-out of one must not have retained anything');
+
+		const third = shareFrame(getSharedMessageEncoding(message, request), 4, 'topic/a', generateFrame);
+		assert.strictEqual(generated, 2, 'from the third subscriber on the frame is shared');
+		assert.strictEqual(third, second);
+		assert.deepStrictEqual(first, second);
 	});
 
 	it('reports a miss without allocating, so the caller only builds the frame once', function () {

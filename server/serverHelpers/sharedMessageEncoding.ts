@@ -11,12 +11,18 @@ import { serializeMessage, getMessageSerializer } from './contentTypes.ts';
  * `hits` counts the subscribers after the first, so a caller can skip caching anything derived
  * from the payload until a fan-out is known to exist. `failed` is a distinct state from an
  * undefined `payload`, which a serializer can legitimately return (JSON of `undefined`).
+ * `bytes` is everything this entry holds — payload plus frames — and `retained` says whether those
+ * bytes are charged against the retention budget, which they are only while the entry is reachable
+ * from a generation. The two together are what make the budget an actual accounting rather than an
+ * estimate: charge on the way in, uncharge on refill, re-charge on promotion.
  */
 export interface SharedMessageEncoding {
 	serializer: Function;
 	payload: Buffer | string | Promise<Buffer | string> | undefined;
 	failed: boolean;
 	hits: number;
+	bytes: number;
+	retained: boolean;
 	frames: Map<number, Map<string, Buffer>> | undefined;
 	next: SharedMessageEncoding | undefined;
 }
@@ -49,7 +55,7 @@ const ROTATE_INTERVAL_MS = 10_000;
 // single-subscriber topics the interval's worth of payloads would all be live at once, for no
 // benefit. The byte budget puts a ceiling on that, at the cost of a fan-out that spans an early
 // rotation falling back to re-encoding — slower, never wrong.
-const MAX_RETAINED_BYTES = 4_000_000;
+export const MAX_RETAINED_BYTES = 4_000_000;
 let currentGeneration = new WeakMap<object, SharedMessageEncoding>();
 let previousGeneration = new WeakMap<object, SharedMessageEncoding>();
 // Rotation runs on a timer, not on a delivery counter: the bound has to hold when traffic stops,
@@ -79,15 +85,27 @@ export function isRotationScheduled(): boolean {
 }
 
 function retainedSize(payload: SharedMessageEncoding['payload']): number {
-	if (typeof payload === 'string') return payload.length;
-	return (payload as Buffer)?.byteLength ?? 0; // a pending promise is accounted for on resolution
+	// a pending promise is accounted for when it resolves
+	if (typeof payload === 'string') return Buffer.byteLength(payload);
+	return (payload as Buffer)?.byteLength ?? 0;
+}
+
+/** Add to an entry's footprint, and to the budget if this entry is currently retained. */
+function charge(encoding: SharedMessageEncoding, bytes: number) {
+	encoding.bytes += bytes;
+	if (encoding.retained) currentBytes += bytes;
 }
 
 function retain(message: object, encoding: SharedMessageEncoding) {
 	if (currentBytes >= MAX_RETAINED_BYTES) rotateSharedEncodings();
 	currentGeneration.set(message, encoding);
 	currentInserts++;
-	currentBytes += retainedSize(encoding.payload);
+	// charges the whole chain: on a promotion this re-charges everything the entry holds, since
+	// rotation zeroed the counter but the bytes are still live
+	for (let node = encoding; node !== undefined; node = node.next) {
+		node.retained = true;
+		currentBytes += node.bytes;
+	}
 	if (rotationTimer === undefined) {
 		rotationTimer = setInterval(rotateSharedEncodings, ROTATE_INTERVAL_MS);
 		rotationTimer.unref?.();
@@ -95,6 +113,9 @@ function retain(message: object, encoding: SharedMessageEncoding) {
 }
 
 function fill(encoding: SharedMessageEncoding, message: any, request: any) {
+	// whatever this entry was holding is being replaced, so give the bytes back before re-charging
+	if (encoding.retained) currentBytes -= encoding.bytes;
+	encoding.bytes = 0;
 	encoding.frames = undefined;
 	// Pessimistic: an entry is only valid once a payload is actually in hand. Set optimistically,
 	// a synchronous throw here would leave an already-retained entry claiming success with no
@@ -109,7 +130,7 @@ function fill(encoding: SharedMessageEncoding, message: any, request: any) {
 		// finished buffer rather than re-entering the async path
 		encoding.payload = (payload as Promise<Buffer | string>).then(
 			(resolved) => {
-				currentBytes += retainedSize(resolved);
+				charge(encoding, retainedSize(resolved));
 				return (encoding.payload = resolved);
 			},
 			(error) => {
@@ -120,6 +141,7 @@ function fill(encoding: SharedMessageEncoding, message: any, request: any) {
 				throw error;
 			}
 		);
+	else charge(encoding, retainedSize(payload));
 }
 
 function encode(message: any, request: any, serializer: Function): SharedMessageEncoding {
@@ -128,6 +150,8 @@ function encode(message: any, request: any, serializer: Function): SharedMessage
 		payload: undefined,
 		failed: false,
 		hits: 0,
+		bytes: 0,
+		retained: false,
 		frames: undefined,
 		next: undefined,
 	};
@@ -167,7 +191,11 @@ export function getSharedMessageEncoding(message: any, request?: any): SharedMes
 		last = encoding;
 		encoding = encoding.next;
 	} while (encoding !== undefined);
-	return (last.next = encode(message, request, serializer));
+	// a second content type on an already-retained message is retained with it, so it is charged too
+	const chained = encode(message, request, serializer);
+	chained.retained = last.retained;
+	if (chained.retained) currentBytes += chained.bytes;
+	return (last.next = chained);
 }
 
 /**
@@ -211,6 +239,6 @@ export function setSharedFrame(encoding: SharedMessageEncoding, version: number,
 	let byTopic = frames.get(version);
 	if (byTopic === undefined) frames.set(version, (byTopic = new Map()));
 	byTopic.set(topic, frame);
-	currentBytes += frame.byteLength;
+	charge(encoding, frame.byteLength);
 	return frame;
 }
