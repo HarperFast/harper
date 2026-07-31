@@ -75,7 +75,14 @@ export function translateMessages(oaiMessages: OAIMessageIn[]): Message[] {
 			? (m.content as Array<{ text: string }>).map((part) => part.text).join('')
 			: (m.content ?? '');
 		const base: Message = {
-			role: m.role as Message['role'],
+			// `developer` is OpenAI's successor to `system` (the API itself treats the two
+			// identically, converting `system` to `developer` on models that use the newer
+			// hierarchy). Harper's internal Message union carries the channel as `system`,
+			// which every provider adapter maps to its system-instruction slot — so the
+			// instruction's priority is preserved rather than degraded to `user`. Roles
+			// outside the union are rejected up front by validateChatRequest, so the cast
+			// below is over a vetted set.
+			role: m.role === 'developer' ? 'system' : (m.role as Message['role']),
 			content,
 		};
 		if (m.tool_calls?.length) {
@@ -153,6 +160,14 @@ export function validateChatRequest(body: OAIChatRequest): string | null {
 		const m = req.messages[i];
 		if (!m || typeof m !== 'object' || Array.isArray(m)) return `'messages[${i}]' must be an object`;
 		if (typeof m.role !== 'string') return `'messages[${i}].role' must be a string`;
+		// Closed set: translateMessages casts into Harper's Message union, so an
+		// unknown role must be a loud 400 here — previously it was cast through and
+		// provider adapters degraded it to 'user', silently changing its priority.
+		// 'developer' is accepted and carried as 'system' (see translateMessages);
+		// the deprecated 'function' role is deliberately not supported.
+		if (!['system', 'developer', 'user', 'assistant', 'tool'].includes(m.role)) {
+			return `'messages[${i}].role' must be one of 'system', 'developer', 'user', 'assistant', 'tool'`;
+		}
 		// OpenAI allows content parts: [{ type: 'text', text: '...' }, ...]. Harper's
 		// Message.content is a string, so those are flattened in translateMessages; reject
 		// shapes we cannot flatten rather than passing a non-string downstream.

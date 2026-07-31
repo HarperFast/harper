@@ -77,6 +77,51 @@ describe('translateMessages', () => {
 		assert.equal(result[0].toolCallId, 'call_1');
 	});
 
+	it("carries 'developer' as 'system' — same channel, priority preserved (review round 3)", () => {
+		// OpenAI treats developer as the successor to system (the API converts system to
+		// developer on newer models); Harper's internal union spells the channel 'system'.
+		// Before this mapping the cast passed 'developer' through and provider adapters
+		// degraded it to 'user'.
+		const result = translateMessages([
+			{ role: 'developer', content: 'be brief' },
+			{ role: 'user', content: 'q' },
+		]);
+		assert.equal(result[0].role, 'system');
+		assert.equal(result[0].content, 'be brief');
+		assert.equal(result[1].role, 'user');
+	});
+
+	it("a translated 'developer' message reaches Anthropic's system slot, not a user turn", async () => {
+		// Composed path: gateway translation → AnthropicBackend wire request. Guards the
+		// full property kris's finding names — the instruction's priority survives to the
+		// provider — against either layer drifting independently.
+		const { AnthropicBackend } = require('#src/components/anthropic/index');
+		const calls = [];
+		const fetch = async (url, init) => {
+			calls.push({ url, init });
+			return new Response(
+				JSON.stringify({
+					id: 'msg_x',
+					type: 'message',
+					role: 'assistant',
+					content: [{ type: 'text', text: 'ok' }],
+					stop_reason: 'end_turn',
+					usage: { input_tokens: 1, output_tokens: 1 },
+				}),
+				{ status: 200, headers: { 'Content-Type': 'application/json' } }
+			);
+		};
+		const backend = new AnthropicBackend({ apiKey: 'sk-ant-test', model: 'claude' }, fetch);
+		const messages = translateMessages([
+			{ role: 'developer', content: 'be brief' },
+			{ role: 'user', content: 'q' },
+		]);
+		await backend.generate(messages, { accounting: { tenantId: 't', app: '/test' } });
+		const sent = JSON.parse(calls[0].init.body);
+		assert.equal(sent.system, 'be brief');
+		assert.deepEqual(sent.messages, [{ role: 'user', content: 'q' }]);
+	});
+
 	it('flattens OpenAI content parts to the string Message.content expects', () => {
 		const result = translateMessages([
 			{
@@ -202,6 +247,13 @@ describe('validateChatRequest', () => {
 
 	it('accepts a well-formed request', () => {
 		assert.equal(validateChatRequest(ok), null);
+	});
+
+	it("accepts the 'developer' role and rejects roles outside the supported set", () => {
+		assert.equal(validateChatRequest({ messages: [{ role: 'developer', content: 'x' }] }), null);
+		// Previously any string role was cast through and silently degraded by adapters.
+		assert.match(validateChatRequest({ messages: [{ role: 'function', content: 'x' }] }), /role/);
+		assert.match(validateChatRequest({ messages: [{ role: 'moderator', content: 'x' }] }), /role/);
 	});
 
 	// Top-level routing/framing fields (review round 3): a non-string model silently ran
