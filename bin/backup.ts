@@ -86,13 +86,37 @@ export async function runBackupCommand(command: string): Promise<void> {
 }
 
 /**
- * Whether to route a backup command through the operation API rather than direct file access.
- * A configured target (explicit `target=`, env, or saved `last_target`) always implies a remote
- * server; otherwise we use the operation API only while the local instance is actually running
+ * Whether the target of a saved `last_target` is the local instance (localhost / loopback). A
+ * `harper login` against a local server saves `http://localhost:9925/`, which must NOT be treated as
+ * a remote target — otherwise the offline backup commands would try to reach a stopped local server
+ * instead of falling back to direct file access.
+ */
+function isLocalTarget(target: string): boolean {
+	try {
+		const url = new URL(target.includes('://') ? target : `http://${target}`);
+		const host = url.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+		return host === 'localhost' || host === '::1' || host.startsWith('127.');
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Whether to route a backup command through the operation API rather than direct file access. An
+ * explicit `target=`/env target, or a saved `last_target` pointing at a *remote* server, always
+ * implies talking to a server. A saved *local* `last_target` does not: the offline backup commands
+ * exist to work on local files while the local server is stopped, so a local/absent target falls
+ * through to the liveness check — the API only when the local instance is actually running
  * (`getHdbPid` verifies process liveness, so a stale pid file reads as stopped).
  */
 function useOperationApi(request: any): boolean {
-	if (request.target || process.env.HARPER_CLI_TARGET || process.env.CLI_TARGET || loadCredentials()?.last_target) {
+	const lastTarget = loadCredentials()?.last_target;
+	if (
+		request.target ||
+		process.env.HARPER_CLI_TARGET ||
+		process.env.CLI_TARGET ||
+		(lastTarget && !isLocalTarget(lastTarget))
+	) {
 		return true;
 	}
 	initConfig();
