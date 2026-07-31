@@ -75,6 +75,9 @@ const RESET_POLL_INTERVAL_MS = 150;
 const RESET_POLL_TIMEOUT_MS = 300;
 // Safety margin before the reset-expiry deadline, so the last poll isn't racing the sweep itself.
 const RESET_CHECK_SAFETY_MS = 200;
+// Below this much time left in the window, a sample is doomed before it starts (its timeout would
+// be clamped to a few ms) — skip it rather than counting a guaranteed failure toward "no clean read".
+const RESET_POLL_MIN_REMAINING_MS = 50;
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
@@ -264,14 +267,16 @@ suite(
 
 		interface PresenceResult {
 			observed: boolean;
-			// true only if every sample that completed *inside* the window (deadlineAt) failed to
-			// return a clean read (200 or 404) — i.e. we never got an in-window clean read at all.
-			// A 404 that lands after deadlineAt doesn't count as a clean sample: by the time it
-			// completed, the real reset-expiry (deadlineAt + RESET_CHECK_SAFETY_MS) may already have
-			// passed, so that 404 could reflect the record correctly expiring late rather than a
-			// genuine NO-RESET. Distinguishes "couldn't measure" from an actual NO-RESET signal, so a
-			// transport hiccup — or a sample that straddles the deadline — never gets reported as a
-			// TTL data-integrity defect.
+			// true only if every sample that completed inside the real reset-expiry (expiresAt)
+			// failed to return a clean read (200 or 404) — i.e. we never got a trustworthy read at
+			// all. A 404 that lands after expiresAt doesn't count as a clean sample: the record may
+			// have genuinely expired only *because* the check ran late, so that 404 could reflect a
+			// correct reset rather than a real NO-RESET. Note expiresAt, not the (earlier, more
+			// conservative) polling deadlineAt: a 404 landing between the two is still trustworthy —
+			// the real reset-expiry hasn't passed — and treating it as unclean would bias this check
+			// toward masking the very NO-RESET regressions it exists to catch. Distinguishes
+			// "couldn't measure" from an actual NO-RESET signal, so a transport hiccup never gets
+			// reported as a TTL data-integrity defect.
 			inconclusive: boolean;
 		}
 
@@ -280,15 +285,17 @@ suite(
 		 * before deadlineAt so no sample can start once the window has closed. Returns as soon as
 		 * any sample observes it present. Each attempt is capped at RESET_POLL_TIMEOUT_MS (see its
 		 * definition above) — and further capped to the remaining time near the deadline — so one
-		 * slow/stalled response can't consume the whole window or run past it.
+		 * slow/stalled response can't consume the whole window or run past it. Samples with less
+		 * than RESET_POLL_MIN_REMAINING_MS left are skipped rather than attempted: a timeout clamped
+		 * to a few ms is a guaranteed failure, not a real absence of a clean read.
 		 */
-		async function pollForPresent(id: string, deadlineAt: number): Promise<PresenceResult> {
+		async function pollForPresent(id: string, deadlineAt: number, expiresAt: number): Promise<PresenceResult> {
 			let sawCleanSample = false;
-			while (Date.now() < deadlineAt) {
+			while (deadlineAt - Date.now() >= RESET_POLL_MIN_REMAINING_MS) {
 				const remainingMs = deadlineAt - Date.now();
 				const { status } = await getRecord(id, Math.min(RESET_POLL_TIMEOUT_MS, remainingMs));
 				if (status === 200) return { observed: true, inconclusive: false };
-				if (status === 404 && Date.now() <= deadlineAt) sawCleanSample = true;
+				if (status === 404 && Date.now() <= expiresAt) sawCleanSample = true;
 				const sleepBudgetMs = deadlineAt - Date.now();
 				if (sleepBudgetMs <= 0) break;
 				await sleep(Math.min(RESET_POLL_INTERVAL_MS, sleepBudgetMs));
@@ -339,7 +346,8 @@ suite(
 				if (waitForCheck > 0) await sleep(waitForCheck);
 
 				const resetDeadline = updateIssuedAt + TTL_MS - RESET_CHECK_SAFETY_MS;
-				const resetResult = await pollForPresent(id, resetDeadline);
+				const resetExpiresAt = updateIssuedAt + TTL_MS;
+				const resetResult = await pollForPresent(id, resetDeadline, resetExpiresAt);
 				result.resetObserved = resetResult.inconclusive ? 'not-checked' : resetResult.observed;
 
 				// Now wait until well past the RESET expiry window (update_time + TTL_MS + slack).
