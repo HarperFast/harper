@@ -350,9 +350,12 @@ export function toEmbedResponse(vecs: Float32Array[], model: string, usage?: Tok
 			object: 'embedding',
 		})),
 		model,
+		// Embeddings have no completion side, so OpenAI reports the same count in both
+		// fields. Harper backends spell it `embeddingTokens` (with `promptTokens` as a
+		// fallback for backends that report it that way); mapping must be symmetric —
+		// a backend supplying only embeddingTokens must not leave prompt_tokens at 0.
 		usage: {
-			prompt_tokens: usage?.promptTokens ?? 0,
-			// OpenAI uses `embeddingTokens` aliased here; fall back to promptTokens.
+			prompt_tokens: usage?.embeddingTokens ?? usage?.promptTokens ?? 0,
 			total_tokens: usage?.embeddingTokens ?? usage?.promptTokens ?? 0,
 		},
 	};

@@ -445,4 +445,18 @@ describe('toEmbedResponse', () => {
 		assert.equal(resp.usage.prompt_tokens, 0);
 		assert.equal(resp.usage.total_tokens, 0);
 	});
+
+	it('reports embeddingTokens in BOTH prompt_tokens and total_tokens (review round 3)', () => {
+		// Embeddings have no completion side: OpenAI reports the same count twice.
+		// A backend supplying only embeddingTokens must not leave prompt_tokens at 0.
+		const resp = toEmbedResponse([new Float32Array(1)], 'm', { embeddingTokens: 7 });
+		assert.equal(resp.usage.prompt_tokens, 7);
+		assert.equal(resp.usage.total_tokens, 7);
+	});
+
+	it('falls back to promptTokens symmetrically for backends that report it that way', () => {
+		const resp = toEmbedResponse([new Float32Array(1)], 'm', { promptTokens: 5 });
+		assert.equal(resp.usage.prompt_tokens, 5);
+		assert.equal(resp.usage.total_tokens, 5);
+	});
 });

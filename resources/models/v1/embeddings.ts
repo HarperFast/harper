@@ -59,8 +59,10 @@ export class V1Embeddings extends Resource {
 		const opts = toEmbedOpts(raw as any);
 
 		try {
-			const vecs = await models.embed(input as string | string[], opts);
-			return toEmbedResponse(vecs, model);
+			// embedWithUsage, not embed(): the public facade drops the result-level usage
+			// backends report, and OpenAI clients read real token counts off the response.
+			const { vectors, usage } = await models.embedWithUsage(input as string | string[], opts);
+			return toEmbedResponse(vectors, model, usage);
 		} catch (err) {
 			return toOpenAIError(err);
 		}

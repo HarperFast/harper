@@ -36,6 +36,17 @@ describe('V1Embeddings.post', () => {
 		assert.equal(result.data.length, 1);
 	});
 
+	it('reports the backend-provided token usage, nonzero and in both fields (review round 3)', async () => {
+		// Previously every successful response reported zero usage: models.embed()
+		// drops ModelCallResult.usage. TestBackend reports embeddingTokens = input
+		// length, so this asserts the real count survives to the wire.
+		const input = 'hello world';
+		const result = await V1Embeddings.post(undefined, { input }, { user: SUPER_USER });
+		assert.equal(result.usage.prompt_tokens, input.length);
+		assert.equal(result.usage.total_tokens, input.length);
+		assert.ok(result.usage.prompt_tokens > 0);
+	});
+
 	it('awaits a Promise-wrapped body, matching REST.ts passing request.data unawaited', async () => {
 		const body = Promise.resolve({ input: ['a', 'b'] });
 		const result = await V1Embeddings.post(undefined, body, { user: SUPER_USER });
