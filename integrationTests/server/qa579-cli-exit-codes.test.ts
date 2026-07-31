@@ -333,6 +333,13 @@ suite('QA-579 CLI exit-code contract matrix (PR #1801)', (ctx: ContextWithHarper
 			0,
 			`Expected non-zero exit for a server-rejected operation, got ${result.status}. stderr: ${result.stderr}`
 		);
+		// A bare non-zero exit doesn't distinguish "clean server-rejected-operation error" (what PR
+		// #1801 guarantees) from a regression back to an unhandled rejection also exiting non-zero.
+		ok(combined.includes('NoSuchTable_QA579'), `Expected the error to name the rejected table, got: ${combined}`);
+		ok(
+			!/UnhandledPromiseRejection|at\s+.*\(.*:\d+:\d+\)/.test(combined),
+			`Expected a clean CLI error message, not an unhandled-rejection stack trace: ${combined}`
+		);
 	});
 
 	test('Cell 5: success control (describe_all against real instance) -> exit 0', async () => {
@@ -362,9 +369,11 @@ suite('QA-579 CLI exit-code contract matrix (PR #1801)', (ctx: ContextWithHarper
 			0,
 			`Expected exit 0 for a valid operation against a running instance, got ${result.status}. stderr: ${result.stderr}`
 		);
+		// A bare `.includes('data')` is close to tautological -- it also matches "database" and most
+		// describe_all output shapes. Pin the actual schema/table this fixture backs.
 		ok(
-			result.stdout.includes('data'),
-			`Expected describe_all output to mention the "data" database, got: ${result.stdout}`
+			/schema:\s*data\b/.test(result.stdout) && result.stdout.includes('Item'),
+			`Expected describe_all output to list the "data" database's "Item" table, got: ${result.stdout}`
 		);
 	});
 });

@@ -56,7 +56,7 @@
  *   npm run test:integration -- "integrationTests/server/qa702-sse-event-data.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -228,7 +228,13 @@ suite(
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: { threads: { count: 1 }, logging: { level: 'error' } },
+				// 'error' would make the uncaughtException-delta oracle below silently vacuous: a
+				// healthy boot logs nothing at that level, hdb.log may never even be created (it's
+				// created lazily on first entry), and "file absent" would then be indistinguishable
+				// from "logPath drifted to the wrong place" -- every uncaughtAfter/uncaughtBefore
+				// assertion would still pass either way. 'info' guarantees real boot-time log
+				// content, which the positive-control assertion just below then verifies.
+				config: { threads: { count: 1 }, logging: { level: 'info' } },
 				env: {},
 			});
 			client = createApiClient(ctx.harper);
@@ -237,19 +243,29 @@ suite(
 			logPath = (ctx.harper as any).logDir
 				? join((ctx.harper as any).logDir, 'hdb.log')
 				: join((ctx.harper as any).dataRootDir, 'log', 'hdb.log');
+			ok(
+				readLogSafe(logPath).length > 0,
+				`positive control: expected hdb.log to have real boot content at ${logPath} -- if this is empty, ` +
+					`the uncaughtException-delta assertions below can't detect anything, regardless of what they show`
+			);
 
 			// Poll the probe route directly until it stops 404-ing (component is pre-installed; no
 			// restart against a running fixture -- restartHttpWorkers() races and flakes on CI).
 			const deadline = Date.now() + 30_000;
+			let ready = false;
 			while (Date.now() < deadline) {
 				try {
 					const p = await getProbe(restBase, authHeaders);
-					if ((p as any).status !== 404) break;
+					if ((p as any).status !== 404) {
+						ready = true;
+						break;
+					}
 				} catch {
 					/* not ready */
 				}
 				await sleep(250);
 			}
+			ok(ready, `Probe route never became ready within 30s (component load failure?) at ${restBase}/Probe/`);
 		});
 
 		after(async () => {
@@ -352,6 +368,22 @@ suite(
 			);
 		}
 
+		// harper#2026 has an `id: 0` half too (contentTypes.ts:152's `if (message.id)` drops the
+		// reconnect cursor `id: 0` by the identical mechanism), otherwise unpinned by the `hasData`
+		// matrix above -- pin it explicitly so #2026's eventual fix updates this assertion too.
+		test('a: event.id = 0 (with real data) -- id: 0 silently omitted, KNOWN DEFECT harper#2026', async () => {
+			const r = await consumeSse(`${restBase}/IdZeroPayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const payloadBlock = parseSseBlocks(r.raw).find((b) => b.event === 'payload');
+			ok(payloadBlock, `expected a 'payload' event block. raw:\n${r.raw}`);
+			strictEqual(payloadBlock!.data, 'id-zero-probe', 'data field should be unaffected by the id value');
+			strictEqual(
+				'id' in payloadBlock!,
+				false,
+				`expected NO id: field for id=0 -- pinning KNOWN DEFECT harper#2026, not an intended contract; got: ${JSON.stringify(payloadBlock)}`
+			);
+		});
+
 		// ── (b) F-133 re-characterization: generator throws mid-stream ─────────────────────────
 
 		test(
@@ -401,12 +433,20 @@ suite(
 					`expected streaming to have started (status 200) before the mid-stream throw, got ${r.status}. raw:\n${r.raw}`
 				);
 				// The events actually yielded before the throw (0, 1) must be exactly what arrived, nothing
-				// from after the throw point.
+				// from after the throw point. Assert the actual values, not just a count in range -- a
+				// count alone would also accept a duplicated {"n":0}, a corrupted {"n":1}, or (if the
+				// throw's timing ever shifts) a frame from after the throw silently replacing one before it.
 				const blocks = parseSseBlocks(r.raw);
 				const dataBlocks = blocks.filter((b) => 'data' in b);
+				const expectedPrefix = ['{"n":0}', '{"n":1}'];
 				ok(
 					dataBlocks.length >= 1 && dataBlocks.length <= 2,
 					`expected 1-2 events yielded before the throw, got ${dataBlocks.length}. raw:\n${r.raw}`
+				);
+				deepStrictEqual(
+					dataBlocks.map((b) => b.data),
+					expectedPrefix.slice(0, dataBlocks.length),
+					`expected the exact pre-throw sequence (a prefix of ${JSON.stringify(expectedPrefix)}), got: ${JSON.stringify(dataBlocks.map((b) => b.data))}`
 				);
 				// Pin the actual shipped shape, not just "didn't hang": the connection closes abruptly
 				// (no clean SSE terminator) rather than ending gracefully. A client currently cannot

@@ -1,8 +1,10 @@
-// QA-702 — two-part exploratory probe against a JUST-SHIPPED fix + an OPEN sibling bug.
+// QA-702 — two-part exploratory probe: a companion to a JUST-SHIPPED fix, plus an OPEN sibling bug.
 //
-// (a) Green anchor for #1863 "fix: guard SSE writes against undefined event data (#1724)"
-//     (commit 6bcd5cd29, merged into main 2026-07-21): server/serverHelpers/progressEmitter.ts's
-//     `writeSSE()` used `JSON.stringify(event.data)` unconditionally for non-string `data`.
+// (a) NOT a regression anchor for #1863 "fix: guard SSE writes against undefined event data
+//     (#1724)" (commit 6bcd5cd29, merged into main 2026-07-21) -- that's
+//     unitTests/server/serverHelpers/progressEmitter.test.js, which imports and calls the actual
+//     fixed function directly. #1863's bug: server/serverHelpers/progressEmitter.ts's `writeSSE()`
+//     used `JSON.stringify(event.data)` unconditionally for non-string `data`.
 //     `JSON.stringify(undefined)` returns the *primitive* `undefined` (not a string), so
 //     `.split(/\r?\n/)` on it threw a TypeError for any event carrying no payload; the fix is
 //     `JSON.stringify(event.data) ?? ''`.
@@ -25,9 +27,9 @@
 //     bytes) — and, as this suite documents, has a DIFFERENT (already-defensive, pre-existing)
 //     falsy-data guard: `if (message.data) { ...emit a data: line... }` silently OMITS the `data:`
 //     field entirely for any falsy `data` (undefined/null/''/0/false), rather than crashing OR
-//     emitting an explicit empty/`null` line the way the fixed writeSSE() does. That's a distinct,
-//     worth-flagging shape of "falsy SSE data" handling, not a crash — see the test file for the
-//     assertions this fixture backs.
+//     emitting an explicit empty/`null` line the way the fixed writeSSE() does. That's a KNOWN
+//     DEFECT tracked as harper#2026 (which also covers the identical `id: 0` omission below), not
+//     a crash and not an intended contract — see the test file for the assertions this fixture backs.
 //
 // (b) Re-characterization of F-133 ("SSE hang on generator that throws mid-stream") on current
 //     main: ThrowGen below is the same shape QA-537 used to document the (at the time) still-open
@@ -76,6 +78,16 @@ export class ZeroPayload extends ssePayloadResource(0) {}
 
 // GET /FalsePayload/ — data: false.
 export class FalsePayload extends ssePayloadResource(false) {}
+
+// GET /IdZeroPayload/ — a real `data` value paired with `id: 0`. Same falsy-guard mechanism
+// (`if (message.id) {...}`, contentTypes.ts) drops the reconnect cursor `id: 0` exactly like it
+// drops falsy `data` above -- the other half of harper#2026, otherwise unpinned by this suite.
+export class IdZeroPayload extends Resource {
+	static loadAsInstance = false;
+	static async *connect() {
+		yield { event: 'payload', data: 'id-zero-probe', id: 0 };
+	}
+}
 
 // GET /PlainObjectPayload/ — data: an object with no field literally named "data" inside it.
 export class PlainObjectPayload extends ssePayloadResource({ foo: 'bar', n: 42 }) {}

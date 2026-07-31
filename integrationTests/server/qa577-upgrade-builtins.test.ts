@@ -74,10 +74,13 @@ const ACTIVATION_LOG_SNIPPET = 'Activated built-in component(s) absent from an u
 //     (real network I/O, async completion racing test teardown) — clearly not what a Pro
 //     built-in's packageIdentifier is for.
 //   - componentLoader.ts's root-level plugin resolution imports it as a no-op inert module.
-//   - server/jobs/jobProcess.ts:39's `packageIdentifier.startsWith('@/')` needs a defined
-//     string — a bare name (no `=value`, which Application.ts's parser otherwise permits)
-//     throws there with no guard; this real, reproducible latent bug is orthogonal to PR
-//     #1814's own diff (neither file it touches) and is reported separately, not exercised here.
+//   - A bare name (no `=value`, which Application.ts's parser otherwise permits as valid syntax)
+//     leaves `packageIdentifier` undefined, which TWO separate unguarded call sites then
+//     dereference: Application.ts:1129 in installApplications() (runs at boot, so this crashes
+//     the whole process) and server/jobs/jobProcess.ts:39's `packageIdentifier.startsWith('@/')`.
+//     Real, reproducible, and orthogonal to PR #1814's own diff (neither file it touches) --
+//     filed as harper#2028 (fix belongs in getEnvBuiltInComponents() itself: reject/skip a
+//     malformed definition at the source, not by guarding each consumer), not exercised here.
 const BACKFILL_KEY_REGISTRATION = `${BACKFILL_KEY}=@/dist/utility/common_utils.js`;
 
 const skip = process.platform === 'win32';
