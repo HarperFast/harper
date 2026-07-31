@@ -38,6 +38,15 @@ install                         - Install harperdb
                                    back to them — run 'harper logout' or pass auth_username=/
                                    auth_password= to override it.
 login [target] [username]       - Login to a remote or local Harper instance
+                                   --for-ci prints the CI/CD credentials (target + long-lived
+                                   refresh token) to stdout in dotenv format, and everything else
+                                   to stderr, so it pipes without the token hitting your screen:
+                                     harper login --for-ci | gh secret set --env-file -
+                                   Log in as a user dedicated to that one CI consumer: Harper
+                                   stores a single refresh token per user, so this revokes any
+                                   refresh token that user already holds — another runner, another
+                                   machine, or an earlier 'harper login' will 401 on its next
+                                   refresh. Two consumers cannot share a user.
 logout [target]                 - Logout from Harper and clear saved JWT
 mcp [subcommand]                - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
 register                        - Register harperdb
@@ -97,10 +106,13 @@ async function harper() {
 		case SERVICE_ACTIONS_ENUM.STATUS:
 			return (require('./status').default || require('./status'))();
 		case SERVICE_ACTIONS_ENUM.LOGIN: {
-			const target = process.argv[3];
-			const username = process.argv[4];
+			const args = process.argv.slice(3);
+			const forCi = args.includes('--for-ci');
+			// Flags are filtered out so they can appear anywhere without being mistaken for the
+			// positional target/username.
+			const [target, username] = args.filter((arg) => !arg.startsWith('-'));
 			const { login } = require('./login');
-			return login(target, username);
+			return login(target, username, { forCi });
 		}
 		case SERVICE_ACTIONS_ENUM.LOGOUT: {
 			const target = process.argv[3];
