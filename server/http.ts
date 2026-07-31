@@ -110,8 +110,11 @@ export function recordUdsBindSuccess(socketPath: string) {
 /**
  * 'owned' — the (dev, inode) this worker recorded at bind time still matches what's on disk.
  * 'foreign' — a socket exists at the path, but with a different identity (or none was ever
- *   recorded): something else — almost always a replacement worker — currently owns it.
- * 'absent' — nothing is on disk at the path at all: there is no live owner to protect.
+ *   recorded): something else — almost always a replacement worker — currently owns it. Also the
+ *   safe default when statSync fails for any reason other than ENOENT (e.g. EACCES): we can't
+ *   confirm the path is genuinely empty, so treat it as though something we can't verify owns it.
+ * 'absent' — statSync confirmed ENOENT: nothing is on disk at the path. There is no live owner to
+ *   protect.
  */
 function ownershipOf(entry: {
 	socketPath: string;
@@ -121,8 +124,8 @@ function ownershipOf(entry: {
 	try {
 		const stat = statSync(entry.socketPath, { bigint: true });
 		current = { dev: stat.dev, ino: stat.ino };
-	} catch {
-		return 'absent';
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'foreign';
 	}
 	return entry.identity !== undefined && current.dev === entry.identity.dev && current.ino === entry.identity.ino
 		? 'owned'

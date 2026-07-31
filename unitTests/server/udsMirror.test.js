@@ -625,6 +625,24 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			assert.ok(fs.existsSync(yamlPath), "a live socket this worker never bound means its yaml isn't ours to delete");
 		});
 
+		it('leaves the yaml in place when stat fails for a reason other than ENOENT', () => {
+			// A stat failure that isn't "the file doesn't exist" (permissions, I/O, etc.) means we
+			// can't confirm the path is genuinely empty — treat it like 'foreign', not 'absent', so a
+			// transient stat error can't be misread as license to delete a live owner's yaml. Forced
+			// deterministically via ENOTDIR (treating a plain file as a path segment) rather than
+			// EACCES, which isn't reliably enforced when tests run as root (common in CI containers).
+			const blockingFile = path.join(TEST_SOCKETS_DIR, 'not-a-directory');
+			const sockPath = path.join(blockingFile, 'nested.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'enotdir-failed.yaml');
+			fs.writeFileSync(blockingFile, '');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(fs.existsSync(yamlPath), 'an inconclusive stat error must not be treated as a safe-to-retract absence');
+		});
+
 		it('leaves the yaml in place when a replacement worker now owns the socket at the same path', () => {
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'replaced-failed.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'replaced-failed.yaml');
