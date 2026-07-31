@@ -826,6 +826,13 @@ describe('Querying through Resource API', () => {
 			assert.deepEqual(record.manyToMany, [], 'no ids to resolve, so no related records');
 		});
 
+		it('array-of-FK relationship with no stored ids returns a fresh array, not the stored FK array', function () {
+			const object = { manyToManyIds: [] };
+			const resolved = many_to_many_attribute.resolve(object);
+			resolved.push('unrelated');
+			assert.deepEqual(object.manyToManyIds, [], 'mutating the resolved empty array must not alias the stored FK array');
+		});
+
 		it('Query by join with many-to-many (reverse)', async function () {
 			let results = [];
 			for await (let record of ManyToMany.search({
