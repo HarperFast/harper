@@ -518,6 +518,38 @@ describe('Scope', () => {
 			}
 		});
 
+		it('resumes a mid-deploy scope when the deploy owner exits', async () => {
+			const ownerThreadId = 41;
+			deployLifecycle._handle({
+				name: this.appName,
+				phase: 'start',
+				deploymentId: 'orphaned-deploy',
+				ownerThreadId,
+			});
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				const deployWait = scope.waitForDeployCompletion();
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+
+				deployLifecycle._reclaimOwner(ownerThreadId);
+				await deployWait;
+				await entryHandler.ready;
+
+				assert.equal(deployLifecycle.isDeployInFlight(this.appName), false);
+				assert.ok(entries.length > 0, 'reclaiming the dead owner resumes the paused handler');
+			} finally {
+				await scope.close();
+			}
+		});
+
 		it('pauses entry handlers and emits the changed-file diff on deploy:end without losing plugin listeners', async () => {
 			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
 

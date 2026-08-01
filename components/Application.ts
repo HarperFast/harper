@@ -1233,7 +1233,7 @@ export function derivePackageIdentifier(packageIdentifier: string) {
  * @returns A promise that resolves when all preparation steps complete.
  */
 export async function prepareApplication(application: Application) {
-	await broadcastDeployStart(application.name);
+	const deploymentId = await broadcastDeployStart(application.name);
 	try {
 		const commandTimeoutMs = application.install?.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
 		await withComponentPreparationLock(
@@ -1301,7 +1301,7 @@ export async function prepareApplication(application: Application) {
 			}
 		);
 	} finally {
-		broadcastDeployEnd(application.name);
+		broadcastDeployEnd(application.name, deploymentId);
 	}
 }
 
