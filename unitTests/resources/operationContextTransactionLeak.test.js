@@ -157,36 +157,45 @@ describe('Ambient operation context must not couple independent writes (transact
 	// holds for a sequence of independent writes (each is released, and each really is a fresh
 	// instance), which is what the assertions below check.
 	//
-	// resources/transaction.ts's transaction() helper assigns `context.transaction = new
-	// DatabaseTransaction()` synchronously — before calling back into Resource.ts's dispatcher — so
-	// each write's fresh instance is observable straight off the real ambient context synchronously,
-	// right after issuing the call and before awaiting it. That avoids stubbing
-	// `DatabaseTransaction.prototype.setContext` (a global, production-method hook that would also
-	// count any unrelated background transaction started elsewhere while it's installed).
+	// Captured by hooking LeakTable.prototype.put — the per-record INSTANCE method Resource.ts's
+	// dispatcher calls from inside the callback it hands to transaction() (resources/Table.ts's
+	// put()), never before. `context.transaction` is unconditionally set before that callback ever
+	// runs (resources/transaction.ts's transaction() assigns it, then invokes the callback), so this
+	// hook point is correct regardless of whatever async work (authorization, resource resolution,
+	// component loading) the dispatcher does on the way there — unlike peeking at the ambient context
+	// synchronously right after issuing the call, which silently assumes no such work is ever async
+	// (it can be, and intermittently was, under CI: a would-be "immediately available" read raced a
+	// pending resolution and observed the write's transaction as not-yet-attached). Scoped to this one
+	// test table's own prototype (an own-property override, shadowing but not touching the shared
+	// `Table` base), so it can't count an unrelated background transaction the way stubbing
+	// `DatabaseTransaction.prototype.setContext` — a hook shared by every table — would.
 	it('releases each independent no-explicit-context write’s transaction from the ambient context once it completes, and each is a genuinely fresh instance (mechanism-level)', async () => {
 		const transactionsSeenAfterEachWrite = [];
 		const transactionsStarted = [];
-		await serverUtilities.processLocalTransaction(
-			{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
-			async () => {
-				const firstWrite = LeakTable.put('mech-first', { name: 'first' });
-				transactionsStarted.push(contextStorage.getStore()?.transaction);
-				await firstWrite;
-				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+		const originalPut = LeakTable.prototype.put;
+		LeakTable.prototype.put = function (...args) {
+			transactionsStarted.push(contextStorage.getStore()?.transaction);
+			return originalPut.apply(this, args);
+		};
+		try {
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
+				async () => {
+					await LeakTable.put('mech-first', { name: 'first' });
+					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
 
-				const secondWrite = LeakTable.put('mech-second', { name: 'second' });
-				transactionsStarted.push(contextStorage.getStore()?.transaction);
-				await secondWrite;
-				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+					await LeakTable.put('mech-second', { name: 'second' });
+					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
 
-				const thirdWrite = LeakTable.put('mech-third', { name: 'third' });
-				transactionsStarted.push(contextStorage.getStore()?.transaction);
-				await thirdWrite;
-				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+					await LeakTable.put('mech-third', { name: 'third' });
+					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
 
-				return { message: 'ok' };
-			}
-		);
+					return { message: 'ok' };
+				}
+			);
+		} finally {
+			LeakTable.prototype.put = originalPut;
+		}
 
 		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
 		assert.strictEqual(
