@@ -1,0 +1,93 @@
+name: Node 26 Canary (harper#2025)
+
+# Non-blocking canary for the temporary Node-26 CI pin in integration-tests.yml: that pin holds
+# the default matrix's Node-26 entry at 26.5.0 because 26.5.1's llhttp/undici bump surfaced a
+# real Harper-side TTL-reset-on-write defect (see harper#2025), so the default matrix no longer
+# exercises Node >=26.5.1 at all. This workflow keeps a signal alive on whatever the latest 26.x
+# release is, in its own file with its own schedule and its own conclusion — deliberately NOT a
+# job inside integration-tests.yml, because harper#2025 reproduces today, so this job is
+# expected to fail every night until it's fixed. A job that fails by design inside
+# integration-tests.yml would make that workflow's overall nightly conclusion permanently
+# "failure", which is exactly the boolean the nightly-gate triage routine reads before it drills
+# into individual jobs — burying a genuine unrelated regression under an already-known, waved-off
+# red. Keeping it in its own workflow lets it report the plain red X a canary should show
+# without corrupting a monitored workflow's signal. Remove this workflow when the pin in
+# integration-tests.yml comes out — see harper#2025, which stays open until then.
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  canary-node26-latest:
+    name: Canary — Node 26 latest (harper#2025, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup Node.js 26 (floating latest)
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+          # Without this, setup-node prefers whatever 26.x is already in the runner's tool
+          # cache over querying for the actual latest release — silently defeating the whole
+          # point of this job once Node 26 lands in the ubuntu-latest image's default toolcache.
+          check-latest: true
+
+      - name: Assert we actually resolved a Node newer than the pin
+        # check-latest REQUESTS the newest 26.x; it does not guarantee one lands (a degraded
+        # manifest lookup falls back to the toolcache). Silently running the pinned version
+        # again and reporting green would be the canary's worst failure mode: it would look
+        # like "latest Node 26 is clean" while >=26.5.1 was never actually executed. Red and
+        # inconclusive beats green and wrong.
+        run: |
+          resolved="$(node --version)"
+          echo "Resolved Node version: $resolved" | tee -a "$GITHUB_STEP_SUMMARY"
+          node -e '
+            const [maj, min, patch] = process.versions.node.split(".").map(Number);
+            const pinned = [26, 5, 0];
+            const newer = maj > pinned[0]
+              || (maj === pinned[0] && min > pinned[1])
+              || (maj === pinned[0] && min === pinned[1] && patch > pinned[2]);
+            if (!newer) {
+              console.error(`::error::resolved Node ${process.versions.node} is not newer than the 26.5.0 pin — check-latest likely fell back to a cached/lagged version. This run cannot demonstrate anything about harper#2025 on >=26.5.1 and must not be read as a pass.`);
+              process.exit(1);
+            }
+          '
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build
+        run: npm run build || true # we currently have type errors so just ignore that
+
+      - name: Guard against a moved/renamed canary target, or a missing build output
+        run: |
+          for f in "dist/bin/harper.js" "integrationTests/database/ttlResetOnWrite.test.ts" "integrationTests/components/static-cache-headers.test.ts"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::canary target missing: $f — a moved/renamed test would silently match nothing and exit 0; a missing dist/bin/harper.js means the 'npm run build || true' above swallowed a real build failure."
+              exit 1
+            fi
+          done
+
+      # No continue-on-error anywhere in this job: it lives in its own workflow specifically so
+      # it CAN fail honestly (see the header comment) without corrupting integration-tests.yml's
+      # conclusion. Let it fail naturally.
+      - name: Run harper#2025 canary tests
+        env:
+          HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
+          HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+        run: |
+          npm run test:integration -- "integrationTests/database/ttlResetOnWrite.test.ts" "integrationTests/components/static-cache-headers.test.ts"
+
+      - name: Upload Harper server logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harper-server-logs-canary-node26-latest
+          path: /tmp/harper-integration-test-logs/
+          retention-days: 3
+          if-no-files-found: ignore
