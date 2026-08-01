@@ -10,14 +10,17 @@
 // The codec is resolved once per process and then frozen (that is the invariant — RocksDB refuses
 // to reopen a column family under a different codec, and Harper's worker threads share one
 // process-wide registry), so these cases are order-dependent by design: the rejection case runs
-// first because it throws without freezing anything.
+// first because it throws without freezing anything. `resetRocksCompression()` re-unfreezes it
+// before that first case runs — this file shares a process with every other file under
+// `unitTests/resources/**`, and several of them open a RocksDatabase (freezing the codec at
+// `undefined`) before mocha's glob ever reaches this one.
 const assert = require('node:assert');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { setProperty } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-const { getRocksCompression, toRocksCompression } = require('#src/resources/databases');
+const { getRocksCompression, toRocksCompression, resetRocksCompression } = require('#src/resources/databases');
 // Required, not dynamically imported: Harper has already loaded this module, and pulling in the
 // ESM copy as well runs its module initialization twice ("Cannot redefine property: query").
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
@@ -27,6 +30,19 @@ const resolveCompression = (metadata) => getRocksCompression() ?? toRocksCompres
 
 describe('storage.rocks.compression reaches a real RocksDB open', function () {
 	let dir;
+
+	before(function () {
+		resetRocksCompression();
+	});
+
+	after(function () {
+		// Undo both the freeze and the config mutation these cases made — every other file in
+		// this mocha process shares the same singleton, and leaving it frozen at 'zstd' (or the
+		// config still set) would make an unrelated file's unset-compression opens request
+		// 'zstd' against families that already exist on disk at a different codec.
+		setProperty(CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, undefined);
+		resetRocksCompression();
+	});
 
 	beforeEach(function () {
 		// os.tmpdir() is fine here: nothing measures bytes, only the codec the engine reports.
