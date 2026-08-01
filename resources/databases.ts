@@ -33,7 +33,7 @@ import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
-import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
 import { totalmem } from 'node:os';
@@ -98,6 +98,39 @@ const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
+/**
+ * The RocksDB block/blob codec for every column family this process opens, or `undefined` to leave
+ * rocksdb-js on its own default (lz4 wherever the native build has it).
+ *
+ * Env var rather than config, and resolved exactly once, both deliberately. RocksDB fixes a column
+ * family's compression for as long as it is open and rejects a reopen that disagrees, and worker
+ * threads share one process-wide column-family registry — so every thread has to arrive at the same
+ * answer. Reading `storage.rocks.compression` from config does not: the main thread loads this
+ * module during install, before that value is readable, while worker threads load it afterwards and
+ * see it. The threads then disagree, `__dbis__` is opened at the build default and reopened as the
+ * configured codec, and Harper dies with "The system database failed to load". The environment is
+ * the one source every thread sees identically from the start. Wiring a config key to this needs
+ * the configured value to be resolvable before the first column family opens.
+ *
+ * Changing this governs files written afterwards; existing SST/blob files keep their original codec
+ * until compaction rewrites them.
+ */
+export const ROCKS_COMPRESSION: string | undefined = resolveRocksCompression();
+
+function resolveRocksCompression(): string | undefined {
+	const requested = process.env.HARPER_STORAGE_ROCKS_COMPRESSION?.trim().toLowerCase();
+	if (!requested) return undefined;
+	// Reject here rather than at the first open: an unsupported name throws inside
+	// `RocksDatabase.open`, which surfaces as the system database failing to load partway through
+	// startup. `supportedCompression` varies with the native build, so a name that works on one
+	// platform's binding may not exist on another's.
+	if (!supportedCompression.includes(requested)) {
+		throw new Error(
+			`HARPER_STORAGE_ROCKS_COMPRESSION="${requested}" is not available in this build of @harperfast/rocksdb-js. Supported: ${supportedCompression.join(', ')}`
+		);
+	}
+	return requested;
+}
 // I don't know if this is the best place for this, but somewhere we need to specify which tables
 // replicate by default:
 export const NON_REPLICATING_SYSTEM_TABLES = [
@@ -192,7 +225,10 @@ export function toRocksCompression(compression: unknown): unknown {
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
 	const legacyOptions = options as { compression?: unknown };
-	legacyOptions.compression = toRocksCompression(legacyOptions.compression);
+	// A configured codec applies to every column family, overriding whatever per-table metadata
+	// carries — that metadata records the LMDB-era boolean, so without this there is no way to
+	// select a RocksDB codec for a deployment.
+	legacyOptions.compression = ROCKS_COMPRESSION ?? toRocksCompression(legacyOptions.compression);
 	// Apply read-only mode if enabled
 	if (isReadOnlyMode()) {
 		options.readOnly = true;

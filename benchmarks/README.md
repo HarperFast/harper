@@ -10,6 +10,7 @@ This directory contains single-node storage and throughput benchmarks for Harper
 | **TTL-churn**      | `ttl-churn/`     | Storage size stability under continuous insert-with-TTL (**ST-1**)          |
 | **Concurrent R+W** | `concurrent-rw/` | Read p99 under mixed concurrent writes on a highly-indexed table (**ST-5**) |
 | **SQL engine A/B** | `sql-engine/`    | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape   |
+| **Compression**    | `compression/`   | RocksDB codec comparison: on-disk size and throughput per codec             |
 
 The three new benchmarks (ST-1, ST-2, ST-5) address gaps called out in §6.3 of the
 Harper Release Testing Strategy and §5 of the v5 Integration Test Plan.
@@ -244,3 +245,44 @@ SQL_ENGINE_SUMMARY queries=N faster=N slower=N even=N unsupported=N mismatch=N e
   with 200 k records cached.
 - All three benchmarks write a machine-parseable `RESULT` line to stdout; a future
   regression gate can `grep` this line and diff against a stored baseline.
+
+---
+
+## Compression — RocksDB codec comparison (`compression/`)
+
+Compares the RocksDB block/blob codecs on identical data and an identical workload. Compression
+is a per-column-family property that RocksDB fixes while the family is open, so each codec gets
+its own Harper instance on a fresh data directory.
+
+```sh
+node benchmarks/compression/run.mts                                   # 200k records, realistic data
+node benchmarks/compression/run.mts --scale=large --dataset=both      # 1M records, + incompressible control
+node benchmarks/compression/run.mts --codecs=none,zstd --records=500000
+```
+
+The codec is selected with `HARPER_STORAGE_ROCKS_COMPRESSION`, which the runner sets per instance.
+It is an environment variable rather than config for a reason documented in `resources/databases.ts`:
+Harper's main thread loads the storage layer before a configured value is readable while its worker
+threads load it after, and because they share one process-wide column-family registry, a config-only
+value makes them disagree and Harper fails to start.
+
+Two measurement details worth knowing before reading the output:
+
+- **Instances are installed outside `os.tmpdir()`.** That is tmpfs on most Linux hosts, which would
+  make every reported byte a memory measurement. The runner pins the install parent under `$HOME`;
+  override with `HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR`.
+- **Sizes are as the workload left them, not a compacted steady state.** Nothing outside the process
+  can force a RocksDB compaction (`storage.compactOnStart` is an LMDB copy-compact and does nothing
+  for RocksDB stores), so the update phase's obsolete versions are present in every codec's number.
+  Codec-to-codec comparison is sound; the absolute ratio against logical bytes is inflated.
+
+Only SST and blob bytes carry the codec — the write-ahead log, the transaction log and
+MANIFEST/OPTIONS do not — so they are reported separately rather than folded into the ratio.
+
+Runs are single-sample and in fixed codec order, and REST-layer throughput on this workload varies
+enough between runs to swamp the codec differences; treat the size columns as the reliable output
+and re-run with `--codecs` reordered before drawing throughput conclusions.
+
+A run whose instance shed load (Harper answers 503 once commits back up past
+`storage.maxTransactionQueueTime`) is marked `INVALID` rather than reported, because its on-disk
+size is missing whatever never landed and would read as a spectacular compression win.
