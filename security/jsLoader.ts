@@ -220,7 +220,7 @@ function resolveESMPackageExports(specifier: string, fromDir: string): string | 
 		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
 		if (!relative) return null;
 
-		return pathToFileURL(join(pkgRoot, relative)).toString();
+		return pathToFileURL(realpathSync(join(pkgRoot, relative))).toString();
 	}
 }
 

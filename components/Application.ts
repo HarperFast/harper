@@ -745,7 +745,8 @@ export async function extractApplication(application: Application) {
 		const extracted = await readdir(application.dirPath, { withFileTypes: true });
 		if (extracted.length === 1 && extracted[0].isDirectory()) {
 			const topLevelDirPath = join(application.dirPath, extracted[0].name);
-			tempDirPath = await mkdtemp(application.dirPath);
+			await mkdir(asideStagingDir, { recursive: true });
+			tempDirPath = await mkdtemp(join(asideStagingDir, '.normalize-'));
 			await cp(topLevelDirPath, tempDirPath, { recursive: true });
 			await rm(topLevelDirPath, { recursive: true, force: true });
 			await cp(tempDirPath, application.dirPath, { recursive: true });
@@ -788,11 +789,9 @@ export async function extractApplication(application: Application) {
 	// earlier deploys whose workers have since exited, and a copy that survives because
 	// its worker is still live is swept by the next deploy. The failure is expected in
 	// the live-worker case, so it's logged at trace rather than as a warning.
-	if (asidePath) {
-		rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
-			logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
-		);
-	}
+	rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
+		logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
+	);
 }
 
 /**

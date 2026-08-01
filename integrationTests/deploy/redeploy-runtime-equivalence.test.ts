@@ -75,7 +75,7 @@ async function buildResolutionPayload(addJavaScriptCandidate: boolean): Promise<
 	}
 }
 
-async function buildPureESMPayload(): Promise<string> {
+async function buildPureESMPayload(version: number): Promise<string> {
 	const directory = await mkdtemp(join(tmpdir(), 'redeploy-pure-esm-'));
 	try {
 		const dependencyDirectory = join(directory, 'vendor', 'pure-esm-probe');
@@ -103,7 +103,7 @@ async function buildPureESMPayload(): Promise<string> {
 		);
 		await writeFile(join(directory, 'package.json'), JSON.stringify(rootPackage) + '\n');
 		await writeFile(join(dependencyDirectory, 'package.json'), JSON.stringify(dependencyPackage) + '\n');
-		await writeFile(join(dependencyDirectory, 'index.js'), 'export const VERSION = 1;\n');
+		await writeFile(join(dependencyDirectory, 'index.js'), `export const VERSION = ${version};\n`);
 		await writeFile(
 			join(directory, 'package-lock.json'),
 			JSON.stringify({
@@ -305,7 +305,7 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 		await operation(ctx, {
 			operation: 'deploy_component',
 			project: PURE_ESM_PROJECT,
-			payload: await buildPureESMPayload(),
+			payload: await buildPureESMPayload(1),
 			restart: true,
 		});
 		await waitForVersion(ctx, 'PureESMVersion', 1);
@@ -316,11 +316,22 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 		await operation(ctx, {
 			operation: 'deploy_component',
 			project: PURE_ESM_PROJECT,
-			payload: await buildPureESMPayload(),
+			payload: await buildPureESMPayload(1),
 			restart: false,
 		});
 		await sleep(2_000);
 		strictEqual(await getRestartRequired(ctx), false);
+		strictEqual(await readResourceVersion(ctx, 'PureESMVersion'), 1);
+	});
+
+	test('changing only import-only dependency source requests restart', async () => {
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project: PURE_ESM_PROJECT,
+			payload: await buildPureESMPayload(2),
+			restart: false,
+		});
+		await waitForRestartRequired(ctx);
 		strictEqual(await readResourceVersion(ctx, 'PureESMVersion'), 1);
 	});
 
