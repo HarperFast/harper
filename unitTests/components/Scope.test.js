@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
 const assert = require('node:assert');
 const { join, basename } = require('node:path');
 const { tmpdir } = require('node:os');
+const { pathToFileURL } = require('node:url');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { stringify } = require('yaml');
 const { spy } = require('sinon');
@@ -275,6 +276,19 @@ describe('Scope', () => {
 
 		assert.doesNotThrow(() => scope.options.emit('error', new Error('child listener failed')));
 		await scope.close();
+	});
+
+	it('invalidates a runtime first loaded by a scope created during deploy', async () => {
+		deployLifecycle._handle({ name: this.appName, phase: 'start' });
+		try {
+			const applicationScope = new ApplicationScope(this.appName, this.resources, this.server);
+			applicationScope.runtimeRoot = this.directory;
+			applicationScope.recordLoadedModule(pathToFileURL(this.testFilePath).href, Buffer.from('"foo";'));
+
+			assert.equal(await applicationScope.finishDeploy(), true);
+		} finally {
+			deployLifecycle._handle({ name: this.appName, phase: 'end' });
+		}
 	});
 
 	it('should support custom entry handlers', async () => {

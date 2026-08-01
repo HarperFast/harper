@@ -75,6 +75,7 @@ export class RuntimeModuleTracker {
 			const referrerPath = key.slice(0, separator);
 			const specifier = key.slice(separator + 1);
 			try {
+				// Node does not invalidate this cache when a component tree is replaced in place.
 				invalidateResolutionCache(specifier, referrerPath, previousResolvedUrl);
 				const resolved = createRequire(pathToFileURL(referrerPath)).resolve(specifier);
 				const resolvedUrl = isAbsolute(resolved) ? pathToFileURL(resolved).toString() : resolved;

@@ -5,6 +5,7 @@ import { scopedImport } from '../security/jsLoader.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { RuntimeModuleTracker } from './RuntimeModuleTracker.ts';
+import { deployLifecycle } from './deployLifecycle.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
@@ -36,6 +37,7 @@ export class ApplicationScope {
 		this.resources = resources;
 		this.server = server;
 		this.#runtimeModules = new RuntimeModuleTracker(() => this.runtimeRoot);
+		if (deployLifecycle.isDeployInFlight(name)) this.#runtimeModules.beginDeploy();
 
 		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_MODULELOADER) ?? 'vm-current-context';
 		this.dependencyLoader = env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYLOADER);
