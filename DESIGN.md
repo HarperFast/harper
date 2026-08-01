@@ -595,9 +595,11 @@ Three consequences worth knowing before touching packaging:
   version tracked a devDependency's looser range instead of the shrinkwrap pin without this strip.
 - Pinning inverts the old incident-remediation path, worth knowing before reaching for it: before
   #1960, rebuilding the image picked up any newer in-range dependency automatically, which is how a
-  bad pin got fixed in production by "refresh/rebuild the image" alone. After #1960, the image is
-  frozen to the shrinkwrap, so a remediation of that shape now needs a lock bump and a re-release —
-  a rebuild alone reproduces the same tree, bug included.
+  bad pin got fixed in production by "refresh/rebuild the image" alone. After #1960, the *pinned* part
+  of the tree is frozen to the shrinkwrap, so a remediation of that shape now needs a lock bump and a
+  re-release — a rebuild alone reproduces the same tree, bug included. This does **not** apply to the
+  react-native residual two bullets up: that subtree is still re-resolved fresh on every build, so a
+  bug specific to it (not that anyone should want one there) actually would clear on a rebuild.
 
 ## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
 
