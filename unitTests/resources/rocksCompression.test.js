@@ -15,17 +15,24 @@ describe('toRocksCompression', function () {
 		assert.strictEqual(toRocksCompression(0), 'none');
 	});
 
-	it('maps true to unset so the build default applies', function () {
-		assert.strictEqual(toRocksCompression(true), undefined);
+	// Not "unset so the build default applies": unset inherits the column family's persisted
+	// codec and only falls back to the build default when the family does not exist yet, so an
+	// upgraded database would keep writing uncompressed despite storage.compression being true.
+	it('maps enabled to an explicit codec so upgraded databases honor it', function () {
+		assert.strictEqual(toRocksCompression(true), 'lz4');
 	});
 
 	it('leaves unset unset (internal DBIs keep the build default)', function () {
 		assert.strictEqual(toRocksCompression(undefined), undefined);
 	});
 
-	it('passes through LMDB-era option objects (rocksdb-js treats a missing algorithm as unset)', function () {
-		const legacyOptions = { startingOffset: 32, threshold: 4036 };
-		assert.strictEqual(toRocksCompression(legacyOptions), legacyOptions);
+	it('maps LMDB-era option objects to an explicit codec (they mean enabled, not a codec choice)', function () {
+		assert.strictEqual(toRocksCompression({ startingOffset: 32, threshold: 4036 }), 'lz4');
+	});
+
+	it('leaves an explicit rocksdb-js request alone', function () {
+		const request = { algorithm: 'zstd', level: 3 };
+		assert.strictEqual(toRocksCompression(request), request);
 	});
 
 	it('passes through explicit algorithm names', function () {

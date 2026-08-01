@@ -219,15 +219,35 @@ export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
 /**
- * Map a persisted (LMDB-era) compression value to what rocksdb-js accepts. Table metadata
- * carries values where a defined falsy value (false, '') means compression was explicitly
- * disabled and true/{ threshold, ... } mean enabled with defaults. rocksdb-js >= 2.6
- * validates `compression` strictly and treats UNSET as "use the build default (lz4)", so
- * disabled must be mapped to 'none' explicitly, and true to unset.
+ * Codec used to honor an "enabled, unspecified" compression setting, or `undefined` where the
+ * native build cannot provide it (in which case the request degrades to the build default rather
+ * than throwing).
+ */
+const DEFAULT_ENABLED_CODEC = supportedCompression.includes('lz4') ? 'lz4' : undefined;
+
+/**
+ * Map a persisted (LMDB-era) compression value to what rocksdb-js accepts. Table metadata carries
+ * values where a defined falsy value (false, '') means compression was explicitly disabled, and
+ * `true` / `{ threshold, ... }` mean enabled with defaults — `storage.compression` defaults to
+ * `true` (defaultConfig.yaml), so essentially every pre-existing table asked for compression.
+ *
+ * "Enabled" resolves to an explicit codec rather than to unset. Unset is not equivalent: RocksDB
+ * persists the codec per column family and a reopen that requests nothing inherits what the family
+ * already has, applying the build default only when the family does not yet exist. Leaving these
+ * unset therefore silently ignores the operator's request on every database created before the
+ * native build carried codecs — it keeps writing uncompressed forever, while a brand-new database
+ * gets lz4. Naming the codec makes the setting mean the same thing in both cases.
+ *
+ * This governs newly written files; existing SSTs keep their codec until write traffic rewrites
+ * them (`db.compact()` will not — see ROCKS_COMPRESSION above).
  */
 export function toRocksCompression(compression: unknown): unknown {
-	if (compression === true) return undefined;
-	if (compression !== undefined && !compression) return 'none';
+	if (compression === undefined) return undefined;
+	if (!compression) return 'none';
+	// An object carrying an explicit `algorithm` is already a rocksdb-js request; anything else
+	// (`true`, or an LMDB descriptor like { startingOffset, threshold }) is "enabled, unspecified".
+	if (compression === true || (typeof compression === 'object' && !(compression as { algorithm?: unknown }).algorithm))
+		return DEFAULT_ENABLED_CODEC;
 	return compression;
 }
 
