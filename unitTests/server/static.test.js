@@ -190,6 +190,30 @@ describe('static plugin fallthrough: false warning', () => {
 });
 
 describe('static plugin ordering live reload', () => {
+	it('removes a directory-owned index when index.html unlinks', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-index-unlink-'));
+		const indexPath = join(directory, 'index.html');
+		writeFileSync(indexPath, 'index');
+
+		try {
+			const { scope, state } = fakeScope();
+			handleApplication(scope);
+			state.entryCallback({ eventType: 'addDir', entryType: 'directory', absolutePath: directory, urlPath: '/' });
+			state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: indexPath, urlPath: '/index.html' });
+			rmSync(indexPath);
+			state.entryCallback({ eventType: 'unlink', entryType: 'file', absolutePath: indexPath, urlPath: '/index.html' });
+
+			const request = { method: 'GET', isWebSocket: false, pathname: '/', url: '/', headers: {} };
+			const fallthrough = Symbol('fallthrough');
+			assert.strictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('keeps a replacement with the same URL when the old absolute file unlinks afterward', () => {
 		const directory = mkdtempSync(join(tmpdir(), 'harper-static-identity-'));
 		const oldPath = join(directory, 'web', 'index.html');

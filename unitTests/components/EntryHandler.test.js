@@ -351,6 +351,30 @@ describe('EntryHandler', () => {
 		await entryHandler.close();
 	});
 
+	it('routes steady-state unlink and addDir listener throws through error', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		await entryHandler.ready;
+
+		const errors = [];
+		entryHandler.on('error', (error) => errors.push(error));
+		entryHandler.on('unlink', (entry) => {
+			if (entry.absolutePath === join(this.directory, 'c')) throw new Error('unlink listener failed');
+		});
+		entryHandler.on('addDir', (entry) => {
+			if (entry.absolutePath === join(this.directory, 'new-directory')) throw new Error('addDir listener failed');
+		});
+
+		rmSync(join(this.directory, 'c'));
+		await waitFor(() => errors.length === 1);
+		await mkdir(join(this.directory, 'new-directory'));
+		await waitFor(() => errors.length === 2);
+		assert.deepEqual(
+			errors.map((error) => error.message),
+			['unlink listener failed', 'addDir listener failed']
+		);
+		await entryHandler.close();
+	});
+
 	it('ignores a pending read from the watcher generation invalidated by pause', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, '.');
 		await entryHandler.ready;

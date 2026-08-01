@@ -6,7 +6,7 @@ import { models as harperModelsSingleton } from '../resources/models/Models.ts';
 import { defineTable, types } from '../resources/defineTable.ts';
 import { defineResource, t, schemaOf, projectTableFragment } from '../resources/defineResource.ts';
 import { readFile } from 'node:fs/promises';
-import { dirname, isAbsolute } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
 import { ApplicationScope } from '../components/ApplicationScope.ts';
@@ -28,7 +28,6 @@ import {
 	statSync,
 	realpathSync,
 } from 'node:fs';
-import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
 
@@ -342,9 +341,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				return getHarperExports(scope);
 			}
 			if (resolvedUrl.startsWith('file://')) {
-				const source = readFileSync(new URL(resolvedUrl), { encoding: 'utf-8' });
-				scope.recordLoadedModule?.(resolvedUrl, source);
-				return loadCJS(resolvedUrl, source).exports;
+				const contents = readFileSync(new URL(resolvedUrl));
+				scope.recordLoadedModule?.(resolvedUrl, contents);
+				return loadCJS(resolvedUrl, contents.toString('utf-8')).exports;
 			}
 			return require(resolvedUrl);
 		};
@@ -463,6 +462,12 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		if (specifier.startsWith('.')) {
 			return true;
 		}
+		// Package imports (`#name`) and package self-references can resolve back into the
+		// application without being relative specifiers. They are application source, not
+		// dependencies, so keep them in the observable loader as well.
+		if (isApplicationLocalModule(resolvedUrl)) {
+			return true;
+		}
 
 		// Check the dependencyLoader for definitive settings, if it is native we always use native loader
 		if (scope.dependencyLoader === 'native') {
@@ -479,6 +484,16 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return packageDependsOnHarper(resolvedUrl);
 		}
 		return false;
+	}
+
+	function isApplicationLocalModule(url: string): boolean {
+		if (!scope.runtimeRoot || !url.startsWith('file://') || url.includes('/node_modules/')) return false;
+		const modulePath = fileURLToPath(url);
+		const relativePath = relative(resolve(scope.runtimeRoot), modulePath);
+		return (
+			relativePath === '' ||
+			(!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath))
+		);
 	}
 
 	/**
@@ -645,9 +660,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 
 		if (url.startsWith('file://') && usePrivateGlobal) {
 			checkAllowedModulePath(url, scope.allowedPath);
-			const source = readFileSync(new URL(url), { encoding: 'utf-8' });
-			scope.recordLoadedModule?.(url, source);
-			return createModuleFromSource(url, source, usePrivateGlobal);
+			const contents = readFileSync(new URL(url));
+			scope.recordLoadedModule?.(url, contents);
+			return createModuleFromSource(url, contents.toString('utf-8'), usePrivateGlobal);
 		}
 
 		// For Node.js built-in modules (node:) and npm packages without application loader for dependency
@@ -655,6 +670,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		if (replacedModule) {
 			return createSyntheticModule(url, normalizeImportedModule(replacedModule));
 		}
+		if (isApplicationLocalModule(url)) scope.markNativeRuntime?.();
 		return import(url).then((importedModule) => createSyntheticModule(url, normalizeImportedModule(importedModule)));
 	}
 	// Load the entry module
@@ -703,8 +719,9 @@ async function getCompartment(scope: ApplicationScope, globals) {
 						},
 					};
 				} else if (moduleSpecifier.startsWith('file:') && !moduleSpecifier.includes('node_modules')) {
-					let moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
-					scope.recordLoadedModule?.(moduleSpecifier, moduleText);
+					const moduleContents = await readFile(new URL(moduleSpecifier));
+					scope.recordLoadedModule?.(moduleSpecifier, moduleContents);
+					let moduleText = moduleContents.toString('utf-8');
 					// Handle JSON files in compartment mode the same way as in VM mode
 					if (moduleSpecifier.endsWith('.json')) {
 						const jsonData = parseJsonModule(moduleText, moduleSpecifier);

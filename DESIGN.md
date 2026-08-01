@@ -664,17 +664,19 @@ layers it uses are proven equivalent:
 
 - `EntryHandler` compares consumer-visible watched entries.
 - `ApplicationScope` records the file URL and load-time digest of every application-local module
-  that Harper's VM or compartment loader reads, together with the local resolution candidates for
-  extensionless relative imports. After a deploy, those exact logical paths and resolution inputs
-  are compared with the installed replacement tree; adding a higher-priority `foo.js` ahead of a
-  previously resolved `foo.json` is therefore a runtime change even when `foo.json` itself is
-  byte-identical.
+  that Harper's VM or compartment loader reads, including application-local package imports and
+  package self-references, together with the resolved target of each relative import. After a deploy,
+  those exact logical paths are re-read and each relative import is resolved again against the
+  replacement tree; adding a higher-priority `foo.js` ahead of a previously resolved `foo.json` is
+  therefore a runtime change even when `foo.json` itself is byte-identical.
 - The deploy pipeline compares dependency metadata at the same preparation stage: the previous
   installed tree before extraction versus the replacement tree after installation.
 
 Loader or installer paths that Harper cannot observe are conservative. Full native module loading,
-custom install commands, enabled install scripts, and installs without deterministic lock evidence
-mark the runtime opaque; an existing component using an opaque path requires a restart on redeploy.
+custom install commands, enabled install scripts, payloads that already contain `node_modules`, and
+installs without deterministic lock evidence mark the runtime opaque; an existing component using an
+opaque path requires a restart on redeploy. `harper deploy` omits `node_modules` by default; callers of
+`package_component` that want restart-free comparison must likewise set `skip_node_modules: true`.
 Npm dependencies delegated from the default VM loader to Node's native loader are instead covered
 by the installed package/lock comparison—otherwise the default `dependencyLoader: auto` mode would
 make nearly every application opaque. `package.json` is compared as parsed JSON so formatting and

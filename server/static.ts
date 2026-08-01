@@ -1,5 +1,5 @@
 import { realpathSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Scope } from '../components/Scope';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
@@ -285,8 +285,12 @@ export function handleApplication(scope: Scope) {
 				// If the file is an index.html, remove it from the index entries as well
 				if (urlPath.endsWith('index.html')) {
 					let lastSlashIndex = urlPath.lastIndexOf('/');
-					removeOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex), entry.absolutePath);
+					const directoryURLPath = urlPath.slice(0, lastSlashIndex);
+					const directoryOwner = dirname(entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, directoryURLPath, entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, directoryURLPath, directoryOwner);
 					removeOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex + 1), entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex + 1), directoryOwner);
 				}
 				break;
 		}
