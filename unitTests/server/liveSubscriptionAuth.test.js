@@ -362,7 +362,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 1, 'the entry is removed once the async revoke actually succeeds');
 		});
 
-		it('bounds a never-settling revoke so it cannot wedge the sweep, and the entry is retried next sweep', async () => {
+		it('bounds a never-settling revoke so it cannot wedge the sweep, and other entries are still processed', async () => {
 			const originalTimeout = process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
 			process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '30';
 			try {
@@ -395,10 +395,23 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 				assert.strictEqual(hangingCalls, 1);
 				assert.strictEqual(otherRevoke.calls.length, 1, 'a hung revoke must not block other entries in the same sweep');
-				assert.strictEqual(
-					_liveSubscriptionCount(),
-					1,
-					'the hung entry stays registered for retry; the other is revoked'
+				assert.strictEqual(_liveSubscriptionCount(), 1, 'the hung entry stays registered; the other is revoked');
+
+				// A second sweep must not re-invoke the still-hanging revoke — it stays registered
+				// (nothing decides it's dead), but every sweep still logs it so a permanently stuck entry
+				// doesn't go completely silent after one line.
+				const originalError = hdbLogger.error;
+				const errorMessages = [];
+				hdbLogger.error = (message) => errorMessages.push(message);
+				try {
+					await _sweepNow();
+				} finally {
+					hdbLogger.error = originalError;
+				}
+				assert.strictEqual(hangingCalls, 1, 'a second sweep must not re-invoke a still-hanging revoke');
+				assert.ok(
+					errorMessages.some((message) => message.includes('hangs-on-revoke')),
+					`expected a per-sweep visibility log for the still-stuck entry, got: ${JSON.stringify(errorMessages)}`
 				);
 			} finally {
 				if (originalTimeout === undefined) delete process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
@@ -427,18 +440,19 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				assert.strictEqual(_liveSubscriptionCount(), 1);
 
 				// Still pending: must not invoke revoke again, and — since the settle handler (not this
-				// wait) is what commits the eventual outcome — must not re-race the timeout either. A
-				// sweep that did re-race would take close to the configured 20ms; this one should return
-				// near-instantly.
-				const before = Date.now();
-				await _sweepNow();
-				const elapsedMs = Date.now() - before;
+				// wait) is what commits the eventual outcome — must not re-race the timeout either. Rather
+				// than asserting a tight wall-clock margin (AGENTS.md flags exactly that pattern as a
+				// flakiness root cause), raise the timeout enormously and race the sweep against a short
+				// deterministic marker: an implementation that re-raced the pending attempt could not win
+				// that race, no matter how loaded the test runner is.
+				process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '100000';
+				const outcome = await Promise.race([
+					_sweepNow().then(() => 'sweep'),
+					new Promise((resolveMarker) => setTimeout(() => resolveMarker('marker'), 250)),
+				]);
+				assert.strictEqual(outcome, 'sweep', 'a sweep finding an already-pending attempt must not re-race the timeout');
 				assert.strictEqual(calls, 1, 'a still-pending revoke must not be invoked a second time');
 				assert.strictEqual(_liveSubscriptionCount(), 1);
-				assert.ok(
-					elapsedMs < 15,
-					`a sweep finding an already-pending attempt must not re-race the timeout (took ${elapsedMs}ms)`
-				);
 
 				// Resolve on its own, with no sweep actively awaiting it — models the realistic case where
 				// the underlying call finishes sometime in the ~30s gap between sweeps, not synchronously

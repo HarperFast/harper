@@ -230,19 +230,38 @@ function invokeTerminate(entry: LiveSubscription): Promise<void> {
  * that lands after this sweep's timeout window closes but before the next sweep starts) commit
  * exactly once instead of being silently discarded and re-invoked. A sweep that finds an attempt
  * already in flight from a previous pass does not re-invoke `terminate`/`revoke` and does not re-race
- * it either — the outcome will be handled by the original handler whenever it settles; there is
- * nothing left for a second wait to accomplish, and re-racing it would cost another full
- * `terminateTimeoutMs()` of serialized sweep time per stuck entry, every single pass, forever.
+ * it either — the outcome will be handled by the original handler whenever it settles, and re-racing
+ * it would cost another full `terminateTimeoutMs()` of serialized sweep time per stuck entry, every
+ * single pass, forever, for a result nothing uses. It does still log on every such sweep (cheaply, no
+ * wait) — without that, a permanently stuck `revoke` would log exactly once, ever, then go silent for
+ * the rest of the worker's life, which is worse than the cost it replaced.
+ *
+ * The success log says "terminate completed", not "revoked" — the default terminate (no `revoke`
+ * supplied) still swallows `end()`/`close()`/`emit` errors internally, unchanged from #1414, so this
+ * module cannot always tell whether delivery actually stopped, only that terminate ran without an
+ * error reaching it.
  *
  * Only the FIRST attempt is raced against `terminateTimeoutMs()`: without a bound, a caller-supplied
  * `revoke` that never settles would hold `sweeping` true forever (the `finally` in `sweep()` never
  * runs), silently disabling re-authorization for every subscription on the worker, not just this
- * entry's. `recheck` has the same unbounded-await shape but is registry-controlled Harper code;
- * `revoke` is arbitrary caller code, which is the materially wider exposure this bound closes.
+ * entry's. `recheck` has the same unbounded-await shape and is NOT similarly bounded here — not
+ * because it's safe (production `recheck` bottoms out in `resource.allowRead`, user-overridable
+ * application code, same as `revoke`), but because bounding it would change behavior on the DEFAULT
+ * (no-`revoke`) path, which this seam's own acceptance contract requires to stay identical to #1414.
  */
 async function claimAndTerminate(entry: LiveSubscription, reason: string): Promise<boolean> {
 	if (!registry.has(entry)) return false; // the caller already unregistered this entry itself
-	if (entry.pendingTerminate) return false; // already being handled by a prior sweep's attempt
+	if (entry.pendingTerminate) {
+		// A prior sweep's attempt is still in flight; its own settle handler (below) commits the
+		// outcome whenever it arrives, so there's nothing to gain by re-invoking or re-racing it — but
+		// silence would be worse than the per-sweep timeout log this replaced: a permanently stuck
+		// revoke would otherwise log exactly once, ever, then vanish. Log cheaply (no wait) instead.
+		safeLog(
+			hdbLogger.error,
+			`liveSubscriptionAuth: terminate for ${entry.username} (${reason}) still pending from an earlier sweep`
+		);
+		return false;
+	}
 
 	const attempt = invokeTerminate(entry);
 	entry.pendingTerminate = attempt;
@@ -250,7 +269,7 @@ async function claimAndTerminate(entry: LiveSubscription, reason: string): Promi
 		() => {
 			if (entry.pendingTerminate === attempt) entry.pendingTerminate = undefined;
 			registry.delete(entry);
-			safeLog(hdbLogger.info, `liveSubscriptionAuth: revoked subscription for ${entry.username} (${reason})`);
+			safeLog(hdbLogger.info, `liveSubscriptionAuth: terminate completed for ${entry.username} (${reason})`);
 		},
 		(error) => {
 			if (entry.pendingTerminate === attempt) entry.pendingTerminate = undefined;
@@ -284,9 +303,17 @@ async function sweep(): Promise<void> {
 	if (sweeping) return; // a slow recheck must not overlap with the next tick/event
 	sweeping = true;
 	try {
-		const now = Date.now();
 		for (const entry of registry) {
+			if (entry.pendingTerminate) {
+				// A prior sweep's attempt is already deciding this entry's fate; recheck() would only be
+				// a wasted storage read (findAndValidateUser + allowRead) for an outcome we already know.
+				await claimAndTerminate(entry, 'previously pending');
+				continue;
+			}
 			try {
+				// Read fresh per entry rather than once before the loop: a slow recheck or terminate on
+				// an earlier entry must not leave a later entry's expiry judged against a stale timestamp.
+				const now = Date.now();
 				const expired = entry.authExpiresAt != null && now >= entry.authExpiresAt * 1000;
 				const stillAuthorized = expired ? false : await entry.recheck();
 				if (expired || !stillAuthorized) {
