@@ -153,6 +153,19 @@ describe('sharedMessageEncoding – payload sharing', function () {
 		assert.strictEqual(first.payload, '{"id":6,"name":"sensor"}');
 	});
 
+	it('shares one encoding between a raw TCP subscriber and a WebSocket subscriber on JSON', function () {
+		// a raw TCP MQTT connection has no request and falls back to JSONStringify; a WebSocket
+		// subscriber negotiating application/json resolves to the same registered function, so the
+		// two share — this pins that the identities really do coincide
+		const message = { id: 6.5, name: 'sensor' };
+
+		const overTcp = share(message, null);
+		const overWebSocket = share(message, subscriberRequest('application/json'));
+
+		assert.strictEqual(overTcp, overWebSocket);
+		assert.strictEqual(overWebSocket.payload, '{"id":6.5,"name":"sensor"}');
+	});
+
 	it('collapses an async serialization into one shared resolved payload', async function () {
 		let asyncCalls = 0;
 		let ready = false;
@@ -224,6 +237,38 @@ describe('sharedMessageEncoding – sharing is gated on store provenance', funct
 
 		assert.strictEqual(countedCalls, 1);
 		assert.strictEqual(first, second);
+	});
+
+	// The version is part of the key, not a permission bit: a producer that reuses one envelope but
+	// advances the version — an app Resource enriching a table subscription copies the version
+	// straight through a spread — must get the new contents, not the first publish's bytes.
+	it('re-encodes when the same object arrives with a new version', function () {
+		const envelope = { id: 32, reading: 1 };
+		const request = subscriberRequest(COUNTED_TYPE);
+
+		const firstPublish = getSharedMessageEncoding(envelope, request, 100);
+		assert.strictEqual(firstPublish.payload.toString(), 'counted:{"id":32,"reading":1}');
+
+		envelope.reading = 2;
+		const secondPublish = getSharedMessageEncoding(envelope, request, 101);
+
+		assert.strictEqual(countedCalls, 2, 'a new version must not be served from the old entry');
+		assert.strictEqual(secondPublish.payload.toString(), 'counted:{"id":32,"reading":2}');
+	});
+
+	it('invalidates every content type on the chain when the version advances', function () {
+		const envelope = { id: 33, reading: 1 };
+
+		getSharedMessageEncoding(envelope, subscriberRequest(COUNTED_TYPE), 200);
+		getSharedMessageEncoding(envelope, subscriberRequest(ALT_TYPE), 200);
+		assert.strictEqual(countedCalls, 1);
+		assert.strictEqual(altCalls, 1);
+
+		envelope.reading = 2;
+		const alt = getSharedMessageEncoding(envelope, subscriberRequest(ALT_TYPE), 201);
+
+		assert.strictEqual(altCalls, 2, 'the chained content type must be invalidated too');
+		assert.strictEqual(alt.payload.toString(), 'alt:{"id":33,"reading":2}');
 	});
 });
 

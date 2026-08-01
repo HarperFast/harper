@@ -360,6 +360,9 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								// A QoS 0 PUBLISH carries no message identifier, so the whole packet depends only on
 								// the payload, the topic, and the protocol version (v5 emits a properties field that
 								// v3.1.1 omits) — share it across every QoS 0 subscriber that matches on those.
+								// The frame also varies on dup/retain/properties, which are fixed below; anything
+								// that starts varying them per subscriber (RETAIN propagation, v5 subscription
+								// identifiers) has to join the key or subscribers will be served the wrong flags.
 								const protocolVersion = mqttOptions.protocolVersion;
 								let packet = getSharedFrame(encoding, protocolVersion, topic);
 								if (packet === undefined) {

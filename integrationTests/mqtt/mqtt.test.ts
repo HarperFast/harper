@@ -625,6 +625,10 @@ suite(
 		// shared, so it cannot detect a regression back to one serialization per subscriber. The
 		// fixture registers a content type that stamps the server's serialization counter into the
 		// payload, which makes the count observable from outside the process.
+		// NOTE: both the counter and the encoding cache are per-worker-thread module state, so this
+		// is only meaningful because the integration harness runs Harper single-threaded. Spread the
+		// subscribers over several threads and every count reads 1 then 2 whether sharing works or
+		// not, and the assertions below pass vacuously.
 		test('fan-out: the server serializes once per publish, not once per subscriber', async () => {
 			const COUNTING_TYPE = 'application/x-count-serializations';
 			const SUBSCRIBERS = 4;

@@ -70,11 +70,15 @@ function perSubscriberEncoding(message, subscribers, qos) {
 	return bytes;
 }
 
-/** What subscribers do now: one serialization per message, and for QoS 0 one packet per topic. */
+/**
+ * What subscribers do now: one serialization per message, and for QoS 0 one packet per topic. The
+ * record version must be passed exactly as server/mqtt.ts's listener does — sharing is keyed on it,
+ * so omitting it would silently measure the unshared path and report no speedup.
+ */
 function sharedEncoding(message, subscribers, qos) {
 	let bytes = 0;
 	for (let i = 0; i < subscribers; i++) {
-		const encoding = getSharedMessageEncoding(message, request);
+		const encoding = getSharedMessageEncoding(message, request, message.recordedAt);
 		const payload = encoding.payload;
 		if (qos > 0) {
 			bytes += generate({ cmd: 'publish', topic: TOPIC, payload, messageId: i + 1, qos }, MQTT_OPTIONS).length;
