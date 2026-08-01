@@ -346,14 +346,16 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
-  # Non-blocking nightly canary for the pin above (harper#2025): the default matrix no longer
-  # exercises Node >=26.5.1 at all, so this keeps a signal alive on whatever the latest 26.x
-  # release is, without reddening the required checks. Only the test step below is
-  # continue-on-error — a setup/install/build/guard failure fails the job for real, so the
-  # canary can still report "I am broken" instead of going permanently green. Targets only the
-  # two test files the pin exists for; the full 6-shard matrix would cost more than this canary
-  # is worth, but that means it does NOT cover replication/broker code paths that sit on the
-  # same llhttp/undici stack — see harper#2025 for that residual risk when planning the unpin.
+  # Non-blocking-of-required-checks nightly canary for the pin above (harper#2025): the default
+  # matrix no longer exercises Node >=26.5.1 at all, so this keeps a signal alive on whatever the
+  # latest 26.x release is. "Non-blocking" refers only to the `if:` gate (schedule/dispatch-26,
+  # never pull_request, never in any other job's `needs`) — this job cannot appear as or block a
+  # required check, so there is no continue-on-error anywhere in it: a reproduction fails the job
+  # for real and shows as a plain red X, which is a more honest signal than a green run with a
+  # buried warning. Targets only the two test files the pin exists for; the full 6-shard matrix
+  # would cost more than this canary is worth, but that means it does NOT cover replication/
+  # broker/operations-API code paths that sit on the same llhttp/undici stack — see harper#2025
+  # for that residual risk when planning the unpin.
   canary-node26-latest:
     name: Canary — Node 26 latest (harper#2025, non-blocking)
     if: github.event_name == 'schedule' || github.event.inputs.node-version == '26'
@@ -392,41 +394,21 @@ jobs:
             fi
           done
 
+      # This job is gated to schedule/workflow_dispatch only (never pull_request, never in any
+      # other job's `needs`), so it cannot appear as or block a required check. There is
+      # therefore nothing for continue-on-error to protect here, and using it would only invert
+      # this job's signal: a real harper#2025 reproduction would show as a green ✅ with a
+      # warning buried inside, which is worse than the plain red ✗ a canary should show. Let it
+      # fail naturally.
       - name: Run harper#2025 canary tests
-        id: canary-tests
-        continue-on-error: true
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
         run: |
           npm run test:integration -- "integrationTests/database/ttlResetOnWrite.test.ts" "integrationTests/components/static-cache-headers.test.ts"
 
-      - name: Report canary result to step summary
-        if: always()
-        run: |
-          case "${{ steps.canary-tests.outcome }}" in
-            success)
-              echo "harper#2025 canary: passed on Node $(node --version)." | tee -a "$GITHUB_STEP_SUMMARY"
-              ;;
-            failure)
-              echo "::warning::harper#2025 canary reproduced a failure on Node $(node --version) — see the uploaded server logs and the Run harper#2025 canary tests step output above."
-              echo "**harper#2025 canary: FAILED on Node $(node --version)** — see step logs and uploaded server logs." | tee -a "$GITHUB_STEP_SUMMARY"
-              ;;
-            *)
-              # skipped (an earlier setup/install/build/guard step failed) or cancelled (hit
-              # timeout-minutes): the canary did NOT run to completion either way, so it must
-              # not be read as a pass — that misreading is how a genuine 26.5.1+ regression
-              # goes unnoticed indefinitely.
-              echo "::warning::harper#2025 canary did not run to completion on Node $(node --version) (outcome: ${{ steps.canary-tests.outcome }}) — inconclusive, not a pass. Check the job's other step logs."
-              echo "**harper#2025 canary: INCONCLUSIVE on Node $(node --version)** (outcome: ${{ steps.canary-tests.outcome }}) — did not run to completion; check earlier step logs." | tee -a "$GITHUB_STEP_SUMMARY"
-              ;;
-          esac
-
-      # Not gated on failure(): continue-on-error above makes the step (and job) conclusion
-      # "success" even when the canary reproduces harper#2025, so failure() would never see it.
-      # outcome != 'success' also catches skipped/cancelled, so partial-run logs aren't lost.
       - name: Upload Harper server logs
-        if: always() && steps.canary-tests.outcome != 'success'
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harper-server-logs-canary-node26-latest
