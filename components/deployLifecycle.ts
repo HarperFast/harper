@@ -26,9 +26,11 @@ import { isMainThread, threadId } from 'node:worker_threads';
 import {
 	broadcast,
 	broadcastWithAcknowledgement,
+	awaitThreadProcessGroupsTerminated,
 	onMessageByType,
 	onThreadExit,
 } from '../server/threads/manageThreads.js';
+import harperLogger from '../utility/logging/harper_logger.ts';
 
 const DEPLOY_LIFECYCLE_MSG = 'harper:deploy:lifecycle';
 
@@ -89,6 +91,14 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		}
 	}
 
+	async _reclaimOwnerAfterTermination(
+		ownerThreadId: number,
+		waitForTermination: (ownerThreadId: number) => Promise<void> = awaitThreadProcessGroupsTerminated
+	): Promise<void> {
+		await waitForTermination(ownerThreadId);
+		this._reclaimOwner(ownerThreadId);
+	}
+
 	#removeDeployment(deploymentId: string): void {
 		const deployment = this.#deployments.get(deploymentId);
 		if (!deployment) return;
@@ -98,7 +108,11 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		active.delete(deploymentId);
 		if (active.size === 0) {
 			this.#byComponent.delete(deployment.name);
-			this.emit('deploy:end', deployment.name);
+			try {
+				this.emit('deploy:end', deployment.name);
+			} catch (error) {
+				harperLogger.error(`Listener for deploy:end threw while reclaiming ${deployment.name}:`, error);
+			}
 		}
 	}
 
@@ -129,7 +143,11 @@ function ensureReceiver() {
 // suppress only the main thread's watchers and the worker watchers would keep
 // firing restart storms (harper#488).
 ensureReceiver();
-onThreadExit((deadThreadId: number) => deployLifecycle._reclaimOwner(deadThreadId));
+onThreadExit((deadThreadId: number) => {
+	void deployLifecycle
+		._reclaimOwnerAfterTermination(deadThreadId)
+		.catch((error) => harperLogger.error(`Could not reclaim deployments from thread ${deadThreadId}:`, error));
+});
 
 /**
  * Announce the start of a deploy for `componentName`. Awaits acknowledgement

@@ -92,6 +92,56 @@ describe('deployLifecycle', () => {
 			assert.equal(endSpy.callCount, 1);
 		});
 
+		it('waits for the dead owner process group before ending its deploy', async () => {
+			let releaseTermination;
+			const termination = new Promise((resolve) => {
+				releaseTermination = resolve;
+			});
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'terminating-deploy',
+				ownerThreadId: 41,
+			});
+
+			const reclaim = deployLifecycle._reclaimOwnerAfterTermination(41, () => termination);
+			await Promise.resolve();
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
+
+			releaseTermination();
+			await reclaim;
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
+		});
+
+		it('continues reclaiming when one component deploy:end listener throws', () => {
+			const originalError = console.error;
+			deployLifecycle.on('deploy:end', (name) => {
+				if (name === 'foo') throw new Error('consumer failed');
+			});
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'foo-deploy',
+				ownerThreadId: 41,
+			});
+			deployLifecycle._handle({
+				name: 'bar',
+				phase: 'start',
+				deploymentId: 'bar-deploy',
+				ownerThreadId: 41,
+			});
+
+			try {
+				console.error = () => {};
+				deployLifecycle._reclaimOwner(41);
+			} finally {
+				console.error = originalError;
+			}
+
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
+			assert.equal(deployLifecycle.isDeployInFlight('bar'), false);
+		});
+
 		it('keeps an overlapping live-owner deploy active and ignores late starts from a dead owner', () => {
 			const endSpy = require('sinon').spy();
 			deployLifecycle.on('deploy:end', endSpy);
