@@ -486,6 +486,32 @@ describe('Scope', () => {
 			await scope.close();
 		});
 
+		it('keeps entry handlers created during deploy paused until deploy:end', async () => {
+			deployLifecycle._handle({ name: this.appName, phase: 'start' });
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+				assert.equal(entries.length, 0, 'a handler created mid-deploy must not scan the intermediate tree');
+
+				deployLifecycle._handle({ name: this.appName, phase: 'end' });
+				await entryHandler.ready;
+				assert.ok(entries.length > 0, 'the handler scans after deploy:end resumes it');
+			} finally {
+				if (deployLifecycle.isDeployInFlight(this.appName)) {
+					deployLifecycle._handle({ name: this.appName, phase: 'end' });
+				}
+				await scope.close();
+			}
+		});
+
 		it('pauses entry handlers and emits the changed-file diff on deploy:end without losing plugin listeners', async () => {
 			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
 

@@ -355,6 +355,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			.on('unlink', this.#defaultEntryHandlerListener('unlink'))
 			.on('addDir', this.#defaultEntryHandlerListener('addDir'))
 			.on('unlinkDir', this.#defaultEntryHandlerListener('unlinkDir'));
+		if (this.#deployInFlight) entryHandler.pause();
 
 		this.#entryHandlers.push(entryHandler);
 

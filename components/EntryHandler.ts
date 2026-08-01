@@ -512,6 +512,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			// teardown in its own settle set; only clear it if close() didn't already replace it.
 			try {
 				await outgoing.close();
+			} catch (error) {
+				this.#logger.warn?.(`Failed to close the previous watcher for ${this.name}; replacing it anyway:`, error);
 			} finally {
 				this.#liveWatchers.delete(outgoing);
 			}

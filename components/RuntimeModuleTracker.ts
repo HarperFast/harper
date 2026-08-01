@@ -78,7 +78,7 @@ export class RuntimeModuleTracker {
 			const specifier = key.slice(separator + 1);
 			try {
 				// Node does not invalidate this cache when a component tree is replaced in place.
-				invalidateResolutionCache(specifier, referrerPath, previousResolvedUrl);
+				if (!invalidateResolutionCache(specifier, referrerPath, previousResolvedUrl)) return true;
 				const resolved = createRequire(pathToFileURL(referrerPath)).resolve(specifier);
 				const resolvedUrl = isAbsolute(resolved) ? pathToFileURL(resolved).toString() : resolved;
 				if (resolvedUrl !== previousResolvedUrl) return true;
@@ -103,18 +103,19 @@ export class RuntimeModuleTracker {
 	}
 }
 
-function invalidateResolutionCache(specifier: string, referrerPath: string, previousResolvedUrl: string): void {
+function invalidateResolutionCache(specifier: string, referrerPath: string, previousResolvedUrl: string): boolean {
 	const pathCache = (Module as unknown as { _pathCache?: Record<string, string> })._pathCache;
-	if (!pathCache) return;
+	if (!pathCache) return false;
 	const previousPath = previousResolvedUrl.startsWith('file:')
 		? fileURLToPath(previousResolvedUrl)
 		: previousResolvedUrl;
 	const relativeKey = `${specifier}\0${dirname(referrerPath)}`;
 	if (pathCache[relativeKey] === previousPath) delete pathCache[relativeKey];
-	if (specifier.startsWith('.')) return;
+	if (specifier.startsWith('.')) return true;
 	for (const cacheKey of Object.keys(pathCache)) {
 		if (cacheKey.startsWith(`${specifier}\0`) && pathCache[cacheKey] === previousPath) delete pathCache[cacheKey];
 	}
+	return true;
 }
 
 function digest(source: Source): string {

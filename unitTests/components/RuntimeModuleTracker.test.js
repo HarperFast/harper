@@ -5,7 +5,7 @@ const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { pathToFileURL } = require('node:url');
-const { createRequire } = require('node:module');
+const { createRequire, Module } = require('node:module');
 const { RuntimeModuleTracker } = require('#src/components/RuntimeModuleTracker');
 
 describe('RuntimeModuleTracker', () => {
@@ -57,6 +57,24 @@ describe('RuntimeModuleTracker', () => {
 		this.tracker.beginDeploy();
 		writeFileSync(join(this.directory, 'helper.js'), 'export default {};');
 		assert.equal(await this.tracker.finishDeploy(), true);
+	});
+
+	it('fails closed when Node resolution cache invalidation is unavailable', async () => {
+		const referrerPath = join(this.directory, 'resources.js');
+		const helperPath = join(this.directory, 'helper.js');
+		writeFileSync(referrerPath, 'import helper from "./helper";');
+		writeFileSync(helperPath, 'export default {};');
+		this.tracker.recordModule(pathToFileURL(helperPath).href, 'export default {};');
+		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(helperPath).href);
+
+		const pathCache = Module._pathCache;
+		try {
+			Module._pathCache = undefined;
+			this.tracker.beginDeploy();
+			assert.equal(await this.tracker.finishDeploy(), true);
+		} finally {
+			Module._pathCache = pathCache;
+		}
 	});
 
 	it('conservatively invalidates native and mixed-generation runtimes', async () => {

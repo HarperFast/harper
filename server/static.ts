@@ -245,7 +245,7 @@ export function handleApplication(scope: Scope) {
 
 	// Handle entry events for the default entry handler based on the `files` and `urlPath` options
 	scope.handleEntry((entry) => {
-		if (urlPathRestartPending) return;
+		if (urlPathRestartPending && entry.eventType !== 'unlink' && entry.eventType !== 'unlinkDir') return;
 		// entry.urlPath includes the component's base URL path, but when a `urlPath` is configured
 		// the routing chain strips that mount prefix from req.pathname before this plugin's handler
 		// runs — so key the maps relative to the base (#1583)
