@@ -61,7 +61,19 @@ jobs:
             echo "entrypoint OK ($(wc -c < "$f") bytes)"
           '
 
-      - name: Container boots and serves the Operations API
+      # The entrypoint does `exec bun "$(which harper)"` under HARPER_RUNTIME=bun, and
+      # `exec harper` (a bare PATH lookup) otherwise -- both depend on the global install
+      # step wiring up the harper bin correctly, which is exactly what #1960 changed.
+      - name: which harper resolves
+        run: |
+          docker run --rm --entrypoint sh harperfast/harper:smoke-test -c '
+            set -e
+            resolved=$(which harper) || { echo "::error::which harper failed to resolve"; exit 1; }
+            test -x "$resolved" || { echo "::error::$resolved is not executable"; ls -l "$resolved"; exit 1; }
+            echo "which harper -> $resolved"
+          '
+
+      - name: Container boots and serves the Operations API (default runtime)
         run: |
           docker run -d --name harper-smoke \
             -e HDB_ADMIN_USERNAME=admin \
@@ -89,10 +101,46 @@ jobs:
           docker logs harper-smoke
           exit 1
 
-      - name: Container logs
+      - name: Container logs (default runtime)
         if: always()
         run: docker logs harper-smoke 2>&1 || true
 
-      - name: Teardown
+      - name: Teardown (default runtime)
         if: always()
         run: docker rm -f harper-smoke 2>/dev/null || true
+
+      - name: Container boots and serves the Operations API (HARPER_RUNTIME=bun)
+        run: |
+          docker run -d --name harper-smoke-bun \
+            -e HARPER_RUNTIME=bun \
+            -e HDB_ADMIN_USERNAME=admin \
+            -e HDB_ADMIN_PASSWORD=password \
+            -p 9925:9925 \
+            harperfast/harper:smoke-test
+
+          echo "Waiting for Operations API on :9925 (bun runtime) ..."
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then
+              echo "Operations API responded with HTTP $code after ${i}s"
+              exit 0
+            fi
+            if ! docker ps --filter name=harper-smoke-bun --filter status=running -q | grep -q .; then
+              echo "::error::Container exited before the Operations API came up"
+              docker logs harper-smoke-bun
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "::error::Operations API did not come up within 60s"
+          docker logs harper-smoke-bun
+          exit 1
+
+      - name: Container logs (HARPER_RUNTIME=bun)
+        if: always()
+        run: docker logs harper-smoke-bun 2>&1 || true
+
+      - name: Teardown (HARPER_RUNTIME=bun)
+        if: always()
+        run: docker rm -f harper-smoke-bun 2>/dev/null || true
