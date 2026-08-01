@@ -4,19 +4,36 @@ name: Node 26 Canary (harper#2025)
 # the default matrix's Node-26 entry at 26.5.0 because 26.5.1's llhttp/undici bump surfaced a
 # real Harper-side TTL-reset-on-write defect (see harper#2025), so the default matrix no longer
 # exercises Node >=26.5.1 at all. This workflow keeps a signal alive on whatever the latest 26.x
-# release is, in its own file with its own schedule and its own conclusion — deliberately NOT a
-# job inside integration-tests.yml, because harper#2025 reproduces today, so this job is
-# expected to fail every night until it's fixed. A job that fails by design inside
-# integration-tests.yml would make that workflow's overall nightly conclusion permanently
-# "failure", which is exactly the boolean the nightly-gate triage routine reads before it drills
-# into individual jobs — burying a genuine unrelated regression under an already-known, waved-off
-# red. Keeping it in its own workflow lets it report the plain red X a canary should show
-# without corrupting a monitored workflow's signal. Remove this workflow when the pin in
-# integration-tests.yml comes out — see harper#2025, which stays open until then.
+# release is, in its own file with its own schedule — deliberately NOT a job inside
+# integration-tests.yml, because that workflow's nightly conclusion is what the repo's
+# nightly-gate triage routine reads before drilling into individual jobs, and this canary's
+# steady state is not the same "green means fine" shape as an ordinary test job.
+#
+# The job's conclusion is intentionally INVERTED from what "canary" suggests: harper#2025's
+# tests failing is this job's SUCCESS (the known defect is still there — expected, no action
+# needed), and the tests unexpectedly PASSING is what makes it FAIL loudly (the defect may be
+# fixed upstream — a human should look, and consider removing the pin). Naively wiring the raw
+# test exit code to the job conclusion would make the every-night-until-fixed EXPECTED outcome a
+# permanent red — nightly-gate enumerates every `--event schedule` workflow with no
+# per-workflow allowlist, so that red gets triaged and re-triaged forever, while the one event
+# anyone actually wants to hear about (the defect clearing) would be silently green and fire no
+# alert. See the "Run harper#2025 canary tests" step below for the inversion itself.
+#
+# Remove this workflow when the pin in integration-tests.yml comes out — see harper#2025, which
+# stays open until then.
+#
+# Coverage note: this canary runs only ttlResetOnWrite.test.ts and static-cache-headers.test.ts
+# — the two tests the pin exists for. It does NOT cover replication, the NATS/MQTT brokers, the
+# operations API, or the uWS HTTP path, all of which sit on the same llhttp/undici stack that
+# 26.5.1 changed. A second, independent >=26.5.1 regression on one of those paths would stay
+# invisible until the pin comes out, at which point it surfaces entangled with harper#2025.
 on:
   schedule:
     - cron: '0 7 * * *'
   workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
   canary-node26-latest:
@@ -48,6 +65,9 @@ jobs:
           echo "Resolved Node version: $resolved" | tee -a "$GITHUB_STEP_SUMMARY"
           node -e '
             const [maj, min, patch] = process.versions.node.split(".").map(Number);
+            // Keep in sync with the "26.5.0" pin in integration-tests.yml — if the matrix pin is
+            // ever bumped without updating this, the assert below stops meaning "newer than
+            // what the matrix already covers".
             const pinned = [26, 5, 0];
             const newer = maj > pinned[0]
               || (maj === pinned[0] && min > pinned[1])
@@ -76,15 +96,39 @@ jobs:
       # No continue-on-error anywhere in this job: it lives in its own workflow specifically so
       # it CAN fail honestly (see the header comment) without corrupting integration-tests.yml's
       # conclusion. Let it fail naturally.
+      # Inverted on purpose: this job's conclusion needs to mean "a human should look at this",
+      # not "the known defect reproduced" — nightly-gate's scheduled-run sweep
+      # (~/.claude/skills/nightly-gate/SKILL.md) enumerates every `--event schedule` workflow and
+      # expects `success`, with no per-workflow allowlist. If this step's own exit code were the
+      # job's conclusion, the EXPECTED nightly outcome (harper#2025 still reproducing) would be a
+      # permanent red that nightly-gate dutifully triages and re-triages forever, while the one
+      # outcome anyone actually wants to hear about — the defect clearing upstream — would be
+      # silently green and fire no alert. So: the tests failing (matching harper#2025) is this
+      # job's SUCCESS; the tests unexpectedly passing is what fails it loudly.
       - name: Run harper#2025 canary tests
+        id: canary-tests
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
         run: |
+          set +e
           npm run test:integration -- "integrationTests/database/ttlResetOnWrite.test.ts" "integrationTests/components/static-cache-headers.test.ts"
+          test_exit=$?
+          set -e
+          if [ "$test_exit" -eq 0 ]; then
+            echo "::error::harper#2025 no longer reproduces on Node $(node --version) — the canary tests PASSED, which is unexpected while the issue is open. Investigate whether the underlying defect is actually fixed, and if so remove the temporary pin in integration-tests.yml and close out harper#2025."
+            echo "**harper#2025 canary: UNEXPECTED PASS on Node $(node --version)** — the defect may be fixed. See harper#2025." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          else
+            echo "harper#2025 canary: reproduced as expected on Node $(node --version) (exit $test_exit) — issue is still open, no action needed." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
+      # Always, not `if: failure()`: the canary-tests step exits 0 on its expected-reproduction
+      # path (see above), so `failure()` alone would miss the run anyone chasing harper#2025
+      # actually wants logs from. Cheap either way at retention-days: 3.
       - name: Upload Harper server logs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harper-server-logs-canary-node26-latest
