@@ -356,7 +356,7 @@ jobs:
   # same llhttp/undici stack — see harper#2025 for that residual risk when planning the unpin.
   canary-node26-latest:
     name: Canary — Node 26 latest (harper#2025, non-blocking)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event.inputs.node-version == '26'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -383,16 +383,17 @@ jobs:
       - name: Build
         run: npm run build || true # we currently have type errors so just ignore that
 
-      - name: Guard against a moved/renamed canary target
+      - name: Guard against a moved/renamed canary target, or a missing build output
         run: |
-          for f in "integrationTests/database/ttlResetOnWrite.test.ts" "integrationTests/components/static-cache-headers.test.ts"; do
+          for f in "dist/bin/harper.js" "integrationTests/database/ttlResetOnWrite.test.ts" "integrationTests/components/static-cache-headers.test.ts"; do
             if [ ! -f "$f" ]; then
-              echo "::error::canary target missing: $f — harper#2025's node:test glob would silently match nothing and exit 0"
+              echo "::error::canary target missing: $f — a moved/renamed test would silently match nothing and exit 0; a missing dist/bin/harper.js means the 'npm run build || true' above swallowed a real build failure."
               exit 1
             fi
           done
 
       - name: Run harper#2025 canary tests
+        id: canary-tests
         continue-on-error: true
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
@@ -400,8 +401,20 @@ jobs:
         run: |
           npm run test:integration -- "integrationTests/database/ttlResetOnWrite.test.ts" "integrationTests/components/static-cache-headers.test.ts"
 
+      - name: Report canary result to step summary
+        if: always()
+        run: |
+          if [ "${{ steps.canary-tests.outcome }}" == "failure" ]; then
+            echo "::warning::harper#2025 canary reproduced a failure on Node $(node --version) — see the uploaded server logs and the Run harper#2025 canary tests step output above."
+            echo "**harper#2025 canary: FAILED on Node $(node --version)** — see step logs and uploaded server logs." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "harper#2025 canary: passed on Node $(node --version)." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Not gated on failure(): continue-on-error above makes the step (and job) conclusion
+      # "success" even when the canary reproduces harper#2025, so failure() would never see it.
       - name: Upload Harper server logs
-        if: failure()
+        if: always() && steps.canary-tests.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harper-server-logs-canary-node26-latest
