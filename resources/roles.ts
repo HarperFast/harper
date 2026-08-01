@@ -20,8 +20,13 @@ export function handleApplication(
 	const rolesByFile = new Map<string, Set<string>>();
 	const contentsByFile = new Map<string, Buffer>();
 	let pending = Promise.resolve();
-	const entryHandler = scope.handleEntry((entry) => {
-		const operation = pending.then(async () => {
+	const enqueue = (operation: () => Promise<void>) => {
+		const queued = pending.then(operation);
+		pending = queued.catch(() => {});
+		return queued;
+	};
+	const entryHandler = scope.handleEntry((entry) =>
+		enqueue(async () => {
 			if (entry.entryType !== 'file') return;
 			const previousRoles = rolesByFile.get(entry.absolutePath) ?? new Set<string>();
 			if (entry.eventType === 'unlink') {
@@ -38,16 +43,15 @@ export function handleApplication(
 				new Set([...previousRoles].filter((roleName) => !currentRoles.has(roleName))),
 				rolesByFile
 			);
-		});
-		pending = operation.catch(() => {});
-		return operation;
-	});
+		})
+	);
 	scope.on('deploy:end', () => {
 		void entryHandler.ready
-			.then(() => pending)
-			.then(async () => {
-				for (const contents of contentsByFile.values()) await handleFile(contents, ensureRoleFn);
-			})
+			.then(() =>
+				enqueue(async () => {
+					for (const contents of contentsByFile.values()) await handleFile(contents, ensureRoleFn);
+				})
+			)
 			.catch((error) => scope.logger.error?.('Could not reconcile roles after deploy:', error));
 	});
 }

@@ -12,6 +12,7 @@ const RELATIVE_PROJECT = 'redeploy-relative-runtime-app';
 const PACKAGE_IMPORT_PROJECT = 'redeploy-package-import-runtime-app';
 const PACKAGE_METADATA_PROJECT = 'redeploy-package-metadata-app';
 const RESOLUTION_PROJECT = 'redeploy-resolution-runtime-app';
+const PURE_ESM_PROJECT = 'redeploy-pure-esm-runtime-app';
 
 async function buildRuntimePayload(className: string, version: number, packageImport: boolean): Promise<string> {
 	const directory = await mkdtemp(join(tmpdir(), 'redeploy-runtime-equivalence-'));
@@ -68,6 +69,55 @@ async function buildResolutionPayload(addJavaScriptCandidate: boolean): Promise<
 		);
 		await writeFile(join(directory, 'helper.json'), '{"VERSION":1}\n');
 		if (addJavaScriptCandidate) await writeFile(join(directory, 'helper.js'), 'export default { VERSION: 2 };\n');
+		return await targz(directory);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+}
+
+async function buildPureESMPayload(): Promise<string> {
+	const directory = await mkdtemp(join(tmpdir(), 'redeploy-pure-esm-'));
+	try {
+		const dependencyDirectory = join(directory, 'vendor', 'pure-esm-probe');
+		const rootPackage = {
+			name: PURE_ESM_PROJECT,
+			version: '1.0.0',
+			type: 'module',
+			dependencies: { 'pure-esm-probe': 'file:vendor/pure-esm-probe' },
+		};
+		const dependencyPackage = {
+			name: 'pure-esm-probe',
+			version: '1.0.0',
+			type: 'module',
+			exports: { '.': { import: './index.js' } },
+		};
+		await mkdir(dependencyDirectory, { recursive: true });
+		await writeFile(join(directory, 'config.yaml'), 'jsResource:\n  files: resources.js\nrest: true\n');
+		await writeFile(
+			join(directory, 'resources.js'),
+			"import { VERSION } from 'pure-esm-probe';\n" +
+				'export class PureESMVersion extends Resource {\n' +
+				'\tstatic loadAsInstance = false;\n' +
+				'\tget() { return { version: VERSION }; }\n' +
+				'}\n'
+		);
+		await writeFile(join(directory, 'package.json'), JSON.stringify(rootPackage) + '\n');
+		await writeFile(join(dependencyDirectory, 'package.json'), JSON.stringify(dependencyPackage) + '\n');
+		await writeFile(join(dependencyDirectory, 'index.js'), 'export const VERSION = 1;\n');
+		await writeFile(
+			join(directory, 'package-lock.json'),
+			JSON.stringify({
+				name: PURE_ESM_PROJECT,
+				version: '1.0.0',
+				lockfileVersion: 3,
+				requires: true,
+				packages: {
+					'': rootPackage,
+					'node_modules/pure-esm-probe': { resolved: 'vendor/pure-esm-probe', link: true },
+					'vendor/pure-esm-probe': dependencyPackage,
+				},
+			}) + '\n'
+		);
 		return await targz(directory);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
@@ -249,6 +299,29 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 		});
 		await waitForRestartRequired(ctx);
 		strictEqual(await readResourceVersion(ctx, 'ResolutionVersion'), 1);
+	});
+
+	test('loads a dependency with import-only package exports', async () => {
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project: PURE_ESM_PROJECT,
+			payload: await buildPureESMPayload(),
+			restart: true,
+		});
+		await waitForVersion(ctx, 'PureESMVersion', 1);
+	});
+
+	test('an identical import-only dependency redeploy remains restart-free', async () => {
+		strictEqual(await getRestartRequired(ctx), false);
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project: PURE_ESM_PROJECT,
+			payload: await buildPureESMPayload(),
+			restart: false,
+		});
+		await sleep(2_000);
+		strictEqual(await getRestartRequired(ctx), false);
+		strictEqual(await readResourceVersion(ctx, 'PureESMVersion'), 1);
 	});
 
 	test('loads a component with deterministic dependency metadata', async () => {

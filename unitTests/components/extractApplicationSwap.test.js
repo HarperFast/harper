@@ -198,6 +198,10 @@ describe('extractApplication directory swap', () => {
 		await assert.rejects(() => extractApplication(app));
 		assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
 		assert.strictEqual(await fs.readFile(path.join(dirPath, 'index.js'), 'utf8'), 'module.exports = () => 1;\n');
+		assert.deepStrictEqual(
+			(await fs.readdir(componentsRoot)).filter((entry) => !entry.startsWith('.')),
+			['web']
+		);
 
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});

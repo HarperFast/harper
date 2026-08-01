@@ -301,7 +301,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 					: dirname(resolveReferrer);
 				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
 				if (esmResolved) {
-					scope.recordModuleResolution?.(specifier, resolveReferrer, esmResolved);
 					return esmResolved;
 				}
 			}

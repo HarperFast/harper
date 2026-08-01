@@ -737,6 +737,7 @@ export async function extractApplication(application: Application) {
 	// A directory existed for this component name prior to this deploy, so this is a redeploy of
 	// an already-active component rather than a first-time deploy. See `isNewComponent` above.
 	if (asidePath) application.isNewComponent = false;
+	let tempDirPath: string | undefined;
 	try {
 		await mkdir(application.dirPath, { recursive: true });
 		await pipeline(tarball, gunzip(), extract(application.dirPath));
@@ -744,19 +745,33 @@ export async function extractApplication(application: Application) {
 		const extracted = await readdir(application.dirPath, { withFileTypes: true });
 		if (extracted.length === 1 && extracted[0].isDirectory()) {
 			const topLevelDirPath = join(application.dirPath, extracted[0].name);
-			const tempDirPath = await mkdtemp(application.dirPath);
+			tempDirPath = await mkdtemp(application.dirPath);
 			await cp(topLevelDirPath, tempDirPath, { recursive: true });
 			await rm(topLevelDirPath, { recursive: true, force: true });
 			await cp(tempDirPath, application.dirPath, { recursive: true });
 			await rm(tempDirPath, { recursive: true, force: true });
+			tempDirPath = undefined;
 		}
 	} catch (error) {
-		try {
-			await rm(application.dirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-			if (asidePath) await rename(asidePath, application.dirPath);
-		} catch (rollbackError) {
+		const rollbackErrors: unknown[] = [];
+		for (const path of [application.dirPath, tempDirPath]) {
+			if (!path) continue;
+			try {
+				await rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+			} catch (rollbackError) {
+				rollbackErrors.push(rollbackError);
+			}
+		}
+		if (asidePath) {
+			try {
+				await rename(asidePath, application.dirPath);
+			} catch (rollbackError) {
+				rollbackErrors.push(rollbackError);
+			}
+		}
+		if (rollbackErrors.length > 0) {
 			throw new AggregateError(
-				[error, rollbackError],
+				[error, ...rollbackErrors],
 				`Failed to extract ${application.name} and restore its previous component directory`
 			);
 		}
