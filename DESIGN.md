@@ -625,21 +625,21 @@ Three consequences worth knowing before touching packaging:
 - The Dockerfile extracts the local tarball into a project directory and runs `npm install` there
   (rather than `npm install --global <tarball>`), so it reads `npm-shrinkwrap.json` off disk like any
   checked-out project and gets version pinning (#1960). It does **not** get the omission half: `npm
-  install` (unlike a registry install of harper as *someone else's* dependency) reconciles the local
+install` (unlike a registry install of harper as _someone else's_ dependency) reconciles the local
   project's own `package.json` against the lockfile, and the packed `package.json` prunes nothing —
   only the shrinkwrap does. `alasql`'s packed manifest still declares the react-native-fs optional
   edge, so plain `npm install` silently re-adds that whole pruned subtree to satisfy it. Closing that
   gap needs `npm ci` against a package.json where `alasql`'s own packed manifest has also had the edge
   removed — a bigger change to the published tarball than this dance, and not yet done. The Dockerfile
-  does strip `devDependencies` from its *own extracted copy* of `package.json` before installing (not
+  does strip `devDependencies` from its _own extracted copy_ of `package.json` before installing (not
   the published tarball — registry consumers never see this) — not for `npm ci`'s sake, but because
   without it `npm install` still resolves dev edges to compute the ideal tree even under `--omit=dev`,
-  which could silently lift a *production* package that a devDependency also happens to want above its
+  which could silently lift a _production_ package that a devDependency also happens to want above its
   shrinkwrap pin. Confirmed empirically before landing: a hoisted production package's installed
   version tracked a devDependency's looser range instead of the shrinkwrap pin without this strip.
 - Pinning inverts the old incident-remediation path, worth knowing before reaching for it: before
   #1960, rebuilding the image picked up any newer in-range dependency automatically, which is how a
-  bad pin got fixed in production by "refresh/rebuild the image" alone. After #1960, the *pinned* part
+  bad pin got fixed in production by "refresh/rebuild the image" alone. After #1960, the _pinned_ part
   of the tree is frozen to the shrinkwrap, so a remediation of that shape now needs a lock bump and a
   re-release — a rebuild alone reproduces the same tree, bug included. This does **not** apply to the
   react-native residual two bullets up: that subtree is still re-resolved fresh on every build, so a

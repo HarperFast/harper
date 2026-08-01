@@ -46,13 +46,17 @@ const pins = {};
 for (const dep of CHECKED_DEPS) {
 	const pinned = packed.packages?.[`node_modules/${dep}`]?.version;
 	if (!pinned) {
-		console.error(`::error::${dep} not found in the packed shrinkwrap -- the check itself needs updating, not just the image`);
+		console.error(
+			`::error::${dep} not found in the packed shrinkwrap -- the check itself needs updating, not just the image`
+		);
 		failed = true;
 		continue;
 	}
 	const range = manifest.dependencies?.[dep];
 	if (!range) {
-		console.error(`::error::${dep} not found in package.json's dependencies -- the check itself needs updating, not just the image`);
+		console.error(
+			`::error::${dep} not found in package.json's dependencies -- the check itself needs updating, not just the image`
+		);
 		failed = true;
 		continue;
 	}
@@ -100,9 +104,13 @@ function verifyCanariesDiscriminate(pins) {
 			// the last array entry.
 			const out = execFileSync('npm', ['view', `${dep}@${range}`, 'version', '--json'], { encoding: 'utf8' });
 			const versions = JSON.parse(out);
-			rangeLatest[dep] = Array.isArray(versions) ? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max)) : versions;
+			rangeLatest[dep] = Array.isArray(versions)
+				? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max))
+				: versions;
 		} catch (e) {
-			console.log(`::warning::could not check registry-latest-in-range for ${dep}@${range} (${e.message}) -- skipping discrimination check for it`);
+			console.log(
+				`::warning::could not check registry-latest-in-range for ${dep}@${range} (${e.message}) -- skipping discrimination check for it`
+			);
 		}
 	}
 	const checkable = Object.keys(rangeLatest);
