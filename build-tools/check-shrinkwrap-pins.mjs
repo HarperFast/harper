@@ -39,6 +39,12 @@ if (!pkgRoot) {
 }
 
 const packed = JSON.parse(readFileSync(`${pkgRoot}/npm-shrinkwrap.packed.json`, 'utf8'));
+if (packed.lockfileVersion !== 3) {
+	console.error(
+		`::error::npm-shrinkwrap.packed.json has lockfileVersion ${packed.lockfileVersion}, expected 3 -- this script assumes the v3 "packages" map layout and would silently check nothing (or throw confusingly) against a different format`
+	);
+	process.exit(1);
+}
 const manifest = JSON.parse(readFileSync(`${pkgRoot}/package.json`, 'utf8'));
 
 let failed = false;
