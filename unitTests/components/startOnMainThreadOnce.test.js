@@ -32,7 +32,9 @@ describe('startOnMainThread once-per-component (#460)', function () {
 			if (key === 'MAX_HEADER_SIZE') return 8192;
 			if (key === 'HTTP_PORT') return 9925;
 			if (key === 'CUSTOM_FUNCTIONS') return false;
-			return '';
+			// Unknown keys must read as unset — '' is a real (and sometimes invalid)
+			// config value, e.g. storage.compression rejects '' as an algorithm name
+			return undefined;
 		});
 
 		const configUtils = require('#src/config/configUtils');

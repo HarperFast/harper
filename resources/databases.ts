@@ -176,8 +176,23 @@ export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>()
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
+/**
+ * Map a persisted (LMDB-era) compression value to what rocksdb-js accepts. Table metadata
+ * carries values where a defined falsy value (false, '') means compression was explicitly
+ * disabled and true/{ threshold, ... } mean enabled with defaults. rocksdb-js >= 2.6
+ * validates `compression` strictly and treats UNSET as "use the build default (lz4)", so
+ * disabled must be mapped to 'none' explicitly, and true to unset.
+ */
+export function toRocksCompression(compression: unknown): unknown {
+	if (compression === true) return undefined;
+	if (compression !== undefined && !compression) return 'none';
+	return compression;
+}
+
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
+	const legacyOptions = options as { compression?: unknown };
+	legacyOptions.compression = toRocksCompression(legacyOptions.compression);
 	// Apply read-only mode if enabled
 	if (isReadOnlyMode()) {
 		options.readOnly = true;
@@ -2265,7 +2280,9 @@ export function getDefaultCompression() {
 	if (STORAGE_COMPRESSION_DICTIONARY)
 		LMDB_COMPRESSION_OPTS['dictionary'] = readFileSync(STORAGE_COMPRESSION_DICTIONARY);
 	if (STORAGE_COMPRESSION_THRESHOLD) LMDB_COMPRESSION_OPTS['threshold'] = STORAGE_COMPRESSION_THRESHOLD;
-	return LMDB_COMPRESSION && LMDB_COMPRESSION_OPTS;
+	// normalize disabled to false so a falsy config value ('' or null) is never persisted
+	// into table metadata as-is (openRocksDatabase maps defined-falsy to 'none')
+	return LMDB_COMPRESSION ? LMDB_COMPRESSION_OPTS : false;
 }
 
 /**
