@@ -534,11 +534,38 @@ describe('Disconnect abort', () => {
 				await DisconnectResource.put(501, { name: 'orphaned' }, context);
 				ac.abort(); // simulate the client disconnecting mid-handler, after a write is staged
 				await delay(20); // give the handler a chance to keep running past the disconnect
+				// Check from INSIDE the still-running handler, not after transaction() settles: the point
+				// of this fix is releasing the intent promptly, not eventually (which onError's fallback
+				// abort() would also achieve, and wouldn't distinguish this from the pre-fix behavior).
+				assertChainReleased(context.transaction);
 			}),
 			/disconnected/
 		);
-		assertChainReleased(context.transaction);
 		assert.ok((await DisconnectResource.get(501)) == null, 'the orphaned write must not have been committed');
+	});
+
+	it('propagates disconnect poison to a database first touched after the disconnect (RocksDB)', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // LMDB already blocks via its own open===CLOSED check; see the note below
+		const OtherDisconnectResource = table({
+			table: 'OtherDisconnectTxnTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(510, { name: 'first table' }, context); // claims context.transaction
+				ac.abort();
+				await delay(10);
+				// touches a SECOND database for the first time, only after the head is already poisoned —
+				// without propagating `disconnected` onto the new `next` link, save() takes the
+				// immediateCommit path and this would silently commit (Table.ts's txnForContext)
+				await OtherDisconnectResource.put(511, { name: 'second table, too late' }, context);
+			}),
+			/disconnected/
+		);
+		assert.ok((await OtherDisconnectResource.get(511)) == null, 'the second table write must not commit either');
 	});
 
 	it('rejects a write staged after the disconnect instead of silently starting a fresh commit', async function () {
@@ -566,6 +593,44 @@ describe('Disconnect abort', () => {
 			await DisconnectResource.put(503, { name: 'normal' }, context);
 		});
 		assert.equal((await DisconnectResource.get(503))?.name, 'normal');
+	});
+
+	// A caching table's on-demand fill-from-source runs `getFromSource`'s OWN `transaction(sourceContext,
+	// ...)` (resources/Table.ts), a completely separate DatabaseTransaction from the requester's — with no
+	// `signal` of its own (`sourceContext` never carries one). So a slow source fetch triggered by a GET
+	// must keep filling the cache even after the requester who triggered it disconnects, exactly as before
+	// this change: nothing here should ever make a disconnect-driven cache miss look like a stampede.
+	it('still caches a slow source fill for later requesters even if the requesting client disconnects mid-fetch', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // caching tables: see unitTests/resources/caching.test.js
+		const CachingResource = table({
+			table: 'DisconnectCachingTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		let releaseSource;
+		CachingResource.sourcedFrom({
+			get(id) {
+				return new Promise((resolve) => {
+					releaseSource = () => resolve({ id, name: 'from-source-' + id });
+				});
+			},
+		});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		const getPromise = CachingResource.get(701, context);
+		await delay(10); // let the fetch reach the gated source call
+		ac.abort(); // the requesting client disconnects while the source fetch is still in flight
+		await delay(5);
+		releaseSource();
+		await assert.rejects(getPromise, /disconnected/); // the disconnected requester itself gets nothing back
+		// The cache fill commits via getFromSource's own background transaction (see the comment above),
+		// deliberately not awaited by the requester's own promise — give it a moment to land.
+		await delay(20);
+		assert.equal(
+			(await CachingResource.get(701, { onlyIfCached: true }))?.name,
+			'from-source-701',
+			'the fetched value must still be cached for a later requester'
+		);
 	});
 });
 

@@ -1654,12 +1654,19 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
 			cfg.wsHandler = (ws: any, upgrade: any) => {
 				try {
+					// Without a signal here, UwsRequest.signal falls back to a throwaway AbortController that
+					// nothing can ever fire — so per-message request-scoped transactions (resources/transaction.ts)
+					// never learn the socket closed (harper#2001). `ws` (UwsWebSocket) emits 'close' once uWS's
+					// own close callback fires; wire it the same way uwsServer.ts's HTTP path wires res.onAborted.
+					const ac = new AbortController();
+					ws.once('close', () => ac.abort());
 					const request: any = new UwsRequest({
 						method: 'GET',
 						url: upgrade.url,
 						headers: upgrade.headers,
 						secure,
 						ip: upgrade.ip,
+						signal: ac.signal,
 					});
 					request.isWebSocket = true;
 					const chainCompletion = httpChain[port](request);

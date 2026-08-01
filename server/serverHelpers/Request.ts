@@ -564,10 +564,14 @@ export class UwsRequest {
 		return this.#signal?.aborted ?? false;
 	}
 	get signal(): AbortSignal {
-		return this.#signal ?? new AbortController().signal;
+		// Cache the fallback rather than minting a new (permanently un-fireable) AbortController on every
+		// read: nothing external can ever signal a controller nobody kept a reference to, so a fresh one
+		// per call was pure waste, not a functional difference.
+		return (this.#signal ??= new AbortController().signal);
 	}
 	_abort(): void {
-		// Abort is driven by the uWS res.onAborted handler wired into the provided signal.
+		// Abort is driven externally, wired into the provided signal (uWS res.onAborted for plain HTTP,
+		// the ws adapter's 'close' event for WebSocket upgrades — see server/http.ts's wsHandler).
 	}
 	get nodeRequest() {
 		return null;

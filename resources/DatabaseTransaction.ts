@@ -250,16 +250,9 @@ export function transactionOpenTooLongError(): ServerError {
 	);
 }
 
-/**
- * Built when the request-scoped transaction is poisoned because its client disconnected before the
- * handler finished (see abortDueToDisconnect, harper#2001). There is no client left to receive this —
- * it only guards a handler that resumes after its client is gone from silently restaging writes onto
- * a fresh native transaction (the immediateCommit path in save()) that would then be held indefinitely
- * with nothing left to commit or time it out.
- */
+/** Thrown by a transaction poisoned via abortDueToDisconnect (see below) if still used afterward. */
 export function requestAbortedError(): ServerError {
-	// 499 (client closed request, the de facto nginx convention for this condition) rather than a
-	// retryable 503/408: there is no client to retry, and the condition is not transient.
+	// 499 (client closed request) rather than a retryable 503/408: no client is left to retry.
 	return new ServerError('Transaction was aborted because the client disconnected', 499);
 }
 
@@ -445,9 +438,8 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
-	// Set by abortDueToDisconnect when the request's client disconnects while this transaction is still
-	// open (harper#2001). Once poisoned, any further addWrite/commit throws requestAbortedError, mirroring
-	// timedOut above — the difference is only WHY the transaction was cut short.
+	// Set by abortDueToDisconnect (client disconnected while this transaction was still open). Mirrors
+	// timedOut above, throwing requestAbortedError instead — same shape, different reason.
 	declare disconnected?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
@@ -1422,51 +1414,33 @@ export class DatabaseTransaction implements Transaction {
 		return false;
 	}
 	/**
-	 * Abort and poison this transaction because it exceeded the open-transaction limit. The next write or
-	 * commit throws transactionOpenTooLongError so the request fails cleanly and rolls back, rather than the
-	 * monitor force-committing a partial write set on the application's behalf (issue #1407). The whole
-	 * multi-store `next` chain is poisoned and aborted: writes to a second database live on `next`, so
-	 * leaving it un-poisoned would let the head's commit cascade force-commit them (or orphan its resources
-	 * until it self-times-out).
+	 * Abort and poison this transaction (and its multi-store `next` chain) for `reason`, throwing on any
+	 * further addWrite/commit (transactionOpenTooLongError / requestAbortedError) rather than the monitor
+	 * force-committing a partial write set on the application's behalf (issue #1407) or a chain link
+	 * silently committing on behalf of a request that was supposed to have been cut off (harper#2001).
+	 * Poisons every link first, then aborts each — so a throw from one link's abort() can't leave a later
+	 * link un-poisoned and eligible for a commit cascade to force-commit it or leak its native handle.
 	 */
-	abortDueToTimeout(): void {
-		// Poison every link first, then abort each, so a throw from one link's abort() can't leave later links
-		// in the chain un-poisoned (and thus eligible to be force-committed by a later commit cascade).
+	abortAndPoison(reason: 'timedOut' | 'disconnected'): void {
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			txn.timedOut = true;
+			txn[reason] = true;
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			try {
 				txn.abort();
 			} catch (error) {
-				harperLogger.debug?.(`Error aborting timed-out transaction in chain: ${error.message}`);
+				harperLogger.debug?.(`Error aborting ${reason} transaction in chain`, error);
 			}
 		}
 	}
-	/**
-	 * Abort and poison this transaction (and its multi-store `next` chain) because the client that
-	 * started it disconnected while the handler was still running — e.g. mid-await inside a long-poll
-	 * loop, with a write already staged. Left alone, that staged write's native RocksDB write intent
-	 * would be held until the handler's own promise eventually settles (which, for a client that is
-	 * never coming back, may be never) or the long-transaction monitor's next cycle catches it — up to
-	 * STORAGE_MAXTRANSACTIONOPENTIME later. A later commit that conflicts with the held intent parks on
-	 * it in the interim (harper#2001: an orphaned intent held past a 12:44:00Z disconnect wedged a
-	 * commit that touched the same slot 27 seconds later). Same two-pass shape as abortDueToTimeout, for
-	 * the same reason: poison every link before aborting any of them.
-	 */
+	/** The long-transaction monitor calls this when a write-bearing transaction stays open too long. */
+	abortDueToTimeout(): void {
+		this.abortAndPoison('timedOut');
+	}
+	/** resources/transaction.ts calls this when the request's client disconnects mid-handler (harper#2001). */
 	abortDueToDisconnect(): void {
-		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			txn.disconnected = true;
-			txn.open = TRANSACTION_STATE.CLOSED;
-		}
-		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			try {
-				txn.abort();
-			} catch (error) {
-				harperLogger.debug?.(`Error aborting disconnected transaction in chain: ${error.message}`);
-			}
-		}
+		this.abortAndPoison('disconnected');
 	}
 	directCommitSync(): void {
 		const transaction = this.transaction;
