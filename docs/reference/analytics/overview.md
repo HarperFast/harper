@@ -171,29 +171,33 @@ Harper automatically tracks the following metrics for all services. Applications
 
 ### Resource Usage Metrics
 
-| `metric`                        | Key attributes                                                                                   | Other               | Unit    | Description                                                                                           |
-| ------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
-| `database-size`                 | `size`, `used`, `free`, `audit`                                                                  | `database`          | bytes   | Database file size breakdown                                                                          |
-| `main-thread-utilization`       | `idle`, `active`, `taskQueueLatency`, `rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers` | `time`              | various | Main thread resource usage: idle/active time, queue latency, and memory breakdown                     |
-| `read-transaction-queue-depth`  | `depth`, `maxDepth`                                                                              |                     | count   | Open read (snapshot) transactions (see [transaction queue depth](#transaction-queue-depth-metrics))   |
-| `resource-usage`                | (see below)                                                                                      |                     | various | Node.js process resource usage (see [resource-usage](#resource-usage-metric))                         |
-| `storage-volume`                | `available`, `free`, `size`                                                                      | `database`          | bytes   | Storage volume size breakdown                                                                         |
-| `table-size`                    | `size`                                                                                           | `database`, `table` | bytes   | Table file size                                                                                       |
-| `utilization`                   |                                                                                                  |                     | %       | Percentage of time the worker thread was processing requests                                          |
-| `write-transaction-queue-depth` | `depth`, `maxDepth`                                                                              |                     | count   | In-flight write transaction commits (see [transaction queue depth](#transaction-queue-depth-metrics)) |
+| `metric`                        | Key attributes                                                                                   | Other               | Unit    | Description                                                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
+| `database-size`                 | `size`, `used`, `free`, `audit`                                                                  | `database`          | bytes   | Database file size breakdown                                                                                          |
+| `main-thread-utilization`       | `idle`, `active`, `taskQueueLatency`, `rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers` | `time`              | various | Main thread resource usage: idle/active time, queue latency, and memory breakdown                                     |
+| `read-transaction-queue-depth`  | `depth`, `maxDepth`                                                                              |                     | count   | Open tracked read transactions (see [transaction queue depth](#transaction-queue-depth-metrics))                      |
+| `resource-usage`                | (see below)                                                                                      |                     | various | Node.js process resource usage (see [resource-usage](#resource-usage-metric))                                         |
+| `storage-volume`                | `available`, `free`, `size`                                                                      | `database`          | bytes   | Storage volume size breakdown                                                                                         |
+| `table-size`                    | `size`                                                                                           | `database`, `table` | bytes   | Table file size                                                                                                       |
+| `transaction-commit-time`       | `median`, `mean`, `p95`, `p90`                                                                   |                     | ms      | Duration from write commit submission to settlement (see [transaction queue depth](#transaction-queue-depth-metrics)) |
+| `utilization`                   |                                                                                                  |                     | %       | Percentage of time the worker thread was processing requests                                                          |
+| `write-transaction-queue-depth` | `depth`, `maxDepth`                                                                              |                     | count   | In-flight write transaction commits (see [transaction queue depth](#transaction-queue-depth-metrics))                 |
 
 #### Transaction Queue Depth Metrics
 
 <VersionBadge version="v5.2.0" />
 
 `write-transaction-queue-depth` and `read-transaction-queue-depth` expose how many transactions are
-in flight against the storage engine per worker thread — a concurrency and throughput signal, not a
-predictor of the `Outstanding write transactions have too long of queue, please try again later`
-(HTTP 503) rejection. That rejection is a duration check on a single outstanding commit
-(see [`storage.maxTransactionQueueTime`](../database/storage-tuning.md#storagemaxtransactionqueuetime),
-default 45s), not a function of concurrent commit count: a thread can carry a high `maxDepth` with
-fast commits and never trip it, or sit at `depth` of 1 for the full timeout and trip it while this
-metric barely moves.
+in flight against the storage engine per worker thread — a concurrency and throughput signal.
+`maxDepth` amplitude alone is not a reliable predictor of the `Outstanding write transactions have too
+long of queue, please try again later` (HTTP 503) rejection: a thread can carry a high `maxDepth` with
+fast commits and never trip it. But a single commit stuck in flight — the precondition for that
+rejection — does show up here as a distinguishing pattern: `depth` pinned at 1 or more across many
+consecutive raw samples (rather than a brief blip that clears) means a commit isn't settling. For a
+direct duration reading on that specific risk, use `transaction-commit-time`, which records each
+commit's submit-to-settle time on the same clock as the
+[`storage.maxTransactionQueueTime`](../database/storage-tuning.md#storagemaxtransactionqueuetime)
+check (default 45s) — a rising p99/p999 there is the leading indicator for the 503.
 
 | Field      | Unit  | Description                                       |
 | ---------- | ----- | ------------------------------------------------- |
@@ -201,14 +205,14 @@ metric barely moves.
 | `maxDepth` | count | High-water mark observed over the sampling period |
 
 - **`write-transaction-queue-depth`** counts write commits handed to the storage engine whose commit
-  promises have not yet settled — how many commits this thread is juggling concurrently, not how
-  close any one of them is to the 503 timeout. This is in-flight, not durability: under
-  `storage.writeAsync: true` a settled commit promise does not guarantee the write has been synced
-  to disk.
-- **`read-transaction-queue-depth`** counts concurrently open (snapshot) transactions. A high count
-  can mean either many short-lived reads or a few long-lived ones — the count alone can't
-  distinguish them, so use it as a concurrency signal; a metric with duration would be needed to spot
-  a single snapshot held open long enough to hold back compaction.
+  promises have not yet settled — how many commits this thread is juggling concurrently. This is
+  in-flight, not durability: under `storage.writeAsync: true` a settled commit promise does not
+  guarantee the write has been synced to disk.
+- **`read-transaction-queue-depth`** counts concurrently open tracked read transactions, including
+  ones opened with snapshot disabled. A high count can mean either many short-lived reads or a few
+  long-lived ones — the count alone can't distinguish them, so use it as a concurrency signal; a
+  duration-based metric would be needed to identify a single transaction held open long enough to
+  hold back compaction.
 
 Both metrics are tracked only on the RocksDB write/read path. On an LMDB-backed database
 (`storage.engine: lmdb`), `depth` and `maxDepth` for both metrics always read `0` — indistinguishable
@@ -220,12 +224,9 @@ source for spike detection. The aggregate `hdb_analytics` table is not a sum of 
 each thread's `maxDepth` is first averaged across its raw samples for the period, then those
 per-thread averages are summed — so a brief single-thread spike is diluted rather than preserved.
 Always alert on `hdb_raw_analytics.maxDepth` (or lower the sampling/aggregation period) rather than
-relying on the aggregate table to catch short spikes. A healthy system keeps
-`write-transaction-queue-depth.maxDepth` near zero; a sustained non-zero peak that trends upward
-indicates growing write concurrency worth investigating, but treat it as a throughput signal rather
-than an early warning for the 503 — that rejection depends on a single commit's duration, not on how
-many commits are queued. Tune the concrete alert threshold against a baseline for your workload,
-since absolute depth scales with worker-thread count and per-transaction size.
+relying on the aggregate table to catch short spikes. Tune the concrete alert threshold against a
+baseline for your workload, since absolute depth scales with worker-thread count and per-transaction
+size.
 
 #### `resource-usage` Metric
 
