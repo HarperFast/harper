@@ -5,7 +5,7 @@
  * Compression in RocksDB is a per-column-family property fixed while the CF is
  * open, so each codec gets its own Harper instance on a fresh data directory.
  * Every instance runs the identical workload against the identical generated
- * dataset (seeded PRNG), so the only variable is HARPER_STORAGE_ROCKS_COMPRESSION.
+ * dataset (seeded PRNG), so the only variable is `storage.rocks.compression`.
  *
  * Per codec the run reports:
  *   - insert / update / point-read / scan throughput through the REST interface
@@ -86,6 +86,7 @@ interface CliOptions {
 	blockCacheBytes: number;
 	warmup: number;
 	settleSeconds: number;
+	shutdownGraceMs: number;
 	maxErrorRate: number;
 	startupTimeoutMs: number;
 	out: string;
@@ -107,6 +108,7 @@ function parseOptions(): CliOptions {
 			'block-cache': { type: 'string', default: '67108864' },
 			'warmup': { type: 'string', default: '2000' },
 			'settle': { type: 'string', default: '45' },
+			'shutdown-grace': { type: 'string', default: '120000' },
 			'max-error-rate': { type: 'string', default: '0.005' },
 			'startup-timeout': { type: 'string', default: '180000' },
 			'out': { type: 'string', default: join(import.meta.dirname, 'results') },
@@ -139,6 +141,7 @@ function parseOptions(): CliOptions {
 		blockCacheBytes: Number(values['block-cache']),
 		warmup: Number(values.warmup),
 		settleSeconds: Number(values.settle),
+		shutdownGraceMs: Number(values['shutdown-grace']),
 		maxErrorRate: Number(values['max-error-rate']),
 		startupTimeoutMs: Number(values['startup-timeout']),
 		out: values.out as string,
@@ -551,17 +554,14 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 		logging: { level: 'warn' },
 		storage: {
 			rocks: {
+				compression: codec,
 				// Pinned so the read phase actually misses cache and pays for
 				// decompression; see the header note.
 				blockCacheSize: opts.blockCacheBytes,
 			},
 		},
 	};
-	// The codec is selected by environment variable, not config. Harper's main thread loads the
-	// storage layer during install, before a configured value is readable, while its worker threads
-	// load it afterwards; they share one process-wide RocksDB column-family registry, so a config
-	// value makes the threads disagree and the second open of `__dbis__` throws.
-	const env = { HARPER_STORAGE_ENGINE: 'rocksdb', HARPER_STORAGE_ROCKS_COMPRESSION: codec };
+	const env = { HARPER_STORAGE_ENGINE: 'rocksdb' };
 
 	await setupHarperWithFixture(ctx, APP_DIR, {
 		harperBinPath: HARPER_BIN,
@@ -591,15 +591,19 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 
 		// Warmup: untimed, and written to a key range the measured phases never
 		// touch, so it heats JIT/connections without seeding the measured set.
+		let warmupErrors = 0;
 		if (opts.warmup > 0) {
 			process.stdout.write(`[${label}] warmup ${opts.warmup.toLocaleString()} inserts...`);
-			await drive(
+			const warmupResult = await drive(
 				ep,
 				opts.warmup,
 				opts.concurrency,
 				(i) => request(ep, 'PUT', `/records/w${key(i)}`, bodies[i % bodies.length]),
 				false
 			);
+			// Retained, not discarded: warmup rows land in the same table and count toward
+			// logicalBytes, so a failed warmup insert shrinks the measured size just like any other.
+			warmupErrors = warmupResult.errors;
 			process.stdout.write(' done\n');
 		}
 
@@ -638,7 +642,10 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 			opts.concurrency,
 			async () => {
 				const start = key(Math.max(0, ((scanRand() * opts.records) | 0) - 50));
-				scanBytesRead += (await request(ep, 'GET', `/records/?id>=${start}&limit(50)`)) as number;
+				// Read, then add: `x += await f()` evaluates x before suspending, so the workers in
+				// flight would each add to the same stale value and lose most of the total.
+				const bytes = (await request(ep, 'GET', `/records/?id>=${start}&limit(50)`)) as number;
+				scanBytesRead += bytes;
 			},
 			true
 		);
@@ -655,14 +662,34 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 		);
 		process.stdout.write(` ${update.throughput.toFixed(0)} ops/s\n`);
 
+		// Sampled before shutdown: /proc entries vanish with the process, so the final flush's CPU
+		// cannot be attributed here. The label says "workload" for that reason.
 		const cpuAfter = await processTreeCpuSeconds(pid);
 		const cpuSeconds = cpuAfter - cpuBefore;
 		ep.agent.destroy();
 
-		// killHarper (not teardownHarper) — SIGTERM lets Harper flush memtables
-		// and close the column families, and leaves dataRootDir in place, which
-		// teardownHarper deletes.
-		await killHarper(ctx as never);
+		// killHarper (not teardownHarper) — SIGTERM lets Harper flush memtables and close the
+		// column families, and leaves dataRootDir in place, which teardownHarper deletes.
+		//
+		// The default grace is 5s, then SIGKILL. A large final flush routinely exceeds that, and a
+		// killed flush loses SST bytes that were never written — which this benchmark, having
+		// excluded WAL bytes, would report as the codec being smaller. Give the flush a
+		// benchmark-sized budget and confirm the process actually exited on its own.
+		const exited = new Promise<number | NodeJS.Signals | null>((resolve) => {
+			const child = started.harper.process as unknown as {
+				once(e: string, cb: (c: number | null, s: NodeJS.Signals | null) => void): void;
+			};
+			child.once('exit', (code, signal) => resolve(signal ?? code));
+		});
+		await killHarper(ctx as never, { graceMs: opts.shutdownGraceMs });
+		const exitStatus = await exited;
+		if (exitStatus === 'SIGKILL') {
+			throw new Error(
+				`[${label}] Harper did not shut down within ${opts.shutdownGraceMs}ms and was SIGKILLed; ` +
+					`its final flush is incomplete, so the on-disk size would understate this codec. ` +
+					`Re-run with a larger --shutdown-grace.`
+			);
+		}
 		const disk = await measureDisk(dataRootDir);
 
 		await teardownHarper(ctx as never);
@@ -671,14 +698,21 @@ async function runOne(opts: CliOptions, codec: string, dataset: string): Promise
 		// answering 503 rather than blocking. A run that tripped that measured
 		// backpressure, not the codec — and its on-disk size is missing whatever
 		// never landed, which would read as a spectacular compression ratio.
-		const attempted = opts.records + opts.reads + opts.scans + opts.updates;
-		const errors = insert.errors + read.errors + scan.errors + update.errors;
-		const errorRate = errors / attempted;
-		const valid = errorRate <= opts.maxErrorRate;
+		// Disk size is the primary result, so mutating requests are held to zero failures rather
+		// than a tolerance: a dropped insert removes a record from disk while logicalBytes still
+		// counts it, which reads as the codec compressing better. Reads and scans cannot affect
+		// what is stored, so they keep the tolerance.
+		const writeErrors = warmupErrors + insert.errors + update.errors;
+		const readAttempts = opts.reads + opts.scans;
+		const readErrors = read.errors + scan.errors;
+		const errorRate = (writeErrors + readErrors) / (opts.warmup + opts.records + opts.updates + readAttempts);
+		const valid = writeErrors === 0 && readErrors / Math.max(1, readAttempts) <= opts.maxErrorRate;
 		if (!valid) {
 			console.warn(
-				`[${label}] INVALID: ${errors.toLocaleString()}/${attempted.toLocaleString()} requests failed ` +
-					`(${(errorRate * 100).toFixed(1)}% > ${(opts.maxErrorRate * 100).toFixed(1)}% limit) — instance was shedding load`
+				`[${label}] INVALID: ${writeErrors.toLocaleString()} write failures (must be 0) and ` +
+					`${readErrors.toLocaleString()}/${readAttempts.toLocaleString()} read failures ` +
+					`(limit ${(opts.maxErrorRate * 100).toFixed(1)}%) — the instance shed load, so its on-disk ` +
+					`size is missing records that logicalBytes still counts`
 			);
 		}
 

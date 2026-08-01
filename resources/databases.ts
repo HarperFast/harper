@@ -99,47 +99,46 @@ const DEFINED_TABLES = Symbol('defined-tables');
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
 /**
- * The RocksDB block/blob codec for every column family this process opens, or `undefined` to leave
- * rocksdb-js on its own default (lz4 wherever the native build has it).
+ * The RocksDB block/blob codec for every column family this process opens (`storage.rocks.compression`),
+ * or `undefined` to leave rocksdb-js on its own default (lz4 wherever the native build has it).
  *
- * Env var rather than config, and resolved exactly once, both deliberately. RocksDB fixes a column
- * family's compression for as long as it is open and rejects a reopen that disagrees, and worker
- * threads share one process-wide column-family registry — so every thread has to arrive at the same
- * answer. Reading `storage.rocks.compression` from config does not: the main thread loads this
- * module during install, before that value is readable, while worker threads load it afterwards and
- * see it. The threads then disagree, `__dbis__` is opened at the build default and reopened as the
- * configured codec, and Harper dies with "The system database failed to load". The environment is
- * the one source every thread sees identically from the start. Wiring a config key to this needs
- * the configured value to be resolvable before the first column family opens.
+ * Resolved on the first open and then frozen, deliberately. RocksDB fixes a column family's codec
+ * for as long as it is open and rejects a reopen that disagrees, and Harper's worker threads share
+ * one process-wide column-family registry — so every open, in every thread, has to resolve the same
+ * value. Re-reading config per open does not guarantee that: on a fresh install the system families
+ * are created by `mountHdb()` before the config file exists, so the main thread would resolve
+ * nothing and the workers would resolve the configured codec, after which `__dbis__` cannot be
+ * reopened and Harper fails with "The system database failed to load". The installer stages this
+ * value before `mountHdb()` (see utility/install/installer.ts) so that first open already sees it.
  *
- * Leaving this unset does NOT apply the build default to an existing column family — RocksDB
- * persists the codec per family and a reopen without an explicit request inherits it. A database
- * created before the native build carried any codecs therefore stays uncompressed forever, however
- * new the binary is; setting this explicitly is the only thing that changes it.
- *
- * Even then it governs only files written afterwards. Existing SST/blob files keep their original
- * codec until something rewrites them, and `db.compact()` will not: rocksdb-js calls `CompactRange`
- * with default `CompactRangeOptions`, whose `bottommost_level_compaction` is
- * `kIfHaveCompactionFilter`, and Harper installs no compaction filter — so the bottommost level,
- * holding the bulk of the data, is skipped. Old data converts only as normal write traffic
- * rewrites it.
+ * Unset is NOT "use the build default" for a family that already exists — see toRocksCompression.
  */
-export const ROCKS_COMPRESSION: string | undefined = resolveRocksCompression();
+let resolvedRocksCompression: string | undefined;
+let rocksCompressionResolved = false;
 
-function resolveRocksCompression(): string | undefined {
-	const requested = process.env.HARPER_STORAGE_ROCKS_COMPRESSION?.trim().toLowerCase();
+export function getRocksCompression(): string | undefined {
+	if (!rocksCompressionResolved) {
+		resolvedRocksCompression = readRocksCompressionConfig();
+		rocksCompressionResolved = true;
+	}
+	return resolvedRocksCompression;
+}
+
+function readRocksCompressionConfig(): string | undefined {
+	const configured = envGet(CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION);
+	if (configured === undefined || configured === null || configured === '') return undefined;
+	const requested = String(configured).trim().toLowerCase();
 	if (!requested) return undefined;
-	// Reject here rather than at the first open: an unsupported name throws inside
-	// `RocksDatabase.open`, which surfaces as the system database failing to load partway through
-	// startup. `supportedCompression` varies with the native build, so a name that works on one
-	// platform's binding may not exist on another's.
+	// Rejected here rather than at the open: an unsupported name throws inside RocksDatabase.open,
+	// which surfaces as the system database failing to load partway through startup.
 	if (!supportedCompression.includes(requested)) {
 		throw new Error(
-			`HARPER_STORAGE_ROCKS_COMPRESSION="${requested}" is not available in this build of @harperfast/rocksdb-js. Supported: ${supportedCompression.join(', ')}`
+			`storage.rocks.compression="${requested}" is not available in this build of @harperfast/rocksdb-js. Supported: ${supportedCompression.join(', ')}`
 		);
 	}
 	return requested;
 }
+
 // I don't know if this is the best place for this, but somewhere we need to specify which tables
 // replicate by default:
 export const NON_REPLICATING_SYSTEM_TABLES = [
@@ -239,7 +238,7 @@ const DEFAULT_ENABLED_CODEC = supportedCompression.includes('lz4') ? 'lz4' : und
  * gets lz4. Naming the codec makes the setting mean the same thing in both cases.
  *
  * This governs newly written files; existing SSTs keep their codec until write traffic rewrites
- * them (`db.compact()` will not — see ROCKS_COMPRESSION above).
+ * them (`db.compact()` will not — see getRocksCompression above).
  */
 export function toRocksCompression(compression: unknown): unknown {
 	if (compression === undefined) return undefined;
@@ -257,7 +256,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	// A configured codec applies to every column family, overriding whatever per-table metadata
 	// carries — that metadata records the LMDB-era boolean, so without this there is no way to
 	// select a RocksDB codec for a deployment.
-	legacyOptions.compression = ROCKS_COMPRESSION ?? toRocksCompression(legacyOptions.compression);
+	legacyOptions.compression = getRocksCompression() ?? toRocksCompression(legacyOptions.compression);
 	// Apply read-only mode if enabled
 	if (isReadOnlyMode()) {
 		options.readOnly = true;

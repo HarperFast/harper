@@ -19,6 +19,7 @@ import * as hdbTerms from '../hdbTerms.ts';
 const { CONFIG_PARAMS } = hdbTerms;
 import installValidator from '../../validation/installValidator.ts';
 import mountHdb from '../mount_hdb.ts';
+import { composeConfigFromEnv } from '../../config/harperConfigEnvVars.ts';
 import * as configUtils from '../../config/configUtils.ts';
 import * as userOps from '../../security/user.ts';
 import * as roleOps from '../../security/role.ts';
@@ -197,6 +198,7 @@ async function install() {
 	}
 	envManager.setHdbBasePath(hdbRoot);
 	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, installParams.STORAGE_ENGINE);
+	stageRocksCompression();
 
 	// Creates the Harper project folder structure and the LMDB environments/dbis.
 	await mountHdb(hdbRoot);
@@ -575,6 +577,23 @@ export function applyInstallModeDefaults(args, defaultsMode) {
  * @param installParams
  * @returns {Promise<void>}
  */
+/**
+ * Make `storage.rocks.compression` readable before `mountHdb()` creates the system column families.
+ *
+ * The config file is not written until `createConfigFile()`, several steps after `mountHdb()`, but
+ * RocksDB fixes a column family's codec when the family is created and refuses a later reopen that
+ * asks for a different one — and worker threads share one process-wide family registry. Left
+ * unstaged, the main thread creates `__dbis__` at the build default while every worker resolves the
+ * configured codec, and Harper dies with "The system database failed to load". Staging it in the
+ * in-memory config here is the same trick the STORAGE_ENGINE line above uses.
+ */
+function stageRocksCompression() {
+	const configured = composeConfigFromEnv()?.storage?.rocks?.compression;
+	if (configured !== undefined && configured !== null && configured !== '') {
+		envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, configured);
+	}
+}
+
 async function createConfigFile(installParams) {
 	hdbLogger.trace('Creating Harper config file');
 	const args = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
