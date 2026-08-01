@@ -1,5 +1,7 @@
 'use strict';
 
+const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scopedImport } = require('#src/security/jsLoader');
@@ -117,6 +119,49 @@ describe('scopedImport', () => {
 		expect(loadedModules.some((url) => url.endsWith('/uses-dynamic-import.cjs'))).to.equal(true);
 		expect(loadedModules.some((url) => url.endsWith('/libgood.cjs'))).to.equal(true);
 		expect(resolutions.some(({ specifier }) => specifier === './libgood.cjs')).to.equal(true);
+	});
+
+	it('keeps app-local package imports in the observable loader', async () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-js-loader-imports-'));
+		try {
+			writeFileSync(
+				join(directory, 'package.json'),
+				JSON.stringify({
+					name: 'app-local-imports',
+					type: 'module',
+					imports: { '#helper': './helper.js' },
+					exports: { './self': './self.js' },
+				})
+			);
+			writeFileSync(
+				join(directory, 'entry.js'),
+				"export { value } from '#helper';\nexport { selfValue } from 'app-local-imports/self';\n"
+			);
+			writeFileSync(join(directory, 'helper.js'), 'export const value = 42;\n');
+			writeFileSync(join(directory, 'self.js'), 'export const selfValue = 84;\n');
+
+			const loadedModules = [];
+			const resolutions = [];
+			let nativeRuntime = false;
+			const result = await scopedImport(join(directory, 'entry.js'), {
+				mode: 'vm-current-context',
+				runtimeRoot: directory,
+				recordLoadedModule: (url) => loadedModules.push(url),
+				recordModuleResolution: (specifier, referrer, resolvedUrl) =>
+					resolutions.push({ specifier, referrer, resolvedUrl }),
+				markNativeRuntime: () => (nativeRuntime = true),
+			});
+
+			expect(result.value).to.equal(42);
+			expect(result.selfValue).to.equal(84);
+			expect(loadedModules.some((url) => url.endsWith('/helper.js'))).to.equal(true);
+			expect(loadedModules.some((url) => url.endsWith('/self.js'))).to.equal(true);
+			expect(resolutions.some(({ specifier }) => specifier === '#helper')).to.equal(true);
+			expect(resolutions.some(({ specifier }) => specifier === 'app-local-imports/self')).to.equal(true);
+			expect(nativeRuntime).to.equal(false);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });
 

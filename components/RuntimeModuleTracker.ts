@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
-import { lstat, readFile, readlink } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 type Source = string | Buffer;
 
-const RESOLUTION_EXTENSIONS = ['', '.js', '.json', '.node', '.ts', '.tsx', '.cjs', '.mjs'];
+const MODULE_COMPARE_CONCURRENCY = 16;
 
 export class RuntimeModuleTracker {
 	#getRoot: () => string | undefined;
@@ -45,7 +45,7 @@ export class RuntimeModuleTracker {
 		const referrerPath = this.#localPath(referrer);
 		if (!referrerPath || !this.#localPath(resolvedUrl)) return;
 		const key = `${referrerPath}\0${specifier}`;
-		if (!this.#resolutions.has(key)) this.#resolutions.set(key, resolutionFingerprint(specifier, referrerPath));
+		if (!this.#resolutions.has(key)) this.#resolutions.set(key, resolvedUrl);
 		if (this.#deployInFlight) this.#loadedDuringDeploy = true;
 	}
 
@@ -58,18 +58,30 @@ export class RuntimeModuleTracker {
 
 	async #compare(): Promise<boolean> {
 		if (this.#nativeRuntime || this.#loadedDuringDeploy) return true;
-		for (const [modulePath, previousDigest] of this.#modules) {
-			try {
-				if (digest(await readFile(modulePath)) !== previousDigest) return true;
-			} catch {
-				return true;
-			}
+		const modules = [...this.#modules];
+		for (let start = 0; start < modules.length; start += MODULE_COMPARE_CONCURRENCY) {
+			const changed = await Promise.all(
+				modules.slice(start, start + MODULE_COMPARE_CONCURRENCY).map(async ([modulePath, previousDigest]) => {
+					try {
+						return digest(await readFile(modulePath)) !== previousDigest;
+					} catch {
+						return true;
+					}
+				})
+			);
+			if (changed.includes(true)) return true;
 		}
-		for (const [key, previousFingerprint] of this.#resolutions) {
+		for (const [key, previousResolvedUrl] of this.#resolutions) {
 			const separator = key.indexOf('\0');
 			const referrerPath = key.slice(0, separator);
 			const specifier = key.slice(separator + 1);
-			if ((await resolutionFingerprintAsync(specifier, referrerPath)) !== previousFingerprint) return true;
+			try {
+				const resolved = createRequire(pathToFileURL(referrerPath)).resolve(specifier);
+				const resolvedUrl = isAbsolute(resolved) ? pathToFileURL(resolved).toString() : resolved;
+				if (resolvedUrl !== previousResolvedUrl) return true;
+			} catch {
+				return true;
+			}
 		}
 		return false;
 	}
@@ -85,58 +97,6 @@ export class RuntimeModuleTracker {
 			(!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath))
 		)
 			return modulePath;
-	}
-}
-
-function resolutionFingerprint(specifier: string, referrerPath: string): string {
-	return JSON.stringify(
-		resolutionCandidates(specifier, referrerPath).map((candidate) => [candidate, candidateState(candidate)])
-	);
-}
-
-async function resolutionFingerprintAsync(specifier: string, referrerPath: string): Promise<string> {
-	return JSON.stringify(
-		await Promise.all(
-			resolutionCandidates(specifier, referrerPath).map(async (candidate) => [
-				candidate,
-				await candidateStateAsync(candidate),
-			])
-		)
-	);
-}
-
-function resolutionCandidates(specifier: string, referrerPath: string): string[] {
-	const basePath = resolve(dirname(referrerPath), specifier);
-	const candidates = new Set<string>();
-	for (const extension of RESOLUTION_EXTENSIONS) candidates.add(basePath + extension);
-	candidates.add(resolve(basePath, 'package.json'));
-	for (const extension of RESOLUTION_EXTENSIONS.slice(1)) candidates.add(resolve(basePath, `index${extension}`));
-	return [...candidates];
-}
-
-function candidateState(path: string): string {
-	try {
-		const stats = lstatSync(path);
-		if (stats.isSymbolicLink()) return `link:${readlinkSync(path)}`;
-		if (stats.isDirectory()) return 'directory';
-		if (!stats.isFile()) return 'other';
-		return path.endsWith('package.json') ? `file:${digest(readFileSync(path))}` : 'file';
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
-		return `error:${(error as NodeJS.ErrnoException).code ?? 'unknown'}`;
-	}
-}
-
-async function candidateStateAsync(path: string): Promise<string> {
-	try {
-		const stats = await lstat(path);
-		if (stats.isSymbolicLink()) return `link:${await readlink(path)}`;
-		if (stats.isDirectory()) return 'directory';
-		if (!stats.isFile()) return 'other';
-		return path.endsWith('package.json') ? `file:${digest(await readFile(path))}` : 'file';
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
-		return `error:${(error as NodeJS.ErrnoException).code ?? 'unknown'}`;
 	}
 }
 

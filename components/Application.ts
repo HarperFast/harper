@@ -801,7 +801,9 @@ export async function installApplication(application: Application) {
 	try {
 		// Does node_modules exist?
 		await access(join(application.dirPath, 'node_modules'), constants.F_OK);
-		application.logger.info(`Application ${application.name} already has node_modules; skipping install`);
+		application.logger.info(
+			`Application ${application.name} already has node_modules; skipping install and treating the runtime as opaque for redeploy comparison`
+		);
 		application.installationIsOpaque = true;
 		return;
 	} catch (err) {

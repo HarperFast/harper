@@ -83,8 +83,7 @@ type RedeployScan = {
 	previousEntries: Map<string, EntrySnapshot>;
 	currentEntries: Map<string, EntrySnapshot>;
 	removalsEmitted: Set<string>;
-	readFailures: Set<string>;
-	readErrors: unknown[];
+	readFailures: Map<string, unknown>;
 };
 
 export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
@@ -243,6 +242,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			.then(
 				(contents) => {
 					if (generation !== this.#watchGeneration || this.#latestPathSequence.get(absolutePath) !== sequence) return;
+					if (this.#redeployScan?.generation === generation) this.#redeployScan.readFailures.delete(absolutePath);
 					const entry: AddFileEvent | ChangeFileEvent = {
 						eventType: event,
 						entryType: 'file',
@@ -260,12 +260,12 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				(error) => {
 					if (
 						generation !== this.#watchGeneration ||
+						this.#latestPathSequence.get(absolutePath) !== sequence ||
 						(error as NodeJS.ErrnoException | null | undefined)?.code === 'ENOENT'
 					)
 						return;
 					if (this.#redeployScan?.generation === generation) {
-						this.#redeployScan.readFailures.add(absolutePath);
-						this.#redeployScan.readErrors.push(error);
+						this.#redeployScan.readFailures.set(absolutePath, error);
 					} else {
 						this.#handleWatcherError(error);
 					}
@@ -310,8 +310,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			// A newer change read can supersede an initial add read for the same path. The consumer still
 			// needs its first event to be an add so it can load the entry before handling later changes.
 			if (entry.entryType === 'file' && entry.eventType === 'change' && !wasKnown)
-				this.#emitEntry({ ...entry, eventType: 'add' });
-			else this.#emitEntry(entry);
+				this.#emitEntrySafely({ ...entry, eventType: 'add' });
+			else this.#emitEntrySafely(entry);
 			return;
 		}
 
@@ -340,13 +340,13 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			previousEntry.entryType === 'file' &&
 			!previousEntry.digest.equals(snapshot.digest)
 		) {
-			this.#emitEntry({ ...entry, eventType: 'change' } as ChangeFileEvent);
+			this.#emitEntrySafely({ ...entry, eventType: 'change' } as ChangeFileEvent);
 		}
 	}
 
 	#emitAddition(entry: AddFileEvent | ChangeFileEvent | AddDirectoryEvent): void {
-		if (entry.entryType === 'file') this.#emitEntry({ ...entry, eventType: 'add' });
-		else this.#emitEntry({ ...entry, eventType: 'addDir' });
+		if (entry.entryType === 'file') this.#emitEntrySafely({ ...entry, eventType: 'add' });
+		else this.#emitEntrySafely({ ...entry, eventType: 'addDir' });
 	}
 
 	#handleRemovedEntry(generation: number, entry: UnlinkFileEvent | UnlinkDirectoryEvent): void {
@@ -356,14 +356,18 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		const scan = this.#redeployScan?.generation === generation ? this.#redeployScan : undefined;
 		if (!scan) {
 			this.#entries.delete(entry.absolutePath);
-			this.#emitEntry(entry);
+			this.#emitEntrySafely(entry);
 			return;
 		}
 
 		const knownEntry = scan.currentEntries.get(entry.absolutePath) ?? scan.previousEntries.get(entry.absolutePath);
 		scan.currentEntries.delete(entry.absolutePath);
 		if (!knownEntry || scan.removalsEmitted.has(entry.absolutePath)) return;
-		this.#emitRemoval(knownEntry, entry.absolutePath);
+		try {
+			this.#emitRemoval(knownEntry, entry.absolutePath);
+		} catch (error) {
+			this.#reportConsumerError(error);
+		}
 		scan.removalsEmitted.add(entry.absolutePath);
 	}
 
@@ -390,6 +394,14 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				break;
 			case 'unlinkDir':
 				this.emit('unlinkDir', entry);
+		}
+	}
+
+	#emitEntrySafely(entry: FileEntryEvent | DirectoryEntryEvent): void {
+		try {
+			this.#emitEntry(entry);
+		} catch (error) {
+			this.#reportConsumerError(error);
 		}
 	}
 
@@ -452,9 +464,9 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		const scan = this.#redeployScan;
 		if (!scan || scan.generation !== generation) return { listenerErrors: [], readErrors: [] };
 		const listenerErrors: unknown[] = [];
-		for (const absolutePath of scan.readFailures) {
+		for (const absolutePath of scan.readFailures.keys()) {
 			const previousEntry = scan.previousEntries.get(absolutePath);
-			if (previousEntry) scan.currentEntries.set(absolutePath, previousEntry);
+			if (previousEntry && !scan.currentEntries.has(absolutePath)) scan.currentEntries.set(absolutePath, previousEntry);
 		}
 		const missingEntries = [...scan.previousEntries].filter(
 			([absolutePath]) => !scan.currentEntries.has(absolutePath) && !scan.removalsEmitted.has(absolutePath)
@@ -472,7 +484,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				listenerErrors.push(error);
 			}
 		}
-		return { listenerErrors, readErrors: scan.readErrors };
+		return { listenerErrors, readErrors: [...scan.readFailures.values()] };
 	}
 
 	#observedEntries(): Map<string, EntrySnapshot> {
@@ -551,8 +563,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			previousEntries,
 			currentEntries: new Map(),
 			removalsEmitted: new Set(),
-			readFailures: new Set(),
-			readErrors: [],
+			readFailures: new Map(),
 		};
 
 		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));

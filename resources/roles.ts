@@ -14,10 +14,37 @@ const USERS_NOT_DBS: readonly string[] = RESERVED_DATABASE_NAMES;
  * definitions and ensure that they are created in the system database.
  */
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
+	const rolesByFile = new Map<string, Set<string>>();
 	scope.handleEntry(async (entry) => {
-		if (entry.entryType !== 'file' || entry.eventType === 'unlink') return;
-		return handleFile(entry.contents);
+		if (entry.entryType !== 'file') return;
+		const previousRoles = rolesByFile.get(entry.absolutePath) ?? new Set<string>();
+		if (entry.eventType === 'unlink') {
+			rolesByFile.delete(entry.absolutePath);
+			warnForStaleRoles(scope, previousRoles, rolesByFile);
+			return;
+		}
+		const currentRoles = await handleFile(entry.contents);
+		rolesByFile.set(entry.absolutePath, currentRoles);
+		warnForStaleRoles(
+			scope,
+			new Set([...previousRoles].filter((roleName) => !currentRoles.has(roleName))),
+			rolesByFile
+		);
 	});
+}
+
+function warnForStaleRoles(
+	scope: import('../components/Scope.ts').Scope,
+	removedRoles: Set<string>,
+	rolesByFile: Map<string, Set<string>>
+): void {
+	const stillDeclared = new Set<string>();
+	for (const roleNames of rolesByFile.values()) for (const roleName of roleNames) stillDeclared.add(roleName);
+	const staleRoles = [...removedRoles].filter((roleName) => !stillDeclared.has(roleName));
+	if (staleRoles.length === 0) return;
+	scope.logger.warn(
+		`Role definitions removed for ${staleRoles.join(', ')}; existing roles and grants remain active until explicitly altered or deleted`
+	);
 }
 
 /**
@@ -27,7 +54,9 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
  */
 async function handleFile(rolesContent) {
 	let rolesToDefine = parseDocument(rolesContent.toString(), { simpleKeys: true } as any).toJSON();
+	const roleNames = new Set<string>();
 	for (let roleName in rolesToDefine) {
+		roleNames.add(roleName);
 		let role = rolesToDefine[roleName];
 		if (!role.permission) {
 			// we allow the permission object to be collapsed into the root object for convenience
@@ -80,6 +109,7 @@ async function handleFile(rolesContent) {
 		role.role = role.id = roleName;
 		await ensureRole(role);
 	}
+	return roleNames;
 }
 async function ensureRole(role) {
 	const roleTable = getDatabases().system.hdb_role;

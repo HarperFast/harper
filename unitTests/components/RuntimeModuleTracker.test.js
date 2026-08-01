@@ -33,6 +33,16 @@ describe('RuntimeModuleTracker', () => {
 		assert.equal(await this.tracker.finishDeploy(), true);
 	});
 
+	it('compares the same raw bytes that the loader recorded', async () => {
+		const modulePath = join(this.directory, 'invalid-utf8.js');
+		const source = Buffer.from([0x2f, 0x2f, 0x20, 0xff, 0x0a]);
+		writeFileSync(modulePath, source);
+		this.tracker.recordModule(pathToFileURL(modulePath).href, source);
+
+		this.tracker.beginDeploy();
+		assert.equal(await this.tracker.finishDeploy(), false);
+	});
+
 	it('detects a new higher-priority extensionless resolution candidate', async () => {
 		const referrerPath = join(this.directory, 'resources.js');
 		const jsonPath = join(this.directory, 'helper.json');
