@@ -578,9 +578,15 @@ Three consequences worth knowing before touching packaging:
   post-processes it (dev prune #1783, react-native prune #1937) to enforce that it describes only the
   production tree a consumer installs. Anything added there must keep it internally consistent; a
   pruned entry that something still requires would ship a broken tree to every consumer.
-- The Dockerfile installs the local tarball, so it gets **none** of this: its dependency tree is
-  resolved fresh at image-build time against whatever is newest within our semver ranges, meaning the
-  image is not reproducible and does not match what npm consumers receive (#1960).
+- The Dockerfile extracts the local tarball into a project directory and runs `npm install` there
+  (rather than `npm install --global <tarball>`), so it reads `npm-shrinkwrap.json` off disk like any
+  checked-out project and gets version pinning (#1960). It does **not** get the omission half: `npm
+  install` (unlike a registry install of harper as *someone else's* dependency) reconciles the local
+  project's own `package.json` against the lockfile, and the packed `package.json` prunes nothing —
+  only the shrinkwrap does. `alasql`'s packed manifest still declares the react-native-fs optional
+  edge, so plain `npm install` silently re-adds that whole pruned subtree to satisfy it. Closing that
+  gap needs `npm ci` against a package.json where `alasql`'s own packed manifest has also had the edge
+  removed — a bigger change to the published tarball than this dance, and not yet done.
 
 ## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
 
