@@ -94,6 +94,56 @@ describe('extractApplication directory swap', () => {
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
 
+	it('atomically restores the previous tree when preparation fails under a live writer', async function () {
+		this.timeout(20000);
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-live-rollback-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const cacheDir = path.join(dirPath, '.next', 'cache');
+		await fs.mkdir(cacheDir, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.writeFile(path.join(dirPath, 'index.js'), 'module.exports = () => 1;\n');
+		const sourceDir = await makeFixture({
+			'package.json': '{"name":"web","version":"2.0.0"}\n',
+			'index.js': 'module.exports = () => 2;\n',
+		});
+		const app = new Application({
+			name: 'web',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		app.dirPath = dirPath;
+
+		let writing = true;
+		const writer = (async () => {
+			let writes = 0;
+			while (writing) {
+				try {
+					await fs.mkdir(cacheDir, { recursive: true });
+					await fs.writeFile(path.join(cacheDir, `live-${writes++}`), 'data');
+				} catch {
+					/* directory swapped between writes */
+				}
+			}
+		})();
+
+		try {
+			const extraction = await extractApplication(app, true);
+			await extraction.rollback();
+		} finally {
+			writing = false;
+			await writer;
+		}
+
+		assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+		assert.strictEqual(await fs.readFile(path.join(dirPath, 'index.js'), 'utf8'), 'module.exports = () => 1;\n');
+		assert.deepStrictEqual(
+			(await fs.readdir(componentsRoot)).filter((entry) => !entry.startsWith('.')),
+			['web']
+		);
+
+		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		await fs.rm(sourceDir, { recursive: true, force: true });
+	});
+
 	it('reclaims a stale aside copy left by an earlier deploy', async function () {
 		this.timeout(20000);
 

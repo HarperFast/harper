@@ -312,7 +312,7 @@ describe('static plugin ordering live reload', () => {
 		assert.equal(state.restartRequests, 1);
 	});
 
-	it('keeps serving the registered route while a urlPath restart is pending', () => {
+	it('applies removals but ignores additions while a urlPath restart is pending', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);
 		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
@@ -322,9 +322,16 @@ describe('static plugin ordering live reload', () => {
 		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/new/asset.js' });
 
 		const fallthrough = Symbol('fallthrough');
-		assert.notStrictEqual(
+		assert.strictEqual(
 			state.listener(
 				{ method: 'GET', isWebSocket: false, pathname: '/asset.js', url: '/asset.js', headers: {} },
+				() => fallthrough
+			),
+			fallthrough
+		);
+		assert.strictEqual(
+			state.listener(
+				{ method: 'GET', isWebSocket: false, pathname: '/new/asset.js', url: '/new/asset.js', headers: {} },
 				() => fallthrough
 			),
 			fallthrough

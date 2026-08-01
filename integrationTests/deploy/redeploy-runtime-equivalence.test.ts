@@ -1,5 +1,5 @@
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { ok, rejects, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -325,6 +325,7 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 	});
 
 	test('changing only import-only dependency source requests restart', async () => {
+		strictEqual(await getRestartRequired(ctx), false);
 		await operation(ctx, {
 			operation: 'deploy_component',
 			project: PURE_ESM_PROJECT,
@@ -357,7 +358,24 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 		strictEqual(await getRestartRequired(ctx), false);
 	});
 
+	test('a failed dependency install restores the loaded component tree', async () => {
+		await rejects(
+			operation(ctx, {
+				operation: 'deploy_component',
+				project: PACKAGE_METADATA_PROJECT,
+				payload: await buildPackageMetadataPayload(2, true),
+				restart: false,
+				install_command: 'sh -c "exit 1"',
+				install_timeout: 30_000,
+			}),
+			/operation deploy_component failed with 500/
+		);
+		strictEqual(await getRestartRequired(ctx), false);
+		strictEqual(await readResourceVersion(ctx, 'MetadataVersion'), 1);
+	});
+
 	test('a changed installed dependency requests restart', async () => {
+		strictEqual(await getRestartRequired(ctx), false);
 		await operation(ctx, {
 			operation: 'deploy_component',
 			project: PACKAGE_METADATA_PROJECT,

@@ -483,6 +483,11 @@ const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
 
+type ExtractionTransaction = {
+	commit(): Promise<void>;
+	rollback(): Promise<void>;
+};
+
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
 // module (both in source and in dist), holds no secret, and is inert without a live session.
 export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.js');
@@ -588,7 +593,10 @@ function canonicalizeJSON(value: any): any {
  * This method may be called from any Harper thread. Same-component calls are serialized across
  * threads by the preparation lock below.
  */
-export async function extractApplication(application: Application) {
+export async function extractApplication(
+	application: Application,
+	deferCommit = false
+): Promise<ExtractionTransaction | undefined> {
 	// Can't specify neither
 	if (!application.payload && !application.packageIdentifier) {
 		throw new Error('Either payload or package must be provided');
@@ -737,7 +745,6 @@ export async function extractApplication(application: Application) {
 	// A directory existed for this component name prior to this deploy, so this is a redeploy of
 	// an already-active component rather than a first-time deploy. See `isNewComponent` above.
 	if (asidePath) application.isNewComponent = false;
-	let tempDirPath: string | undefined;
 	try {
 		await mkdir(application.dirPath, { recursive: true });
 		await pipeline(tarball, gunzip(), extract(application.dirPath));
@@ -746,33 +753,18 @@ export async function extractApplication(application: Application) {
 		if (extracted.length === 1 && extracted[0].isDirectory()) {
 			const topLevelDirPath = join(application.dirPath, extracted[0].name);
 			await mkdir(asideStagingDir, { recursive: true });
-			tempDirPath = await mkdtemp(join(asideStagingDir, '.normalize-'));
+			const tempDirPath = await mkdtemp(join(asideStagingDir, '.normalize-'));
 			await cp(topLevelDirPath, tempDirPath, { recursive: true });
 			await rm(topLevelDirPath, { recursive: true, force: true });
 			await cp(tempDirPath, application.dirPath, { recursive: true });
 			await rm(tempDirPath, { recursive: true, force: true });
-			tempDirPath = undefined;
 		}
 	} catch (error) {
-		const rollbackErrors: unknown[] = [];
-		for (const path of [application.dirPath, tempDirPath]) {
-			if (!path) continue;
-			try {
-				await rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-			} catch (rollbackError) {
-				rollbackErrors.push(rollbackError);
-			}
-		}
-		if (asidePath) {
-			try {
-				await rename(asidePath, application.dirPath);
-			} catch (rollbackError) {
-				rollbackErrors.push(rollbackError);
-			}
-		}
-		if (rollbackErrors.length > 0) {
+		try {
+			await rollbackExtractedDirectory(application, asideStagingDir, asidePath);
+		} catch (rollbackError) {
 			throw new AggregateError(
-				[error, ...rollbackErrors],
+				[error, rollbackError],
 				`Failed to extract ${application.name} and restore its previous component directory`
 			);
 		}
@@ -789,9 +781,65 @@ export async function extractApplication(application: Application) {
 	// earlier deploys whose workers have since exited, and a copy that survives because
 	// its worker is still live is swept by the next deploy. The failure is expected in
 	// the live-worker case, so it's logged at trace rather than as a warning.
-	rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
-		logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
-	);
+	let settled = false;
+	const transaction: ExtractionTransaction = {
+		async commit() {
+			if (settled) return;
+			settled = true;
+			await cleanupExtractionStaging(application, asideStagingDir);
+		},
+		async rollback() {
+			if (settled) return;
+			settled = true;
+			await rollbackExtractedDirectory(application, asideStagingDir, asidePath);
+		},
+	};
+	if (deferCommit) return transaction;
+	await transaction.commit();
+}
+
+async function cleanupExtractionStaging(application: Application, asideStagingDir: string): Promise<void> {
+	try {
+		await rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+	} catch (error) {
+		logger.trace?.(`Cleanup of previous ${application.name} component directory deferred: ${error.message}`);
+	}
+}
+
+async function rollbackExtractedDirectory(
+	application: Application,
+	asideStagingDir: string,
+	asidePath: string | undefined
+): Promise<void> {
+	await mkdir(asideStagingDir, { recursive: true });
+	const displaceCurrentDirectory = async () => {
+		const displacedPath = join(asideStagingDir, `.failed-${process.pid}-${Date.now()}-${randomUUID()}`);
+		try {
+			await rename(application.dirPath, displacedPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		}
+	};
+
+	await displaceCurrentDirectory();
+	if (asidePath) {
+		let restored = false;
+		let restoreError: unknown;
+		for (let attempt = 0; attempt < 100; attempt++) {
+			try {
+				await rename(asidePath, application.dirPath);
+				restored = true;
+				break;
+			} catch (error) {
+				restoreError = error;
+				if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) break;
+				await displaceCurrentDirectory();
+			}
+		}
+		if (!restored) throw restoreError;
+	}
+
+	await cleanupExtractionStaging(application, asideStagingDir);
 }
 
 /**
@@ -1179,6 +1227,7 @@ export async function prepareApplication(application: Application) {
 			application.dirPath,
 			async () => {
 				const previousPackageMetadata = await readInstalledPackageMetadata(application.dirPath);
+				let extraction: ExtractionTransaction | undefined;
 				try {
 					// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
 					// `npm install` authenticate against the private registry; always remove it afterward.
@@ -1189,7 +1238,7 @@ export async function prepareApplication(application: Application) {
 						// already gone by the time the component's dependency tree (and any install script it is
 						// allowed to run) executes.
 						await application.startGitCredentialSession();
-						await extractApplication(application);
+						extraction = await extractApplication(application, true);
 					} finally {
 						await application.cleanupGitCredentialSession();
 					}
@@ -1202,6 +1251,17 @@ export async function prepareApplication(application: Application) {
 							application.installationIsOpaque
 						);
 					}
+					await extraction?.commit();
+				} catch (error) {
+					try {
+						await extraction?.rollback();
+					} catch (rollbackError) {
+						throw new AggregateError(
+							[error, rollbackError],
+							`Failed to prepare ${application.name} and restore its previous component directory`
+						);
+					}
+					throw error;
 				} finally {
 					await application.cleanupTransientNpmrc();
 				}

@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { access, mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
+const { access, mkdir, mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 
@@ -20,6 +20,30 @@ async function makePayload(rootDir, name, version, installScript) {
 }
 
 describe('prepareApplication serialization', () => {
+	it('restores the loaded component tree when installation fails', async function () {
+		this.timeout(10000);
+		const rootDir = await mkdtemp(join(tmpdir(), 'prepare-application-rollback-'));
+		const componentDirPath = join(rootDir, 'shared');
+		await mkdir(componentDirPath, { recursive: true });
+		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shared', version: '1.0.0' }));
+		await writeFile(join(componentDirPath, 'index.js'), 'module.exports = 1;\n');
+
+		const failedApplication = new Application({
+			name: 'shared',
+			payload: await makePayload(rootDir, 'shared', '2.0.0', 'process.exit(2);'),
+			install: { command: 'node install.js', timeout: 5000 },
+		});
+		failedApplication.dirPath = componentDirPath;
+
+		try {
+			await assert.rejects(() => prepareApplication(failedApplication), /Failed to install dependencies/);
+			assert.equal(JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			assert.equal(await readFile(join(componentDirPath, 'index.js'), 'utf8'), 'module.exports = 1;\n');
+		} finally {
+			await rm(rootDir, { recursive: true, force: true });
+		}
+	});
+
 	it('keeps extraction and installation ordered for the same component directory', async function () {
 		this.timeout(10000);
 		const rootDir = await mkdtemp(join(tmpdir(), 'prepare-application-serialization-'));
