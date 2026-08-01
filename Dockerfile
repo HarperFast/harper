@@ -71,6 +71,16 @@ RUN <<-EOF
   # post-install comparison against this file would just compare npm's output to itself.
   # Freeze the packed pins before install so CI can verify against what was actually shipped.
   cp npm-shrinkwrap.json npm-shrinkwrap.packed.json
+  # The packed package.json still lists devDependencies (only the shrinkwrap is pruned of
+  # them) -- this is fine for registry consumers, who install harper as a dependency and
+  # never touch its devDependencies at all, but it's not fine here: `npm install` treats
+  # this extracted copy as its own project and still resolves dev edges to compute the
+  # ideal tree even under --omit=dev, which can silently lift a *production* package (one
+  # a devDependency also happens to want) above its shrinkwrap pin, and forces a network
+  # fetch of every dev package's manifest (including a devDependency pinned to a GitHub
+  # tarball URL) for packages that never end up installed. Stripping devDependencies here
+  # only affects this ephemeral extracted copy, not the published tarball.
+  node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));delete p.devDependencies;fs.writeFileSync('package.json', JSON.stringify(p, null, 2));"
   npm install --omit=dev --ignore-scripts --no-audit --no-fund
   npm cache clean --force
   mkdir -p "$NPM_CONFIG_PREFIX/bin"
