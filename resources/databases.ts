@@ -112,8 +112,17 @@ initSync();
  * the one source every thread sees identically from the start. Wiring a config key to this needs
  * the configured value to be resolvable before the first column family opens.
  *
- * Changing this governs files written afterwards; existing SST/blob files keep their original codec
- * until compaction rewrites them.
+ * Leaving this unset does NOT apply the build default to an existing column family — RocksDB
+ * persists the codec per family and a reopen without an explicit request inherits it. A database
+ * created before the native build carried any codecs therefore stays uncompressed forever, however
+ * new the binary is; setting this explicitly is the only thing that changes it.
+ *
+ * Even then it governs only files written afterwards. Existing SST/blob files keep their original
+ * codec until something rewrites them, and `db.compact()` will not: rocksdb-js calls `CompactRange`
+ * with default `CompactRangeOptions`, whose `bottommost_level_compaction` is
+ * `kIfHaveCompactionFilter`, and Harper installs no compaction filter — so the bottommost level,
+ * holding the bulk of the data, is skipped. Old data converts only as normal write traffic
+ * rewrites it.
  */
 export const ROCKS_COMPRESSION: string | undefined = resolveRocksCompression();
 
