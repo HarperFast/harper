@@ -65,11 +65,12 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 > closure, and `primaryStore.getEntry` is version-guarded — so identity implies equal content. Pinned by
 > `unitTests/resources/subscriptionValueIdentity.test.js`.
 >
-> Rather than leave that as a rule custom Resources have to know, sharing is **gated on provenance**:
-> `DurableSubscriptionsSession` forwards the event's record `version` to the delivery listener, and only
-> events carrying one are shared. A Resource yielding its own envelope has no version, so it falls back
-> to per-subscriber serialization and can mutate and re-send one object safely — it just does not get
-> the fan-out saving.
+> Rather than leave that as a rule custom Resources have to know, the event's record `version` is part
+> of the cache key: `DurableSubscriptionsSession` forwards it to the delivery listener, and an entry
+> whose version does not match is re-encoded. A Resource that reuses one envelope but advances the
+> version is therefore correct, not merely disallowed; one that supplies no version is not shared at
+> all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
+> indistinguishable from re-sending the same message.
 
 ### Threads
 

@@ -43,9 +43,10 @@ const PASS_THROUGH = function passThrough() {};
 // miss (a primitive message, or a store cache eviction between subscribers) only costs the
 // redundant encode we have today rather than yielding stale bytes.
 //
-// A custom Resource that sends a MUTABLE object it later mutates in place and re-sends breaks that
-// contract and would deliver the earlier bytes. Emit a new object per message instead of reusing
-// one envelope — the same rule record objects already follow.
+// A custom Resource is not bound by that, so identity alone is not trusted: the event's record
+// version is part of the key (see getSharedMessageEncoding), which makes reusing one envelope
+// across publishes correct as long as the version advances, and refuses to share at all when there
+// is no version to tell one publish from the next.
 //
 // Retention is bounded by rotating generations rather than by the message object's lifetime: for
 // record events the message IS the store's cached record, so hanging encodings off it alone would
