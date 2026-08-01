@@ -15,19 +15,30 @@
 // after the deploy the watcher compares the new tree with its retained snapshot
 // and emits the same logical add/change/unlink events consumers saw before #1806.
 //
-// State sharing across threads is intentionally narrow: the local Set of
-// in-flight component names is rebuilt from the broadcast stream. Plugins that
-// need to gate their own work on deploy progress import `deployLifecycle` and
-// listen to the events directly.
+// State sharing across threads is intentionally narrow: local deployment-owner
+// records are rebuilt from the broadcast stream and reclaimed when their owner
+// thread exits. Plugins that need to gate their own work on deploy progress
+// import `deployLifecycle` and listen to the events directly.
 
 import { EventEmitter } from 'node:events';
-import { isMainThread } from 'node:worker_threads';
-import { broadcast, broadcastWithAcknowledgement, onMessageByType } from '../server/threads/manageThreads.js';
+import { randomUUID } from 'node:crypto';
+import { isMainThread, threadId } from 'node:worker_threads';
+import {
+	broadcast,
+	broadcastWithAcknowledgement,
+	onMessageByType,
+	onThreadExit,
+} from '../server/threads/manageThreads.js';
 
 const DEPLOY_LIFECYCLE_MSG = 'harper:deploy:lifecycle';
 
 export type DeployPhase = 'start' | 'end';
-export type DeployLifecycleEvent = { name: string; phase: DeployPhase };
+export type DeployLifecycleEvent = {
+	name: string;
+	phase: DeployPhase;
+	deploymentId?: string;
+	ownerThreadId?: number;
+};
 
 type DeployLifecycleEventsMap = {
 	'deploy:start': [componentName: string];
@@ -35,39 +46,69 @@ type DeployLifecycleEventsMap = {
 };
 
 class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
-	// Ref-counts in-flight deploys per component. Concurrent deploys of the
-	// same name (rare, but possible if an operator queues two before the first
-	// resolves) overlap: 0→1 fires deploy:start, 1→0 fires deploy:end. Any
-	// intermediate increment/decrement is silent so watchers aren't toggled
-	// out from under an active deploy by a peer ending early.
-	#inFlight = new Map<string, number>();
+	#deployments = new Map<string, { name: string; ownerThreadId: number }>();
+	#byComponent = new Map<string, Set<string>>();
+	#deadOwners = new Set<number>();
+	#legacyDeployments = new Map<string, string[]>();
+	#legacySequence = 0;
 
 	isDeployInFlight(componentName: string): boolean {
-		return (this.#inFlight.get(componentName) ?? 0) > 0;
+		return (this.#byComponent.get(componentName)?.size ?? 0) > 0;
 	}
 
 	// Process a deploy lifecycle event in-process. Called both from the
 	// broadcast receiver (for events originating on another thread) and from
 	// the broadcaster (so the originating thread also reacts locally).
 	_handle(event: DeployLifecycleEvent): void {
-		const current = this.#inFlight.get(event.name) ?? 0;
+		const ownerThreadId = event.ownerThreadId ?? threadId;
+		let deploymentId = event.deploymentId;
 		if (event.phase === 'start') {
-			this.#inFlight.set(event.name, current + 1);
-			if (current === 0) this.emit('deploy:start', event.name);
-		} else {
-			const next = Math.max(0, current - 1);
-			if (next === 0) {
-				this.#inFlight.delete(event.name);
-				if (current > 0) this.emit('deploy:end', event.name);
-			} else {
-				this.#inFlight.set(event.name, next);
+			if (this.#deadOwners.has(ownerThreadId)) return;
+			if (!deploymentId) {
+				deploymentId = `legacy:${threadId}:${++this.#legacySequence}`;
+				const legacy = this.#legacyDeployments.get(event.name) ?? [];
+				legacy.push(deploymentId);
+				this.#legacyDeployments.set(event.name, legacy);
 			}
+			if (this.#deployments.has(deploymentId)) return;
+			const active = this.#byComponent.get(event.name) ?? new Set<string>();
+			this.#deployments.set(deploymentId, { name: event.name, ownerThreadId });
+			this.#byComponent.set(event.name, active);
+			active.add(deploymentId);
+			if (active.size === 1) this.emit('deploy:start', event.name);
+			return;
+		}
+		if (!deploymentId) deploymentId = this.#legacyDeployments.get(event.name)?.pop();
+		if (deploymentId) this.#removeDeployment(deploymentId);
+	}
+
+	_reclaimOwner(ownerThreadId: number): void {
+		this.#deadOwners.add(ownerThreadId);
+		for (const [deploymentId, deployment] of this.#deployments) {
+			if (deployment.ownerThreadId === ownerThreadId) this.#removeDeployment(deploymentId);
+		}
+	}
+
+	#removeDeployment(deploymentId: string): void {
+		const deployment = this.#deployments.get(deploymentId);
+		if (!deployment) return;
+		this.#deployments.delete(deploymentId);
+		const active = this.#byComponent.get(deployment.name);
+		if (!active) return;
+		active.delete(deploymentId);
+		if (active.size === 0) {
+			this.#byComponent.delete(deployment.name);
+			this.emit('deploy:end', deployment.name);
 		}
 	}
 
 	// Test-only: clear in-flight state without firing events.
 	_clearForTests(): void {
-		this.#inFlight.clear();
+		this.#deployments.clear();
+		this.#byComponent.clear();
+		this.#deadOwners.clear();
+		this.#legacyDeployments.clear();
+		this.#legacySequence = 0;
 	}
 }
 
@@ -88,6 +129,7 @@ function ensureReceiver() {
 // suppress only the main thread's watchers and the worker watchers would keep
 // firing restart storms (harper#488).
 ensureReceiver();
+onThreadExit((deadThreadId: number) => deployLifecycle._reclaimOwner(deadThreadId));
 
 /**
  * Announce the start of a deploy for `componentName`. Awaits acknowledgement
@@ -98,9 +140,10 @@ ensureReceiver();
  * component compose correctly (each call must be paired with exactly one
  * broadcastDeployEnd).
  */
-export async function broadcastDeployStart(componentName: string): Promise<void> {
+export async function broadcastDeployStart(componentName: string): Promise<string> {
 	ensureReceiver();
-	const event: DeployLifecycleEvent = { name: componentName, phase: 'start' };
+	const deploymentId = randomUUID();
+	const event: DeployLifecycleEvent = { name: componentName, phase: 'start', deploymentId, ownerThreadId: threadId };
 	deployLifecycle._handle(event); // local thread first
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -125,6 +168,7 @@ export async function broadcastDeployStart(componentName: string): Promise<void>
 	} finally {
 		if (timer) clearTimeout(timer);
 	}
+	return deploymentId;
 }
 
 /**
@@ -135,9 +179,9 @@ export async function broadcastDeployStart(componentName: string): Promise<void>
  * Must be called exactly once per matching broadcastDeployStart, even if the
  * deploy errored — typically from a `finally` block.
  */
-export function broadcastDeployEnd(componentName: string): void {
+export function broadcastDeployEnd(componentName: string, deploymentId: string): void {
 	ensureReceiver();
-	const event: DeployLifecycleEvent = { name: componentName, phase: 'end' };
+	const event: DeployLifecycleEvent = { name: componentName, phase: 'end', deploymentId, ownerThreadId: threadId };
 	deployLifecycle._handle(event);
 	try {
 		void broadcast({ type: DEPLOY_LIFECYCLE_MSG, event }, false);

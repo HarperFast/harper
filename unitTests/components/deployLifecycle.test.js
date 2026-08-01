@@ -75,5 +75,58 @@ describe('deployLifecycle', () => {
 			assert.equal(endSpy.callCount, 0);
 			assert.equal(deployLifecycle.isDeployInFlight('never-started'), false);
 		});
+
+		it('ends a deploy when its owner thread exits', () => {
+			const endSpy = require('sinon').spy();
+			deployLifecycle.on('deploy:end', endSpy);
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'dead-deploy',
+				ownerThreadId: 41,
+			});
+
+			deployLifecycle._reclaimOwner(41);
+
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
+			assert.equal(endSpy.callCount, 1);
+		});
+
+		it('keeps an overlapping live-owner deploy active and ignores late starts from a dead owner', () => {
+			const endSpy = require('sinon').spy();
+			deployLifecycle.on('deploy:end', endSpy);
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'dead-deploy',
+				ownerThreadId: 41,
+			});
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'live-deploy',
+				ownerThreadId: 42,
+			});
+
+			deployLifecycle._reclaimOwner(41);
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
+			assert.equal(endSpy.callCount, 0);
+
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'late-deploy',
+				ownerThreadId: 41,
+			});
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'end',
+				deploymentId: 'live-deploy',
+				ownerThreadId: 42,
+			});
+
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
+			assert.equal(endSpy.callCount, 1);
+		});
 	});
 });
