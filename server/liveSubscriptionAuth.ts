@@ -205,36 +205,6 @@ export function registerLiveSubscription(opts: {
 	return { unregister };
 }
 
-/**
- * Remove `entry` and run its terminate/revoke, but only commit the removal once terminate actually
- * settles successfully (or times out — see below) — and only if the caller hasn't already
- * unregistered this entry itself (checked via `registry.has`, not a delete-then-restore, so a failed
- * attempt never revisits the entry within the same sweep pass; it's simply left in place for the
- * next one). This makes revocation fail-closed on *tracking*: a `revoke` that throws, rejects, or
- * never settles (e.g. a shared-feed refcount release hitting a wedged backing store) leaves the entry
- * registered instead of being forgotten, so the next sweep retries — recheck fails the same way, so
- * the retry converges once teardown succeeds. The `info` log on success reports that terminate was
- * *invoked without error*, not that delivery is provably stopped — the default terminate (no `revoke`
- * supplied) still swallows its own errors internally, unchanged from #1414, so that guarantee is only
- * as strong as it always was on the legacy path.
- *
- * `terminate` is raced against `terminateTimeoutMs()`: without a bound, a caller-supplied `revoke`
- * that never settles would hold `sweeping` true forever (the `finally` in `sweep()` never runs),
- * silently disabling re-authorization for every subscription on the worker, not just this entry's.
- * `recheck` has the same unbounded-await shape but is registry-controlled Harper code; `revoke` is
- * arbitrary caller code, which is the materially wider exposure this bound closes.
- *
- * A timeout does not cancel the underlying call — `entry.pendingTerminate` caches it, so a retry on
- * the next sweep re-awaits the SAME in-flight attempt instead of invoking `terminate`/`revoke` a
- * second time while the first is still running. Committing the removal (`registry.delete` + the
- * success log) happens from a handler attached to that cached attempt directly, NOT from the code
- * below that raced it with a timeout: a `revoke` that succeeds after this sweep's timeout window
- * closes, but before the next sweep starts, must still be committed exactly once — reusing it as a
- * plain resolved value in a later `claimAndTerminate` call would silently discard that success and
- * invoke `revoke` again next sweep, precisely the double-invocation this cache exists to prevent.
- * Attaching the commit/failure handler once, at the point the attempt is created, means it fires
- * whenever the attempt settles, whether or not any sweep is actively awaiting it at that moment.
- */
 function invokeTerminate(entry: LiveSubscription): Promise<void> {
 	try {
 		return Promise.resolve(entry.terminate());
@@ -243,29 +213,54 @@ function invokeTerminate(entry: LiveSubscription): Promise<void> {
 	}
 }
 
+/**
+ * Remove `entry` and run its terminate/revoke, but only if the caller hasn't already unregistered
+ * this entry itself (checked via `registry.has`, not a delete-then-restore, so a failed attempt never
+ * revisits the entry within the same sweep pass; it's simply left in place for the next one). This
+ * makes revocation fail-closed on *tracking*: a `revoke` that throws, rejects, or never settles (e.g.
+ * a shared-feed refcount release hitting a wedged backing store) leaves the entry registered instead
+ * of being forgotten, so the next sweep retries — recheck fails the same way, so the retry converges
+ * once teardown succeeds.
+ *
+ * `terminate` is invoked at most once per entry no matter how many sweeps it takes to settle.
+ * `entry.pendingTerminate` caches the in-flight attempt, and the commit/failure handler is attached to
+ * it ONCE, at creation — it fires whenever the attempt settles (success, rejection, or, for the
+ * default terminate, a synchronous self-unregister via `subscription.end`'s wrapper), regardless of
+ * whether any sweep is actively awaiting it at that moment. This is what makes a late success (one
+ * that lands after this sweep's timeout window closes but before the next sweep starts) commit
+ * exactly once instead of being silently discarded and re-invoked. A sweep that finds an attempt
+ * already in flight from a previous pass does not re-invoke `terminate`/`revoke` and does not re-race
+ * it either — the outcome will be handled by the original handler whenever it settles; there is
+ * nothing left for a second wait to accomplish, and re-racing it would cost another full
+ * `terminateTimeoutMs()` of serialized sweep time per stuck entry, every single pass, forever.
+ *
+ * Only the FIRST attempt is raced against `terminateTimeoutMs()`: without a bound, a caller-supplied
+ * `revoke` that never settles would hold `sweeping` true forever (the `finally` in `sweep()` never
+ * runs), silently disabling re-authorization for every subscription on the worker, not just this
+ * entry's. `recheck` has the same unbounded-await shape but is registry-controlled Harper code;
+ * `revoke` is arbitrary caller code, which is the materially wider exposure this bound closes.
+ */
 async function claimAndTerminate(entry: LiveSubscription, reason: string): Promise<boolean> {
 	if (!registry.has(entry)) return false; // the caller already unregistered this entry itself
-	let attempt = entry.pendingTerminate;
-	if (!attempt) {
-		attempt = invokeTerminate(entry);
-		entry.pendingTerminate = attempt;
-		const settledAttempt = attempt;
-		attempt.then(
-			() => {
-				if (entry.pendingTerminate === settledAttempt) entry.pendingTerminate = undefined;
-				if (registry.delete(entry)) {
-					safeLog(hdbLogger.info, `liveSubscriptionAuth: revoked subscription for ${entry.username} (${reason})`);
-				}
-			},
-			(error) => {
-				if (entry.pendingTerminate === settledAttempt) entry.pendingTerminate = undefined;
-				safeLog(
-					hdbLogger.error,
-					`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}), will retry next sweep: ${errorMessage(error)}`
-				);
-			}
-		);
-	}
+	if (entry.pendingTerminate) return false; // already being handled by a prior sweep's attempt
+
+	const attempt = invokeTerminate(entry);
+	entry.pendingTerminate = attempt;
+	attempt.then(
+		() => {
+			if (entry.pendingTerminate === attempt) entry.pendingTerminate = undefined;
+			registry.delete(entry);
+			safeLog(hdbLogger.info, `liveSubscriptionAuth: revoked subscription for ${entry.username} (${reason})`);
+		},
+		(error) => {
+			if (entry.pendingTerminate === attempt) entry.pendingTerminate = undefined;
+			safeLog(
+				hdbLogger.error,
+				`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}), will retry next sweep: ${errorMessage(error)}`
+			);
+		}
+	);
+
 	const timeoutMs = terminateTimeoutMs();
 	try {
 		await withTimeout(attempt, timeoutMs, `terminate timed out after ${timeoutMs}ms`);

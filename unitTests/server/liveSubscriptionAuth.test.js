@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 
 const { registerLiveSubscription, _liveSubscriptionCount, _sweepNow } = require('#src/server/liveSubscriptionAuth');
+const hdbLogger = require('#src/utility/logging/harper_logger');
 
 // A bare call-recording function: `.calls` is the arg list of each invocation, in order.
 function spyFn(impl) {
@@ -60,6 +61,32 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			assert.strictEqual(originalEnd.calls.length, 1);
 			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('logs a successful revocation on the default (end()-wrapping) path (regression: the success commit must fire even though end() self-unregisters synchronously before the settle handler runs)', async () => {
+			const originalInfo = hdbLogger.info;
+			const infoMessages = [];
+			hdbLogger.info = (message) => infoMessages.push(message);
+			try {
+				const subscription = fakeSubscription();
+				register({
+					subscription,
+					username: 'logged-user',
+					authExpiresAt: 0,
+					recheck: async () => true,
+				});
+				handles.pop();
+
+				await _sweepNow();
+
+				assert.ok(
+					infoMessages.some((message) => message.includes('logged-user')),
+					`expected a success log for the default terminate path, got: ${JSON.stringify(infoMessages)}`
+				);
+				assert.strictEqual(_liveSubscriptionCount(), 0);
+			} finally {
+				hdbLogger.info = originalInfo;
+			}
 		});
 
 		it('falls back to close() when end() is absent', async () => {
@@ -399,9 +426,19 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				assert.strictEqual(calls, 1);
 				assert.strictEqual(_liveSubscriptionCount(), 1);
 
-				await _sweepNow(); // still pending; must reuse the in-flight call, not invoke revoke again
+				// Still pending: must not invoke revoke again, and — since the settle handler (not this
+				// wait) is what commits the eventual outcome — must not re-race the timeout either. A
+				// sweep that did re-race would take close to the configured 20ms; this one should return
+				// near-instantly.
+				const before = Date.now();
+				await _sweepNow();
+				const elapsedMs = Date.now() - before;
 				assert.strictEqual(calls, 1, 'a still-pending revoke must not be invoked a second time');
 				assert.strictEqual(_liveSubscriptionCount(), 1);
+				assert.ok(
+					elapsedMs < 15,
+					`a sweep finding an already-pending attempt must not re-race the timeout (took ${elapsedMs}ms)`
+				);
 
 				// Resolve on its own, with no sweep actively awaiting it — models the realistic case where
 				// the underlying call finishes sometime in the ~30s gap between sweeps, not synchronously
