@@ -13,6 +13,19 @@ const PACKAGE_IMPORT_PROJECT = 'redeploy-package-import-runtime-app';
 const PACKAGE_METADATA_PROJECT = 'redeploy-package-metadata-app';
 const RESOLUTION_PROJECT = 'redeploy-resolution-runtime-app';
 const PURE_ESM_PROJECT = 'redeploy-pure-esm-runtime-app';
+const STATIC_PROJECT = 'redeploy-static-runtime-app';
+
+async function buildStaticPayload(contents: string): Promise<string> {
+	const directory = await mkdtemp(join(tmpdir(), 'redeploy-static-runtime-'));
+	try {
+		await mkdir(join(directory, 'web'));
+		await writeFile(join(directory, 'config.yaml'), "static:\n  root: web\n  files: 'web/**'\n");
+		await writeFile(join(directory, 'web', 'asset.txt'), contents);
+		return await targz(directory);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+}
 
 async function buildRuntimePayload(className: string, version: number, packageImport: boolean): Promise<string> {
 	const directory = await mkdtemp(join(tmpdir(), 'redeploy-runtime-equivalence-'));
@@ -228,6 +241,24 @@ async function waitForRestartClear(ctx: ContextWithHarper): Promise<void> {
 	throw new Error('Timed out waiting for restartRequired to clear');
 }
 
+async function waitForStaticContent(ctx: ContextWithHarper, expected: string): Promise<void> {
+	const deadline = Date.now() + 30_000;
+	while (Date.now() < deadline) {
+		try {
+			const response = await fetch(`${ctx.harper.httpURL}/asset.txt`, {
+				headers: { Authorization: authHeader(ctx) },
+			});
+			if (response.status === 200) {
+				if ((await response.text()) === expected) return;
+			} else {
+				await response.body?.cancel();
+			}
+		} catch {}
+		await sleep(250);
+	}
+	throw new Error(`Timed out waiting for static content ${expected}`);
+}
+
 suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
@@ -258,6 +289,28 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 		await sleep(2_000);
 		strictEqual(await getRestartRequired(ctx), false);
 		strictEqual(await readResourceVersion(ctx, 'RelativeVersion'), 1);
+	});
+
+	test('loads a static asset', async () => {
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project: STATIC_PROJECT,
+			payload: await buildStaticPayload('version 1'),
+			restart: true,
+		});
+		await waitForStaticContent(ctx, 'version 1');
+		await waitForRestartClear(ctx);
+	});
+
+	test('serves changed static content without a restart', async () => {
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project: STATIC_PROJECT,
+			payload: await buildStaticPayload('version 2'),
+			restart: false,
+		});
+		await waitForStaticContent(ctx, 'version 2');
+		strictEqual(await getRestartRequired(ctx), false);
 	});
 
 	test('changing only an unwatched relative helper requests restart', async () => {

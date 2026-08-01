@@ -77,8 +77,8 @@ describe('deployLifecycle', () => {
 		});
 
 		it('ends a deploy when its owner thread exits', () => {
-			const endSpy = require('sinon').spy();
-			deployLifecycle.on('deploy:end', endSpy);
+			let endCount = 0;
+			deployLifecycle.on('deploy:end', () => endCount++);
 			deployLifecycle._handle({
 				name: 'foo',
 				phase: 'start',
@@ -89,7 +89,7 @@ describe('deployLifecycle', () => {
 			deployLifecycle._reclaimOwner(41);
 
 			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
-			assert.equal(endSpy.callCount, 1);
+			assert.equal(endCount, 1);
 		});
 
 		it('waits for the dead owner process group before ending its deploy', async () => {
@@ -122,11 +122,11 @@ describe('deployLifecycle', () => {
 
 		it('continues reclaiming when one component deploy:end listener throws', () => {
 			const originalError = console.error;
-			const survivingListener = require('sinon').spy();
+			const received = [];
 			deployLifecycle.on('deploy:end', (name) => {
 				if (name === 'foo') throw new Error('consumer failed');
 			});
-			deployLifecycle.on('deploy:end', survivingListener);
+			deployLifecycle.on('deploy:end', (name) => received.push(name));
 			deployLifecycle._handle({
 				name: 'foo',
 				phase: 'start',
@@ -149,19 +149,16 @@ describe('deployLifecycle', () => {
 
 			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
 			assert.equal(deployLifecycle.isDeployInFlight('bar'), false);
-			assert.deepEqual(
-				survivingListener.getCalls().map(({ args }) => args[0]),
-				['foo', 'bar']
-			);
+			assert.deepEqual(received, ['foo', 'bar']);
 		});
 
 		it('continues deploy:start emission when one listener throws', () => {
 			const originalError = console.error;
-			const survivingListener = require('sinon').spy();
+			const received = [];
 			deployLifecycle.on('deploy:start', () => {
 				throw new Error('consumer failed');
 			});
-			deployLifecycle.on('deploy:start', survivingListener);
+			deployLifecycle.on('deploy:start', (name) => received.push(name));
 
 			try {
 				console.error = () => {};
@@ -175,13 +172,21 @@ describe('deployLifecycle', () => {
 				console.error = originalError;
 			}
 
-			assert.equal(survivingListener.calledOnceWith('foo'), true);
+			assert.deepEqual(received, ['foo']);
 			assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
 		});
 
+		it('ignores parent and current-thread exit notifications', async () => {
+			let waited = false;
+			await deployLifecycle._reclaimOwnerAfterTermination(0, async () => {
+				waited = true;
+			});
+			assert.equal(waited, false);
+		});
+
 		it('keeps an overlapping live-owner deploy active and ignores late starts from a dead owner', () => {
-			const endSpy = require('sinon').spy();
-			deployLifecycle.on('deploy:end', endSpy);
+			let endCount = 0;
+			deployLifecycle.on('deploy:end', () => endCount++);
 			deployLifecycle._handle({
 				name: 'foo',
 				phase: 'start',
@@ -197,7 +202,7 @@ describe('deployLifecycle', () => {
 
 			deployLifecycle._reclaimOwner(41);
 			assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
-			assert.equal(endSpy.callCount, 0);
+			assert.equal(endCount, 0);
 
 			deployLifecycle._handle({
 				name: 'foo',
@@ -213,7 +218,7 @@ describe('deployLifecycle', () => {
 			});
 
 			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
-			assert.equal(endSpy.callCount, 1);
+			assert.equal(endCount, 1);
 		});
 	});
 });
