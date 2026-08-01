@@ -5866,6 +5866,13 @@ export function makeTable(options) {
 						// regardless of this state.
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
 					}
+					// Inherit the disconnect poison too: a handler can still be running (and touching a
+					// database for the first time) after its client disconnects poisons the transaction it
+					// already had open (harper#2001, abortDueToDisconnect). Without this, a chain link
+					// created after that point would carry `open = CLOSED` but not `disconnected`, so its
+					// own addWrite/commit would take the immediateCommit path in save() and actually commit
+					// on behalf of a client that's gone.
+					transaction.next.disconnected = transaction.disconnected;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
 					return transaction;

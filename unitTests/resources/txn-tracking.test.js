@@ -509,22 +509,35 @@ describe('Disconnect abort', () => {
 		});
 	});
 
+	// On RocksDB the table's first access claims `context.transaction` itself (txnForContext in
+	// Table.ts). On LMDB, that same first access always chains a fresh `LMDBTransaction` onto
+	// `context.transaction.next` (LMDB never claims the head in place) — so the transaction actually
+	// holding the write, and its native handle, can live one link into the chain. Walk the whole chain
+	// so the assertion holds under either engine.
+	function assertChainReleased(head) {
+		let found = false;
+		for (let txn = head; txn; txn = txn.next) {
+			assert.equal(txn.open, TRANSACTION_STATE.CLOSED, 'every link in the chain should be closed');
+			assert.ok(!txn.readTxnsUsed, 'no outstanding read references (write intents) should remain');
+			assert.ok(!txn.transaction, 'native RocksDB transaction handle should be released');
+			assert.ok(!txn.readTxn, 'native LMDB read transaction handle should be released');
+			found = true;
+		}
+		assert.ok(found, 'expected at least the head transaction');
+	}
+
 	it('aborts a write-bearing txn when the client disconnects mid-handler, releasing the native transaction', async function () {
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
-		let txn;
 		await assert.rejects(
 			transaction(context, async () => {
 				await DisconnectResource.put(501, { name: 'orphaned' }, context);
-				txn = context.transaction;
 				ac.abort(); // simulate the client disconnecting mid-handler, after a write is staged
 				await delay(20); // give the handler a chance to keep running past the disconnect
 			}),
 			/disconnected/
 		);
-		assert.equal(txn.open, TRANSACTION_STATE.CLOSED, 'transaction should be closed');
-		assert.equal(txn.transaction, null, 'native transaction handle should be released');
-		assert.equal(txn.readTxnsUsed, 0, 'no outstanding read references (write intents) should remain');
+		assertChainReleased(context.transaction);
 		assert.ok((await DisconnectResource.get(501)) == null, 'the orphaned write must not have been committed');
 	});
 
@@ -537,7 +550,11 @@ describe('Disconnect abort', () => {
 				await delay(10);
 				await DisconnectResource.put(502, { name: 'too late' }, context);
 			}),
-			/disconnected/
+			// RocksDB rejects with requestAbortedError ("disconnected"). LMDB's own overridden
+			// addWrite/commit don't consult the `disconnected` poison flag, but they already reject on
+			// `open === CLOSED` (which txnForContext does propagate to a chain link created after the
+			// poisoning) with their own pre-existing, differently-worded error — both block the write.
+			/disconnected|no longer open/
 		);
 		assert.ok((await DisconnectResource.get(502)) == null, 'a write staged after disconnect must not commit');
 	});
