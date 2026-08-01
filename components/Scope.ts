@@ -551,6 +551,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				deployLifecycle.off('deploy:end', handleDeployEnd);
 				reject(new Error(`Timed out waiting for deployment of ${this.#appName} to complete`));
 			}, timeoutMs);
+			timer.unref?.();
 			const handleDeployEnd = (componentName: string) => {
 				if (componentName !== this.#appName || this.#deployInFlight) return;
 				deployLifecycle.off('deploy:end', handleDeployEnd);

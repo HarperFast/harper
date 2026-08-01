@@ -357,8 +357,10 @@ function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout:
 		let remaining = timeout;
 		let activeSince = 0;
 		let timer: NodeJS.Timeout | undefined;
+		let absoluteTimer: NodeJS.Timeout;
 		const cleanup = () => {
 			if (timer) clearTimeout(timer);
+			clearTimeout(absoluteTimer);
 			deployLifecycle.off('deploy:start', handleDeployStart);
 			deployLifecycle.off('deploy:end', handleDeployEnd);
 		};
@@ -370,6 +372,8 @@ function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout:
 				)
 			);
 		};
+		absoluteTimer = setTimeout(rejectTimeout, timeout + 6 * 60 * 60 * 1000);
+		absoluteTimer.unref?.();
 		const arm = () => {
 			if (deployLifecycle.isDeployInFlight(scope.appName)) return;
 			if (remaining <= 0) return rejectTimeout();
