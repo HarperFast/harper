@@ -145,57 +145,55 @@ describe('Ambient operation context must not couple independent writes (transact
 	// context, e.g. an MQTT subscription context, can't keep pinning a finished transaction in
 	// memory). A bare null check alone would NOT still discriminate the #1591 fix from a revert,
 	// though: both the fixed `.open === TRANSACTION_STATE.OPEN` check and the old, buggy
-	// bare-truthiness `if (context?.transaction)` check see the SAME falsy `null` once the prior
+	// bare-truthiness `if (context?.transaction)` check see the SAME falsy value once the prior
 	// write's commit has released it, so both take the "start a fresh transaction" branch by the
 	// time this test reads the ambient context after each write — the discriminating power has to
 	// come from OBSERVING that a fresh instance really was minted, not from what's left behind
-	// afterward. resources/transaction.ts:44's `transaction.setContext(context)` runs exactly once,
-	// synchronously, whenever the "start a transaction" branch actually constructs a new
-	// DatabaseTransaction — never on the "already in a transaction, proceed" branch — so hooking it
-	// captures the same instance the original leftover-reference check relied on, before this PR's
-	// own release can clear it.
+	// afterward. resources/transaction.ts's transaction() helper assigns `context.transaction = new
+	// DatabaseTransaction()` synchronously — before calling back into Resource.ts's dispatcher — so
+	// each write's fresh instance is observable straight off the real ambient context synchronously,
+	// right after issuing the call and before awaiting it. That avoids stubbing
+	// `DatabaseTransaction.prototype.setContext` (a global, production-method hook that would also
+	// count any unrelated background transaction started elsewhere while it's installed).
 	it('releases each independent no-explicit-context write’s transaction from the ambient context once it completes, and each is a genuinely fresh instance (mechanism-level)', async () => {
 		const transactionsSeenAfterEachWrite = [];
 		const transactionsStarted = [];
-		const originalSetContext = DatabaseTransaction.prototype.setContext;
-		DatabaseTransaction.prototype.setContext = function (context) {
-			transactionsStarted.push(this);
-			return originalSetContext.call(this, context);
-		};
-		try {
-			await serverUtilities.processLocalTransaction(
-				{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
-				async () => {
-					await LeakTable.put('mech-first', { name: 'first' });
-					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+		await serverUtilities.processLocalTransaction(
+			{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
+			async () => {
+				const firstWrite = LeakTable.put('mech-first', { name: 'first' });
+				transactionsStarted.push(contextStorage.getStore()?.transaction);
+				await firstWrite;
+				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
 
-					await LeakTable.put('mech-second', { name: 'second' });
-					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+				const secondWrite = LeakTable.put('mech-second', { name: 'second' });
+				transactionsStarted.push(contextStorage.getStore()?.transaction);
+				await secondWrite;
+				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
 
-					await LeakTable.put('mech-third', { name: 'third' });
-					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+				const thirdWrite = LeakTable.put('mech-third', { name: 'third' });
+				transactionsStarted.push(contextStorage.getStore()?.transaction);
+				await thirdWrite;
+				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
 
-					return { message: 'ok' };
-				}
-			);
-		} finally {
-			DatabaseTransaction.prototype.setContext = originalSetContext;
-		}
+				return { message: 'ok' };
+			}
+		);
 
 		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
 		assert.strictEqual(
 			afterFirst,
-			null,
+			undefined,
 			"the first write's transaction must be released from the ambient context once its commit completes"
 		);
 		assert.strictEqual(
 			afterSecond,
-			null,
+			undefined,
 			"the second write's transaction must likewise be released, not left attached for a later write to observe"
 		);
 		assert.strictEqual(
 			afterThird,
-			null,
+			undefined,
 			"the third write's transaction must likewise be released, for the same reason"
 		);
 
@@ -203,6 +201,10 @@ describe('Ambient operation context must not couple independent writes (transact
 			transactionsStarted.length,
 			3,
 			'each independent write must start its own transaction() call — none may join an existing OPEN transaction'
+		);
+		assert.ok(
+			transactionsStarted.every((txn) => txn instanceof DatabaseTransaction),
+			'each write must have a real DatabaseTransaction attached to the ambient context while it runs'
 		);
 		assert.notStrictEqual(
 			transactionsStarted[0],

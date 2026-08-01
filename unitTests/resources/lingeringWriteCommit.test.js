@@ -141,9 +141,18 @@ describe('commit with open read iterators commits writes immediately on a replay
 		assert.ok(rejection, 'a terminal replay-commit failure must reject the awaited commit chain, not vanish');
 		assert.equal(rejection.message, 'forced terminal failure');
 		assert.equal(await LingerTable.get('linger-fail'), undefined, 'the failed write is not committed');
+		// A terminal commit failure is just as final as a success: releaseContext() defers the
+		// context release the same way (pendingContextRelease) until the still-open iterator drains,
+		// so capture the wrapper before draining it — draining deletes context.transaction itself.
+		const closedTxn = context.transaction;
 		// the original read handle must survive the replay failure: the iterator finishes normally
 		while (!(await iterator.next()).done);
-		assert.equal(context.transaction.transaction, null, 'the drained iterator must still release the native handle');
+		assert.equal(closedTxn.transaction, null, 'the drained iterator must still release the native handle');
+		assert.equal(
+			context.transaction,
+			undefined,
+			'the drained iterator must also release the context’s back-reference, even after a terminal commit failure'
+		);
 		await delay(100);
 		assert.deepEqual(unhandled, [], 'a replay-commit failure must reject the awaited chain, never float unhandled');
 	});
