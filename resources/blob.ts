@@ -1186,15 +1186,25 @@ export function getRootBlobPathsForDB(store: RootDatabase) {
 			logger.warn?.('No database name specified, can not determine blob storage path');
 			return [];
 		}
-		const blobPaths: string[] = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS);
-		if (blobPaths) {
-			paths = blobPaths.map((path) => join(path, (store as any).databaseName));
-		} else {
-			paths = [join(getHdbBasePath(), 'blobs', (store as any).databaseName)];
-		}
+		paths = getBlobPathsForDatabaseName((store as any).databaseName);
 		databasePaths.set(store, paths);
 	}
 	return paths;
+}
+
+/**
+ * Resolve a database's blob root directories from configuration by name, without needing a live
+ * store handle. Mirrors `getRootBlobPathsForDB`'s path derivation so backup/restore code (which runs
+ * while the database may be closed) computes the same roots: one per configured `storage.blobPaths`
+ * entry, or a single `<hdb_root>/blobs/<database>` when none are configured. A database can therefore
+ * have more than one blob root.
+ */
+export function getBlobPathsForDatabaseName(databaseName: string): string[] {
+	const blobPaths: string[] = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS);
+	if (blobPaths) {
+		return blobPaths.map((path) => join(path, databaseName));
+	}
+	return [join(getHdbBasePath(), 'blobs', databaseName)];
 }
 export async function deleteRootBlobPathsForDB(store: RootDatabase): Promise<void> {
 	const paths = getRootBlobPathsForDB(store);

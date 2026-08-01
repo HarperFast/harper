@@ -41,6 +41,15 @@ import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
+import {
+	acquireRestoreLock,
+	checkRestoreState,
+	releaseRestoreLock,
+	restoreMarkerPresent,
+	scanBlockedRestores,
+	RESTORE_META_DIR,
+	type RestoreLock,
+} from '../dataLayer/restoreMarker.ts';
 
 /**
  * Check if Harper is running in read-only mode.
@@ -167,8 +176,23 @@ export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>()
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
+/**
+ * Map a persisted (LMDB-era) compression value to what rocksdb-js accepts. Table metadata
+ * carries values where a defined falsy value (false, '') means compression was explicitly
+ * disabled and true/{ threshold, ... } mean enabled with defaults. rocksdb-js >= 2.6
+ * validates `compression` strictly and treats UNSET as "use the build default (lz4)", so
+ * disabled must be mapped to 'none' explicitly, and true to unset.
+ */
+export function toRocksCompression(compression: unknown): unknown {
+	if (compression === true) return undefined;
+	if (compression !== undefined && !compression) return 'none';
+	return compression;
+}
+
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
+	const legacyOptions = options as { compression?: unknown };
+	legacyOptions.compression = toRocksCompression(legacyOptions.compression);
 	// Apply read-only mode if enabled
 	if (isReadOnlyMode()) {
 		options.readOnly = true;
@@ -315,11 +339,18 @@ export function getDatabases(): Databases {
 	if (databasePath && existsSync(databasePath)) {
 		// First load all the databases from our main database folder
 		// TODO: Load any databases defined with explicit storage paths from the config
-		for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
+		const entries = readdirSync(databasePath, { withFileTypes: true });
+		const blockedByRestore = databasesBlockedByRestore(databasePath);
+		for (const databaseEntry of entries) {
 			// in-progress migration staging dirs are not databases until atomically renamed into place
 			if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
+			// the restore-metadata directory is reserved: never load it as a database, even if a
+			// (out-of-band) RocksDB directory happens to occupy that reserved name — the API can't
+			// create it (schemaRegex forbids the backtick), but the scan opens any CURRENT+MANIFEST dir
+			if (databaseEntry.name === RESTORE_META_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
+			if (blockedByRestore.has(dbName)) continue;
 
 			if (
 				databaseEntry.isFile() &&
@@ -376,8 +407,12 @@ export function getDatabases(): Databases {
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
 			if (existsSync(databasePath)) {
-				for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
-					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
+				const entries = readdirSync(databasePath, { withFileTypes: true });
+				const blockedByRestore = databasesBlockedByRestore(databasePath);
+				for (const databaseEntry of entries) {
+					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
+					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
+					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
 						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
 					} else {
@@ -450,6 +485,29 @@ export function getDatabases(): Databases {
 		}
 	}
 	return databases;
+}
+
+/**
+ * Scan a databases directory's entries for restore lock/marker files and return the names of
+ * databases that must not be loaded: a held restore lock means a restore is in progress in some
+ * process; an unheld lock with a surviving `.restoring` marker means a restore was interrupted
+ * mid-purge (the directory may be partial garbage) and must be rerun. The files live *next to*
+ * the database directory, so this also covers a database whose directory is missing or empty.
+ */
+function databasesBlockedByRestore(databasePath: string): Set<string> {
+	const blocked = new Set<string>();
+	for (const [dbName, state] of scanBlockedRestores(databasePath)) {
+		if (state === 'in-progress') {
+			logger.warn(`A restore of database '${dbName}' is in progress; not loading it`);
+			blocked.add(dbName);
+		} else if (state === 'incomplete') {
+			logger.error(
+				`Incomplete restore of database '${dbName}' detected (a restore started but did not finish); not loading it — rerun the restore to recover`
+			);
+			blocked.add(dbName);
+		}
+	}
+	return blocked;
 }
 
 /**
@@ -916,18 +974,12 @@ function setTable(tables, tableName, Table) {
 	return Table;
 }
 /**
- * Get root store for a database
- * @param options
- * @returns
+ * Resolve the directory that holds (or would hold) a database's storage, from the databases
+ * config, storage path config/env, or the hdb root — without opening anything. This is the
+ * parent directory selection used by `database()`; a RocksDB database lives at
+ * `join(resolveDatabaseStorageRoot(...), databaseName)`.
  */
-export function database({ database: databaseName, table: tableName }) {
-	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
-	getDatabases();
-	ensureDB(databaseName);
-	const definedDatabase = definedDatabases.get(databaseName);
-	if ((definedDatabase as any)?.rootStore) {
-		return (definedDatabase as any).rootStore;
-	}
+export function resolveDatabaseStorageRoot(databaseName: string, tableName?: string): string {
 	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
 	if (process.env.SCHEMAS_DATA_PATH) {
 		databaseConfig.data = { path: process.env.SCHEMAS_DATA_PATH };
@@ -952,6 +1004,35 @@ export function database({ database: databaseName, table: tableName }) {
 			`Unable to determine database storage path. Ensure STORAGE_PATH, HDB_ROOT, or a valid config path is set.`
 		);
 	}
+	return databasePath;
+}
+
+/**
+ * Resolve the directory path of a RocksDB database (whether or not it exists or is loaded).
+ */
+export function resolveDatabasePath(databaseName: string): string {
+	return join(resolveDatabaseStorageRoot(databaseName), databaseName);
+}
+
+/**
+ * Get root store for a database
+ * @param options
+ * @returns
+ */
+export function database({ database: databaseName, table: tableName }) {
+	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
+	getDatabases();
+	ensureDB(databaseName);
+	const definedDatabase = definedDatabases.get(databaseName);
+	if ((definedDatabase as any)?.rootStore) {
+		return (definedDatabase as any).rootStore;
+	}
+	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
+	if (process.env.SCHEMAS_DATA_PATH) {
+		databaseConfig.data = { path: process.env.SCHEMAS_DATA_PATH };
+	}
+	const tablePath = tableName && databaseConfig[databaseName]?.tables?.[tableName]?.path;
+	const databasePath = resolveDatabaseStorageRoot(databaseName, tableName);
 
 	let rootStore: RootDatabaseKind;
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
@@ -959,6 +1040,10 @@ export function database({ database: databaseName, table: tableName }) {
 		const path = join(databasePath, tablePath ? tableName : databaseName);
 		rootStore = rocksdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
+			// this on-demand open (create_table/create_database and friends) must not resurrect a
+			// database that a restore is rewriting (or left half-purged) — the scan-time restore
+			// checks don't cover this path
+			throwIfBlockedByRestore(path, databaseName);
 			rootStore = openRocksDatabase(path, {
 				disableWAL: false,
 				enableStats: true,
@@ -981,6 +1066,51 @@ export function database({ database: databaseName, table: tableName }) {
 	if (definedDatabase) (definedDatabase as any).rootStore = rootStore;
 	return rootStore;
 }
+function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
+	const restoreState = checkRestoreState(dbPath);
+	if (restoreState !== 'clear') {
+		const error: any = new Error(
+			restoreState === 'in-progress'
+				? `Database '${databaseName}' is being restored; retry when the restore completes`
+				: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
+		);
+		error.statusCode = 409;
+		throw error;
+	}
+}
+
+/**
+ * Take the per-database restore lock for a drop, refusing (409) if a restore holds it (in-progress)
+ * or a crashed restore left a marker (incomplete). Pushes the acquired lock onto `held` so the
+ * caller releases it after the drop. On refusal, releases anything already held and throws.
+ *
+ * The lock is not reentrant within a process, so a path already in `held` must be skipped — every
+ * table in a RocksDB database shares one root store (and one lock path), and re-acquiring it in the
+ * same drop would spuriously 409 on the second table.
+ */
+function lockDatabaseForDrop(dbPath: string, databaseName: string, held: RestoreLock[]): void {
+	if (held.some((h) => h.dbPath === dbPath)) return;
+	let lock: RestoreLock;
+	try {
+		lock = acquireRestoreLock(dbPath);
+	} catch (error) {
+		for (const h of held) releaseRestoreLock(h);
+		throw error; // 409: a restore is in progress and holds the lock
+	}
+	// We now hold the lock, so no restore is active. A surviving marker is therefore debris from a
+	// crashed restore (incomplete) — refuse rather than delete a directory that still needs recovery.
+	if (restoreMarkerPresent(dbPath)) {
+		releaseRestoreLock(lock);
+		for (const h of held) releaseRestoreLock(h);
+		const error: any = new Error(
+			`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
+		);
+		error.statusCode = 409;
+		throw error;
+	}
+	held.push(lock);
+}
+
 /**
  * Delete the database
  * @param databaseName
@@ -990,17 +1120,105 @@ export async function dropDatabase(databaseName) {
 	const dbTables = databases[databaseName];
 	let rootStore;
 
+	// Hold the per-database restore lock across the entire drop so its file deletion can never
+	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
+	// restore's copy would gut a "successful" restore, and vice versa. Restore takes the same lock
+	// (before writing its marker), so both operations serialize on this one primitive rather than on
+	// a check-then-act marker probe. Released in the finally below.
+	const restoreLocks: RestoreLock[] = [];
+	try {
+		for (const tableName in dbTables) {
+			const table = dbTables[tableName];
+			rootStore = table.primaryStore.rootStore;
+			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			lmdbDatabaseEnvs.delete(rootStore.path);
+			rocksdbDatabaseEnvs.delete(rootStore.path);
+		}
+
+		for (const tableName in dbTables) {
+			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
+		}
+
+		if (databaseName === 'data') {
+			for (const tableName in tables) {
+				delete tables[tableName];
+			}
+			delete tables[DEFINED_TABLES];
+		}
+		delete databases[databaseName];
+
+		databaseEventsEmitter.emit('dropDatabase', databaseName);
+
+		if (rootStore) {
+			if (rootStore.status === 'open') {
+				if (rootStore instanceof RocksDatabase) {
+					rootStore.close();
+					rootStore.destroy();
+				} else {
+					await rootStore.close();
+					await unlink(rootStore.path);
+				}
+			}
+		} else {
+			rootStore = database({ database: databaseName, table: null });
+			// a tableless database resolves its root store here rather than in the loop above, so take
+			// the drop lock now (still before any destructive step)
+			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			if (rootStore instanceof RocksDatabase) {
+				rootStore.close();
+				rootStore.destroy();
+			} else if (rootStore.status === 'open') {
+				await rootStore.close();
+				await unlink(rootStore.path);
+			}
+		}
+
+		await deleteRootBlobPathsForDB(rootStore);
+	} finally {
+		for (const lock of restoreLocks) releaseRestoreLock(lock);
+	}
+}
+
+/**
+ * Close a RocksDB database's store handles on the current thread and unregister it, without
+ * touching its files. Used by the restore_backup flow: every thread must release its handles so
+ * `backups.restore()` can purge and rewrite the (fully closed) database directory. A subsequent
+ * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
+ * progress, per the restore marker checks in the scan).
+ */
+export function closeDatabase(databaseName: string): boolean {
+	const dbTables = databases[databaseName];
+	if (!dbTables) return false;
+	const rootStores = new Set<any>();
+	const closeStore = (store: any, description: string) => {
+		try {
+			store?.close?.();
+		} catch (error) {
+			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
+		}
+	};
 	for (const tableName in dbTables) {
-		const table = dbTables[tableName];
-		rootStore = table.primaryStore.rootStore;
+		const table: any = dbTables[tableName];
+		if (!table?.primaryStore) continue;
+		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
+		for (const indexName in table.indices || {}) {
+			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+		}
+		closeStore(table.primaryStore, `table ${tableName}`);
+	}
+	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
+	// an open root store, tracked only on the defined-database entry rather than any table — include
+	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	if (definedRoot) rootStores.add(definedRoot);
+	for (const rootStore of rootStores) {
+		closeStore(rootStore.dbisDb, 'attributes store');
+		closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);
 		rocksdbDatabaseEnvs.delete(rootStore.path);
 	}
-
-	for (const tableName in dbTables) {
-		databaseEventsEmitter.emit('dropTable', tableName, databaseName);
-	}
-
+	const definedDatabase = definedDatabases?.get(databaseName);
+	if (definedDatabase) (definedDatabase as any).rootStore = undefined;
 	if (databaseName === 'data') {
 		for (const tableName in tables) {
 			delete tables[tableName];
@@ -1008,31 +1226,41 @@ export async function dropDatabase(databaseName) {
 		delete tables[DEFINED_TABLES];
 	}
 	delete databases[databaseName];
+	return true;
+}
 
-	databaseEventsEmitter.emit('dropDatabase', databaseName);
-
-	if (rootStore) {
-		if (rootStore.status === 'open') {
-			if (rootStore instanceof RocksDatabase) {
-				rootStore.close();
-				rootStore.destroy();
-			} else {
-				await rootStore.close();
-				await unlink(rootStore.path);
+/**
+ * Close every RocksDB (user) database this thread has open, releasing its native handles.
+ *
+ * rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
+ * closing leaks its handles (the process-global refCount never drops), while the only alternative,
+ * `shutdown()`, tears down rocksdb for the entire process. So a worker thread that opens databases
+ * and then exits — notably a job worker (jobProcess), which opens the whole database graph via
+ * `getDatabases()` and exits when the job finishes — must close its handles explicitly, or those
+ * handles linger process-wide (and, e.g., block an online `restore_backup` from confirming the
+ * database is closed). The `system` database is intentionally left open: it is non-enumerable here
+ * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
+ * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
+ */
+export function closeLoadedDatabases(): void {
+	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
+	for (const databaseName of Object.keys(databases)) {
+		const dbTables = databases[databaseName];
+		if (!dbTables) continue;
+		let isRocks = false;
+		for (const tableName in dbTables) {
+			if (dbTables[tableName]?.primaryStore?.rootStore instanceof RocksDatabase) {
+				isRocks = true;
+				break;
 			}
 		}
-	} else {
-		rootStore = database({ database: databaseName, table: null });
-		if (rootStore instanceof RocksDatabase) {
-			rootStore.close();
-			rootStore.destroy();
-		} else if (rootStore.status === 'open') {
-			await rootStore.close();
-			await unlink(rootStore.path);
+		// a tableless database exposes no table root store, so also check the defined-database
+		// entry — otherwise its open root store would leak on worker exit
+		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
+			isRocks = true;
 		}
+		if (isRocks) closeDatabase(databaseName);
 	}
-
-	await deleteRootBlobPathsForDB(rootStore);
 }
 // HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
 // versioned. process.env values are strings, so a bare truthiness check would treat "0"/"false"
@@ -2052,7 +2280,9 @@ export function getDefaultCompression() {
 	if (STORAGE_COMPRESSION_DICTIONARY)
 		LMDB_COMPRESSION_OPTS['dictionary'] = readFileSync(STORAGE_COMPRESSION_DICTIONARY);
 	if (STORAGE_COMPRESSION_THRESHOLD) LMDB_COMPRESSION_OPTS['threshold'] = STORAGE_COMPRESSION_THRESHOLD;
-	return LMDB_COMPRESSION && LMDB_COMPRESSION_OPTS;
+	// normalize disabled to false so a falsy config value ('' or null) is never persisted
+	// into table metadata as-is (openRocksDatabase maps defined-falsy to 'none')
+	return LMDB_COMPRESSION ? LMDB_COMPRESSION_OPTS : false;
 }
 
 /**

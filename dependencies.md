@@ -114,6 +114,15 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Can be deferred: Potentially, we could load it on-demand
 - Eventual removal: We could write our own code that read/writes multiple files from/to a tar file
 
+## tar-stream
+
+- Need for usage: The low-level USTAR pack/extract streams underneath `tar-fs`. Used directly by the RocksDB backup path (`dataLayer/rocksdbBackup.ts`) to append the database's file-backed blobs (and the generated READMEs) into the `get_backup` archive: the native engine backup emits a plain tar, and its entries are streamed on while blob/README entries are packed and appended before the single end-of-archive trailer. Declared as a direct dependency (rather than relied on transitively via `tar-fs`) so the import contract is stable across package-manager layouts.
+- Size/memory cost: Approximately 30KB
+- Security: None known
+- Overlap: Pulled in transitively by `tar-fs` already; declaring it direct only pins the contract, no new tree.
+- Can be deferred: Only loaded on the `get_backup` blob path
+- Eventual removal: We could write our own minimal USTAR encoder (the engine binding already ships one)
+
 ## gunzip-maybe
 
 - Need for usage: Used by deploy component
