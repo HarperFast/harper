@@ -7,6 +7,7 @@ import {
 	type Transaction,
 } from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
 
@@ -54,19 +55,21 @@ export function transaction<T>(
 	if (context.sourceApply) transaction.sourceApply = true;
 	transaction.setContext(context);
 
-	// If the client that started this request disconnects while the callback is still running (e.g. an
-	// in-flight await inside a long-poll handler), abort the transaction immediately instead of leaving
-	// any staged writes / native write intents held until the callback eventually settles on its own or
-	// the long-transaction monitor's next cycle catches it (harper#2001). `signal` is only populated for
-	// request-scoped contexts (an actual Request/UwsRequest); replication and internal-job contexts don't
-	// carry one, so this is a no-op for them. The listener is removed as the very first step of
-	// onComplete/onError, before either touches the transaction, so it can only ever fire while the
-	// callback itself is still pending — never racing an in-flight commit.
+	// Abort promptly on client disconnect (harper#2001) rather than leaving staged writes/native write
+	// intents held until the callback settles on its own or the long-transaction monitor catches it.
+	// `signal` is unset for non-request contexts (replication, internal jobs), so this is a no-op there.
+	// Removed as the first step of onComplete/onError, before either touches the transaction, so it can
+	// only fire while the callback is still pending — never racing an in-flight commit.
 	const signal = context.signal;
 	let onDisconnect: (() => void) | undefined;
 	if (signal) {
 		onDisconnect = () => {
-			if (transaction.open === TRANSACTION_STATE.OPEN) transaction.abortDueToDisconnect();
+			try {
+				if (transaction.open === TRANSACTION_STATE.OPEN) transaction.abortDueToDisconnect();
+			} catch (error) {
+				// Must not escape as an uncaught exception from the AbortSignal listener.
+				harperLogger.debug?.('aborting transaction on client disconnect', error);
+			}
 		};
 		if (signal.aborted) onDisconnect();
 		else signal.addEventListener('abort', onDisconnect, { once: true });
