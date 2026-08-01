@@ -73,6 +73,12 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
+          # A manual workflow_dispatch with node-version: '26' is meant to float to the latest
+          # 26.x release (see the comment on the manual-dispatch branch above); without this,
+          # setup-node would silently prefer whatever 26.x is already in the runner's tool cache.
+          # Scoped to that one floating case so the normal pinned-version jobs (22, 24, "26.5.0")
+          # don't pay an extra manifest lookup on every run.
+          check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Install dependencies
         run: npm install --ignore-scripts
@@ -110,6 +116,12 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
+          # A manual workflow_dispatch with node-version: '26' is meant to float to the latest
+          # 26.x release (see the comment on the manual-dispatch branch above); without this,
+          # setup-node would silently prefer whatever 26.x is already in the runner's tool cache.
+          # Scoped to that one floating case so the normal pinned-version jobs (22, 24, "26.5.0")
+          # don't pay an extra manifest lookup on every run.
+          check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -336,15 +348,17 @@ jobs:
 
   # Non-blocking nightly canary for the pin above (harper#2025): the default matrix no longer
   # exercises Node >=26.5.1 at all, so this keeps a signal alive on whatever the latest 26.x
-  # release is, without reddening the required checks. `continue-on-error: true` means a failure
-  # here shows as a warning in the run summary, not a red X — check it manually or via the
-  # "Integration Tests" workflow history when triaging harper#2025. Targets only the two test
-  # files the pin exists for; the full 6-shard matrix would cost more than this canary is worth.
+  # release is, without reddening the required checks. Only the test step below is
+  # continue-on-error — a setup/install/build/guard failure fails the job for real, so the
+  # canary can still report "I am broken" instead of going permanently green. Targets only the
+  # two test files the pin exists for; the full 6-shard matrix would cost more than this canary
+  # is worth, but that means it does NOT cover replication/broker code paths that sit on the
+  # same llhttp/undici stack — see harper#2025 for that residual risk when planning the unpin.
   canary-node26-latest:
     name: Canary — Node 26 latest (harper#2025, non-blocking)
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    continue-on-error: true
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -354,6 +368,14 @@ jobs:
         with:
           node-version: '26'
           package-manager-cache: false
+          # Without this, setup-node prefers whatever 26.x is already in the runner's tool
+          # cache over querying for the actual latest release — silently defeating the whole
+          # point of this job once Node 26 lands in the ubuntu-latest image's default toolcache.
+          check-latest: true
+
+      - name: Record resolved Node version
+        run: |
+          echo "Resolved Node version: $(node --version)" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Install dependencies
         run: npm install --ignore-scripts
@@ -361,7 +383,17 @@ jobs:
       - name: Build
         run: npm run build || true # we currently have type errors so just ignore that
 
+      - name: Guard against a moved/renamed canary target
+        run: |
+          for f in "integrationTests/database/ttlResetOnWrite.test.ts" "integrationTests/components/static-cache-headers.test.ts"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::canary target missing: $f — harper#2025's node:test glob would silently match nothing and exit 0"
+              exit 1
+            fi
+          done
+
       - name: Run harper#2025 canary tests
+        continue-on-error: true
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
