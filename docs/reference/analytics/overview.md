@@ -184,41 +184,48 @@ Harper automatically tracks the following metrics for all services. Applications
 
 #### Transaction Queue Depth Metrics
 
+<VersionBadge version="v5.2.0" />
+
 `write-transaction-queue-depth` and `read-transaction-queue-depth` expose how many transactions are
 in flight against the storage engine per worker thread — a concurrency and throughput signal, not a
 predictor of the `Outstanding write transactions have too long of queue, please try again later`
 (HTTP 503) rejection. That rejection is a duration check on a single outstanding commit
-(`storage.maxTransactionQueueTime`, default 45s — see [Storage](../configuration/options.md#storage)),
-not a function of concurrent commit count: a thread can carry a high `maxDepth` with fast commits and
-never trip it, or sit at `depth` of 1 for the full timeout and trip it while this metric barely moves.
+(see [`storage.maxTransactionQueueTime`](../database/storage-tuning.md#storagemaxtransactionqueuetime),
+default 45s), not a function of concurrent commit count: a thread can carry a high `maxDepth` with
+fast commits and never trip it, or sit at `depth` of 1 for the full timeout and trip it while this
+metric barely moves.
 
 | Field      | Unit  | Description                                       |
 | ---------- | ----- | ------------------------------------------------- |
 | `depth`    | count | Instantaneous depth sampled at emit time          |
 | `maxDepth` | count | High-water mark observed over the sampling period |
 
-- **`write-transaction-queue-depth`** counts write commits handed to the storage engine but not yet
-  durably committed on this thread — how many commits it's juggling concurrently, not how close any
-  one of them is to the 503 timeout.
-- **`read-transaction-queue-depth`** counts open read (snapshot) transactions. Persistently high read
-  depth indicates long-lived read snapshots, which can hold back compaction.
+- **`write-transaction-queue-depth`** counts write commits handed to the storage engine whose commit
+  promises have not yet settled — how many commits this thread is juggling concurrently, not how
+  close any one of them is to the 503 timeout. This is in-flight, not durability: under
+  `storage.writeAsync: true` a settled commit promise does not guarantee the write has been synced
+  to disk.
+- **`read-transaction-queue-depth`** counts concurrently open (snapshot) transactions. A high count
+  can mean either many short-lived reads or a few long-lived ones — the count alone can't
+  distinguish them, so use it as a concurrency signal; a metric with duration would be needed to spot
+  a single snapshot held open long enough to hold back compaction.
 
 Both metrics are tracked only on the RocksDB write/read path. On an LMDB-backed database
 (`storage.engine: lmdb`), `depth` and `maxDepth` for both metrics always read `0` — indistinguishable
 from a healthy, empty queue — regardless of actual read/write load.
 
-Both are gauges sampled per worker thread and summed across threads in the aggregate table (the raw
-per-thread entries in `hdb_raw_analytics` retain each thread's own depth). Note that the aggregate
-`maxDepth` is the sum of each thread's peak, which can read higher than any true simultaneous global
-peak since per-thread spikes need not coincide — treat it as an upper bound, not an exact concurrent
-queue length. Because the write queue can fill and drain within a single sampling period, always
-alert on `maxDepth` (the per-period peak) rather than `depth` alone — an instantaneous sample will
-routinely read low even while short spikes are occurring. A healthy system keeps `write-transaction-queue-depth.maxDepth`
-near zero; a sustained non-zero peak that trends upward indicates growing write concurrency worth
-investigating, but treat it as a throughput signal rather than an early warning for the 503 — that
-rejection depends on a single commit's duration, not on how many commits are queued. Tune the
-concrete alert threshold against a baseline for your workload, since absolute depth scales with
-worker-thread count and per-transaction size.
+Both are gauges sampled per worker thread. The raw per-thread entries in `hdb_raw_analytics` retain
+each thread's true instantaneous `depth` and per-period `maxDepth`; treat those as the reliable
+source for spike detection. The aggregate `hdb_analytics` table is not a sum of per-thread peaks —
+each thread's `maxDepth` is first averaged across its raw samples for the period, then those
+per-thread averages are summed — so a brief single-thread spike is diluted rather than preserved.
+Always alert on `hdb_raw_analytics.maxDepth` (or lower the sampling/aggregation period) rather than
+relying on the aggregate table to catch short spikes. A healthy system keeps
+`write-transaction-queue-depth.maxDepth` near zero; a sustained non-zero peak that trends upward
+indicates growing write concurrency worth investigating, but treat it as a throughput signal rather
+than an early warning for the 503 — that rejection depends on a single commit's duration, not on how
+many commits are queued. Tune the concrete alert threshold against a baseline for your workload,
+since absolute depth scales with worker-thread count and per-transaction size.
 
 #### `resource-usage` Metric
 
