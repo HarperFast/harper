@@ -404,17 +404,29 @@ jobs:
       - name: Report canary result to step summary
         if: always()
         run: |
-          if [ "${{ steps.canary-tests.outcome }}" == "failure" ]; then
-            echo "::warning::harper#2025 canary reproduced a failure on Node $(node --version) — see the uploaded server logs and the Run harper#2025 canary tests step output above."
-            echo "**harper#2025 canary: FAILED on Node $(node --version)** — see step logs and uploaded server logs." | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "harper#2025 canary: passed on Node $(node --version)." | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
+          case "${{ steps.canary-tests.outcome }}" in
+            success)
+              echo "harper#2025 canary: passed on Node $(node --version)." | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            failure)
+              echo "::warning::harper#2025 canary reproduced a failure on Node $(node --version) — see the uploaded server logs and the Run harper#2025 canary tests step output above."
+              echo "**harper#2025 canary: FAILED on Node $(node --version)** — see step logs and uploaded server logs." | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              # skipped (an earlier setup/install/build/guard step failed) or cancelled (hit
+              # timeout-minutes): the canary did NOT run to completion either way, so it must
+              # not be read as a pass — that misreading is how a genuine 26.5.1+ regression
+              # goes unnoticed indefinitely.
+              echo "::warning::harper#2025 canary did not run to completion on Node $(node --version) (outcome: ${{ steps.canary-tests.outcome }}) — inconclusive, not a pass. Check the job's other step logs."
+              echo "**harper#2025 canary: INCONCLUSIVE on Node $(node --version)** (outcome: ${{ steps.canary-tests.outcome }}) — did not run to completion; check earlier step logs." | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
 
       # Not gated on failure(): continue-on-error above makes the step (and job) conclusion
       # "success" even when the canary reproduces harper#2025, so failure() would never see it.
+      # outcome != 'success' also catches skipped/cancelled, so partial-run logs aren't lost.
       - name: Upload Harper server logs
-        if: always() && steps.canary-tests.outcome == 'failure'
+        if: always() && steps.canary-tests.outcome != 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harper-server-logs-canary-node26-latest
