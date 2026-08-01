@@ -260,11 +260,7 @@ node benchmarks/compression/run.mts --scale=large --dataset=both      # 1M recor
 node benchmarks/compression/run.mts --codecs=none,zstd --records=500000
 ```
 
-The codec is selected with `HARPER_STORAGE_ROCKS_COMPRESSION`, which the runner sets per instance.
-It is an environment variable rather than config for a reason documented in `resources/databases.ts`:
-Harper's main thread loads the storage layer before a configured value is readable while its worker
-threads load it after, and because they share one process-wide column-family registry, a config-only
-value makes them disagree and Harper fails to start.
+The codec is selected with `storage.rocks.compression`, which the runner sets per instance.
 
 Two measurement details worth knowing before reading the output:
 
@@ -285,4 +281,10 @@ and re-run with `--codecs` reordered before drawing throughput conclusions.
 
 A run whose instance shed load (Harper answers 503 once commits back up past
 `storage.maxTransactionQueueTime`) is marked `INVALID` rather than reported, because its on-disk
-size is missing whatever never landed and would read as a spectacular compression win.
+size is missing whatever never landed and would read as a spectacular compression win. Because size
+is the primary result, mutating requests are held to **zero** failures; reads and scans, which
+cannot change what is stored, keep a tolerance (`--max-error-rate`).
+
+Shutdown is likewise gated: sizes are measured after Harper exits, and a final memtable flush cut
+short by `SIGKILL` loses SST bytes the benchmark would report as the codec being smaller. The runner
+gives shutdown `--shutdown-grace` (default 120s) and fails the run if the process had to be killed.

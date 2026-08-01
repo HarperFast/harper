@@ -2,7 +2,7 @@ import {
 	getDatabases,
 	getDefaultCompression,
 	resetDatabases,
-	ROCKS_COMPRESSION,
+	getRocksCompression,
 	toRocksCompression,
 } from '../resources/databases.ts';
 import { open, asBinary } from 'lmdb';
@@ -339,7 +339,7 @@ function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: b
 	// codec exactly as openRocksDatabase does. Creating them under the build default while the
 	// runtime asks for the configured one leaves the next open unable to reopen them.
 	const legacyOptions = options as { compression?: unknown };
-	legacyOptions.compression = ROCKS_COMPRESSION ?? toRocksCompression(legacyOptions.compression);
+	legacyOptions.compression = getRocksCompression() ?? toRocksCompression(legacyOptions.compression);
 	if (!existsSync(path)) {
 		mkdirSync(path, { recursive: true });
 	}
