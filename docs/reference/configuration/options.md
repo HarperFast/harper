@@ -253,7 +253,7 @@ storage:
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`
 - `compactOnStart` — Compact all non-system databases on startup; _Default_: `false` (Added in: v4.3.0)
 - `compactOnStartKeepBackup` — Retain compaction backups; _Default_: `false`
-- `maxTransactionQueueTime` — Max write queue time before 503; _Default_: `45s`
+- `maxTransactionQueueTime` — Max time a single write commit may stay unsettled before Harper starts rejecting writes with 503; see [Storage Tuning](../database/storage-tuning.md#storagemaxtransactionqueuetime); _Default_: `45s`
 - `noReadAhead` — Advise OS against read-ahead; _Default_: `false`
 - `prefetchWrites` — Prefetch before write transactions; _Default_: `true`
 - `path` — Database files directory; _Default_: `<rootPath>/database`

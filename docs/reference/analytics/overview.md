@@ -204,10 +204,10 @@ once a commit settles, so a genuinely wedged commit contributes no sample at all
 remains outstanding. Harper also logs once per stuck commit when the 503 check itself fires, which is
 the authoritative signal for that specific failure.
 
-| Field      | Unit  | Description                                       |
-| ---------- | ----- | ------------------------------------------------- |
-| `depth`    | count | Instantaneous depth sampled at emit time          |
-| `maxDepth` | count | High-water mark observed over the sampling period |
+| Field      | Unit  | Description                                             |
+| ---------- | ----- | ------------------------------------------------------- |
+| `depth`    | count | Instantaneous depth sampled at emit time                |
+| `maxDepth` | count | High-water mark since this thread's last emitted sample |
 
 - **`write-transaction-queue-depth`** counts write commits handed to the storage engine whose commit
   promises have not yet settled — how many commits this thread is juggling concurrently. This is

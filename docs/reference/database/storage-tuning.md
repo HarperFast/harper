@@ -37,7 +37,7 @@ Type: `string` (duration)
 
 Default: `45s`
 
-The maximum time a single write commit may remain unsettled before Harper starts rejecting new writes on that thread with HTTP 503. This is a per-commit duration check, not a queue-length threshold — it acts as backpressure when downstream disk I/O cannot keep up with incoming writes.
+The maximum time a single write commit may remain unsettled before Harper starts rejecting new application-originated writes on that thread with HTTP 503. This is a per-commit duration check, not a queue-length threshold — it acts as backpressure when downstream disk I/O cannot keep up with incoming writes. Deletes and writes applied from a canonical source (e.g. replication or a caching source) bypass this check.
 
 Lower this in latency-sensitive systems where it is better to shed load early than to let request queues grow. Raise it when occasional disk-write bursts are expected and the application can tolerate longer commit latency.
 
