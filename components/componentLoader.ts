@@ -29,6 +29,7 @@ import * as scheduler from '../resources/scheduler/scheduler.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
+import { deployLifecycle } from './deployLifecycle.ts';
 import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
@@ -312,6 +313,7 @@ function symlinkHarperModule(componentDirectory: string) {
  */
 function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 	return scope.ready.then(async () => {
+		await scope.waitForDeployCompletion();
 		// Timeout priority is user config, plugin default, finally 30 seconds
 		const timeout = scope.options.get(['timeout']) || plugin.defaultTimeout || 30_000; // default 30 second timeout
 		if (typeof timeout !== 'number') {
@@ -333,32 +335,70 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 				}, timeout + 5_000); // extra time for lock acquisition
 			});
 		}
-		let loadTimeout: NodeJS.Timeout;
 		try {
 			// note that handleApplication can throw sync or async errors, need to run finally block for both
-			await Promise.race([
+			await withDeployAwareTimeout(
 				Promise.resolve(plugin.handleApplication(scope)).then(async () => {
 					// Wait for any initial entry handler loads to complete
 					// This ensures all async operations (like secureImport) finish before the component is marked as loaded
 					await scope.waitForInitialLoads();
 				}),
-				new Promise(
-					(_, reject) =>
-						(loadTimeout = setTimeout(
-							() =>
-								reject(
-									new Error(
-										`handleApplication timed out after ${timeout}ms for ${scope.pluginName} on behalf of ${scope.appName}`
-									)
-								),
-							timeout
-						))
-				),
-			]);
+				scope,
+				timeout
+			);
 		} finally {
 			Status.primaryStore.unlock(scope.pluginName);
-			clearTimeout(loadTimeout);
 		}
+	});
+}
+
+function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout: number): Promise<T> {
+	return new Promise((resolve, reject) => {
+		let remaining = timeout;
+		let activeSince = 0;
+		let timer: NodeJS.Timeout | undefined;
+		const cleanup = () => {
+			if (timer) clearTimeout(timer);
+			deployLifecycle.off('deploy:start', handleDeployStart);
+			deployLifecycle.off('deploy:end', handleDeployEnd);
+		};
+		const rejectTimeout = () => {
+			cleanup();
+			reject(
+				new Error(
+					`handleApplication timed out after ${timeout}ms for ${scope.pluginName} on behalf of ${scope.appName}`
+				)
+			);
+		};
+		const arm = () => {
+			if (deployLifecycle.isDeployInFlight(scope.appName)) return;
+			if (remaining <= 0) return rejectTimeout();
+			activeSince = Date.now();
+			timer = setTimeout(rejectTimeout, remaining);
+		};
+		function handleDeployStart(componentName: string) {
+			if (componentName !== scope.appName || !timer) return;
+			remaining -= Date.now() - activeSince;
+			clearTimeout(timer);
+			timer = undefined;
+		}
+		function handleDeployEnd(componentName: string) {
+			if (componentName === scope.appName) arm();
+		}
+
+		deployLifecycle.on('deploy:start', handleDeployStart);
+		deployLifecycle.on('deploy:end', handleDeployEnd);
+		operation.then(
+			(value) => {
+				cleanup();
+				resolve(value);
+			},
+			(error) => {
+				cleanup();
+				reject(error);
+			}
+		);
+		arm();
 	});
 }
 

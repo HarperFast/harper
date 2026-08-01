@@ -498,10 +498,16 @@ describe('Scope', () => {
 			try {
 				const entries = [];
 				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				let deployWaitResolved = false;
+				const deployWait = scope.waitForDeployCompletion().then(() => {
+					deployWaitResolved = true;
+				});
 				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
 				assert.equal(entries.length, 0, 'a handler created mid-deploy must not scan the intermediate tree');
+				assert.equal(deployWaitResolved, false, 'component loading remains gated by the active deploy');
 
 				deployLifecycle._handle({ name: this.appName, phase: 'end' });
+				await deployWait;
 				await entryHandler.ready;
 				assert.ok(entries.length > 0, 'the handler scans after deploy:end resumes it');
 			} finally {

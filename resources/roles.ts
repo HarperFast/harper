@@ -45,11 +45,18 @@ export function handleApplication(
 			);
 		})
 	);
+	if (!entryHandler) return;
 	scope.on('deploy:end', () => {
 		void entryHandler.ready
 			.then(() =>
 				enqueue(async () => {
-					for (const contents of contentsByFile.values()) await handleFile(contents, ensureRoleFn);
+					for (const contents of contentsByFile.values()) {
+						try {
+							await handleFile(contents, ensureRoleFn);
+						} catch (error) {
+							scope.logger.error?.('Could not reconcile a roles file after deploy:', error);
+						}
+					}
 				})
 			)
 			.catch((error) => scope.logger.error?.('Could not reconcile roles after deploy:', error));
@@ -140,10 +147,10 @@ async function ensureRole(role) {
 	for await (let existingRole of roleTable.search([{ attribute: 'role', value: role.role }] as any)) {
 		// use the existing role id so we can update in place. Legacy roles may have a UUID for the id instead of the role name
 		const { __createdtime__, __updatedtime__, ...existingRoleData } = existingRole;
+		role.id = existingRole.id;
 		if (isEqual(existingRoleData, role)) {
 			return;
 		}
-		role.id = existingRole.id;
 		return alterRole(role);
 	}
 	return addRole(role);

@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const { handleApplication } = require('#src/resources/roles');
 const { waitFor } = require('../waitFor.js');
 
-function testScope(warnings = []) {
+function testScope(warnings = [], errors = []) {
 	let handler;
 	const listeners = new Map();
 	return {
@@ -16,7 +16,7 @@ function testScope(warnings = []) {
 			on(event, listener) {
 				listeners.set(event, listener);
 			},
-			logger: { warn: (message) => warnings.push(message), error() {} },
+			logger: { warn: (message) => warnings.push(message), error: (...args) => errors.push(args) },
 		},
 		get handler() {
 			return handler;
@@ -104,5 +104,31 @@ describe('roles entry events', () => {
 		releaseReconcile();
 		await change;
 		assert.deepEqual(applied, ['none', 'none', 'super_user']);
+	});
+
+	it('continues reconciling other role files after one is invalid', async () => {
+		const errors = [];
+		const harness = testScope([], errors);
+		const ensured = [];
+		handleApplication(harness.scope, async (role) => ensured.push(role.role));
+
+		await assert.rejects(
+			harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/invalid.yaml',
+				contents: Buffer.from('broken:\n  dev:\n    dog:\n      attribute_permissions: invalid\n'),
+			})
+		);
+		await harness.handler({
+			entryType: 'file',
+			eventType: 'add',
+			absolutePath: '/app/valid.yaml',
+			contents: Buffer.from('reader:\n  access: none\n'),
+		});
+
+		harness.fire('deploy:end');
+		await waitFor(() => ensured.length === 2 && errors.length === 1);
+		assert.deepEqual(ensured, ['reader', 'reader']);
 	});
 });
