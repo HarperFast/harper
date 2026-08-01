@@ -55,11 +55,9 @@ export function transaction<T>(
 	if (context.sourceApply) transaction.sourceApply = true;
 	transaction.setContext(context);
 
-	// Abort promptly on client disconnect (harper#2001) rather than leaving staged writes/native write
-	// intents held until the callback settles on its own or the long-transaction monitor catches it.
-	// `signal` is unset for non-request contexts (replication, internal jobs), so this is a no-op there.
-	// Removed as the first step of onComplete/onError, before either touches the transaction, so it can
-	// only fire while the callback is still pending — never racing an in-flight commit.
+	// Abort promptly on client disconnect (harper#2001) instead of waiting on the callback or the
+	// long-transaction monitor. `signal` is unset for non-request contexts. Removed at the top of
+	// onComplete/onError so it can only fire while the callback is still pending.
 	const signal = context.signal;
 	let onDisconnect: (() => void) | undefined;
 	if (signal) {
@@ -67,7 +65,6 @@ export function transaction<T>(
 			try {
 				if (transaction.open === TRANSACTION_STATE.OPEN) transaction.abortDueToDisconnect();
 			} catch (error) {
-				// Must not escape as an uncaught exception from the AbortSignal listener.
 				harperLogger.debug?.('aborting transaction on client disconnect', error);
 			}
 		};
