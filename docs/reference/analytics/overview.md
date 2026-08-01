@@ -180,14 +180,17 @@ Harper automatically tracks the following metrics for all services. Applications
 | `storage-volume`                | `available`, `free`, `size`                                                                      | `database`          | bytes   | Storage volume size breakdown                                                                         |
 | `table-size`                    | `size`                                                                                           | `database`, `table` | bytes   | Table file size                                                                                       |
 | `utilization`                   |                                                                                                  |                     | %       | Percentage of time the worker thread was processing requests                                          |
-| `write-transaction-queue-depth` | `depth`, `maxDepth`                                                                              |                     | count   | In-flight write-transaction commits (see [transaction queue depth](#transaction-queue-depth-metrics)) |
+| `write-transaction-queue-depth` | `depth`, `maxDepth`                                                                              |                     | count   | In-flight write transaction commits (see [transaction queue depth](#transaction-queue-depth-metrics)) |
 
 #### Transaction Queue Depth Metrics
 
 `write-transaction-queue-depth` and `read-transaction-queue-depth` expose how many transactions are
-in flight against the storage engine, giving operators a leading indicator before a write-heavy
-workload hits the `Outstanding write transactions have too long of queue, please try again later`
-(HTTP 503) rejection.
+in flight against the storage engine per worker thread — a concurrency and throughput signal, not a
+predictor of the `Outstanding write transactions have too long of queue, please try again later`
+(HTTP 503) rejection. That rejection is a duration check on a single outstanding commit
+(`storage.maxTransactionQueueTime`, default 45s — see [Storage](../configuration/options.md#storage)),
+not a function of concurrent commit count: a thread can carry a high `maxDepth` with fast commits and
+never trip it, or sit at `depth` of 1 for the full timeout and trip it while this metric barely moves.
 
 | Field      | Unit  | Description                                       |
 | ---------- | ----- | ------------------------------------------------- |
@@ -195,9 +198,14 @@ workload hits the `Outstanding write transactions have too long of queue, please
 | `maxDepth` | count | High-water mark observed over the sampling period |
 
 - **`write-transaction-queue-depth`** counts write commits handed to the storage engine but not yet
-  durably committed — the backlog that produces the overload error when it drains too slowly.
+  durably committed on this thread — how many commits it's juggling concurrently, not how close any
+  one of them is to the 503 timeout.
 - **`read-transaction-queue-depth`** counts open read (snapshot) transactions. Persistently high read
   depth indicates long-lived read snapshots, which can hold back compaction.
+
+Both metrics are tracked only on the RocksDB write/read path. On an LMDB-backed database
+(`storage.engine: lmdb`), `depth` and `maxDepth` for both metrics always read `0` — indistinguishable
+from a healthy, empty queue — regardless of actual read/write load.
 
 Both are gauges sampled per worker thread and summed across threads in the aggregate table (the raw
 per-thread entries in `hdb_raw_analytics` retain each thread's own depth). Note that the aggregate
@@ -206,9 +214,11 @@ peak since per-thread spikes need not coincide — treat it as an upper bound, n
 queue length. Because the write queue can fill and drain within a single sampling period, always
 alert on `maxDepth` (the per-period peak) rather than `depth` alone — an instantaneous sample will
 routinely read low even while short spikes are occurring. A healthy system keeps `write-transaction-queue-depth.maxDepth`
-near zero; a sustained non-zero peak that trends upward is the signal to shed or throttle write load
-before commits start timing out. Tune the concrete alert threshold against a baseline for your
-workload, since absolute depth scales with worker-thread count and per-transaction size.
+near zero; a sustained non-zero peak that trends upward indicates growing write concurrency worth
+investigating, but treat it as a throughput signal rather than an early warning for the 503 — that
+rejection depends on a single commit's duration, not on how many commits are queued. Tune the
+concrete alert threshold against a baseline for your workload, since absolute depth scales with
+worker-thread count and per-transaction size.
 
 #### `resource-usage` Metric
 
