@@ -314,34 +314,46 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 
 // A conflict here means RocksDB's own DB::Open already opened this column family transitively
 // (opening any one CF in a database opens every existing CF in the same native call — RocksDB has
-// no lazy per-CF open) before this reconcile pass got to it, at whatever codec was already
-// persisted for it. toRocksCompression(primaryAttribute.compression) can therefore never actually
-// change an EXISTING family's codec via this path — it either happens to agree (no-op) or conflicts
-// (this catch). Falling back to the already-open codec here is what keeps a database upgraded from
-// an older build (where compression selection didn't exist, or defaulted differently) bootable; the
-// alternative is a hard boot failure with no operator-facing way to avoid it. An explicit deployment
-// override (storage.rocks.compression) still fails loudly: the retry re-resolves through
-// getRocksCompression(), which takes precedence over dbiInit.compression regardless of whether we
-// strip it, so a genuinely misconfigured override hits the same conflict again on the retry.
-// rocksdb-js has no API to change an already-open column family's codec without a full close, which
-// is the real fix (tracked separately) — this is the boot-safety net until that exists.
+// no lazy per-CF open) before this open got to it, at whatever codec was already persisted for it.
+// getRocksCompression()/toRocksCompression(...) can therefore never actually change an EXISTING
+// family's codec via a reconcile-time open — it either happens to agree (no-op) or conflicts (this
+// catch). Falling back to the already-open codec is what keeps a database upgraded from an older
+// build, or one carrying an explicit storage.rocks.compression override, bootable; the alternative
+// is a hard boot failure with no operator-facing way to avoid it.
+//
+// The retry strips `compression` from this call's own options, but openRocksDatabase still
+// resolves getRocksCompression() ?? ... itself — so an explicit deployment override re-applies on
+// the retry and conflicts again, by design: only the metadata-derived default backs off silently;
+// a genuinely unhonorable explicit override still fails loudly (and is never logged as a false
+// recovery, since the warning below only fires once the fallback has actually succeeded).
+//
+// rocksdb-js has no API to change an already-open column family's codec without a full close,
+// which is the real fix (tracked as HarperFast/rocksdb-js task rocksdb-js-cf-compression-api) —
+// this is the boot-safety net until that exists.
 const ALREADY_OPEN_CONFLICT = /already open with compression.*cannot reopen it with/;
+const warnedAlreadyOpenConflicts = new Set<string>();
 
-function openExistingRocksPrimaryStore(
-	path: string,
-	dbiInit: Record<string, any>,
-	name: string,
-	tableName: string
-): RocksDatabaseEx {
+function openExistingRocksColumnFamily(path: string, options: Record<string, any>): RocksDatabaseEx {
 	try {
-		return openRocksDatabase(path, { ...dbiInit, name, cache: true } as any) as RocksDatabaseEx;
+		return openRocksDatabase(path, options as any) as RocksDatabaseEx;
 	} catch (error) {
 		if (!ALREADY_OPEN_CONFLICT.test(error.message)) throw error;
-		logger.warn(
-			`${tableName}'s column family is already open under a different codec than storage.compression implies; keeping its existing codec instead of failing to boot (${error.message})`
-		);
-		const { compression, ...withoutCompression } = dbiInit;
-		return openRocksDatabase(path, { ...withoutCompression, name, cache: true } as any) as RocksDatabaseEx;
+		const { compression, ...withoutCompression } = options;
+		const opened = openRocksDatabase(path, withoutCompression as any) as RocksDatabaseEx;
+		// If this throws too (an explicit override that genuinely can't be honored), it propagates
+		// as-is — nothing was logged for this attempt, so there's no false "keeping existing codec"
+		// message ahead of a boot that still fails. Deduped per column family (not per open call):
+		// every worker thread reconciles the same family independently, and this is a degraded-
+		// upgrade path someone is actively trying to read logs for, not a place for N-workers-worth
+		// of identical multi-line warnings.
+		const key = `${path}\0${options.name}`;
+		if (!warnedAlreadyOpenConflicts.has(key)) {
+			warnedAlreadyOpenConflicts.add(key);
+			logger.warn(
+				`"${options.name}" in ${path} is already open under a different codec than storage.compression implies; keeping its existing codec instead of failing to boot (${error.message})`
+			);
+		}
+		return opened;
 	}
 }
 
@@ -692,11 +704,11 @@ function initStores(
 	let attributesDbi = rootStore.dbisDb;
 	if (!attributesDbi) {
 		if (rootStore instanceof RocksDatabase) {
-			attributesDbi = openRocksDatabase(rootStore.path, {
+			attributesDbi = openExistingRocksColumnFamily(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			} as any) as RocksDatabaseEx;
+			});
 		} else {
 			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
@@ -878,7 +890,7 @@ function initStores(
 				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
-					openExistingRocksPrimaryStore(rootStore.path, dbiInit, primaryAttribute.key, tableName),
+					openExistingRocksColumnFamily(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true }),
 					rootStore
 				);
 			} else {
@@ -1458,7 +1470,7 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
 		// available before resolveIndexFormat decides the format. Versioned stores need the VT
 		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
-		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey, cache: isCustomObjectIndex } as any) as any;
+		dbi = openExistingRocksColumnFamily(rootStore.path, { ...dbiInit, name: dbiKey, cache: isCustomObjectIndex }) as any;
 		(dbi as any).rootStore = rootStore;
 		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
 		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
@@ -1642,11 +1654,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		const dbiName = tableName + '/';
 
 		if (rootStore instanceof RocksDatabase) {
-			attributesDbi = (rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
+			attributesDbi = (rootStore as any).dbisDb = openExistingRocksColumnFamily(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			} as any);
+			});
 		} else {
 			attributesDbi = (rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
@@ -1681,7 +1693,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
-				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
+				// Usually a genuinely new column family (existingTableMeta above found no catalog
+				// entry), but an interrupted drop just completed above can leave the physical CF
+				// behind under its old codec even though the catalog entry is gone — same fallback
+				// as the reconcile paths covers that remnant case too.
+				primaryStore = openExistingRocksColumnFamily(rootStore.path, { ...dbiInit, name: dbiName, cache: true });
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
@@ -1739,11 +1755,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	const indices = Table.indices;
 	if (!attributesDbi) {
 		if (rootStore instanceof RocksDatabase) {
-			(rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
+			(rootStore as any).dbisDb = openExistingRocksColumnFamily(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			} as any);
+			});
 		} else {
 			(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
@@ -2291,7 +2307,7 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 	if (rootStore instanceof RocksDatabase) {
 		for (const columnName of (rootStore as any).columns) {
 			if (columnName.startsWith(tableName + '/')) {
-				const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
+				const columnStore = openExistingRocksColumnFamily(rootStore.path, { name: columnName });
 				try {
 					columnStore.dropSync();
 				} catch (error) {

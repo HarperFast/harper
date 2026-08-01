@@ -586,11 +586,26 @@ export function applyInstallModeDefaults(args, defaultsMode) {
  * unstaged, the main thread creates `__dbis__` at the build default while every worker resolves the
  * configured codec, and Harper dies with "The system database failed to load". Staging it in the
  * in-memory config here is the same trick the STORAGE_ENGINE line above uses.
+ *
+ * Checked in the same precedence `createConfigFile()` itself later resolves the value with, so
+ * staging can't silently miss a source `createConfigFile()` would have honored: the JSON-blob env
+ * vars (`HARPER_DEFAULT_CONFIG`/`HARPER_CONFIG`/`HARPER_SET_CONFIG`, via `composeConfigFromEnv()`),
+ * the individual `STORAGE_ROCKS_COMPRESSION` env var or `--STORAGE_ROCKS_COMPRESSION` CLI flag (via
+ * `assignCMDENVVariables`, the same helper `createConfigFile()` uses for every other config param),
+ * and an `--HDB_CONFIG <path>` file (via the local `getConfigFromFile()`, which is otherwise only
+ * read after `mountHdb()` runs). Missing any one of these recreates the exact race this function
+ * exists to prevent: `STORAGE_ROCKS_COMPRESSION=zstd harper install` would install cleanly (main
+ * thread creates `__dbis__` at the build default) and then die on the very next boot, once workers
+ * resolve the now-written config file's codec against a family the main thread already fixed.
  */
 function stageRocksCompression() {
-	const configured = composeConfigFromEnv()?.storage?.rocks?.compression;
+	const param = hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION;
+	const configured =
+		composeConfigFromEnv()?.storage?.rocks?.compression ??
+		assignCMDENVVariables([param], true)[param] ??
+		(cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ? getConfigFromFile()[param] : undefined);
 	if (configured !== undefined && configured !== null && configured !== '') {
-		envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION, configured);
+		envManager.setProperty(param, configured);
 	}
 }
 
