@@ -179,7 +179,7 @@ Harper automatically tracks the following metrics for all services. Applications
 | `resource-usage`                | (see below)                                                                                      |                     | various | Node.js process resource usage (see [resource-usage](#resource-usage-metric))                                         |
 | `storage-volume`                | `available`, `free`, `size`                                                                      | `database`          | bytes   | Storage volume size breakdown                                                                                         |
 | `table-size`                    | `size`                                                                                           | `database`, `table` | bytes   | Table file size                                                                                                       |
-| `transaction-commit-time`       | `median`, `mean`, `p95`, `p90`                                                                   |                     | ms      | Duration from write commit submission to settlement (see [transaction queue depth](#transaction-queue-depth-metrics)) |
+| `transaction-commit-time`       | `mean`, `median`, `p90`, `p95`, `p99`, `p999`                                                    |                     | ms      | Duration from write commit submission to settlement (see [transaction queue depth](#transaction-queue-depth-metrics)) |
 | `utilization`                   |                                                                                                  |                     | %       | Percentage of time the worker thread was processing requests                                                          |
 | `write-transaction-queue-depth` | `depth`, `maxDepth`                                                                              |                     | count   | In-flight write transaction commits (see [transaction queue depth](#transaction-queue-depth-metrics))                 |
 
@@ -188,16 +188,21 @@ Harper automatically tracks the following metrics for all services. Applications
 <VersionBadge version="v5.2.0" />
 
 `write-transaction-queue-depth` and `read-transaction-queue-depth` expose how many transactions are
-in flight against the storage engine per worker thread — a concurrency and throughput signal.
-`maxDepth` amplitude alone is not a reliable predictor of the `Outstanding write transactions have too
-long of queue, please try again later` (HTTP 503) rejection: a thread can carry a high `maxDepth` with
-fast commits and never trip it. But a single commit stuck in flight — the precondition for that
-rejection — does show up here as a distinguishing pattern: `depth` pinned at 1 or more across many
-consecutive raw samples (rather than a brief blip that clears) means a commit isn't settling. For a
-direct duration reading on that specific risk, use `transaction-commit-time`, which records each
-commit's submit-to-settle time on the same clock as the
+in flight against the storage engine per worker thread — a concurrency and throughput signal, not a
+reliable predictor on their own of the `Outstanding write transactions have too long of queue, please
+try again later` (HTTP 503) rejection: `maxDepth` amplitude reflects concurrent commits, not whether
+any single one is approaching the
 [`storage.maxTransactionQueueTime`](../database/storage-tuning.md#storagemaxtransactionqueuetime)
-check (default 45s) — a rising p99/p999 there is the leading indicator for the 503.
+duration limit (default 45s) that actually trips the 503.
+
+`transaction-commit-time` records each commit's submit-to-settle duration on that same clock, and a
+rising `p99`/`p999` (in the `hdb_analytics` aggregate table, where percentiles are computed — they
+aren't present on `hdb_raw_analytics`) is a leading indicator of _gradual_ slowdowns approaching that
+limit. It doesn't help with a single commit that hangs indefinitely, though: the metric only records
+once a commit settles, so a genuinely wedged commit contributes no sample at all, while
+`write-transaction-queue-depth`'s `depth` stays elevated on that thread for as long as the commit
+remains outstanding. Harper also logs once per stuck commit when the 503 check itself fires, which is
+the authoritative signal for that specific failure.
 
 | Field      | Unit  | Description                                       |
 | ---------- | ----- | ------------------------------------------------- |
@@ -214,19 +219,23 @@ check (default 45s) — a rising p99/p999 there is the leading indicator for the
   duration-based metric would be needed to identify a single transaction held open long enough to
   hold back compaction.
 
-Both metrics are tracked only on the RocksDB write/read path. On an LMDB-backed database
-(`storage.engine: lmdb`), `depth` and `maxDepth` for both metrics always read `0` — indistinguishable
-from a healthy, empty queue — regardless of actual read/write load.
+Both metrics are gauges tracked only on the RocksDB write/read path, sampled per worker thread. On an
+LMDB-backed database (`storage.engine: lmdb`), `depth` and `maxDepth` for both metrics always read `0`
+— indistinguishable from a healthy, empty queue — regardless of actual read/write load. All per-thread
+analytics reporting, including these gauges, piggybacks on the thread having recorded some other
+analytics-eligible activity in the period — a thread with no recordable activity in a given second
+emits no row at all rather than an explicit `depth: 0`. Absence of a sample is not the same as a
+healthy reading, particularly for `read-transaction-queue-depth` on an otherwise-quiet thread holding a
+single long-lived read.
 
-Both are gauges sampled per worker thread. The raw per-thread entries in `hdb_raw_analytics` retain
-each thread's true instantaneous `depth` and per-period `maxDepth`; treat those as the reliable
-source for spike detection. The aggregate `hdb_analytics` table is not a sum of per-thread peaks —
-each thread's `maxDepth` is first averaged across its raw samples for the period, then those
-per-thread averages are summed — so a brief single-thread spike is diluted rather than preserved.
-Always alert on `hdb_raw_analytics.maxDepth` (or lower the sampling/aggregation period) rather than
-relying on the aggregate table to catch short spikes. Tune the concrete alert threshold against a
-baseline for your workload, since absolute depth scales with worker-thread count and per-transaction
-size.
+The raw per-thread entries in `hdb_raw_analytics` retain each thread's true instantaneous `depth` and
+per-period `maxDepth`; treat those as the reliable source for spike detection. The aggregate
+`hdb_analytics` table is not a sum of per-thread peaks — each thread's `maxDepth` is first averaged
+across its raw samples for the period, then those per-thread averages are summed — so a brief
+single-thread spike is diluted rather than preserved. Always alert on `hdb_raw_analytics.maxDepth` (or
+lower the sampling/aggregation period) rather than relying on the aggregate table to catch short
+spikes. Tune the concrete alert threshold against a baseline for your workload, since absolute depth
+scales with worker-thread count and per-transaction size.
 
 #### `resource-usage` Metric
 
