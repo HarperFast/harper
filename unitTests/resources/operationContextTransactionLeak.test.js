@@ -143,13 +143,21 @@ describe('Ambient operation context must not couple independent writes (transact
 	// DatabaseTransaction now releases the context's back-reference the instant it completes
 	// (commit or abort; see DatabaseTransaction.ts's releaseContext(), added so a long-lived
 	// context, e.g. an MQTT subscription context, can't keep pinning a finished transaction in
-	// memory). A bare null check alone would NOT still discriminate the #1591 fix from a revert,
-	// though: both the fixed `.open === TRANSACTION_STATE.OPEN` check and the old, buggy
-	// bare-truthiness `if (context?.transaction)` check see the SAME falsy value once the prior
-	// write's commit has released it, so both take the "start a fresh transaction" branch by the
-	// time this test reads the ambient context after each write — the discriminating power has to
-	// come from OBSERVING that a fresh instance really was minted, not from what's left behind
-	// afterward. resources/transaction.ts's transaction() helper assigns `context.transaction = new
+	// memory).
+	//
+	// That release also means this particular flow (a plain sequential write, no outstanding
+	// iterators) can no longer discriminate a #1591 dispatcher revert: once the prior write's
+	// commit has released the slot to `null`, BOTH the fixed `.open === TRANSACTION_STATE.OPEN`
+	// check and the old, buggy bare-truthiness `if (context?.transaction)` check see the same
+	// falsy value and take the "start a fresh transaction" branch — a revert would still pass the
+	// assertions below. The #1591 scenario (a truthy-but-non-OPEN reference genuinely observed by
+	// the next call) still needs a case where release is deferred past the write that would
+	// wrongly join it — see the search()-iterator test above, which exercises exactly that LINGERING
+	// window. This test's job is narrower: pin that DatabaseTransaction's OWN release invariant
+	// holds for a sequence of independent writes (each is released, and each really is a fresh
+	// instance), which is what the assertions below check.
+	//
+	// resources/transaction.ts's transaction() helper assigns `context.transaction = new
 	// DatabaseTransaction()` synchronously — before calling back into Resource.ts's dispatcher — so
 	// each write's fresh instance is observable straight off the real ambient context synchronously,
 	// right after issuing the call and before awaiting it. That avoids stubbing
@@ -183,17 +191,17 @@ describe('Ambient operation context must not couple independent writes (transact
 		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
 		assert.strictEqual(
 			afterFirst,
-			undefined,
+			null,
 			"the first write's transaction must be released from the ambient context once its commit completes"
 		);
 		assert.strictEqual(
 			afterSecond,
-			undefined,
+			null,
 			"the second write's transaction must likewise be released, not left attached for a later write to observe"
 		);
 		assert.strictEqual(
 			afterThird,
-			undefined,
+			null,
 			"the third write's transaction must likewise be released, for the same reason"
 		);
 
