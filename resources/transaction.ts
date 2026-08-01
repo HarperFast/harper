@@ -58,19 +58,23 @@ export function transaction<T>(
 	// Abort promptly on client disconnect (harper#2001) instead of waiting on the callback or the
 	// long-transaction monitor. `signal` is unset for non-request contexts. Removed at the top of
 	// onComplete/onError so it can only fire while the callback is still pending.
+	//
+	// Gated the same way the long-transaction monitor gates abortDueToTimeout (DatabaseTransaction.ts's
+	// startMonitoringTxns): only a write-bearing transaction is poisoned. A read-only transaction (e.g. a
+	// large search()/export) can have live iterators streaming through its native handle — aborting mid-
+	// stream would free that handle out from under them, not just close it early. sourceApply/isReplay
+	// transactions (replication peer / external caching source / crash-recovery replay) have no resume
+	// path, so dropping their write on disconnect would diverge them permanently (harper-pro#348) — same
+	// exclusion the monitor already makes.
+	//
+	// No `signal.aborted` fast path: unlike the monitor (a fresh timer each tick), an AbortSignal stays
+	// aborted forever once fired, and the same signal can be shared by later transaction() calls on the
+	// same context (ALS inheritance, a spread-copied context) — including deliberate post-disconnect
+	// compensation work (a `finally` releasing a claim). Only a disconnect that happens WHILE this
+	// specific transaction is open should poison it; one that already happened before it was created
+	// should not.
 	const signal = context.signal;
 	let onDisconnect: (() => void) | undefined;
-	if (signal) {
-		onDisconnect = () => {
-			try {
-				if (transaction.open === TRANSACTION_STATE.OPEN) transaction.abortDueToDisconnect();
-			} catch (error) {
-				harperLogger.debug?.('aborting transaction on client disconnect', error);
-			}
-		};
-		if (signal.aborted) onDisconnect();
-		else signal.addEventListener('abort', onDisconnect, { once: true });
-	}
 
 	let result;
 	try {
@@ -79,6 +83,26 @@ export function transaction<T>(
 				? callback(transaction)
 				: contextStorage.run(context, () => callback(transaction));
 		if ((result as any)?.then) {
+			// A synchronous callback can't yield to the event loop, so an abort event physically cannot
+			// fire during it — only arm the listener once we know the callback is still in flight. Safe to
+			// do here (rather than before calling callback) because no microtask has run yet.
+			if (signal) {
+				onDisconnect = () => {
+					try {
+						if (
+							transaction.open === TRANSACTION_STATE.OPEN &&
+							transaction.hasPendingWrites() &&
+							!transaction.sourceApply &&
+							!transaction.isReplay
+						) {
+							transaction.abortDueToDisconnect();
+						}
+					} catch (error) {
+						harperLogger.debug?.('aborting transaction on client disconnect', error);
+					}
+				};
+				signal.addEventListener('abort', onDisconnect, { once: true });
+			}
 			return (result as any).then(onComplete, onError);
 		}
 	} catch (error) {

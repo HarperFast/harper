@@ -6,6 +6,7 @@
 import { currentThreadId } from '@harperfast/rocksdb-js';
 import { Scope } from '../components/Scope.ts';
 import { Socket } from 'node:net';
+import { setMaxListeners } from 'node:events';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -1654,11 +1655,13 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
 			cfg.wsHandler = (ws: any, upgrade: any) => {
 				try {
-					// Without a signal here, UwsRequest.signal falls back to a throwaway AbortController that
-					// nothing can ever fire — so per-message request-scoped transactions (resources/transaction.ts)
-					// never learn the socket closed (harper#2001). `ws` (UwsWebSocket) emits 'close' once uWS's
-					// own close callback fires; wire it the same way uwsServer.ts's HTTP path wires res.onAborted.
+					// UwsRequest.signal falls back to a controller nothing can fire. Wire a real one, the
+					// same way uwsServer.ts's HTTP path wires res.onAborted.
 					const ac = new AbortController();
+					// One controller per connection, but one abort listener per in-flight message-handling
+					// transaction (resources/transaction.ts) — a busy connection can hold more than
+					// EventEmitter's default 10-listener warning threshold on perfectly normal traffic.
+					setMaxListeners(0, ac.signal);
 					ws.once('close', () => ac.abort());
 					const request: any = new UwsRequest({
 						method: 'GET',

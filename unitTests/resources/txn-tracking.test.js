@@ -10,6 +10,7 @@ const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { RocksDatabase, registryStatus } = require('@harperfast/rocksdb-js');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const { waitFor } = require('../waitFor.js');
 describe('Txn Expiration', () => {
 	let SlowResource,
 		performedDBInteractions = false;
@@ -544,10 +545,20 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(501)) == null, 'the orphaned write must not have been committed');
 	});
 
-	it('propagates disconnect poison to a database first touched after the disconnect (RocksDB)', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // LMDB already blocks via its own open===CLOSED check; see the note below
+	// Table.ts's txnForContext only chains a separate `next` link when the second store's `.path` differs
+	// from the head's. In this test harness setupTestDBPath() points every configured database name at the
+	// same directory (unitTests/testUtils.js), so two tables never actually get distinct store paths here
+	// to exercise that branch — the same pre-existing harness limitation noted in PR #2009's review of this
+	// file ("same-database tables share one transaction — I measured it"). So this only exercises the
+	// (still real, still necessary) case where a second table resolves to the SAME store as the head: the
+	// rejection comes from the head's own poison check, not from a genuinely new chain link. The Table.ts
+	// propagation fix itself (transaction.next.disconnected = ...) is exercised whenever a real deployment
+	// — with actual distinct database paths — touches a second database after a disconnect; verified by
+	// code inspection (txnForContext's `next` link creation is unconditional on database identity, and the
+	// two new poison-propagation lines run in that same branch) rather than a mechanistic test here.
+	it('rejects a write to a database first touched after the disconnect', async function () {
 		const OtherDisconnectResource = table({
-			table: 'OtherDisconnectTxnTable',
+			table: 'OtherDisconnectTxnTable2',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
@@ -558,24 +569,22 @@ describe('Disconnect abort', () => {
 				await DisconnectResource.put(510, { name: 'first table' }, context); // claims context.transaction
 				ac.abort();
 				await delay(10);
-				// touches a SECOND database for the first time, only after the head is already poisoned —
-				// without propagating `disconnected` onto the new `next` link, save() takes the
-				// immediateCommit path and this would silently commit (Table.ts's txnForContext)
 				await OtherDisconnectResource.put(511, { name: 'second table, too late' }, context);
 			}),
-			/disconnected/
+			/disconnected|no longer open/
 		);
 		assert.ok((await OtherDisconnectResource.get(511)) == null, 'the second table write must not commit either');
 	});
 
-	it('rejects a write staged after the disconnect instead of silently starting a fresh commit', async function () {
+	it('rejects a further write staged after the disconnect poisons an already write-bearing txn', async function () {
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
 		await assert.rejects(
 			transaction(context, async () => {
-				ac.abort();
+				await DisconnectResource.put(502, { name: 'arms the poison' }, context); // stages a write first
+				ac.abort(); // now hasPendingWrites() is true, so this actually poisons
 				await delay(10);
-				await DisconnectResource.put(502, { name: 'too late' }, context);
+				await DisconnectResource.put(504, { name: 'too late' }, context); // must throw, not commit
 			}),
 			// RocksDB rejects with requestAbortedError ("disconnected"). LMDB's own overridden
 			// addWrite/commit don't consult the `disconnected` poison flag, but they already reject on
@@ -583,7 +592,46 @@ describe('Disconnect abort', () => {
 			// poisoning) with their own pre-existing, differently-worded error — both block the write.
 			/disconnected|no longer open/
 		);
-		assert.ok((await DisconnectResource.get(502)) == null, 'a write staged after disconnect must not commit');
+		assert.ok((await DisconnectResource.get(502)) == null, 'the poisoned first write must not commit either');
+		assert.ok((await DisconnectResource.get(504)) == null, 'a write staged after disconnect must not commit');
+	});
+
+	// The disconnect abort is gated exactly like the long-transaction monitor gates abortDueToTimeout
+	// (DatabaseTransaction.ts's startMonitoringTxns): only a transaction with a pending write is poisoned.
+	// A read-only transaction's native handle can have live iterators streaming through it (a large
+	// search()/export) — aborting mid-stream would free that handle out from under them rather than just
+	// closing it early, so a disconnect with nothing staged yet must leave it alone entirely.
+	it('does not poison a read-only transaction on disconnect (no pending writes to protect)', async function () {
+		await DisconnectResource.put(505, { name: 'readable' }, {}); // seed, own (unrelated) txn
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let sawDuringRead;
+		const result = await transaction(context, async () => {
+			await DisconnectResource.get(505, context); // pure read, no writes staged
+			ac.abort();
+			await delay(10);
+			sawDuringRead = { open: context.transaction.open, disconnected: context.transaction.disconnected };
+			return DisconnectResource.get(505, context);
+		});
+		assert.equal(sawDuringRead.disconnected, undefined, 'a read-only transaction must not be poisoned on disconnect');
+		assert.equal(
+			sawDuringRead.open,
+			TRANSACTION_STATE.OPEN,
+			'a read-only transaction stays open through the disconnect'
+		);
+		assert.equal(result?.name, 'readable', 'the read must still complete normally');
+	});
+
+	it('does not poison a source-apply transaction on disconnect (no resume path, must never drop a write)', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal, sourceApply: true };
+		await transaction(context, async () => {
+			await DisconnectResource.put(506, { name: 'from source' }, context);
+			ac.abort();
+			await delay(10);
+			assert.equal(context.transaction.disconnected, undefined, 'a source-apply transaction must not be poisoned');
+		});
+		assert.equal((await DisconnectResource.get(506))?.name, 'from source', 'the source-applied write must commit');
 	});
 
 	it('does not affect a request that completes normally without disconnecting', async function () {
@@ -597,9 +645,11 @@ describe('Disconnect abort', () => {
 
 	// A caching table's on-demand fill-from-source runs `getFromSource`'s OWN `transaction(sourceContext,
 	// ...)` (resources/Table.ts), a completely separate DatabaseTransaction from the requester's — with no
-	// `signal` of its own (`sourceContext` never carries one). So a slow source fetch triggered by a GET
-	// must keep filling the cache even after the requester who triggered it disconnects, exactly as before
-	// this change: nothing here should ever make a disconnect-driven cache miss look like a stampede.
+	// `signal` of its own (`sourceContext` never carries one). Independently, the requester's own (outer)
+	// transaction has no pending writes of its own while waiting on the fetch, so the hasPendingWrites()
+	// gate above leaves it unpoisoned too. Either guarantee alone would be enough; both hold. So a slow
+	// source fetch triggered by a GET must keep filling the cache, AND the original GET must still resolve
+	// normally, even after the requester who triggered it disconnects.
 	it('still caches a slow source fill for later requesters even if the requesting client disconnects mid-fetch', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // caching tables: see unitTests/resources/caching.test.js
 		const CachingResource = table({
@@ -622,15 +672,19 @@ describe('Disconnect abort', () => {
 		ac.abort(); // the requesting client disconnects while the source fetch is still in flight
 		await delay(5);
 		releaseSource();
-		await assert.rejects(getPromise, /disconnected/); // the disconnected requester itself gets nothing back
+		const result = await getPromise; // read-only transaction, ungated — resolves normally despite the disconnect
+		assert.equal(result?.name, 'from-source-701');
 		// The cache fill commits via getFromSource's own background transaction (see the comment above),
-		// deliberately not awaited by the requester's own promise — give it a moment to land.
-		await delay(20);
-		assert.equal(
-			(await CachingResource.get(701, { onlyIfCached: true }))?.name,
-			'from-source-701',
-			'the fetched value must still be cached for a later requester'
-		);
+		// deliberately not awaited by the requester's own promise — poll for it rather than a fixed sleep.
+		// onlyIfCached throws (504) rather than returning falsy while still uncached, so swallow that.
+		const cached = await waitFor(async () => {
+			try {
+				return await CachingResource.get(701, { onlyIfCached: true });
+			} catch {
+				return undefined;
+			}
+		});
+		assert.equal(cached?.name, 'from-source-701', 'the fetched value must still be cached for a later requester');
 	});
 });
 

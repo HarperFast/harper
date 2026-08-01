@@ -5870,8 +5870,8 @@ export function makeTable(options) {
 					// handler touching this database for the first time post-poison) sees CLOSED but not
 					// the reason, takes save()'s immediateCommit path, and commits on behalf of a request
 					// that was supposed to have been cut off.
-					transaction.next.timedOut = transaction.timedOut;
-					transaction.next.disconnected = transaction.disconnected;
+					if (transaction.timedOut) transaction.next.timedOut = true;
+					if (transaction.disconnected) transaction.next.disconnected = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
 					return transaction;

@@ -564,9 +564,6 @@ export class UwsRequest {
 		return this.#signal?.aborted ?? false;
 	}
 	get signal(): AbortSignal {
-		// Cache the fallback rather than minting a new (permanently un-fireable) AbortController on every
-		// read: nothing external can ever signal a controller nobody kept a reference to, so a fresh one
-		// per call was pure waste, not a functional difference.
 		return (this.#signal ??= new AbortController().signal);
 	}
 	_abort(): void {

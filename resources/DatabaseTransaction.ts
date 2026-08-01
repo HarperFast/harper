@@ -438,8 +438,7 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
-	// Set by abortDueToDisconnect (client disconnected while this transaction was still open). Mirrors
-	// timedOut above, throwing requestAbortedError instead — same shape, different reason.
+	// Set by abortDueToDisconnect (client disconnected while this transaction was still open).
 	declare disconnected?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
@@ -904,8 +903,14 @@ export class DatabaseTransaction implements Transaction {
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
-		if (this.timedOut) throw transactionOpenTooLongError();
-		if (this.disconnected) throw requestAbortedError();
+		// Only reject a FRESH commit attempt (no options.transaction), not a retry recursion continuing a
+		// native transaction that's already mid-flight (RETRY_NOW/ERR_BUSY/ERR_TRY_AGAIN, below, which pass
+		// options.transaction). Poisoning mid-retry must not abandon that handle uncommitted-and-unaborted —
+		// let the retry ladder run to its normal conclusion (commit, or the terminal-failure abort() path).
+		if (!options.transaction) {
+			if (this.timedOut) throw transactionOpenTooLongError();
+			if (this.disconnected) throw requestAbortedError();
+		}
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
 		let transaction = options.transaction ?? this.transaction;
