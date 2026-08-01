@@ -1,4 +1,10 @@
-import { getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases.ts';
+import {
+	getDatabases,
+	getDefaultCompression,
+	resetDatabases,
+	ROCKS_COMPRESSION,
+	toRocksCompression,
+} from '../resources/databases.ts';
 import { open, asBinary } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
@@ -329,6 +335,11 @@ export function shapeForStructure(value: any): any {
 
 function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: boolean } = {}) {
 	options.disableWAL ??= false;
+	// Migration writes the column families the runtime will later reopen, so it has to resolve the
+	// codec exactly as openRocksDatabase does. Creating them under the build default while the
+	// runtime asks for the configured one leaves the next open unable to reopen them.
+	const legacyOptions = options as { compression?: unknown };
+	legacyOptions.compression = ROCKS_COMPRESSION ?? toRocksCompression(legacyOptions.compression);
 	if (!existsSync(path)) {
 		mkdirSync(path, { recursive: true });
 	}
