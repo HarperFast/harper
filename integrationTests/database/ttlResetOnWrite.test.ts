@@ -611,7 +611,9 @@ suite(
 			for (let round = 0; round < ROUNDS; round++) {
 				const id = `qa269-race-${round}`;
 
-				// Seed
+				// Seed. The server applies the write at some point at-or-before the response lands, so
+				// the record's true expiry is anywhere in [seedIssuedAt + TTL_MS, seedAt + TTL_MS].
+				const seedIssuedAt = Date.now();
 				const seedStatus = await restPut(id, { tag: 'seed-race', n: 0 });
 				const seedAt = Date.now();
 				if (seedStatus === 'error' || (seedStatus !== 200 && seedStatus !== 204)) {
@@ -619,12 +621,17 @@ suite(
 					continue;
 				}
 
-				// Wait until just before the natural expiry fires.
-				const fireAt = seedAt + TTL_MS - WINDOW_BEFORE_EXPIRY_MS;
+				// Wait until just before the EARLIEST possible natural expiry (anchored on the seed's
+				// ISSUE time, not its response time): anchoring on the response time — as an earlier
+				// version of this probe did — could put fireAt after the record had already expired
+				// if the seed's own round-trip exceeded WINDOW_BEFORE_EXPIRY_MS, silently turning the
+				// "race" into a plain post-expiry write against a dead key.
+				const fireAt = seedIssuedAt + TTL_MS - WINDOW_BEFORE_EXPIRY_MS;
 				const waitMs = fireAt - Date.now();
 				if (waitMs > 0) await sleep(waitMs);
 
 				// Fire the update in the expiry race window.
+				const updateIssuedAt = Date.now();
 				const updateStatus = await restPut(id, { tag: `raced${round}`, n: round + 1 });
 				const updateAt = Date.now();
 
@@ -638,10 +645,15 @@ suite(
 					await deleteRecord(id);
 					continue;
 				}
-				if (updateAt >= seedAt + TTL_MS) {
-					// The update's own round-trip was slow enough that it landed after natural expiry
-					// would already have fired — this round missed the race window it was meant to
-					// probe, independent of whatever the record's state turns out to be.
+				// Gate on when the update was ISSUED, not when its response landed (updateAt): the
+				// server could have applied it well before the response returned, so gating on
+				// response time could discard a round that genuinely raced. seedAt (response time,
+				// the LATEST possible natural expiry) stays the comparison bound — the conservative
+				// choice, so this only marks a round windowMissed when it's certain to have missed.
+				if (updateIssuedAt >= seedAt + TTL_MS) {
+					// The update was issued after natural expiry could already have fired — this round
+					// missed the race window it was meant to probe, independent of whatever the
+					// record's state turns out to be.
 					outcomes.windowMissed++;
 					await deleteRecord(id);
 					continue;
@@ -702,17 +714,19 @@ suite(
 				outcomes.resurrection === 0,
 				`F-002 stale resurrection detected in ${outcomes.resurrection}/${ROUNDS} rounds [${ENGINE}]`
 			);
-			// At least one round should complete cleanly (basic smoke guard).
-			ok(outcomes.cleanReset + outcomes.silentLoss > 0, `No round completed cleanly — environment likely broken`);
 			// Rounds that never entered the race window (windowMissed) can't tell us anything about
 			// F-002 either way — excluded from the denominator so a loaded runner that keeps missing
 			// the window can't manufacture a coverage failure out of a race that never happened.
+			// Checked before the generic smoke guard below so an all-windowMissed run reports its
+			// actual, more specific cause instead of a generic "environment likely broken".
 			const racedRounds = ROUNDS - outcomes.windowMissed;
 			ok(
 				racedRounds > 0,
 				`all ${ROUNDS} rounds missed the intended race window (update landed at/after natural expiry) — ` +
 					`environment too slow to run this probe meaningfully [${ENGINE}]`
 			);
+			// At least one round should complete cleanly (basic smoke guard).
+			ok(outcomes.cleanReset + outcomes.silentLoss > 0, `No round completed cleanly — environment likely broken`);
 			// Only cleanReset and resurrection rounds actually exercise the F-002 property —
 			// silentLoss and updateError both `continue` before the resurrection check ever runs.
 			// A first version of this guard capped transportErr alone, which missed that: a probe
