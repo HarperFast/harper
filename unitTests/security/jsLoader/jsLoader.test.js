@@ -211,12 +211,15 @@ describe('pure-ESM package resolution', () => {
 	it('should import a pure-ESM package (exports map with only "import" conditions, no "require")', async () => {
 		const runtimeRoot = join(__dirname, 'fixtures', 'esm-only-test');
 		const resolutions = [];
+		const loadedModules = [];
 		const result = await scopedImport(join(runtimeRoot, 'uses-pure-esm-pkg.mjs'), {
 			...vmScope(),
 			runtimeRoot,
 			recordModuleResolution: (specifier) => resolutions.push(specifier),
+			recordLoadedModule: (url) => loadedModules.push(url),
 		});
 		expect(result.value).to.equal('esm-only');
 		expect(resolutions).not.to.include('pure-esm-pkg');
+		expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/package.json'))).to.equal(true);
 	});
 });

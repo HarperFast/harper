@@ -131,6 +131,11 @@ Future agents touching `components/deploymentRecorder.ts` for Slice B's streamin
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A lock is never stolen from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The bounded wait remains a backstop when owner liveness cannot be established.
 
+A plugin load that begins while its component is being deployed waits for that lifecycle to end before
+starting `handleApplication`; if a deploy begins during the load, the plugin timeout counts only active,
+unpaused load time. This prevents a long install from looking like a hung plugin while its entry handlers
+are deliberately paused against the intermediate tree.
+
 Extraction renames an existing component aside before writing the replacement and keeps it until
 dependency installation and metadata verification complete. Any preparation failure atomically
 renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
@@ -674,7 +679,8 @@ layers it uses are proven equivalent:
   those exact logical paths are re-read and each edge is resolved again against the replacement tree
   after evicting Node's matching resolution-cache entry. Adding a higher-priority `foo.js` ahead of a
   previously resolved `foo.json` is therefore a runtime change even when `foo.json` itself is
-  byte-identical.
+  byte-identical. For import-only package exports that Node's CommonJS resolver cannot resolve, the
+  package manifest itself is recorded as a runtime input so an exports-map retarget is also observable.
 - The deploy pipeline compares dependency metadata at the same preparation stage: the previous
   installed tree before extraction versus the replacement tree after installation.
 

@@ -312,7 +312,7 @@ describe('static plugin ordering live reload', () => {
 		assert.equal(state.restartRequests, 1);
 	});
 
-	it('applies removals but ignores additions while a urlPath restart is pending', () => {
+	it('keeps the registered route while only a urlPath restart is pending', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);
 		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
@@ -322,7 +322,7 @@ describe('static plugin ordering live reload', () => {
 		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/new/asset.js' });
 
 		const fallthrough = Symbol('fallthrough');
-		assert.strictEqual(
+		assert.notStrictEqual(
 			state.listener(
 				{ method: 'GET', isWebSocket: false, pathname: '/asset.js', url: '/asset.js', headers: {} },
 				() => fallthrough
@@ -336,6 +336,25 @@ describe('static plugin ordering live reload', () => {
 			),
 			fallthrough
 		);
+	});
+
+	it('applies file-selection removals while a urlPath restart is pending', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+
+		scope.fireChange('urlPath');
+		scope.fireChange('files');
+		state.entryCallback({ eventType: 'unlink', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/new/asset.js' });
+
+		const fallthrough = Symbol('fallthrough');
+		for (const pathname of ['/asset.js', '/new/asset.js']) {
+			assert.strictEqual(
+				state.listener({ method: 'GET', isWebSocket: false, pathname, url: pathname, headers: {} }, () => fallthrough),
+				fallthrough
+			);
+		}
 	});
 
 	it('does not request a restart for options read per-request', () => {

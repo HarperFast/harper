@@ -178,7 +178,10 @@ function walkExportsConditions(entry: unknown, conditions: readonly string[]): s
  * ERR_PACKAGE_PATH_NOT_EXPORTED for pure-ESM packages (exports map with only "import"
  * conditions and no "require").
  */
-function resolveESMPackageExports(specifier: string, fromDir: string): string | null {
+function resolveESMPackageExports(
+	specifier: string,
+	fromDir: string
+): { resolvedUrl: string; packageJsonUrl: string; packageJsonSource: Buffer } | null {
 	const isScoped = specifier.startsWith('@');
 	const parts = specifier.split('/');
 	const packageName = isScoped ? `${parts[0]}/${parts[1]}` : parts[0];
@@ -189,8 +192,11 @@ function resolveESMPackageExports(specifier: string, fromDir: string): string | 
 	while (true) {
 		const pkgRoot = join(dir, 'node_modules', packageName);
 		let pkgJson: any;
+		let packageJsonSource: Buffer;
+		const packageJsonPath = join(pkgRoot, 'package.json');
 		try {
-			pkgJson = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf-8'));
+			packageJsonSource = readFileSync(packageJsonPath);
+			pkgJson = JSON.parse(packageJsonSource.toString());
 		} catch {
 			const parent = dirname(dir);
 			if (parent === dir) return null;
@@ -220,7 +226,11 @@ function resolveESMPackageExports(specifier: string, fromDir: string): string | 
 		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
 		if (!relative) return null;
 
-		return pathToFileURL(realpathSync(join(pkgRoot, relative))).toString();
+		return {
+			resolvedUrl: pathToFileURL(realpathSync(join(pkgRoot, relative))).toString(),
+			packageJsonUrl: pathToFileURL(realpathSync(packageJsonPath)).toString(),
+			packageJsonSource,
+		};
 	}
 }
 
@@ -301,7 +311,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 					: dirname(resolveReferrer);
 				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
 				if (esmResolved) {
-					return esmResolved;
+					scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
+					return esmResolved.resolvedUrl;
 				}
 			}
 			throw err;

@@ -772,7 +772,19 @@ export async function extractApplication(
 	}
 	// Clean up the original tarball
 	if (shouldDeleteTarball && tarballPath) {
-		await rm(tarballPath, { force: true });
+		try {
+			await rm(tarballPath, { force: true });
+		} catch (error) {
+			try {
+				await rollbackExtractedDirectory(application, asideStagingDir, asidePath);
+			} catch (rollbackError) {
+				throw new AggregateError(
+					[error, rollbackError],
+					`Failed to clean up the package for ${application.name} and restore its previous component directory`
+				);
+			}
+			throw error;
+		}
 	}
 
 	// Remove this component's aside copies. The old worker may still hold files open
@@ -812,13 +824,23 @@ async function rollbackExtractedDirectory(
 	asidePath: string | undefined
 ): Promise<void> {
 	await mkdir(asideStagingDir, { recursive: true });
+	const retryableRenameCodes = new Set(['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES', 'EBUSY']);
 	const displaceCurrentDirectory = async () => {
 		const displacedPath = join(asideStagingDir, `.failed-${process.pid}-${Date.now()}-${randomUUID()}`);
-		try {
-			await rename(application.dirPath, displacedPath);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		let lastError: unknown;
+		for (let attempt = 0; attempt < 100; attempt++) {
+			try {
+				await rename(application.dirPath, displacedPath);
+				return;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code === 'ENOENT') return;
+				if (!retryableRenameCodes.has(code ?? '')) throw error;
+				lastError = error;
+				await delay(10);
+			}
 		}
+		throw lastError;
 	};
 
 	await displaceCurrentDirectory();
@@ -832,8 +854,9 @@ async function rollbackExtractedDirectory(
 				break;
 			} catch (error) {
 				restoreError = error;
-				if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) break;
+				if (!retryableRenameCodes.has((error as NodeJS.ErrnoException).code ?? '')) break;
 				await displaceCurrentDirectory();
+				await delay(10);
 			}
 		}
 		if (!restored) throw restoreError;

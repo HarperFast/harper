@@ -1,7 +1,7 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, rejects, strictEqual } from 'node:assert';
 import { join } from 'node:path';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -75,7 +75,7 @@ async function buildResolutionPayload(addJavaScriptCandidate: boolean): Promise<
 	}
 }
 
-async function buildPureESMPayload(version: number): Promise<string> {
+async function buildPureESMPayload(version: number, exportsTarget = 'index.js'): Promise<string> {
 	const directory = await mkdtemp(join(tmpdir(), 'redeploy-pure-esm-'));
 	try {
 		const dependencyDirectory = join(directory, 'vendor', 'pure-esm-probe');
@@ -89,7 +89,7 @@ async function buildPureESMPayload(version: number): Promise<string> {
 			name: 'pure-esm-probe',
 			version: '1.0.0',
 			type: 'module',
-			exports: { '.': { import: './index.js' } },
+			exports: { '.': { import: `./${exportsTarget}` } },
 		};
 		await mkdir(dependencyDirectory, { recursive: true });
 		await writeFile(join(directory, 'config.yaml'), 'jsResource:\n  files: resources.js\nrest: true\n');
@@ -103,7 +103,12 @@ async function buildPureESMPayload(version: number): Promise<string> {
 		);
 		await writeFile(join(directory, 'package.json'), JSON.stringify(rootPackage) + '\n');
 		await writeFile(join(dependencyDirectory, 'package.json'), JSON.stringify(dependencyPackage) + '\n');
-		await writeFile(join(dependencyDirectory, 'index.js'), `export const VERSION = ${version};\n`);
+		if (exportsTarget === 'index.js') {
+			await writeFile(join(dependencyDirectory, 'index.js'), `export const VERSION = ${version};\n`);
+		} else {
+			await writeFile(join(dependencyDirectory, 'entry-v1.js'), `export const VERSION = ${version};\n`);
+			await writeFile(join(dependencyDirectory, 'entry-v2.js'), `export const VERSION = ${version + 1};\n`);
+		}
 		await writeFile(
 			join(directory, 'package-lock.json'),
 			JSON.stringify({
@@ -114,7 +119,7 @@ async function buildPureESMPayload(version: number): Promise<string> {
 				packages: {
 					'': rootPackage,
 					'node_modules/pure-esm-probe': { resolved: 'vendor/pure-esm-probe', link: true },
-					'vendor/pure-esm-probe': dependencyPackage,
+					'vendor/pure-esm-probe': { name: 'pure-esm-probe', version: '1.0.0', type: 'module' },
 				},
 			}) + '\n'
 		);
@@ -214,6 +219,15 @@ async function waitForRestartRequired(ctx: ContextWithHarper): Promise<void> {
 	throw new Error('Timed out waiting for restartRequired');
 }
 
+async function waitForRestartClear(ctx: ContextWithHarper): Promise<void> {
+	const deadline = Date.now() + 30_000;
+	while (Date.now() < deadline) {
+		if (!(await getRestartRequired(ctx))) return;
+		await sleep(250);
+	}
+	throw new Error('Timed out waiting for restartRequired to clear');
+}
+
 suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
@@ -309,6 +323,7 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 			restart: true,
 		});
 		await waitForVersion(ctx, 'PureESMVersion', 1);
+		await waitForRestartClear(ctx);
 	});
 
 	test('an identical import-only dependency redeploy remains restart-free', async () => {
@@ -370,6 +385,10 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 			}),
 			/operation deploy_component failed with 500/
 		);
+		const restoredPackageJSON = JSON.parse(
+			await readFile(join(ctx.harper.dataRootDir, 'components', PACKAGE_METADATA_PROJECT, 'package.json'), 'utf8')
+		);
+		strictEqual(restoredPackageJSON.dependencies['probe-dependency'], 'file:vendor/probe-dependency-v1');
 		strictEqual(await getRestartRequired(ctx), false);
 		strictEqual(await readResourceVersion(ctx, 'MetadataVersion'), 1);
 	});
@@ -384,5 +403,38 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 		});
 		await waitForRestartRequired(ctx);
 		ok(await getRestartRequired(ctx));
+	});
+});
+
+suite('Redeploy import-only exports retarget proof', (ctx: ContextWithHarper) => {
+	before(async () => {
+		await startHarper(ctx);
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('loads the initial exports target', async () => {
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project: PURE_ESM_PROJECT,
+			payload: await buildPureESMPayload(10, 'entry-v1.js'),
+			restart: true,
+		});
+		await waitForVersion(ctx, 'PureESMVersion', 10);
+		await waitForRestartClear(ctx);
+	});
+
+	test('retargeting import-only package exports requests restart', async () => {
+		strictEqual(await getRestartRequired(ctx), false);
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project: PURE_ESM_PROJECT,
+			payload: await buildPureESMPayload(10, 'entry-v2.js'),
+			restart: false,
+		});
+		await waitForRestartRequired(ctx);
+		strictEqual(await readResourceVersion(ctx, 'PureESMVersion'), 10);
 	});
 });

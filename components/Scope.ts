@@ -544,6 +544,28 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		}
 	}
 
+	waitForDeployCompletion(timeoutMs = 6 * 60 * 60 * 1000): Promise<void> {
+		if (!this.#deployInFlight) return Promise.resolve();
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				deployLifecycle.off('deploy:end', handleDeployEnd);
+				reject(new Error(`Timed out waiting for deployment of ${this.#appName} to complete`));
+			}, timeoutMs);
+			const handleDeployEnd = (componentName: string) => {
+				if (componentName !== this.#appName || this.#deployInFlight) return;
+				deployLifecycle.off('deploy:end', handleDeployEnd);
+				clearTimeout(timer);
+				resolve();
+			};
+			deployLifecycle.on('deploy:end', handleDeployEnd);
+			if (!this.#deployInFlight) {
+				deployLifecycle.off('deploy:end', handleDeployEnd);
+				clearTimeout(timer);
+				resolve();
+			}
+		});
+	}
+
 	/**
 	 * Import a file into the scope's sandbox.
 	 * @param filePath - The path of the file to import.

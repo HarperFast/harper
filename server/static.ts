@@ -190,6 +190,8 @@ export function handleApplication(scope: Scope) {
 	// to carry the application's mount too, or it would point outside the mount (#1583).
 	const externalBaseURLPath = scope.externalBasePath(baseURLPath);
 	let urlPathRestartPending = false;
+	let fileSelectionChangePending = false;
+	let entryHandler: ReturnType<Scope['handleEntry']>;
 
 	// A bare `before:` / `after:` key in YAML parses as null — treat it as unset, like before this
 	// option was validated.
@@ -221,6 +223,12 @@ export function handleApplication(scope: Scope) {
 
 	scope.options.on('change', (key) => {
 		if (key[0] === 'files') {
+			fileSelectionChangePending = true;
+			const updateReady = entryHandler?.ready;
+			const clearPending = () => {
+				if (entryHandler?.ready === updateReady) fileSelectionChangePending = false;
+			};
+			updateReady?.then(clearPending, clearPending);
 			// EntryHandler updates are incremental: paths no longer matched emit unlink, newly matched
 			// paths emit add, and common unchanged paths remain valid in these maps.
 			scope.logger.info(`Static file matches updated due to change in ${key.join('.')}`);
@@ -244,8 +252,12 @@ export function handleApplication(scope: Scope) {
 	});
 
 	// Handle entry events for the default entry handler based on the `files` and `urlPath` options
-	scope.handleEntry((entry) => {
-		if (urlPathRestartPending && entry.eventType !== 'unlink' && entry.eventType !== 'unlinkDir') return;
+	entryHandler = scope.handleEntry((entry) => {
+		if (
+			urlPathRestartPending &&
+			(!fileSelectionChangePending || (entry.eventType !== 'unlink' && entry.eventType !== 'unlinkDir'))
+		)
+			return;
 		// entry.urlPath includes the component's base URL path, but when a `urlPath` is configured
 		// the routing chain strips that mount prefix from req.pathname before this plugin's handler
 		// runs — so key the maps relative to the base (#1583)
