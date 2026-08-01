@@ -50,10 +50,27 @@ ENV PATH=/home/harperdb/.npm-global/bin:/home/harperdb/.bun/bin:$PATH
 
 VOLUME /home/harperdb/harper
 
-# Install Harper globally
+# Install Harper from the packed tarball, honoring its bundled npm-shrinkwrap.json.
+# `npm install --global harper-*.tgz` only reads a shrinkwrap when the REGISTRY packument
+# says the package has one (`_hasShrinkwrap`); a local tarball has no packument, so npm
+# never learns the shrinkwrap exists and re-resolves every dependency fresh against
+# package.json's ranges instead of the pinned tree. Extracting the tarball into a normal
+# project directory and running `npm install` there makes npm read npm-shrinkwrap.json
+# straight off disk, exactly as it would for any checked-out project, so we replicate
+# npm's own global-install layout (lib/node_modules/<pkg> + a bin symlink) by hand instead
+# of routing back through the global installer, which would hit the same packument gap.
 RUN <<-EOF
-  npm install --ignore-scripts --global harper-*.tgz
+  set -e
+  pkgDir="$NPM_CONFIG_PREFIX/lib/node_modules/harper"
+  mkdir -p "$pkgDir"
+  tar -xzf harper-*.tgz --strip-components=1 -C "$pkgDir"
   rm harper-*.tgz
+  cd "$pkgDir"
+  npm install --omit=dev --ignore-scripts --no-audit --no-fund
+  npm cache clean --force
+  mkdir -p "$NPM_CONFIG_PREFIX/bin"
+  ln -s ../lib/node_modules/harper/dist/bin/harper.js "$NPM_CONFIG_PREFIX/bin/harper"
+  chmod +x "$pkgDir/dist/bin/harper.js"
   mkdir -p /home/harperdb/harper
   chown harperdb:harperdb /home/harperdb/harper
 EOF
