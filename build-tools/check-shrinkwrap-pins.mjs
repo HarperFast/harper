@@ -93,12 +93,14 @@ function verifyCanariesDiscriminate(pins) {
 	const rangeLatest = {};
 	for (const [dep, { range }] of Object.entries(pins)) {
 		try {
-			// `npm view <dep>@<range> version` prints every matching version (one per line)
-			// when more than one satisfies the range, not just the max -- --json plus the
-			// last entry (npm lists them in ascending semver order) gets the single value.
+			// `npm view <dep>@<range> version --json` returns every matching version, not
+			// just the max, and the order isn't a documented contract (it can track
+			// publish/insertion order rather than semver order, e.g. a backported patch
+			// published after a newer minor) -- compare them ourselves rather than trust
+			// the last array entry.
 			const out = execFileSync('npm', ['view', `${dep}@${range}`, 'version', '--json'], { encoding: 'utf8' });
 			const versions = JSON.parse(out);
-			rangeLatest[dep] = Array.isArray(versions) ? versions.at(-1) : versions;
+			rangeLatest[dep] = Array.isArray(versions) ? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max)) : versions;
 		} catch (e) {
 			console.log(`::warning::could not check registry-latest-in-range for ${dep}@${range} (${e.message}) -- skipping discrimination check for it`);
 		}
@@ -115,4 +117,17 @@ function verifyCanariesDiscriminate(pins) {
 		);
 		failed = true;
 	}
+}
+
+// Numeric major.minor.patch comparison, ignoring any prerelease/build suffix -- sufficient
+// for the stable releases this check compares (avoids depending on a semver-parsing
+// package that may not be resolvable from this script's own location).
+function compareVersions(a, b) {
+	const partsA = a.split(/[-+]/)[0].split('.').map(Number);
+	const partsB = b.split(/[-+]/)[0].split('.').map(Number);
+	for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+		const diff = (partsA[i] ?? 0) - (partsB[i] ?? 0);
+		if (diff !== 0) return diff;
+	}
+	return 0;
 }
