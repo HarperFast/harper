@@ -124,6 +124,17 @@ export function getRocksCompression(): string | undefined {
 	return resolvedRocksCompression;
 }
 
+/**
+ * Test-only: un-freezes the resolved codec. Production code never calls this — the freeze is the
+ * invariant (see getRocksCompression above) — but a test process runs many unrelated test files in
+ * one process, so whichever file happens to open a RocksDatabase first freezes this for everyone
+ * after it. Tests that need to exercise config changes call this to get back to the unresolved state.
+ */
+export function resetRocksCompression(): void {
+	resolvedRocksCompression = undefined;
+	rocksCompressionResolved = false;
+}
+
 function readRocksCompressionConfig(): string | undefined {
 	const configured = envGet(CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION);
 	if (configured === undefined || configured === null || configured === '') return undefined;
@@ -299,6 +310,39 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	}
 	db.env = {};
 	return db;
+}
+
+// A conflict here means RocksDB's own DB::Open already opened this column family transitively
+// (opening any one CF in a database opens every existing CF in the same native call — RocksDB has
+// no lazy per-CF open) before this reconcile pass got to it, at whatever codec was already
+// persisted for it. toRocksCompression(primaryAttribute.compression) can therefore never actually
+// change an EXISTING family's codec via this path — it either happens to agree (no-op) or conflicts
+// (this catch). Falling back to the already-open codec here is what keeps a database upgraded from
+// an older build (where compression selection didn't exist, or defaulted differently) bootable; the
+// alternative is a hard boot failure with no operator-facing way to avoid it. An explicit deployment
+// override (storage.rocks.compression) still fails loudly: the retry re-resolves through
+// getRocksCompression(), which takes precedence over dbiInit.compression regardless of whether we
+// strip it, so a genuinely misconfigured override hits the same conflict again on the retry.
+// rocksdb-js has no API to change an already-open column family's codec without a full close, which
+// is the real fix (tracked separately) — this is the boot-safety net until that exists.
+const ALREADY_OPEN_CONFLICT = /already open with compression.*cannot reopen it with/;
+
+function openExistingRocksPrimaryStore(
+	path: string,
+	dbiInit: Record<string, any>,
+	name: string,
+	tableName: string
+): RocksDatabaseEx {
+	try {
+		return openRocksDatabase(path, { ...dbiInit, name, cache: true } as any) as RocksDatabaseEx;
+	} catch (error) {
+		if (!ALREADY_OPEN_CONFLICT.test(error.message)) throw error;
+		logger.warn(
+			`${tableName}'s column family is already open under a different codec than storage.compression implies; keeping its existing codec instead of failing to boot (${error.message})`
+		);
+		const { compression, ...withoutCompression } = dbiInit;
+		return openRocksDatabase(path, { ...withoutCompression, name, cache: true } as any) as RocksDatabaseEx;
+	}
 }
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
@@ -834,7 +878,7 @@ function initStores(
 				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
-					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any),
+					openExistingRocksPrimaryStore(rootStore.path, dbiInit, primaryAttribute.key, tableName),
 					rootStore
 				);
 			} else {
