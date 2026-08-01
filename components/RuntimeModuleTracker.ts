@@ -44,8 +44,10 @@ export class RuntimeModuleTracker {
 		const referrerPath = this.#localPath(referrer);
 		if (!referrerPath || !this.#localPath(resolvedUrl)) return;
 		const key = `${referrerPath}\0${specifier}`;
-		if (!this.#resolutions.has(key)) this.#resolutions.set(key, resolvedUrl);
-		if (this.#deployInFlight) this.#loadedDuringDeploy = true;
+		if (!this.#resolutions.has(key)) {
+			this.#resolutions.set(key, resolvedUrl);
+			if (this.#deployInFlight) this.#loadedDuringDeploy = true;
+		}
 	}
 
 	finishDeploy(): Promise<boolean> {

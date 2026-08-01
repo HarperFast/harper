@@ -144,6 +144,33 @@ describe('extractApplication directory swap', () => {
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
 
+	it('normalizes a single-directory archive through hidden staging', async () => {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-normalize-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const sourceDir = await makeFixture({
+			'wrapper/package.json': '{"name":"web","version":"2.0.0"}\n',
+			'wrapper/index.js': 'module.exports = () => 2;\n',
+		});
+		const app = new Application({
+			name: 'web',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		app.dirPath = dirPath;
+
+		await extractApplication(app);
+
+		assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '2.0.0');
+		assert.strictEqual(await fs.readFile(path.join(dirPath, 'index.js'), 'utf8'), 'module.exports = () => 2;\n');
+		assert.deepStrictEqual(
+			(await fs.readdir(componentsRoot)).filter((entry) => !entry.startsWith('.')),
+			['web'],
+			'archive normalization must not leave a visible sibling that can load as a component'
+		);
+
+		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		await fs.rm(sourceDir, { recursive: true, force: true });
+	});
+
 	// harper#1806: deployComponent uses Application#isNewComponent to scope its own
 	// requestRestart() call to components that have never been deployed before, leaving an
 	// existing component's redeploy to the component's own file watcher.
