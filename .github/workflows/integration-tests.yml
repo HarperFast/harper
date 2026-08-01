@@ -48,6 +48,9 @@ jobs:
             # until then. Do not extend this pin to unit-test.yml or other workflows without new evidence.
             echo "node-versions=[22, 24, \"26.5.0\"]" >> $GITHUB_OUTPUT
           else
+            # Manual dispatch intentionally does NOT apply the 26.5.0 pin above: selecting "26"
+            # here floats to the latest 26.x release, so it doubles as the live reproducer for
+            # checking whether harper#2025 is still reproducing on the newest Node 26 patch.
             echo "node-versions=[${{ github.event.inputs.node-version }}]" >> $GITHUB_OUTPUT
           fi
 
