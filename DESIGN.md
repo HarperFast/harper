@@ -630,7 +630,13 @@ Three consequences worth knowing before touching packaging:
   only the shrinkwrap does. `alasql`'s packed manifest still declares the react-native-fs optional
   edge, so plain `npm install` silently re-adds that whole pruned subtree to satisfy it. Closing that
   gap needs `npm ci` against a package.json where `alasql`'s own packed manifest has also had the edge
-  removed — a bigger change to the published tarball than this dance, and not yet done.
+  removed — a bigger change to the published tarball than this dance, and not yet done. The Dockerfile
+  does strip `devDependencies` from its *own extracted copy* of `package.json` before installing (not
+  the published tarball — registry consumers never see this) — not for `npm ci`'s sake, but because
+  without it `npm install` still resolves dev edges to compute the ideal tree even under `--omit=dev`,
+  which could silently lift a *production* package that a devDependency also happens to want above its
+  shrinkwrap pin. Confirmed empirically before landing: a hoisted production package's installed
+  version tracked a devDependency's looser range instead of the shrinkwrap pin without this strip.
 - Pinning inverts the old incident-remediation path, worth knowing before reaching for it: before
   #1960, rebuilding the image picked up any newer in-range dependency automatically, which is how a
   bad pin got fixed in production by "refresh/rebuild the image" alone. After #1960, the image is
