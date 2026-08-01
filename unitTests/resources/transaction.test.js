@@ -733,7 +733,11 @@ describe('Transactions', () => {
 			await transaction(context, async () => {
 				await TxnTest.put(90, { name: 'release-on-commit' }, context);
 			});
-			assert.strictEqual(context.transaction, null);
+			// releaseContext() deletes the slot (rather than nulling it) so a released context is
+			// indistinguishable from one that never held a transaction — Context.transaction is typed
+			// `DatabaseTransaction | undefined`, and `null` would silently expand that.
+			assert.strictEqual(context.transaction, undefined);
+			assert.ok(!('transaction' in context), 'the released slot must be deleted, not merely set to null');
 			assert.equal((await TxnTest.get(90)).name, 'release-on-commit');
 		});
 		it('releases the context’s back-reference once the transaction aborts', async function () {
@@ -745,7 +749,8 @@ describe('Transactions', () => {
 				}),
 				/forced abort for test/
 			);
-			assert.strictEqual(context.transaction, null);
+			assert.strictEqual(context.transaction, undefined);
+			assert.ok(!('transaction' in context), 'the released slot must be deleted, not merely set to null');
 			assert.equal(await TxnTest.get(91), undefined);
 		});
 		it('does not clobber a context that has been re-pointed at a different transaction', async function () {
@@ -772,7 +777,7 @@ describe('Transactions', () => {
 			await transaction(context, async () => {
 				await TxnTest.put(92, { name: 'first txn on shared context' }, context);
 			});
-			assert.strictEqual(context.transaction, null);
+			assert.strictEqual(context.transaction, undefined);
 			await transaction(context, async () => {
 				await TxnTest.put(93, { name: 'second txn on shared context' }, context);
 			});
@@ -782,7 +787,7 @@ describe('Transactions', () => {
 		// The release must not strand a later write on an uncommitted transaction. It doesn't, and the
 		// reason is worth pinning: resources/transaction.ts:35 only REUSES a context's transaction when
 		// it is still OPEN, so a retained CLOSED one was never reused for a subsequent write anyway —
-		// line 39 minted a fresh DatabaseTransaction either way. Nulling it therefore changes only what
+		// line 39 minted a fresh DatabaseTransaction either way. Deleting it therefore changes only what
 		// stays reachable, not how the next write is serviced: it still goes through the transaction()
 		// wrapper, which commits in onComplete (or aborts in onError) by construction.
 		it('keeps post-completion writes on a reused context durable, with nothing left staged', async function () {
@@ -790,7 +795,7 @@ describe('Transactions', () => {
 			await transaction(context, async () => {
 				await TxnTest.put(94, { name: 'inside txn' }, context);
 			});
-			assert.strictEqual(context.transaction, null);
+			assert.strictEqual(context.transaction, undefined);
 			// Writes made with the SAME context after its transaction completed must still commit.
 			await TxnTest.put(95, { name: 'after commit' }, context);
 			await TxnTest.get(95, context); // a read in between, which also re-enters the dispatcher

@@ -464,7 +464,7 @@ export class DatabaseTransaction implements Transaction {
 	private completeDeferredContextRelease(): void {
 		if (!this.pendingContextRelease) return;
 		this.pendingContextRelease = false;
-		if (this.#context?.transaction === this) this.#context.transaction = null;
+		if (this.#context?.transaction === this) delete this.#context.transaction;
 	}
 
 	disregardReadTxn(): void {
@@ -521,7 +521,7 @@ export class DatabaseTransaction implements Transaction {
 			this.pendingContextRelease = true;
 			return;
 		}
-		if (this.#context?.transaction === this) this.#context.transaction = null;
+		if (this.#context?.transaction === this) delete this.#context.transaction;
 	}
 
 	checkOverloaded() {
@@ -955,6 +955,11 @@ export class DatabaseTransaction implements Transaction {
 								} catch (abortError) {
 									harperLogger.debug?.('aborting transaction after failed commit', abortError);
 								}
+								// A terminal failure is just as final as a success — release the context's
+								// back-reference here too, or transaction.ts's onComplete() (which has no
+								// rejection handler of its own) would leave a long-lived context pinning this
+								// CLOSED wrapper forever.
+								this.releaseContext(!!options.doneWriting);
 								throw error;
 							}
 						}
