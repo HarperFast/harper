@@ -118,7 +118,7 @@ let rocksCompressionResolved = false;
 
 export function getRocksCompression(): string | undefined {
 	if (!rocksCompressionResolved) {
-		resolvedRocksCompression = readRocksCompressionConfig();
+		resolvedRocksCompression = readDatabaseCodec();
 		rocksCompressionResolved = true;
 	}
 	return resolvedRocksCompression;
@@ -133,6 +133,28 @@ export function getRocksCompression(): string | undefined {
 export function resetRocksCompression(): void {
 	resolvedRocksCompression = undefined;
 	rocksCompressionResolved = false;
+}
+
+/**
+ * The codec every column family in this process opens under.
+ *
+ * Compression is a deployment setting, not a per-table one. RocksDB opens all of a database's
+ * column families in one call, so the codec has to be decided before the first open — which is
+ * before Harper has read any table's metadata (that catalog is itself one of the families being
+ * opened). Resolving one codec from configuration and applying it to every family is what makes
+ * that possible; it is passed with `compressionForAllColumnFamilies` so families this process
+ * never names individually adopt it too, which is what lets a database created before the codec
+ * existed start compressing.
+ *
+ * `storage.rocks.compression` names a codec outright. Otherwise `storage.compression` (default
+ * true) decides enabled-or-not and the build default fills in the algorithm. Per-table metadata
+ * still records the LMDB-era boolean, but no longer selects: a table persisted as disabled inside
+ * a deployment that enables compression would need its own codec, and it cannot have one.
+ */
+function readDatabaseCodec(): string | undefined {
+	const explicit = readRocksCompressionConfig();
+	if (explicit) return explicit;
+	return toRocksCompression(getDefaultCompression()) as string | undefined;
 }
 
 function readRocksCompressionConfig(): string | undefined {
@@ -267,7 +289,13 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	// A configured codec applies to every column family, overriding whatever per-table metadata
 	// carries — that metadata records the LMDB-era boolean, so without this there is no way to
 	// select a RocksDB codec for a deployment.
-	legacyOptions.compression = getRocksCompression() ?? toRocksCompression(legacyOptions.compression);
+	// One codec for every column family, and applied to every family this open touches — not just
+	// the one being named. RocksDB opens them all at once and a family's codec cannot change while
+	// it is open, so a family this process never names individually would otherwise stay on
+	// whatever it was created with, forever.
+	const databaseCodec = getRocksCompression();
+	legacyOptions.compression = databaseCodec;
+	if (databaseCodec) (options as { compressionForAllColumnFamilies?: boolean }).compressionForAllColumnFamilies = true;
 	// Apply read-only mode if enabled
 	if (isReadOnlyMode()) {
 		options.readOnly = true;
@@ -310,51 +338,6 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	}
 	db.env = {};
 	return db;
-}
-
-// A conflict here means RocksDB's own DB::Open already opened this column family transitively
-// (opening any one CF in a database opens every existing CF in the same native call — RocksDB has
-// no lazy per-CF open) before this open got to it, at whatever codec was already persisted for it.
-// getRocksCompression()/toRocksCompression(...) can therefore never actually change an EXISTING
-// family's codec via a reconcile-time open — it either happens to agree (no-op) or conflicts (this
-// catch). Falling back to the already-open codec is what keeps a database upgraded from an older
-// build, or one carrying an explicit storage.rocks.compression override, bootable; the alternative
-// is a hard boot failure with no operator-facing way to avoid it.
-//
-// The retry strips `compression` from this call's own options, but openRocksDatabase still
-// resolves getRocksCompression() ?? ... itself — so an explicit deployment override re-applies on
-// the retry and conflicts again, by design: only the metadata-derived default backs off silently;
-// a genuinely unhonorable explicit override still fails loudly (and is never logged as a false
-// recovery, since the warning below only fires once the fallback has actually succeeded).
-//
-// rocksdb-js has no API to change an already-open column family's codec without a full close,
-// which is the real fix (tracked as HarperFast/rocksdb-js task rocksdb-js-cf-compression-api) —
-// this is the boot-safety net until that exists.
-const ALREADY_OPEN_CONFLICT = /already open with compression.*cannot reopen it with/;
-const warnedAlreadyOpenConflicts = new Set<string>();
-
-function openExistingRocksColumnFamily(path: string, options: Record<string, any>): RocksDatabaseEx {
-	try {
-		return openRocksDatabase(path, options as any) as RocksDatabaseEx;
-	} catch (error) {
-		if (!ALREADY_OPEN_CONFLICT.test(error.message)) throw error;
-		const { compression: _compression, ...withoutCompression } = options;
-		const opened = openRocksDatabase(path, withoutCompression as any) as RocksDatabaseEx;
-		// If this throws too (an explicit override that genuinely can't be honored), it propagates
-		// as-is — nothing was logged for this attempt, so there's no false "keeping existing codec"
-		// message ahead of a boot that still fails. Deduped per column family (not per open call):
-		// every worker thread reconciles the same family independently, and this is a degraded-
-		// upgrade path someone is actively trying to read logs for, not a place for N-workers-worth
-		// of identical multi-line warnings.
-		const key = `${path}\0${options.name}`;
-		if (!warnedAlreadyOpenConflicts.has(key)) {
-			warnedAlreadyOpenConflicts.add(key);
-			logger.warn(
-				`"${options.name}" in ${path} is already open under a different codec than storage.compression implies; keeping its existing codec instead of failing to boot (${error.message})`
-			);
-		}
-		return opened;
-	}
 }
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
@@ -704,11 +687,11 @@ function initStores(
 	let attributesDbi = rootStore.dbisDb;
 	if (!attributesDbi) {
 		if (rootStore instanceof RocksDatabase) {
-			attributesDbi = openExistingRocksColumnFamily(rootStore.path, {
+			attributesDbi = openRocksDatabase(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			});
+			} as any);
 		} else {
 			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
@@ -890,7 +873,7 @@ function initStores(
 				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
-					openExistingRocksColumnFamily(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true }),
+					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any),
 					rootStore
 				);
 			} else {
@@ -1470,11 +1453,11 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
 		// available before resolveIndexFormat decides the format. Versioned stores need the VT
 		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
-		dbi = openExistingRocksColumnFamily(rootStore.path, {
+		dbi = openRocksDatabase(rootStore.path, {
 			...dbiInit,
 			name: dbiKey,
 			cache: isCustomObjectIndex,
-		}) as any;
+		} as any) as any;
 		(dbi as any).rootStore = rootStore;
 		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
 		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
@@ -1658,11 +1641,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		const dbiName = tableName + '/';
 
 		if (rootStore instanceof RocksDatabase) {
-			attributesDbi = (rootStore as any).dbisDb = openExistingRocksColumnFamily(rootStore.path, {
+			attributesDbi = (rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			});
+			} as any);
 		} else {
 			attributesDbi = (rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
@@ -1701,7 +1684,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// entry), but an interrupted drop just completed above can leave the physical CF
 				// behind under its old codec even though the catalog entry is gone — same fallback
 				// as the reconcile paths covers that remnant case too.
-				primaryStore = openExistingRocksColumnFamily(rootStore.path, { ...dbiInit, name: dbiName, cache: true });
+				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
@@ -1759,11 +1742,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	const indices = Table.indices;
 	if (!attributesDbi) {
 		if (rootStore instanceof RocksDatabase) {
-			(rootStore as any).dbisDb = openExistingRocksColumnFamily(rootStore.path, {
+			(rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			});
+			} as any);
 		} else {
 			(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
@@ -2311,7 +2294,7 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 	if (rootStore instanceof RocksDatabase) {
 		for (const columnName of (rootStore as any).columns) {
 			if (columnName.startsWith(tableName + '/')) {
-				const columnStore = openExistingRocksColumnFamily(rootStore.path, { name: columnName });
+				const columnStore = openRocksDatabase(rootStore.path, { name: columnName });
 				try {
 					columnStore.dropSync();
 				} catch (error) {
