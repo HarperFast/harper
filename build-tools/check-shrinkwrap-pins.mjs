@@ -16,10 +16,14 @@
 // the react-native gap needs closing, not just a reason this particular check is noisy.
 // Revisit the whole-tree comparison once that gap is closed.
 //
-// A canary only proves anything while its own pin lags the registry, so this also
-// verifies each canary is still capable of catching a regression -- see
-// verifyCanariesDiscriminate below -- rather than silently becoming a no-op once a lock
-// bump happens to land on registry-latest.
+// A canary only proves anything while its own pin lags what a broken install would
+// actually resolve, so this also verifies each canary is still capable of catching a
+// regression -- see verifyCanariesDiscriminate below -- rather than silently becoming a
+// no-op once a lock bump happens to catch up. That's checked against the max version
+// satisfying the dependency's declared range in package.json, not the registry's bare
+// "latest" dist-tag: if the range excludes a newer major, a broken install could never
+// reach it either, so comparing to absolute latest would flag a canary as fine when it
+// has actually gone vacuous within the range that matters.
 //
 // Usage: node check-shrinkwrap-pins.mjs <package-root>
 
@@ -35,6 +39,7 @@ if (!pkgRoot) {
 }
 
 const packed = JSON.parse(readFileSync(`${pkgRoot}/npm-shrinkwrap.packed.json`, 'utf8'));
+const manifest = JSON.parse(readFileSync(`${pkgRoot}/package.json`, 'utf8'));
 
 let failed = false;
 const pins = {};
@@ -45,7 +50,13 @@ for (const dep of CHECKED_DEPS) {
 		failed = true;
 		continue;
 	}
-	pins[dep] = pinned;
+	const range = manifest.dependencies?.[dep];
+	if (!range) {
+		console.error(`::error::${dep} not found in package.json's dependencies -- the check itself needs updating, not just the image`);
+		failed = true;
+		continue;
+	}
+	pins[dep] = { pinned, range };
 
 	let installed;
 	try {
@@ -76,23 +87,31 @@ verifyCanariesDiscriminate(pins);
 process.exit(failed ? 1 : 0);
 
 function verifyCanariesDiscriminate(pins) {
-	const latest = {};
-	for (const [dep, pinned] of Object.entries(pins)) {
+	// What a broken/reverted install would actually resolve to: the max version satisfying
+	// the declared range, not the registry's bare "latest" dist-tag (which could be a newer
+	// major the range excludes, and a broken install could never reach that either).
+	const rangeLatest = {};
+	for (const [dep, { range }] of Object.entries(pins)) {
 		try {
-			latest[dep] = execFileSync('npm', ['view', dep, 'version'], { encoding: 'utf8' }).trim();
+			// `npm view <dep>@<range> version` prints every matching version (one per line)
+			// when more than one satisfies the range, not just the max -- --json plus the
+			// last entry (npm lists them in ascending semver order) gets the single value.
+			const out = execFileSync('npm', ['view', `${dep}@${range}`, 'version', '--json'], { encoding: 'utf8' });
+			const versions = JSON.parse(out);
+			rangeLatest[dep] = Array.isArray(versions) ? versions.at(-1) : versions;
 		} catch (e) {
-			console.log(`::warning::could not check registry-latest for ${dep} (${e.message}) -- skipping discrimination check for it`);
+			console.log(`::warning::could not check registry-latest-in-range for ${dep}@${range} (${e.message}) -- skipping discrimination check for it`);
 		}
 	}
-	const checkable = Object.keys(latest);
+	const checkable = Object.keys(rangeLatest);
 	if (checkable.length === 0) {
 		console.log('::warning::registry unreachable -- could not verify the canary set still discriminates');
 		return;
 	}
-	const stillDiscriminates = checkable.some((dep) => latest[dep] !== pins[dep]);
+	const stillDiscriminates = checkable.some((dep) => rangeLatest[dep] !== pins[dep].pinned);
 	if (!stillDiscriminates) {
 		console.error(
-			`::error::every checked canary (${checkable.join(', ')}) is now pinned at registry-latest -- this check would pass even on a reverted, unpinned install. Pick a new canary whose shrinkwrap pin lags its registry latest.`
+			`::error::every checked canary (${checkable.join(', ')}) is now pinned at the latest version its declared range allows -- this check would pass even on a reverted, unpinned install. Pick a new canary whose shrinkwrap pin lags what its range allows.`
 		);
 		failed = true;
 	}
