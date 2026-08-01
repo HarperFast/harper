@@ -354,6 +354,7 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 
 function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout: number): Promise<T> {
 	return new Promise((resolve, reject) => {
+		const absoluteTimeout = timeout + 6 * 60 * 60 * 1000;
 		let remaining = timeout;
 		let activeSince = 0;
 		let timer: NodeJS.Timeout | undefined;
@@ -364,15 +365,13 @@ function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout:
 			deployLifecycle.off('deploy:start', handleDeployStart);
 			deployLifecycle.off('deploy:end', handleDeployEnd);
 		};
-		const rejectTimeout = () => {
+		const rejectTimeout = (limit = timeout) => {
 			cleanup();
 			reject(
-				new Error(
-					`handleApplication timed out after ${timeout}ms for ${scope.pluginName} on behalf of ${scope.appName}`
-				)
+				new Error(`handleApplication timed out after ${limit}ms for ${scope.pluginName} on behalf of ${scope.appName}`)
 			);
 		};
-		absoluteTimer = setTimeout(rejectTimeout, timeout + 6 * 60 * 60 * 1000);
+		absoluteTimer = setTimeout(() => rejectTimeout(absoluteTimeout), absoluteTimeout);
 		absoluteTimer.unref?.();
 		const arm = () => {
 			if (deployLifecycle.isDeployInFlight(scope.appName)) return;
