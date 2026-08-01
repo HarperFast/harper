@@ -246,12 +246,12 @@ describe('Test configUtils module', () => {
 			try {
 				// Use the default retry count (unspecified maxRetries) so this exercises the real
 				// production budget, but override the delay to ~0 so the backoff doesn't burn real
-				// wall-clock time (default backoff would take ~900ms for a persistent failure).
+				// wall-clock time (default backoff would take ~3.6s for a persistent failure).
 				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content', { initialDelayMs: 0, maxDelayMs: 0 })).to.throw(
 					epermError
 				);
-				// 1 initial attempt + 8 retries (the production default maxRetries)
-				expect(renameStub.callCount).to.equal(9);
+				// 1 initial attempt + 12 retries (the production default maxRetries)
+				expect(renameStub.callCount).to.equal(13);
 				const stragglers = fs
 					.readdirSync(ATOMIC_TEST_DIR)
 					.filter((e) => e.startsWith('atomic-write-test.yaml.') && e.endsWith('.tmp'));
