@@ -50,6 +50,7 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build image (${{ matrix.platform }}, load locally)
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -110,7 +111,7 @@ jobs:
             code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
             # Any HTTP response (even 401/404) means the server is up and listening.
             if [ -n "$code" ] && [ "$code" != "000" ]; then
-              echo "Operations API responded with HTTP $code after ${i}s"
+              echo "Operations API responded with HTTP $code after ${SECONDS}s"
               exit 0
             fi
             if ! docker ps --filter name=harper-smoke --filter status=running -q | grep -q .; then
@@ -121,7 +122,7 @@ jobs:
             sleep 1
           done
 
-          echo "::error::Operations API did not come up within 60s"
+          echo "::error::Operations API did not come up within ${SECONDS}s"
           docker logs harper-smoke
           exit 1
 
@@ -135,9 +136,12 @@ jobs:
 
       # Runs regardless of whether the default-runtime leg above passed -- otherwise a
       # flaky/failed default boot silently skips this leg on the exact runs where a
-      # bun-only regression would most need to be seen.
+      # bun-only regression would most need to be seen. Scoped to the build step
+      # specifically (not just success()/failure() on the whole job so far): if the image
+      # never built, running this against a nonexistent local tag would just fail with an
+      # unrelated "pull access denied" instead of a useful signal.
       - name: Container boots and serves the Operations API (HARPER_RUNTIME=bun)
-        if: success() || failure()
+        if: steps.build.outcome == 'success' && (success() || failure())
         run: |
           docker run -d --name harper-smoke-bun \
             -e HARPER_RUNTIME=bun \
@@ -150,7 +154,7 @@ jobs:
           for i in $(seq 1 60); do
             code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
             if [ -n "$code" ] && [ "$code" != "000" ]; then
-              echo "Operations API responded with HTTP $code after ${i}s"
+              echo "Operations API responded with HTTP $code after ${SECONDS}s"
               exit 0
             fi
             if ! docker ps --filter name=harper-smoke-bun --filter status=running -q | grep -q .; then
@@ -161,7 +165,7 @@ jobs:
             sleep 1
           done
 
-          echo "::error::Operations API did not come up within 60s"
+          echo "::error::Operations API did not come up within ${SECONDS}s"
           docker logs harper-smoke-bun
           exit 1
 
