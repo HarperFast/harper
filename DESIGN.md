@@ -587,6 +587,11 @@ Three consequences worth knowing before touching packaging:
   edge, so plain `npm install` silently re-adds that whole pruned subtree to satisfy it. Closing that
   gap needs `npm ci` against a package.json where `alasql`'s own packed manifest has also had the edge
   removed — a bigger change to the published tarball than this dance, and not yet done.
+- Pinning inverts the old incident-remediation path, worth knowing before reaching for it: before
+  #1960, rebuilding the image picked up any newer in-range dependency automatically, which is how a
+  bad pin got fixed in production by "refresh/rebuild the image" alone. After #1960, the image is
+  frozen to the shrinkwrap, so a remediation of that shape now needs a lock bump and a re-release —
+  a rebuild alone reproduces the same tree, bug included.
 
 ## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
 

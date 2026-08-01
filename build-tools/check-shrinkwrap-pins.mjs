@@ -5,6 +5,14 @@
 // than re-resolving fresh -- comparing against the live npm-shrinkwrap.json would be
 // vacuous, since npm rewrites that file in place to match whatever it installs.
 //
+// Canary-based rather than whole-tree: a whole-tree comparison was tried and reverted --
+// it's permanently red today, because the still-open react-native-fs gap (dependencies.md,
+// "Docker image") causes npm to re-resolve that whole subtree fresh on every build, which
+// drags shared transitive deps like @babel/* along at newer versions than the shrinkwrap
+// pins for them. A canary only proves the regression it's checking for while its own pin
+// lags the registry (see #1960's follow-up discussion), so revisit this once the
+// react-native gap is closed and a whole-tree comparison stops false-positiving.
+//
 // Usage: node check-shrinkwrap-pins.mjs <package-root>
 
 import { readFileSync } from 'node:fs';
