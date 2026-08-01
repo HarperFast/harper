@@ -312,6 +312,25 @@ describe('static plugin ordering live reload', () => {
 		assert.equal(state.restartRequests, 1);
 	});
 
+	it('keeps serving the registered route while a urlPath restart is pending', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+
+		scope.fireChange('urlPath');
+		state.entryCallback({ eventType: 'unlink', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/new/asset.js' });
+
+		const fallthrough = Symbol('fallthrough');
+		assert.notStrictEqual(
+			state.listener(
+				{ method: 'GET', isWebSocket: false, pathname: '/asset.js', url: '/asset.js', headers: {} },
+				() => fallthrough
+			),
+			fallthrough
+		);
+	});
+
 	it('does not request a restart for options read per-request', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);

@@ -121,7 +121,7 @@ describe('scopedImport', () => {
 		expect(resolutions.some(({ specifier }) => specifier === './libgood.cjs')).to.equal(true);
 	});
 
-	it('keeps app-local package imports in the observable loader', async () => {
+	it('keeps app-local package imports observable unless native loading is explicit', async () => {
 		const directory = mkdtempSync(join(tmpdir(), 'harper-js-loader-imports-'));
 		try {
 			writeFileSync(
@@ -159,6 +159,17 @@ describe('scopedImport', () => {
 			expect(resolutions.some(({ specifier }) => specifier === '#helper')).to.equal(true);
 			expect(resolutions.some(({ specifier }) => specifier === 'app-local-imports/self')).to.equal(true);
 			expect(nativeRuntime).to.equal(false);
+
+			let explicitNativeRuntime = false;
+			const nativeResult = await scopedImport(join(directory, 'entry.js'), {
+				mode: 'vm-current-context',
+				runtimeRoot: directory,
+				dependencyLoader: 'native',
+				markNativeRuntime: () => (explicitNativeRuntime = true),
+			});
+			expect(nativeResult.value).to.equal(42);
+			expect(nativeResult.selfValue).to.equal(84);
+			expect(explicitNativeRuntime).to.equal(true);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}

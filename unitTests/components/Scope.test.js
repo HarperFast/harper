@@ -261,6 +261,22 @@ describe('Scope', () => {
 		await scope.close();
 	});
 
+	it('logs a forwarded child error when no scope error listener remains', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { foo: 'bar' } }));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+		await scope.ready;
+
+		assert.doesNotThrow(() => scope.options.emit('error', new Error('child listener failed')));
+		await scope.close();
+	});
+
 	it('should support custom entry handlers', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { foo: 'bar' } }));
 

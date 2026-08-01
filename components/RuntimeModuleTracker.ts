@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { createRequire, Module } from 'node:module';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 type Source = string | Buffer;
@@ -41,7 +41,6 @@ export class RuntimeModuleTracker {
 	}
 
 	recordResolution(specifier: string, referrer: string, resolvedUrl: string): void {
-		if (!specifier.startsWith('.')) return;
 		const referrerPath = this.#localPath(referrer);
 		if (!referrerPath || !this.#localPath(resolvedUrl)) return;
 		const key = `${referrerPath}\0${specifier}`;
@@ -76,6 +75,7 @@ export class RuntimeModuleTracker {
 			const referrerPath = key.slice(0, separator);
 			const specifier = key.slice(separator + 1);
 			try {
+				invalidateResolutionCache(specifier, referrerPath, previousResolvedUrl);
 				const resolved = createRequire(pathToFileURL(referrerPath)).resolve(specifier);
 				const resolvedUrl = isAbsolute(resolved) ? pathToFileURL(resolved).toString() : resolved;
 				if (resolvedUrl !== previousResolvedUrl) return true;
@@ -97,6 +97,20 @@ export class RuntimeModuleTracker {
 			(!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath))
 		)
 			return modulePath;
+	}
+}
+
+function invalidateResolutionCache(specifier: string, referrerPath: string, previousResolvedUrl: string): void {
+	const pathCache = (Module as unknown as { _pathCache?: Record<string, string> })._pathCache;
+	if (!pathCache) return;
+	const previousPath = previousResolvedUrl.startsWith('file:')
+		? fileURLToPath(previousResolvedUrl)
+		: previousResolvedUrl;
+	const relativeKey = `${specifier}\0${dirname(referrerPath)}`;
+	if (pathCache[relativeKey] === previousPath) delete pathCache[relativeKey];
+	if (specifier.startsWith('.')) return;
+	for (const cacheKey of Object.keys(pathCache)) {
+		if (cacheKey.startsWith(`${specifier}\0`) && pathCache[cacheKey] === previousPath) delete pathCache[cacheKey];
 	}
 }
 

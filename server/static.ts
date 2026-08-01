@@ -189,6 +189,7 @@ export function handleApplication(scope: Scope) {
 	// keep agreeing with the entry URL paths the file map is keyed by — but a redirect Location has
 	// to carry the application's mount too, or it would point outside the mount (#1583).
 	const externalBaseURLPath = scope.externalBasePath(baseURLPath);
+	let urlPathRestartPending = false;
 
 	// A bare `before:` / `after:` key in YAML parses as null — treat it as unset, like before this
 	// option was validated.
@@ -226,7 +227,7 @@ export function handleApplication(scope: Scope) {
 			return;
 		}
 		if (key[0] === 'urlPath') {
-			// The route mount cannot be changed on a live server registration — restart to apply
+			urlPathRestartPending = true;
 			scope.requestRestart();
 			return;
 		}
@@ -244,6 +245,7 @@ export function handleApplication(scope: Scope) {
 
 	// Handle entry events for the default entry handler based on the `files` and `urlPath` options
 	scope.handleEntry((entry) => {
+		if (urlPathRestartPending) return;
 		// entry.urlPath includes the component's base URL path, but when a `urlPath` is configured
 		// the routing chain strips that mount prefix from req.pathname before this plugin's handler
 		// runs — so key the maps relative to the base (#1583)

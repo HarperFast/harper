@@ -13,23 +13,42 @@ const USERS_NOT_DBS: readonly string[] = RESERVED_DATABASE_NAMES;
  * This is the component for handling role declarations in the Harper system. This will read roles.yaml for role
  * definitions and ensure that they are created in the system database.
  */
-export function handleApplication(scope: import('../components/Scope.ts').Scope) {
+export function handleApplication(
+	scope: import('../components/Scope.ts').Scope,
+	ensureRoleFn: (role: any) => Promise<unknown> = ensureRole
+) {
 	const rolesByFile = new Map<string, Set<string>>();
-	scope.handleEntry(async (entry) => {
-		if (entry.entryType !== 'file') return;
-		const previousRoles = rolesByFile.get(entry.absolutePath) ?? new Set<string>();
-		if (entry.eventType === 'unlink') {
-			rolesByFile.delete(entry.absolutePath);
-			warnForStaleRoles(scope, previousRoles, rolesByFile);
-			return;
-		}
-		const currentRoles = await handleFile(entry.contents);
-		rolesByFile.set(entry.absolutePath, currentRoles);
-		warnForStaleRoles(
-			scope,
-			new Set([...previousRoles].filter((roleName) => !currentRoles.has(roleName))),
-			rolesByFile
-		);
+	const contentsByFile = new Map<string, Buffer>();
+	let pending = Promise.resolve();
+	const entryHandler = scope.handleEntry((entry) => {
+		const operation = pending.then(async () => {
+			if (entry.entryType !== 'file') return;
+			const previousRoles = rolesByFile.get(entry.absolutePath) ?? new Set<string>();
+			if (entry.eventType === 'unlink') {
+				rolesByFile.delete(entry.absolutePath);
+				contentsByFile.delete(entry.absolutePath);
+				warnForStaleRoles(scope, previousRoles, rolesByFile);
+				return;
+			}
+			contentsByFile.set(entry.absolutePath, entry.contents);
+			const currentRoles = await handleFile(entry.contents, ensureRoleFn);
+			rolesByFile.set(entry.absolutePath, currentRoles);
+			warnForStaleRoles(
+				scope,
+				new Set([...previousRoles].filter((roleName) => !currentRoles.has(roleName))),
+				rolesByFile
+			);
+		});
+		pending = operation.catch(() => {});
+		return operation;
+	});
+	scope.on('deploy:end', () => {
+		void entryHandler.ready
+			.then(() => pending)
+			.then(async () => {
+				for (const contents of contentsByFile.values()) await handleFile(contents, ensureRoleFn);
+			})
+			.catch((error) => scope.logger.error?.('Could not reconcile roles after deploy:', error));
 	});
 }
 
@@ -52,7 +71,7 @@ function warnForStaleRoles(
  * the right shape and created in the system database.
  * @param rolesContent
  */
-async function handleFile(rolesContent) {
+async function handleFile(rolesContent, ensureRoleFn: (role: any) => Promise<unknown>) {
 	let rolesToDefine = parseDocument(rolesContent.toString(), { simpleKeys: true } as any).toJSON();
 	const roleNames = new Set<string>();
 	for (let roleName in rolesToDefine) {
@@ -107,7 +126,7 @@ async function handleFile(rolesContent) {
 			}
 		}
 		role.role = role.id = roleName;
-		await ensureRole(role);
+		await ensureRoleFn(role);
 	}
 	return roleNames;
 }

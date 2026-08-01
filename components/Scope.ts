@@ -66,13 +66,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#pendingInitialLoads: Set<Promise<void>>;
 	#deployStartHandler: (name: string) => void;
 	#deployEndHandler: (name: string) => void;
-	// While a deploy of this component is in flight, EntryHandler events do not
-	// drive requestRestart() — the deploy itself produces hundreds of file
-	// changes that would otherwise pile up. Logical changes from the completed
-	// post-deploy scan can request the restart after this gate is lowered.
 	#deployInFlight: boolean = false;
-	// OptionsWatcher and plugin callbacks are not paused with EntryHandlers. Preserve a restart they
-	// request during the deploy window and replay it once the intermediate filesystem state is gone.
 	#restartRequestedDuringDeploy: boolean = false;
 	applicationScope?: ApplicationScope;
 
@@ -259,7 +253,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	#handleError(error: unknown): void {
-		this.emit('error', error);
+		if (this.listenerCount('error') > 0) this.emit('error', error);
+		else this.#logger.error?.('Error in component scope:', error);
 	}
 
 	async close(): Promise<this> {
@@ -325,16 +320,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		const restartRequestedDuringDeploy = this.#restartRequestedDuringDeploy;
 		this.#restartRequestedDuringDeploy = false;
 
-		// Resume each EntryHandler BEFORE notifying plugins. Otherwise a plugin
-		// throwing in its deploy:end handler would abort this function and
-		// leave the watchers permanently paused (surfaced by Gemini review).
-		// The fresh chokidar watcher compares the post-deploy scan with its
-		// retained pre-deploy snapshot and emits only logical changes. Plugin
-		// handlers stay attached across the pause.
+		// Resume before notifying plugins so a throwing deploy:end listener cannot strand the watchers.
 		for (const entryHandler of this.#entryHandlers) {
-			// `ready` rejects if the resumed generation emits `error` first (the handler's own
-			// 'error' listener reports it); nothing here awaits it, so swallow to avoid an
-			// unhandled rejection.
 			void entryHandler.resume().catch(() => {});
 		}
 		if (restartRequestedDuringDeploy) this.requestRestart();
@@ -351,9 +338,6 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#safeEmit('deploy:end', componentName);
 	}
 
-	// Swallow and log listener exceptions so one buggy plugin can't stop us
-	// from running the rest of the deploy-lifecycle bookkeeping. EventEmitter
-	// by default rethrows from synchronous listeners.
 	#safeEmit(event: 'deploy:start' | 'deploy:end', componentName: string): void {
 		try {
 			this.emit(event, componentName);
@@ -411,9 +395,6 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 					return;
 				}
 
-				// Otherwise, if an entry handler exists, update it with the new config. The returned
-				// readiness latch is not awaited here and rejects if the new generation errors, so
-				// swallow it — the handler's 'error' listener already reports it.
 				void scope.#entryHandler.update(config as FileAndURLPathConfig).catch(() => {});
 
 				return;
@@ -542,8 +523,6 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	requestRestart() {
 		if (this.#deployInFlight) {
-			// Defer while a deploy is rewriting this component's files. EntryHandlers are paused, but
-			// OptionsWatcher and plugin callbacks can still observe a lasting configuration change.
 			this.#restartRequestedDuringDeploy = true;
 			this.#logger.debug?.(`Restart suppressed (deploy in flight) for ${this.#appName}`);
 			return;

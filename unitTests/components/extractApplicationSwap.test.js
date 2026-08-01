@@ -185,6 +185,23 @@ describe('extractApplication directory swap', () => {
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
 
+	it('restores the previous component directory when extraction fails', async () => {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-rollback-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.writeFile(path.join(dirPath, 'index.js'), 'module.exports = () => 1;\n');
+
+		const app = new Application({ name: 'web', payload: Buffer.from('not a tar archive') });
+		app.dirPath = dirPath;
+
+		await assert.rejects(() => extractApplication(app));
+		assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+		assert.strictEqual(await fs.readFile(path.join(dirPath, 'index.js'), 'utf8'), 'module.exports = () => 1;\n');
+
+		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+	});
+
 	it('leaves runtime metadata comparison to post-install preparation', async () => {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-identical-'));
 		const dirPath = path.join(componentsRoot, 'web');

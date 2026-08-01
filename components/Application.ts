@@ -721,12 +721,13 @@ export async function extractApplication(application: Application) {
 	// component, and the per-component path means a sibling component never collides
 	// with (or sweeps) another's aside.
 	const asideStagingDir = join(dirname(application.dirPath), ASIDE_STAGING_DIR, basename(application.dirPath));
-	let didRenameAside = false;
+	let asidePath: string | undefined;
 	try {
 		await access(application.dirPath, constants.F_OK);
 		await mkdir(asideStagingDir, { recursive: true });
-		await rename(application.dirPath, join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`));
-		didRenameAside = true;
+		const candidateAsidePath = join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`);
+		await rename(application.dirPath, candidateAsidePath);
+		asidePath = candidateAsidePath;
 	} catch (err) {
 		// Ignore does not exist error
 		if (err.code !== 'ENOENT') {
@@ -735,30 +736,31 @@ export async function extractApplication(application: Application) {
 	}
 	// A directory existed for this component name prior to this deploy, so this is a redeploy of
 	// an already-active component rather than a first-time deploy. See `isNewComponent` above.
-	if (didRenameAside) application.isNewComponent = false;
-	// Finally, create the application directory fresh
-	await mkdir(application.dirPath, { recursive: true });
+	if (asidePath) application.isNewComponent = false;
+	try {
+		await mkdir(application.dirPath, { recursive: true });
+		await pipeline(tarball, gunzip(), extract(application.dirPath));
 
-	// Now pipeline the tarball into maybe-gunzip then tar-fs to reliably decompress and extract the contents
-	await pipeline(tarball, gunzip(), extract(application.dirPath));
-
-	// If the extracted directory contains a single folder, move the contents up one level
-	// The `npm pack` command does this (the top-level folder is called "package")
-	// Other packing tools may have similar behavior, but the directory name is not guaranteed.
-	const extracted = await readdir(application.dirPath, { withFileTypes: true });
-	if (extracted.length === 1 && extracted[0].isDirectory()) {
-		const topLevelDirPath = join(application.dirPath, extracted[0].name);
-
-		const tempDirPath = await mkdtemp(application.dirPath);
-
-		// Copy contents of top-level directory to temp directory (in order to avoid collisions of top-level directory name and one of the contents)
-		await cp(topLevelDirPath, tempDirPath, { recursive: true });
-		// Remove top-level directory
-		await rm(topLevelDirPath, { recursive: true, force: true });
-		// Copy contents of temp directory to application directory
-		await cp(tempDirPath, application.dirPath, { recursive: true });
-		// Finally, remove the temp dir
-		await rm(tempDirPath, { recursive: true, force: true });
+		const extracted = await readdir(application.dirPath, { withFileTypes: true });
+		if (extracted.length === 1 && extracted[0].isDirectory()) {
+			const topLevelDirPath = join(application.dirPath, extracted[0].name);
+			const tempDirPath = await mkdtemp(application.dirPath);
+			await cp(topLevelDirPath, tempDirPath, { recursive: true });
+			await rm(topLevelDirPath, { recursive: true, force: true });
+			await cp(tempDirPath, application.dirPath, { recursive: true });
+			await rm(tempDirPath, { recursive: true, force: true });
+		}
+	} catch (error) {
+		try {
+			await rm(application.dirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+			if (asidePath) await rename(asidePath, application.dirPath);
+		} catch (rollbackError) {
+			throw new AggregateError(
+				[error, rollbackError],
+				`Failed to extract ${application.name} and restore its previous component directory`
+			);
+		}
+		throw error;
 	}
 	// Clean up the original tarball
 	if (shouldDeleteTarball && tarballPath) {
@@ -771,7 +773,7 @@ export async function extractApplication(application: Application) {
 	// earlier deploys whose workers have since exited, and a copy that survives because
 	// its worker is still live is swept by the next deploy. The failure is expected in
 	// the live-worker case, so it's logged at trace rather than as a warning.
-	if (didRenameAside) {
+	if (asidePath) {
 		rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
 			logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
 		);
@@ -1007,17 +1009,8 @@ export class Application {
 	npmUserconfigPath?: string;
 	#npmrcTempDir?: string;
 	#gitCredentialSession?: GitCredentialSession;
-	// Whether this component's directory did not already exist when extractApplication ran —
-	// i.e. this deploy is the component's first, as opposed to a redeploy of something already
-	// active. Defaults true and is flipped to false by extractApplication when it finds (and
-	// renames aside) a pre-existing directory for this component name. Used by deployComponent to
-	// scope its unconditional requestRestart() call to genuinely new components (harper#1806):
-	// an existing, already-loaded component already has a live file watcher (Scope/EntryHandler)
-	// that independently requests a restart if the redeploy actually needs one.
+	// Existing components rely on their runtime-equivalence checks; only a first deploy restarts unconditionally.
 	isNewComponent: boolean = true;
-	// Package metadata is intentionally outside most plugin `files` globs, but changing it can replace
-	// dependencies or module entry points underneath already-imported code. prepareApplication compares
-	// normalized manifests and lockfiles after installation so deployComponent can request the required restart.
 	packageMetadataChanged: boolean = false;
 	installationIsOpaque: boolean = false;
 
