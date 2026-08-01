@@ -67,6 +67,10 @@ RUN <<-EOF
   rm harper-*.tgz
   cd "$pkgDir"
   test -f npm-shrinkwrap.json || { echo "npm-shrinkwrap.json is missing from the packed tarball -- npm install would silently re-resolve everything fresh instead of honoring the pinned tree (see #1960)" >&2; exit 1; }
+  # npm rewrites npm-shrinkwrap.json in place to match whatever it actually installs, so a
+  # post-install comparison against this file would just compare npm's output to itself.
+  # Freeze the packed pins before install so CI can verify against what was actually shipped.
+  cp npm-shrinkwrap.json npm-shrinkwrap.packed.json
   npm install --omit=dev --ignore-scripts --no-audit --no-fund
   npm cache clean --force
   mkdir -p "$NPM_CONFIG_PREFIX/bin"

@@ -10,12 +10,16 @@ on:
     paths:
       - Dockerfile
       - .dockerignore
+      - package.json
+      - build-tools/**
       - .github/workflows/docker-smoke.yml
   push:
     branches: [main]
     paths:
       - Dockerfile
       - .dockerignore
+      - package.json
+      - build-tools/**
       - .github/workflows/docker-smoke.yml
 
 concurrency:
@@ -35,7 +39,10 @@ jobs:
       matrix:
         include: ${{ github.event_name == 'push' && fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]') || fromJSON('[{"platform":"linux/amd64","runner":"ubuntu-latest"}]') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    # Two boot-check loops can each take up to ~6 minutes in the worst case (60 iterations
+    # of a 5s curl timeout plus a 1s sleep) on top of the build itself; 20m was tight even
+    # before the second (bun) loop existed.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -75,20 +82,19 @@ jobs:
 
       # Proves the shrinkwrap was actually honored, not just present -- the other checks
       # here would stay green even if the Dockerfile reverted to `npm install --global
-      # <tarball>` and started re-resolving the tree fresh again (#1960).
+      # <tarball>` and started re-resolving the tree fresh again (#1960). Compares against
+      # npm-shrinkwrap.packed.json (frozen pre-install by the Dockerfile), not the live
+      # npm-shrinkwrap.json -- npm rewrites the live file to match whatever it installs, so
+      # comparing against it would just compare npm's output to itself.
       - name: Installed dependency versions match the packed shrinkwrap
         run: |
-          docker run --rm --entrypoint sh harperfast/harper:smoke-test -c '
+          docker run --rm \
+            -v "${{ github.workspace }}/build-tools/check-shrinkwrap-pins.mjs:/tmp/check-shrinkwrap-pins.mjs:ro" \
+            --entrypoint sh harperfast/harper:smoke-test -c '
             set -e
             pkgRoot=$(npm root -g)/harper
-            test -f "$pkgRoot/npm-shrinkwrap.json" || { echo "::error::npm-shrinkwrap.json is missing from the installed package"; exit 1; }
-            pinned=$(node -p "require(\"$pkgRoot/npm-shrinkwrap.json\").packages[\"node_modules/@harperfast/rocksdb-js\"].version")
-            installed=$(node -p "require(\"$pkgRoot/node_modules/@harperfast/rocksdb-js/package.json\").version")
-            if [ "$pinned" != "$installed" ]; then
-              echo "::error::@harperfast/rocksdb-js resolved to $installed but the shrinkwrap pins $pinned -- the image is not honoring npm-shrinkwrap.json (see #1960)"
-              exit 1
-            fi
-            echo "shrinkwrap honored: @harperfast/rocksdb-js@$installed matches the pin"
+            test -f "$pkgRoot/npm-shrinkwrap.packed.json" || { echo "::error::npm-shrinkwrap.packed.json is missing from the installed package"; exit 1; }
+            node /tmp/check-shrinkwrap-pins.mjs "$pkgRoot"
           '
 
       - name: Container boots and serves the Operations API (default runtime)
