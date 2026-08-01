@@ -333,3 +333,46 @@ jobs:
           path: /tmp/harper-integration-test-logs/
           retention-days: 3
           if-no-files-found: ignore
+
+  # Non-blocking nightly canary for the pin above (harper#2025): the default matrix no longer
+  # exercises Node >=26.5.1 at all, so this keeps a signal alive on whatever the latest 26.x
+  # release is, without reddening the required checks. `continue-on-error: true` means a failure
+  # here shows as a warning in the run summary, not a red X — check it manually or via the
+  # "Integration Tests" workflow history when triaging harper#2025. Targets only the two test
+  # files the pin exists for; the full 6-shard matrix would cost more than this canary is worth.
+  canary-node26-latest:
+    name: Canary — Node 26 latest (harper#2025, non-blocking)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup Node.js 26 (floating latest)
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build
+        run: npm run build || true # we currently have type errors so just ignore that
+
+      - name: Run harper#2025 canary tests
+        env:
+          HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
+          HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+        run: |
+          npm run test:integration -- "integrationTests/database/ttlResetOnWrite.test.ts" "integrationTests/components/static-cache-headers.test.ts"
+
+      - name: Upload Harper server logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harper-server-logs-canary-node26-latest
+          path: /tmp/harper-integration-test-logs/
+          retention-days: 3
+          if-no-files-found: ignore
