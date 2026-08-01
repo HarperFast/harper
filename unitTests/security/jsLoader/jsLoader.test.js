@@ -223,3 +223,32 @@ describe('pure-ESM package resolution', () => {
 		expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/package.json'))).to.equal(true);
 	});
 });
+
+describe('native addon delegation', () => {
+	it('delegates transitive .node requires and marks the runtime opaque', async () => {
+		const runtimeRoot = mkdtempSync(join(tmpdir(), 'js-loader-native-addon-'));
+		const wrapperPath = join(runtimeRoot, 'wrapper.cjs');
+		const addonPath = join(runtimeRoot, 'addon.node');
+		writeFileSync(wrapperPath, "module.exports = require('./addon.node');\n");
+		writeFileSync(addonPath, Buffer.from([0xff, 0x00, 0xfe]));
+		const originalLoader = require.extensions['.node'];
+		let nativeRuntimeMarked = false;
+		require.extensions['.node'] = (module) => {
+			module.exports = { delegated: true };
+		};
+		try {
+			const result = await scopedImport(wrapperPath, {
+				...vmScope(),
+				runtimeRoot,
+				markNativeRuntime: () => {
+					nativeRuntimeMarked = true;
+				},
+			});
+			expect(result.default.delegated).to.equal(true);
+			expect(nativeRuntimeMarked).to.equal(true);
+		} finally {
+			require.extensions['.node'] = originalLoader;
+			rmSync(runtimeRoot, { recursive: true, force: true });
+		}
+	});
+});

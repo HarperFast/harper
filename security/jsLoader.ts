@@ -351,6 +351,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				return getHarperExports(scope);
 			}
 			if (resolvedUrl.startsWith('file://')) {
+				if (resolvedUrl.endsWith('.node')) {
+					scope.markNativeRuntime?.();
+					return require(fileURLToPath(resolvedUrl));
+				}
 				const contents = readFileSync(new URL(resolvedUrl));
 				scope.recordLoadedModule?.(resolvedUrl, contents);
 				return loadCJS(resolvedUrl, contents.toString('utf-8')).exports;
@@ -664,6 +668,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 
 		if (url.startsWith('file://') && usePrivateGlobal) {
 			checkAllowedModulePath(url, scope.allowedPath);
+			if (url.endsWith('.node')) {
+				scope.markNativeRuntime?.();
+				const nativeModule = createRequire(url)(fileURLToPath(url));
+				return createSyntheticModule(url, normalizeImportedModule(nativeModule));
+			}
 			const contents = readFileSync(new URL(url));
 			scope.recordLoadedModule?.(url, contents);
 			return createModuleFromSource(url, contents.toString('utf-8'), usePrivateGlobal);

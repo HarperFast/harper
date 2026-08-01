@@ -772,19 +772,9 @@ export async function extractApplication(
 	}
 	// Clean up the original tarball
 	if (shouldDeleteTarball && tarballPath) {
-		try {
-			await rm(tarballPath, { force: true });
-		} catch (error) {
-			try {
-				await rollbackExtractedDirectory(application, asideStagingDir, asidePath);
-			} catch (rollbackError) {
-				throw new AggregateError(
-					[error, rollbackError],
-					`Failed to clean up the package for ${application.name} and restore its previous component directory`
-				);
-			}
-			throw error;
-		}
+		await rm(tarballPath, { force: true }).catch((error) =>
+			application.logger.warn(`Failed to remove temporary package ${tarballPath}:`, error)
+		);
 	}
 
 	// Remove this component's aside copies. The old worker may still hold files open
