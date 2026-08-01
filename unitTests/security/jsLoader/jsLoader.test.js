@@ -1,6 +1,6 @@
 'use strict';
 
-const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -225,30 +225,113 @@ describe('pure-ESM package resolution', () => {
 });
 
 describe('native addon delegation', () => {
-	it('delegates transitive .node requires and marks the runtime opaque', async () => {
-		const runtimeRoot = mkdtempSync(join(tmpdir(), 'js-loader-native-addon-'));
-		const wrapperPath = join(runtimeRoot, 'wrapper.cjs');
-		const addonPath = join(runtimeRoot, 'addon.node');
-		writeFileSync(wrapperPath, "module.exports = require('./addon.node');\n");
+	let runtimeRoot;
+	let addonPath;
+	let originalLoader;
+
+	beforeEach(() => {
+		runtimeRoot = mkdtempSync(join(tmpdir(), 'js-loader-native-addon-'));
+		addonPath = join(runtimeRoot, 'addon.node');
 		writeFileSync(addonPath, Buffer.from([0xff, 0x00, 0xfe]));
-		const originalLoader = require.extensions['.node'];
+		originalLoader = require.extensions['.node'];
+	});
+
+	afterEach(() => {
+		require.extensions['.node'] = originalLoader;
+		rmSync(runtimeRoot, { recursive: true, force: true });
+	});
+
+	it('delegates transitive CJS .node requires and marks the runtime opaque', async () => {
+		const wrapperPath = join(runtimeRoot, 'wrapper.cjs');
+		writeFileSync(wrapperPath, "module.exports = require('./addon.node');\n");
 		let nativeRuntimeMarked = false;
 		require.extensions['.node'] = (module) => {
 			module.exports = { delegated: true };
 		};
+		const result = await scopedImport(wrapperPath, {
+			...vmScope(),
+			runtimeRoot,
+			markNativeRuntime: () => {
+				nativeRuntimeMarked = true;
+			},
+		});
+		expect(result.default.delegated).to.equal(true);
+		expect(nativeRuntimeMarked).to.equal(true);
+	});
+
+	it('delegates compartment .node imports and marks the runtime opaque', async () => {
+		const entryPath = join(runtimeRoot, 'entry.mjs');
+		writeFileSync(entryPath, "import addon from './addon.node'; export default addon;\n");
+		let nativeRuntimeMarked = false;
+		require.extensions['.node'] = (module) => {
+			module.exports = { delegated: true };
+		};
+		const result = await scopedImport(entryPath, {
+			mode: 'compartment',
+			runtimeRoot,
+			allowedPath: runtimeRoot,
+			resources: {},
+			markNativeRuntime: () => {
+				nativeRuntimeMarked = true;
+			},
+		});
+		expect(result.default.delegated).to.equal(true);
+		expect(nativeRuntimeMarked).to.equal(true);
+	});
+
+	it('delegates ESM .node imports and marks the runtime opaque', async () => {
+		const entryPath = join(runtimeRoot, 'entry.mjs');
+		writeFileSync(entryPath, "import addon from './addon.node'; export default addon;\n");
+		let nativeRuntimeMarked = false;
+		require.extensions['.node'] = (module) => {
+			module.exports = { delegated: true };
+		};
+		const result = await scopedImport(entryPath, {
+			...vmScope(),
+			runtimeRoot,
+			markNativeRuntime: () => {
+				nativeRuntimeMarked = true;
+			},
+		});
+		expect(result.default.delegated).to.equal(true);
+		expect(nativeRuntimeMarked).to.equal(true);
+	});
+
+	it('does not mark a failed optional native load as opaque', async () => {
+		const wrapperPath = join(runtimeRoot, 'wrapper.cjs');
+		writeFileSync(
+			wrapperPath,
+			"try { module.exports = require('./addon.node'); } catch { module.exports = { fallback: true }; }\n"
+		);
+		let nativeRuntimeMarked = false;
+		require.extensions['.node'] = () => {
+			throw new Error('ABI mismatch');
+		};
+		const result = await scopedImport(wrapperPath, {
+			...vmScope(),
+			runtimeRoot,
+			markNativeRuntime: () => {
+				nativeRuntimeMarked = true;
+			},
+		});
+		expect(result.default.fallback).to.equal(true);
+		expect(nativeRuntimeMarked).to.equal(false);
+	});
+
+	it('rejects a CJS native addon outside allowedPath', async () => {
+		const allowedPath = join(runtimeRoot, 'allowed');
+		const wrapperPath = join(allowedPath, 'wrapper.cjs');
+		mkdirSync(allowedPath);
+		writeFileSync(wrapperPath, "module.exports = require('../addon.node');\n");
+		require.extensions['.node'] = (module) => {
+			module.exports = { delegated: true };
+		};
+		let error;
 		try {
-			const result = await scopedImport(wrapperPath, {
-				...vmScope(),
-				runtimeRoot,
-				markNativeRuntime: () => {
-					nativeRuntimeMarked = true;
-				},
-			});
-			expect(result.default.delegated).to.equal(true);
-			expect(nativeRuntimeMarked).to.equal(true);
-		} finally {
-			require.extensions['.node'] = originalLoader;
-			rmSync(runtimeRoot, { recursive: true, force: true });
+			await scopedImport(wrapperPath, { ...vmScope(), runtimeRoot, allowedPath });
+		} catch (caught) {
+			error = caught;
 		}
+		expect(error?.message).to.include('outside of allowed path');
 	});
 });

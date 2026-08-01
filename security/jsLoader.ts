@@ -234,6 +234,17 @@ function resolveESMPackageExports(
 	}
 }
 
+function normalizeImportedModule(importedModule: any): any {
+	const cjsModule = importedModule['module.exports'];
+	if (cjsModule) {
+		importedModule = importedModule.default ? { default: importedModule.default, ...cjsModule } : cjsModule;
+	}
+	if (!importedModule.default) {
+		importedModule = { default: importedModule, ...importedModule };
+	}
+	return importedModule;
+}
+
 /**
  * Load a module using Node's vm.Module API with optional sandboxing
  * @param moduleUrl - The URL of the module to load
@@ -352,8 +363,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			}
 			if (resolvedUrl.startsWith('file://')) {
 				if (resolvedUrl.endsWith('.node')) {
+					checkAllowedModulePath(resolvedUrl, scope.allowedPath);
+					const nativeModule = require(fileURLToPath(resolvedUrl));
 					scope.markNativeRuntime?.();
-					return require(fileURLToPath(resolvedUrl));
+					return nativeModule;
 				}
 				const contents = readFileSync(new URL(resolvedUrl));
 				scope.recordLoadedModule?.(resolvedUrl, contents);
@@ -575,22 +588,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 	}
 
 	/**
-	 * Normalize imported module to ensure it has proper exports including default
-	 */
-	function normalizeImportedModule(importedModule: any): any {
-		const cjsModule = importedModule['module.exports'];
-		if (cjsModule) {
-			// back-compat import
-			importedModule = importedModule.default ? { default: importedModule.default, ...cjsModule } : cjsModule;
-		}
-		// Ensure there's a default export for ESM imports that expect it
-		if (!importedModule.default) {
-			importedModule = { default: importedModule, ...importedModule };
-		}
-		return importedModule;
-	}
-
-	/**
 	 * Create a SourceTextModule or SyntheticModule from source code
 	 */
 	function createModuleFromSource(
@@ -669,8 +666,8 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		if (url.startsWith('file://') && usePrivateGlobal) {
 			checkAllowedModulePath(url, scope.allowedPath);
 			if (url.endsWith('.node')) {
-				scope.markNativeRuntime?.();
 				const nativeModule = createRequire(url)(fileURLToPath(url));
+				scope.markNativeRuntime?.();
 				return createSyntheticModule(url, normalizeImportedModule(nativeModule));
 			}
 			const contents = readFileSync(new URL(url));
@@ -729,6 +726,18 @@ async function getCompartment(scope: ApplicationScope, globals) {
 						exports: Object.keys(harperExports),
 						execute(exports) {
 							Object.assign(exports, harperExports);
+						},
+					};
+				} else if (moduleSpecifier.startsWith('file:') && moduleSpecifier.endsWith('.node')) {
+					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
+					const nativeModule = createRequire(moduleSpecifier)(fileURLToPath(moduleSpecifier));
+					scope.markNativeRuntime?.();
+					const moduleExports = normalizeImportedModule(nativeModule);
+					return {
+						imports: [],
+						exports: Object.keys(moduleExports),
+						execute(exports) {
+							Object.assign(exports, moduleExports);
 						},
 					};
 				} else if (moduleSpecifier.startsWith('file:') && !moduleSpecifier.includes('node_modules')) {
