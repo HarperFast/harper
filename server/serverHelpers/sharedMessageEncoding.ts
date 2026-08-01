@@ -74,7 +74,9 @@ let currentBytes = 0;
 // charging that to the current budget would bill a generation the bytes do not belong to, then bill
 // them again when a promotion re-charges the entry.
 const UNRETAINED = -1;
-let currentEpoch = 0;
+// starts at 1 so UNRETAINED can never collide with `currentEpoch - 1`, which would make charge()
+// treat a never-retained entry as one still live in the previous generation
+let currentEpoch = 1;
 
 /** Retire the older generation. Exported for the rotation timer and for tests. */
 export function rotateSharedEncodings() {
@@ -94,6 +96,11 @@ export function rotateSharedEncodings() {
 /** Whether the rotation timer is currently armed. Introspection for tests. */
 export function isRotationScheduled(): boolean {
 	return rotationTimer !== undefined;
+}
+
+/** Bytes charged to the live generation. Introspection so tests can pin the accounting exactly. */
+export function getRetainedBytes(): number {
+	return currentBytes;
 }
 
 function retainedSize(payload: SharedMessageEncoding['payload']): number {
@@ -155,6 +162,9 @@ function fill(encoding: SharedMessageEncoding, message: any, request: any) {
 	const payload = serializeMessage(message, request);
 	encoding.payload = payload;
 	encoding.failed = false;
+	// A pass-through payload IS the message's own data, already reachable from the WeakMap key, so
+	// caching it retains nothing extra and must not be billed against the budget.
+	if (encoding.serializer === PASS_THROUGH) return;
 	if ((payload as any)?.then)
 		// collapse an async serialization in place so later subscribers, and frame sharing, see the
 		// finished buffer rather than re-entering the async path

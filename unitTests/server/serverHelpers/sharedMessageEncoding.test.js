@@ -15,6 +15,7 @@ const {
 	setSharedFrame,
 	rotateSharedEncodings,
 	isRotationScheduled,
+	getRetainedBytes,
 	resolveSharedPayload,
 	MAX_RETAINED_BYTES,
 } = require('#src/server/serverHelpers/sharedMessageEncoding');
@@ -466,6 +467,59 @@ describe('sharedMessageEncoding – retention is bounded by rotation', function 
 			rotateSharedEncodings();
 			rotateSharedEncodings();
 		}
+	});
+
+	// Asserting *that* a rotation happened is not enough — every accounting bug so far (a string
+	// charged by character count, a chained content type never charged, a promotion charged twice,
+	// a never-retained entry folded into the live budget) passed those tests. These pin the numbers.
+	it('charges exactly what each entry holds, exactly once', function () {
+		const BULKY_TYPE = 'application/x-shared-encoding-bulky-exact';
+		const ALT_BULKY_TYPE = 'application/x-shared-encoding-bulky-exact-alt';
+		const CHUNK = 100_000;
+		contentTypes.set(BULKY_TYPE, { serialize: () => Buffer.alloc(CHUNK), q: 1 });
+		contentTypes.set(ALT_BULKY_TYPE, { serialize: () => Buffer.alloc(CHUNK * 2), q: 1 });
+		try {
+			rotateSharedEncodings();
+			rotateSharedEncodings();
+			assert.strictEqual(getRetainedBytes(), 0, 'two empty rotations must leave nothing charged');
+
+			const message = { id: 'exact' };
+			getSharedMessageEncoding(message, subscriberRequest(BULKY_TYPE), 1);
+			assert.strictEqual(getRetainedBytes(), CHUNK, 'a new entry is charged for its payload');
+
+			getSharedMessageEncoding(message, subscriberRequest(BULKY_TYPE), 1);
+			assert.strictEqual(getRetainedBytes(), CHUNK, 'reusing an entry must not re-charge it');
+
+			// a second content type on the same message is retained with it, so it is charged too
+			getSharedMessageEncoding(message, subscriberRequest(ALT_BULKY_TYPE), 1);
+			assert.strictEqual(getRetainedBytes(), CHUNK * 3);
+
+			// a frame is retained alongside the payload and charged once, however many subscribers
+			// generated one before the first got stored
+			const encoding = getSharedMessageEncoding(message, subscriberRequest(BULKY_TYPE), 1);
+			setSharedFrame(encoding, 4, 'topic/a', Buffer.alloc(CHUNK));
+			setSharedFrame(encoding, 4, 'topic/a', Buffer.alloc(CHUNK));
+			assert.strictEqual(getRetainedBytes(), CHUNK * 4, 'an overwritten frame must be charged once');
+
+			// a new version discards the whole chain, so everything it held is given back
+			getSharedMessageEncoding(message, subscriberRequest(BULKY_TYPE), 2);
+			assert.strictEqual(getRetainedBytes(), CHUNK, 'only the re-encoded head remains charged');
+		} finally {
+			contentTypes.delete(BULKY_TYPE);
+			contentTypes.delete(ALT_BULKY_TYPE);
+			rotateSharedEncodings();
+			rotateSharedEncodings();
+		}
+	});
+
+	it('does not charge for a pass-through payload, which the message already holds', function () {
+		rotateSharedEncodings();
+		rotateSharedEncodings();
+		const message = { contentType: 'application/octet-stream', data: Buffer.alloc(100_000) };
+
+		getSharedMessageEncoding(message, subscriberRequest(COUNTED_TYPE), 1);
+
+		assert.strictEqual(getRetainedBytes(), 0, 'message.data is reachable from the key either way');
 	});
 
 	it('gives back an entry’s bytes when it is refilled, so the budget does not leak', function () {
