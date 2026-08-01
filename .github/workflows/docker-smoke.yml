@@ -73,6 +73,24 @@ jobs:
             echo "which harper -> $resolved"
           '
 
+      # Proves the shrinkwrap was actually honored, not just present -- the other checks
+      # here would stay green even if the Dockerfile reverted to `npm install --global
+      # <tarball>` and started re-resolving the tree fresh again (#1960).
+      - name: Installed dependency versions match the packed shrinkwrap
+        run: |
+          docker run --rm --entrypoint sh harperfast/harper:smoke-test -c '
+            set -e
+            pkgRoot=$(npm root -g)/harper
+            test -f "$pkgRoot/npm-shrinkwrap.json" || { echo "::error::npm-shrinkwrap.json is missing from the installed package"; exit 1; }
+            pinned=$(node -p "require(\"$pkgRoot/npm-shrinkwrap.json\").packages[\"node_modules/@harperfast/rocksdb-js\"].version")
+            installed=$(node -p "require(\"$pkgRoot/node_modules/@harperfast/rocksdb-js/package.json\").version")
+            if [ "$pinned" != "$installed" ]; then
+              echo "::error::@harperfast/rocksdb-js resolved to $installed but the shrinkwrap pins $pinned -- the image is not honoring npm-shrinkwrap.json (see #1960)"
+              exit 1
+            fi
+            echo "shrinkwrap honored: @harperfast/rocksdb-js@$installed matches the pin"
+          '
+
       - name: Container boots and serves the Operations API (default runtime)
         run: |
           docker run -d --name harper-smoke \
@@ -83,7 +101,7 @@ jobs:
 
           echo "Waiting for Operations API on :9925 ..."
           for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
+            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
             # Any HTTP response (even 401/404) means the server is up and listening.
             if [ -n "$code" ] && [ "$code" != "000" ]; then
               echo "Operations API responded with HTTP $code after ${i}s"
@@ -109,7 +127,11 @@ jobs:
         if: always()
         run: docker rm -f harper-smoke 2>/dev/null || true
 
+      # Runs regardless of whether the default-runtime leg above passed -- otherwise a
+      # flaky/failed default boot silently skips this leg on the exact runs where a
+      # bun-only regression would most need to be seen.
       - name: Container boots and serves the Operations API (HARPER_RUNTIME=bun)
+        if: success() || failure()
         run: |
           docker run -d --name harper-smoke-bun \
             -e HARPER_RUNTIME=bun \
@@ -120,7 +142,7 @@ jobs:
 
           echo "Waiting for Operations API on :9925 (bun runtime) ..."
           for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
+            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
             if [ -n "$code" ] && [ "$code" != "000" ]; then
               echo "Operations API responded with HTTP $code after ${i}s"
               exit 0

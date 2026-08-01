@@ -66,6 +66,7 @@ RUN <<-EOF
   tar -xzf harper-*.tgz --strip-components=1 -C "$pkgDir"
   rm harper-*.tgz
   cd "$pkgDir"
+  test -f npm-shrinkwrap.json || { echo "npm-shrinkwrap.json is missing from the packed tarball -- npm install would silently re-resolve everything fresh instead of honoring the pinned tree (see #1960)" >&2; exit 1; }
   npm install --omit=dev --ignore-scripts --no-audit --no-fund
   npm cache clean --force
   mkdir -p "$NPM_CONFIG_PREFIX/bin"
