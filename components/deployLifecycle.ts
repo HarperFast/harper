@@ -22,11 +22,12 @@
 
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { isMainThread, threadId } from 'node:worker_threads';
 import {
 	broadcast,
 	broadcastWithAcknowledgement,
-	awaitThreadProcessGroupsTerminated,
+	isThreadRunning,
 	onMessageByType,
 	onThreadExit,
 } from '../server/threads/manageThreads.js';
@@ -77,7 +78,7 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 			this.#deployments.set(deploymentId, { name: event.name, ownerThreadId });
 			this.#byComponent.set(event.name, active);
 			active.add(deploymentId);
-			if (active.size === 1) this.emit('deploy:start', event.name);
+			if (active.size === 1) this.#emitSafely('deploy:start', event.name);
 			return;
 		}
 		if (!deploymentId) deploymentId = this.#legacyDeployments.get(event.name)?.pop();
@@ -93,8 +94,9 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 
 	async _reclaimOwnerAfterTermination(
 		ownerThreadId: number,
-		waitForTermination: (ownerThreadId: number) => Promise<void> = awaitThreadProcessGroupsTerminated
+		waitForTermination: (ownerThreadId: number) => Promise<void> = waitForOwnerTermination
 	): Promise<void> {
+		this.#deadOwners.add(ownerThreadId);
 		await waitForTermination(ownerThreadId);
 		this._reclaimOwner(ownerThreadId);
 	}
@@ -108,10 +110,16 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		active.delete(deploymentId);
 		if (active.size === 0) {
 			this.#byComponent.delete(deployment.name);
+			this.#emitSafely('deploy:end', deployment.name);
+		}
+	}
+
+	#emitSafely(event: 'deploy:start' | 'deploy:end', componentName: string): void {
+		for (const listener of this.rawListeners(event)) {
 			try {
-				this.emit('deploy:end', deployment.name);
+				listener.call(this, componentName);
 			} catch (error) {
-				harperLogger.error(`Listener for deploy:end threw while reclaiming ${deployment.name}:`, error);
+				harperLogger.error(`Listener for ${event} threw for ${componentName}:`, error);
 			}
 		}
 	}
@@ -127,6 +135,10 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 }
 
 export const deployLifecycle = new DeployLifecycle();
+
+async function waitForOwnerTermination(ownerThreadId: number): Promise<void> {
+	while (await isThreadRunning(ownerThreadId)) await delay(25);
+}
 
 let receiverInstalled = false;
 function ensureReceiver() {
