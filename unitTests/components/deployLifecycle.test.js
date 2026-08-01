@@ -107,6 +107,13 @@ describe('deployLifecycle', () => {
 			const reclaim = deployLifecycle._reclaimOwnerAfterTermination(41, () => termination);
 			await Promise.resolve();
 			assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
+			deployLifecycle._handle({
+				name: 'bar',
+				phase: 'start',
+				deploymentId: 'late-deploy',
+				ownerThreadId: 41,
+			});
+			assert.equal(deployLifecycle.isDeployInFlight('bar'), false, 'late starts from the dead owner stay ignored');
 
 			releaseTermination();
 			await reclaim;
@@ -115,9 +122,11 @@ describe('deployLifecycle', () => {
 
 		it('continues reclaiming when one component deploy:end listener throws', () => {
 			const originalError = console.error;
+			const survivingListener = require('sinon').spy();
 			deployLifecycle.on('deploy:end', (name) => {
 				if (name === 'foo') throw new Error('consumer failed');
 			});
+			deployLifecycle.on('deploy:end', survivingListener);
 			deployLifecycle._handle({
 				name: 'foo',
 				phase: 'start',
@@ -140,6 +149,34 @@ describe('deployLifecycle', () => {
 
 			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
 			assert.equal(deployLifecycle.isDeployInFlight('bar'), false);
+			assert.deepEqual(
+				survivingListener.getCalls().map(({ args }) => args[0]),
+				['foo', 'bar']
+			);
+		});
+
+		it('continues deploy:start emission when one listener throws', () => {
+			const originalError = console.error;
+			const survivingListener = require('sinon').spy();
+			deployLifecycle.on('deploy:start', () => {
+				throw new Error('consumer failed');
+			});
+			deployLifecycle.on('deploy:start', survivingListener);
+
+			try {
+				console.error = () => {};
+				deployLifecycle._handle({
+					name: 'foo',
+					phase: 'start',
+					deploymentId: 'start-listener-deploy',
+					ownerThreadId: 42,
+				});
+			} finally {
+				console.error = originalError;
+			}
+
+			assert.equal(survivingListener.calledOnceWith('foo'), true);
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
 		});
 
 		it('keeps an overlapping live-owner deploy active and ignores late starts from a dead owner', () => {

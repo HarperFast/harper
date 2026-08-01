@@ -151,7 +151,6 @@ module.exports = {
 	restoreShutdownDeadline,
 	registerWorkerDataProvider,
 	onThreadExit,
-	awaitThreadProcessGroupsTerminated,
 	registerProcessGroup,
 	unregisterProcessGroup,
 	isThreadRunning,
@@ -1089,10 +1088,6 @@ async function isThreadRunning(ownerThreadId, timeoutMs = THREAD_INFO_REQUEST_TI
 	// in flight — wait for that to be confirmed before reporting the owner as reclaimable.
 	await awaitProcessGroupTermination(ownerThreadId);
 	return false;
-}
-
-function awaitThreadProcessGroupsTerminated(ownerThreadId) {
-	return awaitProcessGroupTermination(ownerThreadId);
 }
 
 if (isMainThread) {
