@@ -287,7 +287,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			const resolved = createRequire(resolveReferrer).resolve(specifier);
 			if (isAbsolute(resolved)) {
 				const resolvedUrl = pathToFileURL(resolved).toString();
-				scope.recordModuleResolution?.(specifier, referrer, resolvedUrl);
+				scope.recordModuleResolution?.(specifier, resolveReferrer, resolvedUrl);
 				return resolvedUrl;
 			}
 			return resolved;
@@ -301,7 +301,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 					: dirname(resolveReferrer);
 				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
 				if (esmResolved) {
-					scope.recordModuleResolution?.(specifier, referrer, esmResolved);
+					scope.recordModuleResolution?.(specifier, resolveReferrer, esmResolved);
 					return esmResolved;
 				}
 			}
@@ -462,17 +462,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		if (specifier.startsWith('.')) {
 			return true;
 		}
-		// Package imports (`#name`) and package self-references can resolve back into the
-		// application without being relative specifiers. They are application source, not
-		// dependencies, so keep them in the observable loader as well.
-		if (isApplicationLocalModule(resolvedUrl)) {
-			return true;
-		}
-
 		// Check the dependencyLoader for definitive settings, if it is native we always use native loader
 		if (scope.dependencyLoader === 'native') {
 			return false;
 		}
+		if (isApplicationLocalModule(resolvedUrl)) return true;
 
 		// If it is set to always use the app module loader
 		if (scope.dependencyLoader === 'app') {

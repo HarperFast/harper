@@ -129,6 +129,10 @@ Future agents touching `components/deploymentRecorder.ts` for Slice B's streamin
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A lock is never stolen from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The bounded wait remains a backstop when owner liveness cannot be established.
 
+Extraction renames an existing component aside before writing the replacement. If extraction or
+single-directory normalization fails, the partial replacement is removed and the aside is renamed
+back before the deploy lifecycle resumes the component's watchers.
+
 A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and force-terminates it if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
@@ -649,10 +653,11 @@ layers it uses are proven equivalent:
 - `EntryHandler` compares consumer-visible watched entries.
 - `ApplicationScope` records the file URL and load-time digest of every application-local module
   that Harper's VM or compartment loader reads, including application-local package imports and
-  package self-references, together with the resolved target of each relative import. After a deploy,
-  those exact logical paths are re-read and each relative import is resolved again against the
-  replacement tree; adding a higher-priority `foo.js` ahead of a previously resolved `foo.json` is
-  therefore a runtime change even when `foo.json` itself is byte-identical.
+  package self-references, together with every application-local resolution edge. After a deploy,
+  those exact logical paths are re-read and each edge is resolved again against the replacement tree
+  after evicting Node's matching resolution-cache entry. Adding a higher-priority `foo.js` ahead of a
+  previously resolved `foo.json` is therefore a runtime change even when `foo.json` itself is
+  byte-identical.
 - The deploy pipeline compares dependency metadata at the same preparation stage: the previous
   installed tree before extraction versus the replacement tree after installation.
 
@@ -663,7 +668,8 @@ opaque path requires a restart on redeploy. `harper deploy` omits `node_modules`
 `package_component` that want restart-free comparison must likewise set `skip_node_modules: true`.
 Npm dependencies delegated from the default VM loader to Node's native loader are instead covered
 by the installed package/lock comparison—otherwise the default `dependencyLoader: auto` mode would
-make nearly every application opaque. `package.json` is compared as parsed JSON so formatting and
+make nearly every application opaque. Explicit `dependencyLoader: native` remains authoritative;
+an application-local import delegated by that setting marks the runtime opaque. `package.json` is compared as parsed JSON so formatting and
 key order are irrelevant, while lockfiles remain exact installed-tree evidence. A module first
 loaded while a deploy is in flight also invalidates the old runtime rather than letting a mixed
 generation appear equivalent. This is deliberately proof-oriented: an unused new local file need

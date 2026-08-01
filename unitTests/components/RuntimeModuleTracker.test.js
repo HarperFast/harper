@@ -5,6 +5,7 @@ const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { pathToFileURL } = require('node:url');
+const { createRequire } = require('node:module');
 const { RuntimeModuleTracker } = require('#src/components/RuntimeModuleTracker');
 
 describe('RuntimeModuleTracker', () => {
@@ -48,8 +49,10 @@ describe('RuntimeModuleTracker', () => {
 		const jsonPath = join(this.directory, 'helper.json');
 		writeFileSync(referrerPath, 'import helper from "./helper";');
 		writeFileSync(jsonPath, '{}');
+		const initiallyResolved = createRequire(pathToFileURL(referrerPath)).resolve('./helper');
+		assert.equal(initiallyResolved, jsonPath);
 		this.tracker.recordModule(pathToFileURL(jsonPath).href, '{}');
-		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(jsonPath).href);
+		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(initiallyResolved).href);
 
 		this.tracker.beginDeploy();
 		writeFileSync(join(this.directory, 'helper.js'), 'export default {};');

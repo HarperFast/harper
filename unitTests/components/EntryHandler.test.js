@@ -351,6 +351,25 @@ describe('EntryHandler', () => {
 		await entryHandler.close();
 	});
 
+	it('logs a consumer exception when no error listener is attached', async () => {
+		const errors = [];
+		const entryHandler = new EntryHandler(this.name, this.directory, '.', {
+			error: (...args) => errors.push(args),
+		});
+		await entryHandler.ready;
+		entryHandler.on('unlink', () => {
+			throw new Error('unhandled removal listener failed');
+		});
+
+		entryHandler.pause();
+		rmSync(join(this.directory, 'c'));
+		await entryHandler.resume();
+
+		assert.equal(errors.length, 1);
+		assert.equal(errors[0][1].message, 'unhandled removal listener failed');
+		await entryHandler.close();
+	});
+
 	it('routes steady-state unlink and addDir listener throws through error', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, '.');
 		await entryHandler.ready;
@@ -591,16 +610,13 @@ describe('EntryHandler', () => {
 	});
 
 	it('serializes concurrent config updates without orphaning a watcher', async () => {
-		// A single config save that changes both `files` and `urlPath` drives two OptionsWatcher
-		// `change` events in one tick, so two update() calls enter watcher replacement while a
-		// watcher is live (not paused). Each must close the watcher it actually replaced —
-		// otherwise the first call's fresh chokidar instance is overwritten, never closed, and
-		// its inotify handles leak until GC (the pressure mode of harper#488).
 		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
 		await entryHandler.ready;
 		assert.equal(entryHandler._liveWatcherCountForTests, 1, 'one live watcher after the initial scan');
 
-		await Promise.all([entryHandler.update('b'), entryHandler.update('c')]);
+		const updates = [entryHandler.update('b'), entryHandler.update('c')];
+		assert.equal(entryHandler.listenerCount('ready'), 1, 'concurrent updates share one readiness latch');
+		await Promise.all(updates);
 
 		assert.equal(entryHandler._openCountForTests, 3, 'the initial watcher plus one per update');
 		assert.equal(entryHandler._liveWatcherCountForTests, 1, 'each replacement closes the watcher it replaced');

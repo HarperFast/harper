@@ -11,6 +11,7 @@ import { authHeader, getRestartRequired, operation } from './redeploy-restart-fl
 const RELATIVE_PROJECT = 'redeploy-relative-runtime-app';
 const PACKAGE_IMPORT_PROJECT = 'redeploy-package-import-runtime-app';
 const PACKAGE_METADATA_PROJECT = 'redeploy-package-metadata-app';
+const RESOLUTION_PROJECT = 'redeploy-resolution-runtime-app';
 
 async function buildRuntimePayload(className: string, version: number, packageImport: boolean): Promise<string> {
 	const directory = await mkdtemp(join(tmpdir(), 'redeploy-runtime-equivalence-'));
@@ -46,6 +47,27 @@ async function buildRuntimePayload(className: string, version: number, packageIm
 				'}\n'
 		);
 		await writeFile(join(directory, 'helper.js'), `export const VERSION = ${version};\n`);
+		return await targz(directory);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+}
+
+async function buildResolutionPayload(addJavaScriptCandidate: boolean): Promise<string> {
+	const directory = await mkdtemp(join(tmpdir(), 'redeploy-runtime-resolution-'));
+	try {
+		await writeFile(join(directory, 'config.yaml'), 'jsResource:\n  files: resources.js\nrest: true\n');
+		await writeFile(join(directory, 'package.json'), '{"name":"redeploy-resolution-runtime-app","type":"module"}\n');
+		await writeFile(
+			join(directory, 'resources.js'),
+			"import helper from './helper';\n" +
+				'export class ResolutionVersion extends Resource {\n' +
+				'\tstatic loadAsInstance = false;\n' +
+				'\tget() { return { version: helper.VERSION }; }\n' +
+				'}\n'
+		);
+		await writeFile(join(directory, 'helper.json'), '{"VERSION":1}\n');
+		if (addJavaScriptCandidate) await writeFile(join(directory, 'helper.js'), 'export default { VERSION: 2 };\n');
 		return await targz(directory);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
@@ -205,6 +227,28 @@ suite('Redeploy runtime-equivalence proof', (ctx: ContextWithHarper) => {
 		});
 		await waitForRestartRequired(ctx);
 		strictEqual(await readResourceVersion(ctx, 'PackageImportVersion'), 1);
+	});
+
+	test('loads an extensionless import through its initial JSON candidate', async () => {
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project: RESOLUTION_PROJECT,
+			payload: await buildResolutionPayload(false),
+			restart: true,
+		});
+		await waitForVersion(ctx, 'ResolutionVersion', 1);
+	});
+
+	test('adding a higher-priority resolution candidate requests restart', async () => {
+		strictEqual(await getRestartRequired(ctx), false);
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project: RESOLUTION_PROJECT,
+			payload: await buildResolutionPayload(true),
+			restart: false,
+		});
+		await waitForRestartRequired(ctx);
+		strictEqual(await readResourceVersion(ctx, 'ResolutionVersion'), 1);
 	});
 
 	test('loads a component with deterministic dependency metadata', async () => {
