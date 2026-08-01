@@ -250,6 +250,19 @@ export function transactionOpenTooLongError(): ServerError {
 	);
 }
 
+/**
+ * Built when the request-scoped transaction is poisoned because its client disconnected before the
+ * handler finished (see abortDueToDisconnect, harper#2001). There is no client left to receive this —
+ * it only guards a handler that resumes after its client is gone from silently restaging writes onto
+ * a fresh native transaction (the immediateCommit path in save()) that would then be held indefinitely
+ * with nothing left to commit or time it out.
+ */
+export function requestAbortedError(): ServerError {
+	// 499 (client closed request, the de facto nginx convention for this condition) rather than a
+	// retryable 503/408: there is no client to retry, and the condition is not transient.
+	return new ServerError('Transaction was aborted because the client disconnected', 499);
+}
+
 type MaybePromise<T> = T | Promise<T>;
 
 export type CommitOptions = {
@@ -432,6 +445,10 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
+	// Set by abortDueToDisconnect when the request's client disconnects while this transaction is still
+	// open (harper#2001). Once poisoned, any further addWrite/commit throws requestAbortedError, mirroring
+	// timedOut above — the difference is only WHY the transaction was cut short.
+	declare disconnected?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -777,6 +794,7 @@ export class DatabaseTransaction implements Transaction {
 
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		if (this.disconnected) throw requestAbortedError();
 		// A write is activity: it re-arms the idle limit on this link even though the reads it
 		// performs no longer do (see getReadTxn), so a transaction that keeps writing stays alive
 		// and only an idle one holding write intents is reaped.
@@ -895,6 +913,7 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		if (this.disconnected) throw requestAbortedError();
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
 		let transaction = options.transaction ?? this.transaction;
@@ -1422,6 +1441,30 @@ export class DatabaseTransaction implements Transaction {
 				txn.abort();
 			} catch (error) {
 				harperLogger.debug?.(`Error aborting timed-out transaction in chain: ${error.message}`);
+			}
+		}
+	}
+	/**
+	 * Abort and poison this transaction (and its multi-store `next` chain) because the client that
+	 * started it disconnected while the handler was still running — e.g. mid-await inside a long-poll
+	 * loop, with a write already staged. Left alone, that staged write's native RocksDB write intent
+	 * would be held until the handler's own promise eventually settles (which, for a client that is
+	 * never coming back, may be never) or the long-transaction monitor's next cycle catches it — up to
+	 * STORAGE_MAXTRANSACTIONOPENTIME later. A later commit that conflicts with the held intent parks on
+	 * it in the interim (harper#2001: an orphaned intent held past a 12:44:00Z disconnect wedged a
+	 * commit that touched the same slot 27 seconds later). Same two-pass shape as abortDueToTimeout, for
+	 * the same reason: poison every link before aborting any of them.
+	 */
+	abortDueToDisconnect(): void {
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			txn.disconnected = true;
+			txn.open = TRANSACTION_STATE.CLOSED;
+		}
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			try {
+				txn.abort();
+			} catch (error) {
+				harperLogger.debug?.(`Error aborting disconnected transaction in chain: ${error.message}`);
 			}
 		}
 	}

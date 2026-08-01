@@ -491,6 +491,67 @@ describe('Write txn timeout', () => {
 	});
 });
 
+// harper#2001: a client that disconnects mid-handler must not leave its request-scoped transaction's
+// staged writes / native write intents held until the handler's own promise happens to settle (which,
+// for a client that is never coming back, may be effectively never) or the long-transaction monitor's
+// next cycle catches it. `resources/transaction.ts` listens for `context.signal`'s 'abort' event (the
+// same signal a Request/UwsRequest populates on client disconnect) and, while the callback is still
+// running, aborts the transaction immediately instead.
+describe('Disconnect abort', () => {
+	let DisconnectResource;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		DisconnectResource = table({
+			table: 'DisconnectTxnTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+	});
+
+	it('aborts a write-bearing txn when the client disconnects mid-handler, releasing the native transaction', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let txn;
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(501, { name: 'orphaned' }, context);
+				txn = context.transaction;
+				ac.abort(); // simulate the client disconnecting mid-handler, after a write is staged
+				await delay(20); // give the handler a chance to keep running past the disconnect
+			}),
+			/disconnected/
+		);
+		assert.equal(txn.open, TRANSACTION_STATE.CLOSED, 'transaction should be closed');
+		assert.equal(txn.transaction, null, 'native transaction handle should be released');
+		assert.equal(txn.readTxnsUsed, 0, 'no outstanding read references (write intents) should remain');
+		assert.ok((await DisconnectResource.get(501)) == null, 'the orphaned write must not have been committed');
+	});
+
+	it('rejects a write staged after the disconnect instead of silently starting a fresh commit', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				ac.abort();
+				await delay(10);
+				await DisconnectResource.put(502, { name: 'too late' }, context);
+			}),
+			/disconnected/
+		);
+		assert.ok((await DisconnectResource.get(502)) == null, 'a write staged after disconnect must not commit');
+	});
+
+	it('does not affect a request that completes normally without disconnecting', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await transaction(context, async () => {
+			await DisconnectResource.put(503, { name: 'normal' }, context);
+		});
+		assert.equal((await DisconnectResource.get(503))?.name, 'normal');
+	});
+});
+
 describe('Read Txn Expiration', () => {
 	let SlowReadResource;
 	before(async function () {
