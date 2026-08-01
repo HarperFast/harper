@@ -338,7 +338,7 @@ function openExistingRocksColumnFamily(path: string, options: Record<string, any
 		return openRocksDatabase(path, options as any) as RocksDatabaseEx;
 	} catch (error) {
 		if (!ALREADY_OPEN_CONFLICT.test(error.message)) throw error;
-		const { compression, ...withoutCompression } = options;
+		const { compression: _compression, ...withoutCompression } = options;
 		const opened = openRocksDatabase(path, withoutCompression as any) as RocksDatabaseEx;
 		// If this throws too (an explicit override that genuinely can't be honored), it propagates
 		// as-is — nothing was logged for this attempt, so there's no false "keeping existing codec"
@@ -1470,7 +1470,11 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
 		// available before resolveIndexFormat decides the format. Versioned stores need the VT
 		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
-		dbi = openExistingRocksColumnFamily(rootStore.path, { ...dbiInit, name: dbiKey, cache: isCustomObjectIndex }) as any;
+		dbi = openExistingRocksColumnFamily(rootStore.path, {
+			...dbiInit,
+			name: dbiKey,
+			cache: isCustomObjectIndex,
+		}) as any;
 		(dbi as any).rootStore = rootStore;
 		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
 		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
