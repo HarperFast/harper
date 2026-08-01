@@ -150,7 +150,7 @@ describe('commit with open read iterators commits writes immediately on a replay
 		assert.equal(closedTxn.transaction, null, 'the drained iterator must still release the native handle');
 		assert.equal(
 			context.transaction,
-			undefined,
+			null,
 			'the drained iterator must also release the context’s back-reference, even after a terminal commit failure'
 		);
 		await delay(100);

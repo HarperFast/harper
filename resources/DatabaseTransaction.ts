@@ -464,7 +464,7 @@ export class DatabaseTransaction implements Transaction {
 	private completeDeferredContextRelease(): void {
 		if (!this.pendingContextRelease) return;
 		this.pendingContextRelease = false;
-		if (this.#context?.transaction === this) delete this.#context.transaction;
+		if (this.#context?.transaction === this) this.#context.transaction = null;
 	}
 
 	disregardReadTxn(): void {
@@ -514,6 +514,12 @@ export class DatabaseTransaction implements Transaction {
 	 * (see the outstanding-iterators branch in commit()) — those keep this instance meaningfully
 	 * alive (a fresh write on the same context must not join a DIFFERENT, already-replayed
 	 * transaction) until doneReadTxn() drains the last one, so the release is deferred to there.
+	 *
+	 * Sets `.transaction` to `null` rather than deleting the property: `Context.transaction` is
+	 * typed `DatabaseTransaction | null | undefined` precisely to document this released state, and
+	 * `delete` would repeatedly force a long-lived, hot context (e.g. an MQTT subscription context
+	 * releasing/reattaching a transaction per message) into V8's slower dictionary-mode property
+	 * storage.
 	 */
 	private releaseContext(final: boolean): void {
 		if (!final) return;
@@ -521,7 +527,7 @@ export class DatabaseTransaction implements Transaction {
 			this.pendingContextRelease = true;
 			return;
 		}
-		if (this.#context?.transaction === this) delete this.#context.transaction;
+		if (this.#context?.transaction === this) this.#context.transaction = null;
 	}
 
 	checkOverloaded() {

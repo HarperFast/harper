@@ -67,8 +67,14 @@ export interface Context {
 	login?: (username: string, password: string) => Promise<string>;
 	/** Describes the current cookie-based session if it is present and grants the capacity to delete it. authentication.enableSessions must be turned on in the harperdb-config.yaml  */
 	session?: Session;
-	/**	 The database transaction object */
-	transaction?: DatabaseTransaction;
+	/**
+	 * The database transaction object. `undefined` means none was ever attached; `null` means one
+	 * was attached and has since completed and released its back-reference (DatabaseTransaction.ts's
+	 * releaseContext()) — kept `null` rather than deleting the property so a long-lived, hot context
+	 * (e.g. an MQTT subscription context releasing/reattaching a transaction per message) doesn't
+	 * repeatedly force V8 to deoptimize it into dictionary-mode property storage.
+	 */
+	transaction?: DatabaseTransaction | null;
 	/**	 If the operation that will be performed with this context should check user authorization	 */
 	authorize?: boolean;
 	/**	 The last modification time of any data that has been accessed with this context	 */
