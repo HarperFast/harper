@@ -11,6 +11,7 @@ on:
       - Dockerfile
       - .dockerignore
       - package.json
+      - package-lock.json
       - build-tools/**
       - .github/workflows/docker-smoke.yml
   push:
@@ -19,6 +20,7 @@ on:
       - Dockerfile
       - .dockerignore
       - package.json
+      - package-lock.json
       - build-tools/**
       - .github/workflows/docker-smoke.yml
 
