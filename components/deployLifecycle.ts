@@ -96,6 +96,7 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		ownerThreadId: number,
 		waitForTermination: (ownerThreadId: number) => Promise<void> = waitForOwnerTermination
 	): Promise<void> {
+		if (ownerThreadId === 0 || ownerThreadId === threadId) return;
 		this.#deadOwners.add(ownerThreadId);
 		await waitForTermination(ownerThreadId);
 		this._reclaimOwner(ownerThreadId);
@@ -137,7 +138,18 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 export const deployLifecycle = new DeployLifecycle();
 
 async function waitForOwnerTermination(ownerThreadId: number): Promise<void> {
-	while (await isThreadRunning(ownerThreadId)) await delay(25);
+	let timeoutReported = false;
+	for (;;) {
+		try {
+			if (!(await isThreadRunning(ownerThreadId))) return;
+		} catch (error) {
+			if (!timeoutReported) {
+				timeoutReported = true;
+				harperLogger.warn(`Retrying liveness check for exited thread ${ownerThreadId}:`, error);
+			}
+		}
+		await delay(25, undefined, { ref: false });
+	}
 }
 
 let receiverInstalled = false;
