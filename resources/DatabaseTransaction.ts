@@ -654,15 +654,18 @@ export class DatabaseTransaction implements Transaction {
 						// write-transaction-queue-depth, the one metric that can observe a commit that never
 						// settles (harper#2001), reading zero for exactly this path.
 					}
-					// The retained handle's staged writes are now owned by the replay (staged above,
-					// which installed the replay's own write intents on the same VT slots) or were
-					// removed — either way no commit will ever run on this handle, so its write
-					// intents can only be released here: left in place, other writers'
-					// coordinated-retry commits park on them until the last iterator finishes
-					// (harper#2001's leaked-holder wedge). Reads through the retained handle,
-					// including read-your-own-writes, keep working; abandonWrites is idempotent
-					// across retry rounds. Optional call: older rocksdb-js lacks it.
-					(this.transaction as { abandonWrites?: () => void }).abandonWrites?.();
+					// No commit will ever run on the retained handle — the replay above owns these
+					// writes — so this is the only place its write intents can be released. Left in
+					// place, other writers' coordinated-retry commits park on them until the last
+					// iterator finishes (harper#2001). Reads through the handle, including
+					// read-your-own-writes, keep working. Fenced like the other post-submit steps
+					// here: the replay commit is already in flight, so a throw must not skip
+					// onCommit/the chain-store commit below. Optional: rocksdb-js < 2.7 lacks it.
+					try {
+						(this.transaction as { abandonWrites?: () => void }).abandonWrites?.();
+					} catch (error) {
+						harperLogger.warn?.('Failed to release write intents on a retained read transaction', error);
+					}
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
 					trackedTxns.delete(this);
