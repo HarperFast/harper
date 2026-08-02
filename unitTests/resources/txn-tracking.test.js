@@ -125,6 +125,50 @@ describe('Write txn timeout', () => {
 		}
 	});
 
+	// A handler that keeps reading must not extend the limit once it is holding uncommitted writes:
+	// those hold verification-table write intents that other writers' commits park on. This is the
+	// harper#2001 shape — an orphaned long-poll re-armed its own limit on every read and held the
+	// intents for hours. The read-only arm below pins the other half: reads alone still re-arm.
+	it('does not let reads extend the limit for a txn holding uncommitted writes', async function () {
+		setExpiration(20);
+		try {
+			const context = {};
+			await assert.rejects(
+				transaction(context, async () => {
+					await IndexedResource.put(401, { t: 4001 }, context);
+					// Read repeatedly, well past the limit: pre-fix each read reset the clock and the
+					// monitor never fired.
+					for (let i = 0; i < 15; i++) {
+						await IndexedResource.get(401, context);
+						await delay(15);
+					}
+				}),
+				/open-transaction time/
+			);
+			assert.ok((await IndexedResource.get(401)) == null, 'the aborted write must not be committed');
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	it('still lets reads extend the limit for a read-only txn', async function () {
+		await IndexedResource.put(402, { t: 4002 });
+		setExpiration(20);
+		try {
+			const context = {};
+			// Same duration and read cadence as the arm above, without a write: the transaction holds
+			// no write intents, so continued reads legitimately keep it alive.
+			await transaction(context, async () => {
+				for (let i = 0; i < 15; i++) {
+					assert.ok(await IndexedResource.get(402, context));
+					await delay(15);
+				}
+			});
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
 	// Multi-store path: a transaction that reads one database and writes another holds the write on its
 	// `next` chain while the head (which only read) has no writes of its own. The head must still be treated
 	// as write-bearing and aborted, or the monitor would force-commit the second database's write (#1407).

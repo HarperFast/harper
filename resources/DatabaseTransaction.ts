@@ -281,7 +281,16 @@ export class DatabaseTransaction implements Transaction {
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
-		this.timeout = txnExpiration; // reset the timeout
+		// Reads extend a transaction's life, but not once it is holding UNCOMMITTED writes: those
+		// hold verification-table write intents that other writers' coordinated-retry commits park
+		// on, so the limit has to run from the first write rather than the last read. Before this, a
+		// handler that kept reading — an orphaned long-poll whose client had already gone, in
+		// harper#2001 — re-armed the limit on every read and held those intents indefinitely.
+		// Committed transactions still re-arm: their intents were released by the commit, and the
+		// monitor enforces their retained read snapshot separately (releaseReadTxn).
+		if (this.open !== TRANSACTION_STATE.OPEN || !this.hasPendingWrites()) {
+			this.timeout = txnExpiration;
+		}
 		if (this.transaction) {
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
