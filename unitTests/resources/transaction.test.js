@@ -7,6 +7,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const harperLogger = require('#src/utility/logging/harper_logger');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 // The package blocks deep imports of its package.json, so walk up from the resolved entry point.
@@ -135,26 +136,35 @@ describe('Transactions', () => {
 		const context = {};
 		let abandonCalls = 0;
 		let iterator;
-		await transaction(context, async () => {
-			iterator = TxnTest2.search([], context)[Symbol.asyncIterator]();
-			const first = await iterator.next();
-			assert.ok(!first.done, 'test setup: the iterator must be outstanding at commit');
-			await TxnTest2.put('aw-write', { name: 'aw-write' }, context);
-			const retained = context.transaction.transaction;
-			if (nativeExpected) {
-				assert.equal(
-					typeof retained.abandonWrites,
-					'function',
-					'installed rocksdb-js should expose abandonWrites; without it the call site is a silent no-op'
-				);
-			}
-			const original = retained.abandonWrites?.bind(retained);
-			retained.abandonWrites = function () {
-				abandonCalls++;
-				return original?.();
-			};
-		});
+		const replayWarnings = [];
+		const originalWarn = harperLogger.warn;
+		harperLogger.warn = (...args) => replayWarnings.push(args.join(' '));
+		try {
+			await transaction(context, async () => {
+				iterator = TxnTest2.search([], context)[Symbol.asyncIterator]();
+				const first = await iterator.next();
+				assert.ok(!first.done, 'test setup: the iterator must be outstanding at commit');
+				await TxnTest2.put('aw-write', { name: 'aw-write' }, context);
+				const retained = context.transaction.transaction;
+				if (nativeExpected) {
+					assert.equal(
+						typeof retained.abandonWrites,
+						'function',
+						'installed rocksdb-js should expose abandonWrites; without it the call site is a silent no-op'
+					);
+				}
+				const original = retained.abandonWrites?.bind(retained);
+				retained.abandonWrites = function () {
+					abandonCalls++;
+					return original?.();
+				};
+			});
+		} finally {
+			harperLogger.warn = originalWarn;
+		}
 		assert.equal(abandonCalls, 1, 'the replay commit must abandon the retained handle writes');
+		assert.equal(replayWarnings.length, 1, 'the replay must warn the author about the doubled write work');
+		assert.match(replayWarnings[0], /read iterators are still open/);
 		assert.equal((await TxnTest2.get('aw-write')).name, 'aw-write', 'the replayed write must be durable');
 		let remaining = 0;
 		while (!(await iterator.next()).done) {
