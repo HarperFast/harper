@@ -288,8 +288,13 @@ export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Pro
 			deleteCallbackResult = auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
 	}
 	const auditRemoval = auditStore.remove(auditRecord.key);
-	// a caller awaiting only auditRemoval would leave a rejected deleteCallbackResult detached
-	return deleteCallbackResult ? Promise.all([deleteCallbackResult, auditRemoval]).then(() => undefined) : auditRemoval;
+	if (!deleteCallbackResult) return auditRemoval;
+	// a failed tombstone removal doesn't mean the audit entry removal failed — it just leaves an
+	// orphaned primary-store record for the cleanupDeletedRecords fallback sweep to catch later
+	const tombstoneRemoval = Promise.resolve(deleteCallbackResult).catch((error) => {
+		harperLogger.warn('Error removing deleted record while removing its audit entry', error);
+	});
+	return Promise.all([tombstoneRemoval, auditRemoval]).then(() => undefined);
 }
 
 function updateLastRemoved(auditStore, lastKey) {

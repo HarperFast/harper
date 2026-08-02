@@ -118,14 +118,18 @@ The cross-thread subscription path (default `crossThreads`) drives every `Table.
 `scheduleAuditCleanup` (`auditStore.ts`) and `Table.deleteHistory` (`Table.ts`, the LMDB path behind
 `delete_transaction_logs_before`) both iterate a range of audit records and remove each one. Both were
 originally written as `completion = removeAuditEntry(auditStore, auditRecord)` inside the loop, awaiting
-only the final iteration's promise afterward. Any rejection from a non-last iteration (e.g. a decode
-failure over a corrupt/misaligned entry) was silently discarded — the promise reference was overwritten
-before it could be awaited or caught — and surfaced later as an unhandled rejection instead. On Bun this
-killed the process a few seconds after the operation had already reported success, with no shutdown log
-line. Fixed independently in both places (`d6c64eaee`/`4ad7fdc94`/`1f7ddbedd` for `scheduleAuditCleanup`,
-harper#F-264 for `deleteHistory`) by awaiting and catching each removal inline. Any future loop that
-removes audit/primary-store entries in a batch must do the same — never stash a per-iteration promise in
-an outer variable to await only the last one.
+only the final iteration's promise afterward. Any rejection from a non-last iteration was silently
+discarded — the promise reference was overwritten before it could be awaited or caught — and surfaced
+later as an unhandled rejection instead, with no logging to explain it. Any loop that removes
+audit/primary-store entries in a batch must await (and catch) each removal inline — never stash a
+per-iteration promise in an outer variable to await only the last one.
+
+`removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
+also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding
+primary-store tombstone. That callback's promise must be returned and joined with the audit-store
+removal (currently via `Promise.all`, with the callback's own rejection caught and logged separately so
+a failed tombstone cleanup doesn't get misreported as a failed audit-entry removal) — otherwise the
+tombstone removal is fire-and-forget and the same detached-rejection hazard reappears one level down.
 
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
