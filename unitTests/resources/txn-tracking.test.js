@@ -156,6 +156,27 @@ describe('Write txn timeout', () => {
 		}
 	});
 
+	// The limit is an IDLE limit, so work in progress must not be killed: a transaction that keeps
+	// writing stays alive indefinitely, and only goes over when it stops. This is the counterpart to
+	// the arm above — reads don't extend a write-holding transaction, but writes do.
+	it('lets continued writes extend the limit well past it', async function () {
+		if (isLMDB) this.skip();
+		setExpiration(20);
+		try {
+			const context = {};
+			// Same total duration and cadence as the read-loop arm above, writing instead of reading.
+			await transaction(context, async () => {
+				for (let i = 0; i < 15; i++) {
+					await IndexedResource.put(500 + i, { t: 5000 + i }, context);
+					await delay(15);
+				}
+			});
+			assert.ok(await IndexedResource.get(514), 'a continuously-writing transaction must commit normally');
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
 	// Direct-construction unit check of the chain walk: a head that holds NO writes of its own but
 	// whose `next` link does must not re-arm on a read. Driving this through the resource API is not
 	// reliable here — a second `database:` in this suite resolves to the same store, so no `next`
