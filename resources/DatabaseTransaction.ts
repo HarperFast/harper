@@ -654,6 +654,15 @@ export class DatabaseTransaction implements Transaction {
 						// write-transaction-queue-depth, the one metric that can observe a commit that never
 						// settles (harper#2001), reading zero for exactly this path.
 					}
+					// The retained handle's staged writes are now owned by the replay (staged above,
+					// which installed the replay's own write intents on the same VT slots) or were
+					// removed — either way no commit will ever run on this handle, so its write
+					// intents can only be released here: left in place, other writers'
+					// coordinated-retry commits park on them until the last iterator finishes
+					// (harper#2001's leaked-holder wedge). Reads through the retained handle,
+					// including read-your-own-writes, keep working; abandonWrites is idempotent
+					// across retry rounds. Optional call: older rocksdb-js lacks it.
+					(this.transaction as { abandonWrites?: () => void }).abandonWrites?.();
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
 					trackedTxns.delete(this);

@@ -104,6 +104,42 @@ describe('Transactions', () => {
 		}
 		assert.equal(sevens.length, 1);
 	});
+	it('abandons the retained handle writes when a commit with outstanding iterators replays', async function () {
+		// RocksDB-only: the outstanding-iterators commit branch replays staged writes onto a
+		// fresh transaction and retains the original handle solely for the iterators. The
+		// retained handle's VT write intents can never be released by a commit, so the branch
+		// must call abandonWrites() on it — otherwise other writers' coordinated-retry commits
+		// park on those intents until the last iterator finishes (harper#2001).
+		if (isLMDB) this.skip();
+		await TxnTest2.put('aw-seed-1', { name: 'aw-seed' });
+		await TxnTest2.put('aw-seed-2', { name: 'aw-seed' });
+		const context = {};
+		let abandonCalls = 0;
+		let iterator;
+		await transaction(context, async () => {
+			iterator = TxnTest2.search([], context)[Symbol.asyncIterator]();
+			const first = await iterator.next();
+			assert.ok(!first.done, 'test setup: the iterator must be outstanding at commit');
+			await TxnTest2.put('aw-write', { name: 'aw-write' }, context);
+			// Spy on the retained native handle. Injected even when the installed rocksdb-js
+			// predates abandonWrites: the call site feature-detects, so this asserts harper's
+			// side of the contract regardless of the dependency version (the release semantics
+			// themselves are covered by rocksdb-js's own park-wake test).
+			const retained = context.transaction.transaction;
+			const original = retained.abandonWrites?.bind(retained);
+			retained.abandonWrites = function () {
+				abandonCalls++;
+				return original?.();
+			};
+		});
+		assert.equal(abandonCalls, 1, 'the replay commit must abandon the retained handle writes');
+		assert.equal((await TxnTest2.get('aw-write')).name, 'aw-write', 'the replayed write must be durable');
+		let remaining = 0;
+		while (!(await iterator.next()).done) {
+			remaining++;
+		}
+		assert.ok(remaining >= 1, 'the retained handle must keep serving the outstanding iterator');
+	});
 	describe('Testing updates', () => {
 		it('Can update with addTo and set', async function () {
 			const context = {};
