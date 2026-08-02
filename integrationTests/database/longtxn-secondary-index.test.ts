@@ -193,9 +193,14 @@ suite(`QA-176 long-txn monitor vs secondary index [${ENGINE}]`, { skip: skipSuit
 				`missing=${r.missing.length}${r.missing.length ? ' ' + JSON.stringify(r.missing.slice(0, 5)) : ''}\n` +
 				`  >>> ${r.phantom.length === 0 && r.missing.length === 0 ? 'CONSISTENT (green anchor)' : 'ORPHANED INDEX ENTRIES (DEFECT)'}`
 		);
-		strictEqual(res.status, 200, 'slow write request should complete');
+		// Same contract as Q2: the request may succeed or be aborted over-time — the invariant under
+		// test is that the index never diverges from the base table. This case used to complete
+		// (200) only because each write's read re-armed the limit, so the monitor never actually
+		// fired on the very transaction this test was written to drive it against; a write-bearing
+		// transaction that crosses the limit is now aborted regardless of read activity (#1407).
 		strictEqual(r.phantom.length, 0, `phantom index entries (index->no base): ${JSON.stringify(r.phantom)}`);
 		strictEqual(r.missing.length, 0, `missing index entries (base->no index): ${JSON.stringify(r.missing)}`);
+		ok(typeof res.status === 'number');
 	});
 
 	// ---- Q2: write then HOLD across the threshold, then one more write AFTER over-time ----

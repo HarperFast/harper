@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { setTxnExpiration } = require('#src/resources/DatabaseTransaction');
+const { setTxnExpiration, DatabaseTransaction, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -85,8 +85,11 @@ describe('Write txn timeout', () => {
 				{ name: 't', indexed: true },
 			],
 		});
-		// a second table so a single transaction can span two databases (writes to the second live on the
-		// transaction's `next` chain), exercising the multi-store classification path
+		// A second table for the multi-store classification path. Note it shares `test` with
+		// IndexedResource, and the `next` chain is per-DATABASE, so both tables resolve to the same
+		// transaction link — a `next` link does not actually form here (a second `database:` in this
+		// suite resolves to the same store), which is why the chain-walk test below builds its links
+		// directly instead of going through the resource API.
 		OtherResource = table({
 			table: 'OtherTxnTable',
 			database: 'test',
@@ -153,28 +156,31 @@ describe('Write txn timeout', () => {
 		}
 	});
 
-	// The write lives on the `next` chain while the head only ever reads, so re-arming has to consult
-	// the whole chain — checking the head's own `writes` would re-arm forever and hold B's intents.
-	it('does not let reads on one database extend the limit for a write on the next chain', async function () {
+	// Direct-construction unit check of the chain walk: a head that holds NO writes of its own but
+	// whose `next` link does must not re-arm on a read. Driving this through the resource API is not
+	// reliable here — a second `database:` in this suite resolves to the same store, so no `next`
+	// link forms — so the links are built directly, as sourceApplyConflictRetry.test.js does.
+	it('does not re-arm the head on a read when the next chain holds the writes', function () {
 		if (isLMDB) this.skip();
-		await IndexedResource.put(403, { t: 4003 });
-		setExpiration(20);
-		try {
-			const context = {};
-			await assert.rejects(
-				transaction(context, async () => {
-					await OtherResource.put(404, { name: 'should not persist' }, context); // writes database B
-					for (let i = 0; i < 15; i++) {
-						await IndexedResource.get(403, context); // reads database A (head)
-						await delay(15);
-					}
-				}),
-				/open-transaction time/
-			);
-			assert.ok((await OtherResource.get(404)) == null, 'the next-chain write must not be committed');
-		} finally {
-			setExpiration(30000);
-		}
+		const head = new DatabaseTransaction();
+		const next = new DatabaseTransaction();
+		head.next = next;
+		head.open = TRANSACTION_STATE.OPEN;
+		next.open = TRANSACTION_STATE.OPEN;
+		head.writes = [];
+		next.writes = [{ key: 'pending' }];
+		head.transaction = {}; // stand-in native read txn so getReadTxn returns before allocating one
+		assert.ok(head.hasPendingWrites(), "test setup: the head must see the next chain's write");
+
+		head.timeout = 5;
+		head.getReadTxn();
+		assert.equal(head.timeout, 5, 'a read must not re-arm a head whose next chain holds writes');
+
+		// Control: with the chain drained the same read re-arms normally.
+		next.writes = [];
+		head.timeout = 5;
+		head.getReadTxn();
+		assert.ok(head.timeout > 5, 'a read must still re-arm once no link holds writes');
 	});
 
 	it('still lets reads extend the limit for a read-only txn', async function () {
