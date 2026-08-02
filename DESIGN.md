@@ -113,6 +113,20 @@ The cross-thread subscription path (default `crossThreads`) drives every `Table.
 - **`notifyScheduled` + `setImmediate`** in the `'committed'` listener defers the iteration off the commit microtask. Multiple `'committed'` events that land in the same event-loop turn collapse into one notify pass. `notifyScheduled` stays set for the entire drain — including across yield-and-resume turns — so a re-entry from a new `'committed'` event cannot spawn a second concurrent notify on the same iterator.
 - **Batched yielding** in `notifyFromTransactionData` (`NOTIFY_BATCH_SIZE`) is gated by `allowYield`. The `'committed'` path passes `allowYield = true`; the `listenToCommits` (same-thread `aftercommit`) path does not, because that path holds an inter-thread `'thread-local-writes'` lock that must not span event-loop turns. `subscribersWithTxns` is carried across yields via `subscriptions.pendingTxnSubscribers` so the `end_txn` signal fires exactly once when the iterator truly drains. When `activeCount` drops to zero mid-yield, the next continuation drops the carry-over to avoid invoking ended subscribers' listeners.
 
+## Audit-entry removal loops must await each `removeAuditEntry()`/`removeEntry()` call inline
+
+`scheduleAuditCleanup` (`auditStore.ts`) and `Table.deleteHistory` (`Table.ts`, the LMDB path behind
+`delete_transaction_logs_before`) both iterate a range of audit records and remove each one. Both were
+originally written as `completion = removeAuditEntry(auditStore, auditRecord)` inside the loop, awaiting
+only the final iteration's promise afterward. Any rejection from a non-last iteration (e.g. a decode
+failure over a corrupt/misaligned entry) was silently discarded — the promise reference was overwritten
+before it could be awaited or caught — and surfaced later as an unhandled rejection instead. On Bun this
+killed the process a few seconds after the operation had already reported success, with no shutdown log
+line. Fixed independently in both places (`d6c64eaee`/`4ad7fdc94`/`1f7ddbedd` for `scheduleAuditCleanup`,
+harper#F-264 for `deleteHistory`) by awaiting and catching each removal inline. Any future loop that
+removes audit/primary-store entries in a batch must do the same — never stash a per-iteration promise in
+an outer variable to await only the last one.
+
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
 When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream)` then `row.payload_blob = blob; await table.put(row)`), the put does **not** wait for the underlying stream to fully drain into the file before resolving. Internally `saveBlob` kicks off a `writeBlobWithStream` pipeline whose `storageInfo.saving` promise is tracked separately. The put resolves once encoding has captured the blob reference; the bytes finish writing concurrently.

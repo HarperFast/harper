@@ -5050,7 +5050,6 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
-			let completion: Promise<void>;
 			let entriesDeleted = 0;
 			for (const auditRecord of auditStore.getRange({
 				start: 0,
@@ -5058,7 +5057,14 @@ export function makeTable(options) {
 			})) {
 				await rest(); // yield to other async operations
 				if (auditRecord.tableId !== tableId) continue;
-				completion = removeAuditEntry(auditStore, auditRecord);
+				try {
+					// awaited so a rejection is caught here instead of escaping as an unhandled
+					// rejection once a later iteration's promise replaces this one (see auditStore.ts
+					// scheduleAuditCleanup for the same fix)
+					await removeAuditEntry(auditStore, auditRecord);
+				} catch (error) {
+					harperLogger.warn('Error removing audit entry during deleteHistory', error);
+				}
 				entriesDeleted++;
 			}
 			if (cleanupDeletedRecords) {
@@ -5068,11 +5074,14 @@ export function makeTable(options) {
 					const { value, localTime } = entry;
 					await rest(); // yield to other async operations
 					if (value === null && localTime < endTime) {
-						completion = removeEntry(primaryStore, entry);
+						try {
+							await removeEntry(primaryStore, entry);
+						} catch (error) {
+							harperLogger.warn('Error removing deleted record during deleteHistory', error);
+						}
 					}
 				}
 			}
-			await completion;
 			return entriesDeleted;
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
