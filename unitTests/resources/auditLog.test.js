@@ -105,7 +105,10 @@ describe('Audit log', () => {
 	});
 	// Regression test for harper#F-264 (see DESIGN.md's audit-entry-removal-loop invariant).
 	it('deleteHistory does not let a mid-loop removeAuditEntry rejection escape as an unhandled rejection', async function () {
-		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore)
+		// rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore); this.skip()
+		// (rather than a bare return, as the file's other reusableIterable guards use) so the report
+		// distinguishes "skipped on this engine" from "passed"
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
 		await AuditedTable.deleteHistory(Date.now() + 60_000); // start from a clean backlog
 
 		await AuditedTable.put(30, { name: 'race-a' });

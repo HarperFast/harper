@@ -278,23 +278,30 @@ export function openAuditStore(rootStore) {
 }
 
 export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Promise<void> {
-	let deleteCallbackResult: any;
+	let tombstoneRemoval: Promise<void> | undefined;
 	if (auditRecord.type === 'delete') {
 		// if this is a delete, we remove the delete entry from the primary table
 		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
-		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
-			deleteCallbackResult = auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
+		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version) {
+			try {
+				// a failed tombstone removal (sync throw or rejection) doesn't mean the audit entry
+				// removal failed — only auditStore.remove() below decides this function's outcome;
+				// the .catch is attached here, before anything else can throw synchronously, so this
+				// promise is never left without a handler
+				tombstoneRemoval = Promise.resolve(
+					auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version)
+				).catch((error) => {
+					harperLogger.warn('Error removing deleted record while removing its audit entry', error);
+				});
+			} catch (error) {
+				harperLogger.warn('Error removing deleted record while removing its audit entry', error);
+			}
+		}
 	}
 	const auditRemoval = auditStore.remove(auditRecord.key);
-	if (!deleteCallbackResult) return auditRemoval;
-	// a failed tombstone removal doesn't mean the audit entry removal failed — it just leaves an
-	// orphaned primary-store record for the cleanupDeletedRecords fallback sweep to catch later
-	const tombstoneRemoval = Promise.resolve(deleteCallbackResult).catch((error) => {
-		harperLogger.warn('Error removing deleted record while removing its audit entry', error);
-	});
-	return Promise.all([tombstoneRemoval, auditRemoval]).then(() => undefined);
+	return tombstoneRemoval ? Promise.all([tombstoneRemoval, auditRemoval]).then(() => undefined) : auditRemoval;
 }
 
 function updateLastRemoved(auditStore, lastKey) {

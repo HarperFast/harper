@@ -130,6 +130,9 @@ primary-store tombstone. That callback's promise must be returned and joined wit
 removal (currently via `Promise.all`, with the callback's own rejection caught and logged separately so
 a failed tombstone cleanup doesn't get misreported as a failed audit-entry removal) — otherwise the
 tombstone removal is fire-and-forget and the same detached-rejection hazard reappears one level down.
+A tombstone whose cleanup fails this way is not swept automatically — `scheduleAuditCleanup`'s automatic
+pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
+in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
 
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
