@@ -5058,14 +5058,11 @@ export function makeTable(options) {
 				await rest(); // yield to other async operations
 				if (auditRecord.tableId !== tableId) continue;
 				try {
-					// awaited so a rejection is caught here instead of escaping as an unhandled
-					// rejection once a later iteration's promise replaces this one (see auditStore.ts
-					// scheduleAuditCleanup for the same fix)
 					await removeAuditEntry(auditStore, auditRecord);
+					entriesDeleted++;
 				} catch (error) {
 					harperLogger.warn('Error removing audit entry during deleteHistory', error);
 				}
-				entriesDeleted++;
 			}
 			if (cleanupDeletedRecords) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
@@ -6230,7 +6227,7 @@ export function makeTable(options) {
 	}
 	function addDeleteRemoval() {
 		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(tableId, primaryStore, (id: Id, version: number) => {
-			primaryStore.remove(id, version);
+			return primaryStore.remove(id, version);
 		});
 	}
 	function runRecordExpirationEviction() {

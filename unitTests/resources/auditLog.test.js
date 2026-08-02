@@ -6,12 +6,12 @@ const {
 	readAuditEntry,
 	createAuditEntry,
 	transactionKeyEncoder,
+	removeAuditEntry,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor');
-const sinon = require('sinon');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
 	let AuditedTable;
@@ -103,13 +103,7 @@ describe('Audit log', () => {
 		// verify that the twice-written entry was not removed
 		assert.equal(AuditedTable.primaryStore.getEntry(2)?.value?.name, 'two-changed');
 	});
-	// Regression test for harper#F-264: deleteHistory() (the LMDB path behind the
-	// delete_transaction_logs_before operation) used to stash each removeAuditEntry() promise in a
-	// single `completion` variable that a later iteration's promise would overwrite before it could
-	// be awaited or caught. A rejection from any non-last entry (e.g. a decode failure over a
-	// corrupt/misaligned audit entry) escaped as an unhandled rejection instead of being caught —
-	// on Bun this killed the process a few seconds after the operation had already reported
-	// COMPLETE. deleteHistory() now awaits and catches each removal inline.
+	// Regression test for harper#F-264 (see DESIGN.md's audit-entry-removal-loop invariant).
 	it('deleteHistory does not let a mid-loop removeAuditEntry rejection escape as an unhandled rejection', async function () {
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore)
 		await AuditedTable.deleteHistory(Date.now() + 60_000); // start from a clean backlog
@@ -117,14 +111,20 @@ describe('Audit log', () => {
 		await AuditedTable.put(30, { name: 'race-a' });
 		await AuditedTable.put(31, { name: 'race-b' });
 
+		// find record 30's raw audit-store key so the injected failure targets that one entry specifically,
+		// the same way deleteHistory itself finds it (getHistory()'s yielded entries don't carry this key —
+		// its `localTime` field is the record's version, not the key)
+		let targetKey;
+		for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
+			if (record.tableId === AuditedTable.tableId && record.recordId === 30) targetKey = record.key;
+		}
+		assert.notEqual(targetKey, undefined, 'test setup: could not find record 30 in the audit log');
+
 		const originalRemove = AuditedTable.auditStore.remove.bind(AuditedTable.auditStore);
-		let removeCalls = 0;
-		const removeStub = sinon.stub(AuditedTable.auditStore, 'remove').callsFake((key) => {
-			removeCalls++;
-			// fail only the first (non-last) removal in the loop; later removals must still proceed
-			if (removeCalls === 1) return Promise.reject(new Error('simulated audit entry removal failure'));
+		AuditedTable.auditStore.remove = (key) => {
+			if (key === targetKey) return Promise.reject(new Error('simulated audit entry removal failure'));
 			return originalRemove(key);
-		});
+		};
 
 		let unhandledRejection;
 		const onUnhandledRejection = (reason) => {
@@ -133,7 +133,7 @@ describe('Audit log', () => {
 		process.on('unhandledRejection', onUnhandledRejection);
 		try {
 			const entriesDeleted = await AuditedTable.deleteHistory(Date.now() + 60_000);
-			assert.equal(entriesDeleted, 2, 'both entries should be processed even though the first removal rejected');
+			assert.equal(entriesDeleted, 1, 'only the successful removal should be counted, not the rejected one');
 			// give the event loop a couple of turns for a stray unhandled rejection to surface
 			await delay(50);
 			assert.equal(
@@ -151,10 +151,30 @@ describe('Audit log', () => {
 			);
 		} finally {
 			process.off('unhandledRejection', onUnhandledRejection);
-			removeStub.restore();
+			AuditedTable.auditStore.remove = originalRemove;
 		}
 		// clean up record 30's now-orphaned audit entry so it doesn't leak into later tests
 		await AuditedTable.deleteHistory(Date.now() + 60_000);
+	});
+	it("removeAuditEntry propagates the delete-callback's rejection instead of leaving it detached", async () => {
+		const primaryRemoveCalls = [];
+		const fakeAuditStore = {
+			tableStores: { 7: { getEntry: () => ({ version: 42 }) } },
+			deleteCallbacks: {
+				7: (id, version) => {
+					primaryRemoveCalls.push([id, version]);
+					return Promise.reject(new Error('simulated primary-store tombstone removal failure'));
+				},
+			},
+			remove: () => Promise.resolve(),
+		};
+		const deleteAuditRecord = { type: 'delete', tableId: 7, recordId: 'orphan', version: 42, key: 'audit-key' };
+		await assert.rejects(
+			() => removeAuditEntry(fakeAuditStore, deleteAuditRecord),
+			/simulated primary-store tombstone removal failure/,
+			"removeAuditEntry must reject when the delete-callback's promise rejects, not resolve with it detached"
+		);
+		assert.deepEqual(primaryRemoveCalls, [['orphan', 42]]);
 	});
 	it('check log after operations and prune', async () => {
 		await AuditedTable.operation({

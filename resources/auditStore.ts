@@ -278,15 +278,18 @@ export function openAuditStore(rootStore) {
 }
 
 export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Promise<void> {
+	let deleteCallbackResult: any;
 	if (auditRecord.type === 'delete') {
 		// if this is a delete, we remove the delete entry from the primary table
 		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
 		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
-			auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
+			deleteCallbackResult = auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
 	}
-	return auditStore.remove(auditRecord.key);
+	const auditRemoval = auditStore.remove(auditRecord.key);
+	// a caller awaiting only auditRemoval would leave a rejected deleteCallbackResult detached
+	return deleteCallbackResult ? Promise.all([deleteCallbackResult, auditRemoval]).then(() => undefined) : auditRemoval;
 }
 
 function updateLastRemoved(auditStore, lastKey) {
