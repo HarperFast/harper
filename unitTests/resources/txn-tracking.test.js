@@ -9,6 +9,7 @@ const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 describe('Txn Expiration', () => {
 	let SlowResource,
 		performedDBInteractions = false;
@@ -126,10 +127,11 @@ describe('Write txn timeout', () => {
 	});
 
 	// A handler that keeps reading must not extend the limit once it is holding uncommitted writes:
-	// those hold verification-table write intents that other writers' commits park on. This is the
-	// harper#2001 shape — an orphaned long-poll re-armed its own limit on every read and held the
-	// intents for hours. The read-only arm below pins the other half: reads alone still re-arm.
+	// those hold write intents other writers' commits park on (harper#2001). The read-only arm below
+	// pins the other half — reads alone still re-arm. RocksDB-only: LMDBTransaction.getReadTxn()
+	// re-arms unconditionally, and that engine has no verification-table park to wedge.
 	it('does not let reads extend the limit for a txn holding uncommitted writes', async function () {
+		if (isLMDB) this.skip();
 		setExpiration(20);
 		try {
 			const context = {};
@@ -151,7 +153,32 @@ describe('Write txn timeout', () => {
 		}
 	});
 
+	// The write lives on the `next` chain while the head only ever reads, so re-arming has to consult
+	// the whole chain — checking the head's own `writes` would re-arm forever and hold B's intents.
+	it('does not let reads on one database extend the limit for a write on the next chain', async function () {
+		if (isLMDB) this.skip();
+		await IndexedResource.put(403, { t: 4003 });
+		setExpiration(20);
+		try {
+			const context = {};
+			await assert.rejects(
+				transaction(context, async () => {
+					await OtherResource.put(404, { name: 'should not persist' }, context); // writes database B
+					for (let i = 0; i < 15; i++) {
+						await IndexedResource.get(403, context); // reads database A (head)
+						await delay(15);
+					}
+				}),
+				/open-transaction time/
+			);
+			assert.ok((await OtherResource.get(404)) == null, 'the next-chain write must not be committed');
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
 	it('still lets reads extend the limit for a read-only txn', async function () {
+		if (isLMDB) this.skip();
 		await IndexedResource.put(402, { t: 4002 });
 		setExpiration(20);
 		try {
