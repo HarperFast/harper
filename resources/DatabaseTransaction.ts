@@ -1120,6 +1120,15 @@ function startMonitoringTxns() {
 
 startMonitoringTxns();
 
+/**
+ * Test seam: re-arms the once-per-process replay warning. The whole unit suite shares one process,
+ * so whichever test first drives a commit under open iterators consumes the warning for every test
+ * after it.
+ */
+export function resetReplayedWritesWarning() {
+	replayedWritesWarned = false;
+}
+
 export function setTxnExpiration(ms) {
 	clearInterval(timer);
 	txnExpiration = ms;

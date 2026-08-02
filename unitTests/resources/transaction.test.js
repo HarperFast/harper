@@ -8,6 +8,7 @@ const { transaction } = require('#src/resources/transaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const harperLogger = require('#src/utility/logging/harper_logger');
+const { resetReplayedWritesWarning } = require('#src/resources/DatabaseTransaction');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 // The package blocks deep imports of its package.json, so walk up from the resolved entry point.
@@ -137,6 +138,8 @@ describe('Transactions', () => {
 		let abandonCalls = 0;
 		let iterator;
 		const replayWarnings = [];
+		// The warning is once per process and the whole suite shares one, so re-arm it here.
+		resetReplayedWritesWarning();
 		const originalWarn = harperLogger.warn;
 		harperLogger.warn = (...args) => replayWarnings.push(args.join(' '));
 		try {
