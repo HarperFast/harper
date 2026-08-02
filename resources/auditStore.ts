@@ -284,21 +284,16 @@ export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Pro
 		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
-		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version) {
-			try {
-				// a failed tombstone removal (sync throw or rejection) doesn't mean the audit entry
-				// removal failed — only auditStore.remove() below decides this function's outcome;
-				// the .catch is attached here, before anything else can throw synchronously, so this
-				// promise is never left without a handler
-				tombstoneRemoval = Promise.resolve(
-					auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version)
-				).catch((error) => {
-					harperLogger.warn('Error removing deleted record while removing its audit entry', error);
-				});
-			} catch (error) {
+		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
+			// a failed tombstone removal (sync throw or rejection) doesn't mean the audit entry removal
+			// failed — only auditStore.remove() below decides this function's outcome. The executor here
+			// catches a synchronous throw from the callback the same way `.catch` catches a rejection, in
+			// one handler, so this promise is never left without one attached
+			tombstoneRemoval = new Promise<void>((resolve) => {
+				resolve(auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version));
+			}).catch((error) => {
 				harperLogger.warn('Error removing deleted record while removing its audit entry', error);
-			}
-		}
+			});
 	}
 	const auditRemoval = auditStore.remove(auditRecord.key);
 	return tombstoneRemoval ? Promise.all([tombstoneRemoval, auditRemoval]).then(() => undefined) : auditRemoval;

@@ -156,42 +156,50 @@ describe('Audit log', () => {
 			await AuditedTable.deleteHistory(Date.now() + 60_000); // clear record 30's now-orphaned entry
 		}
 	});
-	it('removeAuditEntry does not let a rejected delete-callback block or escape the audit-store removal', async () => {
-		const auditRemoveCalls = [];
-		const fakeAuditStore = {
-			tableStores: { 7: { getEntry: () => ({ version: 42 }) } },
-			deleteCallbacks: {
-				7: () => Promise.reject(new Error('simulated primary-store tombstone removal failure')),
+	for (const [label, failingCallback] of [
+		['rejects', () => Promise.reject(new Error('simulated primary-store tombstone removal failure'))],
+		[
+			'throws synchronously',
+			() => {
+				throw new Error('simulated primary-store tombstone removal failure');
 			},
-			remove(key) {
-				auditRemoveCalls.push(key);
-				return Promise.resolve();
-			},
-		};
-		const deleteAuditRecord = { type: 'delete', tableId: 7, recordId: 'orphan', version: 42, key: 'audit-key' };
+		],
+	]) {
+		it(`removeAuditEntry does not let a delete-callback that ${label} block or escape the audit-store removal`, async () => {
+			const auditRemoveCalls = [];
+			const fakeAuditStore = {
+				tableStores: { 7: { getEntry: () => ({ version: 42 }) } },
+				deleteCallbacks: { 7: failingCallback },
+				remove(key) {
+					auditRemoveCalls.push(key);
+					return Promise.resolve();
+				},
+			};
+			const deleteAuditRecord = { type: 'delete', tableId: 7, recordId: 'orphan', version: 42, key: 'audit-key' };
 
-		let unhandledRejection;
-		const onUnhandledRejection = (reason) => {
-			unhandledRejection = reason;
-		};
-		process.on('unhandledRejection', onUnhandledRejection);
-		try {
-			await removeAuditEntry(fakeAuditStore, deleteAuditRecord); // must not reject
-			await delay(50);
-			assert.equal(
-				unhandledRejection,
-				undefined,
-				'a rejected delete-callback must not escape as an unhandled rejection'
+			let unhandledRejection;
+			const onUnhandledRejection = (reason) => {
+				unhandledRejection = reason;
+			};
+			process.on('unhandledRejection', onUnhandledRejection);
+			try {
+				await removeAuditEntry(fakeAuditStore, deleteAuditRecord); // must not reject
+				await delay(50);
+				assert.equal(
+					unhandledRejection,
+					undefined,
+					`a delete-callback that ${label} must not escape as an unhandled rejection`
+				);
+			} finally {
+				process.off('unhandledRejection', onUnhandledRejection);
+			}
+			assert.deepEqual(
+				auditRemoveCalls,
+				['audit-key'],
+				'the audit-store removal must still proceed even though the tombstone cleanup failed'
 			);
-		} finally {
-			process.off('unhandledRejection', onUnhandledRejection);
-		}
-		assert.deepEqual(
-			auditRemoveCalls,
-			['audit-key'],
-			'the audit-store removal must still proceed even though the tombstone cleanup failed'
-		);
-	});
+		});
+	}
 	it('check log after operations and prune', async () => {
 		await AuditedTable.operation({
 			operation: 'upsert',
