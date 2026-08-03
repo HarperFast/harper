@@ -78,28 +78,29 @@ interface CreateOptions {
 
 /**
  * Run `write()` (a single table.put()) in a fresh, isolated transaction with an open-time
- * budget of `timeoutMs` instead of the generic storage.maxTransactionOpenTime default. An
- * copy of the ambient context with its transaction removed forces a new transaction even when
- * the caller is already inside one, while preserving audit attribution. Joining the ambient
- * transaction here would extend an unrelated write's budget, and on the streaming path risks a
- * circular wait against that outer transaction's own commit. LMDB has a known gap: see the note
- * inline below.
+ * budget of `timeoutMs` instead of the generic storage.maxTransactionOpenTime default. A copy of
+ * the ambient context with its transaction controls removed forces a new transaction even when the
+ * caller is already inside one, while preserving audit attribution. Joining the ambient transaction
+ * here would extend an unrelated write's budget, and on the streaming path risks a circular wait
+ * against that outer transaction's own commit. LMDB has a known gap: see the note inline below.
  *
- * `.timeout` is set *after* calling `write()`, not before: `write()`'s own pre-commit read
- * calls `getReadTxn()`, which unconditionally resets `.timeout` to the generic default
- * (DatabaseTransaction.ts) — that read runs synchronously before `write()`'s first await, so
- * this assignment lands after the reset instead of being clobbered by it.
+ * `timeoutBudget` is sticky across RocksDB `getReadTxn()` calls, so reads inside `write()` cannot
+ * silently restore the generic default. The transaction uses the larger of this budget and the
+ * configured global limit.
  */
 function withExtendedTransactionTimeout<T>(timeoutMs: number, write: () => Promise<T>): Promise<T> {
-	const context = { ...contextStorage.getStore(), transaction: undefined };
+	const context = {
+		...contextStorage.getStore(),
+		transaction: undefined,
+		isExplicit: undefined,
+		authorize: undefined,
+	};
 	return transaction(context, (txn) => {
-		const result = write();
 		// TODO(harper#2057): only extends the RocksDB DatabaseTransaction head; on
 		// HARPER_STORAGE_ENGINE=lmdb, Table.txnForContext() chains a separate LMDBTransaction
 		// that this budget doesn't reach.
-		const transactionWithTimeout = txn as unknown as { timeout?: number };
-		transactionWithTimeout.timeout = Math.max(transactionWithTimeout.timeout ?? 0, timeoutMs);
-		return result;
+		txn.timeoutBudget = timeoutMs;
+		return write();
 	});
 }
 

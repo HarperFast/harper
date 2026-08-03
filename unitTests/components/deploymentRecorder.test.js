@@ -459,7 +459,7 @@ describe('ingestTransactionTimeoutMs', () => {
 });
 
 describe('DeploymentRecorder.ingestPayload transaction context', () => {
-	it('preserves audit context and a larger configured transaction budget', async () => {
+	it('preserves audit context while isolating the transaction timeout budget', async () => {
 		const configuredBudget = DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS * 2;
 		const ambientTransaction = { marker: 'ambient' };
 		const user = { username: 'deploy-user' };
@@ -467,21 +467,21 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 			user,
 			originatingOperation: 'deploy_component',
 			transaction: ambientTransaction,
+			isExplicit: true,
+			authorize: true,
 		};
 		let ingestContext;
 		const installed = installMockDeploymentTable();
 		installed.mock.put = async (row) => {
 			if (row.payload_blob) {
 				ingestContext = contextStorage.getStore();
-				// Mirror getReadTxn() loading the configured global budget before the helper extends it.
-				ingestContext.transaction.timeout = configuredBudget;
 			}
 			installed.mock.rows.set(row.deployment_id, row);
 		};
 
 		try {
 			await contextStorage.run(ambientContext, async () => {
-				const recorder = await DeploymentRecorder.create({ project: 'p' });
+				const recorder = await DeploymentRecorder.create({ project: 'p', ingestTimeoutMs: configuredBudget });
 				await recorder.ingestPayload(Buffer.from('payload'));
 			});
 		} finally {
@@ -491,7 +491,10 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		assert.strictEqual(ingestContext.user, user);
 		assert.strictEqual(ingestContext.originatingOperation, 'deploy_component');
 		assert.notStrictEqual(ingestContext.transaction, ambientTransaction);
-		assert.strictEqual(ingestContext.transaction.timeout, configuredBudget);
+		assert.strictEqual(ingestContext.transaction.timeoutBudget, configuredBudget);
+		assert.strictEqual(ingestContext.isExplicit, undefined);
+		assert.strictEqual(ingestContext.authorize, undefined);
+		assert.strictEqual(ambientContext.transaction, ambientTransaction);
 	});
 });
 
