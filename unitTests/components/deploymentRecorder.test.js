@@ -517,28 +517,35 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 
 	it('defers progress flushes until the payload-ingest write settles', async () => {
 		const emitter = new ProgressEmitter();
+		let releaseFlush;
+		const flushGate = new Promise((resolve) => (releaseFlush = resolve));
 		let releaseIngest;
 		const ingestGate = new Promise((resolve) => (releaseIngest = resolve));
-		let payloadWrites = 0;
 		let putCalls = 0;
 		const installed = installMockDeploymentTable();
 		installed.mock.put = async (row) => {
 			putCalls++;
-			if (row.payload_blob && payloadWrites++ === 0) await ingestGate;
+			if (putCalls === 2) await flushGate;
+			if (putCalls === 3 && row.payload_blob) await ingestGate;
 			installed.mock.rows.set(row.deployment_id, row);
 		};
 
 		let recorder;
 		try {
 			recorder = await DeploymentRecorder.create({ project: 'p', emitter });
-			const ingest = recorder.ingestPayload(Buffer.from('payload'));
+			emitter.emit('phase', { phase: 'preparing', status: 'start' });
 			await waitFor(() => putCalls === 2);
-			emitter.emit('phase', { phase: 'uploading', status: 'start' });
+			const ingest = recorder.ingestPayload(Buffer.from('payload'));
 			assert.strictEqual(putCalls, 2);
+			releaseFlush();
+			await waitFor(() => putCalls === 3);
+			emitter.emit('phase', { phase: 'uploading', status: 'start' });
+			assert.strictEqual(putCalls, 3);
 			releaseIngest();
 			await ingest;
-			await waitFor(() => putCalls === 3);
+			await waitFor(() => putCalls === 4);
 		} finally {
+			releaseFlush?.();
 			releaseIngest?.();
 			await recorder?.finish('failed');
 			installed.restore();
