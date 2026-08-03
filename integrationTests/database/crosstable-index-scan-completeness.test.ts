@@ -102,7 +102,9 @@ suite(
 				// hangs this data volume's seed on this machine (QA-772). Default RocksDB memory
 				// config never flushes this volume on its own, so we force flushes explicitly below.
 				config: { logging: { console: true, level: 'error' } },
-				env: {},
+				// RocksDB-only defect: an inherited LMDB run would otherwise fail here for the wrong
+				// reason (LMDB has no sorted-run or flush concept to arm the oracle with).
+				env: { HARPER_STORAGE_ENGINE: 'rocksdb' },
 			});
 			client = createApiClient(ctx.harper);
 			httpURL = ctx.harper.httpURL;
@@ -112,15 +114,20 @@ suite(
 			// promotion gate).
 			{
 				const deadline = Date.now() + 120_000;
+				let ready = false;
 				while (Date.now() < deadline) {
 					try {
 						const probe = await client.reqRest('/Probe/').timeout(2000);
-						if (probe.status === 200) break; // 500/503 during boot is NOT ready
+						if (probe.status === 200) {
+							ready = true;
+							break; // 500/503 during boot is NOT ready
+						}
 					} catch {
 						/* not ready yet */
 					}
 					await sleep(250);
 				}
+				ok(ready, `${'QA-772'} Harper did not serve /Probe/ with 200 within 120s — boot failed`);
 			}
 
 			function post(path: string, body: unknown): Promise<Response> {

@@ -1,9 +1,14 @@
 # QA-772 — same GenA/GenB repro shape as QA-629 (GH #1881), reused verbatim so the resulting
 # on-disk state is directly comparable to the original writeBufferManagerSize-forced repro.
+# `owner` carries the table name in the ROW. Ownership must not be inferred from the primary
+# key: the keys below deliberately COLLIDE across tables so that a read resolved against a
+# foreign column family finds a real row and returns it, which is #1881's severe mode. A
+# key-derived owner check cannot see that, because the key would be identical either way.
 type GenA @table(database: "metrics-repro") @export {
 	id: ID @primaryKey
 	repositoryId: String @indexed
 	n: Int @indexed
+	owner: String
 	body: String
 }
 
@@ -11,5 +16,6 @@ type GenB @table(database: "metrics-repro") @export {
 	id: ID @primaryKey
 	repositoryId: String @indexed
 	n: Int @indexed
+	owner: String
 	body: String
 }
