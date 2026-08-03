@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785745479848,
+  "lastUpdate": 1785745482825,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8092,6 +8092,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 194.19,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "b852a722c4abe562cab72a2f25313664fa74547d",
+          "message": "Widen atomicWriteFile's Windows rename-retry budget and sleep without spinning\n\nThe ~910ms backoff budget (8 retries, 200ms cap) was exhausted twice in a row\nby the same test on a Windows CI runner (harper#2036) - an AV real-time scan\ncan hold harper-config.yaml for over a second. Widen to 12 retries with a\n500ms cap (~3.6s worst case), and replace the performance.now() busy-spin\nwith a timeout-only Atomics.wait so the wait is CPU-idle, which is what makes\nthe longer budget affordable.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-01T00:42:14Z",
+          "url": "https://github.com/HarperFast/harper/commit/b852a722c4abe562cab72a2f25313664fa74547d"
+        },
+        "date": 1785745481999,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.1,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.48,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 18.17,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.65,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 23.11,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.49,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 34.84,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 16.25,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 18.78,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 171.19,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 48.32,
             "unit": "ms"
           }
         ]
