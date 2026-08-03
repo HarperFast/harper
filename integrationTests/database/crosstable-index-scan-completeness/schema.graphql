@@ -1,0 +1,15 @@
+# QA-772 — same GenA/GenB repro shape as QA-629 (GH #1881), reused verbatim so the resulting
+# on-disk state is directly comparable to the original writeBufferManagerSize-forced repro.
+type GenA @table(database: "metrics-repro") @export {
+	id: ID @primaryKey
+	repositoryId: String @indexed
+	n: Int @indexed
+	body: String
+}
+
+type GenB @table(database: "metrics-repro") @export {
+	id: ID @primaryKey
+	repositoryId: String @indexed
+	n: Int @indexed
+	body: String
+}
