@@ -89,7 +89,7 @@ With the server running, this restores the database in place — Harper closes t
 
 ### RocksDB <EngineBadge engines="RocksDB" />
 
-For a RocksDB database the stream is a `tar` archive, gzipped by default. It contains the database's current state — all tables, the transaction log, and, for a database with file-backed blobs, a `blobs/<rootIndex>/…` tree for each blob root (pass `exclude_blobs=true` to omit them):
+For a RocksDB database the stream is a `tar` archive, gzipped by default. It contains the database's current state — all tables, the transaction log, and, for a database with file-backed blobs, a `blobs/<rootIndex>/...` tree for each blob root (pass `exclude_blobs=true` to omit them):
 
 ```bash
 harper get_backup database=data out=./data.tar.gz
@@ -107,15 +107,15 @@ tar -xzf data.tar.gz -C ~/hdb/database/data
 harper start
 ```
 
-**If the database has file-backed blobs,** the RocksDB files and the `blobs/` tree restore to different locations: the RocksDB files into the database directory, and each `blobs/<rootIndex>/…` tree into its blob root (by default `<rootPath>/blobs/<database>`, or the paths configured in [`storage.blobPaths`](../configuration/options.md#storage); the archive's `blobs/README.md` lists the index-to-path mapping). Extracting the whole archive into the database directory would bury the blobs where the engine can't find them, silently losing blob data. Restore the two parts separately:
+**If the database has file-backed blobs,** the RocksDB files and the `blobs/` tree restore to different locations: the RocksDB files into the database directory, and each `blobs/<rootIndex>/...` tree into its blob root (by default `<rootPath>/blobs/<database>`, or the paths configured in [`storage.blobPaths`](../configuration/options.md#storage); the archive's `blobs/README.md` lists the index-to-path mapping). Extracting the whole archive into the database directory would bury the blobs where the engine can't find them, silently losing blob data. Restore the two parts separately:
 
 ```bash
 harper stop
-# 1. RocksDB files → database directory (exclude the blobs tree)
+# 1. RocksDB files -> database directory (exclude the blobs tree)
 mv ~/hdb/database/data ~/hdb/database/data.old # optional: keep a copy of the previous database
 mkdir -p ~/hdb/database/data
 tar -xzf data.tar.gz -C ~/hdb/database/data --exclude='blobs' --exclude='blobs/*'
-# 2. each blobs/<rootIndex>/ → its blob root (index 0 shown; repeat per root)
+# 2. each blobs/<rootIndex>/ -> its blob root (index 0 shown; repeat per root)
 mkdir -p ~/hdb/blobs/data
 tar -xzf data.tar.gz -C ~/hdb/blobs/data --strip-components=2 blobs/0
 harper start
