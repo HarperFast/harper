@@ -46,7 +46,10 @@ export class SeedWave extends Resource {
 		for (let r = 0; r < keys; r++) {
 			for (let i = 0; i < perKeyPerWave; i++) {
 				const n = wave * perKeyPerWave + i;
-				await table.put({ id: `${tableName}-r${r}-n${n}`, repositoryId: `repo-${r}`, n, body: payload });
+				// Key is table-INDEPENDENT on purpose: identical primary keys across sibling tables are
+				// what let a foreign-column-family read find a real row and hand back the WRONG
+				// table's data (#1881's severe mode). `owner` is how the reader tells them apart.
+				await table.put({ id: `r${r}-n${n}`, repositoryId: `repo-${r}`, n, owner: tableName, body: payload });
 				count++;
 			}
 		}
@@ -138,7 +141,7 @@ export class Drain extends Resource {
 				for await (const r of table.search({ conditions: [] })) {
 					if (r.repositoryId === key) {
 						count++;
-						seen.add(String(r.id).split('-')[0]);
+						seen.add(String(r.owner));
 					}
 				}
 			} else {
@@ -147,7 +150,7 @@ export class Drain extends Resource {
 					conditions: [{ attribute: 'repositoryId', comparator: 'equals', value: key }],
 				})) {
 					count++;
-					seen.add(String(r.id).split('-')[0]);
+					seen.add(String(r.owner));
 				}
 			}
 			counts[tableName] = count;

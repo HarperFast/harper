@@ -76,6 +76,9 @@ interface DrainStep {
 function countSstFiles(dir: string): { total: number; byDir: Record<string, number> } {
 	const byDir: Record<string, number> = {};
 	let total = 0;
+	// The root must be readable: returning 0 for an EACCES/ENOENT surfaces as "oracle not armed"
+	// and sends the reader after a storage problem that is really a path problem.
+	readdirSync(dir);
 	function walk(d: string) {
 		let entries: ReturnType<typeof readdirSync>;
 		try {
@@ -123,15 +126,20 @@ suite('QA-631 F-158 blast-radius [rocksdb]', { skip: process.platform === 'win32
 		// do NOT restartHttpWorkers() -- races the worker respawn and flakes on CI).
 		{
 			const deadline = Date.now() + 120_000;
+			let ready = false;
 			while (Date.now() < deadline) {
 				try {
 					const probe = await client.reqRest('/Probe/').timeout(2000);
-					if (probe.status === 200) break; // 500/503 during boot is NOT ready
+					if (probe.status === 200) {
+						ready = true;
+						break; // 500/503 during boot is NOT ready
+					}
 				} catch {
 					/* not ready yet */
 				}
 				await sleep(250);
 			}
+			assert.ok(ready, 'QA-631 Harper did not serve /Probe/ with 200 within 120s — boot failed');
 		}
 
 		function post(path: string, body: unknown): Promise<Response> {
