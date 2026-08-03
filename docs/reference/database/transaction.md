@@ -143,7 +143,9 @@ Deletes transaction log entries older than the specified timestamp.
 
 On RocksDB (the default storage engine), deletion is database-wide: all tables in a database share one transaction log, so omit `table` and pass only `database` (or `schema`) and `timestamp`.
 
-<VersionBadge type="changed" version="v5.2.0" /> — On RocksDB, a request that includes `table` is now rejected with a `400` error, and a `table` that does not exist returns a `404`. Previously the `table` scope was silently ignored and the entire database's transaction log was purged. On LMDB, `table` scopes the deletion to that table's history, unchanged.
+<VersionBadge type="changed" version="v5.2.0" /> — On RocksDB, a request that includes `table` is now rejected with a `400` error; previously the `table` scope was silently ignored and the entire database's transaction log was purged. On either engine, a `table` that does not exist now returns a `404` (previously this was a silent no-op on LMDB). On LMDB, a valid `table` continues to scope the deletion to that table's history, unchanged.
+
+On LMDB only, the optional `cleanup_deleted_records` (boolean) parameter additionally removes leftover tombstone entries for records deleted before the timestamp — a repair step for tombstones that normal audit log cleanup should already have removed. It is ignored on RocksDB.
 
 ```json
 {
