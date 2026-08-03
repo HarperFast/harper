@@ -196,8 +196,7 @@ export class DeploymentRecorder {
 	// settles. This keeps event_log writes O(1) puts per burst rather than O(N) per event.
 	private scheduleFlush(): void {
 		if (this.sealed || this.flushSuppressed) {
-			// Sealed: accumulate state in memory but don't write. finish() does the single
-			// terminal write. See seal() for why. The emitter still emits live SSE events.
+			// Accumulate state until finish() or the active ingest writes it without a competing put.
 			this.dirty = true;
 			return;
 		}
@@ -231,6 +230,13 @@ export class DeploymentRecorder {
 	async ingestPayload(source: Readable | Buffer | string): Promise<void> {
 		this.flushSuppressed = true;
 		try {
+			while (this.pendingPut) {
+				try {
+					await this.pendingPut;
+				} catch {
+					/* already logged; the ingest write carries the current row state */
+				}
+			}
 			await this.ingestPayloadWithoutFlush(source);
 		} finally {
 			this.flushSuppressed = false;
