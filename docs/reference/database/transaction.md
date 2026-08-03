@@ -133,6 +133,8 @@ Deletes audit log entries older than the specified timestamp. Deprecated in favo
 }
 ```
 
+### Transaction Log Operations
+
 #### `delete_transaction_logs_before`
 
 Deletes transaction log entries older than the specified timestamp.
