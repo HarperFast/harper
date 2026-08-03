@@ -442,8 +442,8 @@ async function deployComponent(req) {
 				credentials: credentialReferences.length ? credentialReferences : null,
 				emitter,
 				// Reuse the same `deployment_timeout` knob operators already have for the
-				// peer-side row/blob waits (DEFAULT_AWAIT_ROW_TIMEOUT_MS) to size the origin's
-				// payload-ingest write transaction too — see the comment in ingestPayload().
+				// peer-side row/blob waits to size the origin's payload-ingest write
+				// transaction too — see DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS in ingestPayload().
 				ingestTimeoutMs: req.deployment_timeout,
 			});
 	if (recorder) req._deploymentId = recorder.deploymentId;

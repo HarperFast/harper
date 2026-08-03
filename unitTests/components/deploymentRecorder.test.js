@@ -18,6 +18,8 @@ const {
 	DeploymentRecorder,
 	awaitDeploymentRow,
 	readPayloadBlobWithRetry,
+	ingestTransactionTimeoutMs,
+	DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS,
 } = require('#src/components/deploymentRecorder');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
@@ -421,6 +423,37 @@ describe('awaitDeploymentRow', () => {
 
 	it('polls once then times out when timeoutMs is 0 and the row is absent', async () => {
 		await assert.rejects(() => awaitDeploymentRow('zero-absent', { timeoutMs: 0 }), /Timed out after 0ms/);
+	});
+});
+
+describe('ingestTransactionTimeoutMs', () => {
+	// Regression guard: `deployment_timeout` also drives the peer-side row/blob wait
+	// (awaitDeploymentRow, above), where 0 means "poll once, don't wait" — a value that must
+	// never also apply to the origin's own payload-ingest write transaction, or a caller
+	// requesting fast-fail peer polling would silently abort a healthy large upload at 0ms.
+	it('floors 0 up to the default instead of passing it through', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs(0), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+
+	it('floors a small explicit value up to the default', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs(5000), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+
+	it('honors an explicit value above the default', () => {
+		const large = DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS * 3;
+		assert.strictEqual(ingestTransactionTimeoutMs(large), large);
+	});
+
+	it('falls back to the default when unset', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs(undefined), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+
+	it('falls back to the default for a non-numeric value', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs('not-a-number'), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+
+	it('falls back to the default for a negative value', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs(-1), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
 	});
 });
 
