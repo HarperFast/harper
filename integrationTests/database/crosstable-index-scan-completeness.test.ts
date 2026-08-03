@@ -36,11 +36,7 @@
  * backpressure could (that pressure applies mid-transaction too). That is a real, reportable
  * limitation of technique (a) relative to the original WBM-based repro, not an oversight.
  *
- * Repro command (foreground, budget-boxed):
- *   cd /home/kzyp/dev/harper && timeout 900 npm run test:integration -- \
- *     "integrationTests/qa-scratch/qa772-flush-forcing.test.ts" > /home/kzyp/dev/tmp/qa772.log 2>&1; \
- *     tail -80 /home/kzyp/dev/tmp/qa772.log
- * Harper SHA under test: d112560b6 (main).
+ * Originally characterised against harper d112560b6.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, strictEqual, ok } from 'node:assert';
