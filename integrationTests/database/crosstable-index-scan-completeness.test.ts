@@ -43,7 +43,7 @@
  * Harper SHA under test: d112560b6 (main).
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { deepStrictEqual, strictEqual, ok } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readdirSync } from 'node:fs';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -65,12 +65,15 @@ const DRAIN_KEY = 'repo-7';
 function countSstFiles(dir: string): { total: number; byDir: Record<string, number> } {
 	const byDir: Record<string, number> = {};
 	let total = 0;
+	// The root must be readable: returning 0 for an EACCES/ENOENT would surface as "oracle not
+	// armed" and send the reader hunting a storage problem that is really a path problem.
+	readdirSync(dir);
 	function walk(d: string) {
 		let entries: ReturnType<typeof readdirSync>;
 		try {
 			entries = readdirSync(d, { withFileTypes: true });
 		} catch {
-			return;
+			return; // a column-family dir removed mid-walk by compaction is expected
 		}
 		for (const e of entries) {
 			const p = join(d, e.name);
@@ -112,7 +115,7 @@ suite(
 				while (Date.now() < deadline) {
 					try {
 						const probe = await client.reqRest('/Probe/').timeout(2000);
-						if (probe.status !== 404) break;
+						if (probe.status === 200) break; // 500/503 during boot is NOT ready
 					} catch {
 						/* not ready yet */
 					}
@@ -162,12 +165,31 @@ suite(
 			const url = `${httpURL}/Drain/?tables=${encodeURIComponent(tablesCsv)}&scan=${scan}&key=${encodeURIComponent(key)}`;
 			const r = await fetch(url, { headers: { Authorization: client.headers.Authorization } });
 			strictEqual(r.status, 200, `Drain ${tablesCsv} scan=${scan} should return 200, got ${r.status}`);
-			const body = (await r.json()) as { order: string[]; counts: Record<string, number> };
+			const body = (await r.json()) as {
+				order: string[];
+				counts: Record<string, number>;
+				owners: Record<string, string[]>;
+			};
 			console.log(`[QA-772] Drain(${tablesCsv}, scan=${scan}, key=${key}) -> ${JSON.stringify(body.counts)}`);
+			// Every returned row must belong to the table it was read from. Asserted here rather
+			// than per-test so no call site can opt out: #1881's severe outcome is a read resolved
+			// against a foreign column family returning a SIBLING TABLE's row, and at the expected
+			// cardinality a count assertion passes while the caller holds another table's data.
+			for (const [table, owners] of Object.entries(body.owners ?? {}))
+				deepStrictEqual(
+					owners.filter((o) => o !== table),
+					[],
+					`Drain(${tablesCsv}) read ${table} but got rows owned by ${JSON.stringify(owners)} — ` +
+						`a foreign column family answered this read`
+				);
 			return body.counts;
 		}
 
-		// ── ARM THE ORACLE: verify >1 on-disk sorted run per table, two independent ways ──────────
+		// ── ARM THE ORACLE. Only the filesystem .sst count below is ASSERTED. The per-column-family
+		// levelstats test that follows is a DIAGNOSTIC, not a gate: RocksDB's own background
+		// compaction can legitimately merge a table's L0 down to a single bottom-level file before
+		// the check runs, so a `>1 sorted run per CF` assertion would fail on correct behaviour.
+		// The real proof this suite can detect the defect is the fails-on-base run in the header.
 		test('oracle precondition: filesystem shows multiple .sst files under dataRootDir', () => {
 			const dataRootDir = (ctx.harper as any).dataRootDir as string;
 			ok(dataRootDir, 'ctx.harper.dataRootDir must be set');
@@ -176,7 +198,7 @@ suite(
 			ok(total > 1, `expected >1 .sst file across metrics-repro's column families, found ${total}`);
 		});
 
-		test('oracle precondition: RocksDB level-0 file counts for GenA/GenB, primary + index CF', async () => {
+		test('diagnostic (not a gate): RocksDB level-0 file counts for GenA/GenB, primary + index CF', async () => {
 			type Stats = { l0Files: number | null; numEntries?: number; levelStats: string };
 			type Body = { primary: Stats; index: Stats };
 			for (const table of ['GenA', 'GenB']) {
