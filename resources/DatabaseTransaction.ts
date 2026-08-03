@@ -248,6 +248,12 @@ export class DatabaseTransaction implements Transaction {
 	readTxnRefCount: number;
 	readTxnsUsed: number;
 	timeout: number;
+	// Write recency, tracked separately from `timeout`: set only by addWrite, never by a read. `timeout`
+	// is re-armed by reads too (on a link with no pending writes of its own, see the fast path in
+	// getReadTxn), so chainStillActive can't use it to mean "this link was written recently" — a `.next`
+	// link with no writes that is being read in a loop would otherwise masquerade as write activity and
+	// keep a write-holding head immortal.
+	declare writeTimeout: number;
 	validated = 0;
 	timestamp = 0;
 	retries = 0;
@@ -425,6 +431,9 @@ export class DatabaseTransaction implements Transaction {
 		// performs no longer do (see getReadTxn), so a transaction that keeps writing stays alive
 		// and only an idle one holding write intents is reaped.
 		this.timeout = txnExpiration;
+		// Independent write-recency signal for chainStillActive (see the field comment) — reads never
+		// touch this, only writes do.
+		this.writeTimeout = txnExpiration;
 		this.linkWrite(operation);
 		this.writes.push(operation);
 		if (!operation.deferSave) {
@@ -989,14 +998,19 @@ export class ImmediateTransaction extends DatabaseTransaction {
 let timer;
 
 /**
- * True when a link other than `txn` in the same multi-store chain still has limit remaining —
- * i.e. that link received a write recently enough to re-arm itself. Writes re-arm only the link
- * that receives them, so a chain writing database B while its head only reads A would otherwise
- * be aborted by the head's own decay.
+ * True when a link other than `txn` in the same multi-store chain was written recently enough to
+ * still be active — i.e. its `writeTimeout` (set only by addWrite, see the field comment) hasn't
+ * decayed to zero. Writes re-arm only the link that receives them, so a chain writing database B
+ * while its head only reads A would otherwise be aborted by the head's own decay.
  */
 function chainStillActive(txn: DatabaseTransaction): boolean {
 	for (let link: DatabaseTransaction = txn.next; link; link = link.next) {
-		if (link.timeout > 0) return true;
+		// A write-only link (e.g. a blind write to a second database, never itself read) never calls
+		// getReadTxn, so it's never added to trackedTxns and the main loop below never decays it.
+		// Decay it here instead, so an idle write-only link eventually expires rather than keeping the
+		// whole chain immortal (harper#2001's blind-write shape).
+		if (!trackedTxns.has(link) && link.writeTimeout > 0) link.writeTimeout -= txnExpiration;
+		if (link.writeTimeout > 0) return true;
 	}
 	return false;
 }
@@ -1004,6 +1018,10 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
+			// Decay write recency once per tick for every tracked link, independent of the `timeout`
+			// branches below — a tracked link that keeps its own idle limit alive by reading must not
+			// thereby keep chainStillActive believing it was written recently too.
+			if (txn.writeTimeout > 0) txn.writeTimeout -= txnExpiration;
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
 				if (txn.open === TRANSACTION_STATE.CLOSED) {

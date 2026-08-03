@@ -204,6 +204,78 @@ describe('Write txn timeout', () => {
 		assert.ok(head.timeout > 5, 'a read must still re-arm once no link holds writes');
 	});
 
+	// chainStillActive must tell "written recently" apart from "read recently": a next link with no
+	// writes of its own re-arms its own `timeout` on every read (the fast path above), so using that
+	// same field to decide the chain is write-active would let unrelated reads on the next link keep
+	// a write-holding head immortal — the harper#2001 shape, shifted onto a second store.
+	it('does not treat repeated reads on a write-free next link as write activity (chainStillActive)', async function () {
+		if (isLMDB) this.skip();
+		const trackedTxns = setExpiration(20);
+		try {
+			const head = new DatabaseTransaction();
+			head.open = TRANSACTION_STATE.OPEN;
+			head.writes = [{ key: 'pending' }]; // head itself holds the write
+			head.transaction = { abort() {} }; // stand-in native handle, as the chain-walk test above uses
+			head.readTxnsUsed = 1; // as a real getReadTxn() would leave behind
+			trackedTxns.add(head); // ...and as a real getReadTxn() would track it
+			head.timeout = 20;
+
+			const next = new DatabaseTransaction();
+			head.next = next;
+			next.open = TRANSACTION_STATE.OPEN;
+			next.transaction = { abort() {} };
+
+			// Read next repeatedly, well past the limit: each read re-arms next.timeout via the fast
+			// path, but must never touch writeTimeout — the signal chainStillActive actually consults.
+			for (let i = 0; i < 8; i++) {
+				next.getReadTxn();
+				assert.ok(next.timeout > 0, "test setup: next's own idle timeout does re-arm on reads");
+				await delay(15);
+			}
+			assert.ok(!next.writeTimeout, 'reads on a write-free link must never set writeTimeout');
+			assert.ok(
+				!trackedTxns.has(head),
+				'the head must not be kept immortal by unrelated reads on a write-free next link'
+			);
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	// The other half of the same fix: a next link that receives a write but is never itself read (a
+	// blind write to a second database) is never added to trackedTxns, so nothing else decays it.
+	// Pre-fix, chainStillActive treated its permanently-armed timeout as ongoing write activity and
+	// kept the head immortal forever — a regression inside this PR's own target scenario.
+	it('reaps an idle chain whose next link received a write but was never itself read (chainStillActive decay)', async function () {
+		if (isLMDB) this.skip();
+		const trackedTxns = setExpiration(20);
+		try {
+			const head = new DatabaseTransaction();
+			head.open = TRANSACTION_STATE.OPEN;
+			head.transaction = { abort() {} };
+			head.readTxnsUsed = 1;
+			trackedTxns.add(head);
+			head.timeout = 20;
+
+			const next = new DatabaseTransaction();
+			head.next = next;
+			next.open = TRANSACTION_STATE.OPEN;
+			next.writes = [{ key: 'pending' }]; // as addWrite would leave staged
+			next.writeTimeout = 20; // as addWrite would set — but next.getReadTxn() is never called
+
+			assert.ok(!trackedTxns.has(next), 'test setup: next must not be tracked — it is never itself read');
+			assert.ok(head.hasPendingWrites(), "test setup: head must see the next chain's write");
+
+			await delay(150); // several monitor cycles with nothing touching either link
+			assert.ok(
+				!trackedTxns.has(head),
+				'an idle chain whose only write lives on an untracked next link must eventually be reaped'
+			);
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
 	it('still lets reads extend the limit for a read-only txn', async function () {
 		if (isLMDB) this.skip();
 		await IndexedResource.put(402, { t: 4002 });
