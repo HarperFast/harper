@@ -22,6 +22,7 @@ const {
 	DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS,
 } = require('#src/components/deploymentRecorder');
 const { databases } = require('#src/resources/databases');
+const { contextStorage } = require('#src/resources/transaction');
 const terms = require('#src/utility/hdbTerms');
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
@@ -454,6 +455,43 @@ describe('ingestTransactionTimeoutMs', () => {
 
 	it('falls back to the default for a negative value', () => {
 		assert.strictEqual(ingestTransactionTimeoutMs(-1), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+});
+
+describe('DeploymentRecorder.ingestPayload transaction context', () => {
+	it('preserves audit context and a larger configured transaction budget', async () => {
+		const configuredBudget = DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS * 2;
+		const ambientTransaction = { marker: 'ambient' };
+		const user = { username: 'deploy-user' };
+		const ambientContext = {
+			user,
+			originatingOperation: 'deploy_component',
+			transaction: ambientTransaction,
+		};
+		let ingestContext;
+		const installed = installMockDeploymentTable();
+		installed.mock.put = async (row) => {
+			if (row.payload_blob) {
+				ingestContext = contextStorage.getStore();
+				// Mirror getReadTxn() loading the configured global budget before the helper extends it.
+				ingestContext.transaction.timeout = configuredBudget;
+			}
+			installed.mock.rows.set(row.deployment_id, row);
+		};
+
+		try {
+			await contextStorage.run(ambientContext, async () => {
+				const recorder = await DeploymentRecorder.create({ project: 'p' });
+				await recorder.ingestPayload(Buffer.from('payload'));
+			});
+		} finally {
+			installed.restore();
+		}
+
+		assert.strictEqual(ingestContext.user, user);
+		assert.strictEqual(ingestContext.originatingOperation, 'deploy_component');
+		assert.notStrictEqual(ingestContext.transaction, ambientTransaction);
+		assert.strictEqual(ingestContext.transaction.timeout, configuredBudget);
 	});
 });
 
