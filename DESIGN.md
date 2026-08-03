@@ -24,6 +24,14 @@ To match v4: `OpenDBIObject` sets `randomAccessStructure = isPrimary`, and `Reco
 - The struct **read** hook is left intact, so records a prior v5 already wrote in struct mode still decode (read-compat); only new writes switch to records mode.
 - Companion change in `structon`: `prepareStructures` saves the shared structures in the legacy plain-array form when there are no typed structs (instead of the `{named, typed}` Map), so the `Symbol.for('structures')` buffer for a records-mode `__dbis__` is also v4-decodable.
 
+## Version gate at startup: downgrades prompt, and only the minor direction is confirmable
+
+`getVersionUpdateInfo()` (`dataLayer/hdbInfoController.ts`) compares the store's `data_version_num` (latest `system.hdb_info` record) against the binary's `packageJson.version` on every start. Data newer than binary by a **major** version → hard refusal. Newer by a **minor** version → `forceDowngradePrompt()` asks for confirmation; answering yes records the data version back down to the binary's version and boots (upgrade directives are deliberately additive/downgrade-compatible — see the struct-mode section above and `patchHdbSecretIsHashAttribute` in `upgrade/directives/5-2-0.ts`).
+
+- The prompt's answer can be supplied non-interactively via `CONFIRM_DOWNGRADE` — env var or `--CONFIRM_DOWNGRADE` CLI arg; argv wins (`assignCMDENVVariables`). With no override and no TTY on stdin, the prompt throws instead of blocking on stdin forever (#2046 — services/CI hung with nothing in the log; the mismatch is also logged to hdb.log now).
+- Upgrades never prompt (see the rationale comment in `bin/upgrade.js`); only the downgrade direction confirms. `upgradeCertsPrompt()` on the 4.x upgrade path still has the block-on-stdin hazard.
+- Test-suite gotcha: `unitTests/dataLayer/hdbInfoController.test.js` pushes `--CONFIRM_DOWNGRADE yes` into `process.argv` in a `before()` without cleanup, so it leaks into every later test file in the mocha process; tests that exercise the prompt must scrub argv first (see `unitTests/upgrade/upgradePrompt.test.js`).
+
 ## getFromSource() timing: promise resolves before commit runs
 
 In `getFromSource()` (`Table.ts`), the promise that callers await resolves with the entry **before** the `dbTxn.addWrite` commit callback runs. The commit callback mutates `updatedRecord` in-place to set fields like `createdAt` and `updatedAt`. Since the resolved entry's `.value` is the same reference as `updatedRecord`, those mutations are visible to the caller after resolution.
@@ -611,11 +619,3 @@ runs pre-handshake there (auth is unaffected — it runs in the WS connection ch
 matching Node's upgrade-then-authorize order). No core component registers custom upgrade
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
-
-## Version gate at startup: downgrades prompt, and only the minor direction is confirmable
-
-`getVersionUpdateInfo()` (`dataLayer/hdbInfoController.ts`) compares the store's `data_version_num` (latest `system.hdb_info` record) against the binary's `packageJson.version` on every start. Data newer than binary by a **major** version → hard refusal. Newer by a **minor** version → `forceDowngradePrompt()` asks for confirmation; answering yes records the data version back down to the binary's version and boots (upgrade directives are deliberately additive/downgrade-compatible — see the struct-mode section above and `patchHdbSecretIsHashAttribute` in `upgrade/directives/5-2-0.ts`).
-
-- The prompt's answer can be supplied non-interactively via `CONFIRM_DOWNGRADE` — env var or `--CONFIRM_DOWNGRADE` CLI arg; argv wins (`assignCMDENVVariables`). With no override and no TTY on stdin, the prompt throws instead of blocking on stdin forever (#2046 — services/CI hung with nothing in the log; the mismatch is also logged to hdb.log now).
-- Upgrades never prompt (see the rationale comment in `bin/upgrade.js`); only the downgrade direction confirms. `upgradeCertsPrompt()` on the 4.x upgrade path still has the block-on-stdin hazard.
-- Test-suite gotcha: `unitTests/dataLayer/hdbInfoController.test.js` pushes `--CONFIRM_DOWNGRADE yes` into `process.argv` in a `before()` without cleanup, so it leaks into every later test file in the mocha process; tests that exercise the prompt must scrub argv first (see `unitTests/upgrade/upgradePrompt.test.js`).
