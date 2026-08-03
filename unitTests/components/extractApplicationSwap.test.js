@@ -4,12 +4,22 @@ const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
+const { Readable } = require('node:stream');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { extractApplication, Application } = require('#src/components/Application');
+const {
+	extractApplication,
+	recoverInterruptedComponentExtractions,
+	dropComponentDirectory,
+	Application,
+} = require('#src/components/Application');
 const { packageDirectory } = require('#src/components/packageComponent');
+const {
+	ComponentPreparationLockTimeoutError,
+	withComponentPreparationLock,
+} = require('#src/components/componentPreparationLock');
 
 async function makeFixture(files) {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-src-'));
@@ -22,6 +32,273 @@ async function makeFixture(files) {
 }
 
 describe('extractApplication directory swap', () => {
+	it('restores the exact previous tree when payload extraction fails', async function () {
+		this.timeout(20000);
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-rollback-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		await fs.mkdir(path.join(dirPath, 'nested'), { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.writeFile(path.join(dirPath, '.env'), 'OLD_ONLY=true\n');
+		await fs.writeFile(path.join(dirPath, 'nested', 'old-only.txt'), 'previous bytes\n');
+		const sourceDir = await makeFixture({
+			'package.json': '{"name":"web","version":"2.0.0"}\n',
+			'index.js': 'module.exports = () => 2;\n',
+		});
+		const archive = await packageDirectory(sourceDir, { skip_node_modules: true });
+		const extractionError = new Error('payload delivery failed');
+		const payload = Readable.from(
+			(async function* () {
+				yield archive.subarray(0, Math.floor(archive.length / 2));
+				throw extractionError;
+			})()
+		);
+		const app = new Application({ name: 'web', payload });
+		app.dirPath = dirPath;
+
+		try {
+			await assert.rejects(
+				() => extractApplication(app),
+				(error) => error === extractionError
+			);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			assert.strictEqual(await fs.readFile(path.join(dirPath, '.env'), 'utf8'), 'OLD_ONLY=true\n');
+			assert.strictEqual(await fs.readFile(path.join(dirPath, 'nested', 'old-only.txt'), 'utf8'), 'previous bytes\n');
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(sourceDir, { recursive: true, force: true });
+		}
+	});
+
+	it('removes a partial directory when a first deploy fails', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-new-failure-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const extractionError = new Error('payload delivery failed');
+		const payload = new Readable({
+			read() {
+				this.destroy(extractionError);
+			},
+		});
+		const app = new Application({ name: 'web', payload });
+		app.dirPath = dirPath;
+
+		try {
+			await assert.rejects(() => extractApplication(app), extractionError);
+			await assert.rejects(fs.access(dirPath));
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('settles a deferred extraction transaction only once', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-idempotent-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		const sourceDir = await makeFixture({ 'package.json': '{"name":"web","version":"2.0.0"}\n' });
+		const app = new Application({
+			name: 'web',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		app.dirPath = dirPath;
+
+		try {
+			const extraction = await extractApplication(app, true);
+			await extraction.rollback();
+			await extraction.rollback();
+			await extraction.commit();
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(sourceDir, { recursive: true, force: true });
+		}
+	});
+
+	it('recovers the newest marked aside over a partial replacement before retrying', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-recover-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const olderAside = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-100-previous');
+		const staleAside = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-200-previous');
+		await fs.mkdir(olderAside, { recursive: true });
+		await fs.writeFile(path.join(olderAside, 'package.json'), '{"name":"web","version":"0.9.0"}\n');
+		await fs.mkdir(staleAside, { recursive: true });
+		await fs.writeFile(path.join(staleAside, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.writeFile(path.join(staleAside, 'old-only.txt'), 'previous bytes\n');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+		await fs.writeFile(path.join(dirPath, 'partial-only.txt'), 'incomplete bytes\n');
+		const extractionError = new Error('payload delivery failed again');
+		const payload = new Readable({
+			read() {
+				this.destroy(extractionError);
+			},
+		});
+		const app = new Application({ name: 'web', payload });
+		app.dirPath = dirPath;
+
+		try {
+			await assert.rejects(() => extractApplication(app), extractionError);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			assert.strictEqual(await fs.readFile(path.join(dirPath, 'old-only.txt'), 'utf8'), 'previous bytes\n');
+			await assert.rejects(fs.access(path.join(dirPath, 'partial-only.txt')));
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('does not resurrect a committed cleanup leftover after the component was dropped', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-dropped-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const stagingDir = path.join(componentsRoot, '.deploy-aside', 'web');
+		const retiredAside = path.join(stagingDir, '.in-progress-123-previous');
+		await fs.mkdir(retiredAside, { recursive: true });
+		await fs.writeFile(path.join(retiredAside, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.writeFile(path.join(stagingDir, '.retired-123-previous'), '');
+		const extractionError = new Error('new deployment failed');
+		const app = new Application({
+			name: 'web',
+			payload: new Readable({
+				read() {
+					this.destroy(extractionError);
+				},
+			}),
+		});
+		app.dirPath = dirPath;
+
+		try {
+			await assert.rejects(() => extractApplication(app), extractionError);
+			await assert.rejects(fs.access(dirPath));
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('recovers an interrupted deploy before component loading', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-startup-recovery-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.writeFile(path.join(asidePath, 'old-only.txt'), 'previous bytes\n');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+		await fs.writeFile(path.join(dirPath, 'partial-only.txt'), 'incomplete bytes\n');
+
+		try {
+			await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			assert.strictEqual(await fs.readFile(path.join(dirPath, 'old-only.txt'), 'utf8'), 'previous bytes\n');
+			await assert.rejects(fs.access(path.join(dirPath, 'partial-only.txt')));
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('defers startup recovery while the component is actively being prepared', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-startup-active-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.mkdir(dirPath, { recursive: true });
+		let releasePreparation;
+		let preparationStarted;
+		const started = new Promise((resolve) => (preparationStarted = resolve));
+		const preparation = withComponentPreparationLock(dirPath, async () => {
+			preparationStarted();
+			await new Promise((resolve) => (releasePreparation = resolve));
+		});
+
+		try {
+			await started;
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert(failures.get('web') instanceof ComponentPreparationLockTimeoutError);
+			await fs.access(asidePath);
+		} finally {
+			releasePreparation?.();
+			await preparation;
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('retires interrupted deploy state before a component is dropped', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-drop-retire-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+
+		try {
+			await dropComponentDirectory(dirPath);
+			await recoverInterruptedComponentExtractions(componentsRoot);
+			await assert.rejects(fs.access(dirPath));
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('cleans only paths owned by the settled transaction', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-owned-cleanup-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		const sourceDir = await makeFixture({ 'package.json': '{"name":"web","version":"2.0.0"}\n' });
+		const app = new Application({
+			name: 'web',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		app.dirPath = dirPath;
+		const unrelatedPath = path.join(componentsRoot, '.deploy-aside', 'web', 'unrelated-transaction');
+
+		try {
+			const extraction = await extractApplication(app, true);
+			await fs.mkdir(unrelatedPath, { recursive: true });
+			await fs.writeFile(path.join(unrelatedPath, 'marker'), 'keep\n');
+			await extraction.commit();
+			assert.strictEqual(await fs.readFile(path.join(unrelatedPath, 'marker'), 'utf8'), 'keep\n');
+			assert.strictEqual((await fs.stat(path.join(componentsRoot, '.deploy-aside'))).mode & 0o777, 0o700);
+			assert.strictEqual((await fs.stat(path.dirname(unrelatedPath))).mode & 0o777, 0o700);
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(sourceDir, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects a symlinked deploy staging directory', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-symlink-'));
+		const externalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-external-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		try {
+			await fs.symlink(externalDir, path.join(componentsRoot, '.deploy-aside'), 'dir');
+		} catch (error) {
+			if (error.code === 'EPERM') {
+				await fs.rm(componentsRoot, { recursive: true, force: true });
+				await fs.rm(externalDir, { recursive: true, force: true });
+				this.skip();
+			}
+			throw error;
+		}
+		const app = new Application({ name: 'web', payload: Buffer.from('not an archive') });
+		app.dirPath = dirPath;
+
+		try {
+			await assert.rejects(() => extractApplication(app), /deploy staging path is not a directory/);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			assert.deepStrictEqual(await fs.readdir(externalDir), []);
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(externalDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	// Regression for the replicate-phase failure on a live Next.js peer:
 	//   ENOTEMPTY: directory not empty, rmdir '<component>/.next'
 	// The old worker keeps writing into .next/cache while the deploy replaces the

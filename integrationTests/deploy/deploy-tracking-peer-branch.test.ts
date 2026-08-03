@@ -20,8 +20,19 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import {
+	existsSync,
+	mkdtempSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	truncateSync,
+	writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
+import { randomFillSync } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { request } from 'node:http';
 import { Readable } from 'node:stream';
@@ -30,6 +41,25 @@ import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast
 
 import { streamPackagedDirectory } from '../../dist/components/packageComponent.js';
 import { buildMultipartBody } from '../../dist/bin/multipartBuilder.js';
+
+const PEER_PROJECT = 'peer-branch-replay-application';
+
+function filesUnder(directory: string): string[] {
+	if (!existsSync(directory)) return [];
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const entryPath = join(directory, entry.name);
+		return entry.isDirectory() ? filesUnder(entryPath) : [entryPath];
+	});
+}
+
+async function waitForMarkedAside(asidePath: string): Promise<void> {
+	const deadline = Date.now() + 10_000;
+	while (Date.now() < deadline) {
+		if (existsSync(asidePath) && readdirSync(asidePath).some((entry) => entry.startsWith('.in-progress-'))) return;
+		await sleep(5);
+	}
+	throw new Error('Timed out waiting for peer extraction to move the previous component aside');
+}
 
 function postMultipart(
 	url: URL,
@@ -89,14 +119,16 @@ async function callOperation(
 suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 	let fixtureDir: string;
 	let seedDeploymentId: string;
+	let seedPayloadBlobPath: string;
 
 	before(async () => {
-		await startHarper(ctx);
+		await startHarper(ctx, { config: { storage: { blobReadTimeout: 1000 } }, env: {} });
 		fixtureDir = mkdtempSync(join(tmpdir(), 'peer-branch-fixture-'));
 		writeFileSync(join(fixtureDir, 'config.yaml'), 'graphqlSchema:\n  files: schema.graphql\nrest: true\n');
 		writeFileSync(join(fixtureDir, 'schema.graphql'), 'type Query { hello: String }\n');
 		mkdirSync(join(fixtureDir, 'web'), { recursive: true });
 		writeFileSync(join(fixtureDir, 'web', 'index.html'), '<h1>Hello, Peer Branch!</h1>');
+		writeFileSync(join(fixtureDir, 'web', 'blob.bin'), randomFillSync(Buffer.alloc(8 * 1024 * 1024)));
 	});
 
 	after(async () => {
@@ -110,6 +142,7 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 
 	test('seed: an initial deploy populates an hdb_deployment row with a payload_blob', async () => {
 		const project = 'peer-branch-seed-application';
+		const existingBlobFiles = new Set(filesUnder(join(ctx.harper.dataRootDir, 'blobs', 'system')));
 		const multipart = buildMultipartBody(
 			{ operation: 'deploy_component', project, restart: false },
 			{
@@ -132,6 +165,13 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 		strictEqual(got.status, 200);
 		ok(got.body.payload_blob_present, 'seed row should have a payload_blob attached');
 		ok(got.body.payload_hash, 'seed row should have a sha256 payload_hash');
+		const blobFiles = filesUnder(join(ctx.harper.dataRootDir, 'blobs', 'system'))
+			.filter((path) => !existingBlobFiles.has(path))
+			.map((path) => ({ path, size: statSync(path).size }))
+			.sort((left, right) => right.size - left.size);
+		const [payloadBlobFile] = blobFiles;
+		ok(payloadBlobFile?.size > 1024 * 1024, 'expected the retained deployment payload to be file-backed');
+		seedPayloadBlobPath = payloadBlobFile.path;
 	});
 
 	// On Bun the deploy hangs after extraction when reading a Web ReadableStream from a
@@ -146,10 +186,9 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 			// Simulate the operation shape origin produces for peers via `replicateOperation`:
 			// `_deploymentId` set, no `payload`, no multipart. The handler should detect this is a
 			// replicated execution and source the tarball from the row's payload_blob.
-			const peerProject = 'peer-branch-replay-application';
 			const response = await callOperation(ctx, {
 				operation: 'deploy_component',
-				project: peerProject,
+				project: PEER_PROJECT,
 				restart: false,
 				_deploymentId: seedDeploymentId,
 			});
@@ -157,7 +196,7 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 
 			// Confirm the component was actually written on disk (peer code path ran extraction
 			// from the row's payload_blob and not from a missing req.payload).
-			const fetched = await fetch(`${ctx.harper.operationsAPIURL}/${peerProject}/`, {
+			const fetched = await fetch(`${ctx.harper.operationsAPIURL}/${PEER_PROJECT}/`, {
 				headers: {
 					Authorization:
 						'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64'),
@@ -169,6 +208,40 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 				fetched.status === 404 || fetched.status === 200,
 				`expected component to be reachable (any 200/404 from the loaded component), got ${fetched.status}`
 			);
+		}
+	);
+
+	// This test intentionally corrupts the seed deployment blob and must remain the suite's final deployment test.
+	test(
+		'peer-side branch: a payload blob failure after the swap restores the previous tree',
+		{ skip: skipOnBun },
+		async () => {
+			ok(seedPayloadBlobPath, 'seed payload blob path should be recorded before the failure test');
+			const componentPath = join(ctx.harper.dataRootDir, 'components', PEER_PROJECT);
+			const asidePath = join(ctx.harper.dataRootDir, 'components', '.deploy-aside', PEER_PROJECT);
+			const oldOnlyPath = join(componentPath, 'old-only.txt');
+			writeFileSync(oldOnlyPath, 'previous bytes\n');
+			truncateSync(seedPayloadBlobPath, 128 * 1024);
+
+			const responsePromise = callOperation(ctx, {
+				operation: 'deploy_component',
+				project: PEER_PROJECT,
+				restart: false,
+				_deploymentId: seedDeploymentId,
+				deployment_timeout: 5000,
+			});
+			responsePromise.catch(() => {});
+			await waitForMarkedAside(asidePath);
+			const response = await responsePromise;
+
+			strictEqual(response.status, 500, `peer deploy should fail after payload truncation: ${response.rawText}`);
+			ok(
+				/blob|payload|incomplete|stall/i.test(response.rawText),
+				`peer failure should report payload delivery, got: ${response.rawText}`
+			);
+			strictEqual(readFileSync(oldOnlyPath, 'utf8'), 'previous bytes\n');
+			strictEqual(readFileSync(join(componentPath, 'web', 'index.html'), 'utf8'), '<h1>Hello, Peer Branch!</h1>');
+			strictEqual(existsSync(asidePath), false, 'rollback should remove the component deploy staging directory');
 		}
 	);
 

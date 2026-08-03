@@ -51,7 +51,8 @@ import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
-import { getEnvBuiltInComponents } from './Application.ts';
+import { getEnvBuiltInComponents, recoverInterruptedComponentExtractions } from './Application.ts';
+import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
 
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
@@ -113,6 +114,16 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 export async function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
+	let failedRecoveries = new Map<string, Error>();
+	try {
+		failedRecoveries = await recoverInterruptedComponentExtractions(CF_ROUTES_DIR);
+	} catch (error) {
+		const recoveryError = error instanceof Error ? error : new Error(String(error));
+		harperLogger.warn(
+			'Loading existing filesystem components without deploy recovery because staging could not be inspected:',
+			errorForLog(recoveryError)
+		);
+	}
 	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
 	// any application loads (root components — including the Pro custody registration — have
 	// already loaded by this point). Re-runs on each reload cycle, which is how changed/late-custody
@@ -127,6 +138,16 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
 			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
+			const recoveryError = failedRecoveries.get(appName);
+			if (recoveryError) {
+				if (recoveryError instanceof ComponentPreparationLockTimeoutError) continue;
+				componentLifecycle.failed(
+					appName,
+					recoveryError,
+					`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
+				);
+				continue;
+			}
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;

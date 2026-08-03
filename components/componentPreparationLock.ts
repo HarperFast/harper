@@ -32,6 +32,8 @@ export interface ComponentPreparationLockOptions {
 	isOwnerAlive?: (owner: ComponentPreparationLockOwner) => boolean | Promise<boolean>;
 }
 
+export class ComponentPreparationLockTimeoutError extends Error {}
+
 export function componentPreparationLockIdentity(
 	componentDirPath: string,
 	platform: NodeJS.Platform = process.platform
@@ -286,7 +288,7 @@ async function acquireComponentPreparationLock(
 					// liveness cannot be positively established.
 					deadline = performance.now() + timeoutMs;
 				} else {
-					throw new Error(
+					throw new ComponentPreparationLockTimeoutError(
 						`Timed out waiting for component preparation lock for ${canonicalPath}` +
 							` held by process ${blocker.pid}, thread ${blocker.threadId}`
 					);

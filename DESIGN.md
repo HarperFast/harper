@@ -152,6 +152,17 @@ Extraction renames an existing component aside before writing the replacement an
 dependency installation and metadata verification complete. Any preparation failure atomically
 renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
 wedge rollback with `ENOTEMPTY`; cleanup completes while the same-component lock is still held.
+The aside name is itself the recovery record: `.in-progress-*` is recoverable after an interrupted
+deploy unless a sibling `.retired-*` marker records that the replacement committed. Cleanup removes
+the aside before its marker, so an interrupted cleanup cannot make an obsolete tree recoverable.
+Component loading recovers marked interrupted deploys before scanning the component root, and
+preparation repeats recovery under the same-component lock before reading runtime metadata. A full
+`drop_component` writes retirement markers before deleting the live tree and keeps its filesystem,
+configuration, and replication mutations under that lock, so cleanup residue cannot resurrect a
+dropped component and a concurrent deploy cannot interleave with the drop. Full-component drops
+rename the live tree into staging before best-effort cleanup, avoiding an in-place recursive-delete
+race with the running worker. The marker protocol guarantees process-crash recovery; it does not
+claim persistence ordering across a host power loss without filesystem-level durability guarantees.
 
 A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and force-terminates it if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
 
