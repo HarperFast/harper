@@ -128,6 +128,22 @@ describe('Write txn timeout', () => {
 		}
 	});
 
+	it('does not abort a RocksDB write transaction whose budget exceeds the global limit', async function () {
+		if (!(IndexedResource.primaryStore instanceof RocksDatabase)) this.skip();
+		setTxnExpiration(20);
+		try {
+			const context = {};
+			await transaction(context, async (txn) => {
+				txn.timeoutBudget = 5_000;
+				await IndexedResource.put(904, { t: 42 }, context);
+				await delay(150);
+			});
+			assert.equal((await IndexedResource.get(904))?.t, 42);
+		} finally {
+			setTxnExpiration(30_000);
+		}
+	});
+
 	// A transaction held open past the limit with uncommitted writes must be aborted and surface an error,
 	// not silently force-committed. Force-committing a partial write set violates atomicity and can orphan
 	// secondary-index entries that only a full index rebuild repairs (issue #1407).

@@ -77,29 +77,28 @@ interface CreateOptions {
 }
 
 /**
- * Run `write()` (a single table.put()) in a fresh, isolated transaction with an open-time
- * budget of `timeoutMs` instead of the generic storage.maxTransactionOpenTime default. A copy of
- * the ambient context with its transaction controls removed forces a new transaction even when the
- * caller is already inside one, while preserving audit attribution. Joining the ambient transaction
- * here would extend an unrelated write's budget, and on the streaming path risks a circular wait
- * against that outer transaction's own commit. LMDB has a known gap: see the note inline below.
+ * Run `write()` in a fresh transaction while preserving audit attribution. Recorder writes must
+ * commit independently of a caller's transaction so an older staged row cannot overwrite them.
  *
  * `timeoutBudget` is sticky across RocksDB `getReadTxn()` calls, so reads inside `write()` cannot
  * silently restore the generic default. The transaction uses the larger of this budget and the
  * configured global limit.
  */
-function withExtendedTransactionTimeout<T>(timeoutMs: number, write: () => Promise<T>): Promise<T> {
+function withIsolatedTransaction<T>(write: () => Promise<T>, timeoutMs?: number): Promise<T> {
+	const ambient = contextStorage.getStore();
 	const context = {
-		...contextStorage.getStore(),
-		transaction: undefined,
-		isExplicit: undefined,
-		authorize: undefined,
+		user: ambient?.user,
+		originatingOperation: ambient?.originatingOperation,
+		session: ambient?.session,
+		signal: ambient?.signal,
 	};
 	return transaction(context, (txn) => {
-		// TODO(harper#2057): only extends the RocksDB DatabaseTransaction head; on
-		// HARPER_STORAGE_ENGINE=lmdb, Table.txnForContext() chains a separate LMDBTransaction
-		// that this budget doesn't reach.
-		txn.timeoutBudget = timeoutMs;
+		if (timeoutMs != null) {
+			// TODO(harper#2057): only extends the RocksDB DatabaseTransaction head; on
+			// HARPER_STORAGE_ENGINE=lmdb, Table.txnForContext() chains a separate LMDBTransaction
+			// that this budget doesn't reach.
+			txn.timeoutBudget = timeoutMs;
+		}
 		return write();
 	});
 }
@@ -241,7 +240,7 @@ export class DeploymentRecorder {
 			// Same blob-durability gate as the streaming path below applies here too (the commit
 			// waits for the buffer to land on disk), so a large base64-in-JSON/CBOR body needs the
 			// same extended budget.
-			await withExtendedTransactionTimeout(ingestTransactionTimeoutMs(this.ingestTimeoutMs), () => this.put());
+			await this.put(ingestTransactionTimeoutMs(this.ingestTimeoutMs));
 			return;
 		}
 
@@ -319,7 +318,7 @@ export class DeploymentRecorder {
 		// a large upload mid-stream (which rejects both tapDone and the blob write) fails the
 		// deploy loudly here instead of leaking an unhandledRejection. This also makes hash/size
 		// correctness independent of the put()/store write timing and of isSaving() being defined.
-		const putDone = withExtendedTransactionTimeout(ingestTransactionTimeoutMs(this.ingestTimeoutMs), () => this.put());
+		const putDone = this.put(ingestTransactionTimeoutMs(this.ingestTimeoutMs));
 		const saving = isSaving(blob) ?? Promise.resolve();
 		try {
 			await Promise.all([putDone, tapDone, saving]);
@@ -337,7 +336,7 @@ export class DeploymentRecorder {
 				// ensures the null-reference write lands after the original reference write
 				// (so it wins) and the blob's file lock is released before we unlink it.
 				await Promise.allSettled([putDone, saving]);
-				await this.put();
+				await this.put(ingestTransactionTimeoutMs(this.ingestTimeoutMs));
 				deleteBlob(blob);
 			} catch (cleanupError) {
 				logger.warn?.('Failed to clean up partial deploy payload blob', cleanupError);
@@ -350,7 +349,7 @@ export class DeploymentRecorder {
 		this.record.payload_size = blob.size ?? byteCount;
 		// Persist the now-known hash + size. The blob is already saved, so this re-put does
 		// not re-stream — saveBlob short-circuits on the existing fileId.
-		await this.put();
+		await this.put(ingestTransactionTimeoutMs(this.ingestTimeoutMs));
 	}
 
 	/**
@@ -485,14 +484,14 @@ export class DeploymentRecorder {
 		return this.record;
 	}
 
-	private async put(): Promise<void> {
+	private async put(timeoutMs?: number): Promise<void> {
 		const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
 		if (!table) {
 			// Table missing means the upgrade directive hasn't run yet (or the table got dropped).
 			// We tolerate this — tracking is observability; the deploy itself must still succeed.
 			return;
 		}
-		await table.put(this.record);
+		await withIsolatedTransaction(() => table.put(this.record), timeoutMs);
 	}
 }
 
