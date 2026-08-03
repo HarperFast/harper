@@ -335,7 +335,7 @@ export class DatabaseTransaction implements Transaction {
 	// link with no writes that is being read in a loop would otherwise masquerade as write activity and
 	// keep a write-holding head immortal.
 	declare writeTimeout: number;
-	declare timeoutBudget?: number;
+	timeoutBudget = 0;
 	validated = 0;
 	timestamp = 0;
 	retries = 0;
@@ -382,7 +382,7 @@ export class DatabaseTransaction implements Transaction {
 		// `writes`/`next` are checked inline first: this is a hot path and the dominant case is a
 		// single-store transaction that has never written.
 		if ((this.writes.length === 0 && !this.next) || this.open !== TRANSACTION_STATE.OPEN || !this.hasPendingWrites()) {
-			this.timeout = Math.max(txnExpiration, this.timeoutBudget ?? 0);
+			this.timeout = Math.max(txnExpiration, this.timeoutBudget);
 		}
 		if (this.transaction) {
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
@@ -1163,7 +1163,7 @@ function startMonitoringTxns() {
 					} catch (error) {
 						harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
 					}
-					txn.timeout = txnExpiration;
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget);
 				}
 			} else {
 				txn.timeout -= txnExpiration;

@@ -463,16 +463,25 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		const configuredBudget = DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS * 2;
 		const ambientTransaction = { marker: 'ambient' };
 		const user = { username: 'deploy-user' };
+		const session = { id: 'session' };
+		const signal = new AbortController().signal;
 		const ambientContext = {
 			user,
 			originatingOperation: 'deploy_component',
+			session,
+			signal,
 			transaction: ambientTransaction,
 			isExplicit: true,
 			authorize: true,
+			timestamp: 42,
+			sourceApply: true,
+			replicatedConfirmation: 2,
 		};
 		let ingestContext;
+		const writeContexts = [];
 		const installed = installMockDeploymentTable();
 		installed.mock.put = async (row) => {
+			writeContexts.push(contextStorage.getStore());
 			if (row.payload_blob) {
 				ingestContext = contextStorage.getStore();
 			}
@@ -490,11 +499,18 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 
 		assert.strictEqual(ingestContext.user, user);
 		assert.strictEqual(ingestContext.originatingOperation, 'deploy_component');
+		assert.strictEqual(ingestContext.session, session);
+		assert.strictEqual(ingestContext.signal, signal);
 		assert.notStrictEqual(ingestContext.transaction, ambientTransaction);
 		assert.strictEqual(ingestContext.transaction.timeoutBudget, configuredBudget);
 		assert.strictEqual(ingestContext.isExplicit, undefined);
 		assert.strictEqual(ingestContext.authorize, undefined);
+		assert.strictEqual(ingestContext.timestamp, undefined);
+		assert.strictEqual(ingestContext.sourceApply, undefined);
+		assert.strictEqual(ingestContext.replicatedConfirmation, undefined);
 		assert.strictEqual(ambientContext.transaction, ambientTransaction);
+		assert.strictEqual(writeContexts.length, 2);
+		assert.ok(writeContexts.every((context) => context.transaction !== ambientTransaction));
 	});
 });
 
