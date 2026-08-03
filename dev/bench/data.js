@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785657767541,
+  "lastUpdate": 1785745479848,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -3416,6 +3416,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 965.97,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "b852a722c4abe562cab72a2f25313664fa74547d",
+          "message": "Widen atomicWriteFile's Windows rename-retry budget and sleep without spinning\n\nThe ~910ms backoff budget (8 retries, 200ms cap) was exhausted twice in a row\nby the same test on a Windows CI runner (harper#2036) - an AV real-time scan\ncan hold harper-config.yaml for over a second. Widen to 12 retries with a\n500ms cap (~3.6s worst case), and replace the performance.now() busy-spin\nwith a timeout-only Atomics.wait so the wait is CPU-idle, which is what makes\nthe longer budget affordable.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-01T00:42:14Z",
+          "url": "https://github.com/HarperFast/harper/commit/b852a722c4abe562cab72a2f25313664fa74547d"
+        },
+        "date": 1785745478796,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6431.7,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8173.65,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8349.27,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6799.1,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4967.35,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8202.2,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1022.06,
             "unit": "ops/sec"
           }
         ]
