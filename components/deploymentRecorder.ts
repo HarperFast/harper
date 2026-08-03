@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { databases } from '../resources/databases.ts';
+import { transaction } from '../resources/transaction.ts';
 import { createBlob, isSaving, deleteBlob, BLOB_UNAVAILABLE_STATUS } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import type { CredentialReference } from './secretOperations.ts';
@@ -68,6 +69,44 @@ interface CreateOptions {
 	// no-custody transient token.
 	credentials?: CredentialReference[] | null;
 	emitter?: ProgressEmitter;
+	// Open-transaction budget (ms) for the payload-ingest write, below. Mirrors the
+	// `deployment_timeout` operation parameter already used for the peer-side row/blob waits
+	// (DEFAULT_AWAIT_ROW_TIMEOUT_MS) so operators have one existing knob for all of a deploy's
+	// size-driven timeouts, rather than a new config surface for this one.
+	ingestTimeoutMs?: number;
+}
+
+/**
+ * Run `write()` (a single table.put()) inside its own transaction whose open-time budget is
+ * `timeoutMs` instead of the generic storage.maxTransactionOpenTime default, so the
+ * long-transaction monitor (resources/DatabaseTransaction.ts) doesn't abort a write that is
+ * known in advance to legitimately need more time.
+ *
+ * `resources/transaction.ts`'s `transaction(callback)` (no explicit context) creates the
+ * transaction and binds it into the ambient AsyncLocalStorage context for the duration of
+ * `callback` — including every write `write()` performs — so `table.put()`'s own transaction
+ * lookup (Resource.ts) finds this transaction already open and joins it rather than starting
+ * a fresh, un-extended one. The callback gets a direct, synchronous reference to the new
+ * transaction, so the budget is set before any write is staged.
+ *
+ * This does not change what the monitor protects (issue #1407's no-silent-partial-commit
+ * guarantee still applies) — it only widens the window before that guard engages, for this
+ * one write.
+ */
+function withExtendedTransactionTimeout<T>(timeoutMs: number, write: () => Promise<T>): Promise<T> {
+	return transaction((txn) => {
+		const t = txn as unknown as { timeout: number };
+		// `write()`'s own pre-commit read (fetching the existing entry for ifVersion/merge)
+		// calls getReadTxn(), which unconditionally resets `.timeout` back to the generic
+		// storage.maxTransactionOpenTime default (DatabaseTransaction.ts) — so setting the
+		// budget *before* calling write() would just be clobbered. That read happens
+		// synchronously before write()'s first await, so by the time the call below returns
+		// (even though its promise is still pending), the reset has already happened and this
+		// assignment is the one that sticks for the rest of the write's lifetime.
+		const result = write();
+		if (t.timeout < timeoutMs) t.timeout = timeoutMs;
+		return result;
+	});
 }
 
 export class DeploymentRecorder {
@@ -78,10 +117,12 @@ export class DeploymentRecorder {
 	private pendingPut: Promise<void> | null = null;
 	private dirty = false;
 	private sealed = false;
+	private readonly ingestTimeoutMs?: number;
 
-	private constructor(deploymentId: string, initial: Record<string, any>) {
+	private constructor(deploymentId: string, initial: Record<string, any>, ingestTimeoutMs?: number) {
 		this.deploymentId = deploymentId;
 		this.record = initial;
+		this.ingestTimeoutMs = ingestTimeoutMs;
 	}
 
 	static async create(options: CreateOptions): Promise<DeploymentRecorder> {
@@ -107,7 +148,7 @@ export class DeploymentRecorder {
 			credentials: options.credentials ?? null,
 			error: null,
 		};
-		const recorder = new DeploymentRecorder(deploymentId, record);
+		const recorder = new DeploymentRecorder(deploymentId, record, options.ingestTimeoutMs);
 		await recorder.put();
 		if (options.emitter) {
 			recorder.subscribeTo(options.emitter);
@@ -263,6 +304,16 @@ export class DeploymentRecorder {
 		});
 		const blob = createBlob(tap, { type: 'application/gzip' });
 		this.record.payload_blob = blob;
+		// This row's commit is gated on the blob's durable file write (resources/blob.ts,
+		// startPreCommitBlobsForRecord's local-write branch) so a peer never sees a row that
+		// references a not-yet-durable blob — the write transaction is legitimately held open for
+		// as long as the payload takes to land on disk. The deploy system is explicitly designed
+		// to carry arbitrarily large, uncapped components (see the module comment above), so that
+		// duration scales with payload size, not with anything bounded. Run this one put() under
+		// an extended open-time budget instead of the generic storage.maxTransactionOpenTime meant
+		// for ordinary short requests (a large-but-otherwise-healthy ingest tripped that generic
+		// guard on a loaded self-hosted runner — see the Large Deploy Payload Test regression).
+		//
 		// Persisting the row encodes the blob, which synchronously starts the file write that
 		// drains the tap, so `isSaving(blob)` is set as soon as put() is *called*. Await the put,
 		// the source draining (tapDone), and the file flush (saving) together: handing all three
@@ -270,7 +321,8 @@ export class DeploymentRecorder {
 		// a large upload mid-stream (which rejects both tapDone and the blob write) fails the
 		// deploy loudly here instead of leaking an unhandledRejection. This also makes hash/size
 		// correctness independent of the put()/store write timing and of isSaving() being defined.
-		const putDone = this.put();
+		const ingestTimeoutMs = coerceTimeoutMs(this.ingestTimeoutMs, DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+		const putDone = withExtendedTransactionTimeout(ingestTimeoutMs, () => this.put());
 		const saving = isSaving(blob) ?? Promise.resolve();
 		try {
 			await Promise.all([putDone, tapDone, saving]);
@@ -454,6 +506,16 @@ export class DeploymentRecorder {
 // blob-stream receive default and gives a loaded cluster room to converge. Override per-deploy
 // via the `deployment_timeout` operation parameter.
 export const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
+
+// Default open-time budget for the origin's payload-ingest write transaction (ingestPayload,
+// below). Distinct from DEFAULT_AWAIT_ROW_TIMEOUT_MS (that one bounds a *replication* wait;
+// this one bounds *local disk I/O* for a component the deploy system explicitly supports at
+// arbitrarily large, uncapped sizes — see the module comment above and the large-payload
+// regression test). 10 minutes comfortably covers a multi-GB ingest even on a slow or loaded
+// disk while still being a bounded safety net, not a disabled one. Overridable via the same
+// `deployment_timeout` operation parameter as the peer-side waits, so operators sizing for
+// even larger components (or a known-slow disk) have one knob, not two.
+export const DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS = 600_000;
 
 export function coerceTimeoutMs(value: unknown, fallback: number): number {
 	const requested = Number(value);
