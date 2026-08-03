@@ -1,7 +1,6 @@
 'use strict';
 
-const chai = require('chai');
-const { expect } = chai;
+const assert = require('node:assert');
 
 const { forceDowngradePrompt } = require('#src/upgrade/upgradePrompt');
 const { UpgradeObject } = require('#src/upgrade/UpgradeObjects');
@@ -38,25 +37,22 @@ describe('forceDowngradePrompt — non-interactive starts', () => {
 	});
 
 	it('throws instead of blocking when there is no TTY and no override', async () => {
-		let error;
-		try {
-			await forceDowngradePrompt(upgradeObj);
-		} catch (err) {
-			error = err;
-		}
-		expect(error).to.be.an.instanceOf(Error);
-		expect(error.message).to.include('5.2.0');
-		expect(error.message).to.include('5.1.22');
-		expect(error.message).to.include('CONFIRM_DOWNGRADE');
+		await assert.rejects(forceDowngradePrompt(upgradeObj), (error) => {
+			assert.ok(error instanceof Error);
+			assert.ok(error.message.includes('5.2.0'));
+			assert.ok(error.message.includes('5.1.22'));
+			assert.ok(error.message.includes('CONFIRM_DOWNGRADE'));
+			return true;
+		});
 	});
 
 	it('proceeds without a TTY when CONFIRM_DOWNGRADE=yes', async () => {
 		process.env.CONFIRM_DOWNGRADE = 'yes';
-		expect(await forceDowngradePrompt(upgradeObj)).to.equal(true);
+		assert.strictEqual(await forceDowngradePrompt(upgradeObj), true);
 	});
 
 	it('declines without a TTY when CONFIRM_DOWNGRADE=no', async () => {
 		process.env.CONFIRM_DOWNGRADE = 'no';
-		expect(await forceDowngradePrompt(upgradeObj)).to.equal(false);
+		assert.strictEqual(await forceDowngradePrompt(upgradeObj), false);
 	});
 });
