@@ -42,9 +42,6 @@
  * Harper SHA under test: d112560b6 (main). Engine: RocksDB only (this technique relies on
  * `primaryStore.flush()`, a RocksDB-only API; LMDB confirmed clean by qa629 — no LSM/sorted-run
  * structure — not re-tested here).
- * Repro command (foreground, budget-boxed):
- *   cd /home/kzyp/dev/harper && timeout 900 npm run test:integration -- \
- *     "integrationTests/qa-scratch/qa631-f158-blast.test.ts" 2>&1 | tail -60
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
