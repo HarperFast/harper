@@ -6206,12 +6206,17 @@ export function makeTable(options) {
 					nodeName: 'source',
 					commit: (txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
-						if (existingEntry?.version !== existingVersion) {
-							// don't do anything if the version has changed
+						if (
+							existingEntry?.version !== existingVersion &&
+							(existingVersion != null || precedesExistingVersion(txnTime, existingEntry) <= 0)
+						) {
+							// Revalidations retain exact-CAS semantics. Competing fills of a missing key use the
+							// table's deterministic ordering, so every node keeps the same winner.
 							sourceWrite.skipped = true;
 							return;
 						}
-						updateIndices(id, existingRecord, updatedRecord, transaction && { transaction });
+						const currentRecord = existingEntry?.value;
+						updateIndices(id, currentRecord, updatedRecord, transaction && { transaction });
 						if (updatedRecord) {
 							if (existingEntry) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
@@ -6228,7 +6233,7 @@ export function makeTable(options) {
 											: txnTime;
 							}
 							if (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null) {
-								const existingCreatedTime = existingEntry?.value?.[createdTimeProperty.name];
+								const existingCreatedTime = currentRecord?.[createdTimeProperty.name];
 								if (existingCreatedTime != null) {
 									updatedRecord[createdTimeProperty.name] = existingCreatedTime;
 								} else {
