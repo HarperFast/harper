@@ -116,17 +116,37 @@ The `original_records` field contains the record state before the operation was 
 
 #### `delete_audit_logs_before`
 
-Deletes audit log entries older than the specified timestamp.
+Deletes audit log entries older than the specified timestamp. Deprecated in favor of [`delete_transaction_logs_before`](#delete_transaction_logs_before).
 
 <VersionBadge type="changed" version="v4.3.0" /> — Audit log cleanup improved to reduce resource consumption during scheduled cleanups
 
 <VersionBadge type="changed" version="v4.5.0" /> — Storage reclamation: Harper automatically evicts older audit log entries when free storage drops below a configurable threshold
+
+<VersionBadge type="changed" version="v5.2.0" /> — This operation requires `table`, but on the RocksDB storage engine (the default) history cannot be deleted for a single table because all tables in a database share one transaction log. On RocksDB this operation now always returns an error directing you to `delete_transaction_logs_before`; it remains usable on LMDB.
 
 ```json
 {
 	"operation": "delete_audit_logs_before",
 	"schema": "dev",
 	"table": "dog",
+	"timestamp": 1598290282817
+}
+```
+
+#### `delete_transaction_logs_before`
+
+Deletes transaction log entries older than the specified timestamp.
+
+<EngineBadge engines="RocksDB, LMDB" />
+
+On RocksDB (the default storage engine), deletion is database-wide: all tables in a database share one transaction log, so omit `table` and pass only `database` (or `schema`) and `timestamp`.
+
+<VersionBadge type="changed" version="v5.2.0" /> — On RocksDB, a request that includes `table` is now rejected with a `400` error, and a `table` that does not exist returns a `404`. Previously the `table` scope was silently ignored and the entire database's transaction log was purged. On LMDB, `table` scopes the deletion to that table's history, unchanged.
+
+```json
+{
+	"operation": "delete_transaction_logs_before",
+	"database": "dev",
 	"timestamp": 1598290282817
 }
 ```
