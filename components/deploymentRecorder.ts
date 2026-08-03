@@ -78,7 +78,8 @@ interface CreateOptions {
 
 /**
  * Run `write()` in a fresh transaction while preserving audit attribution. Recorder writes must
- * commit independently of a caller's transaction so an older staged row cannot overwrite them.
+ * commit independently of a caller's transaction so an older staged row cannot overwrite them;
+ * authorization is enforced by the deploy operation rather than these internal writes.
  *
  * `timeoutBudget` is sticky across RocksDB `getReadTxn()` calls, so reads inside `write()` cannot
  * silently restore the generic default. The transaction uses the larger of this budget and the
@@ -111,6 +112,7 @@ export class DeploymentRecorder {
 	private pendingPut: Promise<void> | null = null;
 	private dirty = false;
 	private sealed = false;
+	private flushSuppressed = false;
 	private readonly ingestTimeoutMs?: number;
 
 	private constructor(deploymentId: string, initial: Record<string, any>, ingestTimeoutMs?: number) {
@@ -193,7 +195,7 @@ export class DeploymentRecorder {
 	// the record dirty; the chained continuation issues a follow-up put once the prior one
 	// settles. This keeps event_log writes O(1) puts per burst rather than O(N) per event.
 	private scheduleFlush(): void {
-		if (this.sealed) {
+		if (this.sealed || this.flushSuppressed) {
 			// Sealed: accumulate state in memory but don't write. finish() does the single
 			// terminal write. See seal() for why. The emitter still emits live SSE events.
 			this.dirty = true;
@@ -210,6 +212,7 @@ export class DeploymentRecorder {
 				this.scheduleFlush();
 			}
 		});
+		this.pendingPut.catch((error) => logger.warn?.('Failed to persist deployment progress', error));
 	}
 
 	/**
@@ -226,6 +229,19 @@ export class DeploymentRecorder {
 	 * materialized by the time they reach us, so they take the simpler buffer path.
 	 */
 	async ingestPayload(source: Readable | Buffer | string): Promise<void> {
+		this.flushSuppressed = true;
+		try {
+			await this.ingestPayloadWithoutFlush(source);
+		} finally {
+			this.flushSuppressed = false;
+			if (this.dirty && !this.sealed) {
+				this.dirty = false;
+				this.scheduleFlush();
+			}
+		}
+	}
+
+	private async ingestPayloadWithoutFlush(source: Readable | Buffer | string): Promise<void> {
 		const hash = createHash('sha256');
 
 		// In-memory sources: the bytes are already resident, so hashing them and creating a

@@ -5506,6 +5506,7 @@ export function makeTable(options) {
 					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
 					// drop the canonical write when a secondary store hits a transient conflict.
 					transaction.next.sourceApply = transaction.sourceApply;
+					transaction.next.timeoutBudget = transaction.timeoutBudget;
 					// Inherit the replay marker so a multi-table replay transaction skips validation on
 					// every store, not just the first (harper#1316).
 					transaction.next.isReplay = transaction.isReplay;
