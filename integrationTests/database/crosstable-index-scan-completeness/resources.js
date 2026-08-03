@@ -125,24 +125,34 @@ export class Drain extends Resource {
 		const scan = q('scan', 'index');
 
 		const counts = {};
+		// Which table each returned row actually came from, keyed by the row-id prefix. #1881's
+		// worse outcome is a read resolved against a foreign column family returning a SIBLING
+		// TABLE's row at the expected cardinality — invisible to a count, visible here.
+		const owners = {};
 		for (const tableName of tableNames) {
 			const table = getTable(tableName);
 			if (!table) throw new Error(`unknown table ${tableName}`);
 			let count = 0;
+			const seen = new Set();
 			if (scan === 'full') {
 				for await (const r of table.search({ conditions: [] })) {
-					if (r.repositoryId === key) count++;
+					if (r.repositoryId === key) {
+						count++;
+						seen.add(String(r.id).split('-')[0]);
+					}
 				}
 			} else {
-				for await (const _r of table.search({
+				for await (const r of table.search({
 					operator: 'and',
 					conditions: [{ attribute: 'repositoryId', comparator: 'equals', value: key }],
 				})) {
 					count++;
+					seen.add(String(r.id).split('-')[0]);
 				}
 			}
 			counts[tableName] = count;
+			owners[tableName] = [...seen].sort();
 		}
-		return { order: tableNames, key, scan, counts };
+		return { order: tableNames, key, scan, counts, owners };
 	}
 }

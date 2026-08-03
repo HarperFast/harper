@@ -7,6 +7,12 @@
  * scan returns 0 rows even though the data is fully intact (full-scan of the same slot returns
  * everything).
  *
+ * FAILS-ON-BASE (measured 2026-08-03): with @harperfast/rocksdb-js pinned to 2.4.0 (the last
+ * pre-fix release; #1881 shipped in 2.5.0) this suite goes RED on three tests — `Q1 SPREAD`,
+ * `Q3 no-heal control` and `Q3 HEAL`. Note that the full-scan positive control running earlier
+ * in the file does NOT immunise these: a full scan warms the PRIMARY column family, and the
+ * defect lives in the index-CF read path. Re-verify after any change to seeding or test order.
+ *
  * QA-774 (this file): converts the original stalled RED candidate into a shipped-fix regression
  * anchor. The ORIGINAL repro forced multiple sorted runs via
  * `storage.rocks.writeBufferManagerSize: 8388608`; on this machine that cap now HANGS this
@@ -64,6 +70,7 @@ interface DrainStep {
 	table: string;
 	scan: 'index' | 'full';
 	count: number;
+	owners?: string[];
 }
 
 function countSstFiles(dir: string): { total: number; byDir: Record<string, number> } {
@@ -74,7 +81,7 @@ function countSstFiles(dir: string): { total: number; byDir: Record<string, numb
 		try {
 			entries = readdirSync(d, { withFileTypes: true });
 		} catch {
-			return;
+			return; // a column-family dir removed mid-walk by compaction is expected
 		}
 		for (const e of entries) {
 			const p = join(d, e.name);
@@ -119,7 +126,7 @@ suite('QA-631 F-158 blast-radius [rocksdb]', { skip: process.platform === 'win32
 			while (Date.now() < deadline) {
 				try {
 					const probe = await client.reqRest('/Probe/').timeout(2000);
-					if (probe.status !== 404) break;
+					if (probe.status === 200) break; // 500/503 during boot is NOT ready
 				} catch {
 					/* not ready yet */
 				}
@@ -197,6 +204,17 @@ suite('QA-631 F-158 blast-radius [rocksdb]', { skip: process.platform === 'win32
 		assert.strictEqual(r.status, 200, `Drain steps=${steps} should return 200, got ${r.status}`);
 		const body = (await r.json()) as { steps: DrainStep[]; key: string };
 		console.log(`[QA-631] Drain(steps=${steps}, key=${key}) -> ${JSON.stringify(body.steps)}`);
+		// Every returned row must belong to the table it was read from. Asserted here rather than
+		// per-test so no call site can opt out: #1881's severe outcome is a read resolved against a
+		// foreign column family returning a SIBLING TABLE's row, and at the expected cardinality a
+		// count assertion passes while the caller holds another table's data.
+		for (const step of body.steps)
+			assert.deepStrictEqual(
+				(step.owners ?? []).filter((o) => o !== step.table),
+				[],
+				`Drain(${steps}) read ${step.table} but got rows owned by ${JSON.stringify(step.owners)} — ` +
+					`a foreign column family answered this read`
+			);
 		return body.steps;
 	}
 
