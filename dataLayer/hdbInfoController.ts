@@ -183,15 +183,23 @@ export async function getVersionUpdateInfo() {
 							`You have installed a version lower than the version that your data was created on or was upgraded to. This may cause issues and is currently not supported.${os.EOL}${hdbTerms.SUPPORT_HELP_MSG}`
 						)
 					);
+					log.error(
+						`This instance's data was last run on version ${dataVersion}, which is newer than this installed version ${upgradeVersion}. Downgrading across major versions is not supported.`
+					);
 					throw new Error('Trying to downgrade major HDB versions is not supported.');
 				}
 				if (!hdbUtils.isCompatibleDataVersion(dataVersion.toString(), upgradeVersion.toString(), true)) {
 					console.log(chalk.yellow(`This instance's data was last run on version ${dataVersion}`));
+					log.warn(
+						`This instance's data was last run on version ${dataVersion}, which is newer than this installed version ${upgradeVersion}. Confirmation is required before running the older version against this data.`
+					);
 
 					if (await forceDowngradePrompt(new UpgradeObject(dataVersion, upgradeVersion))) {
 						await insertHdbUpgradeInfo(upgradeVersion.toString());
+						log.notify(`Downgrade confirmed; data version recorded as ${upgradeVersion}.`);
 					} else {
 						console.log('Cancelled downgrade, closing Harper');
+						log.notify('Cancelled downgrade, closing Harper');
 						process.exit(0);
 					}
 				}

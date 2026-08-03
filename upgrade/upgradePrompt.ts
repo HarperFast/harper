@@ -9,10 +9,21 @@ const UPGRADE_PROCEED = ['yes', 'y'];
 
 /**
  * Prompt the user before proceeding with a minor version downgrade
- * @param _upgradeObj - {UpgradeObject} Object includes the versions the data and current install are on
+ * @param upgradeObj - {UpgradeObject} Object includes the versions the data and current install are on
  * @returns {Promise<boolean>}
  */
-export async function forceDowngradePrompt(_upgradeObj: any) {
+export async function forceDowngradePrompt(upgradeObj: any) {
+	const override = assignCMDENVVariables(['CONFIRM_DOWNGRADE']);
+	// Without a terminal the prompt below blocks on stdin forever (systemd, containers, CI), so
+	// refuse to start instead unless a CONFIRM_DOWNGRADE override answers it (#2046).
+	if (override.CONFIRM_DOWNGRADE === undefined && !process.stdin.isTTY) {
+		throw new Error(
+			`This instance's data was last run on Harper ${upgradeObj.data_version}, which is newer than this installed version ${upgradeObj.upgrade_version}.` +
+				' Running the older version requires confirmation, and there is no interactive terminal to ask on.' +
+				' Set CONFIRM_DOWNGRADE=yes (environment variable or --CONFIRM_DOWNGRADE yes) to proceed with the downgrade,' +
+				` or run Harper ${upgradeObj.data_version} or newer.`
+		);
+	}
 	let downgradeMessage =
 		`${os.EOL}` +
 		chalk.bold.green(
@@ -22,7 +33,7 @@ export async function forceDowngradePrompt(_upgradeObj: any) {
 				' backup before proceeding.' +
 				`${os.EOL}`
 		);
-	prompt.override = assignCMDENVVariables(['CONFIRM_DOWNGRADE']);
+	prompt.override = override;
 	prompt.start();
 	prompt.message = downgradeMessage;
 	let downgradeConfirmation = {
