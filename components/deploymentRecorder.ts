@@ -86,8 +86,8 @@ interface CreateOptions {
  * transaction and binds it into the ambient AsyncLocalStorage context for the duration of
  * `callback` — including every write `write()` performs — so `table.put()`'s own transaction
  * lookup (Resource.ts) finds this transaction already open and joins it rather than starting
- * a fresh, un-extended one. The callback gets a direct, synchronous reference to the new
- * transaction, so the budget is set before any write is staged.
+ * a fresh, un-extended one. The budget itself is set *after* calling `write()` (see the
+ * comment inline below) rather than before.
  *
  * This does not change what the monitor protects (issue #1407's no-silent-partial-commit
  * guarantee still applies) — it only widens the window before that guard engages, for this
@@ -102,9 +102,12 @@ function withExtendedTransactionTimeout<T>(timeoutMs: number, write: () => Promi
 		// budget *before* calling write() would just be clobbered. That read happens
 		// synchronously before write()'s first await, so by the time the call below returns
 		// (even though its promise is still pending), the reset has already happened and this
-		// assignment is the one that sticks for the rest of the write's lifetime.
+		// assignment is the one that sticks for the rest of the write's lifetime. Unconditional,
+		// not a "only raise" comparison: `.timeout` is `undefined` until the first `getReadTxn()`
+		// call, and `undefined < timeoutMs` is always false, which would silently skip the
+		// assignment entirely on a transaction that hasn't read yet.
 		const result = write();
-		if (t.timeout < timeoutMs) t.timeout = timeoutMs;
+		t.timeout = timeoutMs;
 		return result;
 	});
 }
@@ -243,7 +246,10 @@ export class DeploymentRecorder {
 			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
 			this.record.payload_hash = hash.digest('hex');
 			this.record.payload_size = buffer.length;
-			await this.put();
+			// Same blob-durability gate as the streaming path below applies here too (the commit
+			// waits for the buffer to land on disk), so a large base64-in-JSON/CBOR body needs the
+			// same extended budget.
+			await withExtendedTransactionTimeout(ingestTransactionTimeoutMs(this.ingestTimeoutMs), () => this.put());
 			return;
 		}
 
@@ -321,8 +327,7 @@ export class DeploymentRecorder {
 		// a large upload mid-stream (which rejects both tapDone and the blob write) fails the
 		// deploy loudly here instead of leaking an unhandledRejection. This also makes hash/size
 		// correctness independent of the put()/store write timing and of isSaving() being defined.
-		const ingestTimeoutMs = coerceTimeoutMs(this.ingestTimeoutMs, DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
-		const putDone = withExtendedTransactionTimeout(ingestTimeoutMs, () => this.put());
+		const putDone = withExtendedTransactionTimeout(ingestTransactionTimeoutMs(this.ingestTimeoutMs), () => this.put());
 		const saving = isSaving(blob) ?? Promise.resolve();
 		try {
 			await Promise.all([putDone, tapDone, saving]);
@@ -520,6 +525,17 @@ export const DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS = 600_000;
 export function coerceTimeoutMs(value: unknown, fallback: number): number {
 	const requested = Number(value);
 	return Number.isFinite(requested) && requested >= 0 ? requested : fallback;
+}
+
+// Floored at the default, never lowered by it: `deployment_timeout` also governs the
+// peer-side row/blob wait (awaitDeploymentRow), where 0 means "poll once, don't wait" — a
+// legitimate fast-fail setting for peers that must never also starve the origin's own disk
+// write down to 0ms.
+export function ingestTransactionTimeoutMs(deploymentTimeout: unknown): number {
+	return Math.max(
+		coerceTimeoutMs(deploymentTimeout, DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS),
+		DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS
+	);
 }
 
 /**
