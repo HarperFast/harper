@@ -1,0 +1,6 @@
+# QA-631 — F-158 (GH #1881) blast-radius characterization.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true

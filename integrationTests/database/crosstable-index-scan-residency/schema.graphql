@@ -1,0 +1,24 @@
+# QA-656c -- minimal warm/cold ARM1 hypothesis test, follow-up to QA-653/QA-656/QA-656b
+# (GH#1881, source:gh:1881). TWO tables only (a 4-table/2-pair variant of this fixture was
+# tried first and caused a write-stall -- the 3rd table's first write exceeded a 15s fetch
+# timeout, almost certainly RocksDB backing up against the 8MB WriteBufferManager cap once
+# cumulative write volume crossed it; 2 tables at this per-table volume did not stall).
+#   WarmA / WarmB -- same GenA/GenB shape (id @primaryKey, repositoryId @indexed, n, body).
+#   Leg 1 ("warm-A-first"): solo-warm WarmA, then Drain(WarmA,WarmB) -- WarmB is cold-first-touch
+#     in slot 2.
+#   Leg 2 ("warm-B-first", warming swapped): solo-warm WarmB, then Drain(WarmB,WarmA) -- note
+#     WarmA is NOT genuinely cold here (it was already read in leg 1 as the warmed slot-1
+#     table), so leg 2 tests "does a table already warmed earlier still avoid shorting when
+#     moved to slot 2", not a pristine cold-B case. See test file docstring for the caveat.
+type WarmA @table(database: "qa656c") @export {
+	id: ID @primaryKey
+	repositoryId: String @indexed
+	n: Int
+	body: String
+}
+type WarmB @table(database: "qa656c") @export {
+	id: ID @primaryKey
+	repositoryId: String @indexed
+	n: Int
+	body: String
+}
