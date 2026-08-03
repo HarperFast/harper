@@ -492,12 +492,25 @@ export class ResourceBridge extends BridgeMethods {
 				: typeof deleteObj.timestamp === 'string'
 					? Number.parseInt(deleteObj.timestamp)
 					: deleteObj.timestamp;
+		const databaseName = deleteObj.database || deleteObj.schema || DEFAULT_DATABASE;
 		const table = getTable(deleteObj);
+		// A nonexistent table must not fall through to the no-table branch below — on RocksDB that
+		// widens a table-scoped request (e.g. a typo) into a whole-database log purge (#2049).
+		// Presence check, not truthiness: a table named "0" addressed numerically is still table-scoped.
+		if (deleteObj.table != null && !table)
+			throw handleHDBError(
+				new Error(),
+				HDB_ERROR_MSGS.TABLE_NOT_FOUND(databaseName, deleteObj.table),
+				404,
+				undefined,
+				undefined,
+				true
+			);
 		if (!table) {
 			// no table, check if any of the tables are RocksDB
 			// since all tables share the same transaction log store, we break after the first
 			// RocksDB table is found
-			const tables = getDatabases()[deleteObj.database];
+			const tables = getDatabases()[databaseName];
 			if (tables) {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
@@ -509,9 +522,16 @@ export class ResourceBridge extends BridgeMethods {
 				}
 			}
 		} else if (table.primaryStore instanceof RocksDatabase) {
-			const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
-			totalResults.log_files_deleted += deleted.length;
-			totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
+			// All tables in a RocksDB database share one transaction log with no per-table purge
+			// granularity; honoring `table` here would silently purge every sibling table's log (#2049).
+			throw handleHDBError(
+				new Error(),
+				`Table-level transaction log deletion is not supported for RocksDB tables because all tables in a database share one transaction log; to delete the transaction logs for the entire '${databaseName}' database, use delete_transaction_logs_before with only 'database' and 'timestamp'`,
+				400,
+				undefined,
+				undefined,
+				true
+			);
 		} else {
 			totalResults.entries_deleted += await table.deleteHistory(before, deleteObj.cleanup_deleted_records);
 		}
@@ -698,7 +718,8 @@ function getTable(operationObject: { database?: string; schema?: string; table?:
 	const databaseName = operationObject.database || operationObject.schema || DEFAULT_DATABASE;
 	const tables = getDatabases()[databaseName];
 	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(databaseName), 404);
-	return operationObject.table ? tables[operationObject.table] : undefined;
+	// Presence check, not truthiness, so a table named "0" resolves when addressed numerically.
+	return operationObject.table != null ? tables[operationObject.table] : undefined;
 }
 
 /**

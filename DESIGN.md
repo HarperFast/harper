@@ -479,6 +479,20 @@ corrupt by verify). This closes the "healthy-looking but incomplete" and concurr
 the remaining engine/blob point-in-time skew (a blob unlinked between the engine cut and the blob
 walk) is the documented best-effort limitation above.
 
+## RocksDB transaction log purges are database-wide only (`ResourceBridge.deleteTransactionLogsBefore`)
+
+On RocksDB, every table in a database writes to one shared set of transaction logs (partitioned per
+origin node, not per table), and `purgeLogs()` deletes whole log files — rocksdb-js has no table
+filter, and adding one would mean rewriting files instead of deleting them. So a table-scoped
+`delete_transaction_logs_before` is unimplementable at the storage layer; the bridge rejects
+`table` on RocksDB with a 400 rather than silently purging every sibling table's history
+(harper#2049 — the original code did exactly that, and a _typo'd_ table name did too, because a
+missing table fell through to the no-table branch; that now 404s). Two consequences to preserve:
+the deprecated `delete_audit_logs_before` op _requires_ `table`, so it always errors on RocksDB
+(the message steers callers to the new op without `table`); and the table/no-table checks in the
+bridge use `!= null` presence, not truthiness, so a table named `"0"` addressed numerically stays
+table-scoped instead of widening to a database purge.
+
 ## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
 
 The built-in `scheduler` plugin (#951) runs config-declared jobs "exactly once per cluster." The

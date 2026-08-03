@@ -113,7 +113,27 @@ suite('Transaction Logs', (ctx) => {
 	test('delete_transaction_logs_before suiteStart deletes no files', async () => {
 		// `suiteStart` is from before any inserts happened — no log files should
 		// have been rotated out yet, so the job should run to completion with
-		// `log_files_deleted: 0` and `entries_deleted: 0`.
+		// `log_files_deleted: 0` and `entries_deleted: 0`. No `table`: on RocksDB
+		// the operation is database-wide only (harper#2049).
+		const response = await client
+			.req()
+			.send({
+				operation: 'delete_transaction_logs_before',
+				timestamp: `${suiteStart}`,
+				schema: SCHEMA,
+			})
+			.expect(200);
+
+		const jobId = getJobId(response.body);
+		const jobResponse = await awaitJob(client, jobId, 15);
+		assert.equal(jobResponse.body[0].result.log_files_deleted, 0, jobResponse.text);
+		assert.equal(jobResponse.body[0].result.entries_deleted, 0, jobResponse.text);
+	});
+
+	test('delete_transaction_logs_before with a table is rejected on RocksDB', async () => {
+		// All tables in a RocksDB database share one transaction log, so a
+		// table-scoped delete used to silently purge every sibling table's log
+		// (harper#2049). It must fail instead of widening the scope.
 		const response = await client
 			.req()
 			.send({
@@ -126,8 +146,8 @@ suite('Transaction Logs', (ctx) => {
 
 		const jobId = getJobId(response.body);
 		const jobResponse = await awaitJob(client, jobId, 15);
-		assert.equal(jobResponse.body[0].result.log_files_deleted, 0, jobResponse.text);
-		assert.equal(jobResponse.body[0].result.entries_deleted, 0, jobResponse.text);
+		assert.equal(jobResponse.body[0].status, 'ERROR', jobResponse.text);
+		assert.ok(JSON.stringify(jobResponse.body[0].message).includes('not supported for RocksDB'), jobResponse.text);
 	});
 
 	test('drop test_logs table', async () => {
