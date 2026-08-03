@@ -77,37 +77,26 @@ interface CreateOptions {
 }
 
 /**
- * Run `write()` (a single table.put()) inside its own transaction whose open-time budget is
- * `timeoutMs` instead of the generic storage.maxTransactionOpenTime default, so the
- * long-transaction monitor (resources/DatabaseTransaction.ts) doesn't abort a write that is
- * known in advance to legitimately need more time.
+ * Run `write()` (a single table.put()) in a fresh, isolated transaction with an open-time
+ * budget of `timeoutMs` instead of the generic storage.maxTransactionOpenTime default. An
+ * explicit empty context (rather than `transaction(callback)`'s ambient ALS lookup) forces a
+ * new transaction even when the caller is already inside one — joining an ambient transaction
+ * here would extend an unrelated write's budget, and on the streaming path risks a circular
+ * wait against that outer transaction's own commit. LMDB has a known gap: see the note inline
+ * below.
  *
- * `resources/transaction.ts`'s `transaction(callback)` (no explicit context) creates the
- * transaction and binds it into the ambient AsyncLocalStorage context for the duration of
- * `callback` — including every write `write()` performs — so `table.put()`'s own transaction
- * lookup (Resource.ts) finds this transaction already open and joins it rather than starting
- * a fresh, un-extended one. The budget itself is set *after* calling `write()` (see the
- * comment inline below) rather than before.
- *
- * This does not change what the monitor protects (issue #1407's no-silent-partial-commit
- * guarantee still applies) — it only widens the window before that guard engages, for this
- * one write.
+ * `.timeout` is set *after* calling `write()`, not before: `write()`'s own pre-commit read
+ * calls `getReadTxn()`, which unconditionally resets `.timeout` to the generic default
+ * (DatabaseTransaction.ts) — that read runs synchronously before `write()`'s first await, so
+ * this assignment lands after the reset instead of being clobbered by it.
  */
 function withExtendedTransactionTimeout<T>(timeoutMs: number, write: () => Promise<T>): Promise<T> {
-	return transaction((txn) => {
-		const t = txn as unknown as { timeout: number };
-		// `write()`'s own pre-commit read (fetching the existing entry for ifVersion/merge)
-		// calls getReadTxn(), which unconditionally resets `.timeout` back to the generic
-		// storage.maxTransactionOpenTime default (DatabaseTransaction.ts) — so setting the
-		// budget *before* calling write() would just be clobbered. That read happens
-		// synchronously before write()'s first await, so by the time the call below returns
-		// (even though its promise is still pending), the reset has already happened and this
-		// assignment is the one that sticks for the rest of the write's lifetime. Unconditional,
-		// not a "only raise" comparison: `.timeout` is `undefined` until the first `getReadTxn()`
-		// call, and `undefined < timeoutMs` is always false, which would silently skip the
-		// assignment entirely on a transaction that hasn't read yet.
+	return transaction({}, (txn) => {
 		const result = write();
-		t.timeout = timeoutMs;
+		// TODO(harper#2057): only extends the RocksDB DatabaseTransaction head; on
+		// HARPER_STORAGE_ENGINE=lmdb, Table.txnForContext() chains a separate LMDBTransaction
+		// that this budget doesn't reach.
+		(txn as unknown as { timeout: number }).timeout = timeoutMs;
 		return result;
 	});
 }
