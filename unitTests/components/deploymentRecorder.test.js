@@ -23,7 +23,9 @@ const {
 } = require('#src/components/deploymentRecorder');
 const { databases } = require('#src/resources/databases');
 const { contextStorage } = require('#src/resources/transaction');
+const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
 const terms = require('#src/utility/hdbTerms');
+const { waitFor } = require('../waitFor.js');
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 
@@ -511,6 +513,36 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		assert.strictEqual(ambientContext.transaction, ambientTransaction);
 		assert.strictEqual(writeContexts.length, 2);
 		assert.ok(writeContexts.every((context) => context.transaction !== ambientTransaction));
+	});
+
+	it('defers progress flushes until the payload-ingest write settles', async () => {
+		const emitter = new ProgressEmitter();
+		let releaseIngest;
+		const ingestGate = new Promise((resolve) => (releaseIngest = resolve));
+		let payloadWrites = 0;
+		let putCalls = 0;
+		const installed = installMockDeploymentTable();
+		installed.mock.put = async (row) => {
+			putCalls++;
+			if (row.payload_blob && payloadWrites++ === 0) await ingestGate;
+			installed.mock.rows.set(row.deployment_id, row);
+		};
+
+		let recorder;
+		try {
+			recorder = await DeploymentRecorder.create({ project: 'p', emitter });
+			const ingest = recorder.ingestPayload(Buffer.from('payload'));
+			await waitFor(() => putCalls === 2);
+			emitter.emit('phase', { phase: 'uploading', status: 'start' });
+			assert.strictEqual(putCalls, 2);
+			releaseIngest();
+			await ingest;
+			await waitFor(() => putCalls === 3);
+		} finally {
+			releaseIngest?.();
+			await recorder?.finish('failed');
+			installed.restore();
+		}
 	});
 });
 
