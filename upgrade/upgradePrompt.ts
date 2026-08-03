@@ -14,15 +14,23 @@ const UPGRADE_PROCEED = ['yes', 'y'];
  */
 export async function forceDowngradePrompt(upgradeObj: any) {
 	const override = assignCMDENVVariables(['CONFIRM_DOWNGRADE']);
-	// Without a terminal the prompt below blocks on stdin forever (systemd, containers, CI), so
-	// refuse to start instead unless a CONFIRM_DOWNGRADE override answers it (#2046).
-	if (override.CONFIRM_DOWNGRADE === undefined && !process.stdin.isTTY) {
-		throw new Error(
-			`This instance's data was last run on Harper ${upgradeObj.data_version}, which is newer than this installed version ${upgradeObj.upgrade_version}.` +
-				' Running the older version requires confirmation, and there is no interactive terminal to ask on.' +
-				' Set CONFIRM_DOWNGRADE=yes (environment variable or --CONFIRM_DOWNGRADE yes) to proceed with the downgrade,' +
-				` or run Harper ${upgradeObj.data_version} or newer.`
-		);
+	// Without a terminal, prompt.get() blocks on stdin forever (systemd, containers, CI) — and an
+	// override value the prompt library rejects (its pattern is lowercase-only) is deleted and
+	// falls through to that same blocking read. So with no TTY, resolve the answer here and never
+	// reach the prompt (#2046).
+	if (!process.stdin.isTTY) {
+		if (override.CONFIRM_DOWNGRADE === undefined) {
+			throw new Error(
+				`This instance's data was last run on Harper ${upgradeObj.data_version}, which is newer than this installed version ${upgradeObj.upgrade_version}.` +
+					' Running the older version requires confirmation, and there is no interactive terminal to ask on.' +
+					' Set CONFIRM_DOWNGRADE=yes (environment variable or --CONFIRM_DOWNGRADE yes) to proceed with the downgrade,' +
+					` or run Harper ${upgradeObj.data_version} or newer.`
+			);
+		}
+		const answer = override.CONFIRM_DOWNGRADE.toLowerCase();
+		if (UPGRADE_PROCEED.includes(answer)) return true;
+		if (answer === 'no' || answer === 'n') return false;
+		throw new Error(`Unrecognized CONFIRM_DOWNGRADE value '${override.CONFIRM_DOWNGRADE}'; use yes or no.`);
 	}
 	let downgradeMessage =
 		`${os.EOL}` +

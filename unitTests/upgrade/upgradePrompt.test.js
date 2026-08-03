@@ -51,8 +51,21 @@ describe('forceDowngradePrompt — non-interactive starts', () => {
 		assert.strictEqual(await forceDowngradePrompt(upgradeObj), true);
 	});
 
+	it('accepts the override case-insensitively (the prompt library would reject YES and hang)', async () => {
+		process.env.CONFIRM_DOWNGRADE = 'YES';
+		assert.strictEqual(await forceDowngradePrompt(upgradeObj), true);
+	});
+
 	it('declines without a TTY when CONFIRM_DOWNGRADE=no', async () => {
 		process.env.CONFIRM_DOWNGRADE = 'no';
 		assert.strictEqual(await forceDowngradePrompt(upgradeObj), false);
+	});
+
+	it('throws on an unrecognized override value instead of falling through to the blocking prompt', async () => {
+		process.env.CONFIRM_DOWNGRADE = 'true';
+		await assert.rejects(forceDowngradePrompt(upgradeObj), (error) => {
+			assert.ok(error.message.includes("Unrecognized CONFIRM_DOWNGRADE value 'true'"));
+			return true;
+		});
 	});
 });
