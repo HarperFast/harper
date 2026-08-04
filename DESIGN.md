@@ -113,7 +113,7 @@ The cross-thread subscription path (default `crossThreads`) drives every `Table.
 - **`notifyScheduled` + `setImmediate`** in the `'committed'` listener defers the iteration off the commit microtask. Multiple `'committed'` events that land in the same event-loop turn collapse into one notify pass. `notifyScheduled` stays set for the entire drain — including across yield-and-resume turns — so a re-entry from a new `'committed'` event cannot spawn a second concurrent notify on the same iterator.
 - **Batched yielding** in `notifyFromTransactionData` (`NOTIFY_BATCH_SIZE`) is gated by `allowYield`. The `'committed'` path passes `allowYield = true`; the `listenToCommits` (same-thread `aftercommit`) path does not, because that path holds an inter-thread `'thread-local-writes'` lock that must not span event-loop turns. `subscribersWithTxns` is carried across yields via `subscriptions.pendingTxnSubscribers` so the `end_txn` signal fires exactly once when the iterator truly drains. When `activeCount` drops to zero mid-yield, the next continuation drops the carry-over to avoid invoking ended subscribers' listeners.
 
-## Audit-entry removal loops must await each `removeAuditEntry()`/`removeEntry()` call inline
+## Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise
 
 `scheduleAuditCleanup` (`auditStore.ts`) and `Table.deleteHistory` (`Table.ts`, the LMDB path behind
 `delete_transaction_logs_before`) both iterate a range of audit records and remove each one. Both were
@@ -121,8 +121,11 @@ originally written as `completion = removeAuditEntry(auditStore, auditRecord)` i
 only the final iteration's promise afterward. Any rejection from a non-last iteration was silently
 discarded — the promise reference was overwritten before it could be awaited or caught — and surfaced
 later as an unhandled rejection instead, with no logging to explain it. Any loop that removes
-audit/primary-store entries in a batch must await (and catch) each removal inline — never stash a
-per-iteration promise in an outer variable to await only the last one.
+audit/primary-store entries in a batch must attach a rejection handler to every removal immediately
+and drain all tracked promises before returning — never stash a per-iteration promise in an outer
+variable to await only the last one. `Table.deleteHistory` allows up to ten removals in flight so
+storage writes overlap without growing an unbounded pending set; `scheduleAuditCleanup` remains
+sequential because it is an automatic background loop.
 
 `removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
 also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding

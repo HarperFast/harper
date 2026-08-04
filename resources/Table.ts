@@ -120,6 +120,7 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
+const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
 // RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
@@ -5050,6 +5051,21 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
+			const inFlightRemovals = new Set<Promise<void>>();
+			async function queueRemoval(
+				remove: () => MaybePromise<void>,
+				errorMessage: string,
+				onSuccess?: () => void
+			): Promise<void> {
+				const removal = new Promise<void>((resolve) => resolve(remove()))
+					.then(onSuccess, (error) => harperLogger.warn(errorMessage, error))
+					.finally(() => inFlightRemovals.delete(removal));
+				inFlightRemovals.add(removal);
+				if (inFlightRemovals.size >= MAX_CONCURRENT_HISTORY_REMOVALS) {
+					await Promise.race(inFlightRemovals);
+				}
+			}
+			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
 			for (const auditRecord of auditStore.getRange({
 				start: 0,
@@ -5057,13 +5073,15 @@ export function makeTable(options) {
 			})) {
 				await rest(); // yield to other async operations
 				if (auditRecord.tableId !== tableId) continue;
-				try {
-					await removeAuditEntry(auditStore, auditRecord);
-					entriesDeleted++;
-				} catch (error) {
-					harperLogger.warn('Error removing audit entry during deleteHistory', error);
-				}
+				await queueRemoval(
+					() => removeAuditEntry(auditStore, auditRecord),
+					'Error removing audit entry during deleteHistory',
+					() => {
+						entriesDeleted++;
+					}
+				);
 			}
+			await drainRemovals();
 			if (cleanupDeletedRecords) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
 				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
@@ -5071,13 +5089,13 @@ export function makeTable(options) {
 					const { value, localTime } = entry;
 					await rest(); // yield to other async operations
 					if (value === null && localTime < endTime) {
-						try {
-							await removeEntry(primaryStore, entry);
-						} catch (error) {
-							harperLogger.warn('Error removing deleted record during deleteHistory', error);
-						}
+						await queueRemoval(
+							() => removeEntry(primaryStore, entry),
+							'Error removing deleted record during deleteHistory'
+						);
 					}
 				}
+				await drainRemovals();
 			}
 			return entriesDeleted;
 		}

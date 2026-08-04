@@ -156,6 +156,62 @@ describe('Audit log', () => {
 			await AuditedTable.deleteHistory(Date.now() + 60_000); // clear record 30's now-orphaned entry
 		}
 	});
+	it('deleteHistory limits concurrent removals without serializing them', async function () {
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
+		await AuditedTable.deleteHistory(Date.now() + 60_000);
+
+		for (let id = 40; id < 51; id++) await AuditedTable.put(id, { name: `concurrent-${id}` });
+		const targetKeys = new Set();
+		for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
+			if (record.tableId === AuditedTable.tableId && record.recordId >= 40 && record.recordId < 51) {
+				targetKeys.add(record.key);
+			}
+		}
+		assert.equal(targetKeys.size, 11, 'test setup: expected one audit entry per inserted record');
+
+		const originalRemove = AuditedTable.auditStore.remove.bind(AuditedTable.auditStore);
+		const releaseRemovals = [];
+		let activeRemovals = 0;
+		let maximumActiveRemovals = 0;
+		let removalCalls = 0;
+		let releaseImmediately = false;
+		AuditedTable.auditStore.remove = (key) => {
+			if (!targetKeys.has(key)) return originalRemove(key);
+			removalCalls++;
+			activeRemovals++;
+			maximumActiveRemovals = Math.max(maximumActiveRemovals, activeRemovals);
+			if (releaseImmediately) {
+				activeRemovals--;
+				return Promise.resolve();
+			}
+			return new Promise((resolve) => {
+				releaseRemovals.push(() => {
+					activeRemovals--;
+					resolve();
+				});
+			});
+		};
+
+		let deletion;
+		try {
+			deletion = AuditedTable.deleteHistory(Date.now() + 60_000);
+			await waitFor(() => removalCalls >= 10, { timeout: 5000, message: 'expected ten removals to start' });
+			assert.equal(removalCalls, 10, 'the eleventh removal must wait for an in-flight removal');
+
+			releaseRemovals.shift()();
+			await waitFor(() => removalCalls === 11, { timeout: 5000, message: 'expected the final removal to start' });
+			while (releaseRemovals.length > 0) releaseRemovals.shift()();
+
+			assert.equal(await deletion, 11);
+			assert.equal(maximumActiveRemovals, 10);
+		} finally {
+			releaseImmediately = true;
+			while (releaseRemovals.length > 0) releaseRemovals.shift()();
+			await deletion?.catch(() => {});
+			AuditedTable.auditStore.remove = originalRemove;
+			await AuditedTable.deleteHistory(Date.now() + 60_000);
+		}
+	});
 	for (const [label, failingCallback] of [
 		['rejects', () => Promise.reject(new Error('simulated primary-store tombstone removal failure'))],
 		[
