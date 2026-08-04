@@ -51,7 +51,11 @@ import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
-import { getEnvBuiltInComponents, recoverInterruptedComponentExtractions } from './Application.ts';
+import {
+	getEnvBuiltInComponents,
+	recoverInterruptedComponentExtraction,
+	recoverInterruptedComponentExtractions,
+} from './Application.ts';
 import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
 
@@ -59,6 +63,7 @@ const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
+let componentLoadGeneration = 0;
 
 /**
  * Load all the applications registered in Harper, those in the components directory as well as any directly
@@ -112,6 +117,7 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 }
 
 export async function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
+	const loadGeneration = ++componentLoadGeneration;
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
 	let failedRecoveries = new Map<string, Error>();
@@ -130,6 +136,34 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 	// secrets heal. Never throws.
 	await materializeGlobalSecrets();
 	const cfsLoaded: Promise<any>[] = [];
+	const deferredRecoveries = new Map(
+		[...failedRecoveries].filter(([, error]) => error instanceof ComponentPreparationLockTimeoutError)
+	);
+	const deferComponentLoad = (appName: string) => {
+		componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
+		void recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
+			.then(async () => {
+				if (loadGeneration !== componentLoadGeneration) return;
+				const appFolder = join(CF_ROUTES_DIR, appName);
+				if (!existsSync(appFolder)) return;
+				const mountResult = tryRootConfigMount(appName);
+				if (!mountResult.ok) return;
+				await loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
+					isRoot: false,
+					autoReload: false,
+					appName,
+					mount: mountResult.mount,
+				});
+			})
+			.catch((error) => {
+				const recoveryError = error instanceof Error ? error : new Error(String(error));
+				componentLifecycle.failed(
+					appName,
+					recoveryError,
+					`Component '${appName}' failed to load after waiting for in-progress preparation`
+				);
+			});
+	};
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 		for (const appEntry of cfFolders) {
@@ -141,11 +175,8 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			const recoveryError = failedRecoveries.get(appName);
 			if (recoveryError) {
 				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
-					componentLifecycle.failed(
-						appName,
-						recoveryError,
-						`Component '${appName}' is waiting for in-progress preparation to finish`
-					);
+					deferredRecoveries.delete(appName);
+					deferComponentLoad(appName);
 					continue;
 				}
 				componentLifecycle.failed(
@@ -167,6 +198,9 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 				})
 			);
 		}
+	}
+	for (const [appName, recoveryError] of deferredRecoveries) {
+		if (recoveryError instanceof ComponentPreparationLockTimeoutError) deferComponentLoad(appName);
 	}
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {

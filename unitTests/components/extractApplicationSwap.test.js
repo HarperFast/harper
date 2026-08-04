@@ -11,12 +11,16 @@ testUtils.preTestPrep();
 
 const {
 	extractApplication,
+	recoverInterruptedComponentExtraction,
 	recoverInterruptedComponentExtractions,
 	dropComponentDirectory,
 	Application,
 } = require('#src/components/Application');
 const { packageDirectory } = require('#src/components/packageComponent');
-const { withComponentPreparationLock } = require('#src/components/componentPreparationLock');
+const {
+	ComponentPreparationLockTimeoutError,
+	withComponentPreparationLock,
+} = require('#src/components/componentPreparationLock');
 
 async function makeFixture(files) {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-src-'));
@@ -195,7 +199,7 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
-	it('waits for active component preparation before recovering the component', async function () {
+	it('defers bulk recovery, then waits for active preparation before recovering the component', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-startup-race-'));
 		const dirPath = path.join(componentsRoot, 'web');
 		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
@@ -213,9 +217,10 @@ describe('extractApplication directory swap', () => {
 
 		try {
 			await started;
-			setTimeout(() => releaseRecovery(), 25);
 			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
-			assert.strictEqual(failures.size, 0);
+			assert(failures.get('web') instanceof ComponentPreparationLockTimeoutError);
+			setTimeout(() => releaseRecovery(), 25);
+			await recoverInterruptedComponentExtraction(componentsRoot, 'web');
 			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
 		} finally {
 			releaseRecovery?.();

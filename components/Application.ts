@@ -896,35 +896,8 @@ export async function recoverInterruptedComponentExtractions(
 		entries
 			.filter((entry) => entry.isDirectory())
 			.map(async (entry) => {
-				const componentDirPath = join(componentsRootDirPath, entry.name);
 				try {
-					await withComponentPreparationLock(
-						componentDirPath,
-						async () => {
-							const asideStagingDir = extractionStagingDirectory(componentDirPath);
-							try {
-								await lstat(asideStagingDir);
-							} catch (error) {
-								if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-								throw error;
-							}
-							await ensureExtractionStagingDirectory(asideStagingDir);
-							await recoverOrCleanupStaleExtractionPaths(
-								{ name: entry.name, dirPath: componentDirPath, logger },
-								asideStagingDir
-							);
-						},
-						{
-							timeoutMs: COMPONENT_RECOVERY_WAIT_TIMEOUT_MS,
-							onWait: (owner) => {
-								logger.info(
-									`Waiting to settle component deployment state for ${entry.name}` +
-										(owner ? ` held by process ${owner.pid}, thread ${owner.threadId}` : '')
-								);
-							},
-							isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
-						}
-					);
+					await recoverInterruptedComponentExtraction(componentsRootDirPath, entry.name, false);
 				} catch (error) {
 					const recoveryError = error instanceof Error ? error : new Error(String(error));
 					failedComponents.set(entry.name, recoveryError);
@@ -938,6 +911,42 @@ export async function recoverInterruptedComponentExtractions(
 			})
 	);
 	return failedComponents;
+}
+
+export async function recoverInterruptedComponentExtraction(
+	componentsRootDirPath: string,
+	componentName: string,
+	waitForPreparation = true
+): Promise<void> {
+	const componentDirPath = join(componentsRootDirPath, componentName);
+	await withComponentPreparationLock(
+		componentDirPath,
+		async () => {
+			const asideStagingDir = extractionStagingDirectory(componentDirPath);
+			try {
+				await lstat(asideStagingDir);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+				throw error;
+			}
+			await ensureExtractionStagingDirectory(asideStagingDir);
+			await recoverOrCleanupStaleExtractionPaths(
+				{ name: componentName, dirPath: componentDirPath, logger },
+				asideStagingDir
+			);
+		},
+		{
+			timeoutMs: waitForPreparation ? COMPONENT_RECOVERY_WAIT_TIMEOUT_MS : 0,
+			renewTimeoutWhileOwnerAlive: waitForPreparation,
+			onWait: (owner) => {
+				logger.info(
+					`Waiting to settle component deployment state for ${componentName}` +
+						(owner ? ` held by process ${owner.pid}, thread ${owner.threadId}` : '')
+				);
+			},
+			isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
+		}
+	);
 }
 
 export async function retireComponentExtractionStaging(
