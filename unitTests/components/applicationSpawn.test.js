@@ -16,6 +16,7 @@ const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const testUtils = require('../testUtils.js');
+const { waitFor } = require('../waitFor.js');
 testUtils.preTestPrep();
 
 const {
@@ -173,9 +174,16 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		// exactly the state that let the old exitCode/signalCode check skip probing the process group.
 		assert.notStrictEqual(childProcess.exitCode, null);
 
-		await delay(50);
-		const sizeBeforeTermination = (await require('node:fs/promises').stat(writesPath)).size;
-		assert.ok(sizeBeforeTermination > 0, 'descendant writer should have started before termination');
+		const sizeBeforeTermination = await waitFor(
+			async () => {
+				try {
+					return (await require('node:fs/promises').stat(writesPath)).size;
+				} catch {
+					return false;
+				}
+			},
+			{ message: 'descendant writer should have started before termination' }
+		);
 
 		await terminateProcessTree(childProcess, Promise.resolve());
 
@@ -255,6 +263,18 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 				},
 			}),
 			false
+		);
+		assert.equal(
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['456'],
+				readStat: (path) => {
+					if (path === '/proc/123/stat') throw new Error('leader reaped');
+					return '456 (running child) S 1 123 123';
+				},
+			}),
+			true
 		);
 	});
 
