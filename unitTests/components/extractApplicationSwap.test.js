@@ -121,11 +121,14 @@ describe('extractApplication directory swap', () => {
 		const dirPath = path.join(componentsRoot, 'web');
 		const olderAside = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-100-previous');
 		const staleAside = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-200-previous');
+		const malformedAside = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-999999');
 		await fs.mkdir(olderAside, { recursive: true });
 		await fs.writeFile(path.join(olderAside, 'package.json'), '{"name":"web","version":"0.9.0"}\n');
 		await fs.mkdir(staleAside, { recursive: true });
 		await fs.writeFile(path.join(staleAside, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
 		await fs.writeFile(path.join(staleAside, 'old-only.txt'), 'previous bytes\n');
+		await fs.mkdir(malformedAside, { recursive: true });
+		await fs.writeFile(path.join(malformedAside, 'package.json'), '{"name":"web","version":"9.9.9"}\n');
 		await fs.mkdir(dirPath, { recursive: true });
 		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
 		await fs.writeFile(path.join(dirPath, 'partial-only.txt'), 'incomplete bytes\n');

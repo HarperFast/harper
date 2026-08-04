@@ -142,6 +142,9 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 	const deferredRecoveries = new Map(
 		[...failedRecoveries].filter(([, error]) => error instanceof ComponentPreparationLockTimeoutError)
 	);
+	const unreportedFailedRecoveries = new Map(
+		[...failedRecoveries].filter(([, error]) => !(error instanceof ComponentPreparationLockTimeoutError))
+	);
 	const deferComponentLoad = (appName: string) => {
 		const appFolder = join(CF_ROUTES_DIR, appName);
 		const appWasVisible = existsSync(appFolder);
@@ -200,6 +203,7 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 					deferComponentLoad(appName);
 					continue;
 				}
+				unreportedFailedRecoveries.delete(appName);
 				componentLifecycle.failed(
 					appName,
 					recoveryError,
@@ -219,6 +223,13 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 				})
 			);
 		}
+	}
+	for (const [appName, recoveryError] of unreportedFailedRecoveries) {
+		componentLifecycle.failed(
+			appName,
+			recoveryError,
+			`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
+		);
 	}
 	for (const appName of deferredRecoveries.keys()) deferComponentLoad(appName);
 	const hdbAppFolder = process.env.RUN_HDB_APP;

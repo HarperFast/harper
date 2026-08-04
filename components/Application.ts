@@ -864,9 +864,11 @@ async function recoverOrCleanupStaleExtractionPaths(
 				entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX) &&
 				!entryNames.has(`${RETIRED_ASIDE_PREFIX}${entry.name.slice(IN_PROGRESS_ASIDE_PREFIX.length)}`)
 		)
-		.sort((left, right) => extractionAsideTimestamp(right.name) - extractionAsideTimestamp(left.name));
+		.map((entry) => ({ entry, timestamp: extractionAsideTimestamp(entry.name) }))
+		.filter(({ timestamp }) => Number.isFinite(timestamp))
+		.sort((left, right) => right.timestamp - left.timestamp);
 	if (restorable.length > 0) {
-		const restoredPath = join(asideStagingDir, restorable[0].name);
+		const restoredPath = join(asideStagingDir, restorable[0].entry.name);
 		await rollbackExtractedDirectory(application, asideStagingDir, restoredPath, paths, false);
 		application.logger.warn(
 			`Recovered the previous ${application.name} component directory after an interrupted deploy` +
@@ -879,6 +881,7 @@ async function recoverOrCleanupStaleExtractionPaths(
 
 function extractionAsideTimestamp(name: string): number {
 	const timestampEnd = name.indexOf('-', IN_PROGRESS_ASIDE_PREFIX.length);
+	if (timestampEnd < 0) return Number.NaN;
 	return Number(name.slice(IN_PROGRESS_ASIDE_PREFIX.length, timestampEnd));
 }
 
