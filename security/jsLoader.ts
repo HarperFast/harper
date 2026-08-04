@@ -180,7 +180,7 @@ function walkExportsConditions(entry: unknown, conditions: readonly string[]): s
 function resolveESMPackageExports(
 	specifier: string,
 	fromDir: string,
-	requireImportOnly = false
+	preferRequireConditions = false
 ): { resolvedUrl: string; packageJsonUrl: string; packageJsonSource: Buffer } | null {
 	const isScoped = specifier.startsWith('@');
 	const parts = specifier.split('/');
@@ -222,9 +222,11 @@ function resolveESMPackageExports(
 		}
 
 		if (!entry) return null;
-		if (requireImportOnly && walkExportsConditions(entry, ['require', 'node', 'default'])) return null;
 
-		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
+		const relative = preferRequireConditions
+			? (walkExportsConditions(entry, ['bun', 'require', 'node', 'default']) ??
+				walkExportsConditions(entry, ['bun', 'import', 'node', 'default']))
+			: walkExportsConditions(entry, ['import', 'node', 'default']);
 		if (!relative) return null;
 
 		return {
