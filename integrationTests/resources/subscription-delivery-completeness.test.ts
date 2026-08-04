@@ -439,13 +439,14 @@ function runSuite(threadCount: 1 | 4) {
 
 		test('T-slow: single id, spaced/settled writes — is the slow rate lossless?', async () => {
 			const COUNT = threadCount === 1 ? 30 : 15;
-			const { inProcStats, sseStats, mqStats } = await driveAndMeasure({
+			const { issued, inProcStats, sseStats, mqStats } = await driveAndMeasure({
 				label: 'slow',
 				id: `slow-${threadCount}`,
 				count: COUNT,
 				rate: 'slow',
 				settleMs: 200,
 			});
+			strictEqual(issued, COUNT, `all ${COUNT} slow writes must succeed before measuring delivery`);
 
 			// The claim under test: "slow" (one settled write at a time) should be lossless on every
 			// surface. Report, don't hard-fail the suite on this — it's the finding, not a known
@@ -458,12 +459,13 @@ function runSuite(threadCount: 1 | 4) {
 
 		test('T-burst: single id, tight-loop concurrent writes — drop-under-burst', async () => {
 			const COUNT = 200;
-			const { inProcStats, sseStats, mqStats, finalSeq } = await driveAndMeasure({
+			const { issued, inProcStats, sseStats, mqStats, finalSeq } = await driveAndMeasure({
 				label: 'burst',
 				id: `burst-${threadCount}`,
 				count: COUNT,
 				rate: 'burst',
 			});
+			strictEqual(issued, COUNT, `all ${COUNT} burst writes must succeed before measuring delivery`);
 
 			// Coalescing under burst is the EXPECTED, documented-as-a-cache-semantic behavior per
 			// QA-883's premise — not asserted as a defect. NOTE: writes were fired concurrently
@@ -478,7 +480,8 @@ function runSuite(threadCount: 1 | 4) {
 				finalSeq,
 				`SSE last-delivered seq must match final stored seq ${finalSeq}, got ${sseStats.last}`
 			);
-			if (mqStats && mqStats.receivedCount > 0) {
+			if (mqStats) {
+				ok(mqStats.receivedCount > 0, 'MQTT must deliver at least one event under burst');
 				strictEqual(
 					mqStats.last,
 					finalSeq,
@@ -531,10 +534,10 @@ function runSuite(threadCount: 1 | 4) {
 				}
 				const issuedTotal = [...issuedById.values()].reduce((total, issued) => total + issued, 0);
 
-				await sleep(3000);
+				const settleDeadline = Date.now() + 15_000;
 				let stableRounds = 0;
 				let lastTotal = -1;
-				while (stableRounds < 3) {
+				while (stableRounds < 3 && Date.now() < settleDeadline) {
 					const total =
 						sse.events.filter((e) => sseDelivered(e)?.tag === tag).length +
 						(mqCollect?.events.filter((e) => e.tag === tag).length ?? 0);
@@ -543,6 +546,7 @@ function runSuite(threadCount: 1 | 4) {
 					lastTotal = total;
 					await sleep(300);
 				}
+				ok(stableRounds === 3, 'many-id subscriptions did not settle before the deadline');
 
 				const inProc = threadCount === 1 ? (await inProcEvents()).filter((e) => e.tag === tag) : [];
 				const sseEvents = sse.events.map(sseDelivered).filter((e): e is Delivered => e?.tag === tag);
@@ -595,6 +599,13 @@ function runSuite(threadCount: 1 | 4) {
 						se.last,
 						finalSeq,
 						`SSE terminal value for ${id} must match final stored seq ${finalSeq}, got ${se.last}`
+					);
+					const mq = analyze(mqEvents, id, issued);
+					ok(mq.receivedCount > 0, `MQTT must deliver at least one event for ${id}`);
+					strictEqual(
+						mq.last,
+						finalSeq,
+						`MQTT terminal value for ${id} must match final stored seq ${finalSeq}, got ${mq.last}`
 					);
 				}
 			});

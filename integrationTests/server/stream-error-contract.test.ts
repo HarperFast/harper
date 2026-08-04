@@ -291,12 +291,14 @@ suite(
 			const cap = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'control');
 			captures.push(cap);
 			strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
+			assertServerTerminated(cap);
 		});
 
 		test('control: IterHealth ndjson clean completion', { timeout: 20_000 }, async () => {
 			const cap = await rawCapture(restBase, '/IterHealth/', 'application/x-ndjson', authHeader, 'ndjson', 'control');
 			captures.push(cap);
 			strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
+			assertServerTerminated(cap);
 		});
 
 		test('control: IterHealth iterable-rest (default json) clean completion', { timeout: 20_000 }, async () => {
@@ -310,6 +312,7 @@ suite(
 			);
 			captures.push(cap);
 			strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
+			assertServerTerminated(cap);
 		});
 
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────
