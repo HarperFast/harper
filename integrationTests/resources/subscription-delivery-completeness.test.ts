@@ -310,6 +310,7 @@ function runSuite(threadCount: 1 | 4) {
 				mqttUsable = false;
 				console.log(`\n[QA-883] HARNESS: MQTT connect probe failed on ${mqttURL}: ${(err as Error)?.message}`);
 			}
+			ok(mqttUsable, `QA-883 requires an MQTT connection at ${mqttURL}`);
 
 			if (threadCount === 1) {
 				await sleep(500);
@@ -380,11 +381,11 @@ function runSuite(threadCount: 1 | 4) {
 			}
 			const writeMs = Date.now() - t0;
 
-			// Settle window: wait until each surface's terminal value (highest seq seen) stops moving.
-			await sleep(rate === 'slow' ? 500 : Math.min(8000, 1000 + count * 15));
+			// Wait until each surface's delivery count stops moving instead of assuming a fixed delay.
+			const settleDeadline = Date.now() + Math.min(15_000, 3_000 + count * 30);
 			let stableRounds = 0;
 			let lastTotal = -1;
-			while (stableRounds < 3) {
+			while (stableRounds < 3 && Date.now() < settleDeadline) {
 				const total =
 					sse.events.filter((e) => sseDelivered(e)?.id === id && sseDelivered(e)?.tag === tag).length +
 					(mqCollect?.events.filter((e) => e.id === id && e.tag === tag).length ?? 0);
@@ -393,6 +394,7 @@ function runSuite(threadCount: 1 | 4) {
 				lastTotal = total;
 				await sleep(300);
 			}
+			ok(stableRounds === 3, `[${label}] subscriptions did not settle before the deadline`);
 
 			const sseDeliveredEvents = sse.events
 				.map(sseDelivered)
@@ -512,15 +514,22 @@ function runSuite(threadCount: 1 | 4) {
 
 				await sleep(400);
 
-				const puts = [];
+				const puts: Array<{ id: string; request: ReturnType<typeof restPut> }> = [];
 				for (let i = 0; i < IDS; i++) {
 					const id = runId(i);
-					for (let seq = 1; seq <= PER_ID; seq++) puts.push(restPut(id, { id, value: seq, seq, tag }));
+					for (let seq = 1; seq <= PER_ID; seq++) puts.push({ id, request: restPut(id, { id, value: seq, seq, tag }) });
 				}
 				const t0 = Date.now();
-				const results = await Promise.all(puts);
+				const results = await Promise.all(puts.map((put) => put.request));
 				const writeMs = Date.now() - t0;
-				const issuedTotal = results.filter((r) => r.status === 204).length;
+				const issuedById = new Map<string, number>();
+				for (const [index, result] of results.entries()) {
+					if (result.status === 204) {
+						const id = puts[index].id;
+						issuedById.set(id, (issuedById.get(id) ?? 0) + 1);
+					}
+				}
+				const issuedTotal = [...issuedById.values()].reduce((total, issued) => total + issued, 0);
 
 				await sleep(3000);
 				let stableRounds = 0;
@@ -546,9 +555,10 @@ function runSuite(threadCount: 1 | 4) {
 				let mqDroppedTotal = 0;
 				for (let i = 0; i < IDS; i++) {
 					const id = runId(i);
-					const ip = analyze(inProc, id, PER_ID);
-					const se = analyze(sseEvents, id, PER_ID);
-					const mq = mqCollect ? analyze(mqEvents, id, PER_ID) : undefined;
+					const issued = issuedById.get(id) ?? 0;
+					const ip = analyze(inProc, id, issued);
+					const se = analyze(sseEvents, id, issued);
+					const mq = mqCollect ? analyze(mqEvents, id, issued) : undefined;
 					inProcDroppedTotal += threadCount === 1 ? ip.dropped : 0;
 					sseDroppedTotal += se.dropped;
 					mqDroppedTotal += mq?.dropped ?? 0;
@@ -572,12 +582,19 @@ function runSuite(threadCount: 1 | 4) {
 				// characterizing the drop RATE under cross-id load, not asserting a specific number.
 				for (let i = 0; i < IDS; i++) {
 					const id = runId(i);
-					const se = analyze(sseEvents, id, PER_ID);
+					const issued = issuedById.get(id) ?? 0;
+					strictEqual(issued, PER_ID, `all writes for ${id} must succeed before measuring delivery`);
+					const finalRes = await request(restBase)
+						.get(`/${TABLE}/${encodeURIComponent(id)}`)
+						.set(client.headers);
+					strictEqual(finalRes.status, 200, `final GET for ${id} must succeed`);
+					const finalSeq = (finalRes.body as any)?.seq;
+					const se = analyze(sseEvents, id, issued);
 					ok(se.receivedCount > 0, `SSE must deliver at least one event for ${id}`);
 					strictEqual(
 						se.last,
-						PER_ID,
-						`SSE terminal value for ${id} must be the final write ${PER_ID}, got ${se.last}`
+						finalSeq,
+						`SSE terminal value for ${id} must match final stored seq ${finalSeq}, got ${se.last}`
 					);
 				}
 			});

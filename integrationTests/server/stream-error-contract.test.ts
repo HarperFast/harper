@@ -371,6 +371,9 @@ suite(
 			console.log(
 				`[QA-890][sse/mid] status=${cap.status} totalBytes=${cap.totalBytes} sawTerminalChunk=${cap.sawTerminalChunk}`
 			);
+			ok(cap.status === 200, `SSE mid-stream response should start 200, got ${cap.status}`);
+			ok(cap.totalBytes > 0, 'SSE mid-stream response must include data before the throw');
+			assertServerTerminated(cap);
 		});
 
 		test('ndjson: mid-stream throw (2 of 5) -- raw byte capture', { timeout: 20_000 }, async () => {
@@ -386,6 +389,9 @@ suite(
 			console.log(
 				`[QA-890][ndjson/mid] status=${cap.status} totalBytes=${cap.totalBytes} sawTerminalChunk=${cap.sawTerminalChunk}`
 			);
+			ok(cap.status === 200, `NDJSON mid-stream response should start 200, got ${cap.status}`);
+			ok(cap.totalBytes > 0, 'NDJSON mid-stream response must include data before the throw');
+			assertServerTerminated(cap);
 		});
 
 		test('iterable-rest: mid-stream throw (2 of 5) -- raw byte capture', { timeout: 20_000 }, async () => {
@@ -401,6 +407,9 @@ suite(
 			console.log(
 				`[QA-890][iterable-rest/mid] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
 			);
+			ok(cap.status === 200, `iterable REST mid-stream response should start 200, got ${cap.status}`);
+			ok(cap.totalBytes > 0, 'iterable REST mid-stream response must include data before the throw');
+			assertServerTerminated(cap);
 		});
 
 		test('Z: liveness canary -- worker survived every throw shape above', { timeout: 30_000 }, async () => {
