@@ -6000,6 +6000,18 @@ export function makeTable(options) {
 		const metadataFlags = existingEntry?.metadataFlags;
 
 		const existingVersion = existingEntry?.version;
+		const existingRecord = existingEntry?.value;
+		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+		const monotonicTimestamp = () =>
+			isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime();
+		const nextExistingVersion =
+			existingVersion == null
+				? 0
+				: existingVersion + Math.max(Math.abs(existingVersion) * Number.EPSILON, Number.MIN_VALUE);
+		const sourceTimestamp =
+			inheritedTimestamp && (existingVersion == null || inheritedTimestamp > existingVersion)
+				? inheritedTimestamp
+				: Math.max(monotonicTimestamp(), nextExistingVersion);
 		let whenResolved, timer;
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
@@ -6038,17 +6050,9 @@ export function makeTable(options) {
 		// lock acquired — this request will actually load from source
 		setLoadedFromSource(target, true);
 
-		const existingRecord = existingEntry?.value;
-		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		const monotonicTimestamp = () =>
-			isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime();
-		const sourceTimestamp =
-			inheritedTimestamp && (existingVersion == null || inheritedTimestamp > existingVersion)
-				? inheritedTimestamp
-				: Math.max(monotonicTimestamp(), existingVersion == null ? 0 : existingVersion + 0.000488);
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
-		// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
-		// want a timestamp later than the current transaction
+		// with the canonical data, we are simply fulfilling our local copy of the canonical data. We preserve the
+		// request timestamp unless advancing it is required to replace an existing version.
 		// we create a new context for the source, we want to determine the timestamp and don't want to
 		// attribute this to the current user
 		const sourceContext = {

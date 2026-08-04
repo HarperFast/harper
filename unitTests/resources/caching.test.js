@@ -505,7 +505,7 @@ describe('Caching', () => {
 		await waitFor(() => conflictSourceRequest?.id === id);
 		const sourceTimestamp = conflictSourceRequest.timestamp;
 		assert.equal(typeof sourceTimestamp, 'number');
-		await ConflictCachingTable.put(id, { id, name: 'authoritative' });
+		await ConflictCachingTable.put(id, { id, name: 'authoritative' }, { timestamp: sourceTimestamp + 1 });
 		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'authoritative');
 		const authoritativeVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
 		conflictSourceRequest.respond({ id, name: 'source' });
@@ -523,15 +523,16 @@ describe('Caching', () => {
 		const existingVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
 		await ConflictCachingTable.invalidate(id);
 		await waitFor(() => ConflictCachingTable.primaryStore.getEntry(id)?.metadataFlags);
+		const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
 		conflictSourceRequest = null;
 		const fill = ConflictCachingTable.get(id, { timestamp: existingVersion - 1000 });
 		await waitFor(() => conflictSourceRequest?.id === id);
-		assert(conflictSourceRequest.timestamp > existingVersion);
+		assert(conflictSourceRequest.timestamp > invalidatedVersion);
 		conflictSourceRequest.respond({ id, name: 'refreshed' });
 		assert.equal((await fill).name, 'refreshed');
 		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
 		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'refreshed');
-		assert(ConflictCachingTable.primaryStore.getEntry(id).version > existingVersion);
+		assert(ConflictCachingTable.primaryStore.getEntry(id).version > invalidatedVersion);
 	});
 
 	it('first source fill replaces an older raced record and its index entries', async function () {
@@ -541,7 +542,7 @@ describe('Caching', () => {
 		await waitFor(() => conflictSourceRequest?.id === id);
 		const sourceTimestamp = conflictSourceRequest.timestamp;
 		const createdAt = new Date(sourceTimestamp - 0.0001);
-		await ConflictCachingTable.put(id, { id, name: 'older', createdAt });
+		await ConflictCachingTable.put(id, { id, name: 'older', createdAt }, { timestamp: sourceTimestamp - 1 });
 		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'older');
 		const racedEntry = ConflictCachingTable.primaryStore.getEntry(id);
 		assert(racedEntry.version < sourceTimestamp);
@@ -574,7 +575,7 @@ describe('Caching', () => {
 		const fill = ConflictCachingTable.get(id, { timestamp: nextConflictTimestamp() });
 		await waitFor(() => conflictSourceRequest?.id === id);
 		const sourceTimestamp = conflictSourceRequest.timestamp;
-		await ConflictCachingTable.put(id, { id, name: 'raced' });
+		await ConflictCachingTable.put(id, { id, name: 'raced' }, { timestamp: sourceTimestamp - 1 });
 		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'raced');
 		assert(ConflictCachingTable.primaryStore.getEntry(id).version < sourceTimestamp);
 		const racedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
@@ -591,7 +592,7 @@ describe('Caching', () => {
 		const fill = ConflictCachingTable.get(id, { timestamp: nextConflictTimestamp() });
 		await waitFor(() => conflictSourceRequest?.id === id);
 		const sourceTimestamp = conflictSourceRequest.timestamp;
-		await ConflictCachingTable.put(id, { id, name: 'older-delete' });
+		await ConflictCachingTable.put(id, { id, name: 'older-delete' }, { timestamp: sourceTimestamp - 1 });
 		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'older-delete');
 		assert(ConflictCachingTable.primaryStore.getEntry(id).version < sourceTimestamp);
 		const racedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
