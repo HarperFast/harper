@@ -3,8 +3,18 @@ import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUti
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
+<<<<<<< HEAD
 import { withComponentPreparationLock } from './componentPreparationLock.ts';
 import { isThreadRunning, registerProcessGroup, unregisterProcessGroup } from '../server/threads/manageThreads.js';
+=======
+import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
+import {
+	isThreadRunning,
+	isZombieProcessGroupLeader,
+	registerProcessGroup,
+	unregisterProcessGroup,
+} from '../server/threads/manageThreads.js';
+>>>>>>> b092e32ba (fix(components): stop polling zombie process groups)
 import type { CredentialReference, ResolvedCredential, ResolvedRegistryCredential } from './secretOperations.ts';
 import {
 	GIT_CREDENTIAL_SOCKET_ENV,
@@ -1916,10 +1926,10 @@ class CommandTimeoutError extends Error {
 function processGroupIsAlive(processGroupId: number): boolean {
 	try {
 		process.kill(-processGroupId, 0);
-		return true;
 	} catch (error: any) {
 		return error.code === 'EPERM';
 	}
+	return !isZombieProcessGroupLeader(processGroupId);
 }
 
 async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {
