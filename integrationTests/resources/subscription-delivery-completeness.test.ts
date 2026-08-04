@@ -115,7 +115,7 @@ function openSse(urlStr: string, headers: Record<string, string>): Promise<SseSt
 				};
 				res.setEncoding('utf8');
 				res.on('data', (chunk: string) => {
-					buffer += chunk;
+					buffer += chunk.replace(/\r\n?/g, '\n');
 					let sep: number;
 					while ((sep = buffer.indexOf('\n\n')) >= 0) {
 						parseFrame(buffer.slice(0, sep));
@@ -363,81 +363,83 @@ function runSuite(threadCount: 1 | 4) {
 				mqCollect = collectMqtt(mqc);
 			}
 
-			await sleep(400); // let subscriptions attach before we start writing
+			try {
+				await sleep(400); // let subscriptions attach before we start writing
 
-			let issued = 0;
-			const t0 = Date.now();
-			if (rate === 'slow') {
-				for (let seq = 1; seq <= count; seq++) {
-					const res = await restPut(id, { id, value: seq, seq, tag });
-					if (res.status === 204) issued++;
-					await sleep(settleMs);
+				let issued = 0;
+				const t0 = Date.now();
+				if (rate === 'slow') {
+					for (let seq = 1; seq <= count; seq++) {
+						const res = await restPut(id, { id, value: seq, seq, tag });
+						if (res.status === 204) issued++;
+						await sleep(settleMs);
+					}
+				} else {
+					const puts = [];
+					for (let seq = 1; seq <= count; seq++) puts.push(restPut(id, { id, value: seq, seq, tag }));
+					const results = await Promise.all(puts);
+					issued = results.filter((r) => r.status === 204).length;
 				}
-			} else {
-				const puts = [];
-				for (let seq = 1; seq <= count; seq++) puts.push(restPut(id, { id, value: seq, seq, tag }));
-				const results = await Promise.all(puts);
-				issued = results.filter((r) => r.status === 204).length;
+				const writeMs = Date.now() - t0;
+
+				// Wait until each surface's delivery count stops moving instead of assuming a fixed delay.
+				const settleDeadline = Date.now() + Math.min(15_000, 3_000 + count * 30);
+				let stableRounds = 0;
+				let lastTotal = -1;
+				while (stableRounds < 3 && Date.now() < settleDeadline) {
+					const inProcTotal =
+						threadCount === 1 ? (await inProcEvents()).filter((e) => e.id === id && e.tag === tag).length : 0;
+					const total =
+						sse.events.filter((e) => sseDelivered(e)?.id === id && sseDelivered(e)?.tag === tag).length +
+						(mqCollect?.events.filter((e) => e.id === id && e.tag === tag).length ?? 0) +
+						inProcTotal;
+					if (total > 0 && total === lastTotal) stableRounds++;
+					else stableRounds = 0;
+					lastTotal = total;
+					await sleep(300);
+				}
+				ok(stableRounds === 3, `[${label}] subscriptions did not settle before the deadline`);
+
+				const sseDeliveredEvents = sse.events
+					.map(sseDelivered)
+					.filter((e): e is Delivered => e?.id === id && e?.tag === tag);
+				const sseStats = analyze(sseDeliveredEvents, id, issued);
+
+				let mqStats: ReturnType<typeof analyze> | undefined;
+				if (mqCollect) {
+					mqCollect.stop();
+					const mqEvents = mqCollect.events.filter((e) => e.id === id && e.tag === tag);
+					mqStats = analyze(mqEvents, id, issued);
+				}
+
+				let inProcStats: ReturnType<typeof analyze> | undefined;
+				if (threadCount === 1) {
+					const inProc = await inProcEvents();
+					const inProcOwn = inProc.filter((e) => e.id === id && e.tag === tag);
+					inProcStats = analyze(inProcOwn, id, issued);
+				}
+
+				// Ground truth for terminal-value correctness (meaningful even under concurrent/unordered
+				// commits, where our own issuance-order `seq` labels do NOT define commit order): the
+				// actual stored record after everything settles.
+				const finalRes = await request(restBase)
+					.get(`/${TABLE}/${encodeURIComponent(id)}`)
+					.set(client.headers);
+				const finalSeq = (finalRes.body as any)?.seq;
+
+				console.log(
+					`\n[QA-883][${label}] rate=${rate} threads=${threadCount} id=${id} issued=${issued} writeMs=${writeMs} finalStoredSeq=${finalSeq}\n` +
+						`  in-proc: ${inProcStats ? j(inProcStats) : 'N/A (threads!=1)'}\n` +
+						`  SSE    : ${j(sseStats)}\n` +
+						`  MQTT   : ${mqStats ? j(mqStats) : 'N/A (mqtt unusable)'}`
+				);
+
+				return { issued, writeMs, inProcStats, sseStats, mqStats, finalSeq };
+			} finally {
+				drop(sse);
+				mqCollect?.stop();
+				await endQuiet(mqc);
 			}
-			const writeMs = Date.now() - t0;
-
-			// Wait until each surface's delivery count stops moving instead of assuming a fixed delay.
-			const settleDeadline = Date.now() + Math.min(15_000, 3_000 + count * 30);
-			let stableRounds = 0;
-			let lastTotal = -1;
-			while (stableRounds < 3 && Date.now() < settleDeadline) {
-				const inProcTotal =
-					threadCount === 1 ? (await inProcEvents()).filter((e) => e.id === id && e.tag === tag).length : 0;
-				const total =
-					sse.events.filter((e) => sseDelivered(e)?.id === id && sseDelivered(e)?.tag === tag).length +
-					(mqCollect?.events.filter((e) => e.id === id && e.tag === tag).length ?? 0) +
-					inProcTotal;
-				if (total > 0 && total === lastTotal) stableRounds++;
-				else stableRounds = 0;
-				lastTotal = total;
-				await sleep(300);
-			}
-			ok(stableRounds === 3, `[${label}] subscriptions did not settle before the deadline`);
-
-			const sseDeliveredEvents = sse.events
-				.map(sseDelivered)
-				.filter((e): e is Delivered => e?.id === id && e?.tag === tag);
-			const sseStats = analyze(sseDeliveredEvents, id, issued);
-
-			let mqStats: ReturnType<typeof analyze> | undefined;
-			if (mqCollect) {
-				mqCollect.stop();
-				const mqEvents = mqCollect.events.filter((e) => e.id === id && e.tag === tag);
-				mqStats = analyze(mqEvents, id, issued);
-			}
-
-			let inProcStats: ReturnType<typeof analyze> | undefined;
-			if (threadCount === 1) {
-				const inProc = await inProcEvents();
-				const inProcOwn = inProc.filter((e) => e.id === id && e.tag === tag);
-				inProcStats = analyze(inProcOwn, id, issued);
-			}
-
-			// Ground truth for terminal-value correctness (meaningful even under concurrent/unordered
-			// commits, where our own issuance-order `seq` labels do NOT define commit order): the
-			// actual stored record after everything settles.
-			const finalRes = await request(restBase)
-				.get(`/${TABLE}/${encodeURIComponent(id)}`)
-				.set(client.headers);
-			const finalSeq = (finalRes.body as any)?.seq;
-
-			console.log(
-				`\n[QA-883][${label}] rate=${rate} threads=${threadCount} id=${id} issued=${issued} writeMs=${writeMs} finalStoredSeq=${finalSeq}\n` +
-					`  in-proc: ${inProcStats ? j(inProcStats) : 'N/A (threads!=1)'}\n` +
-					`  SSE    : ${j(sseStats)}\n` +
-					`  MQTT   : ${mqStats ? j(mqStats) : 'N/A (mqtt unusable)'}`
-			);
-
-			drop(sse);
-			if (mqCollect) mqCollect.stop();
-			await endQuiet(mqc);
-
-			return { issued, writeMs, inProcStats, sseStats, mqStats, finalSeq };
 		}
 
 		test('T-slow: single id, spaced/settled writes — is the slow rate lossless?', async () => {

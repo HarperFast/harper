@@ -181,7 +181,13 @@ function rawCapture(
 			finish();
 		});
 		socket.on('error', (err: any) => {
-			socketEvents.push(`error: ${err.code ?? err.message} @${Date.now() - start}ms`);
+			let detail: string;
+			try {
+				detail = err?.code ?? err?.message ?? String(err);
+			} catch {
+				detail = 'unreadable error';
+			}
+			socketEvents.push(`error: ${detail} @${Date.now() - start}ms`);
 		});
 	});
 }
