@@ -327,6 +327,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
 				if (esmResolved) {
 					scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
+					scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));
 					return esmResolved.resolvedUrl;
 				}
 			}

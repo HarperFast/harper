@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { lstat, readFile, readlink } from 'node:fs/promises';
 import { createRequire, Module } from 'node:module';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -138,8 +138,17 @@ function higherPriorityResolutionCandidates(
 	const candidates = [...new Set(RESOLUTION_EXTENSIONS.map((extension) => basePath + extension))];
 	candidates.push(resolve(basePath, 'package.json'));
 	for (const extension of RESOLUTION_EXTENSIONS.slice(1)) candidates.push(resolve(basePath, `index${extension}`));
-	const resolvedIndex = candidates.indexOf(resolvedPath);
-	if (resolvedIndex === -1) return;
+	let resolvedIndex = candidates.indexOf(resolvedPath);
+	if (resolvedIndex === -1) {
+		resolvedIndex = candidates.findIndex((candidate) => {
+			try {
+				return realpathSync(candidate) === resolvedPath;
+			} catch {
+				return false;
+			}
+		});
+	}
+	if (resolvedIndex === -1) return candidates.slice(0, RESOLUTION_EXTENSIONS.length + 1);
 	return candidates.slice(0, resolvedIndex);
 }
 

@@ -89,6 +89,24 @@ describe('RuntimeModuleTracker', () => {
 		assert.equal(await this.tracker.finishDeploy(), false);
 	});
 
+	it('detects a new file candidate ahead of a directory package entry', async () => {
+		const referrerPath = join(this.directory, 'resources.js');
+		const helperDirectory = join(this.directory, 'helper');
+		const packageEntryPath = join(this.directory, 'package-entry.js');
+		mkdirSync(helperDirectory);
+		writeFileSync(referrerPath, 'import helper from "./helper";');
+		writeFileSync(join(helperDirectory, 'package.json'), '{"main":"../package-entry.js"}');
+		writeFileSync(packageEntryPath, 'export default {};');
+		const initiallyResolved = createRequire(pathToFileURL(referrerPath)).resolve('./helper');
+		assert.equal(initiallyResolved, packageEntryPath);
+		this.tracker.recordModule(pathToFileURL(packageEntryPath).href, 'export default {};');
+		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(initiallyResolved).href);
+
+		this.tracker.beginDeploy();
+		writeFileSync(join(this.directory, 'helper.js'), 'export default {};');
+		assert.equal(await this.tracker.finishDeploy(), true);
+	});
+
 	it('fails closed when Node resolution cache invalidation is unavailable', async () => {
 		const referrerPath = join(this.directory, 'resources.js');
 		const helperPath = join(this.directory, 'helper.js');
