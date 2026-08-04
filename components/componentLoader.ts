@@ -172,7 +172,9 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 				if (loadGeneration !== componentLoadGeneration) return;
 				const modulesToReady = [...cycleLoadedComponents.keys()].filter(
 					(serverModule) =>
-						!modulesBeforeLoad.has(serverModule) && !deferredReadyModules.has(serverModule) && serverModule.ready
+						!modulesBeforeLoad.has(serverModule) &&
+						!deferredReadyModules.has(serverModule) &&
+						typeof serverModule.ready === 'function'
 				);
 				for (const serverModule of modulesToReady) deferredReadyModules.add(serverModule);
 				await Promise.all(modulesToReady.map((serverModule) => serverModule.ready()));
