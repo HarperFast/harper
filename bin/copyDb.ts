@@ -335,9 +335,8 @@ export function shapeForStructure(value: any): any {
 
 function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: boolean } = {}) {
 	options.disableWAL ??= false;
-	// Migration writes the column families the runtime will later reopen, so it has to resolve the
-	// codec exactly as openRocksDatabase does. Creating them under the build default while the
-	// runtime asks for the configured one leaves the next open unable to reopen them.
+	// Migration creates a complete replacement database, so use the deployment codec for the files
+	// it writes; runtime opens additionally reconcile pre-existing sibling column families.
 	const legacyOptions = options as { compression?: unknown };
 	legacyOptions.compression = getRocksCompression() ?? toRocksCompression(legacyOptions.compression);
 	if (!existsSync(path)) {

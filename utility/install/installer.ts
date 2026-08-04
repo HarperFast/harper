@@ -578,7 +578,7 @@ export function applyInstallModeDefaults(args, defaultsMode) {
  * @returns {Promise<void>}
  */
 /**
- * Make `storage.rocks.compression` readable before `mountHdb()` creates the system column families.
+ * Make the deployment codec readable before `mountHdb()` creates the system column families.
  *
  * The config file is not written until `createConfigFile()`, several steps after `mountHdb()`, but
  * RocksDB fixes a column family's codec when the family is created and refuses a later reopen that
@@ -588,25 +588,28 @@ export function applyInstallModeDefaults(args, defaultsMode) {
  * in-memory config here is the same trick the STORAGE_ENGINE line above uses.
  *
  * Checked in the same precedence `createConfigFile()` itself later resolves the value with, so
- * staging can't silently miss a source `createConfigFile()` would have honored: the JSON-blob env
- * vars (`HARPER_DEFAULT_CONFIG`/`HARPER_CONFIG`/`HARPER_SET_CONFIG`, via `composeConfigFromEnv()`),
- * the individual `STORAGE_ROCKS_COMPRESSION` env var or `--STORAGE_ROCKS_COMPRESSION` CLI flag (via
- * `assignCMDENVVariables`, the same helper `createConfigFile()` uses for every other config param),
- * and an `--HDB_CONFIG <path>` file (via the local `getConfigFromFile()`, which is otherwise only
- * read after `mountHdb()` runs). Missing any one of these recreates the exact race this function
- * exists to prevent: `STORAGE_ROCKS_COMPRESSION=zstd harper install` would install cleanly (main
- * thread creates `__dbis__` at the build default) and then die on the very next boot, once workers
- * resolve the now-written config file's codec against a family the main thread already fixed.
+ * `storage.compression` also participates when no explicit RocksDB codec is set: its default is
+ * true, which resolves to lz4. Stage both values from every source `createConfigFile()` honors so
+ * the first open cannot create `__dbis__` with `none` and later workers reopen it with lz4.
  */
 function stageRocksCompression() {
-	const param = hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION;
-	const configured =
-		composeConfigFromEnv()?.storage?.rocks?.compression ??
-		assignCMDENVVariables([param], true)[param] ??
-		(cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ? getConfigFromFile()[param] : undefined);
-	if (configured !== undefined && configured !== null && configured !== '') {
-		envManager.setProperty(param, configured);
+	const rocksCompression = hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION;
+	const compression = hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION;
+	const envConfig = composeConfigFromEnv();
+	const commandLineConfig = assignCMDENVVariables([rocksCompression, compression], true);
+	const fileConfig = cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ? getConfigFromFile() : {};
+	const configuredRocksCompression =
+		envConfig?.storage?.rocks?.compression ?? commandLineConfig[rocksCompression] ?? fileConfig[rocksCompression];
+	const configuredCompression =
+		envConfig?.storage?.compression ?? commandLineConfig[compression] ?? fileConfig[compression] ?? true;
+	if (
+		configuredRocksCompression !== undefined &&
+		configuredRocksCompression !== null &&
+		configuredRocksCompression !== ''
+	) {
+		envManager.setProperty(rocksCompression, configuredRocksCompression);
 	}
+	envManager.setProperty(compression, configuredCompression);
 }
 
 async function createConfigFile(installParams) {
