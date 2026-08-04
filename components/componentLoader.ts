@@ -138,6 +138,7 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 	// secrets heal. Never throws.
 	await materializeGlobalSecrets();
 	const cfsLoaded: Promise<any>[] = [];
+	const deferredReadyModules = new Set<any>();
 	const deferredRecoveries = new Map(
 		[...failedRecoveries].filter(([, error]) => error instanceof ComponentPreparationLockTimeoutError)
 	);
@@ -159,14 +160,14 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 					autoReload: false,
 					appName,
 					mount: mountResult.mount,
-					providedLoadedComponents: cycleLoadedComponents,
 				});
 				if (loadGeneration !== componentLoadGeneration) return;
-				await Promise.all(
-					[...cycleLoadedComponents.keys()]
-						.filter((serverModule) => !modulesBeforeLoad.has(serverModule) && serverModule.ready)
-						.map((serverModule) => serverModule.ready())
+				const modulesToReady = [...cycleLoadedComponents.keys()].filter(
+					(serverModule) =>
+						!modulesBeforeLoad.has(serverModule) && !deferredReadyModules.has(serverModule) && serverModule.ready
 				);
+				for (const serverModule of modulesToReady) deferredReadyModules.add(serverModule);
+				await Promise.all(modulesToReady.map((serverModule) => serverModule.ready()));
 			})
 			.catch((error) => {
 				const recoveryError = error instanceof Error ? error : new Error(String(error));
