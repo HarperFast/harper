@@ -120,6 +120,8 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 	const loadGeneration = ++componentLoadGeneration;
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
+	const cycleResources = resources;
+	const cycleLoadedComponents = loadedComponents;
 	let failedRecoveries = new Map<string, Error>();
 	try {
 		failedRecoveries = await recoverInterruptedComponentExtractions(CF_ROUTES_DIR);
@@ -151,12 +153,20 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 				}
 				const mountResult = tryRootConfigMount(appName);
 				if (!mountResult.ok) return;
-				await loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
+				const modulesBeforeLoad = new Set(cycleLoadedComponents.keys());
+				await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
 					isRoot: false,
 					autoReload: false,
 					appName,
 					mount: mountResult.mount,
+					providedLoadedComponents: cycleLoadedComponents,
 				});
+				if (loadGeneration !== componentLoadGeneration) return;
+				await Promise.all(
+					[...cycleLoadedComponents.keys()]
+						.filter((serverModule) => !modulesBeforeLoad.has(serverModule) && serverModule.ready)
+						.map((serverModule) => serverModule.ready())
+				);
 			})
 			.catch((error) => {
 				const recoveryError = error instanceof Error ? error : new Error(String(error));
