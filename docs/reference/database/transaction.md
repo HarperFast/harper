@@ -11,17 +11,17 @@ title: Transaction Logging
 
 # Transaction Logging
 
-Harper provides two complementary mechanisms for recording a history of data changes on a table: the **audit log** and the **transaction log**. Both are available at the table level and serve different use cases.
+Harper provides two complementary mechanisms for recording a history of data changes on a table: the **audit log** and the **transaction log**. Both record and expose history for individual tables, but their underlying storage differs: on RocksDB (the default storage engine) the transaction log is physically a single database-wide log shared by all tables — history is read per table, while deletion operates on the whole database's log.
 
-| Feature                       | Audit Log                         | Transaction Log                |
-| ----------------------------- | --------------------------------- | ------------------------------ |
-| Storage                       | Standard Harper table (per-table) | Clustering streams (per-table) |
-| Requires clustering           | No                                | Yes                            |
-| Available since               | v4.1.0                            | v4.1.0                         |
-| Stores original record values | Yes                               | No                             |
-| Query by username             | Yes                               | No                             |
-| Query by primary key          | Yes                               | No                             |
-| Used for real-time messaging  | Yes (required)                    | No                             |
+| Feature                       | Audit Log                         | Transaction Log                                                         |
+| ----------------------------- | --------------------------------- | ----------------------------------------------------------------------- |
+| Storage                       | Standard Harper table (per-table) | Shared per-database log (RocksDB); clustering streams, per-table (LMDB) |
+| Requires clustering           | No                                | Yes                                                                     |
+| Available since               | v4.1.0                            | v4.1.0                                                                  |
+| Stores original record values | Yes                               | No                                                                      |
+| Query by username             | Yes                               | No                                                                      |
+| Query by primary key          | Yes                               | No                                                                      |
+| Used for real-time messaging  | Yes (required)                    | No                                                                      |
 
 ## Audit Log
 
@@ -122,7 +122,7 @@ Deletes audit log entries older than the specified timestamp. Deprecated in favo
 
 <VersionBadge type="changed" version="v4.5.0" /> — Storage reclamation: Harper automatically evicts older audit log entries when free storage drops below a configurable threshold
 
-<VersionBadge type="changed" version="v5.2.0" /> — This operation requires `table`, but on the RocksDB storage engine (the default) history cannot be deleted for a single table because all tables in a database share one transaction log. On RocksDB this operation now always returns an error directing you to `delete_transaction_logs_before`; it remains usable on LMDB.
+<VersionBadge type="changed" version="v5.2.0" /> — This operation is unsupported on the RocksDB storage engine (the default): it requires `table`, but history cannot be deleted for a single table because all tables in a database share one transaction log. For an existing table the job fails with an error directing you to `delete_transaction_logs_before`; for a nonexistent table the job fails with a not-found error. The operation remains usable on LMDB.
 
 ```json
 {
@@ -137,21 +137,32 @@ Deletes audit log entries older than the specified timestamp. Deprecated in favo
 
 #### `delete_transaction_logs_before`
 
-Deletes transaction log entries older than the specified timestamp.
-
 <EngineBadge engines="RocksDB, LMDB" />
+
+<VersionBadge type="changed" version="v5.2.0" /> — On RocksDB, a request that includes `table` now fails; previously the `table` scope was silently ignored and the entire database's transaction log was purged. On either engine, a `table` that does not exist now fails with a not-found error (previously this was a silent no-op on LMDB). On LMDB, a valid `table` continues to scope the deletion to that table's history, unchanged.
+
+Deletes transaction log entries older than the specified timestamp.
 
 On RocksDB (the default storage engine), deletion is database-wide: all tables in a database share one transaction log, so omit `table` and pass only `database` (or `schema`) and `timestamp`.
 
-<VersionBadge type="changed" version="v5.2.0" /> — On RocksDB, a request that includes `table` is now rejected with a `400` error; previously the `table` scope was silently ignored and the entire database's transaction log was purged. On either engine, a `table` that does not exist now returns a `404` (previously this was a silent no-op on LMDB). On LMDB, a valid `table` continues to scope the deletion to that table's history, unchanged.
+`cleanup_deleted_records`: `boolean` (optional) — LMDB only; additionally removes leftover tombstone entries for records deleted before the timestamp, a repair step for tombstones that normal audit log cleanup should already have removed. Ignored on RocksDB.
 
-On LMDB only, the optional `cleanup_deleted_records` (boolean) parameter additionally removes leftover tombstone entries for records deleted before the timestamp — a repair step for tombstones that normal audit log cleanup should already have removed. It is ignored on RocksDB.
+The operation runs as a background job: the request itself returns `200` with a job ID, and any rejection surfaces when the job runs. Poll [`get_job`](jobs.md) to observe the outcome — a rejected request ends with job status `ERROR` and a message describing the failure (for example, the RocksDB table-scope rejection).
 
 ```json
 {
 	"operation": "delete_transaction_logs_before",
 	"database": "dev",
 	"timestamp": 1598290282817
+}
+```
+
+Response:
+
+```json
+{
+	"message": "Starting job with id 2fe25039-566e-4670-8bb3-2db3d4e07e69",
+	"job_id": "2fe25039-566e-4670-8bb3-2db3d4e07e69"
 }
 ```
 
