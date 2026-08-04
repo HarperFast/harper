@@ -667,9 +667,10 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						`NON-VACUOUS PRECONDITION: WARM read_audit_log(${sampleId}) must see the pre-cutoff insert entry before the purge, got ${JSON.stringify(preWarmEntries)}`
 					);
 
+					const purgeTarget = engine === 'rocksdb' ? { database: SCHEMA } : { schema: SCHEMA, table: TABLE };
 					const ack = await rawOp(ctx, {
 						operation: 'delete_transaction_logs_before',
-						...(engine === 'rocksdb' ? { database: SCHEMA } : { schema: SCHEMA, table: TABLE }),
+						...purgeTarget,
 						timestamp: cutoffTimestamp,
 					});
 					ok(
