@@ -96,7 +96,7 @@ function parseHttpRaw(buf: Buffer): {
 		if (lineEnd === -1) break;
 		const sizeHex = bodyRaw.subarray(offset, lineEnd).toString('latin1').trim().split(';')[0];
 		const size = Number.parseInt(sizeHex, 16);
-		if (Number.isNaN(size)) break;
+		if (!Number.isSafeInteger(size) || size < 0) break;
 		chunkSizes.push(size);
 		if (size === 0) {
 			sawTerminalChunk = true;

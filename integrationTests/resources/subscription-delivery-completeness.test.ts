@@ -386,10 +386,13 @@ function runSuite(threadCount: 1 | 4) {
 			let stableRounds = 0;
 			let lastTotal = -1;
 			while (stableRounds < 3 && Date.now() < settleDeadline) {
+				const inProcTotal =
+					threadCount === 1 ? (await inProcEvents()).filter((e) => e.id === id && e.tag === tag).length : 0;
 				const total =
 					sse.events.filter((e) => sseDelivered(e)?.id === id && sseDelivered(e)?.tag === tag).length +
-					(mqCollect?.events.filter((e) => e.id === id && e.tag === tag).length ?? 0);
-				if (total === lastTotal) stableRounds++;
+					(mqCollect?.events.filter((e) => e.id === id && e.tag === tag).length ?? 0) +
+					inProcTotal;
+				if (total > 0 && total === lastTotal) stableRounds++;
 				else stableRounds = 0;
 				lastTotal = total;
 				await sleep(300);
