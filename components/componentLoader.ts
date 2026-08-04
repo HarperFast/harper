@@ -47,7 +47,7 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle } from './status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
@@ -145,7 +145,10 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			.then(async () => {
 				if (loadGeneration !== componentLoadGeneration) return;
 				const appFolder = join(CF_ROUTES_DIR, appName);
-				if (!existsSync(appFolder)) return;
+				if (!existsSync(appFolder)) {
+					statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+					return;
+				}
 				const mountResult = tryRootConfigMount(appName);
 				if (!mountResult.ok) return;
 				await loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
@@ -199,9 +202,7 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			);
 		}
 	}
-	for (const [appName, recoveryError] of deferredRecoveries) {
-		if (recoveryError instanceof ComponentPreparationLockTimeoutError) deferComponentLoad(appName);
-	}
+	for (const appName of deferredRecoveries.keys()) deferComponentLoad(appName);
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);

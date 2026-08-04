@@ -1143,19 +1143,26 @@ async function rollbackExtractedDirectory(
 					displacedPath = await displaceCurrentDirectory();
 					placeholderIdentity = undefined;
 					if (displacedPath && displacedPlaceholderIdentity) {
-						const displaced = await lstat(displacedPath, { bigint: true });
-						if (
-							displaced.dev === displacedPlaceholderIdentity.dev &&
-							displaced.ino === displacedPlaceholderIdentity.ino
-						) {
-							await rm(displacedPath, {
-								recursive: true,
-								force: true,
-								maxRetries: 3,
-								retryDelay: 100,
-							});
-							transactionPaths.delete(displacedPath);
-							displacedPath = undefined;
+						try {
+							const displaced = await lstat(displacedPath, { bigint: true });
+							if (
+								displaced.dev === displacedPlaceholderIdentity.dev &&
+								displaced.ino === displacedPlaceholderIdentity.ino
+							) {
+								const displacedPlaceholderPath = displacedPath;
+								displacedPath = undefined;
+								await rm(displacedPlaceholderPath, {
+									recursive: true,
+									force: true,
+									maxRetries: 3,
+									retryDelay: 100,
+								});
+								transactionPaths.delete(displacedPlaceholderPath);
+							}
+						} catch (placeholderCleanupError) {
+							application.logger.trace?.(
+								`Cleanup of the ${application.name} rollback placeholder deferred: ${errorMessage(placeholderCleanupError)}`
+							);
 						}
 					}
 				} catch (displaceError) {

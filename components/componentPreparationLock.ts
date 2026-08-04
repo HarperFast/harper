@@ -251,6 +251,7 @@ async function acquireComponentPreparationLock(
 	const choosingPath = join(lockRoot, `${lockName}.choosing.${owner.token}.json`);
 	let ticketPath: string | undefined;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_WAIT_TIMEOUT_MS;
+	const renewTimeoutWhileOwnerAlive = options.renewTimeoutWhileOwnerAlive ?? timeoutMs > 0;
 	let deadline = performance.now() + timeoutMs;
 
 	await mkdir(lockRoot, { recursive: true, mode: 0o700 });
@@ -284,7 +285,7 @@ async function acquireComponentPreparationLock(
 				options.onWait?.(blocker);
 			}
 			if (performance.now() >= deadline) {
-				if (options.renewTimeoutWhileOwnerAlive !== false && (await ownerLivenessConfirmed(blocker, options))) {
+				if (renewTimeoutWhileOwnerAlive && (await ownerLivenessConfirmed(blocker, options))) {
 					// A confirmed-live holder is allowed to finish; the deadline only bounds owners whose
 					// liveness cannot be positively established.
 					deadline = performance.now() + timeoutMs;
