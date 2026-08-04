@@ -154,6 +154,7 @@ module.exports = {
 	onThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
+	isZombieProcessGroupLeader,
 	isThreadRunning,
 	waitUntilConfirmedGone,
 	restartNumber: workerData?.restartNumber || 1,
@@ -946,18 +947,13 @@ const processGroupsByThread = new Map();
 const pendingProcessGroupTerminations = new Map();
 const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
 
-// A process-group leader spawned by a worker thread's own event loop is normally reaped by that
-// same loop when it dies. But the only caller of this check (waitForProcessGroupExit, for a
-// *dead* owner thread) runs after that loop is already gone, so nothing will ever reap it here:
-// kill(pid, 0) keeps succeeding forever against the zombie's still-allocated PID slot. A zombie
-// can no longer touch the filesystem, so treat a confirmed zombie as dead rather than poll
-// forever for a reap that will never come. Reproduced by killing a worker mid-install: the
-// installer's process-group leader becomes a permanent `Z` in /proc without this check.
-function isZombieProcessGroupLeader(processGroupId) {
-	if (process.platform !== 'linux') return false;
+// A zombie cannot mutate the component directory, but kill(pid, 0) still succeeds until it is
+// reaped. Treat a confirmed zombie process-group leader as gone so cleanup cannot poll forever.
+function isZombieProcessGroupLeader(processGroupId, platform = process.platform, readStat = readFileSync) {
+	if (platform !== 'linux') return false;
 	let stat;
 	try {
-		stat = readFileSync(`/proc/${processGroupId}/stat`, 'utf8');
+		stat = readStat(`/proc/${processGroupId}/stat`, 'utf8');
 	} catch {
 		return false;
 	}
