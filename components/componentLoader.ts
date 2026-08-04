@@ -176,11 +176,13 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			})
 			.catch((error) => {
 				const recoveryError = error instanceof Error ? error : new Error(String(error));
-				componentLifecycle.failed(
-					appName,
-					recoveryError,
-					`Component '${appName}' failed to load after waiting for in-progress preparation`
-				);
+				if (appWasVisible) {
+					componentLifecycle.failed(
+						appName,
+						recoveryError,
+						`Component '${appName}' failed to load after waiting for in-progress preparation`
+					);
+				}
 			});
 	};
 	if (existsSync(CF_ROUTES_DIR)) {
