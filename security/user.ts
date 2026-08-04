@@ -9,6 +9,7 @@ const ACTIVE_BOOLEAN = 'active must be true or false';
 export {
 	addUser,
 	alterUser,
+	assertActiveSuperUserRemains,
 	dropUser,
 	getSuperUser,
 	userInfo,
@@ -202,6 +203,7 @@ async function alterUser(jsonMessage) {
 		throw new Error(EMPTY_ROLE);
 	}
 	// Invalid roles will be found in the role search
+	let nextRole;
 	if (cleanUser.role) {
 		const roleData = await search.searchByValue({
 			schema: 'system',
@@ -217,7 +219,16 @@ async function alterUser(jsonMessage) {
 		if (roleData.length > 1)
 			throw new ClientError(HDB_ERROR_MSGS.DUP_ROLES_FOUND(cleanUser.role), HTTP_STATUS_CODES.CONFLICT);
 
-		cleanUser.role = roleData[0].id;
+		nextRole = roleData[0];
+		cleanUser.role = nextRole.id;
+	}
+
+	if (nextRole !== undefined || cleanUser.active !== undefined) {
+		await assertActiveSuperUserRemains((user) =>
+			user.username === cleanUser.username
+				? { ...user, role: nextRole ?? user.role, active: cleanUser.active ?? user.active }
+				: user
+		);
 	}
 
 	const updateResponse = await insert.update({
@@ -239,6 +250,8 @@ async function dropUser(user: User | any): Promise<string> {
 
 	if (usersWithRolesMap.get(user.username) === undefined)
 		throw new ClientError(HDB_ERROR_MSGS.USER_NOT_EXIST(user.username), HTTP_STATUS_CODES.NOT_FOUND);
+
+	await assertActiveSuperUserRemains((existing) => (existing.username === user.username ? undefined : existing));
 
 	const deleteResponse = await promiseDelete({
 		table: 'hdb_user',
@@ -379,6 +392,37 @@ async function setUsersWithRolesCache(cache = undefined) {
 async function getUsersWithRolesCache() {
 	if (!usersWithRolesMap) await setUsersWithRolesCache();
 	return usersWithRolesMap;
+}
+
+/**
+ * Rejects a pending change that would leave no active super_user. That state is unrecoverable
+ * without host access, because Studio, the operations API and the CLI all resolve admin access
+ * through `permission.super_user`. `simulate` maps each current user to what it would become —
+ * return undefined for a user the change removes. Local view only: `system` is replicated, so a
+ * node behind on replication can approve a change another node would reject.
+ */
+async function assertActiveSuperUserRemains(simulate: (user: User) => User | undefined): Promise<void> {
+	const users = await getUsersWithRolesCache();
+	if (!users) return;
+
+	const isActiveSuperUser = (user?: User) => Boolean(user?.active && user.role?.permission?.super_user);
+
+	// Only the removal of the last one is rejected; with none present there is nothing to protect,
+	// and refusing here would block the repair that restores one.
+	let present = false;
+	for (const user of users.values()) {
+		if (isActiveSuperUser(user)) {
+			present = true;
+			break;
+		}
+	}
+	if (!present) return;
+
+	for (const user of users.values()) {
+		if (isActiveSuperUser(simulate(user))) return;
+	}
+
+	throw new ClientError(HDB_ERROR_MSGS.LAST_SUPER_USER, HTTP_STATUS_CODES.CONFLICT);
 }
 
 /**

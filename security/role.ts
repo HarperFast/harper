@@ -16,6 +16,7 @@ import SearchObject from '../dataLayer/SearchObject.ts';
 import SearchByHashObject from '../dataLayer/SearchByHashObject.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
+import { assertActiveSuperUserRemains } from './user.ts';
 
 import { UserEventMsg } from '../server/threads/itc.js';
 
@@ -103,6 +104,12 @@ export async function alterRole(role: any) {
 	}
 
 	role = scrubRoleDetails(role);
+
+	if (role.permission) {
+		await assertActiveSuperUserRemains((user) =>
+			user.role?.id === role.id ? { ...user, role: { ...user.role, permission: role.permission } } : user
+		);
+	}
 
 	let updateObject = {
 		operation: 'update',
