@@ -395,11 +395,8 @@ async function getUsersWithRolesCache() {
 }
 
 /**
- * Rejects a pending change that would leave no active super_user. That state is unrecoverable
- * without host access, because Studio, the operations API and the CLI all resolve admin access
- * through `permission.super_user`. `simulate` maps each current user to what it would become —
- * return undefined for a user the change removes. Local view only: `system` is replicated, so a
- * node behind on replication can approve a change another node would reject.
+ * `simulate` maps each user to what the pending change would make it; undefined means removed.
+ * Local view only — `system` is replicated, so a lagging node can approve what another rejects.
  */
 async function assertActiveSuperUserRemains(simulate: (user: User) => User | undefined): Promise<void> {
 	const users = await getUsersWithRolesCache();
@@ -407,8 +404,7 @@ async function assertActiveSuperUserRemains(simulate: (user: User) => User | und
 
 	const isActiveSuperUser = (user?: User) => Boolean(user?.active && user.role?.permission?.super_user);
 
-	// Only the removal of the last one is rejected; with none present there is nothing to protect,
-	// and refusing here would block the repair that restores one.
+	// Nothing to protect when none exists — and refusing would block the repair that restores one.
 	let present = false;
 	for (const user of users.values()) {
 		if (isActiveSuperUser(user)) {
