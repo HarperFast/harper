@@ -15,7 +15,7 @@ import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
+import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
@@ -6077,7 +6077,7 @@ export function makeTable(options) {
 			// before the drain's fail-closed timeout below.
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
-				let updatedRecord;
+				let updatedRecord, assignCreatedTime;
 				let hasChanges, invalidated;
 				try {
 					updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
@@ -6142,6 +6142,7 @@ export function makeTable(options) {
 						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}
+					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;
 					resolved = true;
 					const resolvedEntry: Entry = {
 						key: id,
@@ -6202,16 +6203,15 @@ export function makeTable(options) {
 				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,
-					entry: existingEntry,
+					entry: undefined,
 					nodeName: 'source',
 					commit: (txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
 						if (
 							existingEntry?.version !== existingVersion &&
-							(existingVersion != null || precedesExistingVersion(txnTime, existingEntry) <= 0)
+							(existingVersion != null || !updatedRecord || precedesExistingVersion(txnTime, existingEntry) <= 0)
 						) {
-							// Revalidations retain exact-CAS semantics. Competing fills of a missing key use the
-							// table's deterministic ordering, so every node keeps the same winner.
+							// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
 							sourceWrite.skipped = true;
 							return;
 						}
@@ -6232,7 +6232,7 @@ export function makeTable(options) {
 											? new Date(txnTime).toISOString()
 											: txnTime;
 							}
-							if (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null) {
+							if (assignCreatedTime) {
 								const existingCreatedTime = currentRecord?.[createdTimeProperty.name];
 								if (existingCreatedTime != null) {
 									updatedRecord[createdTimeProperty.name] = existingCreatedTime;

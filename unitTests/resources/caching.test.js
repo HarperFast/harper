@@ -11,6 +11,7 @@ const { waitFor } = require('../waitFor.js');
 describe('Caching', () => {
 	let CachingTable,
 		IndexedCachingTable,
+		ConflictCachingTable,
 		CachingTableStaleWhileRevalidate,
 		SwrQueryTable,
 		Source,
@@ -18,6 +19,14 @@ describe('Caching', () => {
 		sourceResponses = 0;
 	let swrEnabled = true;
 	let sourceGate = null; // when set, SwrQueryTable's source defers responding until the test releases it
+	let conflictSourceRequest;
+	let conflictTimestamp = 0;
+	function nextConflictTimestamp() {
+		return (conflictTimestamp = Math.max(
+			conflictTimestamp + 1000,
+			ConflictCachingTable.primaryStore.getMonotonicTimestamp() + 1000
+		));
+	}
 	let observedSwrIds = []; // ids the SwrQueryTable SWR hook saw via this.getId(), for the per-row-identity test
 	let events = [];
 	let timer = 0;
@@ -86,6 +95,22 @@ describe('Caching', () => {
 			},
 		});
 		IndexedCachingTable.sourcedFrom(Source);
+		ConflictCachingTable = table({
+			table: 'ConflictCachingTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'createdAt', type: 'Date', assignCreatedTime: true },
+			],
+		});
+		ConflictCachingTable.sourcedFrom({
+			get(id, context) {
+				return new Promise((resolve) => {
+					conflictSourceRequest = { id, timestamp: context.timestamp, respond: resolve };
+				});
+			},
+		});
 		let subscription = await CachingTable.subscribe({});
 
 		subscription.on('data', (event) => {
@@ -473,6 +498,93 @@ describe('Caching', () => {
 			return_value = true;
 		}
 	});
+	it('orders first source fills from fetch start without overwriting a later write', async function () {
+		const id = 610;
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id);
+		await waitFor(() => conflictSourceRequest?.id === id);
+		const sourceTimestamp = conflictSourceRequest.timestamp;
+		assert.equal(typeof sourceTimestamp, 'number');
+		await ConflictCachingTable.put(id, { id, name: 'authoritative' });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'authoritative');
+		conflictSourceRequest.respond({ id, name: 'source' });
+		assert.equal((await fill).name, 'source');
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'authoritative');
+		assert(ConflictCachingTable.primaryStore.getEntry(id).version > sourceTimestamp);
+	});
+
+	it('first source fill replaces an older raced record and its index entries', async function () {
+		const id = 611;
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: nextConflictTimestamp() });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		const sourceTimestamp = conflictSourceRequest.timestamp;
+		const createdAt = new Date(sourceTimestamp - 0.0001);
+		await ConflictCachingTable.put(id, { id, name: 'older', createdAt });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'older');
+		const racedEntry = ConflictCachingTable.primaryStore.getEntry(id);
+		assert(racedEntry.version < sourceTimestamp);
+		const racedCreatedAt = racedEntry.value.createdAt;
+		conflictSourceRequest.respond({ id, name: 'source' });
+		assert.equal((await fill).name, 'source');
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'source');
+		const stored = ConflictCachingTable.primaryStore.getSync(id);
+		assert.equal(stored.createdAt.getTime(), racedCreatedAt.getTime());
+		const oldIndex = [];
+		for await (const record of ConflictCachingTable.search({ conditions: [{ attribute: 'name', value: 'older' }] }))
+			oldIndex.push(record);
+		assert.equal(oldIndex.length, 0);
+		const sourceIndex = [];
+		for await (const record of ConflictCachingTable.search({ conditions: [{ attribute: 'name', value: 'source' }] }))
+			sourceIndex.push(record);
+		assert.deepEqual(
+			sourceIndex.map((record) => record.id),
+			[id]
+		);
+	});
+
+	it('revalidation retains exact-CAS when a lower-version write races the source', async function () {
+		const id = 612;
+		await ConflictCachingTable.put(id, { id, name: 'seed' });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'seed');
+		await ConflictCachingTable.invalidate(id);
+		await waitFor(() => ConflictCachingTable.primaryStore.getEntry(id)?.metadataFlags);
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: nextConflictTimestamp() });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		const sourceTimestamp = conflictSourceRequest.timestamp;
+		await ConflictCachingTable.put(id, { id, name: 'raced' });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'raced');
+		assert(ConflictCachingTable.primaryStore.getEntry(id).version < sourceTimestamp);
+		conflictSourceRequest.respond({ id, name: 'source' });
+		assert.equal((await fill).name, 'source');
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'raced');
+		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'raced');
+	});
+
+	it('source deletion does not remove a record that raced the fill', async function () {
+		const id = 613;
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: nextConflictTimestamp() });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		const sourceTimestamp = conflictSourceRequest.timestamp;
+		await ConflictCachingTable.put(id, { id, name: 'older-delete' });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'older-delete');
+		assert(ConflictCachingTable.primaryStore.getEntry(id).version < sourceTimestamp);
+		conflictSourceRequest.respond(undefined);
+		assert.equal(await fill, undefined);
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'older-delete');
+		const indexed = [];
+		for await (const record of ConflictCachingTable.search({
+			conditions: [{ attribute: 'name', value: 'older-delete' }],
+		}))
+			indexed.push(record);
+		assert.deepEqual(
+			indexed.map((record) => record.id),
+			[id]
+		);
+	});
+
 	it('Source throw error', async function () {
 		try {
 			IndexedCachingTable.setTTLExpiration(0.005);
