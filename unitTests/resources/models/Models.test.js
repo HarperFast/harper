@@ -80,6 +80,16 @@ describe('Models facade', () => {
 			assert.ok(vectors[0] instanceof Float32Array);
 		});
 
+		it('embedWithUsage preserves the result-level usage that embed() drops (internal gateway path)', async () => {
+			const { vectors, usage } = await models.embedWithUsage('hello');
+			assert.ok(vectors[0] instanceof Float32Array);
+			// TestBackend reports embeddingTokens = total input length.
+			assert.strictEqual(usage.embeddingTokens, 'hello'.length);
+			// Same analytics path as embed(): one success row, not a new code path.
+			assert.strictEqual(writer.records.length, 1);
+			assert.strictEqual(writer.records[0].method, 'embed');
+		});
+
 		it('writes an analytics record with backend=test, method=embed, success=true', async () => {
 			await models.embed('hello');
 			assert.strictEqual(writer.records.length, 1);
