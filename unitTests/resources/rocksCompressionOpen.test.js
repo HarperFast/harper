@@ -59,7 +59,7 @@ describe('storage.rocks.compression reaches a real RocksDB open', function () {
 		}
 	});
 
-	it('overrides per-table metadata that says compression is disabled', async function () {
+	it('resolves the configured codec alongside disabled per-table metadata', async function () {
 		assert.strictEqual(toRocksCompression(false), 'none');
 		const db = RocksDatabase.open(dir, { name: 'records', compression: getRocksCompression() });
 		try {
