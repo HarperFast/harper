@@ -244,6 +244,18 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 			true
 		);
 		assert.equal(zombieGroup(['123']), false);
+		assert.equal(
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['456'],
+				readStat: (path) => {
+					if (path === '/proc/123/stat') throw new Error('leader reaped');
+					return '456 (unreaped child) Z 1 123 123';
+				},
+			}),
+			false
+		);
 	});
 
 	it('accepts a Windows taskkill miss only when the process tree is independently gone', async () => {

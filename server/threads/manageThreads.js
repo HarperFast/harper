@@ -946,42 +946,35 @@ const processGroupsByThread = new Map();
 // window component-preparation locking exists to close.
 const pendingProcessGroupTerminations = new Map();
 const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
+const ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS = 250;
+const zombieGroupScanTimes = new Map();
 
-function isZombieProcessGroupLeader(processGroupId, platform = process.platform, readStat = readFileSync) {
-	if (platform !== 'linux') return false;
+function processGroupExists(processGroupId) {
+	try {
+		process.kill(-processGroupId, 0);
+		return true;
+	} catch (error) {
+		return error.code === 'EPERM';
+	}
+}
+
+function processGroupLeaderState(processGroupId, platform, readStat) {
+	if (platform !== 'linux') return 'unknown';
 	let stat;
 	try {
 		stat = readStat(`/proc/${processGroupId}/stat`, 'utf8');
 	} catch {
-		return false;
+		return 'missing';
 	}
-	// Format is "pid (comm) state ..."; comm can contain spaces/parens, so anchor on the last ')'.
-	return stat[stat.lastIndexOf(')') + 2] === 'Z';
+	return stat[stat.lastIndexOf(')') + 2] === 'Z' ? 'zombie' : 'alive';
 }
 
-function isProcessGroupAlive(
-	processGroupId,
-	{
-		platform = process.platform,
-		processGroupExists = (id) => {
-			try {
-				process.kill(-id, 0);
-				return true;
-			} catch (error) {
-				return error.code === 'EPERM';
-			}
-		},
-		readDirectory = readdirSync,
-		readStat = readFileSync,
-	} = {}
-) {
-	if (!processGroupExists(processGroupId)) return false;
-	if (!isZombieProcessGroupLeader(processGroupId, platform, readStat)) return true;
+function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
 	let processIds;
 	try {
 		processIds = readDirectory('/proc');
 	} catch {
-		return true;
+		return null;
 	}
 	let foundMember = false;
 	for (const processId of processIds) {
@@ -997,7 +990,26 @@ function isProcessGroupAlive(
 		foundMember = true;
 		if (fields[0] !== 'Z') return true;
 	}
-	return !foundMember;
+	return foundMember ? false : null;
+}
+
+function isProcessGroupAlive(processGroupId, testOptions) {
+	const platform = testOptions?.platform ?? process.platform;
+	const groupExists = testOptions?.processGroupExists ?? processGroupExists;
+	const readDirectory = testOptions?.readDirectory ?? readdirSync;
+	const readStat = testOptions?.readStat ?? readFileSync;
+	if (!groupExists(processGroupId)) return false;
+	const leaderState = processGroupLeaderState(processGroupId, platform, readStat);
+	if (leaderState === 'alive' || leaderState === 'unknown') return true;
+	if (!testOptions) {
+		const lastScan = zombieGroupScanTimes.get(processGroupId);
+		if (lastScan && performance.now() - lastScan < ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS) return true;
+		zombieGroupScanTimes.set(processGroupId, performance.now());
+	}
+	const isAlive = scanLinuxProcessGroup(processGroupId, readDirectory, readStat);
+	if (isAlive !== false) return true;
+	zombieGroupScanTimes.delete(processGroupId);
+	return false;
 }
 
 function processGroupIsAlive(processGroupId) {
