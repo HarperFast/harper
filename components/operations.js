@@ -318,6 +318,8 @@ async function dropCustomFunctionProject(req) {
 
 	try {
 		const projectDir = path.join(cfDir, project);
+		const stagingDir = path.join(cfDir, ASIDE_STAGING_DIR, project);
+		if (!(await fs.pathExists(projectDir)) && !(await fs.pathExists(stagingDir))) await fs.stat(projectDir);
 		await withComponentPreparationLock(
 			projectDir,
 			async () => {

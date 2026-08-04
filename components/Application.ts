@@ -484,6 +484,8 @@ const IN_PROGRESS_ASIDE_PREFIX = '.in-progress-';
 const RETIRED_ASIDE_PREFIX = '.retired-';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
+const COMPONENT_RECOVERY_WAIT_TIMEOUT_MS = 30000;
+const COMPONENT_RECOVERY_LOCK_PURPOSE = 'component-recovery';
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
 
@@ -727,7 +729,8 @@ export async function extractApplication(
 	// `maxRetries` is set, and a continuously-writing app would outlast retries
 	// anyway.) Renaming the old directory aside is atomic and immune to the race: the
 	// still-running worker keeps writing into the renamed inode harmlessly until it's
-	// replaced on restart, and the aside copy is removed best-effort below.
+	// replaced on restart. The aside remains the rollback/recovery record until commit
+	// marks it retired and cleanup removes it.
 	//
 	// The aside lives under a hidden, component-scoped staging directory inside the
 	// components root: same filesystem as the source so the rename stays atomic, the
@@ -913,12 +916,21 @@ export async function recoverInterruptedComponentExtractions(
 							);
 						},
 						{
-							timeoutMs: 0,
-							onWait: (owner) =>
+							timeoutMs: COMPONENT_RECOVERY_WAIT_TIMEOUT_MS,
+							purpose: COMPONENT_RECOVERY_LOCK_PURPOSE,
+							renewTimeoutWhileOwnerAlive: false,
+							onWait: (owner) => {
+								if (owner?.purpose !== COMPONENT_RECOVERY_LOCK_PURPOSE) {
+									throw new ComponentPreparationLockTimeoutError(
+										`Component preparation is still in progress for ${componentDirPath}`
+									);
+								}
 								logger.info(
 									`Waiting to recover an interrupted deployment of ${entry.name}` +
 										(owner ? ` held by process ${owner.pid}, thread ${owner.threadId}` : '')
-								),
+								);
+							},
+							isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
 						}
 					);
 				} catch (error) {
@@ -1044,8 +1056,8 @@ async function rollbackExtractedDirectory(
 ): Promise<void> {
 	await ensureExtractionStagingDirectory(asideStagingDir);
 	const retryableRenameCodes = new Set(['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES', 'EBUSY']);
-	const retryDeadline = Date.now() + 5000;
 	const displaceCurrentDirectory = async (): Promise<string | undefined> => {
+		const retryDeadline = Date.now() + 5000;
 		let lastError: unknown;
 		do {
 			const displacedPath = join(asideStagingDir, `.failed-${process.pid}-${Date.now()}-${randomUUID()}`);
@@ -1066,6 +1078,7 @@ async function rollbackExtractedDirectory(
 
 	if (asidePath) {
 		let restoreError: unknown;
+		let restoreRetryDeadline: number | undefined;
 		let fallbackDisplacedPath: string | undefined;
 		const failRestore = async (error: unknown): Promise<never> => {
 			try {
@@ -1118,6 +1131,7 @@ async function rollbackExtractedDirectory(
 					);
 				}
 				fallbackDisplacedPath ??= displacedPath;
+				restoreRetryDeadline ??= Date.now() + 5000;
 				if (process.platform !== 'win32') {
 					try {
 						await mkdir(application.dirPath, { mode: 0o000 });
@@ -1129,7 +1143,7 @@ async function rollbackExtractedDirectory(
 				}
 				await delay(10);
 			}
-		} while (Date.now() < retryDeadline);
+		} while (Date.now() < (restoreRetryDeadline ?? Date.now() + 5000));
 		return failRestore(restoreError);
 	}
 	try {

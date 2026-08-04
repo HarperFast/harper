@@ -224,6 +224,39 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
+	it('waits for another startup recovery before loading the component', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-startup-race-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+		let releaseRecovery;
+		let recoveryStarted;
+		const started = new Promise((resolve) => (recoveryStarted = resolve));
+		const recovery = withComponentPreparationLock(
+			dirPath,
+			async () => {
+				recoveryStarted();
+				await new Promise((resolve) => (releaseRecovery = resolve));
+			},
+			{ purpose: 'component-recovery' }
+		);
+
+		try {
+			await started;
+			setTimeout(() => releaseRecovery(), 25);
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+		} finally {
+			releaseRecovery?.();
+			await recovery;
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	it('retires interrupted deploy state before a component is dropped', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-drop-retire-'));
 		const dirPath = path.join(componentsRoot, 'web');

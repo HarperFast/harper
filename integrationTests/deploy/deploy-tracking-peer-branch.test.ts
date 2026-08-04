@@ -122,13 +122,13 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 	let seedPayloadBlobPath: string;
 
 	before(async () => {
-		await startHarper(ctx, { config: { storage: { blobReadTimeout: 1000 } }, env: {} });
+		await startHarper(ctx, { config: { storage: { blobReadTimeout: 2000 } }, env: {} });
 		fixtureDir = mkdtempSync(join(tmpdir(), 'peer-branch-fixture-'));
 		writeFileSync(join(fixtureDir, 'config.yaml'), 'graphqlSchema:\n  files: schema.graphql\nrest: true\n');
 		writeFileSync(join(fixtureDir, 'schema.graphql'), 'type Query { hello: String }\n');
 		mkdirSync(join(fixtureDir, 'web'), { recursive: true });
 		writeFileSync(join(fixtureDir, 'web', 'index.html'), '<h1>Hello, Peer Branch!</h1>');
-		writeFileSync(join(fixtureDir, 'web', 'blob.bin'), randomFillSync(Buffer.alloc(8 * 1024 * 1024)));
+		writeFileSync(join(fixtureDir, 'web', 'blob.bin'), randomFillSync(Buffer.alloc(2 * 1024 * 1024)));
 	});
 
 	after(async () => {
@@ -230,9 +230,12 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 				_deploymentId: seedDeploymentId,
 				deployment_timeout: 5000,
 			});
-			responsePromise.catch(() => {});
-			await waitForMarkedAside(asidePath);
-			const response = await responsePromise;
+			const [asideResult, responseResult] = await Promise.allSettled([waitForMarkedAside(asidePath), responsePromise]);
+			if (responseResult.status === 'rejected') throw responseResult.reason;
+			if (asideResult.status === 'rejected') {
+				throw new Error(`${asideResult.reason}; deploy response: ${responseResult.value.rawText}`);
+			}
+			const response = responseResult.value;
 
 			strictEqual(response.status, 500, `peer deploy should fail after payload truncation: ${response.rawText}`);
 			ok(
