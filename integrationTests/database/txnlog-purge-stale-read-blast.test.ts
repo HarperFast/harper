@@ -36,7 +36,7 @@
  *     collection query (`?bucket=`), `search_by_value` (ops API), SQL (ops API), and a raw
  *     index-independent full primary-store scan.
  *   - CONTRAST ARM: run the KNOWN-reproducing audit purge (`delete_transaction_logs_before`)
- *     against the SAME table in the SAME process and check `read_audit_log` for the deleted
+ *     against the same database (and table for LMDB) in the SAME process and check `read_audit_log` for the deleted
  *     range -- documents (not hard-asserted, since it's independently filed as F-225) whether
  *     the audit phantom reproduces here too, for the sharpest possible same-process contrast.
  *   - RESTART DISCRIMINATOR: `killHarper` + `startHarper` on the identical `dataRootDir`,
@@ -669,8 +669,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 
 					const ack = await rawOp(ctx, {
 						operation: 'delete_transaction_logs_before',
-						schema: SCHEMA,
-						table: TABLE,
+						...(engine === 'rocksdb' ? { database: SCHEMA } : { schema: SCHEMA, table: TABLE }),
 						timestamp: cutoffTimestamp,
 					});
 					ok(
