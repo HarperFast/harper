@@ -6039,6 +6039,13 @@ export function makeTable(options) {
 		setLoadedFromSource(target, true);
 
 		const existingRecord = existingEntry?.value;
+		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+		const monotonicTimestamp = () =>
+			isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime();
+		const sourceTimestamp =
+			inheritedTimestamp && (existingVersion == null || inheritedTimestamp > existingVersion)
+				? inheritedTimestamp
+				: Math.max(monotonicTimestamp(), existingVersion == null ? 0 : existingVersion + 0.000488);
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
 		// want a timestamp later than the current transaction
@@ -6056,6 +6063,7 @@ export function makeTable(options) {
 			noCacheStore: droppingTable,
 			source: null,
 			transaction: undefined,
+			timestamp: sourceTimestamp,
 			expiresAt: undefined,
 			lastModified: undefined,
 		};
