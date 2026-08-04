@@ -221,6 +221,63 @@ describe('Scope', () => {
 		await scope.close();
 	});
 
+	it('should call requestRestart when the plugin config block is deleted', async () => {
+		// Deleting a component's block emits `remove`, not `change`. Absence is the
+		// canonical disabled state for opt-in built-ins (e.g. the /v1 models gateway),
+		// so removal must restart just like a change would — otherwise the component
+		// keeps serving until some unrelated restart.
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { enabled: true } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+
+		await scope.ready;
+
+		assert.equal(restartNeeded(), false, 'requestRestart should not be called yet');
+
+		// Rewrite the config with the plugin's block deleted entirely
+		await writeFile(this.configFilePath, stringify({ otherPlugin: { enabled: true } }));
+
+		await waitFor(() => restartNeeded());
+
+		assert.equal(restartNeeded(), true, 'requestRestart should be called on block removal');
+
+		await scope.close();
+	});
+
+	it('should NOT call requestRestart on block removal when the plugin handles remove itself', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { enabled: true } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+
+		await scope.ready;
+
+		const removeSpy = spy();
+		scope.options.on('remove', removeSpy);
+
+		await writeFile(this.configFilePath, stringify({ otherPlugin: { enabled: true } }));
+
+		await waitFor(() => removeSpy.callCount > 0);
+
+		assert.equal(removeSpy.callCount, 1, 'plugin remove handler should be invoked');
+		assert.equal(restartNeeded(), false, 'plugin owns removal handling; no restart requested');
+
+		await scope.close();
+	});
+
 	it('should emit error for missing default entry handler', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { foo: 'bar' } }));
 

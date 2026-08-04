@@ -171,6 +171,16 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 		return require('../server/fastifyRoutes');
 	},
 	login,
+	// String entry: the loader `await import()`s these lazily when the component is actually
+	// processed, so the gateway's module graph is not pulled into componentLoader's own
+	// evaluation. `#src/*` is used rather than a relative path because it resolves under both
+	// conditions (source under --conditions=typestrip, dist otherwise); a relative extensionless
+	// require would only resolve against dist.
+	//
+	// The component is only *processed* when a `modelsGateway` key exists in the config, since
+	// the root loop skips absent keys (`if (!componentConfig) continue`). `defaultConfig.yaml`
+	// ships no such key, so an instance that never opts in pays nothing for this entry.
+	modelsGateway: '#src/resources/models/v1/index',
 	static: staticFiles,
 	customFunctions: {},
 	http: httpComponent,

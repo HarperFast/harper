@@ -1,0 +1,462 @@
+'use strict';
+
+/**
+ * Pure-mapper unit tests for `resources/models/v1/translation.ts` (#631).
+ *
+ * No I/O, no Harper server — just input→output assertions on the shape translators.
+ */
+
+const assert = require('node:assert');
+const {
+	translateMessages,
+	translateTools,
+	toGenerateInput,
+	toGenerateOpts,
+	validateChatRequest,
+	toEmbedOpts,
+	toChatCompletion,
+	toEmbedResponse,
+} = require('#src/resources/models/v1/translation');
+
+// ---------------------------------------------------------------------------
+// translateMessages
+// ---------------------------------------------------------------------------
+
+describe('translateMessages', () => {
+	it('maps a simple user message', () => {
+		const result = translateMessages([{ role: 'user', content: 'hi' }]);
+		assert.equal(result.length, 1);
+		assert.equal(result[0].role, 'user');
+		assert.equal(result[0].content, 'hi');
+	});
+
+	it('maps null content to empty string', () => {
+		const result = translateMessages([{ role: 'assistant', content: null }]);
+		assert.equal(result[0].content, '');
+	});
+
+	it('parses tool_calls arguments from JSON string to object', () => {
+		const result = translateMessages([
+			{
+				role: 'assistant',
+				content: null,
+				tool_calls: [
+					{
+						id: 'call_abc',
+						type: 'function',
+						function: { name: 'get_weather', arguments: '{"city":"NYC"}' },
+					},
+				],
+			},
+		]);
+		assert.ok(Array.isArray(result[0].toolCalls));
+		assert.equal(result[0].toolCalls[0].id, 'call_abc');
+		assert.equal(result[0].toolCalls[0].name, 'get_weather');
+		assert.deepEqual(result[0].toolCalls[0].arguments, { city: 'NYC' });
+	});
+
+	it('keeps unparseable arguments under _raw sentinel', () => {
+		const result = translateMessages([
+			{
+				role: 'assistant',
+				content: null,
+				tool_calls: [
+					{
+						id: 'c1',
+						type: 'function',
+						function: { name: 'fn', arguments: 'not-json' },
+					},
+				],
+			},
+		]);
+		assert.deepEqual(result[0].toolCalls[0].arguments, { _raw: 'not-json' });
+	});
+
+	it('maps tool_call_id to toolCallId on tool role messages', () => {
+		const result = translateMessages([{ role: 'tool', content: '42', tool_call_id: 'call_1' }]);
+		assert.equal(result[0].toolCallId, 'call_1');
+	});
+
+	it("carries 'developer' as 'system' — same channel, priority preserved (review round 3)", () => {
+		// OpenAI treats developer as the successor to system (the API converts system to
+		// developer on newer models); Harper's internal union spells the channel 'system'.
+		// Before this mapping the cast passed 'developer' through and provider adapters
+		// degraded it to 'user'.
+		const result = translateMessages([
+			{ role: 'developer', content: 'be brief' },
+			{ role: 'user', content: 'q' },
+		]);
+		assert.equal(result[0].role, 'system');
+		assert.equal(result[0].content, 'be brief');
+		assert.equal(result[1].role, 'user');
+	});
+
+	it("a translated 'developer' message reaches Anthropic's system slot, not a user turn", async () => {
+		// Composed path: gateway translation → AnthropicBackend wire request. Guards the
+		// full property kris's finding names — the instruction's priority survives to the
+		// provider — against either layer drifting independently.
+		const { AnthropicBackend } = require('#src/components/anthropic/index');
+		const calls = [];
+		const fetch = async (url, init) => {
+			calls.push({ url, init });
+			return new Response(
+				JSON.stringify({
+					id: 'msg_x',
+					type: 'message',
+					role: 'assistant',
+					content: [{ type: 'text', text: 'ok' }],
+					stop_reason: 'end_turn',
+					usage: { input_tokens: 1, output_tokens: 1 },
+				}),
+				{ status: 200, headers: { 'Content-Type': 'application/json' } }
+			);
+		};
+		const backend = new AnthropicBackend({ apiKey: 'sk-ant-test', model: 'claude' }, fetch);
+		const messages = translateMessages([
+			{ role: 'developer', content: 'be brief' },
+			{ role: 'user', content: 'q' },
+		]);
+		await backend.generate(messages, { accounting: { tenantId: 't', app: '/test' } });
+		const sent = JSON.parse(calls[0].init.body);
+		assert.equal(sent.system, 'be brief');
+		assert.deepEqual(sent.messages, [{ role: 'user', content: 'q' }]);
+	});
+
+	it('flattens OpenAI content parts to the string Message.content expects', () => {
+		const result = translateMessages([
+			{
+				role: 'user',
+				content: [
+					{ type: 'text', text: 'hello ' },
+					{ type: 'text', text: 'world' },
+				],
+			},
+		]);
+		assert.equal(result[0].content, 'hello world');
+		assert.equal(typeof result[0].content, 'string', 'must not pass an array downstream');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// translateTools
+// ---------------------------------------------------------------------------
+
+describe('translateTools', () => {
+	it('maps OpenAI tool definitions to ToolDef', () => {
+		const tools = translateTools([
+			{
+				type: 'function',
+				function: {
+					name: 'search',
+					description: 'Search the web',
+					parameters: { type: 'object', properties: { query: { type: 'string' } } },
+				},
+			},
+		]);
+		assert.equal(tools.length, 1);
+		assert.equal(tools[0].name, 'search');
+		assert.equal(tools[0].description, 'Search the web');
+		assert.deepEqual(tools[0].parameters, { type: 'object', properties: { query: { type: 'string' } } });
+	});
+
+	it('uses empty string for missing description and empty object for missing parameters', () => {
+		const tools = translateTools([{ type: 'function', function: { name: 'noop' } }]);
+		assert.equal(tools[0].description, '');
+		assert.deepEqual(tools[0].parameters, {});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// toGenerateInput
+// ---------------------------------------------------------------------------
+
+describe('toGenerateInput', () => {
+	const msgs = [{ role: 'user', content: 'hello' }];
+
+	it('returns Message[] when no tools', () => {
+		const input = toGenerateInput(msgs, undefined);
+		assert.ok(Array.isArray(input));
+	});
+
+	it('returns object form { messages, tools } when tools present', () => {
+		const tools = [{ name: 'x', description: '', parameters: {} }];
+		const input = toGenerateInput(msgs, tools);
+		assert.ok(!Array.isArray(input));
+		assert.deepEqual(input.messages, msgs);
+		assert.deepEqual(input.tools, tools);
+	});
+
+	it('returns Message[] when tools array is empty', () => {
+		const input = toGenerateInput(msgs, []);
+		assert.ok(Array.isArray(input));
+	});
+});
+
+// ---------------------------------------------------------------------------
+// toGenerateOpts
+// ---------------------------------------------------------------------------
+
+describe('toGenerateOpts', () => {
+	it('maps model, temperature, max_tokens', () => {
+		const opts = toGenerateOpts({ model: 'my-model', temperature: 0.5, max_tokens: 100, messages: [] });
+		assert.equal(opts.model, 'my-model');
+		assert.equal(opts.temperature, 0.5);
+		assert.equal(opts.maxTokens, 100);
+	});
+
+	it('prefers max_completion_tokens over max_tokens', () => {
+		const opts = toGenerateOpts({ max_tokens: 100, max_completion_tokens: 200, messages: [] });
+		assert.equal(opts.maxTokens, 200);
+	});
+
+	it('maps response_format json_object to json', () => {
+		const opts = toGenerateOpts({ response_format: { type: 'json_object' }, messages: [] });
+		assert.equal(opts.responseFormat, 'json');
+	});
+
+	it('extracts the inner schema from the real OpenAI json_schema wrapper', () => {
+		// The wire value is { name, strict, schema } — passing the whole wrapper through
+		// would make the backend wrap it again and send metadata where the provider
+		// expects the JSON Schema itself.
+		const schema = { type: 'object', properties: {} };
+		const opts = toGenerateOpts({
+			response_format: { type: 'json_schema', json_schema: { name: 'my_schema', strict: true, schema } },
+			messages: [],
+		});
+		assert.deepEqual(opts.responseFormat, { schema });
+		assert.equal(opts.responseFormat.schema.name, undefined, 'must not carry wrapper metadata');
+	});
+
+	it('maps response_format text to text', () => {
+		const opts = toGenerateOpts({ response_format: { type: 'text' }, messages: [] });
+		assert.equal(opts.responseFormat, 'text');
+	});
+
+	it('always sets toolMode to return', () => {
+		const opts = toGenerateOpts({ messages: [] });
+		assert.equal(opts.toolMode, 'return');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// validateChatRequest — malformed wire shapes must become 400s, not TypeErrors
+// ---------------------------------------------------------------------------
+
+describe('validateChatRequest', () => {
+	const ok = { messages: [{ role: 'user', content: 'hi' }] };
+
+	it('accepts a well-formed request', () => {
+		assert.equal(validateChatRequest(ok), null);
+	});
+
+	it("accepts the 'developer' role and rejects roles outside the supported set", () => {
+		assert.equal(validateChatRequest({ messages: [{ role: 'developer', content: 'x' }] }), null);
+		// Previously any string role was cast through and silently degraded by adapters.
+		assert.match(validateChatRequest({ messages: [{ role: 'function', content: 'x' }] }), /role/);
+		assert.match(validateChatRequest({ messages: [{ role: 'moderator', content: 'x' }] }), /role/);
+	});
+
+	// Top-level routing/framing fields (review round 3): a non-string model silently ran
+	// the configured default; a truthy non-boolean stream returned SSE the client
+	// didn't ask for.
+	it('rejects a non-string model rather than silently running the default', () => {
+		assert.match(validateChatRequest({ ...ok, model: 7 }), /'model'/);
+		assert.match(validateChatRequest({ ...ok, model: { name: 'x' } }), /'model'/);
+	});
+
+	it('rejects a non-boolean stream rather than treating "false" as truthy SSE', () => {
+		assert.match(validateChatRequest({ ...ok, stream: 'false' }), /'stream'/);
+		assert.match(validateChatRequest({ ...ok, stream: 1 }), /'stream'/);
+		assert.equal(validateChatRequest({ ...ok, stream: true }), null);
+		assert.equal(validateChatRequest({ ...ok, stream: false }), null);
+	});
+
+	it('rejects malformed numeric options instead of ignoring or forwarding them', () => {
+		assert.match(validateChatRequest({ ...ok, temperature: 'hot' }), /'temperature'/);
+		assert.match(validateChatRequest({ ...ok, temperature: NaN }), /'temperature'/);
+		assert.match(validateChatRequest({ ...ok, temperature: 3 }), /between 0 and 2/);
+		assert.match(validateChatRequest({ ...ok, max_tokens: '100' }), /'max_tokens'/);
+		assert.match(validateChatRequest({ ...ok, max_tokens: 0 }), /'max_tokens'/);
+		assert.match(validateChatRequest({ ...ok, max_completion_tokens: 1.5 }), /'max_completion_tokens'/);
+		assert.equal(validateChatRequest({ ...ok, temperature: 0.7, max_tokens: 100 }), null);
+	});
+
+	it('rejects a missing or empty messages array', () => {
+		assert.ok(validateChatRequest({}));
+		assert.ok(validateChatRequest({ messages: [] }));
+		assert.ok(validateChatRequest({ messages: 'nope' }));
+	});
+
+	// Each of these previously threw a TypeError inside the mappers → RFC 9457 500
+	it('rejects a null message element instead of throwing', () => {
+		const msg = validateChatRequest({ messages: [null] });
+		assert.match(msg, /messages\[0\]/);
+	});
+
+	it('rejects a tool_calls entry with no function', () => {
+		const msg = validateChatRequest({ messages: [{ role: 'assistant', content: null, tool_calls: [{}] }] });
+		assert.match(msg, /tool_calls\[0\]\.function/);
+	});
+
+	it('rejects non-string tool_calls arguments (mapper assumes a JSON string)', () => {
+		const msg = validateChatRequest({
+			messages: [
+				{ role: 'assistant', content: null, tool_calls: [{ id: 'a', function: { name: 'f', arguments: {} } }] },
+			],
+		});
+		assert.match(msg, /arguments/);
+	});
+
+	it('rejects a non-array tools and a tools entry with no function', () => {
+		assert.match(validateChatRequest({ ...ok, tools: 'nope' }), /'tools'/);
+		assert.match(validateChatRequest({ ...ok, tools: [{}] }), /tools\[0\]\.function/);
+	});
+
+	it("accepts tool_choice 'auto' and 'none'", () => {
+		assert.equal(validateChatRequest({ ...ok, tool_choice: 'auto' }), null);
+		assert.equal(validateChatRequest({ ...ok, tool_choice: 'none' }), null);
+	});
+
+	it("rejects tool_choice values the internal contract can't represent, rather than silently downgrading", () => {
+		assert.match(validateChatRequest({ ...ok, tool_choice: 'required' }), /tool_choice/);
+		assert.match(
+			validateChatRequest({ ...ok, tool_choice: { type: 'function', function: { name: 'f' } } }),
+			/tool_choice/
+		);
+	});
+
+	it('accepts OpenAI text content parts', () => {
+		assert.equal(validateChatRequest({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] }), null);
+	});
+
+	it('rejects content part types the gateway cannot flatten, rather than passing a non-string downstream', () => {
+		const msg = validateChatRequest({
+			messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'http://x' } }] }],
+		});
+		assert.match(msg, /content\[0\]/);
+	});
+
+	it('rejects a json_schema response_format missing the inner schema', () => {
+		assert.match(validateChatRequest({ ...ok, response_format: { type: 'json_schema' } }), /json_schema/);
+		assert.match(
+			validateChatRequest({ ...ok, response_format: { type: 'json_schema', json_schema: { name: 'x' } } }),
+			/json_schema\.schema/
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// toEmbedOpts
+// ---------------------------------------------------------------------------
+
+describe('toEmbedOpts', () => {
+	it('maps model field', () => {
+		assert.equal(toEmbedOpts({ model: 'embed-v1' }).model, 'embed-v1');
+	});
+
+	it('returns empty opts when model absent', () => {
+		assert.deepEqual(toEmbedOpts({}), {});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// toChatCompletion
+// ---------------------------------------------------------------------------
+
+describe('toChatCompletion', () => {
+	const baseResult = {
+		content: 'Hello!',
+		finishReason: 'stop',
+		usage: { promptTokens: 10, completionTokens: 5 },
+	};
+
+	it('builds a valid chat.completion object', () => {
+		const resp = toChatCompletion(baseResult, 'gpt-test', 'chatcmpl-fixed');
+		assert.equal(resp.id, 'chatcmpl-fixed');
+		assert.equal(resp.object, 'chat.completion');
+		assert.equal(resp.model, 'gpt-test');
+		assert.equal(resp.choices.length, 1);
+		assert.equal(resp.choices[0].finish_reason, 'stop');
+		assert.equal(resp.choices[0].message.role, 'assistant');
+		assert.equal(resp.choices[0].message.content, 'Hello!');
+		assert.equal(resp.usage.prompt_tokens, 10);
+		assert.equal(resp.usage.completion_tokens, 5);
+		assert.equal(resp.usage.total_tokens, 15);
+	});
+
+	it('generates an id when none provided', () => {
+		const resp = toChatCompletion(baseResult, 'm');
+		assert.ok(resp.id.startsWith('chatcmpl-'));
+	});
+
+	it('sets content to null and includes tool_calls when toolCalls present', () => {
+		const resp = toChatCompletion(
+			{
+				content: '',
+				finishReason: 'tool_calls',
+				toolCalls: [{ id: 'c1', name: 'search', arguments: { q: 'hi' } }],
+			},
+			'm',
+			'id1'
+		);
+		assert.equal(resp.choices[0].message.content, null);
+		assert.ok(Array.isArray(resp.choices[0].message.tool_calls));
+		const tc = resp.choices[0].message.tool_calls[0];
+		assert.equal(tc.id, 'c1');
+		assert.equal(tc.type, 'function');
+		assert.equal(tc.function.name, 'search');
+		assert.deepEqual(JSON.parse(tc.function.arguments), { q: 'hi' });
+	});
+
+	it('uses zeros when usage absent', () => {
+		const resp = toChatCompletion({ content: 'hi', finishReason: 'stop' }, 'm', 'id2');
+		assert.equal(resp.usage.prompt_tokens, 0);
+		assert.equal(resp.usage.completion_tokens, 0);
+		assert.equal(resp.usage.total_tokens, 0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// toEmbedResponse
+// ---------------------------------------------------------------------------
+
+describe('toEmbedResponse', () => {
+	it('converts Float32Array vectors to number arrays', () => {
+		const vec = new Float32Array([0.1, -0.5, 0.9]);
+		const resp = toEmbedResponse([vec], 'embed-v1', { embeddingTokens: 3 });
+		assert.equal(resp.object, 'list');
+		assert.equal(resp.model, 'embed-v1');
+		assert.equal(resp.data.length, 1);
+		assert.equal(resp.data[0].index, 0);
+		assert.equal(resp.data[0].object, 'embedding');
+		assert.ok(Array.isArray(resp.data[0].embedding));
+		assert.equal(resp.data[0].embedding.length, 3);
+		assert.equal(resp.usage.total_tokens, 3);
+	});
+
+	it('assigns sequential indices to multiple vectors', () => {
+		const resp = toEmbedResponse([new Float32Array(2), new Float32Array(2)], 'm');
+		assert.equal(resp.data[0].index, 0);
+		assert.equal(resp.data[1].index, 1);
+	});
+
+	it('uses zero usage when absent', () => {
+		const resp = toEmbedResponse([new Float32Array(1)], 'm');
+		assert.equal(resp.usage.prompt_tokens, 0);
+		assert.equal(resp.usage.total_tokens, 0);
+	});
+
+	it('reports embeddingTokens in BOTH prompt_tokens and total_tokens (review round 3)', () => {
+		// Embeddings have no completion side: OpenAI reports the same count twice.
+		// A backend supplying only embeddingTokens must not leave prompt_tokens at 0.
+		const resp = toEmbedResponse([new Float32Array(1)], 'm', { embeddingTokens: 7 });
+		assert.equal(resp.usage.prompt_tokens, 7);
+		assert.equal(resp.usage.total_tokens, 7);
+	});
+
+	it('falls back to promptTokens symmetrically for backends that report it that way', () => {
+		const resp = toEmbedResponse([new Float32Array(1)], 'm', { promptTokens: 5 });
+		assert.equal(resp.usage.prompt_tokens, 5);
+		assert.equal(resp.usage.total_tokens, 5);
+	});
+});

@@ -40,6 +40,16 @@ export function getBackend(kind: ModelKind, logicalName: string): ModelBackend |
 }
 
 /**
+ * Enumerate all registrations for `kind` as `{logicalName, backend}` pairs. Used by
+ * `GET /v1/models` (#631) to advertise selectable model names; `logicalName` is what a
+ * caller passes as `opts.model`, not the backend's own `.name`.
+ */
+export function listBackends(kind: ModelKind): Array<{ logicalName: string; backend: ModelBackend }> {
+	const map = kind === 'embedding' ? embedding : generative;
+	return [...map.entries()].map(([logicalName, backend]) => ({ logicalName, backend }));
+}
+
+/**
  * Resolve the embedding backend mapped to `logicalName` (default: `'default'`).
  * Throws `ModelBackendNotFoundError` if no backend is mapped.
  */
