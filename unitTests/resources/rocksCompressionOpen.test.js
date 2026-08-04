@@ -82,6 +82,7 @@ describe('storage.rocks.compression reaches a real RocksDB open', function () {
 	});
 
 	it('adopts the codec for an unmentioned sibling through the production open path', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const sibling = RocksDatabase.open(dir, { name: 'sibling', compression: 'none' });
 		await sibling.close();
 
