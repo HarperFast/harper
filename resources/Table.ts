@@ -5059,6 +5059,7 @@ export function makeTable(options) {
 			): Promise<void> {
 				const removal = new Promise<void>((resolve) => resolve(remove()))
 					.then(onSuccess, (error) => harperLogger.warn(errorMessage, error))
+					.catch(() => undefined)
 					.finally(() => inFlightRemovals.delete(removal));
 				inFlightRemovals.add(removal);
 				if (inFlightRemovals.size >= MAX_CONCURRENT_HISTORY_REMOVALS) {

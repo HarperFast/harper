@@ -12,6 +12,7 @@ const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLog
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor');
+const harperLogger = require('#src/utility/logging/harper_logger');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
 	let AuditedTable;
@@ -104,7 +105,7 @@ describe('Audit log', () => {
 		assert.equal(AuditedTable.primaryStore.getEntry(2)?.value?.name, 'two-changed');
 	});
 	// Regression test for harper#F-264 (see DESIGN.md's audit-entry-removal-loop invariant).
-	it('deleteHistory does not let a mid-loop removeAuditEntry rejection escape as an unhandled rejection', async function () {
+	it('deleteHistory contains a mid-loop rejection even when failure logging throws', async function () {
 		// rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore); this.skip()
 		// (rather than a bare return, as the file's other reusableIterable guards use) so the report
 		// distinguishes "skipped on this engine" from "passed"
@@ -124,9 +125,13 @@ describe('Audit log', () => {
 		assert.notEqual(targetKey, undefined, 'test setup: could not find record 30 in the audit log');
 
 		const originalRemove = AuditedTable.auditStore.remove.bind(AuditedTable.auditStore);
+		const originalWarn = harperLogger.warn;
 		AuditedTable.auditStore.remove = (key) => {
 			if (key === targetKey) return Promise.reject(new Error('simulated audit entry removal failure'));
 			return originalRemove(key);
+		};
+		harperLogger.warn = () => {
+			throw new Error('simulated logging failure');
 		};
 
 		let unhandledRejection;
@@ -152,6 +157,7 @@ describe('Audit log', () => {
 			);
 		} finally {
 			process.off('unhandledRejection', onUnhandledRejection);
+			harperLogger.warn = originalWarn;
 			AuditedTable.auditStore.remove = originalRemove;
 			await AuditedTable.deleteHistory(Date.now() + 60_000); // clear record 30's now-orphaned entry
 		}
