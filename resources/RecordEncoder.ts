@@ -101,6 +101,19 @@ const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publi
 // WeakMaps are definitely not the fastest form of private properties, but they are the only
 // way to do this with how the objects are frozen for now.
 export const entryMap = new WeakMap<any, Entry>();
+/**
+ * The shared base for decoded table records. Each encoder uses a subclass so its table-specific
+ * computed-property prototype remains isolated, while callers can identify records independently
+ * of whether msgpackr or structon decoded them.
+ */
+export class RecordObject {
+	getUpdatedTime(): number {
+		return entryMap.get(this)?.version;
+	}
+	getExpiresAt(): number {
+		return entryMap.get(this)?.expiresAt;
+	}
+}
 export let lastValueEncoding: Buffer | undefined;
 let timestampNextEncoding = 0,
 	metadataInNextEncoding = -1,
@@ -137,16 +150,9 @@ export class RecordEncoder extends StructonEncoder {
 		 * are usually frozen, but this can be extended (by the Updatable class) for providing
 		 * mutation methods.
 		 */
-		class RecordObject {
-			getUpdatedTime() {
-				return entryMap.get(this)?.version;
-			}
-			getExpiresAt() {
-				return entryMap.get(this)?.expiresAt;
-			}
-		}
+		class StoreRecordObject extends RecordObject {}
 
-		options.structPrototype = RecordObject.prototype;
+		options.structPrototype = StoreRecordObject.prototype;
 		super(options);
 		// Whether this store carries per-record version/timestamp metadata. Only versioned stores
 		// (primary table DBIs) prefix records with the metadata header; non-versioned internal DBIs
@@ -165,7 +171,11 @@ export class RecordEncoder extends StructonEncoder {
 		if (!options.randomAccessStructure) this._writeStruct = () => 0;
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
-			if (!this.useVersions) {
+			// Explicit opt-out only: `this` may be a foreign encoder this hook was grafted onto
+			// (copyDb patches the migration target's plain msgpackr encoder with it), where
+			// useVersions is undefined. Treating undefined as non-versioned silently stripped the
+			// metadata prefix from every LMDB→RocksDB migrated record (harper#2012).
+			if (this.useVersions === false) {
 				// harper#1307: this store does not carry version metadata, so it never prefixes its records.
 				// Encode plainly and LEAVE any in-flight *NextEncoding globals untouched for their real owner:
 				// they belong to a versioned write (recordUpdater staged the primary's metadata and a nested
@@ -845,7 +855,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						version: newVersion,
 						tableId,
 						recordId: id,
-						previousVersion: store instanceof RocksDatabase ? existingEntry?.version : existingEntry?.localTime ? 1 : 0,
+						previousVersion: isRocksDB ? existingEntry?.version : existingEntry?.localTime,
 						nodeId,
 						user: username,
 						type,
@@ -917,8 +927,4 @@ export function removeEntry(store: any, entry: any, options?: any) {
 		}
 	}
 	return removal;
-}
-export interface RecordObject {
-	getUpdatedTime(): number;
-	getExpiresAt(): number;
 }

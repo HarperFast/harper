@@ -27,10 +27,12 @@ const {
 } = require('../../components/shutdownDrain.ts');
 const { realExit } = require('./workerProcessGuard.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
+const { getDomainSocketPathMaxBytes, isDomainSocketPathTooLong } = require('../../utility/domainSocket.ts');
 const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/keys.ts');
 const { startupLog } = require('../../bin/run.ts');
 const { SERVERS, setPortServerMap, portServer, socketOptionDefaults } = require('../serverRegistry.ts');
 const httpComponent = require('../http.ts');
+const { withProxyProtocol } = require('../serverHelpers/proxyProtocol.ts');
 const globals = require('../../globals.js');
 const { whenScopesClosed } = require('../../components/scopeShutdown.ts');
 
@@ -94,6 +96,7 @@ process.on('unhandledRejection', (reason) => {
 });
 env.initSync();
 exports.globals = globals;
+exports.listenOnDomainSocket = listenOnDomainSocket;
 exports.listenOnPorts = listenOnPorts;
 exports.startServers = startServers;
 exports.closeServers = closeServers;
@@ -252,6 +255,44 @@ function startServers() {
 	});
 	return loaded;
 }
+/**
+ * An overlong path is the only condition that can skip a domain-socket listener. Check before
+ * listen() because supported Node versions differ: some reject the path while others truncate and
+ * bind it somewhere clients cannot reach using the configured path.
+ */
+function listenOnDomainSocket(port, server) {
+	if (isDomainSocketPathTooLong(port)) {
+		httpComponent.markUdsBindFailed(port);
+		harperLogger.error(
+			`Not binding domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: the ${Buffer.byteLength(port)}-byte path exceeds the platform limit of ${getDomainSocketPathMaxBytes()} bytes. Continuing without this domain socket.`
+		);
+		return Promise.resolve({ port, failed: true });
+	}
+	if (existsSync(port)) unlinkSync(port);
+	return new Promise((resolve, reject) => {
+		function onError(error) {
+			reject(error);
+		}
+		function onListening() {
+			server.removeListener('error', onError);
+			// Record ownership of the inode we just bound, so cleanupUdsFiles()/markUdsBindFailed()
+			// (see http.ts) can tell this worker's own file apart from a replacement's later rebind
+			// at the same path (see registerUdsCleanupPaths). A no-op for domain sockets that aren't
+			// UDS mirrors (e.g. the operations API's primary socket), which were never registered.
+			httpComponent.recordUdsBindSuccess(port);
+			harperLogger.info('Domain socket listening on ' + port);
+			resolve({ port, name: server.name, protocol_name: server.protocol_name });
+		}
+		try {
+			server.once('error', onError);
+			server.listen({ path: port }, onListening);
+		} catch (error) {
+			server.removeListener('error', onError);
+			reject(error);
+		}
+	});
+}
+
 let listening;
 function listenOnPorts() {
 	if (isBun) return listenOnPortsBun();
@@ -262,17 +303,7 @@ function listenOnPorts() {
 
 		// If server is unix domain socket
 		if (port.includes?.('/')) {
-			if (existsSync(port)) unlinkSync(port);
-			listening.push(
-				new Promise((resolve, reject) => {
-					server
-						.listen({ path: port }, () => {
-							resolve({ port, name: server.name, protocol_name: server.protocol_name });
-							harperLogger.info('Domain socket listening on ' + port);
-						})
-						.on('error', reject);
-				})
-			);
+			listening.push(listenOnDomainSocket(port, server));
 			continue;
 		}
 		let listen_on;
@@ -361,6 +392,9 @@ function listenOnPorts() {
 							callback?.();
 						},
 					};
+					// createUwsServer() only resolves once uWS's own listen_unix() confirms the bind, so
+					// ownership is confirmed now (see http.ts's ownership-aware cleanupUdsFiles()).
+					if (cfg.socketPath) httpComponent.recordUdsBindSuccess(cfg.socketPath);
 					harperLogger.info('uWS listening on ' + (cfg.socketPath ?? cfg.port));
 					return { port: key };
 				})
@@ -491,6 +525,9 @@ async function listenOnPortsBun() {
 				});
 				SERVERS[udsPath] = udsServer;
 				httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
+				// Bun.serve() above already succeeded (a bind failure throws synchronously into the
+				// surrounding catch), so this worker's ownership of udsPath is confirmed now.
+				httpComponent.recordUdsBindSuccess(udsPath);
 
 				const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, port, config.pseudoServer);
 				config.tlsSelector.ready.then(writeMetadata);
@@ -509,17 +546,7 @@ async function listenOnPortsBun() {
 		if (server?.stop || bunServeConfigs[port]) continue;
 		if (server?.listen) {
 			if (port.includes?.('/')) {
-				if (existsSync(port)) unlinkSync(port);
-				listening.push(
-					new Promise((resolve, reject) => {
-						server
-							.listen({ path: port }, () => {
-								resolve({ port });
-								harperLogger.info('Domain socket listening on ' + port);
-							})
-							.on('error', reject);
-					})
-				);
+				listening.push(listenOnDomainSocket(port, server));
 			} else {
 				const lastColon = String(port).lastIndexOf(':');
 				const rawHostname = lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : null;
@@ -569,13 +596,24 @@ function onSocket(listener, options) {
 	let socketServer;
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
-		const SNICallback = createTLSSelector('server', options.mtls);
+		// usageType lets a caller's certificates (tagged via hdb_certificate.uses) win the quality
+		// bonus in createTLSSelector for this listener, the same way http.ts's usageType does for
+		// operations-api/http listeners; falls back to the generic 'server' type for callers that
+		// don't specify one.
+		const usageType = options.usageType ?? 'server';
+		const SNICallback = createTLSSelector(usageType, options.mtls);
 		// OpenSSL takes the cipher list (and its @SECLEVEL) from the context the server was created with;
 		// a context swapped in by the SNI callback doesn't carry its own cipher list onto the connection.
 		// The listener-level string is therefore the only one honored — resolve it from every configured
 		// source (see resolveEffectiveTlsCiphers in keys.ts).
-		const effectiveCiphers = getEffectiveTlsCiphers('server', options.mtls);
-		socketServer = createSecureSocketServer(
+		const effectiveCiphers = getEffectiveTlsCiphers(usageType, options.mtls);
+		// Own const, NOT the shared `socketServer` binding: a caller registering both ports (MQTT's
+		// port + securePort) reaches the plain-TCP branch below, which reassigns `socketServer` to
+		// the 1883 server. The writeMetadata closure below outlives this function, so capturing the
+		// mutable binding made every secure-port metadata write read `secureContexts` off the plain
+		// TCP server (undefined) and publish an empty `certificates:` list — the #1998 bug that let
+		// an SNI-routing proxy (Symphony) fall back to the node certificate on 8883.
+		const secureSocketServer = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
@@ -585,21 +623,23 @@ function onSocket(listener, options) {
 			},
 			listener
 		);
-		socketServer.appliedCiphers = effectiveCiphers ?? null;
-		socketServer.verifiesClientCerts = Boolean(options.mtls);
-		SNICallback.initialize(socketServer);
+		socketServer = secureSocketServer;
+		secureSocketServer.appliedCiphers = effectiveCiphers ?? null;
+		secureSocketServer.verifiesClientCerts = Boolean(options.mtls);
+		secureSocketServer.mtlsRequired = Boolean(options.mtls?.required);
+		SNICallback.initialize(secureSocketServer);
 		// Only opt out of reusePort on macOS, which doesn't reliably support SO_REUSEPORT on all
 		// socket types (ENOTSUP). Everywhere else, sharing the port lets every worker accept
 		// connections for this listener (e.g. MQTT), matching how HTTP servers are bound; without
 		// it only the first worker to bind serves the port and every sibling's listen() fails with
 		// a silently-swallowed EADDRINUSE.
-		if (process.platform === 'darwin') socketServer.noReusePort = true;
+		if (process.platform === 'darwin') secureSocketServer.noReusePort = true;
 		// Unlike HTTP/operations ports, these component listeners are never bound by the main
 		// thread (components don't run handleApplication there), so a worker owns them. Marking
 		// them lets listenOnPorts() give an exclusive (non-reusePort) one a single deterministic
 		// owner worker, which makes any EADDRINUSE on it unambiguously an external process.
-		socketServer.dedicatedListener = true;
-		SERVERS[options.securePort] = socketServer;
+		secureSocketServer.dedicatedListener = true;
+		SERVERS[options.securePort] = secureSocketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
 		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
@@ -609,19 +649,20 @@ function onSocket(listener, options) {
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 
-			const udsServer = createSocketServer({ ...socketOptionDefaults }, listener);
+			// Strip the PROXY header (v1 or v2) a fronting proxy (e.g. symphony) prepends,
+			// BEFORE invoking the listener: raw-protocol handlers (MQTT) read
+			// socket.authorized/remoteAddress at connection time, so the data-interception
+			// approach the HTTP UDS mirror uses (enableProxyProtocol) would apply the
+			// forwarded mTLS identity too late.
+			const udsServer = createSocketServer({ ...socketOptionDefaults }, withProxyProtocol(listener));
 
 			udsServer.isPerThreadSocket = true;
-			// Strip the PROXY v1 header a fronting proxy (e.g. symphony) prepends, same as the
-			// HTTP UDS mirror. Without this the header is fed to the protocol parser (e.g. MQTT),
-			// corrupting the first packet.
-			httpComponent.enableProxyProtocol(udsServer);
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, socketServer);
+			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
 			SNICallback.ready.then(writeMetadata);
-			socketServer.secureContextsListeners.push(writeMetadata);
+			secureSocketServer.secureContextsListeners.push(writeMetadata);
 		}
 	}
 	if (options.port) {

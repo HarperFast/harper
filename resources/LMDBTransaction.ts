@@ -106,6 +106,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			return result;
 		}
 
+		this.linkWrite(operation);
 		this.writes.push(operation); // standard path, add to current transaction
 	}
 
@@ -266,14 +267,17 @@ export class LMDBTransaction extends DatabaseTransaction {
 								)
 							);
 					}
-					// commit succeeded; clean up files for any writes whose commit-handler took an early-return.
-					// deferred until here so a retry that *would* have referenced the blob can flip skipped back to false first.
+					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
+					// or whose stored record a later write to the same key replaced without an audit entry
+					// keeping its blobs reachable (checked against the final committed record, so a blob the
+					// later write retained survives). Deferred until here so a retry that *would* have
+					// referenced the blob can flip skipped/superseded back to false first.
 					for (const write of this.writes) {
-						if (write?.skipped && write?.savedBlobs)
+						if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 							cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 					}
 					// now reset transactions tracking; this transaction be reused and committed again
-					this.writes = [];
+					this.clearWrites();
 					this.timestamp = 0;
 					this.next = null;
 					return Promise.all(completions).then(() => {
@@ -319,7 +323,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 		}
 		// reset the transaction
-		this.writes = [];
+		this.clearWrites();
 	}
 	save(..._args: any[]): any {
 		// noop for LMDB

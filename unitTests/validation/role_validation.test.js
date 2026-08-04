@@ -249,6 +249,96 @@ describe('Test role_validation module ', () => {
 			expect(test_result).to.equal(null);
 		});
 
+		it('NOMINAL - should return null for valid cluster_user = true ADD_ROLE object', () => {
+			const test_role_json = TEST_ADD_ROLE_OBJECT();
+			test_role_json.permission = { cluster_user: true };
+			const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+			expect(test_result).to.equal(null);
+		});
+
+		// harper#1016: cluster_user is a boolean role flag, not a database name. A
+		// non-boolean value must report the boolean-type error, not a misleading
+		// "database 'cluster_user' does not exist".
+		it('should return the boolean error (not SCHEMA_NOT_FOUND) for non-boolean cluster_user', () => {
+			const test_role_json = TEST_ADD_ROLE_OBJECT();
+			test_role_json.permission = { cluster_user: 'wut' };
+			const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+			expect(test_result.statusCode).to.equal(400);
+			expect(test_result.http_resp_msg.main_permissions).to.include(
+				TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_BOOLEAN_ERROR('cluster_user')
+			);
+			expect(test_result.http_resp_msg.main_permissions).to.not.include(
+				TEST_SCHEMA_OP_ERROR.SCHEMA_NOT_FOUND('cluster_user')
+			);
+		});
+
+		// harper#1016 (review): the boolean check must gate on key presence, not truthiness — a falsey
+		// non-boolean (0, '', null) must still be rejected rather than silently skipping both the check
+		// and the database-permission loop. Covers cluster_user and the latent super_user variant.
+		[
+			{ role: 'cluster_user', value: 0 },
+			{ role: 'cluster_user', value: null },
+			{ role: 'cluster_user', value: '' },
+			{ role: 'super_user', value: 0 },
+			{ role: 'super_user', value: null },
+		].forEach(({ role, value }) => {
+			it(`should reject a falsey non-boolean ${role} = ${JSON.stringify(value)} as a boolean error`, () => {
+				const test_role_json = TEST_ADD_ROLE_OBJECT();
+				test_role_json.permission = { [role]: value };
+				const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+				expect(test_result.statusCode).to.equal(400);
+				expect(test_result.http_resp_msg.main_permissions).to.include(
+					TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_BOOLEAN_ERROR(role)
+				);
+			});
+		});
+
+		// harper#1016 (review): `permission` is only presence-constrained, so any type reaches validation.
+		// A non-object carries no role flags and no database entries, so every downstream check is a no-op
+		// on it — without an explicit shape check the role validates clean and gets persisted, since
+		// `hdb_role.permission` has no storage type constraint either. Assert the 400, not merely that
+		// nothing throws: a silent pass is the actual bug here, and no-throw does not distinguish them.
+		[{ p: 'x' }, { p: 1 }, { p: true }, { p: [] }, { p: [{ super_user: true }] }, { p: 0 }, { p: '' }].forEach(
+			({ p }) => {
+				it(`should reject a non-object permission ${JSON.stringify(p)} with a 400`, () => {
+					const test_role_json = TEST_ADD_ROLE_OBJECT();
+					test_role_json.permission = p;
+					const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+					expect(test_result, 'a non-object permission must not validate clean').to.not.equal(null);
+					expect(test_result.statusCode).to.equal(400);
+				});
+			}
+		);
+
+		it('should still accept a well-formed object permission', () => {
+			const test_role_json = TEST_ADD_ROLE_OBJECT();
+			test_role_json.permission = { super_user: true };
+			expect(customValidate_rw(test_role_json, getAddRoleConstraints())).to.equal(null);
+		});
+
+		// harper#1016 (review): cluster_user is exclusive like super_user. Before CU joined ROLE_TYPES the
+		// database-permission loop rejected this incidentally; that loop now skips it, so validateNoSUPerms
+		// has to enforce it.
+		[
+			{ extra: 'someDb', value: { tables: {} } },
+			{ extra: 'operations', value: ['add_role'] },
+			{ extra: 'structure_user', value: true },
+		].forEach(({ extra, value }) => {
+			it(`should reject cluster_user = true combined with ${extra}`, () => {
+				const test_role_json = TEST_ADD_ROLE_OBJECT();
+				test_role_json.permission = { cluster_user: true, [extra]: value };
+				const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+				expect(test_result.statusCode).to.equal(400);
+				expect(test_result.http_resp_msg.main_permissions).to.include(
+					TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('cluster_user')
+				);
+			});
+		});
+
 		it('NOMINAL - should return null for valid ALTER_ROLE object', () => {
 			const test_result = customValidate_rw(TEST_ALTER_ROLE_OBJECT(), getAlterRoleConstraints());
 			expect(test_result).to.equal(null);

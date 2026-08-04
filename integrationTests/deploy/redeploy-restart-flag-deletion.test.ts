@@ -2,13 +2,11 @@
  * Redeploy of an active jsResource component that *deletes* a resource file must also flag
  * restartRequired (harper#1817 follow-up).
  *
- * The original harper#1817 fix (see redeploy-restart-flag.test.ts) handles a redeployed file whose
- * *contents* changed: the fresh post-redeploy chokidar scan re-emits every surviving file as `'add'`,
- * and jsResource treats a re-`add` of an already-loaded file like a change. But a redeploy that
- * removes a resource file entirely produces no event at all for it — no re-`add`, no `unlink` —
- * because the fresh watcher's initial scan only reports what's currently on disk and has no memory
- * of the prior tree. Left unhandled, the deleted resource stays registered and active in memory,
- * with no signal to the operator that anything changed.
+ * EntryHandler retains the pre-deploy snapshot and compares it with the resumed watcher's initial
+ * scan. A surviving file with changed contents emits `change`; a file absent from the completed scan
+ * emits `unlink`, which causes jsResource to request a restart. Before that generation diff existed,
+ * the fresh watcher had no memory of the prior tree, so a deleted resource produced no event and
+ * stayed registered and active in memory with no signal to the operator that anything changed.
  *
  * This test deploys a jsResource component with a single resource file, then redeploys with that
  * file entirely absent (restart:false), and asserts `get_status.restartRequired` flips to `true`.

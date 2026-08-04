@@ -22,11 +22,11 @@ concurrency:
 
 jobs:
   work:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@441d2a310cb360adf419d3546dd27566164f1ec2 # main 2026-06-09 (post #58: Opus for :bug/:test, efficiency guidance)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@54d9e61c9c827d19e34229a5c460773a9fb080a0 # main 2026-07-24 (#79: deep path / :bug,:test escalation -> claude-opus-5)
     with:
       # Same SHA as the `uses:` ref above. See the comment in
       # claude-mention.yml for why the duplication is unavoidable.
-      ai-review-prompts-ref: 441d2a310cb360adf419d3546dd27566164f1ec2
+      ai-review-prompts-ref: 54d9e61c9c827d19e34229a5c460773a9fb080a0
       repo-specific-conventions: |
         ## Harper core notes
 

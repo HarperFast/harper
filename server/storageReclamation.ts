@@ -1,6 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -26,6 +26,56 @@ export type QuotaStatusData = {
 	quotaBytes?: number;
 	updatedAt: number;
 };
+
+/**
+ * Resolves `target` to its real (symlink-free) path. `target` itself may not exist yet (e.g. a
+ * table's storage directory that hasn't been created), so walk up to the nearest existing
+ * ancestor, resolve that, and rejoin the not-yet-existing remainder lexically — this still
+ * catches a symlinked *parent* directory, which is the case that actually matters for quota
+ * scoping (leaf directories are created by Harper itself, not symlinked).
+ */
+async function resolveRealPath(target: string): Promise<string> {
+	try {
+		return await realpath(target);
+	} catch {
+		const parent = dirname(target);
+		if (parent === target) return resolve(target);
+		return join(await resolveRealPath(parent), basename(target));
+	}
+}
+
+/**
+ * Whether `target` resolves to a path inside `root`. quota-status.json is scoped to a single
+ * ROOTPATH; a database or table configured with its own STORAGE_PATH (or a STORAGE_BLOBPATHS
+ * entry) can live on an entirely different volume, and must not be reported against the root's
+ * quota. Compares real (symlink-resolved) paths, not just lexically-normalized ones — a `..`-free
+ * path can still be a symlink into another volume, and `resolve()` alone wouldn't catch that.
+ */
+async function isPathWithinRoot(root: string, target: string): Promise<boolean> {
+	const [resolvedRoot, resolvedTarget] = await Promise.all([resolveRealPath(root), resolveRealPath(target)]);
+	const relativePath = relative(resolvedRoot, resolvedTarget);
+	if (relativePath === '') return true;
+	if (isAbsolute(relativePath)) return false;
+	// Check the first segment specifically (`..`), not a `..`-prefix match — a child directory
+	// literally named e.g. `..data` (the Kubernetes ConfigMap/Secret atomic-update symlink
+	// convention) is not a parent-traversal and must not be rejected as escaping the root.
+	const firstSegment = relativePath.split(sep)[0];
+	return firstSegment !== '..';
+}
+
+/**
+ * Guards against a syntactically valid but semantically broken quota-status.json (missing or
+ * negative usage, non-positive quota, non-finite timestamp) being read as "100% free" or worse.
+ */
+function isValidQuotaStatus(status: QuotaStatusData): boolean {
+	return (
+		Number.isFinite(status.updatedAt) &&
+		Number.isFinite(status.quotaBytes) &&
+		status.quotaBytes > 0 &&
+		Number.isFinite(status.usedBytes) &&
+		status.usedBytes >= 0
+	);
+}
 
 /**
  * Reads the quota-status.json file written by host-manager.
@@ -70,15 +120,61 @@ export function onStorageReclamation(
 }
 let reclamationTimer: NodeJS.Timeout;
 
+export type StorageSpaceStats = {
+	available: number;
+	free: number;
+	size: number;
+	// Whether these numbers reflect a quota (accurate for what Harper can actually write) or
+	// raw filesystem-level statfs (can be wildly wrong under a quota-limited data directory).
+	basis: 'quota' | 'filesystem';
+};
+
+/**
+ * Get available/free/size storage stats for a path, preferring a fresh quota-status.json (see
+ * getQuotaStatus) over statfs. statfs describes the filesystem, which is misleading whenever
+ * the data directory is quota-limited on a larger shared volume (#1976).
+ */
+export async function getStorageSpaceStats(path: string): Promise<StorageSpaceStats> {
+	const rootPath = envMgr.get(CONFIG_PARAMS.ROOTPATH);
+	const status = await getQuotaStatus();
+	const statusAge = status ? Date.now() - status.updatedAt : undefined;
+	if (
+		status &&
+		isValidQuotaStatus(status) &&
+		rootPath &&
+		// A negative age (clock skew, or a corrupt/future updatedAt) is not "fresh" — treat it the
+		// same as stale rather than trusting quota data indefinitely.
+		statusAge >= 0 &&
+		statusAge < QUOTA_STATUS_MAX_AGE_MS &&
+		// Checked last: it's the only async/IO-bound condition, so short-circuit it behind the
+		// cheap synchronous checks above.
+		(await isPathWithinRoot(rootPath, path))
+	) {
+		const available = Math.max(0, status.quotaBytes - status.usedBytes);
+		return { available, free: available, size: status.quotaBytes, basis: 'quota' };
+	}
+	const fsStats = await statfs(path);
+	return {
+		available: fsStats.bavail * fsStats.bsize,
+		free: fsStats.bfree * fsStats.bsize,
+		size: fsStats.blocks * fsStats.bsize,
+		basis: 'filesystem',
+	};
+}
+
+/**
+ * Ratio of available to total size, guarding the 0/0 = NaN case (a zero-size statfs/quota result,
+ * e.g. an empty or misconfigured mount) so a full disk still reports a ratio of 0 rather than NaN.
+ */
+export function computeAvailableRatio(available: number, size: number): number {
+	return size > 0 ? available / size : 0;
+}
+
 // If a fresh quota-status.json exists (written by host-manager every ~90s), use quota-based ratio.
 // Otherwise fall back to statfs for the registered path.
 const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
-	const status = await getQuotaStatus();
-	if (status?.quotaBytes && Date.now() - status.updatedAt < QUOTA_STATUS_MAX_AGE_MS) {
-		return Math.max(0, status.quotaBytes - status.usedBytes) / status.quotaBytes;
-	}
-	const fsStats = await statfs(path);
-	return fsStats.bavail / fsStats.blocks;
+	const { available, size } = await getStorageSpaceStats(path);
+	return computeAvailableRatio(available, size);
 };
 let getAvailableSpaceRatio: (path: string) => Promise<number> = defaultGetAvailableSpaceRatio;
 

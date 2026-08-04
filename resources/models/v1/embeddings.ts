@@ -17,6 +17,11 @@ const MAX_EMBEDDING_INPUTS = 2048;
 
 // @ts-ignore — Resource base class is not typed for static dispatch; pattern mirrors login.ts
 export class V1Embeddings extends Resource {
+	// Reserve this fixed route: a later app registration at the same path becomes a
+	// loud conflict (ErrorResource) instead of silently replacing the gateway and its
+	// super_user gate. See Resources.set.
+	static reservedPath = true;
+
 	static async post(_target: unknown, body: Record<string, unknown>, request: unknown) {
 		const authError = authorizeV1Request(request as any);
 		if (authError) return authError;
@@ -33,6 +38,10 @@ export class V1Embeddings extends Resource {
 		if (!body || typeof body !== 'object' || Array.isArray(body))
 			return badRequest('Request body must be a JSON object');
 		const raw = body as Record<string, unknown>;
+
+		// Mirrors validateChatRequest: a non-string model would silently invoke the
+		// configured default rather than being rejected.
+		if (raw.model !== undefined && typeof raw.model !== 'string') return badRequest("'model' must be a string");
 
 		const input = raw.input;
 		if (input === undefined || input === null) return badRequest("'input' is required");
@@ -58,8 +67,10 @@ export class V1Embeddings extends Resource {
 		const opts = toEmbedOpts(raw as any);
 
 		try {
-			const vecs = await models.embed(input as string | string[], opts);
-			return toEmbedResponse(vecs, model, undefined, encodingFormat);
+			// embedWithUsage, not embed(): the public facade drops the result-level usage
+			// backends report, and OpenAI clients read real token counts off the response.
+			const { vectors, usage } = await models.embedWithUsage(input as string | string[], opts);
+			return toEmbedResponse(vectors, model, usage, encodingFormat);
 		} catch (err) {
 			return toOpenAIError(err);
 		}

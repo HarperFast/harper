@@ -1,6 +1,6 @@
 'use strict';
 
-import { loadCredentials, saveCredentials, normalizeTarget } from './cliCredentials.ts';
+import { loadCredentials, saveCredentials, normalizeTarget, extractTargetCredentials } from './cliCredentials.ts';
 import { isJWTExpired } from '../security/tokenAuthentication.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
@@ -34,11 +34,14 @@ const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or
 const SSE_OPERATIONS = new Set(['deploy_component']);
 
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
-// They never get serialized into the request body.
+// They never get serialized into the request body. `username`/`password` are deliberately
+// NOT here: those args are payload fields (e.g. the user add_user/alter_user create/alter),
+// not transport — use `auth_username`/`auth_password` (or env-var/`harper login` auth) to
+// authenticate as a different user than the one being operated on.
 const TRANSPORT_ONLY_FIELDS = new Set([
 	'target',
-	'username',
-	'password',
+	'auth_username',
+	'auth_password',
 	'rejectUnauthorized',
 	'json',
 	'skip_node_modules',
@@ -150,7 +153,103 @@ function operationFields(req: any): any {
 	return fields;
 }
 
-export { cliOperations, buildRequest };
+function basicAuthHeader(username: string, password: string): string {
+	return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+}
+
+/**
+ * Picks the HTTP Basic credentials for a targeted operation from the first source that supplies
+ * any, in precedence order: the dedicated `auth_username=`/`auth_password=` args, then userinfo
+ * embedded in the target URL, then each env-var pair. Every source is all-or-nothing: pairing one
+ * source's username with another's password would send one identity's name with a different
+ * identity's secret, so a half-specified source is never completed from the next one (an empty
+ * value — a blank CI variable, say — counts as specified-but-missing).
+ *
+ * Returns undefined when no source is configured at all, which leaves authentication to the saved
+ * `harper login` token and, failing that, the legacy `username=`/`password=` payload fallback.
+ */
+function resolveTransportCredentials(req: any, urlCredentials: { username: string; password: string }) {
+	const sources = [
+		{
+			name: '`auth_username=`/`auth_password=`',
+			username: req.auth_username,
+			password: req.auth_password,
+			incompleteIsFatal: true,
+		},
+		{
+			name: 'the target URL',
+			// A URL with no userinfo yields empty strings, which here mean "absent" — unlike an
+			// explicitly passed empty value, there is nothing for the user to have gotten wrong.
+			username: urlCredentials.username || undefined,
+			password: urlCredentials.password || undefined,
+			incompleteIsFatal: true,
+		},
+		{
+			name: 'HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD',
+			username: process.env.HARPER_CLI_USERNAME,
+			password: process.env.HARPER_CLI_PASSWORD,
+			incompleteIsFatal: false,
+		},
+		{
+			name: 'CLI_TARGET_USERNAME/CLI_TARGET_PASSWORD',
+			username: process.env.CLI_TARGET_USERNAME,
+			password: process.env.CLI_TARGET_PASSWORD,
+			incompleteIsFatal: false,
+		},
+	];
+	// A source counts as configured once either half is *supplied*, empty or not: `auth_username=`
+	// with an unset CI variable behind it is a broken credential, and quietly falling through to a
+	// saved admin token would run the command as the wrong identity.
+	for (const { name, username, password, incompleteIsFatal } of sources) {
+		if (username === undefined && password === undefined) continue;
+		if (!username || !password) {
+			const missing = username ? 'a password' : password ? 'a username' : 'a username and a password';
+			const detail = `${name} is missing ${missing}, and credentials are never combined across sources`;
+			// Credentials passed explicitly for this command have no other purpose, so an
+			// incomplete pair is a mistake worth failing on. The env vars double as `harper login`
+			// inputs — a lone HARPER_CLI_USERNAME or HARPER_CLI_PASSWORD is a supported login idiom
+			// with the other half prompted for — so an incomplete pair there is skipped with a
+			// warning instead of breaking every later operation in the same shell or CI job.
+			if (incompleteIsFatal) throw new Error(`Incomplete credentials: ${detail}.`);
+			console.error(`Ignoring incomplete credentials: ${detail}.`);
+			continue;
+		}
+		return { username, password };
+	}
+}
+
+// Secret-valued CLI args, whatever their role (transport auth or operation payload). Logging a
+// parsed CLI request must go through redactCredentials() so a password doesn't land in the log
+// file — the command line already exposes it to shell history and process listings; the log
+// shouldn't be a third copy. This list is by field name, not exhaustive — any future secret-bearing
+// arg (a token, a key) needs to be added here explicitly, or it will reach logger.trace unredacted.
+const SECRET_FIELDS = new Set(['auth_password', 'password']);
+
+// `target=https://admin:secret@host` carries a password too, so masking the userinfo is part of
+// making a target printable — the same string is echoed by the "Connecting to ..." line.
+function redactTargetUrl(target: unknown): unknown {
+	if (typeof target !== 'string') return target;
+	try {
+		const url = new URL(target);
+		if (!url.password) return target;
+		url.password = '***';
+		return url.toString();
+	} catch {
+		return target;
+	}
+}
+
+function redactCredentials(req: any): any {
+	const redacted: any = {};
+	for (const [key, value] of Object.entries(req)) {
+		if (SECRET_FIELDS.has(key) && value) redacted[key] = '***';
+		else if (key === 'target') redacted[key] = redactTargetUrl(value);
+		else redacted[key] = value;
+	}
+	return redacted;
+}
+
+export { cliOperations, buildRequest, redactCredentials, refreshExpiredOperationToken };
 const PREPARE_OPERATION: any = {
 	deploy_component: async (req) => {
 		if (req.package) {
@@ -229,38 +328,104 @@ function resolveTarget(req, allCredentials) {
 }
 
 /**
+ * Ensures `tokens.operation_token` is usable, minting a fresh one via `refresh_operation_token`
+ * when it is expired — or absent entirely, which is the refresh-token-only shape a CI/CD runner
+ * gets from `HARPER_CLI_REFRESH_TOKEN`. Updates `tokens.operation_token` in place.
+ *
+ * `persistKey` is the credentials-file key to write the refreshed token back to; pass `null` for
+ * tokens sourced from env vars, which have no file entry and stay in memory for this invocation
+ * only. Shared by `cliOperations` and any other CLI transport (e.g. `harper agent`) authenticating
+ * with tokens, so refresh behavior stays in one place instead of drifting between callers.
+ */
+async function refreshExpiredOperationToken(
+	options: any,
+	tokens: { operation_token?: string; refresh_token?: string },
+	persistKey: string | null
+): Promise<void> {
+	if (!tokens.refresh_token) return;
+	// Short-circuited so `isJWTExpired` never runs on an absent token.
+	if (tokens.operation_token && !isJWTExpired(tokens.operation_token)) return;
+	console.error(
+		tokens.operation_token
+			? 'Operation token expired, attempting to refresh...'
+			: 'Minting an operation token from the refresh token...'
+	);
+	try {
+		// Always use the standard operation timeout for this call, even when the caller's
+		// own options carry the longer SSE timeout (e.g. a deploy_component retry) — the
+		// refresh call itself is a small, fast request, not the streaming operation.
+		const refreshOptions = { ...options, timeout: CLI_OPERATION_TIMEOUT_MS };
+		refreshOptions.headers = { ...options.headers, Authorization: `Bearer ${tokens.refresh_token}` };
+		const refreshResponse = await httpRequest(refreshOptions, {
+			operation: 'refresh_operation_token',
+		});
+		if (refreshResponse.statusCode === 200) {
+			const refreshData = JSON.parse(refreshResponse.body);
+			if (refreshData.operation_token) {
+				tokens.operation_token = refreshData.operation_token;
+				// Only file-based credentials are persisted; env-var tokens have no file entry.
+				if (persistKey) {
+					saveCredentials(persistKey, {
+						operation_token: tokens.operation_token,
+						refresh_token: tokens.refresh_token,
+					});
+				}
+				console.error('Operation token refreshed successfully.');
+			}
+		} else if (refreshResponse.statusCode === 401) {
+			console.error('Refresh token expired or invalid. Please run harper login again.');
+			process.exit(1);
+		} else {
+			console.error(`Failed to refresh operation token: ${refreshResponse.statusCode}`);
+		}
+	} catch (refreshErr) {
+		console.error(`Error refreshing operation token: ${refreshErr.message}`);
+	}
+}
+
+/**
  * Using a unix domain socket will send a request to hdb operations API server
  * @param req
  * @param skipResponseLog By default, the response is logged to the console. Set this to true to skip logging it, which can be useful for sensitive responses like login calls!
  * @returns {Promise<void>}
  */
-async function cliOperations(req: any, skipResponseLog = false) {
-	require('dotenv').config();
-
+/**
+ * Resolve the transport options for a CLI operation request: a remote target URL (with auth) when
+ * one is configured (`target=`, env, or a saved `last_target`), otherwise the local domain socket.
+ * Returns the `options` object ready for `httpRequest` (method + Content-Type, and an Authorization
+ * header for remote targets, refreshing an expired operation token when possible) plus the resolved
+ * `target` (undefined for a local connection). Exits the process if a local connection is required
+ * but Harper is not running or has no domain socket. Shared by `cliOperations` and the CLI's
+ * streaming `get_backup` download so both reach local and remote servers the same way.
+ */
+export async function resolveRequestOptions(req: any): Promise<{ options: any; target: any }> {
 	const allCredentials = loadCredentials();
-	req.target = normalizeTarget(resolveTarget(req, allCredentials));
+	const rawTarget = resolveTarget(req, allCredentials);
+	// Userinfo is a transport credential, and `normalizeTarget` strips it so the resolved target can
+	// be logged, stored and emitted freely — so read it off the raw value first.
+	const urlCredentials = extractTargetCredentials(rawTarget);
+	req.target = normalizeTarget(rawTarget);
 	let target;
 	if (req.target) {
+		let parsedTarget;
 		try {
-			target = new URL(req.target);
+			parsedTarget = new URL(req.target);
 		} catch (error) {
 			try {
-				target = new URL(`https://${req.target}:9925`);
+				parsedTarget = new URL(`https://${req.target}:9925`);
 			} catch {
 				throw error;
 			}
 		}
 		const resolvedTarget = req.target;
 		target = {
-			protocol: target.protocol,
-			hostname: target.hostname,
-			port: target.port,
-			username: req.username || target.username || process.env.HARPER_CLI_USERNAME || process.env.CLI_TARGET_USERNAME,
-			password: req.password || target.password || process.env.HARPER_CLI_PASSWORD || process.env.CLI_TARGET_PASSWORD,
+			protocol: parsedTarget.protocol,
+			hostname: parsedTarget.hostname,
+			port: parsedTarget.port,
 			rejectUnauthorized: req.rejectUnauthorized,
 			resolvedTarget,
 		};
-		console.error(`Connecting to ${resolvedTarget}`);
+		console.error(`Connecting to ${redactTargetUrl(resolvedTarget)}`);
 	} else {
 		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
 		// is running and that we can communicate with it.
@@ -276,59 +441,93 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			process.exit(1);
 		}
 	}
-	await PREPARE_OPERATION[req.operation]?.(req);
-	try {
-		let options = target ?? {
-			protocol: 'http:',
-			socketPath: getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
-		};
-		options.method = 'POST';
-		options.headers = { 'Content-Type': 'application/json' };
-		options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
-		if (target?.username) {
-			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
-		} else if (allCredentials) {
-			let tokens = null;
-			let lookupKey = null;
-			if (target && allCredentials.targets) {
-				lookupKey = target.resolvedTarget;
-				tokens = allCredentials.targets[lookupKey] ?? null;
-			}
+	let options = target ?? {
+		protocol: 'http:',
+		socketPath: getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+	};
+	options.method = 'POST';
+	options.headers = { 'Content-Type': 'application/json' };
+	options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
+	// Authentication precedence: explicitly configured credentials (dedicated args, URL
+	// userinfo, env vars) beat everything, then env-var tokens, then the saved `harper login`
+	// token, and only then the legacy `username=`/`password=` payload fallback below. The
+	// tokens must outrank that fallback: for add_user/alter_user those args are the credentials
+	// of the user being created/altered, so treating them as auth would authenticate as a user
+	// who doesn't exist yet (or as the wrong identity) instead of using the admin's session.
+	const transportCredentials = target ? resolveTransportCredentials(req, urlCredentials) : undefined;
+	if (transportCredentials) {
+		options.headers.Authorization = basicAuthHeader(transportCredentials.username, transportCredentials.password);
+	} else if (target) {
+		// Bearer-token auth, for remote targets ONLY. A local operation goes over the domain
+		// socket, which the server trusts via `bypassLocalAuth` — but that bypass is an
+		// `else if` on "no Authorization header present" (security/auth.ts), so attaching a
+		// Bearer token to a local request opts out of the trust and gets validated instead,
+		// 401ing on a token minted for some other cluster. Since these env vars are meant to
+		// persist across a whole CI job (or a developer's shell), an ungated read here would
+		// break every local `harper` command run in that environment.
+		//
+		// Env-var tokens (for CI/CD — see `harper login --for-ci`) take precedence over the
+		// stored ~/.harperdb/credentials.json entry: they're an explicit per-invocation override
+		// that needs no prior `harper login` on the runner. A token refreshed from env vars is
+		// used in-memory only (there's no file to write back to); a token refreshed from the
+		// credentials file is persisted as before.
+		//
+		// Whichever namespace supplies a token owns both halves. Resolving them independently
+		// would let `HARPER_CLI_OPERATION_TOKEN` from one user pair with
+		// `CLI_TARGET_REFRESH_TOKEN` from another: commands would run as the first identity
+		// until its operation token expired, then silently continue as the second. `login.ts`
+		// selects its username/password namespace as a unit for exactly this reason.
+		const tokenPrefix = ['HARPER_CLI', 'CLI_TARGET'].find(
+			(prefix) =>
+				process.env[`${prefix}_OPERATION_TOKEN`] !== undefined || process.env[`${prefix}_REFRESH_TOKEN`] !== undefined
+		);
+		const envOperationToken = tokenPrefix ? process.env[`${tokenPrefix}_OPERATION_TOKEN`]?.trim() : undefined;
+		const envRefreshToken = tokenPrefix ? process.env[`${tokenPrefix}_REFRESH_TOKEN`]?.trim() : undefined;
+		// A namespace that is set but blank is a broken CI secret, not a request to fall back to
+		// whatever the developer last logged in as — say so rather than switching identity silently.
+		if (tokenPrefix && !envOperationToken && !envRefreshToken) {
+			console.error(
+				`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved login credentials.`
+			);
+		}
 
-			if (tokens?.operation_token) {
-				if (tokens.refresh_token && isJWTExpired(tokens.operation_token)) {
-					console.error('Operation token expired, attempting to refresh...');
-					try {
-						const refreshOptions = { ...options, timeout: CLI_OPERATION_TIMEOUT_MS };
-						refreshOptions.headers = { ...options.headers, Authorization: `Bearer ${tokens.refresh_token}` };
-						const refreshResponse = await httpRequest(refreshOptions, {
-							operation: 'refresh_operation_token',
-						});
-						if (refreshResponse.statusCode === 200) {
-							const refreshData = JSON.parse(refreshResponse.body);
-							if (refreshData.operation_token) {
-								tokens.operation_token = refreshData.operation_token;
-								saveCredentials(lookupKey || target?.resolvedTarget, {
-									operation_token: tokens.operation_token,
-									refresh_token: tokens.refresh_token,
-								});
-								console.error('Operation token refreshed successfully.');
-								// Update the original request's authorization header with the new token
-								options.headers.Authorization = `Bearer ${tokens.operation_token}`;
-							}
-						} else if (refreshResponse.statusCode === 401) {
-							console.error('Refresh token expired or invalid. Please run harper login again.');
-							process.exit(1);
-						} else {
-							console.error(`Failed to refresh operation token: ${refreshResponse.statusCode}`);
-						}
-					} catch (refreshErr) {
-						console.error(`Error refreshing operation token: ${refreshErr.message}`);
-					}
-				}
+		let tokens: { operation_token?: string; refresh_token?: string } | null = null;
+		let persistKey: string | null = null; // non-null => persist a refreshed operation token back to the file
+		if (envOperationToken || envRefreshToken) {
+			tokens = { operation_token: envOperationToken, refresh_token: envRefreshToken };
+		} else if (allCredentials?.targets) {
+			persistKey = target.resolvedTarget;
+			tokens = allCredentials.targets[persistKey] ?? null;
+		}
+
+		if (tokens?.operation_token || tokens?.refresh_token) {
+			await refreshExpiredOperationToken(options, tokens, persistKey);
+			if (tokens.operation_token) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
 		}
+	}
+	// Legacy fallback for operations where `username=`/`password=` genuinely ARE the caller's
+	// credentials (e.g. `create_table username= password=`) and nothing else is configured.
+	// Both are required — a lone `username=` (as in `drop_user username=bob`) is payload, not
+	// a credential.
+	if (target && !options.headers.Authorization && req.username && req.password) {
+		options.headers.Authorization = basicAuthHeader(req.username, req.password);
+	}
+	return { options, target };
+}
+
+async function cliOperations(req: any, skipResponseLog = false) {
+	require('dotenv').config();
+
+	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
+	// `auth_username=`/`auth_password=` pair, which resolveRequestOptions throws on) is mapped to the
+	// same console.error + process.exit(1) as every other failure below, rather than escaping as an
+	// unhandled rejection. `target` is declared out here so the catch can still reference it.
+	let options: any, target: any;
+	try {
+		({ options, target } = await resolveRequestOptions(req));
+		await PREPARE_OPERATION[req.operation]?.(req);
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the
 		// legacy JSON deploy if it predates 5.1. Local (domain-socket) deploys always
@@ -404,7 +603,10 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				body = fields;
 			}
 		} else {
-			body = req;
+			// Same TRANSPORT_ONLY_FIELDS stripping as the deploy body paths above — auth_username/
+			// auth_password (and target/rejectUnauthorized/json/etc.) must never reach the wire as
+			// operation-payload fields, on this path either.
+			body = operationFields(req);
 		}
 		let response: any = await httpRequest(options, body);
 

@@ -1,6 +1,6 @@
 'use strict';
 const { join, dirname } = require('node:path');
-const { existsSync, readFileSync } = require('node:fs');
+const { existsSync, readFileSync, realpathSync } = require('node:fs');
 
 /**
  * A naive find-up implementation to find the root package.json, and
@@ -37,10 +37,13 @@ const packageJsonPath = findPackageJson();
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
 
 /**
- * The Harper package root directory.
+ * The Harper package root directory, canonicalized (symlinks resolved).
  *
- * Works across dev and prod (built).
+ * Works across dev and prod (built). Callers that compare this against a `realpathSync`'d
+ * path (e.g. the module sandbox's allowed-path check in security/jsLoader.ts) need it
+ * canonical too, or a symlinked checkout (e.g. `--preserve-symlinks`, a symlinked worktree
+ * root) makes the string comparison fail even though the path is legitimately inside.
  */
-const PACKAGE_ROOT = dirname(packageJsonPath);
+const PACKAGE_ROOT = realpathSync(dirname(packageJsonPath));
 
 module.exports = { packageJson, PACKAGE_ROOT };

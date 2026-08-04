@@ -71,22 +71,18 @@ export function registerLiveSubscription(opts: {
 	recheck: () => Promise<boolean>;
 }): void {
 	const { subscription, username, authExpiresAt, recheck } = opts;
-	if (!subscription || typeof subscription !== 'object') return;
+	if (!subscription || typeof subscription !== 'object' || subscription.closed) return;
 
 	const entry: LiveSubscription = {
 		username,
 		authExpiresAt,
 		recheck,
 		terminate: () => {
-			// emit('close') runs the subscription's own teardown wiring; end() removes it from the
-			// broadcast notify loop so no further events are delivered. Both are idempotent.
+			// end() removes the subscription from the broadcast loop and closes its iterable queue.
 			try {
-				subscription.emit?.('close');
-			} catch {
-				/* ignore */
-			}
-			try {
-				subscription.end?.();
+				if (subscription.end) subscription.end();
+				else if (subscription.close) subscription.close();
+				else subscription.emit?.('close');
 			} catch {
 				/* ignore */
 			}

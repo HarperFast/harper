@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
+import { getDomainSocketPathMaxBytes } from '../utility/domainSocket.ts';
 import * as validator from './validationWrapper.ts';
 
 const DEFAULT_LOG_FOLDER = 'log';
@@ -411,6 +412,43 @@ function validatePath(value, helpers) {
 	if (doesExistMsg) {
 		return helpers.message(doesExistMsg);
 	}
+}
+
+// A Unix domain socket path is stored in a fixed-size `sockaddr_un.sun_path` buffer that must
+// also fit a trailing NUL — 108 bytes on Linux (107 usable), 104 on macOS (103 usable). A path
+// beyond that limit can fail at listen() time or be silently truncated, depending on the supported
+// Node version. threadServer.js therefore skips only this known-overlong listener before calling
+// listen(). This remains a warning rather than a schema error so configured TCP endpoints can start.
+export const UDS_PATH_MAX_BYTES = getDomainSocketPathMaxBytes();
+
+/**
+ * Returns a warning message if `domainSocket` (resolved against `hdbRootPath`) would exceed the
+ * platform's Unix domain socket path limit, or null if it fits (or domainSocket is falsy/non-string,
+ * i.e. disabled). Called from configUtils.ts's validateConfig, after the Joi schema (which resolves
+ * the default) has already run — non-blocking, so it's a plain function rather than a Joi custom rule.
+ * `platform` defaults to `process.platform` but is accepted as a parameter so the path-resolution
+ * logic for every platform can be unit tested from any CI host.
+ */
+export function getDomainSocketPathLengthWarning(hdbRootPath, domainSocket, platform = process.platform) {
+	if (!domainSocket || typeof domainSocket !== 'string') return null;
+
+	const platformPath = platform === 'win32' ? path.win32 : path.posix;
+	let resolvedValue;
+	if (domainSocket.startsWith('~/')) {
+		resolvedValue = platformPath.join(os.homedir(), domainSocket.slice(1));
+	} else if (platformPath.isAbsolute(domainSocket)) {
+		resolvedValue = domainSocket;
+	} else {
+		// getConfigPath() (configUtils.ts) resolves this same value at runtime with
+		// `path.resolve(rootPath, value)`, not `.join()` — when rootPath is itself relative (the
+		// `rootPath` config value has no absolute-path requirement), resolve() folds in the process's
+		// cwd while join() would leave the result relative, undercounting its real byte length.
+		resolvedValue = platformPath.resolve(hdbRootPath, domainSocket);
+	}
+	const byteLength = Buffer.byteLength(resolvedValue);
+	const limit = getDomainSocketPathMaxBytes(platform);
+	if (byteLength <= limit) return null;
+	return `operationsApi.network.domainSocket resolves to "${resolvedValue}" (${byteLength} bytes), which exceeds the ${limit}-byte Unix domain socket path limit on ${platform}. The domain socket may be unavailable or truncated; any configured TCP endpoint is unaffected — use a shorter rootPath, set operationsApi.network.domainSocket to a short absolute path outside rootPath, or set it to false to silence this warning.`;
 }
 
 function validateRotationMaxSize(value, helpers) {

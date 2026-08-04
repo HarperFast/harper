@@ -134,6 +134,7 @@ describe('Querying through Resource API', () => {
 				name: i === 17 ? [long_str] : i === 18 ? long_str : 'many-to-many entry ' + i,
 			});
 		}
+		await ManyToMany.put({ id: ['composite', 42], name: 'composite id entry' });
 		let last;
 		for (let i = 0; i < 100; i++) {
 			let many_ids = [];
@@ -764,6 +765,76 @@ describe('Querying through Resource API', () => {
 				related = await results[1].manyToMany;
 				assert.equal(related.length, 2);
 			});
+		});
+
+		it('relationship property access is synchronous (v4 contract)', async function () {
+			const record = await QueryTable.get('id-3');
+			// pin the contract: resolvers must never touch the async get() path, which
+			// returns a Promise on a RocksDB block-cache miss
+			const stores = [RelatedTable.primaryStore, ManyToMany.primaryStore];
+			const original_gets = stores.map((store) => store.get);
+			for (const store of stores)
+				store.get = () => {
+					throw new Error('relationship resolver must use the synchronous read path');
+				};
+			try {
+				const related = record.related;
+				assert.equal(typeof related?.then, 'undefined', 'many-to-one resolves synchronously');
+				assert.equal(related.name, 'related name 3');
+				const many_to_many = record.manyToMany;
+				assert(Array.isArray(many_to_many), 'array-of-foreign-keys resolves synchronously to an array');
+				assert.equal(many_to_many.length, 3);
+				assert.equal(many_to_many[0].name, 'many-to-many entry 3');
+				// childrenOfSelf resolves via relatedTable.search(...).asArray, not primaryStore.get, so the
+				// stub above doesn't pin this branch — it only demonstrates the local (non-caching) case, and
+				// the known revalidation gap for caching tables (see DESIGN.md) is untouched by this test.
+				const children = related.childrenOfSelf;
+				assert(Array.isArray(children), 'one-to-many resolves synchronously to an array on a local table');
+			} finally {
+				stores.forEach((store, i) => (store.get = original_gets[i]));
+			}
+		});
+
+		it('array-of-FK relationship tolerates a scalar stored id and normalizes single-record sets', async function () {
+			const scalar_stored = many_to_many_attribute.resolve({ manyToManyIds: 3 });
+			assert(Array.isArray(scalar_stored), 'scalar stored id resolves to an array');
+			assert.equal(scalar_stored.length, 1);
+			assert.equal(scalar_stored[0].name, 'many-to-many entry 3');
+
+			const object = {};
+			many_to_many_attribute.set(object, { id: 7 });
+			assert.deepEqual(object.manyToManyIds, [7], 'single record set on an elements attribute stores an array');
+		});
+
+		it('array-of-FK relationship nests a composite (array) related id as one element, not spread ids', function () {
+			const object = {};
+			many_to_many_attribute.set(object, { id: ['composite', 42] });
+			assert.deepEqual(
+				object.manyToManyIds,
+				[['composite', 42]],
+				'a composite id must stay a single array element, not be spread into two scalar ids'
+			);
+
+			const resolved = many_to_many_attribute.resolve(object);
+			assert.equal(resolved.length, 1, 'the composite id resolves to exactly the one related record');
+			assert.equal(resolved[0].name, 'composite id entry');
+		});
+
+		it('array-of-FK relationship with no stored ids resolves to an empty array without reading', async function () {
+			// id-0 was written with manyToManyIds: [] (see `before`)
+			const record = await QueryTable.get('id-0');
+			assert.deepEqual(record.manyToMany, [], 'no ids to resolve, so no related records');
+		});
+
+		it('array-of-FK relationship with no stored ids returns a fresh array, not the stored FK array', function () {
+			const object = { manyToManyIds: [] };
+			const resolved = many_to_many_attribute.resolve(object);
+			resolved.push('unrelated');
+			assert.deepEqual(
+				object.manyToManyIds,
+				[],
+				'mutating the resolved empty array must not alias the stored FK array'
+			);
 		});
 
 		it('Query by join with many-to-many (reverse)', async function () {

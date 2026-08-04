@@ -29,6 +29,8 @@ import * as scheduler from '../resources/scheduler/scheduler.ts';
 import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
+import { deployLifecycle } from './deployLifecycle.ts';
+import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
@@ -63,6 +65,51 @@ let resources;
  * @param loadedPluginModules
  * @param loadedResources
  */
+/**
+ * The application mount an operator declared for `appName` in the root config.
+ *
+ * Applications in the components root are loaded by directory scan, not from a root-config
+ * entry, so this is what makes a root-config entry authoritative for where an app is served:
+ *
+ * ```yaml
+ * my-app:
+ *   host: api.example.com
+ *   urlPath: /v1
+ * ```
+ *
+ * Works whether or not the entry also carries `package` — a payload-deployed app is mounted the
+ * same way as an installed one. A built-in plugin's config block is never an application mount;
+ * those keys (`http`, `mqtt`, …) configure the plugin itself.
+ */
+function rootConfigMount(appName: string): ScopeMount | undefined {
+	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return undefined;
+	return toScopeMount(getConfigObj()?.[appName]);
+}
+
+/**
+ * Resolves the mount for `appName`, or reports the failure and returns `undefined` if the
+ * configured `host`/`urlPath` is invalid. The caller must skip loading the application in that
+ * case rather than loading it anyway: an invalid mount is a request to CONSTRAIN where the app is
+ * served, so loading it unconstrained would silently drop the isolation the operator configured
+ * (review finding) — worse than not loading it at all. Isolated per-app so one bad mount doesn't
+ * take down every other application's load.
+ */
+function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | undefined } | { ok: false } {
+	try {
+		return { ok: true, mount: rootConfigMount(appName) };
+	} catch (error) {
+		(error as Error).message = `Not loading '${appName}': invalid routing configured: ${(error as Error).message}`;
+		errorReporter?.(error);
+		(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error as Error));
+		componentLifecycle.failed(
+			appName,
+			error as Error,
+			`Component '${appName}' failed to load due to invalid routing configuration`
+		);
+		return { ok: false };
+	}
+}
+
 export async function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
@@ -81,21 +128,32 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
 			const appFolder = join(CF_ROUTES_DIR, appName);
+			const mountResult = tryRootConfigMount(appName);
+			if (!mountResult.ok) continue;
 			cfsLoaded.push(
-				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, { isRoot: false, autoReload: false, appName })
+				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
+					isRoot: false,
+					autoReload: false,
+					appName,
+					mount: mountResult.mount,
+				})
 			);
 		}
 	}
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
-		cfsLoaded.push(
-			loadComponent(hdbAppFolder, resources, hdbAppFolder, {
-				isRoot: false,
-				autoReload: Boolean(process.env.DEV_MODE),
-				appName: hdbAppFolder,
-			})
-		);
+		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
+		if (mountResult.ok) {
+			cfsLoaded.push(
+				loadComponent(hdbAppFolder, resources, hdbAppFolder, {
+					isRoot: false,
+					autoReload: Boolean(process.env.DEV_MODE),
+					appName: hdbAppFolder,
+					mount: mountResult.mount,
+				})
+			);
+		}
 	}
 	return Promise.all(cfsLoaded).then(() => {
 		watchesSetup = true;
@@ -118,6 +176,10 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	// evaluation. `#src/*` is used rather than a relative path because it resolves under both
 	// conditions (source under --conditions=typestrip, dist otherwise); a relative extensionless
 	// require would only resolve against dist.
+	//
+	// The component is only *processed* when a `modelsGateway` key exists in the config, since
+	// the root loop skips absent keys (`if (!componentConfig) continue`). `defaultConfig.yaml`
+	// ships no such key, so an instance that never opts in pays nothing for this entry.
 	modelsGateway: '#src/resources/models/v1/index',
 	static: staticFiles,
 	customFunctions: {},
@@ -261,6 +323,7 @@ function symlinkHarperModule(componentDirectory: string) {
  */
 function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 	return scope.ready.then(async () => {
+		await scope.waitForDeployCompletion();
 		// Timeout priority is user config, plugin default, finally 30 seconds
 		const timeout = scope.options.get(['timeout']) || plugin.defaultTimeout || 30_000; // default 30 second timeout
 		if (typeof timeout !== 'number') {
@@ -282,32 +345,73 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 				}, timeout + 5_000); // extra time for lock acquisition
 			});
 		}
-		let loadTimeout: NodeJS.Timeout;
 		try {
 			// note that handleApplication can throw sync or async errors, need to run finally block for both
-			await Promise.race([
+			await withDeployAwareTimeout(
 				Promise.resolve(plugin.handleApplication(scope)).then(async () => {
 					// Wait for any initial entry handler loads to complete
 					// This ensures all async operations (like secureImport) finish before the component is marked as loaded
 					await scope.waitForInitialLoads();
 				}),
-				new Promise(
-					(_, reject) =>
-						(loadTimeout = setTimeout(
-							() =>
-								reject(
-									new Error(
-										`handleApplication timed out after ${timeout}ms for ${scope.pluginName} on behalf of ${scope.appName}`
-									)
-								),
-							timeout
-						))
-				),
-			]);
+				scope,
+				timeout
+			);
 		} finally {
 			Status.primaryStore.unlock(scope.pluginName);
-			clearTimeout(loadTimeout);
 		}
+	});
+}
+
+function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout: number): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const absoluteTimeout = timeout + 6 * 60 * 60 * 1000;
+		let remaining = timeout;
+		let activeSince = 0;
+		let timer: NodeJS.Timeout | undefined;
+		let absoluteTimer: NodeJS.Timeout;
+		const cleanup = () => {
+			if (timer) clearTimeout(timer);
+			clearTimeout(absoluteTimer);
+			deployLifecycle.off('deploy:start', handleDeployStart);
+			deployLifecycle.off('deploy:end', handleDeployEnd);
+		};
+		const rejectTimeout = (limit = timeout) => {
+			cleanup();
+			reject(
+				new Error(`handleApplication timed out after ${limit}ms for ${scope.pluginName} on behalf of ${scope.appName}`)
+			);
+		};
+		absoluteTimer = setTimeout(() => rejectTimeout(absoluteTimeout), absoluteTimeout);
+		absoluteTimer.unref?.();
+		const arm = () => {
+			if (deployLifecycle.isDeployInFlight(scope.appName)) return;
+			if (remaining <= 0) return rejectTimeout();
+			activeSince = Date.now();
+			timer = setTimeout(rejectTimeout, remaining);
+		};
+		function handleDeployStart(componentName: string) {
+			if (componentName !== scope.appName || !timer) return;
+			remaining -= Date.now() - activeSince;
+			clearTimeout(timer);
+			timer = undefined;
+		}
+		function handleDeployEnd(componentName: string) {
+			if (componentName === scope.appName) arm();
+		}
+
+		deployLifecycle.on('deploy:start', handleDeployStart);
+		deployLifecycle.on('deploy:end', handleDeployEnd);
+		operation.then(
+			(value) => {
+				cleanup();
+				resolve(value);
+			},
+			(error) => {
+				cleanup();
+				reject(error);
+			}
+		);
+		arm();
 	});
 }
 
@@ -322,6 +426,10 @@ export interface LoadComponentOptions {
 	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
 	// across deploys (#1462).
 	collectScopes?: Set<Scope>;
+	// Routing the operator declared for this application in the root config (`host`/`urlPath` on
+	// the application's entry). Applied to every plugin scope this load creates, and inherited by
+	// components the application itself declares, so the whole subtree moves together.
+	mount?: ScopeMount;
 }
 
 /**
@@ -348,7 +456,9 @@ export async function loadComponent(
 		isRoot,
 		autoReload,
 		appName,
+		mount,
 	} = options;
+	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	try {
@@ -491,6 +601,13 @@ export async function loadComponent(
 								autoReload: false,
 								appName: appName || componentName,
 								collectScopes: options.collectScopes,
+								// `host`/`urlPath` on this entry route the component being loaded. For an
+								// application (no plugin module of its own) that entry is the only place an
+								// operator can say where the app is served — its own config.yaml declares the
+								// plugins, not the deployment. A nested component's own mount nests inside
+								// the parent's rather than replacing it, and the parent keeps hostname
+								// authority, so a child can't escape the host it is served on.
+								mount: nestScopeMount(mount, toScopeMount(componentConfig)),
 							});
 							componentFunctionality[componentName] = true;
 						}
@@ -560,7 +677,10 @@ export async function loadComponent(
 						// authoritative root-ness: only root-load scopes watch THE root config and
 						// get the runtime env-config overlay (#1618) — an app component that happens
 						// to ship a root-named config file does not
-						isRoot
+						isRoot,
+						// A root-declared plugin reads its own `host`/`urlPath` straight from this
+						// config, so only an inherited application mount applies here.
+						mount
 					);
 
 					if (options.collectScopes) {
@@ -601,6 +721,32 @@ export async function loadComponent(
 					harperLogger.warn?.(
 						`Component ${componentName} is using deprecated extension API. Upgrade to the new Plugin API. For more information: https://docs.harperdb.io/docs/reference/components/plugins`
 					);
+				}
+
+				// `start`/`startOnMainThread` hand the plugin the raw, unmounted `server` directly —
+				// unlike the new Plugin API's `handleApplication(scope)`, which receives the mount-aware
+				// scope — so routes registered there would silently escape a configured host/urlPath
+				// mount and stay reachable unconstrained (review finding). Same isolation gap
+				// fastifyRoutes.ts already closes for its own legacy fallback (host-only there, since
+				// urlPath composes into its route prefix; here neither composes, so both are rejected).
+				// Refuse rather than imply an isolation the hook can't honor; contained to this
+				// component by the loader's per-component try/catch.
+				if (
+					mount &&
+					(typeof extensionModule.start === 'function' || typeof extensionModule.startOnMainThread === 'function')
+				) {
+					const error = new Error(
+						`Component '${componentName}' is mounted (${[
+							mount.host && `host '${mount.host}'`,
+							mount.urlPath && `urlPath '${mount.urlPath}'`,
+						]
+							.filter(Boolean)
+							.join(
+								', '
+							)}), but its deprecated 'start'/'startOnMainThread' extension API receives the bare, unmounted server — routes registered there would stay reachable unconstrained. Upgrade to the new Plugin API (handleApplication(scope)) or drop the mount.`
+					);
+					componentLifecycle.failed(componentStatusName, error, `Component '${componentStatusName}' failed to load`);
+					throw error;
 				}
 
 				if (isMainThread) {

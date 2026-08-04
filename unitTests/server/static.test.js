@@ -1,20 +1,31 @@
 'use strict';
 
 const assert = require('assert');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+const { join } = require('node:path');
+const { tmpdir } = require('node:os');
 const { handleApplication } = require('#src/server/static');
 
 // A minimal Scope stand-in: captures the http registration and warning log so tests can
 // assert on the middleware ordering options the plugin passes to the server.
-function fakeScope(options = {}) {
+function fakeScope(options = {}, mount = undefined) {
 	const state = {
 		httpOptions: undefined,
 		warnings: [],
 		changeListeners: [],
 		restartRequests: 0,
+		mount,
+		listener: undefined,
+		entryCallback: undefined,
 	};
 	const scope = {
 		directory: '/fake/app',
+		appName: 'fake-app',
 		pluginName: 'static',
+		// Mirrors Scope: the application mount an operator declared in the root config, and the
+		// helper that turns a mount-relative base path into the absolute path a client sees.
+		mount: state.mount,
+		externalBasePath: (baseURLPath) => (state.mount?.urlPath ? `${state.mount.urlPath}${baseURLPath}` : baseURLPath),
 		options: {
 			get: (key) => options[key[0]],
 			getAll: () => options,
@@ -26,10 +37,13 @@ function fakeScope(options = {}) {
 			info() {},
 			warn: (message) => state.warnings.push(message),
 		},
-		handleEntry() {},
+		handleEntry(callback) {
+			state.entryCallback = callback;
+		},
 		requestRestart: () => state.restartRequests++,
 		server: {
-			http: (_listener, httpOptions) => {
+			http: (listener, httpOptions) => {
+				state.listener = listener;
 				state.httpOptions = httpOptions;
 			},
 		},
@@ -176,6 +190,112 @@ describe('static plugin fallthrough: false warning', () => {
 });
 
 describe('static plugin ordering live reload', () => {
+	it('removes a directory-owned index when index.html unlinks', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-index-unlink-'));
+		const indexPath = join(directory, 'index.html');
+		writeFileSync(indexPath, 'index');
+
+		try {
+			const { scope, state } = fakeScope();
+			handleApplication(scope);
+			state.entryCallback({ eventType: 'addDir', entryType: 'directory', absolutePath: directory, urlPath: '/' });
+			state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: indexPath, urlPath: '/index.html' });
+			rmSync(indexPath);
+			state.entryCallback({ eventType: 'unlink', entryType: 'file', absolutePath: indexPath, urlPath: '/index.html' });
+
+			const request = { method: 'GET', isWebSocket: false, pathname: '/', url: '/', headers: {} };
+			const fallthrough = Symbol('fallthrough');
+			assert.strictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('keeps a replacement with the same URL when the old absolute file unlinks afterward', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-identity-'));
+		const oldPath = join(directory, 'web', 'index.html');
+		const newPath = join(directory, 'dist', 'index.html');
+		mkdirSync(join(directory, 'web'), { recursive: true });
+		mkdirSync(join(directory, 'dist'), { recursive: true });
+		writeFileSync(oldPath, 'old');
+		writeFileSync(newPath, 'new');
+
+		try {
+			const { scope, state } = fakeScope();
+			handleApplication(scope);
+			const entry = (eventType, absolutePath) =>
+				state.entryCallback({ eventType, entryType: 'file', absolutePath, urlPath: '/index.html' });
+			entry('add', oldPath);
+			entry('add', newPath);
+			entry('unlink', oldPath);
+
+			const request = {
+				method: 'GET',
+				isWebSocket: false,
+				pathname: '/index.html',
+				url: '/index.html',
+				headers: {},
+			};
+			const fallthrough = Symbol('fallthrough');
+			assert.notStrictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+
+			entry('unlink', newPath);
+			assert.strictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('restores a surviving colliding file when the active file unlinks', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-collision-'));
+		const oldPath = join(directory, 'web', 'index.html');
+		const newPath = join(directory, 'dist', 'index.html');
+		mkdirSync(join(directory, 'web'), { recursive: true });
+		mkdirSync(join(directory, 'dist'), { recursive: true });
+		writeFileSync(oldPath, 'old');
+		writeFileSync(newPath, 'new');
+
+		try {
+			const { scope, state } = fakeScope();
+			handleApplication(scope);
+			const entry = (eventType, absolutePath) =>
+				state.entryCallback({ eventType, entryType: 'file', absolutePath, urlPath: '/index.html' });
+			entry('add', oldPath);
+			entry('add', newPath);
+			entry('unlink', newPath);
+
+			const request = {
+				method: 'GET',
+				isWebSocket: false,
+				pathname: '/index.html',
+				url: '/index.html',
+				headers: {},
+			};
+			const fallthrough = Symbol('fallthrough');
+			assert.notStrictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+
+			entry('unlink', oldPath);
+			assert.strictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('requests a restart when before or after changes', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);
@@ -192,6 +312,51 @@ describe('static plugin ordering live reload', () => {
 		assert.equal(state.restartRequests, 1);
 	});
 
+	it('keeps the registered route while only a urlPath restart is pending', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+
+		scope.fireChange('urlPath');
+		state.entryCallback({ eventType: 'unlink', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/new/asset.js' });
+
+		const fallthrough = Symbol('fallthrough');
+		assert.notStrictEqual(
+			state.listener(
+				{ method: 'GET', isWebSocket: false, pathname: '/asset.js', url: '/asset.js', headers: {} },
+				() => fallthrough
+			),
+			fallthrough
+		);
+		assert.strictEqual(
+			state.listener(
+				{ method: 'GET', isWebSocket: false, pathname: '/new/asset.js', url: '/new/asset.js', headers: {} },
+				() => fallthrough
+			),
+			fallthrough
+		);
+	});
+
+	it('applies file-selection removals while a urlPath restart is pending', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+
+		scope.fireChange('urlPath');
+		scope.fireChange('files');
+		state.entryCallback({ eventType: 'unlink', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/new/asset.js' });
+
+		const fallthrough = Symbol('fallthrough');
+		for (const pathname of ['/asset.js', '/new/asset.js']) {
+			assert.strictEqual(
+				state.listener({ method: 'GET', isWebSocket: false, pathname, url: pathname, headers: {} }, () => fallthrough),
+				fallthrough
+			);
+		}
+	});
+
 	it('does not request a restart for options read per-request', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);
@@ -199,5 +364,38 @@ describe('static plugin ordering live reload', () => {
 			scope.fireChange(key);
 		}
 		assert.equal(state.restartRequests, 0);
+	});
+});
+
+describe('static plugin mount-root redirect', () => {
+	// A root-level static plugin (no urlPath of its own) has baseURLPath === '/', so gating the
+	// redirect on baseURLPath alone never fires — even though the application mount makes the
+	// client-visible root something other than '/'. Review finding: the mount root then serves
+	// without ever redirecting to its trailing-slash form.
+	it('redirects the application mount root to its trailing-slash form even when static has no urlPath of its own', () => {
+		const { scope, state } = fakeScope({}, { urlPath: '/v1' });
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: '/fake/app/web/index.html' });
+
+		const result = state.listener({ method: 'GET', pathname: '/', url: '/', originalPathname: '/v1' }, () => ({
+			status: -1,
+		}));
+
+		assert.equal(result.status, 301);
+		assert.equal(result.headers.Location, '/v1/');
+	});
+
+	it('does not redirect when the application has no mount (root stays root)', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		// A real, existing path — with no mount, the redirect guard is false and this falls through
+		// to actually serving the file (realpathSync must succeed).
+		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: __filename });
+
+		const result = state.listener({ method: 'GET', pathname: '/', url: '/', originalPathname: '/' }, () => ({
+			status: -1,
+		}));
+
+		assert.notEqual(result.status, 301);
 	});
 });

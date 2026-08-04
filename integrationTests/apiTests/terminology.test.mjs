@@ -452,6 +452,10 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
 	});
 
+	// The two delete_audit_logs_before jobs below start fine but ERROR on RocksDB:
+	// the deprecated op requires `table`, and table-scoped transaction log deletion
+	// is rejected there because all tables in a database share one log (harper#2049).
+	// The database/schema param handling under test still resolves before that error.
 	test('delete_audit_logs_before with database param starts job', async () => {
 		const r = await client
 			.req()
@@ -463,7 +467,11 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			})
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
+		await awaitJobCompleted(client, r.body.job_id, {
+			timeoutSeconds: JOB_TIMEOUT_SECONDS,
+			// the error echoes the resolved database, proving the `database` param was honored
+			expectedError: "transaction logs for the entire 'job_guy' database",
+		});
 	});
 
 	test('delete_audit_logs_before without database starts job', async () => {
@@ -472,7 +480,11 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			.send({ operation: 'delete_audit_logs_before', table: 'friends', timestamp: 1690553291764 })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
-		await awaitJobCompleted(client, r.body.job_id, { timeoutSeconds: JOB_TIMEOUT_SECONDS });
+		await awaitJobCompleted(client, r.body.job_id, {
+			timeoutSeconds: JOB_TIMEOUT_SECONDS,
+			// no database param resolves to the default 'data' database
+			expectedError: "transaction logs for the entire 'data' database",
+		});
 	});
 
 	test('csv_file_load with database param starts job', async () => {

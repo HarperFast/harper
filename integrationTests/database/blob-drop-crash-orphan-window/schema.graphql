@@ -1,0 +1,61 @@
+# QA-809 — kill-window sweep for drop_table/drop_database blob unlink.
+#
+# Background (prior wave, this same checkout): drop_table returns to the client BEFORE its
+# blob files are unlinked -- deleteBlob() schedules unlink via setTimeout(deletionDelay=500ms)
+# for every HAS_BLOBS entry it walks, and only AFTER scheduling all of those does the column
+# family get dropped and the op return. So there's a ~0.5-3s window, starting at the moment
+# the op returns, in which the table's metadata is already gone but its blob files are not.
+#
+# This fixture drives that sweep: one BlobTable per kill-delay arm (blobs aren't partitioned
+# by table on disk -- {dataRootDir}/blobs/{db}/... -- so isolating each arm to its own table
+# lets us delta-count that arm's survival independent of the others). All drop_table arms
+# share database "qa809t" and keep a sibling `Keepalive` table alive throughout, because
+# cleanup_orphan_blobs's `for (const tableName in database)` loop (dataLayer needs a resolvable
+# store/auditStore pair) never fires for an empty database -- confirmed by a prior QA wave
+# (QA-697) and reused here verbatim from qa805's fixture design.
+#
+# drop_database arms get their OWN database each (whole-directory rimraf), so blobs/{db} is
+# exclusively that arm's files and the accounting is unambiguous.
+
+# ---- db "qa809t": drop_table kill-window sweep, Keepalive keeps the db resolvable ----
+type Keepalive @table(database: "qa809t", audit: true) @export {
+	id: ID @primaryKey
+	blob: Blob
+}
+
+type BlobTableK0 @table(database: "qa809t", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+}
+
+type BlobTableK100 @table(database: "qa809t", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+}
+
+type BlobTableK400 @table(database: "qa809t", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+}
+
+type BlobTableK600 @table(database: "qa809t", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+}
+
+type BlobTableCtrl @table(database: "qa809t", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+}
+
+# ---- db "qa809d0": drop_database, kill immediately (0ms) after the op returns ----
+type BlobDBKill0 @table(database: "qa809d0", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+}
+
+# ---- db "qa809dc": drop_database control, no kill (graceful restart) ----
+type BlobDBCtrl @table(database: "qa809dc", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+}

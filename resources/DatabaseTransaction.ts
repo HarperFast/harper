@@ -13,20 +13,127 @@ import { Transaction as RocksTransaction, type Store as RocksStore, constants } 
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
+import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
+const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN: 1, // the transaction is open and can be used for reads and writes
-	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
+	// LMDB-only (LMDBTransaction.ts): committed while reads were outstanding, still usable for immediate
+	// writes. The RocksDB path never enters this state — a commit with outstanding iterators replays its
+	// writes onto a fresh transaction and commits immediately (see the outstanding-iterators branch in
+	// commit()), going straight to CLOSED.
+	LINGERING: 2,
 };
 const MAX_RETRIES = 40;
 // Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
-let outstandingCommit, outstandingCommitStart;
+// Every native write commit currently outstanding on this worker thread, oldest first.
+// checkOverloaded() sheds new application writes once the OLDEST of these has been outstanding
+// past MAX_OUTSTANDING_TXN_DURATION, so a commit whose promise never settles (harper#2001) is
+// detected whichever transaction submitted it. A linked list rather than a Set because the write
+// path reads the oldest on every write and must not allocate an iterator to do it, and because
+// commits settle out of order and so have to unlink in constant time.
+interface OutstandingCommit {
+	start: number;
+	prev: OutstandingCommit | undefined;
+	next: OutstandingCommit | undefined;
+	// Identity for the one-time checkOverloaded() log below (harper#2001) — otherwise a stuck commit
+	// gives no indication of which database/table/resource to investigate. Snapshotted at arm time
+	// (not read from `this.writes`/`this.startedFrom` lazily off the DatabaseTransaction object)
+	// because that object can be reused for a later immediate commit while this native commit is
+	// still wedged — its resolve handler runs clearWrites() on the SAME object, which would blank or
+	// replace the identity out from under a deferred read. Per-node (not a single module-level slot)
+	// so that every outstanding commit carries its own identity and its own `logged` flag: a second
+	// commit that is still stuck once the first settles becomes the new oldest and logs on its own.
+	store: any;
+	startedFrom: { resourceName: string; method: string } | undefined;
+	nativeTransaction: any;
+	logged: boolean;
+}
+let oldestOutstandingCommit: OutstandingCommit | undefined;
+let newestOutstandingCommit: OutstandingCommit | undefined;
+let outstandingCommitCount = 0;
+// Caps the stuck-commit log (checkOverloaded() below) to at most one line per this interval across
+// the whole thread, regardless of how many distinct commits individually cross the threshold — see
+// the comment at the log site for why a per-commit-only dedup isn't enough under sustained overload.
+const OVERLOAD_LOG_MIN_INTERVAL_MS = 1000;
+let lastOverloadLogAt = -Infinity;
+
+// Track a submitted commit until it settles. Every attempt is tracked unconditionally: a
+// coordinated retry round and a chained second-store commit are both issued from inside the
+// preceding commit's own resolve handler, which runs before any reaction that could release a
+// single shared slot — so anything conditional on "is something already outstanding" skips them
+// and leaves a wedged retry or chain invisible to checkOverloaded() forever. Each attempt is timed
+// from its own submission, keeping the overload window per-attempt rather than cumulative over a
+// retry ladder. `.then(untrack, untrack)` also marks an ERR_BUSY rejection handled, so this
+// tracking never surfaces as an unhandled rejection alongside the caller's own handler.
+// Exported only so unit tests can drive the list with controllable promises: the unlink order that
+// matters (a middle or tail node settling first) cannot be forced through real writes, and a node
+// left linked would 503 every write on this thread forever. commit() below is the sole caller.
+// Also the single source for write-queue-depth accounting (getTransactionQueueDepths below): every
+// native commit this function tracks is, by definition, exactly the write-queue backlog — see the
+// comment there for why that used to be a second, separately-maintained counter.
+// `store`/`startedFrom`/`nativeTransaction` are the identity snapshot for checkOverloaded()'s stuck-
+// commit log (harper#2001); omit them (as the test seam below does) when a caller has none to give.
+export function trackOutstandingCommit(
+	commitResolution: Promise<number | void>,
+	store?: any,
+	startedFrom?: { resourceName: string; method: string },
+	nativeTransaction?: any
+): void {
+	// Guards against a future caller passing a non-Promise: today commit() always hands this a real
+	// Promise, but an unguarded link here would leave a node permanently wedged in the list (503ing
+	// every write on this thread) with no settlement to ever unlink it.
+	if (typeof commitResolution?.then !== 'function') return;
+	const outstanding: OutstandingCommit = {
+		start: performance.now(),
+		prev: newestOutstandingCommit,
+		next: undefined,
+		store,
+		startedFrom,
+		nativeTransaction,
+		logged: false,
+	};
+	if (newestOutstandingCommit != null) newestOutstandingCommit.next = outstanding;
+	else oldestOutstandingCommit = outstanding;
+	newestOutstandingCommit = outstanding;
+	outstandingCommitCount++;
+	// Doubles as the write-queue-depth high-water mark (see getTransactionQueueDepths): every
+	// outstanding commit is a write-queue entry, so the peak of one is the peak of the other.
+	if (outstandingCommitCount > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = outstandingCommitCount;
+	// Guards against double-untracking the same node: `.then(untrack, untrack)` below means a promise
+	// that both resolves and later has its rejection handler independently triggered (or is tracked via
+	// a shared/misused resolution) could otherwise run the unlink twice, corrupting the list or driving
+	// outstandingCommitCount negative.
+	let untracked = false;
+	const untrack = () => {
+		if (untracked) return;
+		untracked = true;
+		if (outstanding.prev != null) outstanding.prev.next = outstanding.next;
+		else oldestOutstandingCommit = outstanding.next;
+		if (outstanding.next != null) outstanding.next.prev = outstanding.prev;
+		else newestOutstandingCommit = outstanding.prev;
+		outstandingCommitCount--;
+	};
+	commitResolution.then(untrack, untrack);
+}
+
+/**
+ * How many write commits are outstanding on this thread and how long the oldest has been waiting
+ * (`oldestAgeMs` is undefined when none is). `oldestAgeMs` is exactly the value checkOverloaded()
+ * rejects on, exposed so a commit that never settles (harper#2001) can be observed directly rather
+ * than inferred from the 503s it eventually produces.
+ */
+export function getOutstandingCommits(): { count: number; oldestAgeMs: number | undefined } {
+	return {
+		count: outstandingCommitCount,
+		oldestAgeMs: oldestOutstandingCommit ? performance.now() - oldestOutstandingCommit.start : undefined,
+	};
+}
 
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
@@ -60,28 +167,19 @@ function recordCommitLatency(commitResolution: Promise<number | void>, submitted
 
 // Queue-depth gauges surfaced through the analytics pipeline (write-transaction-queue-depth /
 // read-transaction-queue-depth). Per-thread state; the analytics aggregator sums across threads.
-// `writeTxnQueueDepth` counts write commits handed to the storage engine but not yet resolved —
-// this is the backlog that, when it drains too slowly, produces the "Outstanding write transactions
-// have too long of queue" overload error. Read depth is derived from the live `trackedTxns` set
-// (every tracked transaction holds an open read snapshot). We also retain a high-water mark per
-// sampling window because the queue can fill and drain within a single (~1s) analytics period, so an
+// The write depth is `outstandingCommitCount` itself (maintained above by trackOutstandingCommit) —
+// write commits handed to the storage engine but not yet resolved are exactly the same set of native
+// commits the overload check tracks, and keeping one counter instead of two removes the duplicate
+// per-commit bookkeeping (and the drift risk: a code path that updates one but not the other, as the
+// replay path did before this fix). Read depth is derived from the live `trackedTxns` set (every
+// tracked transaction holds an open read snapshot). We also retain a high-water mark per sampling
+// window because the queue can fill and drain within a single (~1s) analytics period, so an
 // instantaneous sample taken at emit time would routinely miss the spike operators need to see.
 // RocksDB-write-path only: LMDB routes through the separate LMDBTransaction.commit()/getReadTxn()
 // overrides (resources/LMDBTransaction.ts), which maintain their own unrelated `trackedTxns` set and
 // do not call into this accounting.
-let writeTxnQueueDepth = 0;
 let writeTxnQueueDepthHighWater = 0;
 let readTxnQueueDepthHighWater = 0;
-
-function enterWriteQueue() {
-	if (++writeTxnQueueDepth > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = writeTxnQueueDepth;
-}
-function leaveWriteQueue() {
-	// Floor at zero: accounting is balanced by construction (every enterWriteQueue has exactly one
-	// matching settlement), but the guard is cheap insurance against a future call-site imbalance
-	// producing a negative depth that would corrupt every subsequent sample.
-	if (writeTxnQueueDepth > 0) writeTxnQueueDepth--;
-}
 
 /**
  * Returns the current write/read transaction queue depths for this thread along with the high-water
@@ -93,12 +191,12 @@ export function getTransactionQueueDepths() {
 	// dominates the current size here — no need to reconcile against `readDepth` before reporting.
 	const readDepth = trackedTxns.size;
 	const depths = {
-		writeDepth: writeTxnQueueDepth,
+		writeDepth: outstandingCommitCount,
 		writeMaxDepth: writeTxnQueueDepthHighWater,
 		readDepth,
 		readMaxDepth: readTxnQueueDepthHighWater,
 	};
-	writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+	writeTxnQueueDepthHighWater = outstandingCommitCount;
 	readTxnQueueDepthHighWater = readDepth;
 	return depths;
 }
@@ -123,7 +221,7 @@ export function transactionOpenTooLongError(): ServerError {
 	// status (503/408) would invite clients and gateways to auto-retry the same doomed long transaction.
 	// 422 signals the request itself must change (split the work), which is the actionable response.
 	return new ServerError(
-		'Transaction was aborted after exceeding the open-transaction limit; split long-running work into smaller transactions',
+		'Transaction was aborted after exceeding the maximum open-transaction time; split long-running work into smaller transactions',
 		422
 	);
 }
@@ -169,13 +267,58 @@ export type TransactionWrite = {
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
 	appendedAuditEntry?: boolean;
+	// the preceding write to the same store and key in this transaction, if any (linked in addWrite)
+	priorWrite?: TransactionWrite;
+	// what this write left for its key in this transaction, once its commit handler stored it (a
+	// deletion stages an entry with no value). Reset at the top of each commit-handler invocation so
+	// a retry round that takes an early return doesn't leave the prior round's state behind.
+	stagedEntry?: Partial<Entry>;
+	// a later write to the same key in this transaction replaced (or deleted) the record this write
+	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
+	// commit-handler round, like stagedEntry.
+	superseded?: boolean;
+	// this write appended an audit entry, which references its saved blobs — they then belong to the
+	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
+	blobsAuditReferenced?: boolean;
 };
+
+/**
+ * The state a preceding write in this transaction left for `operation`'s key, or undefined if this
+ * is the first write to it. Within a transaction the writes are ordered by program order, and
+ * neither storage engine can serve that state to a read — LMDB applies staged writes only in the
+ * commit batch — so a later write to the same key gets its basis from the write that staged it
+ * rather than from a pre-transaction read (harper#1968). Walks past writes that staged nothing
+ * (a skipped or non-record write) to the last one that did, returning the owning write.
+ */
+export function priorStagedWrite(operation: TransactionWrite): TransactionWrite | undefined {
+	for (let prior = operation.priorWrite; prior; prior = prior.priorWrite) {
+		if (prior.stagedEntry) return prior;
+	}
+}
+
+/**
+ * Key identity for the per-key write chain, which must match the storage engines' key identity —
+ * and that identity is the ordered-binary encoding, not JS value identity. The mismatches run in
+ * both directions: `1n` and `1` (or `2**60` and `1n << 60n`) encode to the SAME stored key, so the
+ * chain must link them or repeat writes re-introduce the harper#1968 stale basis; while `[0]` vs
+ * `[-0]` and `[null]` vs `[NaN]` are DIFFERENT stored keys that value-ish encodings (JSON, string
+ * coercion) collapse, cross-contaminating unrelated records. So every key is mapped through the
+ * same encoder the stores use; latin1 keeps the bytes injective in a string. Symbol keys (internal
+ * metadata writes) can't be key-encoded and keep native identity; so does null (topic-less
+ * publishes), which never stages a record.
+ */
+export function writeKeyId(key: Id): unknown {
+	if (typeof key === 'symbol' || key == null) return key;
+	return toBufferKey(key as any).toString('latin1');
+}
 
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
 
 export class DatabaseTransaction implements Transaction {
 	#context: Context;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
+	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
+	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
 	completions: Promise<void>[] = []; // the set of outstanding async operations to complete
 	db: RootDatabaseKind;
 	transaction: RocksTransactionWithRetry;
@@ -188,6 +331,9 @@ export class DatabaseTransaction implements Transaction {
 	retries = 0;
 	declare next: DatabaseTransaction;
 	declare stale: boolean;
+	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
+	// consumed by a commit round; iterator references are consumed only by doneReadTxn().
+	declare baseReadRefConsumed?: boolean;
 	declare startedFrom?: {
 		resourceName: string;
 		method: string;
@@ -232,6 +378,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 
 		this.readTxnsUsed = 1;
+		this.baseReadRefConsumed = false; // fresh handle, fresh base reference for commit() to consume
 		if (DEBUG_LONG_TXNS) {
 			this.stackTraces = [new StartedTransaction()];
 		}
@@ -251,15 +398,32 @@ export class DatabaseTransaction implements Transaction {
 	doneReadTxn() {
 		if (!this.transaction) return;
 		if (--this.readTxnsUsed === 0) {
+			// The native handle was only being held open for the read iterators: any writes staged
+			// through it were already committed at commit() time by replaying them onto a fresh
+			// transaction (see the outstanding-iterators branch in commit()), so aborting it here
+			// discards nothing — the replay re-staged the writes AND their audit/txn-log entries
+			// into its own transaction; this handle's never-committed log batch dies with it.
 			trackedTxns.delete(this);
-			if (this.open === TRANSACTION_STATE.LINGERING) {
-				// if we have lingering writes, we have to call commit to finish them
-				this.commit();
-			} else {
-				this.transaction?.abort();
-				this.transaction = null;
-			}
+			this.transaction?.abort();
+			this.transaction = null;
 		}
+	}
+
+	/**
+	 * Force-release the retained native read handle without touching staged writes. Used by the
+	 * long-transaction monitor for a CLOSED (already-acknowledged) transaction whose iterators have
+	 * held the read snapshot past the open-transaction limit: the writes are not the monitor's to
+	 * abort (an in-flight replay commit owns them), only the snapshot's lifetime is enforced.
+	 */
+	releaseReadTxn(): void {
+		trackedTxns.delete(this);
+		this.readTxnsUsed = 0; // doneReadTxn() no-ops for the remaining iterators (guarded on this.transaction)
+		try {
+			this.transaction?.abort();
+		} catch (error) {
+			harperLogger.debug?.('releasing timed-out read transaction', error);
+		}
+		this.transaction = null;
 	}
 
 	disregardReadTxn(): void {
@@ -268,12 +432,68 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
+	/**
+	 * Chain a newly staged write to the preceding write to the same store and key, so its commit
+	 * handler can apply on top of what that write staged instead of the pre-transaction record
+	 * (see priorStagedWrite). Called by both engines' addWrite.
+	 */
+	linkWrite(operation: TransactionWrite): void {
+		if (operation.key === undefined) return;
+		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
+		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
+		const keyId = writeKeyId(operation.key);
+		const priorWrite = writesForStore.get(keyId);
+		if (priorWrite) operation.priorWrite = priorWrite;
+		writesForStore.set(keyId, operation);
+	}
+
+	/**
+	 * Discard the staged write set (committed or aborted); the per-key chain must go with it so a
+	 * reused transaction never bases a write on a previous batch's staged state.
+	 */
+	clearWrites(): void {
+		this.writes = [];
+		this.writesByKey = undefined;
+	}
+
 	checkOverloaded() {
 		if (
-			outstandingCommit &&
+			oldestOutstandingCommit &&
 			!this.overloadChecked &&
-			performance.now() - outstandingCommitStart > MAX_OUTSTANDING_TXN_DURATION
+			performance.now() - oldestOutstandingCommit.start > MAX_OUTSTANDING_TXN_DURATION
 		) {
+			const now = performance.now();
+			// Also rate-limited across the whole overload episode (not just deduped per commit): under
+			// sustained heavy load, many distinct commits can each individually age past the limit in
+			// quick succession as earlier ones finally settle, which without this cap would turn one
+			// overload episode into a growing stream of ERROR lines — the same "flood" harper#2001's
+			// original per-request log was fixed to avoid, just shifted from per-request to per-commit.
+			// A commit skipped by the cooldown is NOT marked `logged`, so it still gets a log later if
+			// it's still the oldest once the cooldown clears, rather than going silent forever.
+			if (!oldestOutstandingCommit.logged && now - lastOverloadLogAt > OVERLOAD_LOG_MIN_INTERVAL_MS) {
+				// Log once per stuck commit (not once per rejected request, harper#2001): a wedged
+				// thread otherwise logs nothing at all server-side while rejecting every write with a
+				// 503, which was the single biggest obstacle to root-causing a recurrence. The flag lives
+				// on the node itself, so if THIS commit settles while still over the limit and a
+				// different one is now oldest, that one logs too instead of staying silent forever.
+				oldestOutstandingCommit.logged = true;
+				lastOverloadLogAt = now;
+				const nativeTransactionId = oldestOutstandingCommit.nativeTransaction?.id;
+				const store = oldestOutstandingCommit.store;
+				const startedFrom = oldestOutstandingCommit.startedFrom;
+				harperLogger.error(
+					`Rejecting writes on this thread: a commit has been outstanding for ` +
+						`${Math.round(now - oldestOutstandingCommit.start)}ms (exceeds the ` +
+						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${store?.rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
+						(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
+						(startedFrom?.resourceName
+							? `, started from ${startedFrom.resourceName}${startedFrom.method ? '.' + startedFrom.method : ''}`
+							: '') +
+						`. Further record updates and publishes from new application requests on this thread ` +
+						`will be rejected with 503 until the commit settles or the process is restarted (deletes, ` +
+						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
+				);
+			}
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
@@ -281,6 +501,7 @@ export class DatabaseTransaction implements Transaction {
 
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		this.linkWrite(operation);
 		this.writes.push(operation);
 		if (!operation.deferSave) {
 			// Setting saved to false means to defer saving
@@ -297,7 +518,11 @@ export class DatabaseTransaction implements Transaction {
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
 		let txnTime = this.timestamp;
-		transaction ??= this.transaction;
+		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
+		// be retained for outstanding read iterators; staging into it would silently discard the write
+		// when doneReadTxn() aborts the handle, so such writes commit immediately on a fresh
+		// transaction below instead.
+		if (!transaction && this.open === TRANSACTION_STATE.OPEN) transaction = this.transaction;
 		let immediateCommit = false;
 		if (!transaction) {
 			transaction = new RocksTransaction(operation.store.store as RocksStore);
@@ -338,8 +563,9 @@ export class DatabaseTransaction implements Transaction {
 			if (result?.then) this.completions.push(result);
 		}
 		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
-		// Sticky record that THIS write staged with its audit entry appended (log entries are written
-		// at staging and are not part of the transaction, so they survive an abort). isRetry stagings
+		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
+		// native transaction and are durably written by its commit attempt — even a failed one — so
+		// they survive the abort-after-failed-commit of the retry paths). isRetry stagings
 		// skip the log write, so they never set it. The retry dedup guards in the commit handler key
 		// off this: a launderable proxy (like last attempt's skipped state) breaks under multi-round
 		// retries where a recommit round self-skips before a fresh-transaction replay.
@@ -356,7 +582,9 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		if (this.timedOut) throw transactionOpenTooLongError();
-		const transaction = options.transaction ?? this.transaction; // reused across retries; the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain
+		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
+		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
+		let transaction = options.transaction ?? this.transaction;
 		for (let i = 0; i < this.writes.length; i++) {
 			let operation = this.writes[i];
 			if (!operation || (this.retries === 0 && operation.saved)) continue;
@@ -376,23 +604,56 @@ export class DatabaseTransaction implements Transaction {
 				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
 				// coordinatedRetry, or void on a normal commit/abort.
 				let commitResolution: Promise<number | void> | void;
-				if (--this.readTxnsUsed > 0) {
-					// we still have outstanding iterators using the transaction, we can't just commit/abort it, we will still
-					// need to use it
+				// Consume this commit's own read reference — exactly once per read handle: retry
+				// recursions, immediate-commit re-entries, and a second top-level commit() (wrapper
+				// commit after an explicit in-handler commit) must not steal a reference owned by an
+				// outstanding iterator (doneReadTxn() would then never release the native handle).
+				if (!this.baseReadRefConsumed) {
+					this.baseReadRefConsumed = true;
+					this.readTxnsUsed--;
+				}
+				if (this.readTxnsUsed > 0) {
+					// Outstanding iterators still stream through this.transaction — their native iterators
+					// live inside it (GetIterator wraps its write batch + snapshot), so committing or
+					// aborting the handle now would invalidate them mid-stream. Leave it open for the
+					// iterators (doneReadTxn() aborts it when the last one finishes) and commit the writes
+					// NOW by replaying them onto a fresh transaction, the same shape as the ERR_TRY_AGAIN
+					// replay below: entries reload through the new transaction and re-resolve against
+					// current state, and conflicts surface through the normal retry ladder. Deferring the
+					// native commit to doneReadTxn() instead (the old LINGERING state) meant anything that
+					// kept the last iterator from finishing cleanly — a hung stream, the long-transaction
+					// monitor's timeout abort — dropped writes the caller had already been told committed.
+					this.writes = this.writes.filter((write) => write); // filter out removed entries
 					if (this.writes.length > 0) {
-						// if there are outstanding writes, we have to call commit later to finish them
-						this.open = TRANSACTION_STATE.LINGERING;
-						/* TODO: This is not really the intended behavior though, we want to immediately commit writes, but continue to use
-						 * the transaction, as there is likely existing references to the transaction in other parts of the codebase,
-						 * particularly in the query iterator */
+						if (!options.transaction) {
+							// Deliberately NOT marked isRetry and NOT carrying over the original's onCommit:
+							// audit/txn-log entries batch natively on the transaction they were staged into and
+							// are only durably written by that transaction's commit attempt (an abort discards
+							// them — unlike the ERR_TRY_AGAIN replay below, where the original's FAILED commit
+							// attempt already wrote its log batch). The original handle here never attempts a
+							// commit, so the replayed stagings must re-append their entries into the replay
+							// transaction's own batch — which also installs the replay's own commit hook.
+							const replayTransaction = new RocksTransaction(
+								(this.writes[0].store.store ?? this.db.store) as RocksStore,
+								{ coordinatedRetry: true }
+							);
+							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
+							this.retries++; // a replay round: commit handlers re-base on the reloaded entries
+							for (const operation of this.writes) {
+								this.save(operation, replayTransaction, true, options);
+							}
+							transaction = replayTransaction;
+						}
+						// with options.transaction set this is a retry round — the save loop above already
+						// re-staged the writes into it
+						commitResolution = transaction.commit() as Promise<void>;
+						recordCommitLatency(commitResolution, performance.now());
+						// Write-queue-depth accounting for this replay commit happens uniformly below, via
+						// trackOutstandingCommit(commitResolution) — see that function's comment. Omitting
+						// dedicated accounting here (as a prior version of this replay path did) used to leave
+						// write-transaction-queue-depth, the one metric that can observe a commit that never
+						// settles (harper#2001), reading zero for exactly this path.
 					}
-					/*
-				commitResolution =
-					this.writes.length > 0
-						? transaction?.commit({ renewAfterCommit: true }) // Try to use RocksDB's CommitAndTryCreateSnapshot
-			: // don't abort, we still have outstanding reads to complete
-							null;
-				*/
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
 					trackedTxns.delete(this);
@@ -406,28 +667,19 @@ export class DatabaseTransaction implements Transaction {
 							// Promise<number | void>; it is handled in the resolve callback below.
 							commitResolution = transaction.commit();
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
-							// metric. This is the same clock the overload check uses (outstandingCommitStart is
-							// stamped at submit), so a rising p99/p999 is the leading indicator for the
+							// metric. This is the same clock the overload check uses (trackOutstandingCommit
+							// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
 							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
-							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
-							// re-arms per attempt, so recording per attempt matches the overload semantics.
+							// conflict retry rejects this promise and issues a fresh commit(), which is tracked as
+							// its own attempt, so recording per attempt matches the overload semantics.
 							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
 							// Promise<void> here because the widening union defeats flow analysis on the prior
 							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
 							recordCommitLatency(commitResolution as Promise<void>, performance.now());
-							// Count this commit against the write queue depth until the storage engine
-							// resolves it. A transient-conflict retry rejects this promise and issues a
-							// fresh commit() (re-entering here), so the enter/leave stays balanced. leaveWriteQueue
-							// never throws, so the settled promise resolves and needs no rejection handling of its own.
-							// The thenable guard protects against a future caller passing a non-Promise
-							// `commitResolution` (today it is always rocksdb-js's async Transaction.commit()
-							// result, guaranteed to be a Promise).
-							enterWriteQueue();
-							if (commitResolution && typeof (commitResolution as any).then === 'function') {
-								commitResolution.then(leaveWriteQueue, leaveWriteQueue);
-							} else {
-								leaveWriteQueue();
-							}
+							// Write-queue-depth accounting for this commit happens uniformly below, via
+							// trackOutstandingCommit(commitResolution) — see that function's comment. A
+							// transient-conflict retry rejects this promise and issues a fresh commit()
+							// (re-entering here), which trackOutstandingCommit tracks as its own attempt.
 						} else {
 							try {
 								commitResolution = transaction.abort();
@@ -442,18 +694,10 @@ export class DatabaseTransaction implements Transaction {
 				}
 
 				if (commitResolution) {
-					if (!outstandingCommit) {
-						outstandingCommit = commitResolution;
-						outstandingCommitStart = performance.now();
-						outstandingCommit
-							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
-							// will correct course, but the reject will still be propagated on the
-							// `outstandingCommit` promise and needs to be caught and silenced
-							.catch(() => {})
-							.finally(() => {
-								outstandingCommit = null;
-							});
-					}
+					// Read the table off the write itself, not this.db, which is whichever table first
+					// claimed this per-database transaction in txnForContext and so can name the wrong
+					// table when a transaction spans more than one table in the same database.
+					trackOutstandingCommit(commitResolution, this.writes[0]?.store, this.startedFrom, transaction);
 					const completions = [];
 					return commitResolution.then(
 						(commitResult) => {
@@ -493,7 +737,11 @@ export class DatabaseTransaction implements Transaction {
 								harperLogger.warn?.('onCommit handler failed after commit', error);
 							}
 							if (this.next) {
-								completions.push(this.next.commit(options));
+								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
+								// the next store — it must commit its own writes through its own transaction
+								completions.push(
+									this.next.commit(options.transaction ? { ...options, transaction: undefined } : options)
+								);
 							}
 							if (options?.flush) {
 								completions.push(this.writes[0].store.flushed);
@@ -513,16 +761,18 @@ export class DatabaseTransaction implements Transaction {
 									);
 								}
 							}
-							// commit succeeded; clean up files for any writes whose commit-handler took an early-return.
-							// deferred until here so a retry that *would* have referenced the blob can flip skipped back to false first.
+							// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
+							// or whose stored record a later write to the same key replaced without an audit entry
+							// keeping its blobs reachable (checked against the final committed record, so a blob the
+							// later write retained survives). Deferred until here so a retry that *would* have
+							// referenced the blob can flip skipped/superseded back to false first.
 							for (const write of this.writes) {
-								if (write?.skipped && write?.savedBlobs)
+								if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
-							this.writes = [];
-							if (this.#context?.resourceCache) this.#context.resourceCache = null;
+							this.clearWrites();
 							this.next = null;
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
@@ -595,23 +845,35 @@ export class DatabaseTransaction implements Transaction {
 									);
 								}
 								return this.commit({ ...options, transaction }); // try again
-							} else throw error;
+							} else {
+								// terminal (non-conflict) failure: release the native handle so it doesn't leak;
+								// usually already released by the failed commit itself, abort for the unexpected
+								// case (same defensive pattern as the retry-exhaustion give-up above)
+								try {
+									transaction.abort();
+								} catch (abortError) {
+									harperLogger.debug?.('aborting transaction after failed commit', abortError);
+								}
+								throw error;
+							}
 						}
 					);
 				}
 				for (const write of this.writes) {
-					if (write?.skipped && write?.savedBlobs)
+					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
-				this.writes = [];
-				if (this.#context?.resourceCache) this.#context.resourceCache = null;
+				this.clearWrites();
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
 				if (this.next) {
 					// now run any other transactions
 					options.timestamp = this.timestamp;
-					const nextResolution = this.next?.commit(options);
+					// as above: the next store must not inherit this store's explicit native transaction
+					const nextResolution = this.next?.commit(
+						options.transaction ? { ...options, transaction: undefined } : options
+					);
 					if ((nextResolution as any)?.then)
 						return (nextResolution as any)?.then((nextResolution) => ({
 							txnTime: this.timestamp,
@@ -635,8 +897,7 @@ export class DatabaseTransaction implements Transaction {
 				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 		}
 		// reset the transaction
-		this.writes = [];
-		if (this.#context?.resourceCache) this.#context.resourceCache = null;
+		this.clearWrites();
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
@@ -700,9 +961,6 @@ export class DatabaseTransaction implements Transaction {
 		// in the chain un-poisoned (and thus eligible to be force-committed by a later commit cascade).
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			txn.timedOut = true;
-			// Force the CLOSED path when releasing the read snapshot: doneReadTxn() flushes lingering writes via
-			// commit() while open === LINGERING, and commit() now throws transactionOpenTooLongError once poisoned.
-			// Closing first makes the release discard (abort) the uncommitted writes instead, which is the intent.
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
@@ -772,7 +1030,20 @@ function startMonitoringTxns() {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
-				if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
+				if (txn.open === TRANSACTION_STATE.CLOSED) {
+					// The commit was already acknowledged; any staged writes are riding an in-flight
+					// replay commit (see the outstanding-iterators branch in commit()) and are not the
+					// monitor's to abort — dropping them here would re-introduce the silent
+					// write-loss-after-ack this branch structure exists to prevent. Only the read
+					// snapshot's lifetime is left to enforce: release the retained native handle that
+					// the overdue iterators are holding open.
+					harperLogger.warn?.(
+						`Read iterators held a committed transaction's snapshot past the open-transaction limit; releasing it, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`
+					);
+					txn.releaseReadTxn();
+				} else if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
 					// Abort and surface an error rather than force-committing a partial write set: silently
 					// committing on the application's behalf breaks atomicity and can leave orphaned
 					// secondary-index entries that only a full index rebuild repairs (issue #1407). The app

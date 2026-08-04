@@ -1,6 +1,6 @@
 'use strict';
 
-import log from './logging/harper_logger.ts';
+import log, { isErrorLike, inspectForLog } from './logging/harper_logger.ts';
 import * as terms from './hdbTerms.ts';
 
 /**
@@ -51,9 +51,30 @@ export async function callOperationFunctionAsAwait(
 			throw err;
 		}
 		// This check is here to make sure a new HdbError is logged correctly
-		if (err.http_resp_msg) {
+		// Read exactly once: err.http_resp_msg could be an accessor (component code is not required
+		// to use a plain data property), and classifying one read while logging a later, different
+		// read would let a value that was never actually checked reach the "safe" raw log.error path.
+		const http_resp_msg = err.http_resp_msg;
+		if (http_resp_msg) {
 			log.error(`Error calling operation: ${promisifiedFunction.name}`);
-			log.error(err.http_resp_msg);
+			if (typeof http_resp_msg === 'string' || isErrorLike(http_resp_msg)) {
+				// A string passes through as-is; an Error (same-realm or a VM-created cross-realm
+				// Error - component code runs through node:vm) goes through the normal log.error path
+				// so it gets the same secret-safe handling as any other logged Error (#1734), rather
+				// than the raw inspect() below.
+				log.error(http_resp_msg);
+			} else {
+				// Otherwise http_resp_msg is a structured diagnostic object (e.g. deployComponent's
+				// phase/install_output/deployment_id detail). Console's defaults (depth: 2,
+				// maxArrayLength: 100, maxStringLength: 10000) flatten that to `[Object]`, drop array
+				// entries past the 100th, and truncate any individual string over 10000 chars - hiding
+				// the very data an operator needs to grep (harper#1982), most concretely
+				// install_output.lines, which is capped at 200 entries / 16KB total. inspectForLog
+				// renders it fully, bounded well above that cap rather than left unbounded, and defers
+				// the (potentially expensive) render until the logger's level gate actually writes the
+				// entry rather than paying for it on a call that gets discarded.
+				log.error(inspectForLog(http_resp_msg, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 }));
+			}
 			throw err;
 		}
 		log.error(`Error calling operation: ${promisifiedFunction.name}`);

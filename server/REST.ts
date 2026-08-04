@@ -13,6 +13,7 @@ import { generateJsonApi } from '../resources/openApi.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { ASIDE_STAGING_DIR } from '../components/Application.ts';
+import { COMPONENT_PREPARATION_LOCK_DIR } from '../components/componentPreparationLock.ts';
 import { restartNeeded } from '../components/requestRestart.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
@@ -22,7 +23,6 @@ import { entryMap } from '../resources/RecordEncoder.ts';
 const { errorToString, errorForLog } = harperLogger;
 const etagBytes = new Uint8Array(8);
 const etagFloat = new Float64Array(etagBytes.buffer, 0, 1);
-let httpOptions = {};
 
 const OPENAPI_DOMAIN = 'openapi';
 
@@ -102,6 +102,7 @@ async function findInactiveComponent(url: string): Promise<string | undefined> {
 		name === '..' ||
 		name === 'node_modules' ||
 		name === ASIDE_STAGING_DIR ||
+		name === COMPONENT_PREPARATION_LOCK_DIR ||
 		name.includes('/') ||
 		name.includes('\\')
 	)
@@ -116,7 +117,7 @@ async function findInactiveComponent(url: string): Promise<string | undefined> {
 	}
 }
 
-async function http(request: Request, nextHandler) {
+async function http(request: Request, nextHandler, resources: Resources, httpOptions: any) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
 	const method = isSse ? 'CONNECT' : request.method;
@@ -393,24 +394,41 @@ async function http(request: Request, nextHandler) {
 	}
 }
 
-let started = false;
-let resources: Resources;
+// One registration per distinct route mount, not one per process. Two applications that both
+// enable `rest` under different root-config mounts each need their own chain — a single global
+// `started` flag registered only the first, silently 404ing the other application's REST API.
+const startedMounts = new Set<string>();
 let addedMetrics;
 let connectionCount = 0;
 
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
-	httpOptions = scope.options.getAll();
+	// A deploy pre-flight validation scope exists only to validate config, and may share a live
+	// component's identity — registering real HTTP/WS handlers from it would splice a validation
+	// run into the live request path, and permanently marking its mount as started below would
+	// leave the REAL scope's later registration silently skipped (review finding).
+	if (scope.isTransientValidation) return;
+
+	const httpOptions = scope.options.getAll();
 	if ((httpOptions as any).includeExpensiveRecordCountEstimates) {
 		// If they really want to enable expensive record count estimates
 		(Request.prototype as any).includeExpensiveRecordCountEstimates = true;
 	}
-	resources = scope.resources;
-	if (started) return;
-	started = true;
+	// Captured per-mount in this closure — not a shared module-level variable — so each mount's
+	// registered handler always reads ITS OWN resources/options, not whichever mount happened to
+	// register last (review finding: two mounts sharing mutable module globals).
+	const resources = scope.resources;
+	// Key on the route this registration will actually answer on, not on the parts it is composed
+	// from: two configurations that resolve to the same route are the same chain and must dedupe,
+	// while two that resolve to different routes must not collide. Concatenating the mount and the
+	// plugin's raw urlPath did collide (mount '/a' + 'bc' and mount '/ab' + 'c' both gave '/abc').
+	const route = scope.routeFor(httpOptions as any);
+	const mountKey = `${route.host ?? ''}|${route.urlPath ?? ''}`;
+	if (startedMounts.has(mountKey)) return;
+	startedMounts.add(mountKey);
 	scope.server.http(
 		async (request: any, nextHandler) => {
 			if (request.isWebSocket) return;
-			return http(request, nextHandler);
+			return http(request, nextHandler, resources, httpOptions);
 		},
 		{ after: 'authentication', ...(httpOptions as any) }
 	);

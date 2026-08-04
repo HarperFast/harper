@@ -18,6 +18,11 @@ const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
 // containing `=` or a newline) from injecting extra assignments into a .env file.
 const ENV_KEY_REGEX = /^[\w.-]+$/;
 
+// Compiled once and reused: a routing `host` is either a DNS hostname or a bare IPv6 literal, and
+// re-compiling these per validation call would allocate on every deploy_component.
+const HOSTNAME_SCHEMA = Joi.string().hostname();
+const IPV6_SCHEMA = Joi.string().ip({ version: 'ipv6' });
+
 module.exports = {
 	getDropCustomFunctionValidator,
 	setCustomFunctionValidator,
@@ -457,10 +462,33 @@ function deployComponentValidator(req) {
 			.min(1)
 			.custom((value, helpers) => {
 				if (value.includes('..')) return helpers.error('any.invalid');
+				// A component mount has no relative base and WHATWG clients strip '.' segments before
+				// sending the request, so a dot-segment mount would simply be unreachable.
+				if (value.split('/').includes('.')) return helpers.error('string.dotSegment');
 				return value;
 			})
 			.optional()
-			.messages({ 'any.invalid': 'urlPath must not contain ".."' }),
+			.messages({
+				'any.invalid': '{#label} must not contain ".."',
+				'string.dotSegment': '{#label} must not contain "." path segments',
+			}),
+		// Virtual hostname the component is served on. Like `urlPath`, this is deployment routing and
+		// belongs on the root-config entry, not in the component's own config.yaml. `hostname()`
+		// rejects a value carrying a port or path, which would never match the router's host compare.
+		// IPv6 literals are accepted in their bare form only — the router unwraps the brackets it
+		// finds in a Host header, so a bracketed value here would never match.
+		host: Joi.string()
+			.custom((value, helpers) => {
+				if (value.startsWith('[') || value.endsWith(']')) return helpers.error('string.bracketedHost');
+				return value;
+			})
+			.custom((value, helpers) => {
+				if (!HOSTNAME_SCHEMA.validate(value).error) return value;
+				// Accept a bare IPv6 literal, which `hostname()` rejects but the router can match.
+				return IPV6_SCHEMA.validate(value).error ? helpers.error('string.hostname') : value;
+			})
+			.optional()
+			.messages({ 'string.bracketedHost': '{#label} must not be bracketed; use the bare IPv6 literal' }),
 		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
 		// identifying key rather than a separate discriminator field, so a new kind is added as
 		// another item alternative here without reshaping the field. Today: npm registry auth
@@ -490,7 +518,9 @@ function deployComponentValidator(req) {
 		registryAuth: Joi.any().forbidden().messages({
 			'any.unknown': `'registryAuth' has been renamed to 'credentials'`,
 		}),
-	}).with('urlPath', 'package');
+	})
+		.with('urlPath', 'package')
+		.with('host', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);
 }

@@ -486,6 +486,10 @@
 				},
 				"prefetchWrites": { "type": "boolean", "description": "Load data prior to write transactions. Default: true" },
 				"path": { "type": "string", "description": "Directory for all database files. Default: <rootPath>/database" },
+				"backupPath": {
+					"type": "string",
+					"description": "Directory for managed database backups (RocksDB directory backups created by create_backup), one subdirectory per database. Default: <rootPath>/backup"
+				},
 				"blobPaths": {
 					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
 					"description": "Path or array of paths for blob storage. Default: <rootPath>/blobs"

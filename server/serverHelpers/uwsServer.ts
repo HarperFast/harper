@@ -13,7 +13,7 @@
  *    symphony upstream, real client IP via X-Forwarded-For, so this server never touches certs.
  *  - HARPER_UWS_HTTP: a direct plaintext TCP HTTP port (real peer IP from the socket).
  *
- * `uWebSockets.js` is an optionalDependency (ABI/platform-specific, built by CI).
+ * `uWebSockets.js` is an optional peer (ABI/platform-specific, installed for CI as a devDependency).
  */
 import { STATUS_CODES } from 'node:http';
 import { EventEmitter } from 'node:events';
@@ -373,7 +373,8 @@ function registerWsBehavior(
 	maxPayload: number
 ): void {
 	app.ws('/*', {
-		maxPayload,
+		// uWS's option key — a plain `maxPayload` is silently ignored (default 16 KiB cap)
+		maxPayloadLength: maxPayload,
 		// Capture the upgrade request synchronously (uWS's HttpRequest is only valid here) and upgrade.
 		// Auth runs after open() in the ws chain, matching the Node path (which upgrades then authorizes).
 		upgrade: (res: UwsResponse, req: UwsRequestRaw, context: unknown) => {

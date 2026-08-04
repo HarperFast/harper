@@ -75,7 +75,14 @@ export function translateMessages(oaiMessages: OAIMessageIn[]): Message[] {
 			? (m.content as Array<{ text: string }>).map((part) => part.text).join('')
 			: (m.content ?? '');
 		const base: Message = {
-			role: m.role as Message['role'],
+			// `developer` is OpenAI's successor to `system` (the API itself treats the two
+			// identically, converting `system` to `developer` on models that use the newer
+			// hierarchy). Harper's internal Message union carries the channel as `system`,
+			// which every provider adapter maps to its system-instruction slot — so the
+			// instruction's priority is preserved rather than degraded to `user`. Roles
+			// outside the union are rejected up front by validateChatRequest, so the cast
+			// below is over a vetted set.
+			role: m.role === 'developer' ? 'system' : (m.role as Message['role']),
 			content,
 		};
 		if (m.tool_calls?.length) {
@@ -130,11 +137,37 @@ function isRepresentableToolChoice(choice: unknown): boolean {
  */
 export function validateChatRequest(body: OAIChatRequest): string | null {
 	const req = body as any;
+	// Top-level fields that control routing and framing first: a non-string `model`
+	// would silently invoke the configured default model (potentially expensive), and a
+	// truthy non-boolean `stream` ("false") would return SSE the client didn't ask for.
+	if (req.model !== undefined && typeof req.model !== 'string') return "'model' must be a string";
+	if (req.stream !== undefined && typeof req.stream !== 'boolean') return "'stream' must be a boolean";
+	if (req.temperature !== undefined) {
+		if (typeof req.temperature !== 'number' || !Number.isFinite(req.temperature)) {
+			return "'temperature' must be a finite number";
+		}
+		if (req.temperature < 0 || req.temperature > 2) return "'temperature' must be between 0 and 2";
+	}
+	for (const field of ['max_tokens', 'max_completion_tokens']) {
+		const value = req[field];
+		if (value === undefined) continue;
+		if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+			return `'${field}' must be a positive integer`;
+		}
+	}
 	if (!Array.isArray(req.messages) || req.messages.length === 0) return "'messages' must be a non-empty array";
 	for (let i = 0; i < req.messages.length; i++) {
 		const m = req.messages[i];
 		if (!m || typeof m !== 'object' || Array.isArray(m)) return `'messages[${i}]' must be an object`;
 		if (typeof m.role !== 'string') return `'messages[${i}].role' must be a string`;
+		// Closed set: translateMessages casts into Harper's Message union, so an
+		// unknown role must be a loud 400 here — previously it was cast through and
+		// provider adapters degraded it to 'user', silently changing its priority.
+		// 'developer' is accepted and carried as 'system' (see translateMessages);
+		// the deprecated 'function' role is deliberately not supported.
+		if (!['system', 'developer', 'user', 'assistant', 'tool'].includes(m.role)) {
+			return `'messages[${i}].role' must be one of 'system', 'developer', 'user', 'assistant', 'tool'`;
+		}
 		// OpenAI allows content parts: [{ type: 'text', text: '...' }, ...]. Harper's
 		// Message.content is a string, so those are flattened in translateMessages; reject
 		// shapes we cannot flatten rather than passing a non-string downstream.
@@ -332,9 +365,12 @@ export function toEmbedResponse(
 			object: 'embedding',
 		})),
 		model,
+		// Embeddings have no completion side, so OpenAI reports the same count in both
+		// fields. Harper backends spell it `embeddingTokens` (with `promptTokens` as a
+		// fallback for backends that report it that way); mapping must be symmetric —
+		// a backend supplying only embeddingTokens must not leave prompt_tokens at 0.
 		usage: {
-			prompt_tokens: usage?.promptTokens ?? 0,
-			// OpenAI uses `embeddingTokens` aliased here; fall back to promptTokens.
+			prompt_tokens: usage?.embeddingTokens ?? usage?.promptTokens ?? 0,
 			total_tokens: usage?.embeddingTokens ?? usage?.promptTokens ?? 0,
 		},
 	};

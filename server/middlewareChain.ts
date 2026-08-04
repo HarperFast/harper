@@ -152,16 +152,42 @@ export function normalizeUrlPath(urlPath: string | undefined): string | undefine
 }
 
 /**
+ * Extracts the hostname from a Host/`:authority` header value: the port is dropped and an IPv6
+ * literal is unwrapped from its brackets ('[::1]:9926' -> '::1'), so a bracket-less configured
+ * host can match. Lowercased because hostnames are case-insensitive (RFC 4343) — a configured
+ * 'API.example.com' must match the 'api.example.com' a client actually sends. A trailing dot
+ * (the absolute-FQDN form some resolvers/clients emit, e.g. 'api.example.com.') is stripped —
+ * it names the same origin per RFC 1035.
+ */
+export function hostnameFromHeader(hostHeader: string): string {
+	if (hostHeader.startsWith('[')) {
+		const end = hostHeader.indexOf(']');
+		if (end !== -1) return hostHeader.slice(1, end).toLowerCase();
+	}
+	const colon = hostHeader.indexOf(':');
+	const hostname = (colon === -1 ? hostHeader : hostHeader.slice(0, colon)).toLowerCase();
+	return hostname.endsWith('.') ? hostname.slice(0, -1) : hostname;
+}
+
+/**
+ * Reads the request's authority for host matching: `request.host` (Harper's `Request` class)
+ * already resolves this correctly for both HTTP/1 (`Host` header) and HTTP/2 (`:authority`
+ * pseudo-header — HTTP/2 clients don't send `Host` at all). The header fallbacks below only
+ * cover request-like objects that don't carry that getter (e.g. bare fakes in tests).
+ */
+function requestAuthority(request: any): string {
+	return request.host ?? request.headers?.asObject?.[':authority'] ?? request.headers?.asObject?.host ?? '';
+}
+
+/**
  * Returns true when `request` satisfies the route's host and urlPath constraints.
  * urlPath matching is prefix-based and segment-boundary-aware:
  *   '/api' matches '/api' and '/api/foo' but NOT '/api2'.
- * Trailing slashes on `route.urlPath` are ignored.
+ * Trailing slashes on `route.urlPath` are ignored. Host matching ignores the port and case.
  */
 export function matchesRoute(request: any, route: { host?: string; urlPath?: string }): boolean {
 	if (route.host) {
-		const hostHeader: string = request.headers?.asObject?.host ?? '';
-		const requestHost = hostHeader.split(':')[0];
-		if (requestHost !== route.host) return false;
+		if (hostnameFromHeader(requestAuthority(request)) !== route.host.toLowerCase()) return false;
 	}
 	const urlPath = normalizeUrlPath(route.urlPath);
 	if (urlPath) {
@@ -230,10 +256,18 @@ export function stripPrefix(request: any, prefix: string): any {
  * and `describeChains` reports it, so the observed order can never drift from the served one.
  */
 export function resolveRoutedChains(portEntries: HttpEntry[], onCycle?: () => void): ResolvedChain[] {
-	// Global name registry across all routes (first registration wins)
-	const nameToEntry = new Map<string, HttpEntry>();
+	// Global name registry, but restricted to unmounted (no host/urlPath) entries — e.g.
+	// `authentication` — so it only ever supplies dependencies that are meant to apply everywhere.
+	// A mounted route's own plugins are resolved separately per-group below; if this stayed global
+	// across ALL routes (mounted or not), two applications mounted at different hosts/paths that
+	// each happen to register a same-named plugin (e.g. both enable `rest`) would resolve `after:
+	// 'rest'` to whichever one registered first — silently splicing one application's handler into
+	// another's request chain (review finding).
+	const globalNameToEntry = new Map<string, HttpEntry>();
 	for (const entry of portEntries) {
-		if (entry.name && !nameToEntry.has(entry.name)) nameToEntry.set(entry.name, entry);
+		if (entry.name && !entry.host && !entry.urlPath && !globalNameToEntry.has(entry.name)) {
+			globalNameToEntry.set(entry.name, entry);
+		}
 	}
 
 	// Group entries by (host, normalized urlPath) so that '/api' and '/api/' coalesce.
@@ -249,11 +283,24 @@ export function resolveRoutedChains(portEntries: HttpEntry[], onCycle?: () => vo
 	const defaultGroup = routeGroups.find((g) => !g.host && !g.urlPath);
 	const subRouteGroups = routeGroups.filter((g) => g.host || g.urlPath);
 
-	const subRoutes: ResolvedChain[] = subRouteGroups.map((group) => ({
-		host: group.host,
-		urlPath: group.urlPath,
-		order: topoSort(resolveDeps(group.entries, nameToEntry), onCycle),
-	}));
+	const subRoutes: ResolvedChain[] = subRouteGroups.map((group) => {
+		// This route's own plugins take priority over the global (unmounted) registry for the
+		// same name, so a same-named handler local to this mount always wins over an unrelated
+		// unmounted one — but the lookup never reaches into another mounted route's plugins.
+		const localNameToEntry = new Map(globalNameToEntry);
+		const seenInGroup = new Set<string>();
+		for (const entry of group.entries) {
+			if (entry.name && !seenInGroup.has(entry.name)) {
+				seenInGroup.add(entry.name);
+				localNameToEntry.set(entry.name, entry);
+			}
+		}
+		return {
+			host: group.host,
+			urlPath: group.urlPath,
+			order: topoSort(resolveDeps(group.entries, localNameToEntry), onCycle),
+		};
+	});
 
 	subRoutes.sort((a, b) => {
 		const aSpec = (a.host ? 2 : 0) + (a.urlPath ? 1 : 0);
@@ -274,23 +321,35 @@ export function buildRoutedChain(
 	const resolved = resolveRoutedChains(portEntries, onCycle);
 	// resolveRoutedChains returns sub-routes (dispatch order) followed by the default route last.
 	const defaultChain = buildLinearChain(resolved[resolved.length - 1].order, fallback);
+	// hostLower/urlPathWithSlash are computed once here rather than per request/per candidate:
+	// `route.urlPath` is already normalized by resolveRoutedChains, but `route.host` isn't
+	// (plugin-config hosts via routeFor aren't pre-lowercased), and matchesRoute's generic form
+	// would otherwise re-run toLowerCase()/a regex/a concat on every probe of every request —
+	// this dispatch is the mainline path once a port has any mounted route.
 	const subRouteChains = resolved.slice(0, -1).map((route) => ({
-		host: route.host,
+		hostLower: route.host?.toLowerCase(),
 		urlPath: route.urlPath,
+		urlPathWithSlash: route.urlPath ? route.urlPath + '/' : undefined,
 		chain: buildLinearChain(route.order, fallback),
 	}));
+	const anyHostRoute = subRouteChains.some((route) => route.hostLower);
 
 	return function dispatch(...args: any[]) {
 		const request = args[requestArgIndex];
+		// The request's authority is the same for every candidate probed below, so it's
+		// extracted once per request rather than once per candidate — and skipped entirely
+		// when no mounted route in this chain matches on host at all.
+		const requestHost = anyHostRoute ? hostnameFromHeader(requestAuthority(request)) : undefined;
+		const pathname: string = request.pathname ?? '/';
 		for (const route of subRouteChains) {
-			if (matchesRoute(request, route)) {
-				if (route.urlPath) {
-					const newArgs = args.slice();
-					newArgs[requestArgIndex] = stripPrefix(request, route.urlPath);
-					return route.chain(...newArgs);
-				}
-				return route.chain(...args);
+			if (route.hostLower && requestHost !== route.hostLower) continue;
+			if (route.urlPath) {
+				if (pathname !== route.urlPath && !pathname.startsWith(route.urlPathWithSlash as string)) continue;
+				const newArgs = args.slice();
+				newArgs[requestArgIndex] = stripPrefix(request, route.urlPath);
+				return route.chain(...newArgs);
 			}
+			return route.chain(...args);
 		}
 		return defaultChain(...args);
 	};

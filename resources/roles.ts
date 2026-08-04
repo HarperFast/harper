@@ -2,18 +2,79 @@ import { getDatabases } from './databases.ts';
 import { alterRole, addRole } from '../security/role.ts';
 import { parseDocument } from 'yaml';
 import { isEqual } from 'lodash';
+import { RESERVED_DATABASE_NAMES } from '../utility/hdbTerms.ts';
 
-const USERS_NOT_DBS = ['super_user', 'structure_user'];
+// Named permission flags are keyed alongside per-database permissions in a role's
+// `permission` object; skip them when walking database permissions. This is the
+// same reserved set that database names are rejected from (harper#1016).
+const USERS_NOT_DBS: readonly string[] = RESERVED_DATABASE_NAMES;
 
 /**
  * This is the component for handling role declarations in the Harper system. This will read roles.yaml for role
  * definitions and ensure that they are created in the system database.
  */
-export function handleApplication(scope: import('../components/Scope.ts').Scope) {
-	scope.handleEntry(async (entry) => {
-		if (entry.eventType === 'unlink') return;
-		return handleFile((entry as any).contents);
+export function handleApplication(
+	scope: import('../components/Scope.ts').Scope,
+	ensureRoleFn: (role: any) => Promise<unknown> = ensureRole
+) {
+	const rolesByFile = new Map<string, Set<string>>();
+	const contentsByFile = new Map<string, Buffer>();
+	let pending = Promise.resolve();
+	const enqueue = (operation: () => Promise<void>) => {
+		const queued = pending.then(operation);
+		pending = queued.catch(() => {});
+		return queued;
+	};
+	const entryHandler = scope.handleEntry((entry) =>
+		enqueue(async () => {
+			if (entry.entryType !== 'file') return;
+			const previousRoles = rolesByFile.get(entry.absolutePath) ?? new Set<string>();
+			if (entry.eventType === 'unlink') {
+				rolesByFile.delete(entry.absolutePath);
+				contentsByFile.delete(entry.absolutePath);
+				warnForStaleRoles(scope, previousRoles, rolesByFile);
+				return;
+			}
+			contentsByFile.set(entry.absolutePath, entry.contents);
+			const currentRoles = await handleFile(entry.contents, ensureRoleFn);
+			rolesByFile.set(entry.absolutePath, currentRoles);
+			warnForStaleRoles(
+				scope,
+				new Set([...previousRoles].filter((roleName) => !currentRoles.has(roleName))),
+				rolesByFile
+			);
+		})
+	);
+	if (!entryHandler) return;
+	scope.on('deploy:end', () => {
+		void entryHandler.ready
+			.then(() =>
+				enqueue(async () => {
+					for (const contents of contentsByFile.values()) {
+						try {
+							await handleFile(contents, ensureRoleFn);
+						} catch (error) {
+							scope.logger.error?.('Could not reconcile a roles file after deploy:', error);
+						}
+					}
+				})
+			)
+			.catch((error) => scope.logger.error?.('Could not reconcile roles after deploy:', error));
 	});
+}
+
+function warnForStaleRoles(
+	scope: import('../components/Scope.ts').Scope,
+	removedRoles: Set<string>,
+	rolesByFile: Map<string, Set<string>>
+): void {
+	const stillDeclared = new Set<string>();
+	for (const roleNames of rolesByFile.values()) for (const roleName of roleNames) stillDeclared.add(roleName);
+	const staleRoles = [...removedRoles].filter((roleName) => !stillDeclared.has(roleName));
+	if (staleRoles.length === 0) return;
+	scope.logger.warn(
+		`Role definitions removed for ${staleRoles.join(', ')}; existing roles and grants remain active until explicitly altered or deleted`
+	);
 }
 
 /**
@@ -21,9 +82,11 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
  * the right shape and created in the system database.
  * @param rolesContent
  */
-async function handleFile(rolesContent) {
+async function handleFile(rolesContent, ensureRoleFn: (role: any) => Promise<unknown>) {
 	let rolesToDefine = parseDocument(rolesContent.toString(), { simpleKeys: true } as any).toJSON();
+	const roleNames = new Set<string>();
 	for (let roleName in rolesToDefine) {
+		roleNames.add(roleName);
 		let role = rolesToDefine[roleName];
 		if (!role.permission) {
 			// we allow the permission object to be collapsed into the root object for convenience
@@ -74,8 +137,9 @@ async function handleFile(rolesContent) {
 			}
 		}
 		role.role = role.id = roleName;
-		await ensureRole(role);
+		await ensureRoleFn(role);
 	}
+	return roleNames;
 }
 async function ensureRole(role) {
 	const roleTable = getDatabases().system.hdb_role;
@@ -83,10 +147,10 @@ async function ensureRole(role) {
 	for await (let existingRole of roleTable.search([{ attribute: 'role', value: role.role }] as any)) {
 		// use the existing role id so we can update in place. Legacy roles may have a UUID for the id instead of the role name
 		const { __createdtime__, __updatedtime__, ...existingRoleData } = existingRole;
+		role.id = existingRole.id;
 		if (isEqual(existingRoleData, role)) {
 			return;
 		}
-		role.id = existingRole.id;
 		return alterRole(role);
 	}
 	return addRole(role);

@@ -1,0 +1,7 @@
+# Fixture for the /v1 route-reservation test: an app that (wrongly) tries to claim
+# the gateway's fixed `v1/models` path with its own custom Resource. The gateway's
+# reservedPath marking must turn this into a loud conflict rather than a silent
+# replacement of the endpoint and its super_user gate.
+rest: true
+jsResource:
+  files: resources.js

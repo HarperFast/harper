@@ -6,9 +6,13 @@
  *   POST /v1/chat/completions    → V1ChatCompletions
  *   GET  /v1/models              → V1Models
  *
- * Off by default. Opt in by setting `enabled: true` in the `modelsGateway`
- * block of `harperdb-config.yaml`. Opt out explicitly with `enabled: false`.
- * This mirrors the `agent` component's enabled-flag pattern.
+ * Off by default, and `defaultConfig.yaml` deliberately ships no `modelsGateway`
+ * block: with the key absent the root loader skips the component before resolving
+ * it, so none of this module graph is imported on an instance that does not use
+ * the gateway. Opt in by adding the block to `harperdb-config.yaml` with
+ * `enabled: true`, or via `set_configuration` (`modelsGateway_enabled`).
+ * `enabled: false` is honored too, for an instance that wants the block present
+ * but inert — that costs the import, which is why it is not the shipped default.
  *
  * Example (opt in). `rest` is required: these are REST-served resources and the
  * gateway deliberately does not force REST to start (see `handleApplication`).
@@ -55,7 +59,14 @@ export function handleApplication(scope: Scope): void {
 			'modelsGateway is enabled but no `rest` section is configured; /v1/* endpoints are only served when REST is active'
 		);
 	}
-	scope.resources.set('v1/models', V1Models);
-	scope.resources.set('v1/embeddings', V1Embeddings);
-	scope.resources.set('v1/chat/completions', V1ChatCompletions);
+	// Explicit protocol visibility: these are REST-only wire-protocol endpoints. Without a
+	// policy, the shared registry matches them for every protocol lookup — WS dispatch could
+	// reach V1ChatCompletions.connect() and then fail iterating its non-iterable badRequest
+	// envelope, and they would surface through MQTT/GraphQL/MCP enumeration too. `sse` stays
+	// enabled for chat only: an explicit `Accept: text/event-stream` POST is dispatched via
+	// the sse lookup (REST.ts) and is a supported streaming client shape (see connect()).
+	const restOnly = { rest: true, sse: false, ws: false, mqtt: false, graphql: false, mcp: false };
+	scope.resources.set('v1/models', V1Models, restOnly);
+	scope.resources.set('v1/embeddings', V1Embeddings, restOnly);
+	scope.resources.set('v1/chat/completions', V1ChatCompletions, { ...restOnly, sse: true });
 }

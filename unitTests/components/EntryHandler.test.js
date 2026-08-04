@@ -3,7 +3,7 @@ const { EventEmitter, once } = require('node:events');
 const assert = require('node:assert');
 const { join, basename } = require('node:path');
 const { tmpdir } = require('node:os');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+const { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { writeFile, mkdir } = require('node:fs/promises');
 const { spy } = require('sinon');
 const { waitFor } = require('../waitFor.js');
@@ -249,6 +249,297 @@ describe('EntryHandler', () => {
 		await entryHandler.close();
 	});
 
+	it('emits logical file and directory diffs after pause and resume', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		await entryHandler.ready;
+
+		const entries = [];
+		let readyCount = 0;
+		entryHandler.on('all', (entry) => entries.push(entry));
+		entryHandler.on('ready', () => readyCount++);
+
+		entryHandler.pause();
+		await writeFile(join(this.directory, 'b'), 'changed');
+		rmSync(join(this.directory, 'c'));
+		await writeFile(join(this.directory, 'new-file'), 'new');
+		await mkdir(join(this.directory, 'new-directory'));
+		rmSync(join(this.directory, 'foo', 'bar'), { recursive: true });
+
+		await entryHandler.resume();
+
+		assert.equal(readyCount, 1, 'the resumed watcher emits ready once');
+		assert.equal(
+			entries.some((entry) => entry.absolutePath === join(this.directory, 'a')),
+			false,
+			'an unchanged file emits no redeploy event'
+		);
+		assert.deepEqual(
+			entries
+				.map((entry) => [entry.eventType, entry.absolutePath.slice(this.directory.length + 1)])
+				.sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0])),
+			[
+				['change', 'b'],
+				['unlink', 'c'],
+				['unlinkDir', 'foo/bar'],
+				['unlink', 'foo/bar/f'],
+				['unlink', 'foo/bar/g'],
+				['addDir', 'new-directory'],
+				['add', 'new-file'],
+			].sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]))
+		);
+		assert.deepEqual(
+			entries.find((entry) => entry.absolutePath === join(this.directory, 'b')).contents,
+			Buffer.from('changed'),
+			'the synthesized change carries the post-deploy contents'
+		);
+		const removedSubtreeEvents = entries
+			.filter((entry) => entry.absolutePath.startsWith(join(this.directory, 'foo', 'bar')))
+			.map((entry) => entry.eventType);
+		assert.deepEqual(
+			removedSubtreeEvents,
+			['unlink', 'unlink', 'unlinkDir'],
+			'children are unlinked before their directory'
+		);
+
+		await entryHandler.close();
+	});
+
+	it('emits unlink then add when an entry changes type across pause and resume', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		await entryHandler.ready;
+
+		const entries = [];
+		entryHandler.on('all', (entry) => {
+			if (entry.absolutePath === join(this.directory, 'a')) entries.push(entry);
+		});
+
+		entryHandler.pause();
+		rmSync(join(this.directory, 'a'));
+		await mkdir(join(this.directory, 'a'));
+		await entryHandler.resume();
+
+		assert.deepEqual(
+			entries.map((entry) => entry.eventType),
+			['unlink', 'addDir']
+		);
+		await entryHandler.close();
+	});
+
+	it('commits the resumed generation even when a removal listener throws synchronously', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		await entryHandler.ready;
+
+		let emittedError;
+		let unlinkCount = 0;
+		entryHandler.on('error', (error) => (emittedError = error));
+		entryHandler.on('unlink', (entry) => {
+			if (entry.absolutePath === join(this.directory, 'c')) {
+				unlinkCount++;
+				throw new Error('removal listener failed');
+			}
+		});
+
+		entryHandler.pause();
+		rmSync(join(this.directory, 'c'));
+		await entryHandler.resume();
+		assert.equal(emittedError?.message, 'removal listener failed');
+		assert.equal(unlinkCount, 1);
+
+		entryHandler.pause();
+		await entryHandler.resume();
+		assert.equal(unlinkCount, 1, 'the committed snapshot does not replay the same removal');
+		await entryHandler.close();
+	});
+
+	it('logs a consumer exception when no error listener is attached', async () => {
+		const errors = [];
+		const entryHandler = new EntryHandler(this.name, this.directory, '.', {
+			error: (...args) => errors.push(args),
+		});
+		await entryHandler.ready;
+		entryHandler.on('unlink', () => {
+			throw new Error('unhandled removal listener failed');
+		});
+
+		entryHandler.pause();
+		rmSync(join(this.directory, 'c'));
+		await entryHandler.resume();
+
+		assert.equal(errors.length, 1);
+		assert.equal(errors[0][1].message, 'unhandled removal listener failed');
+		await entryHandler.close();
+	});
+
+	it('routes steady-state unlink and addDir listener throws through error', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		await entryHandler.ready;
+
+		const errors = [];
+		entryHandler.on('error', (error) => errors.push(error));
+		entryHandler.on('unlink', (entry) => {
+			if (entry.absolutePath === join(this.directory, 'c')) throw new Error('unlink listener failed');
+		});
+		entryHandler.on('addDir', (entry) => {
+			if (entry.absolutePath === join(this.directory, 'new-directory')) throw new Error('addDir listener failed');
+		});
+
+		rmSync(join(this.directory, 'c'));
+		await waitFor(() => errors.length === 1);
+		await mkdir(join(this.directory, 'new-directory'));
+		await waitFor(() => errors.length === 2);
+		assert.deepEqual(
+			errors.map((error) => error.message),
+			['unlink listener failed', 'addDir listener failed']
+		);
+		await entryHandler.close();
+	});
+
+	it('ignores a pending read from the watcher generation invalidated by pause', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		await entryHandler.ready;
+
+		const entries = [];
+		entryHandler.on('all', (entry) => entries.push(entry));
+		let resolveRead;
+		const pendingRead = entryHandler._simulateFileReadForTests(
+			'add',
+			'stale-file',
+			new Promise((resolve) => (resolveRead = resolve))
+		);
+
+		entryHandler.pause();
+		resolveRead(Buffer.from('pre-deploy'));
+		await pendingRead;
+		await entryHandler.resume();
+
+		assert.equal(entries.length, 0, 'stale reads neither emit nor pollute the resumed generation diff');
+		await entryHandler.close();
+	});
+
+	it('carries entries emitted by an interrupted first scan into the resumed diff', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const resourcePath = join(this.directory, 'resource.js');
+		const resourceEvents = [];
+		entryHandler.on('all', (entry) => {
+			if (entry.absolutePath === resourcePath) resourceEvents.push(entry);
+		});
+
+		let resolveHold;
+		const holdRead = entryHandler._simulateFileReadForTests(
+			'add',
+			'hold-open',
+			new Promise((resolve) => (resolveHold = resolve))
+		);
+		await entryHandler._simulateFileReadForTests('add', 'resource.js', Promise.resolve(Buffer.from('old')));
+		assert.deepEqual(
+			resourceEvents.map((entry) => entry.eventType),
+			['add']
+		);
+
+		entryHandler.pause();
+		await writeFile(resourcePath, 'new');
+		resolveHold(Buffer.from('ignored'));
+		await holdRead;
+		await entryHandler.resume();
+
+		assert.deepEqual(
+			resourceEvents.map((entry) => entry.eventType),
+			['add', 'change'],
+			'an entry already exposed to consumers is changed, not replayed as a fresh add'
+		);
+		await entryHandler.close();
+	});
+
+	it('preserves the pre-deploy snapshot when update races the resumed scan', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		await entryHandler.ready;
+
+		const entries = [];
+		entryHandler.on('all', (entry) => entries.push(entry));
+		entryHandler.pause();
+		rmSync(join(this.directory, 'c'));
+
+		await Promise.all([entryHandler.resume(), entryHandler.update('.')]);
+		assert.deepEqual(
+			entries.filter((entry) => entry.absolutePath === join(this.directory, 'c')).map((entry) => entry.eventType),
+			['unlink'],
+			'the superseding update generation retains the deletion diff exactly once'
+		);
+		await entryHandler.close();
+	});
+
+	it('invalidates a pending outgoing read before applying new URL configuration', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, { files: 'a', urlPath: '/old' });
+		await entryHandler.ready;
+
+		const entries = [];
+		entryHandler.on('all', (entry) => entries.push(entry));
+		let resolveRead;
+		const pendingRead = entryHandler._simulateFileReadForTests(
+			'change',
+			'a',
+			new Promise((resolve) => (resolveRead = resolve))
+		);
+		const update = entryHandler.update({ files: 'a', urlPath: '/new' });
+		resolveRead(Buffer.from('stale'));
+
+		await Promise.all([pendingRead, update]);
+		assert.deepEqual(
+			entries.map((entry) => [entry.eventType, entry.urlPath]),
+			[
+				['unlink', '/old/a'],
+				['add', '/new/a'],
+			]
+		);
+		await entryHandler.close();
+	});
+
+	it('preserves a known file when a redeploy scan cannot read it', async () => {
+		if (process.platform === 'win32') return;
+		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		await entryHandler.ready;
+		const pollingReady = once(entryHandler, 'ready');
+		entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('exhausted'), { code: 'ENOSPC' }));
+		await pollingReady;
+
+		const entries = [];
+		const errors = [];
+		entryHandler.on('all', (entry) => entries.push(entry));
+		entryHandler.on('error', (error) => errors.push(error));
+		const filePath = join(this.directory, 'a');
+		entryHandler.pause();
+		chmodSync(filePath, 0o000);
+		try {
+			await entryHandler.resume();
+			await waitFor(() => errors.length === 1);
+			assert.equal(errors[0].code, 'EACCES');
+			assert.equal(
+				entries.some((entry) => entry.eventType === 'unlink'),
+				false
+			);
+		} finally {
+			chmodSync(filePath, 0o600);
+			await entryHandler.close();
+		}
+	});
+
+	it('routes primitive listener throws through error without rejecting the file read', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		await entryHandler.ready;
+
+		let emittedError;
+		const listenerFailure = 'listener failed';
+		entryHandler.on('error', (error) => (emittedError = error));
+		entryHandler.on('change', () => {
+			throw listenerFailure;
+		});
+
+		await writeFile(join(this.directory, 'a'), 'changed');
+		await waitFor(() => emittedError !== undefined);
+		assert.equal(emittedError, listenerFailure);
+		await entryHandler.close();
+	});
+
 	it('should handle updating the config', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
 
@@ -266,6 +557,8 @@ describe('EntryHandler', () => {
 
 		const addDirHandlerSpy = spy();
 		entryHandler.on('addDir', addDirHandlerSpy);
+		const unlinkHandlerSpy = spy();
+		entryHandler.on('unlink', unlinkHandlerSpy);
 
 		await waitFor(() => allHandlerSpy.callCount === 1);
 
@@ -286,13 +579,16 @@ describe('EntryHandler', () => {
 		allHandlerSpy.resetHistory();
 		addHandlerSpy.resetHistory();
 		addDirHandlerSpy.resetHistory();
+		unlinkHandlerSpy.resetHistory();
 
 		await entryHandler.update('b');
 
-		await waitFor(() => allHandlerSpy.callCount === 1);
+		await waitFor(() => allHandlerSpy.callCount === 2);
 
 		assert.equal(readyEventSpy.callCount, 1, 'ready event should be triggered again once');
-		assert.equal(allHandlerSpy.callCount, 1, 'all event should be triggered for each new entry');
+		assert.equal(allHandlerSpy.callCount, 2, 'the old match is removed before the new match is added');
+		assert.equal(unlinkHandlerSpy.callCount, 1, 'the old config match emits unlink');
+		assert.equal(unlinkHandlerSpy.getCall(0).args[0].absolutePath, aPath);
 		assert.equal(addHandlerSpy.callCount, 1, 'add event should be triggered for the updated singular file');
 		const addArgB = addHandlerSpy.getCall(0).args[0];
 		const bPath = join(this.directory, 'b');
@@ -311,6 +607,43 @@ describe('EntryHandler', () => {
 		assert.equal(entryHandler.listenerCount('all'), 0, 'all event listener should be removed');
 		assert.equal(entryHandler.listenerCount('add'), 0, 'add event listener should be removed');
 		assert.equal(entryHandler.listenerCount('addDir'), 0, 'addDir event listener should be removed');
+	});
+
+	it('serializes concurrent config updates without orphaning a watcher', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		await entryHandler.ready;
+		assert.equal(entryHandler._liveWatcherCountForTests, 1, 'one live watcher after the initial scan');
+
+		const updates = [entryHandler.update('b'), entryHandler.update('c')];
+		assert.equal(entryHandler.listenerCount('ready'), 1, 'concurrent updates share one readiness latch');
+		await Promise.all(updates);
+
+		assert.equal(entryHandler._openCountForTests, 3, 'the initial watcher plus one per update');
+		assert.equal(entryHandler._liveWatcherCountForTests, 1, 'each replacement closes the watcher it replaced');
+
+		await entryHandler.close();
+		assert.equal(entryHandler._liveWatcherCountForTests, 0, 'close() releases the last watcher');
+	});
+
+	it('update() readiness does not resolve against the outgoing generation', async () => {
+		// update() must re-arm the readiness latch the way pause() does. Otherwise awaiting it on
+		// an already-ready handler resolves immediately against the previous generation's `ready`,
+		// before the replacement generation has scanned, digested, and emitted its diff.
+		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		await entryHandler.ready;
+
+		const events = [];
+		entryHandler.on('all', (entry) => events.push(entry.eventType));
+
+		await entryHandler.update('b');
+
+		assert.deepEqual(
+			[...events].sort(),
+			['add', 'unlink'],
+			'the new generation has emitted its full diff by the time update() resolves'
+		);
+
+		await entryHandler.close();
 	});
 
 	it('should resolve the correct urlPath for files', async () => {
@@ -486,7 +819,7 @@ describe('EntryHandler', () => {
 	});
 
 	describe('pause / resume', () => {
-		it('stops emitting while paused and re-emits add events on resume', async () => {
+		it('stops emitting while paused and emits only logical additions on resume', async () => {
 			const { directory } = createFixture(['a', 'b', 'c']);
 			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
 			const addSpy = spy();
@@ -503,13 +836,10 @@ describe('EntryHandler', () => {
 			await new Promise((r) => setTimeout(r, 100));
 			assert.equal(addSpy.callCount, initialAdds, 'no events while paused');
 
-			// Resume — fresh scan should emit add for every current file (now 4)
+			// Resume — the fresh scan should report only the file created while paused.
 			await entryHandler.resume();
-			await new Promise((r) => setTimeout(r, 200));
-			assert.ok(
-				addSpy.callCount >= initialAdds + 4,
-				`resume should re-emit add for current files, got ${addSpy.callCount} total`
-			);
+			assert.equal(addSpy.callCount, initialAdds + 1, 'resume should emit one add for the new file');
+			assert.equal(addSpy.lastCall.args[0].absolutePath, join(directory, 'd'));
 
 			await entryHandler.close();
 			rmSync(directory, { recursive: true, force: true });
@@ -526,10 +856,11 @@ describe('EntryHandler', () => {
 			assert.ok(before >= 1);
 
 			entryHandler.pause();
+			await writeFile(join(directory, 'a'), 'changed');
 			await entryHandler.resume();
-			await new Promise((r) => setTimeout(r, 200));
 
-			assert.ok(allSpy.callCount > before, 'all listener still attached after resume');
+			assert.equal(allSpy.callCount, before + 1, 'all listener still attached after resume');
+			assert.equal(allSpy.lastCall.args[0].eventType, 'change');
 
 			await entryHandler.close();
 			rmSync(directory, { recursive: true, force: true });
@@ -610,13 +941,18 @@ describe('EntryHandler', () => {
 			entryHandler.on('error', errorSpy);
 
 			assert.equal(entryHandler._usingPollingForTests, false);
+			const recoveryEntries = [];
+			entryHandler.on('all', (entry) => recoveryEntries.push(entry));
+			const recoveryReady = once(entryHandler, 'ready');
 
 			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
 
 			// Allow the close+reopen-with-polling to settle.
 			await waitFor(() => entryHandler._usingPollingForTests === true, 2000);
+			await recoveryReady;
 			assert.equal(entryHandler._usingPollingForTests, true);
 			assert.equal(errorSpy.callCount, 0, 'ENOSPC should be swallowed');
+			assert.deepEqual(recoveryEntries, [], 'unchanged entries are not replayed as adds during recovery');
 
 			// The polling watcher should pick up subsequent file writes; default
 			// directory polling interval is 3s, so allow up to 5s.
@@ -645,6 +981,37 @@ describe('EntryHandler', () => {
 			assert.equal(errorSpy.callCount, 1, 'non-exhaustion error should propagate');
 
 			entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('does not treat an exhaustion-shaped consumer exception as a watcher failure', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+
+			const errors = [];
+			entryHandler.on('error', (error) => errors.push(error));
+			entryHandler.on('change', () => {
+				throw Object.assign(new Error('consumer failed'), { code: 'ENOSPC' });
+			});
+
+			await writeFile(join(directory, 'a.txt'), 'changed');
+			await waitFor(() => errors.length === 1);
+			assert.equal(entryHandler._usingPollingForTests, false);
+
+			await entryHandler.close();
+			rmSync(directory, { recursive: true, force: true });
+		});
+
+		it('rejects a paused readiness latch when the handler closes', async () => {
+			const { directory } = createFixture(['a.txt']);
+			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			await entryHandler.ready;
+			entryHandler.pause();
+			const pausedReady = entryHandler.ready;
+
+			await entryHandler.close();
+			await assert.rejects(pausedReady, /closed before becoming ready/);
 			rmSync(directory, { recursive: true, force: true });
 		});
 

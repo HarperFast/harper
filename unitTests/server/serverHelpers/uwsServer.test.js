@@ -2,7 +2,7 @@
  * Unit tests for the uWS UDS adapter (server/serverHelpers/uwsServer.ts, #914).
  *
  * Exercises the request-construction and response-serialization paths of createUwsServer over a
- * real Unix domain socket, without booting Harper. uWebSockets.js is an optionalDependency (built
+ * real Unix domain socket, without booting Harper. uWebSockets.js is an optional peer (installed
  * by CI); when it isn't installed for the current platform, the whole suite skips.
  */
 const assert = require('node:assert');
@@ -34,13 +34,74 @@ try {
 }
 
 // Issue an HTTP/1.1 request over a Unix domain socket and collect the full response.
+//
+// A server that responds early (e.g. 413 for an over-limit body) is allowed to close the connection
+// before the client has finished flushing the request body — correct per HTTP, but it races the
+// client's outstanding write against the close. Node's http client normally forwards any socket error
+// straight to `req`'s own 'error' event — except for the specific window right after a keep-alive
+// response finishes, where the client detaches its listener before handing the socket back to the
+// agent's free-connection pool and reattaching one (`responseKeepAlive` in Node's `_http_client.js`,
+// which has its own upstream `// TODO(ronag): ... the socket has no 'error' handler` comment on exactly
+// this gap). A write that fails in that window is unhandled and becomes an uncaught exception
+// attributed to whichever test happens to be running — that's the macOS flake this helper exists to
+// close. `agent: false` below is therefore the primary fix: without connection pooling, the gap window
+// never opens. The socket-level listener is retained as a second layer, in case an equivalent
+// unhandled-window exists on a platform/libuv path this can't be verified against from Linux.
+//
+// Settles exactly once, from whichever channel gets there first:
+//   - `req`'s own 'error' event, for as long as the request is attached to its socket (covers
+//     everything that can happen before or during a normal response, including a pre-response
+//     failure like a missing socket path).
+//   - a socket-level 'error' listener, described above. EPIPE/ECONNRESET are exactly the expected
+//     shape of the write-vs-close race and are swallowed once the promise has settled; a sibling
+//     delivery of the same event that already settled the promise a moment earlier is a no-op, so
+//     this can't double-fire for a single error. An unrelated error arriving after settlement can't
+//     reject an already-settled promise either way, so it's unavoidably absorbed — logged via
+//     udsRequestWarnings (asserted empty in this file's `after`) rather than disappearing silently.
+//   - `req`'s 'close' event, if the connection closes without either of the above (e.g. the server
+//     commits headers and then aborts mid-body) — otherwise that would hang until Mocha's timeout.
+//
+// Uses a fresh connection per call (`agent: false`) rather than Node's default keep-alive pooling, both
+// for the reason above and because this file issues many requests against the same socketPath, and a
+// shared pooled socket would carry the socket listener across requests and accumulate one per call.
+// Errors udsRequest couldn't fail the promise with because it arrived after settlement — see the
+// helper's docblock. Asserted empty in this file's `after`, so a genuinely broken transport still
+// fails the run instead of scrolling past as a log line nobody reads.
+const udsRequestWarnings = [];
+
 function udsRequest(socketPath, { method = 'GET', pathName = '/', headers = {}, body } = {}) {
 	return new Promise((resolve, reject) => {
-		const req = http.request({ socketPath, method, path: pathName, headers }, (res) => {
+		let settled = false;
+		// Node's own socket-error forwarding to `req` always runs before our 'socket' listener below sees
+		// the same event (both fire synchronously within one 'error' emission), so an ordinary pre-response
+		// failure settles the promise via `req.on('error')` a moment before our listener also observes it —
+		// that's an echo of an event already handled, not a new one. `settledThisTick` distinguishes that
+		// from a genuinely late arrival (the queued microtask clears it once the current synchronous
+		// dispatch is done), so only the latter is worth logging.
+		let settledThisTick = false;
+		const settleResolve = (value) => {
+			if (settled) return;
+			settled = true;
+			settledThisTick = true;
+			queueMicrotask(() => {
+				settledThisTick = false;
+			});
+			resolve(value);
+		};
+		const settleReject = (err) => {
+			if (settled) return;
+			settled = true;
+			settledThisTick = true;
+			queueMicrotask(() => {
+				settledThisTick = false;
+			});
+			reject(err);
+		};
+		const req = http.request({ socketPath, method, path: pathName, headers, agent: false }, (res) => {
 			const chunks = [];
 			res.on('data', (c) => chunks.push(c));
 			res.on('end', () =>
-				resolve({
+				settleResolve({
 					status: res.statusCode,
 					statusMessage: res.statusMessage,
 					headers: res.headers,
@@ -48,7 +109,22 @@ function udsRequest(socketPath, { method = 'GET', pathName = '/', headers = {}, 
 				})
 			);
 		});
-		req.on('error', reject);
+		req.on('socket', (socket) => {
+			socket.on('error', (err) => {
+				if (settled) {
+					if (!settledThisTick && err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
+						udsRequestWarnings.push(err);
+					}
+					return;
+				}
+				if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+				settleReject(err);
+			});
+		});
+		req.on('error', settleReject);
+		req.once('close', () => {
+			if (!settled) settleReject(new Error('connection closed before response completed'));
+		});
 		if (body) req.write(body);
 		req.end();
 	});
@@ -130,6 +206,7 @@ function readBody(request) {
 				/* best effort */
 			}
 		}
+		assert.deepStrictEqual(udsRequestWarnings, [], 'udsRequest saw an unexpected post-settlement socket error');
 	});
 
 	it('serves a bodyless GET', async function () {
@@ -200,6 +277,14 @@ function readBody(request) {
 		}
 	});
 
+	it('rejects with the underlying error when the connection fails before any response', async function () {
+		const missingSocket = path.join(os.tmpdir(), `uws-no-such-socket-${process.pid}.sock`);
+		await assert.rejects(udsRequest(missingSocket, { pathName: '/' }), (err) => {
+			assert.strictEqual(err.code, 'ENOENT');
+			return true;
+		});
+	});
+
 	it('rejects a body over maxBodyBytes with 413', async function () {
 		const overLimitSocket = path.join(os.tmpdir(), `uws-413-test-${process.pid}.sock`);
 		if (fs.existsSync(overLimitSocket)) fs.unlinkSync(overLimitSocket);
@@ -209,6 +294,9 @@ function readBody(request) {
 			handler: async (request) => ({ status: 200, body: await readBody(request) }),
 		});
 		try {
+			// A real over-limit upload is always this shape: production's default maxBodyBytes is 100 MiB
+			// (server/serverHelpers/uwsServer.ts), so every 413 in practice happens while the client still
+			// has bytes queued to send — the write-vs-close race udsRequest is built to tolerate.
 			const res = await udsRequest(overLimitSocket, {
 				method: 'POST',
 				pathName: '/echo',
@@ -376,6 +464,34 @@ try {
 			});
 			assert.strictEqual(res.status, 200);
 			assert.strictEqual(res.body.length, 0);
+		});
+
+		it('enforces wsMaxPayload by closing a connection that sends an oversized frame', async function () {
+			// Regression: registerWsBehavior passed `maxPayload` to app.ws(), but uWS's option key is
+			// `maxPayloadLength`, so the configured cap was silently ignored (uWS's 16 KiB default applied).
+			const cappedPort = port + 1;
+			const cappedServer = await createUwsServer({
+				port: cappedPort,
+				handler: async () => ({ status: 200, body: 'http' }),
+				wsHandler: (ws) => ws.on('message', (data) => ws.send(data)),
+				wsMaxPayload: 64,
+			});
+			try {
+				const client = new WebSocket(`ws://127.0.0.1:${cappedPort}/`);
+				await new Promise((resolve, reject) => {
+					client.on('open', resolve);
+					client.on('error', reject);
+				});
+				const closed = new Promise((resolve) => client.on('close', (code) => resolve(code)));
+				client.send(Buffer.alloc(1024));
+				const code = await Promise.race([
+					closed,
+					new Promise((resolve) => setTimeout(() => resolve('no-close'), 2000).unref()),
+				]);
+				assert.notStrictEqual(code, 'no-close', 'oversized frame must close the connection');
+			} finally {
+				cappedServer.close();
+			}
 		});
 
 		it('accepts an upgrade, exposes url/headers/ip, and round-trips text and binary frames', function (done) {

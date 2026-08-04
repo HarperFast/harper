@@ -34,20 +34,47 @@ export interface OpenAIStreamOptions {
 // terminates the stream through the same sanitized error-frame path as any backend failure.
 const MAX_TOOL_CALLS_PER_STREAM = 256;
 const MAX_TOOL_ARGUMENT_KEYS = 1024;
+// Cumulative serialized-character budget across the WHOLE stream's assembly (ids, names,
+// and every argument value as it arrives, plus per-entry JSON syntax so the count is an
+// upper bound on `JSON.stringify(arguments)`, not just the raw content). Call/key counts
+// alone don't bound memory — one key can hold an arbitrarily large value, and the final
+// JSON.stringify duplicates the retained allocation — so the budget is charged per delta
+// (O(delta), no re-serialization of the accumulator) and monotonically: replacing an
+// existing key charges the new value too, so churn cannot smuggle unbounded values under
+// a stable key count. The SSE frame that flushes the calls adds only a bounded constant
+// envelope per call plus string-escaping of the arguments blob (< 2x), so the frame size
+// is bounded by a small multiple of this budget.
+const MAX_TOOL_ASSEMBLY_CHARS = 1_048_576;
 
 /** Signals that a stream exceeded the tool-assembly bounds; surfaced as an SSE error frame. */
 class ToolAssemblyOverflowError extends Error {
 	statusCode = 502;
 }
 
-/** Count only the keys `source` adds to `target`, so accumulation stays O(delta), not O(total). */
-function assignCountingNewKeys(target: object, source: object): number {
-	let added = 0;
+/**
+ * Merge `source` into `target`, returning the keys added and the serialized characters
+ * charged. Charging over-approximates `JSON.stringify(target).length`: each first add
+ * charges the key plus 4 chars of JSON syntax (`"key":` quotes and colon, plus the
+ * comma/brace share), and every assignment — replacements included — charges the
+ * serialized value. Since a replacement's earlier charge is never refunded, the
+ * cumulative total stays an upper bound on the retained serialization while keeping
+ * accumulation O(delta), not O(total).
+ */
+function assignCountingNewKeys(target: object, source: object): { addedKeys: number; addedChars: number } {
+	let addedKeys = 0;
+	let addedChars = 0;
 	for (const key in source) {
-		if (!(key in target)) added++;
-		(target as Record<string, unknown>)[key] = (source as Record<string, unknown>)[key];
+		if (!(key in target)) {
+			addedKeys++;
+			addedChars += key.length + 4;
+		}
+		const value = (source as Record<string, unknown>)[key];
+		// `?? ''`: JSON.stringify returns undefined for undefined/function/symbol values —
+		// impossible from JSON.parse but reachable from a custom backend's crafted object.
+		addedChars += (JSON.stringify(value) ?? '').length;
+		(target as Record<string, unknown>)[key] = value;
 	}
-	return added;
+	return { addedKeys, addedChars };
 }
 
 /** OpenAI streaming error body (`{ message, type, code, param }` under an `error` key). */
@@ -107,6 +134,7 @@ export async function* openaiStream(
 	// (`{"a":1}` + `{"b":2}` → invalid JSON) — Harper's already-buffered upstream model
 	// means we cannot faithfully reproduce per-token argument fragments anyway.
 	const toolAssembly = new Map<string, { index: number; name?: string; arguments: object; argumentCount: number }>();
+	let assemblyChars = 0;
 
 	const chunk = (delta: OpenAIDelta, finish: OpenAIFinishReason | null): OpenAIStreamMessage => ({
 		data: {
@@ -145,18 +173,32 @@ export async function* openaiStream(
 						// setter and silently drop the field (the previous spread did not).
 						existing = { index: toolAssembly.size, arguments: Object.create(null), argumentCount: 0 };
 						toolAssembly.set(incoming.id, existing);
+						// + 96: the flush frame's fixed per-call envelope (index/id/type/function
+						// syntax and the argument object's braces), so 256 calls of envelope are
+						// inside the budget too, not on top of it.
+						assemblyChars += incoming.id.length + 96;
 					}
-					if (incoming.name) existing.name = incoming.name;
+					if (incoming.name && incoming.name !== existing.name) {
+						assemblyChars += incoming.name.length;
+						existing.name = incoming.name;
+					}
 					// Guard the contract (`ToolCall.arguments` is an object): a string would be
 					// assigned index-wise, inflating the field count from characters.
 					if (incoming.arguments && typeof incoming.arguments === 'object') {
 						// Mutate rather than re-spread — spreading copied every previously
 						// accumulated property on each partial delta (O(n²) as fields grow) — and
 						// count only newly-introduced keys so the bound check stays O(delta) too.
-						existing.argumentCount += assignCountingNewKeys(existing.arguments, incoming.arguments);
+						const { addedKeys, addedChars } = assignCountingNewKeys(existing.arguments, incoming.arguments);
+						existing.argumentCount += addedKeys;
+						assemblyChars += addedChars;
 						if (existing.argumentCount > MAX_TOOL_ARGUMENT_KEYS) {
 							throw new ToolAssemblyOverflowError(`tool call arguments exceeded ${MAX_TOOL_ARGUMENT_KEYS} fields`);
 						}
+					}
+					if (assemblyChars > MAX_TOOL_ASSEMBLY_CHARS) {
+						throw new ToolAssemblyOverflowError(
+							`stream tool-call assembly exceeded ${MAX_TOOL_ASSEMBLY_CHARS} serialized characters`
+						);
 					}
 				}
 			}

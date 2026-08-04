@@ -9,6 +9,7 @@
 const assert = require('node:assert');
 const { toOpenAIError, badRequest, authorizeV1Request } = require('#src/resources/models/v1/errors');
 const { ModelBackendNotFoundError } = require('#src/resources/models/backendRegistry');
+const { ModelCapabilityError } = require('#src/resources/models/Models');
 
 function makeClientError(message, statusCode) {
 	const err = new Error(message);
@@ -24,6 +25,17 @@ describe('toOpenAIError', () => {
 		assert.equal(resp.data.error.type, 'invalid_request_error');
 		assert.equal(resp.data.error.code, 'model_not_found');
 		assert.ok(resp.data.error.message.includes('missing-model'));
+	});
+
+	it('maps ModelCapabilityError to 400 invalid_request_error, not a sanitized 500', () => {
+		// It extends ServerError (statusCode 500), but a capability mismatch is
+		// caller-driven — e.g. sending `tools` to a backend that doesn't support them —
+		// so the client must see what to change, not "Internal server error".
+		const resp = toOpenAIError(new ModelCapabilityError('my-backend', 'tools'));
+		assert.equal(resp.status, 400);
+		assert.equal(resp.data.error.type, 'invalid_request_error');
+		assert.equal(resp.data.error.code, 'capability_unsupported');
+		assert.ok(resp.data.error.message.includes("'tools'"), 'message must name the unmet capability');
 	});
 
 	it('maps 400 statusCode errors to invalid_request_error', () => {

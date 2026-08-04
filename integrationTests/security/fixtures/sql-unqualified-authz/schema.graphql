@@ -1,0 +1,25 @@
+# Regression fixture for GHSA-5c29-q62v-jrwf — schema-unqualified SQL must be authorized.
+#
+# `UnqualSecret` is the forbidden table: the test role holds no grant on it at all.
+# `UnqualPublic` is the permitted table: the role can read it, so the test can prove the
+# fix still resolves a legitimate unqualified reference instead of rejecting everything.
+# Both names are unique across databases so the engine's pickDefaultDatabase resolves them.
+type UnqualSecret @table @export {
+	id: ID @primaryKey
+	owner: String
+	ssn: String
+}
+
+type UnqualPublic @table @export {
+	id: ID @primaryKey
+	label: String
+}
+
+# Lives in a SECOND database so a bare, unaliased cross-database join can be exercised. The role
+# below gets table-level read on it but is denied the `ssn` attribute — the column's database has
+# to resolve through the table-to-schema map or its attribute permission is never checked.
+type UnqualVault @table(database: "vault") @export {
+	id: ID @primaryKey
+	label: String
+	ssn: String
+}

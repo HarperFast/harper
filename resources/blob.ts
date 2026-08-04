@@ -1186,15 +1186,25 @@ export function getRootBlobPathsForDB(store: RootDatabase) {
 			logger.warn?.('No database name specified, can not determine blob storage path');
 			return [];
 		}
-		const blobPaths: string[] = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS);
-		if (blobPaths) {
-			paths = blobPaths.map((path) => join(path, (store as any).databaseName));
-		} else {
-			paths = [join(getHdbBasePath(), 'blobs', (store as any).databaseName)];
-		}
+		paths = getBlobPathsForDatabaseName((store as any).databaseName);
 		databasePaths.set(store, paths);
 	}
 	return paths;
+}
+
+/**
+ * Resolve a database's blob root directories from configuration by name, without needing a live
+ * store handle. Mirrors `getRootBlobPathsForDB`'s path derivation so backup/restore code (which runs
+ * while the database may be closed) computes the same roots: one per configured `storage.blobPaths`
+ * entry, or a single `<hdb_root>/blobs/<database>` when none are configured. A database can therefore
+ * have more than one blob root.
+ */
+export function getBlobPathsForDatabaseName(databaseName: string): string[] {
+	const blobPaths: string[] = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS);
+	if (blobPaths) {
+		return blobPaths.map((path) => join(path, databaseName));
+	}
+	return [join(getHdbBasePath(), 'blobs', databaseName)];
 }
 export async function deleteRootBlobPathsForDB(store: RootDatabase): Promise<void> {
 	const paths = getRootBlobPathsForDB(store);
@@ -1330,8 +1340,11 @@ function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
 	}
 	if (((blobStoragePaths as any).lastUpdated ?? 0) + 60000 < now) {
 		(blobStoragePaths as any).lastUpdated = now;
-		// create a new frequency table based on the available space
-		createFrequencyTableForStoragePaths(blobStoragePaths);
+		// create a new frequency table based on the available space; fire-and-forget, so a
+		// transient stat/mkdir failure must not become an unhandled rejection
+		createFrequencyTableForStoragePaths(blobStoragePaths).catch((error) => {
+			logger.warn?.('Error creating storage path frequency table', error);
+		});
 	}
 	const nextIndex = (blobStoragePaths as any).frequencyTable[fileId % FREQUENCY_TABLE_SIZE];
 	return nextIndex;
@@ -1346,6 +1359,10 @@ async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 	if (!statfs) return; // statfs is not available on all older node versions
 	const availableSpaces = await Promise.all(
 		blobStoragePaths.map(async (path) => {
+			// This compares MULTIPLE distinct paths against each other, so it always needs the
+			// real per-path number: quota-status.json (see getStorageSpaceStats, #1976) is a
+			// single instance-wide figure that can't tell two disks apart, and would collapse
+			// every path in a multi-volume STORAGE_BLOBPATHS config to the same "available" value.
 			let stats: StatsFs;
 			try {
 				stats = await statfs(path);

@@ -6,7 +6,7 @@ import { models as harperModelsSingleton } from '../resources/models/Models.ts';
 import { defineTable, types } from '../resources/defineTable.ts';
 import { defineResource, t, schemaOf, projectTableFragment } from '../resources/defineResource.ts';
 import { readFile } from 'node:fs/promises';
-import { dirname, isAbsolute } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule, createContext, runInContext, runInThisContext } from 'node:vm';
 import { ApplicationScope } from '../components/ApplicationScope.ts';
@@ -28,7 +28,6 @@ import {
 	statSync,
 	realpathSync,
 } from 'node:fs';
-import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
 
@@ -105,6 +104,7 @@ async function importScoped(moduleUrl: string, scope?: ApplicationScope) {
 				return await loadModuleWithVM(moduleUrl, scope, true);
 			}
 		}
+		if (scope) scope.markNativeRuntime?.();
 		// important! we need to await the import, otherwise the error will not be caught
 		return await import(moduleUrl);
 	} catch (err) {
@@ -178,7 +178,10 @@ function walkExportsConditions(entry: unknown, conditions: readonly string[]): s
  * ERR_PACKAGE_PATH_NOT_EXPORTED for pure-ESM packages (exports map with only "import"
  * conditions and no "require").
  */
-function resolveESMPackageExports(specifier: string, fromDir: string): string | null {
+function resolveESMPackageExports(
+	specifier: string,
+	fromDir: string
+): { resolvedUrl: string; packageJsonUrl: string; packageJsonSource: Buffer } | null {
 	const isScoped = specifier.startsWith('@');
 	const parts = specifier.split('/');
 	const packageName = isScoped ? `${parts[0]}/${parts[1]}` : parts[0];
@@ -189,8 +192,11 @@ function resolveESMPackageExports(specifier: string, fromDir: string): string | 
 	while (true) {
 		const pkgRoot = join(dir, 'node_modules', packageName);
 		let pkgJson: any;
+		let packageJsonSource: Buffer;
+		const packageJsonPath = join(pkgRoot, 'package.json');
 		try {
-			pkgJson = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf-8'));
+			packageJsonSource = readFileSync(packageJsonPath);
+			pkgJson = JSON.parse(packageJsonSource.toString());
 		} catch {
 			const parent = dirname(dir);
 			if (parent === dir) return null;
@@ -220,8 +226,23 @@ function resolveESMPackageExports(specifier: string, fromDir: string): string | 
 		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
 		if (!relative) return null;
 
-		return pathToFileURL(join(pkgRoot, relative)).toString();
+		return {
+			resolvedUrl: pathToFileURL(realpathSync(join(pkgRoot, relative))).toString(),
+			packageJsonUrl: pathToFileURL(realpathSync(packageJsonPath)).toString(),
+			packageJsonSource,
+		};
 	}
+}
+
+function normalizeImportedModule(importedModule: any): any {
+	const cjsModule = importedModule['module.exports'];
+	if (cjsModule) {
+		importedModule = importedModule.default ? { default: importedModule.default, ...cjsModule } : cjsModule;
+	}
+	if (!importedModule.default) {
+		importedModule = { default: importedModule, ...importedModule };
+	}
+	return importedModule;
 }
 
 /**
@@ -286,7 +307,9 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		try {
 			const resolved = createRequire(resolveReferrer).resolve(specifier);
 			if (isAbsolute(resolved)) {
-				return pathToFileURL(resolved).toString();
+				const resolvedUrl = pathToFileURL(resolved).toString();
+				scope.recordModuleResolution?.(specifier, resolveReferrer, resolvedUrl);
+				return resolvedUrl;
 			}
 			return resolved;
 		} catch (err) {
@@ -298,7 +321,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 					? dirname(fileURLToPath(resolveReferrer))
 					: dirname(resolveReferrer);
 				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
-				if (esmResolved) return esmResolved;
+				if (esmResolved) {
+					scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
+					return esmResolved.resolvedUrl;
+				}
 			}
 			throw err;
 		}
@@ -336,8 +362,15 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				return getHarperExports(scope);
 			}
 			if (resolvedUrl.startsWith('file://')) {
-				const source = readFileSync(new URL(resolvedUrl), { encoding: 'utf-8' });
-				return loadCJS(resolvedUrl, source).exports;
+				if (resolvedUrl.endsWith('.node')) {
+					checkAllowedModulePath(resolvedUrl, scope.allowedPath);
+					const nativeModule = require(fileURLToPath(resolvedUrl));
+					scope.markNativeRuntime?.();
+					return nativeModule;
+				}
+				const contents = readFileSync(new URL(resolvedUrl));
+				scope.recordLoadedModule?.(resolvedUrl, contents);
+				return loadCJS(resolvedUrl, contents.toString('utf-8')).exports;
 			}
 			return require(resolvedUrl);
 		};
@@ -456,11 +489,11 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		if (specifier.startsWith('.')) {
 			return true;
 		}
-
 		// Check the dependencyLoader for definitive settings, if it is native we always use native loader
 		if (scope.dependencyLoader === 'native') {
 			return false;
 		}
+		if (isApplicationLocalModule(resolvedUrl)) return true;
 
 		// If it is set to always use the app module loader
 		if (scope.dependencyLoader === 'app') {
@@ -472,6 +505,16 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return packageDependsOnHarper(resolvedUrl);
 		}
 		return false;
+	}
+
+	function isApplicationLocalModule(url: string): boolean {
+		if (!scope.runtimeRoot || !url.startsWith('file://') || url.includes('/node_modules/')) return false;
+		const modulePath = fileURLToPath(url);
+		const relativePath = relative(resolve(scope.runtimeRoot), modulePath);
+		return (
+			relativePath === '' ||
+			(!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath))
+		);
 	}
 
 	/**
@@ -542,22 +585,6 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			},
 			{ identifier: url, context }
 		);
-	}
-
-	/**
-	 * Normalize imported module to ensure it has proper exports including default
-	 */
-	function normalizeImportedModule(importedModule: any): any {
-		const cjsModule = importedModule['module.exports'];
-		if (cjsModule) {
-			// back-compat import
-			importedModule = importedModule.default ? { default: importedModule.default, ...cjsModule } : cjsModule;
-		}
-		// Ensure there's a default export for ESM imports that expect it
-		if (!importedModule.default) {
-			importedModule = { default: importedModule, ...importedModule };
-		}
-		return importedModule;
 	}
 
 	/**
@@ -638,8 +665,14 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 
 		if (url.startsWith('file://') && usePrivateGlobal) {
 			checkAllowedModulePath(url, scope.allowedPath);
-			const source = readFileSync(new URL(url), { encoding: 'utf-8' });
-			return createModuleFromSource(url, source, usePrivateGlobal);
+			if (url.endsWith('.node')) {
+				const nativeModule = createRequire(url)(fileURLToPath(url));
+				scope.markNativeRuntime?.();
+				return createSyntheticModule(url, normalizeImportedModule(nativeModule));
+			}
+			const contents = readFileSync(new URL(url));
+			scope.recordLoadedModule?.(url, contents);
+			return createModuleFromSource(url, contents.toString('utf-8'), usePrivateGlobal);
 		}
 
 		// For Node.js built-in modules (node:) and npm packages without application loader for dependency
@@ -647,6 +680,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		if (replacedModule) {
 			return createSyntheticModule(url, normalizeImportedModule(replacedModule));
 		}
+		if (isApplicationLocalModule(url)) scope.markNativeRuntime?.();
 		return import(url).then((importedModule) => createSyntheticModule(url, normalizeImportedModule(importedModule)));
 	}
 	// Load the entry module
@@ -679,6 +713,7 @@ async function getCompartment(scope: ApplicationScope, globals) {
 				const resolved = createRequire(moduleReferrer).resolve(moduleSpecifier);
 				if (isAbsolute(resolved)) {
 					const resolvedURL = pathToFileURL(resolved).toString();
+					scope.recordModuleResolution?.(moduleSpecifier, moduleReferrer, resolvedURL);
 					return resolvedURL;
 				}
 				return moduleSpecifier;
@@ -693,8 +728,22 @@ async function getCompartment(scope: ApplicationScope, globals) {
 							Object.assign(exports, harperExports);
 						},
 					};
+				} else if (moduleSpecifier.startsWith('file:') && moduleSpecifier.endsWith('.node')) {
+					checkAllowedModulePath(moduleSpecifier, scope.allowedPath);
+					const nativeModule = createRequire(moduleSpecifier)(fileURLToPath(moduleSpecifier));
+					scope.markNativeRuntime?.();
+					const moduleExports = normalizeImportedModule(nativeModule);
+					return {
+						imports: [],
+						exports: Object.keys(moduleExports),
+						execute(exports) {
+							Object.assign(exports, moduleExports);
+						},
+					};
 				} else if (moduleSpecifier.startsWith('file:') && !moduleSpecifier.includes('node_modules')) {
-					let moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
+					const moduleContents = await readFile(new URL(moduleSpecifier));
+					scope.recordLoadedModule?.(moduleSpecifier, moduleContents);
+					let moduleText = moduleContents.toString('utf-8');
 					// Handle JSON files in compartment mode the same way as in VM mode
 					if (moduleSpecifier.endsWith('.json')) {
 						const jsonData = parseJsonModule(moduleText, moduleSpecifier);

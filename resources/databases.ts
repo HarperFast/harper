@@ -9,9 +9,15 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
-import { makeTable } from './Table.ts';
+import { makeTable, ignoreAlreadyDropped } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
-import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
+import {
+	CONFIG_PARAMS,
+	LEGACY_DATABASES_DIR_NAME,
+	DATABASES_DIR_NAME,
+	MIGRATING_DIR_SUFFIX,
+	RESERVED_DATABASE_NAMES,
+} from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
@@ -35,6 +41,15 @@ import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
+import {
+	acquireRestoreLock,
+	checkRestoreState,
+	releaseRestoreLock,
+	restoreMarkerPresent,
+	scanBlockedRestores,
+	RESTORE_META_DIR,
+	type RestoreLock,
+} from '../dataLayer/restoreMarker.ts';
 
 /**
  * Check if Harper is running in read-only mode.
@@ -161,8 +176,23 @@ export const databaseEventsEmitter = new EventEmitter<DatabaseWatcherEventMap>()
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
+/**
+ * Map a persisted (LMDB-era) compression value to what rocksdb-js accepts. Table metadata
+ * carries values where a defined falsy value (false, '') means compression was explicitly
+ * disabled and true/{ threshold, ... } mean enabled with defaults. rocksdb-js >= 2.6
+ * validates `compression` strictly and treats UNSET as "use the build default (lz4)", so
+ * disabled must be mapped to 'none' explicitly, and true to unset.
+ */
+export function toRocksCompression(compression: unknown): unknown {
+	if (compression === true) return undefined;
+	if (compression !== undefined && !compression) return 'none';
+	return compression;
+}
+
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
+	const legacyOptions = options as { compression?: unknown };
+	legacyOptions.compression = toRocksCompression(legacyOptions.compression);
 	// Apply read-only mode if enabled
 	if (isReadOnlyMode()) {
 		options.readOnly = true;
@@ -215,6 +245,55 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
+// How many times the schema load will try to finish a tombstoned drop before
+// giving up for the rest of this process's lifetime. A drop that fails once
+// almost always fails identically forever - the usual cause is a RocksDB
+// environment that latched a background error and now rejects every write it
+// receives - and the schema load re-runs on every resetDatabases(), so an
+// unbounded retry turns one broken table into a per-reload log flood in every
+// worker thread.
+const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
+// physical store path + table -> drop generation -> consecutive failed
+// completion attempts in this thread. Keyed by the physical store path
+// rather than the database alias name: multiple database names can point at
+// the same directory (config-level aliasing), and readMetaDb/readRocksMetaDb
+// reconcile each alias's schema independently, so a table shared by N
+// aliases would otherwise be attempted (and give up) N times over - once per
+// alias - on top of the once-per-worker duplication. Keying by path
+// collapses all of that back down to one budget, and one give-up log via the
+// worker-0 gate below, per physical table.
+//
+// Nested by generation (Table.ts stamps a fresh id on every dropping
+// tombstone) rather than a single flat count per path+table: a worker can
+// exhaust one drop's budget, then observe the table recreated and dropped
+// again without ever seeing an intermediate non-tombstoned row to reset on.
+// A fresh generation always gets a fresh inner-map key, independent of what
+// any worker last observed. Tombstones written before this field existed
+// fall back to a shared 'legacy' bucket. Nesting (rather than a flat map
+// keyed by a combined string) also makes "clear every generation for this
+// path+table" an O(1) delete of the outer entry instead of a scan - a live
+// (non-tombstoned) row never carries the dropGeneration of whatever drop it
+// resolved, so a resolution can only ever identify the outer path+table key,
+// never the specific spent generation to target.
+const interruptedDropAttempts = new Map<string, Map<string, number>>();
+const interruptedDropTableKey = (storePath: string, tableName: string) => `${storePath}\0${tableName}`;
+function getInterruptedDropAttempts(storePath: string, tableName: string, generation?: string): number {
+	return interruptedDropAttempts.get(interruptedDropTableKey(storePath, tableName))?.get(generation ?? 'legacy') ?? 0;
+}
+function setInterruptedDropAttempts(
+	storePath: string,
+	tableName: string,
+	generation: string | undefined,
+	attempts: number
+) {
+	const tableKey = interruptedDropTableKey(storePath, tableName);
+	let generations = interruptedDropAttempts.get(tableKey);
+	if (!generations) interruptedDropAttempts.set(tableKey, (generations = new Map()));
+	generations.set(generation ?? 'legacy', attempts);
+}
+function clearInterruptedDropEntries(storePath: string, tableName: string) {
+	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
+}
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -260,9 +339,18 @@ export function getDatabases(): Databases {
 	if (databasePath && existsSync(databasePath)) {
 		// First load all the databases from our main database folder
 		// TODO: Load any databases defined with explicit storage paths from the config
-		for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
+		const entries = readdirSync(databasePath, { withFileTypes: true });
+		const blockedByRestore = databasesBlockedByRestore(databasePath);
+		for (const databaseEntry of entries) {
+			// in-progress migration staging dirs are not databases until atomically renamed into place
+			if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
+			// the restore-metadata directory is reserved: never load it as a database, even if a
+			// (out-of-band) RocksDB directory happens to occupy that reserved name — the API can't
+			// create it (schemaRegex forbids the backtick), but the scan opens any CURRENT+MANIFEST dir
+			if (databaseEntry.name === RESTORE_META_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
+			if (blockedByRestore.has(dbName)) continue;
 
 			if (
 				databaseEntry.isFile() &&
@@ -319,7 +407,12 @@ export function getDatabases(): Databases {
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
 			if (existsSync(databasePath)) {
-				for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
+				const entries = readdirSync(databasePath, { withFileTypes: true });
+				const blockedByRestore = databasesBlockedByRestore(databasePath);
+				for (const databaseEntry of entries) {
+					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
+					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
+					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
 						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
 					} else {
@@ -392,6 +485,29 @@ export function getDatabases(): Databases {
 		}
 	}
 	return databases;
+}
+
+/**
+ * Scan a databases directory's entries for restore lock/marker files and return the names of
+ * databases that must not be loaded: a held restore lock means a restore is in progress in some
+ * process; an unheld lock with a surviving `.restoring` marker means a restore was interrupted
+ * mid-purge (the directory may be partial garbage) and must be rerun. The files live *next to*
+ * the database directory, so this also covers a database whose directory is missing or empty.
+ */
+function databasesBlockedByRestore(databasePath: string): Set<string> {
+	const blocked = new Set<string>();
+	for (const [dbName, state] of scanBlockedRestores(databasePath)) {
+		if (state === 'in-progress') {
+			logger.warn(`A restore of database '${dbName}' is in progress; not loading it`);
+			blocked.add(dbName);
+		} else if (state === 'incomplete') {
+			logger.error(
+				`Incomplete restore of database '${dbName}' detected (a restore started but did not finish); not loading it — rerun the restore to recover`
+			);
+			blocked.add(dbName);
+		}
+	}
+	return blocked;
 }
 
 /**
@@ -537,16 +653,53 @@ function initStores(
 	// partway, the tombstone survives alongside the catalog rows. Without this
 	// reconcile, those rows would silently resurrect the table below
 	// (recreating any missing column families as empty stores).
+	// The attempt budget is deliberately scoped to this reconcile: the create path
+	// calls completeInterruptedDrop under the exclusive lock and must never skip
+	// it, because creating over a half-dropped table would resurrect its catalog
+	// rows. There a failure propagates to the caller as its own single error.
 	for (const [tableName, tableDef] of tablesToLoad) {
-		if (!tableDef.primary?.dropping) continue;
-		try {
-			completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
-			definedTables?.delete(tableName);
-		} catch (error) {
-			logger.error(
-				`Failed to complete interrupted drop of table ${databaseName}.${tableName}; will retry on next start`,
-				error
-			);
+		if (!tableDef.primary?.dropping) {
+			// No tombstone, so any budget this table spent belongs to a drop that
+			// has since been resolved - by the create path, which completes
+			// interrupted drops itself and never passes through here. Leaving the
+			// budget spent would permanently skip cleanup for the table's NEXT
+			// interrupted drop. Checked (and, on the common all-live path, skipped)
+			// before touching the generation or the map at all, since this runs for
+			// every table on every reconcile pass.
+			clearInterruptedDropEntries(path, tableName);
+			continue;
+		}
+		const generation = tableDef.primary?.dropGeneration;
+		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
+		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
+			try {
+				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				// Sweep every generation this worker has ever tracked for this table, not
+				// just the one just resolved: if a prior generation was exhausted here,
+				// then resolved+recreated+re-dropped by another worker as this generation
+				// without this worker ever observing a live row in between (the only other
+				// place that sweeps), the prior generation's entry would otherwise never
+				// be cleared.
+				clearInterruptedDropEntries(path, tableName);
+				definedTables?.delete(tableName);
+			} catch (error) {
+				const attempt = failedAttempts + 1;
+				setInterruptedDropAttempts(path, tableName, generation, attempt);
+				const dropLabel = `${databaseName}.${tableName}`;
+				if (attempt < MAX_INTERRUPTED_DROP_ATTEMPTS) {
+					logger.debug(`Failed to complete interrupted drop of table ${dropLabel}, attempt ${attempt}`, error);
+				} else if (manageThreads.getWorkerIndex() === 0) {
+					// The attempt budget (and this failure) is independently tracked per worker
+					// thread, and the failure isn't transient, so every worker converges on the
+					// same give-up outcome. Only worker 0 - which exists in every threading mode,
+					// including threads:0 where the main thread acts as worker 0 - logs it, so one
+					// stuck table produces one actionable error instead of one per worker.
+					logger.error(
+						`Unable to complete the interrupted drop of table ${dropLabel} after ${attempt} attempts; giving up until this worker restarts (a full node restart also resets this). ${tableName} stays unloaded, with its catalog rows and column families left in place. An "Invalid column family specified in write batch" cause means the storage environment for ${databaseName} has latched a background error and will reject every write to every table in it until this node restarts.`,
+						error
+					);
+				}
+			}
 		}
 		// whether or not cleanup succeeded, never load a table that was being dropped
 		tablesToLoad.delete(tableName);
@@ -821,18 +974,12 @@ function setTable(tables, tableName, Table) {
 	return Table;
 }
 /**
- * Get root store for a database
- * @param options
- * @returns
+ * Resolve the directory that holds (or would hold) a database's storage, from the databases
+ * config, storage path config/env, or the hdb root — without opening anything. This is the
+ * parent directory selection used by `database()`; a RocksDB database lives at
+ * `join(resolveDatabaseStorageRoot(...), databaseName)`.
  */
-export function database({ database: databaseName, table: tableName }) {
-	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
-	getDatabases();
-	ensureDB(databaseName);
-	const definedDatabase = definedDatabases.get(databaseName);
-	if ((definedDatabase as any)?.rootStore) {
-		return (definedDatabase as any).rootStore;
-	}
+export function resolveDatabaseStorageRoot(databaseName: string, tableName?: string): string {
 	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
 	if (process.env.SCHEMAS_DATA_PATH) {
 		databaseConfig.data = { path: process.env.SCHEMAS_DATA_PATH };
@@ -857,6 +1004,35 @@ export function database({ database: databaseName, table: tableName }) {
 			`Unable to determine database storage path. Ensure STORAGE_PATH, HDB_ROOT, or a valid config path is set.`
 		);
 	}
+	return databasePath;
+}
+
+/**
+ * Resolve the directory path of a RocksDB database (whether or not it exists or is loaded).
+ */
+export function resolveDatabasePath(databaseName: string): string {
+	return join(resolveDatabaseStorageRoot(databaseName), databaseName);
+}
+
+/**
+ * Get root store for a database
+ * @param options
+ * @returns
+ */
+export function database({ database: databaseName, table: tableName }) {
+	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
+	getDatabases();
+	ensureDB(databaseName);
+	const definedDatabase = definedDatabases.get(databaseName);
+	if ((definedDatabase as any)?.rootStore) {
+		return (definedDatabase as any).rootStore;
+	}
+	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
+	if (process.env.SCHEMAS_DATA_PATH) {
+		databaseConfig.data = { path: process.env.SCHEMAS_DATA_PATH };
+	}
+	const tablePath = tableName && databaseConfig[databaseName]?.tables?.[tableName]?.path;
+	const databasePath = resolveDatabaseStorageRoot(databaseName, tableName);
 
 	let rootStore: RootDatabaseKind;
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
@@ -864,6 +1040,10 @@ export function database({ database: databaseName, table: tableName }) {
 		const path = join(databasePath, tablePath ? tableName : databaseName);
 		rootStore = rocksdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
+			// this on-demand open (create_table/create_database and friends) must not resurrect a
+			// database that a restore is rewriting (or left half-purged) — the scan-time restore
+			// checks don't cover this path
+			throwIfBlockedByRestore(path, databaseName);
 			rootStore = openRocksDatabase(path, {
 				disableWAL: false,
 				enableStats: true,
@@ -886,6 +1066,51 @@ export function database({ database: databaseName, table: tableName }) {
 	if (definedDatabase) (definedDatabase as any).rootStore = rootStore;
 	return rootStore;
 }
+function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
+	const restoreState = checkRestoreState(dbPath);
+	if (restoreState !== 'clear') {
+		const error: any = new Error(
+			restoreState === 'in-progress'
+				? `Database '${databaseName}' is being restored; retry when the restore completes`
+				: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
+		);
+		error.statusCode = 409;
+		throw error;
+	}
+}
+
+/**
+ * Take the per-database restore lock for a drop, refusing (409) if a restore holds it (in-progress)
+ * or a crashed restore left a marker (incomplete). Pushes the acquired lock onto `held` so the
+ * caller releases it after the drop. On refusal, releases anything already held and throws.
+ *
+ * The lock is not reentrant within a process, so a path already in `held` must be skipped — every
+ * table in a RocksDB database shares one root store (and one lock path), and re-acquiring it in the
+ * same drop would spuriously 409 on the second table.
+ */
+function lockDatabaseForDrop(dbPath: string, databaseName: string, held: RestoreLock[]): void {
+	if (held.some((h) => h.dbPath === dbPath)) return;
+	let lock: RestoreLock;
+	try {
+		lock = acquireRestoreLock(dbPath);
+	} catch (error) {
+		for (const h of held) releaseRestoreLock(h);
+		throw error; // 409: a restore is in progress and holds the lock
+	}
+	// We now hold the lock, so no restore is active. A surviving marker is therefore debris from a
+	// crashed restore (incomplete) — refuse rather than delete a directory that still needs recovery.
+	if (restoreMarkerPresent(dbPath)) {
+		releaseRestoreLock(lock);
+		for (const h of held) releaseRestoreLock(h);
+		const error: any = new Error(
+			`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
+		);
+		error.statusCode = 409;
+		throw error;
+	}
+	held.push(lock);
+}
+
 /**
  * Delete the database
  * @param databaseName
@@ -895,17 +1120,105 @@ export async function dropDatabase(databaseName) {
 	const dbTables = databases[databaseName];
 	let rootStore;
 
+	// Hold the per-database restore lock across the entire drop so its file deletion can never
+	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
+	// restore's copy would gut a "successful" restore, and vice versa. Restore takes the same lock
+	// (before writing its marker), so both operations serialize on this one primitive rather than on
+	// a check-then-act marker probe. Released in the finally below.
+	const restoreLocks: RestoreLock[] = [];
+	try {
+		for (const tableName in dbTables) {
+			const table = dbTables[tableName];
+			rootStore = table.primaryStore.rootStore;
+			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			lmdbDatabaseEnvs.delete(rootStore.path);
+			rocksdbDatabaseEnvs.delete(rootStore.path);
+		}
+
+		for (const tableName in dbTables) {
+			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
+		}
+
+		if (databaseName === 'data') {
+			for (const tableName in tables) {
+				delete tables[tableName];
+			}
+			delete tables[DEFINED_TABLES];
+		}
+		delete databases[databaseName];
+
+		databaseEventsEmitter.emit('dropDatabase', databaseName);
+
+		if (rootStore) {
+			if (rootStore.status === 'open') {
+				if (rootStore instanceof RocksDatabase) {
+					rootStore.close();
+					rootStore.destroy();
+				} else {
+					await rootStore.close();
+					await unlink(rootStore.path);
+				}
+			}
+		} else {
+			rootStore = database({ database: databaseName, table: null });
+			// a tableless database resolves its root store here rather than in the loop above, so take
+			// the drop lock now (still before any destructive step)
+			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			if (rootStore instanceof RocksDatabase) {
+				rootStore.close();
+				rootStore.destroy();
+			} else if (rootStore.status === 'open') {
+				await rootStore.close();
+				await unlink(rootStore.path);
+			}
+		}
+
+		await deleteRootBlobPathsForDB(rootStore);
+	} finally {
+		for (const lock of restoreLocks) releaseRestoreLock(lock);
+	}
+}
+
+/**
+ * Close a RocksDB database's store handles on the current thread and unregister it, without
+ * touching its files. Used by the restore_backup flow: every thread must release its handles so
+ * `backups.restore()` can purge and rewrite the (fully closed) database directory. A subsequent
+ * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
+ * progress, per the restore marker checks in the scan).
+ */
+export function closeDatabase(databaseName: string): boolean {
+	const dbTables = databases[databaseName];
+	if (!dbTables) return false;
+	const rootStores = new Set<any>();
+	const closeStore = (store: any, description: string) => {
+		try {
+			store?.close?.();
+		} catch (error) {
+			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
+		}
+	};
 	for (const tableName in dbTables) {
-		const table = dbTables[tableName];
-		rootStore = table.primaryStore.rootStore;
+		const table: any = dbTables[tableName];
+		if (!table?.primaryStore) continue;
+		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
+		for (const indexName in table.indices || {}) {
+			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+		}
+		closeStore(table.primaryStore, `table ${tableName}`);
+	}
+	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
+	// an open root store, tracked only on the defined-database entry rather than any table — include
+	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	if (definedRoot) rootStores.add(definedRoot);
+	for (const rootStore of rootStores) {
+		closeStore(rootStore.dbisDb, 'attributes store');
+		closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);
 		rocksdbDatabaseEnvs.delete(rootStore.path);
 	}
-
-	for (const tableName in dbTables) {
-		databaseEventsEmitter.emit('dropTable', tableName, databaseName);
-	}
-
+	const definedDatabase = definedDatabases?.get(databaseName);
+	if (definedDatabase) (definedDatabase as any).rootStore = undefined;
 	if (databaseName === 'data') {
 		for (const tableName in tables) {
 			delete tables[tableName];
@@ -913,31 +1226,41 @@ export async function dropDatabase(databaseName) {
 		delete tables[DEFINED_TABLES];
 	}
 	delete databases[databaseName];
+	return true;
+}
 
-	databaseEventsEmitter.emit('dropDatabase', databaseName);
-
-	if (rootStore) {
-		if (rootStore.status === 'open') {
-			if (rootStore instanceof RocksDatabase) {
-				rootStore.close();
-				rootStore.destroy();
-			} else {
-				await rootStore.close();
-				await unlink(rootStore.path);
+/**
+ * Close every RocksDB (user) database this thread has open, releasing its native handles.
+ *
+ * rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
+ * closing leaks its handles (the process-global refCount never drops), while the only alternative,
+ * `shutdown()`, tears down rocksdb for the entire process. So a worker thread that opens databases
+ * and then exits — notably a job worker (jobProcess), which opens the whole database graph via
+ * `getDatabases()` and exits when the job finishes — must close its handles explicitly, or those
+ * handles linger process-wide (and, e.g., block an online `restore_backup` from confirming the
+ * database is closed). The `system` database is intentionally left open: it is non-enumerable here
+ * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
+ * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
+ */
+export function closeLoadedDatabases(): void {
+	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
+	for (const databaseName of Object.keys(databases)) {
+		const dbTables = databases[databaseName];
+		if (!dbTables) continue;
+		let isRocks = false;
+		for (const tableName in dbTables) {
+			if (dbTables[tableName]?.primaryStore?.rootStore instanceof RocksDatabase) {
+				isRocks = true;
+				break;
 			}
 		}
-	} else {
-		rootStore = database({ database: databaseName, table: null });
-		if (rootStore instanceof RocksDatabase) {
-			rootStore.close();
-			rootStore.destroy();
-		} else if (rootStore.status === 'open') {
-			await rootStore.close();
-			await unlink(rootStore.path);
+		// a tableless database exposes no table root store, so also check the defined-database
+		// entry — otherwise its open root store would leak on worker exit
+		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
+			isRocks = true;
 		}
+		if (isRocks) closeDatabase(databaseName);
 	}
-
-	await deleteRootBlobPathsForDB(rootStore);
 }
 // HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
 // versioned. process.env values are strings, so a bare truthiness check would treat "0"/"false"
@@ -1089,6 +1412,16 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		cacheControl,
 	} = tableDefinition;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
+	// Reject reserved names here too, not only at the operations API: a database
+	// is also created by schema authoring — a `schema.graphql` `@table(database:)`
+	// or a programmatic `table()` call — which bypasses the create_schema
+	// validation. A reserved name collides with a role permission flag (harper#1016).
+	// Deliberately on this authoring path only, NOT in `database()`/`makeTable`: those
+	// are also the load and drop paths, so a reserved-name database created before this
+	// fix still loads (data stays accessible) and can be dropped to remediate.
+	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
+		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
+	}
 	const rootStore = database({ database: databaseName, table: tableName });
 	const tables = databases[databaseName];
 	logger.trace(`Defining ${tableName} in ${databaseName}`);
@@ -1229,6 +1562,15 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// entry as an existing table would recurse forever on the stale
 				// catalog row.
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				// This resolves the drop without ever going through the schema-load
+				// reconcile below, which is the only other place that returns a spent
+				// budget. Without clearing it here too, a table that gets dropped again
+				// before any reconcile observes it live in between would have its NEXT
+				// interrupted drop inherit this one's spent attempts. Generation-scoped
+				// keying (see interruptedDropAttempts) already makes that impossible, but
+				// clearing it here too avoids leaving a dead entry behind - for every
+				// generation this table has ever spent, not just the one on this row.
+				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
@@ -1827,20 +2169,27 @@ async function runIndexing(Table, attributes, indicesToRemove) {
  * catalog rows. Called from the boot-time schema load and from the create
  * path when a same-named table is created over a tombstoned entry. Callers
  * are expected to hold the database's exclusive lock or be in single-threaded
- * startup; the per-store drops tolerate races (another worker may be
- * completing the same drop concurrently).
+ * startup; a redundant drop of an already-gone store (another worker may be
+ * completing the same drop concurrently) is tolerated, but any other
+ * per-store failure propagates so the catalog rows are NOT removed - a store
+ * that failed to drop must keep its tombstone, or a same-name recreate could
+ * reuse (LMDB) or resurrect (RocksDB) the old store's data. Logged only at
+ * debug: the caller's retry loop is what decides when a failure is
+ * actionable, and logging here on every attempt would flood at the same
+ * volume this function's callers are bounding.
  */
 function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
-	logger.warn(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 	if (rootStore instanceof RocksDatabase) {
 		for (const columnName of (rootStore as any).columns) {
 			if (columnName.startsWith(tableName + '/')) {
+				const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
 				try {
-					const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
 					columnStore.dropSync();
-					columnStore.close();
 				} catch (error) {
-					logger.warn(`Failed dropping column family ${columnName} of ${databaseName}.${tableName}`, error);
+					ignoreAlreadyDropped(error);
+				} finally {
+					columnStore.close();
 				}
 			}
 		}
@@ -1849,20 +2198,41 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		// be dropped too; removing only the catalog rows would let a same-name
 		// recreate silently inherit the previous table's records.
 		for (const { key, value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			const objectStorage =
+				value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
+			const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
 			try {
-				const objectStorage =
-					value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
-				const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
-				// lmdb drop commits with the env's next transaction
-				store.drop?.();
+				// dropSync (not drop): this function is synchronous, and its callers rely on
+				// a thrown error to count against the retry budget below - the async drop()
+				// resolves/rejects after this try/catch has already returned, so a failure
+				// there would silently bypass the retry accounting entirely.
+				store.dropSync?.();
 			} catch (error) {
-				logger.warn(`Failed dropping store ${key} of ${databaseName}.${tableName}`, error);
+				ignoreAlreadyDropped(error);
 			}
 		}
 	}
+	// The primary catalog row (the `dropping` tombstone itself, keyed at exactly
+	// `tableName + '/'`) sorts first among these keys and so would be removed
+	// before the attribute rows that follow it. Removing it last instead means a
+	// removeSync failure partway through leaves the tombstone in place alongside
+	// whatever attribute rows didn't get removed yet, so a later retry still
+	// recognizes the table as mid-drop - instead of the tombstone vanishing
+	// first and stranding orphaned attribute rows that the next load would
+	// misread as a live (non-dropping) table.
+	const primaryCatalogKey = tableName + '/';
+	let removePrimaryLast = false;
 	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
-		attributesDbi.remove(key);
+		if (key === primaryCatalogKey) {
+			removePrimaryLast = true;
+			continue;
+		}
+		// removeSync (not remove): same reasoning as dropSync above - the async
+		// remove() rejects after this function has already returned, so a
+		// catalog-removal failure would bypass the retry accounting entirely.
+		(attributesDbi as any).removeSync(key);
 	}
+	if (removePrimaryLast) (attributesDbi as any).removeSync(primaryCatalogKey);
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {
@@ -1910,7 +2280,9 @@ export function getDefaultCompression() {
 	if (STORAGE_COMPRESSION_DICTIONARY)
 		LMDB_COMPRESSION_OPTS['dictionary'] = readFileSync(STORAGE_COMPRESSION_DICTIONARY);
 	if (STORAGE_COMPRESSION_THRESHOLD) LMDB_COMPRESSION_OPTS['threshold'] = STORAGE_COMPRESSION_THRESHOLD;
-	return LMDB_COMPRESSION && LMDB_COMPRESSION_OPTS;
+	// normalize disabled to false so a falsy config value ('' or null) is never persisted
+	// into table metadata as-is (openRocksDatabase maps defined-falsy to 'none')
+	return LMDB_COMPRESSION ? LMDB_COMPRESSION_OPTS : false;
 }
 
 /**

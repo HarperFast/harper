@@ -291,6 +291,19 @@ describe('matchesRoute', () => {
 		assert.strictEqual(matchesRoute(req('/', 'other.com'), { host: 'example.com' }), false);
 	});
 
+	// Hostnames are case-insensitive (RFC 4343). Clients send them lowercased, so a case-sensitive
+	// compare made a configured 'API.example.com' unmatchable by any real request.
+	it('matches host case-insensitively in both directions', () => {
+		assert.strictEqual(matchesRoute(req('/', 'API.Example.com'), { host: 'api.example.com' }), true);
+		assert.strictEqual(matchesRoute(req('/', 'api.example.com'), { host: 'API.Example.com' }), true);
+	});
+
+	it('matches a bare IPv6 host against the bracketed Host header form', () => {
+		assert.strictEqual(matchesRoute(req('/', '[::1]:9926'), { host: '::1' }), true);
+		assert.strictEqual(matchesRoute(req('/', '[::1]'), { host: '::1' }), true);
+		assert.strictEqual(matchesRoute(req('/', '[fe80::1]:9926'), { host: '::1' }), false);
+	});
+
 	it('requires both host and urlPath to match', () => {
 		const route = { host: 'example.com', urlPath: '/api' };
 		assert.strictEqual(matchesRoute(req('/api', 'example.com'), route), true);
@@ -308,6 +321,23 @@ describe('matchesRoute', () => {
 		const route = { host: 'example.com', urlPath: '/' };
 		assert.strictEqual(matchesRoute(req('/deep/path', 'example.com'), route), true);
 		assert.strictEqual(matchesRoute(req('/deep/path', 'other.com'), route), false);
+	});
+
+	// HTTP/2 clients send the ':authority' pseudo-header, never 'Host' — reading headers.asObject.host
+	// directly (as this used to) silently 404s every host-mounted app under h2 while h1 keeps working.
+	it("matches via request.host (Harper's Request getter, correct for both HTTP/1 and HTTP/2)", () => {
+		const request = { pathname: '/', headers: { asObject: {} }, host: 'example.com' };
+		assert.strictEqual(matchesRoute(request, { host: 'example.com' }), true);
+	});
+
+	it("falls back to headers.asObject[':authority'] when request.host is unavailable (HTTP/2 without the Request wrapper)", () => {
+		const request = { pathname: '/', headers: { asObject: { ':authority': 'example.com:8080' } } };
+		assert.strictEqual(matchesRoute(request, { host: 'example.com' }), true);
+	});
+
+	it('matches a trailing-dot absolute-FQDN Host header against the same bare host (RFC 1035)', () => {
+		assert.strictEqual(matchesRoute(req('/', 'example.com.'), { host: 'example.com' }), true);
+		assert.strictEqual(matchesRoute(req('/', 'example.com.:8080'), { host: 'example.com' }), true);
 	});
 });
 
@@ -498,6 +528,36 @@ describe('makeCallbackChain', () => {
 		order.length = 0;
 		chain(req('/', 'other.com'));
 		assert.deepStrictEqual(order, ['default']);
+	});
+
+	// The dispatch loop precomputes hostLower once per chain build; confirm it still resolves an
+	// HTTP/2-shaped request (no 'host' header, only ':authority') via the routed-chain dispatcher.
+	it('routes to sub-chain by host under an HTTP/2-shaped request (":authority", no "host")', () => {
+		const order = [];
+		const responders = [
+			{
+				name: 'vhost-handler',
+				port: 9000,
+				host: 'example.com',
+				listener: (r, next) => {
+					order.push('vhost');
+					return next(r);
+				},
+			},
+			{
+				name: 'default-handler',
+				port: 9000,
+				listener: (r, next) => {
+					order.push('default');
+					return next(r);
+				},
+			},
+		];
+		const chain = makeCallbackChain(responders, 9000, UNHANDLED);
+		const h2Request = { pathname: '/', url: '/', headers: { asObject: { ':authority': 'example.com' } } };
+
+		chain(h2Request);
+		assert.deepStrictEqual(order, ['vhost']);
 	});
 
 	it('sub-route auto-pulls auth via `after` dependency', () => {
@@ -1014,6 +1074,39 @@ describe('describeChains', () => {
 		assert.deepStrictEqual(
 			secure.order.map((e) => e.name),
 			['auth', 'waf']
+		);
+	});
+
+	// Two applications mounted at different urlPaths each register a plugin under the same name
+	// (e.g. both enable `rest`). Resolving `after: 'rest'` in one mount must never reach into the
+	// other mount's same-named entry — that would splice one application's handler into another's
+	// request chain (review finding).
+	it('does not let a same-named entry from another mounted route satisfy `after`', () => {
+		const restOne = entry('rest', { urlPath: '/one', listener: 'rest-one' });
+		const authOne = entry('auth-one', { urlPath: '/one', after: 'rest' });
+		const restTwo = entry('rest', { urlPath: '/two', listener: 'rest-two' });
+		const authTwo = entry('auth-two', { urlPath: '/two', after: 'rest' });
+		const resolved = resolveRoutedChains([restOne, authOne, restTwo, authTwo]);
+
+		const one = resolved.find((r) => r.urlPath === '/one');
+		const restEntryForOne = one.order.find((e) => e.name === 'rest');
+		assert.strictEqual(restEntryForOne.listener, 'rest-one', "'/one' must resolve its own 'rest', not '/two's");
+
+		const two = resolved.find((r) => r.urlPath === '/two');
+		const restEntryForTwo = two.order.find((e) => e.name === 'rest');
+		assert.strictEqual(restEntryForTwo.listener, 'rest-two', "'/two' must resolve its own 'rest', not '/one's");
+	});
+
+	// An unmounted (no host/urlPath) entry like `authentication` is meant to apply everywhere, so a
+	// mounted route with no same-named entry of its own must still be able to depend on it.
+	it('still pulls in an unmounted global entry when the mounted route has no same-named entry of its own', () => {
+		const auth = entry('authentication');
+		const waf = entry('waf', { urlPath: '/secure', after: 'authentication' });
+		const resolved = resolveRoutedChains([auth, waf]);
+		const secure = resolved.find((r) => r.urlPath === '/secure');
+		assert.deepStrictEqual(
+			secure.order.map((e) => e.name),
+			['authentication', 'waf']
 		);
 	});
 });

@@ -1,8 +1,10 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import logger from '../utility/logging/harper_logger.ts';
+import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
+import { withComponentPreparationLock } from './componentPreparationLock.ts';
+import { isThreadRunning, registerProcessGroup, unregisterProcessGroup } from '../server/threads/manageThreads.js';
 import type { CredentialReference, ResolvedCredential, ResolvedRegistryCredential } from './secretOperations.ts';
 import {
 	GIT_CREDENTIAL_SOCKET_ENV,
@@ -28,13 +30,14 @@ import {
 	symlink,
 	writeFile,
 } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
@@ -475,10 +478,110 @@ async function runNpmPack(
 // during a deploy swap (see extractApplication). The leading dot keeps
 // loadComponentDirectories from loading its contents as components.
 export const ASIDE_STAGING_DIR = '.deploy-aside';
+const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
+const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
+const MAX_GIT_EXTRACTION_COMMANDS = 4;
+const MAX_INSTALL_COMMANDS = 2;
+
+type ExtractionTransaction = {
+	commit(): Promise<void>;
+	rollback(): Promise<void>;
+};
 
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
 // module (both in source and in dist), holds no secret, and is inert without a live session.
 export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.js');
+
+const PACKAGE_LOCK_FILES = [
+	'package-lock.json',
+	'npm-shrinkwrap.json',
+	'pnpm-lock.yaml',
+	'yarn.lock',
+	'bun.lock',
+	'bun.lockb',
+];
+
+type InstalledPackageMetadata = {
+	files: Map<string, Buffer>;
+	readable: boolean;
+	hasLockfile: boolean;
+	hasInstallableDependencies: boolean;
+};
+
+export async function readInstalledPackageMetadata(directory: string): Promise<InstalledPackageMetadata> {
+	const files = new Map<string, Buffer>();
+	let readable = true;
+	let packageJSON: any;
+	await Promise.all([
+		(async () => {
+			try {
+				const contents = await readFile(join(directory, 'package.json'));
+				try {
+					packageJSON = JSON.parse(contents.toString());
+					files.set('package.json', Buffer.from(JSON.stringify(canonicalizeJSON(packageJSON))));
+				} catch {
+					files.set('package.json', contents);
+				}
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') readable = false;
+			}
+		})(),
+		...PACKAGE_LOCK_FILES.map(async (filename) => {
+			try {
+				files.set(filename, await readFile(join(directory, filename)));
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') readable = false;
+			}
+		}),
+	]);
+	return {
+		files,
+		readable,
+		hasLockfile: PACKAGE_LOCK_FILES.some((filename) => files.has(filename)),
+		hasInstallableDependencies: ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].some(
+			(field) => {
+				const dependencies = packageJSON?.[field];
+				return (
+					typeof dependencies === 'object' &&
+					dependencies !== null &&
+					!Array.isArray(dependencies) &&
+					Object.keys(dependencies).length > 0
+				);
+			}
+		),
+	};
+}
+
+export function installedPackageMetadataEqual(
+	previous: InstalledPackageMetadata,
+	current: InstalledPackageMetadata
+): boolean {
+	if (!previous.readable || !current.readable || previous.files.size !== current.files.size) return false;
+	for (const [filename, contents] of previous.files) {
+		if (!current.files.get(filename)?.equals(contents)) return false;
+	}
+	return true;
+}
+
+export function installedRuntimeChanged(
+	previous: InstalledPackageMetadata,
+	current: InstalledPackageMetadata,
+	installationIsOpaque: boolean
+): boolean {
+	return (
+		installationIsOpaque ||
+		(current.hasInstallableDependencies && !current.hasLockfile) ||
+		!installedPackageMetadataEqual(previous, current)
+	);
+}
+
+function canonicalizeJSON(value: any): any {
+	if (Array.isArray(value)) return value.map(canonicalizeJSON);
+	if (!value || typeof value !== 'object') return value;
+	const canonical: Record<string, any> = Object.create(null);
+	for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeJSON(value[key]);
+	return canonical;
+}
 
 /**
  * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
@@ -487,9 +590,13 @@ export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.j
  *
  * Writes the application to the configured components root directory using the `application.name` and overwrites any existing directory.
  *
- * This method should only be called from the main thread
+ * This method may be called from any Harper thread. Same-component calls are serialized across
+ * threads by the preparation lock below.
  */
-export async function extractApplication(application: Application) {
+export async function extractApplication(
+	application: Application,
+	deferCommit = false
+): Promise<ExtractionTransaction | undefined> {
 	// Can't specify neither
 	if (!application.payload && !application.packageIdentifier) {
 		throw new Error('Either payload or package must be provided');
@@ -499,7 +606,6 @@ export async function extractApplication(application: Application) {
 	if (application.payload && application.packageIdentifier) {
 		throw new Error('Both payload and package cannot be provided');
 	}
-
 	// Resolve the tarball from the input
 	let tarballPath: string;
 	let tarball: Readable;
@@ -568,6 +674,7 @@ export async function extractApplication(application: Application) {
 			// not have, so this gates the pack step regardless of whether a credential happens to be in
 			// play.
 			const allowScripts = !!application.install?.allowInstallScripts;
+			if (allowScripts) application.installationIsOpaque = true;
 			// `--ignore-scripts` alone isn't a reliable way to enforce that: pacote's DirFetcher runs a
 			// git source's `prepare` unconditionally on npm versions before 11.0.0 (see
 			// packGitReferenceWithoutScripts), which is exactly what Node 22's bundled npm ships. For a
@@ -622,12 +729,13 @@ export async function extractApplication(application: Application) {
 	// component, and the per-component path means a sibling component never collides
 	// with (or sweeps) another's aside.
 	const asideStagingDir = join(dirname(application.dirPath), ASIDE_STAGING_DIR, basename(application.dirPath));
-	let didRenameAside = false;
+	let asidePath: string | undefined;
 	try {
 		await access(application.dirPath, constants.F_OK);
 		await mkdir(asideStagingDir, { recursive: true });
-		await rename(application.dirPath, join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`));
-		didRenameAside = true;
+		const candidateAsidePath = join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`);
+		await rename(application.dirPath, candidateAsidePath);
+		asidePath = candidateAsidePath;
 	} catch (err) {
 		// Ignore does not exist error
 		if (err.code !== 'ENOENT') {
@@ -636,35 +744,37 @@ export async function extractApplication(application: Application) {
 	}
 	// A directory existed for this component name prior to this deploy, so this is a redeploy of
 	// an already-active component rather than a first-time deploy. See `isNewComponent` above.
-	if (didRenameAside) application.isNewComponent = false;
-	// Finally, create the application directory fresh
-	await mkdir(application.dirPath, { recursive: true });
+	if (asidePath) application.isNewComponent = false;
+	try {
+		await mkdir(application.dirPath, { recursive: true });
+		await pipeline(tarball, gunzip(), extract(application.dirPath));
 
-	// Now pipeline the tarball into maybe-gunzip then tar-fs to reliably decompress and extract the contents
-	await pipeline(tarball, gunzip(), extract(application.dirPath));
-
-	// If the extracted directory contains a single folder, move the contents up one level
-	// The `npm pack` command does this (the top-level folder is called "package")
-	// Other packing tools may have similar behavior, but the directory name is not guaranteed.
-	const extracted = await readdir(application.dirPath, { withFileTypes: true });
-	if (extracted.length === 1 && extracted[0].isDirectory()) {
-		const topLevelDirPath = join(application.dirPath, extracted[0].name);
-
-		const tempDirPath = await mkdtemp(application.dirPath);
-
-		// Copy contents of top-level directory to temp directory (in order to avoid collisions of top-level directory name and one of the contents)
-		await cp(topLevelDirPath, tempDirPath, { recursive: true });
-		// Remove top-level directory
-		await rm(topLevelDirPath, { recursive: true, force: true });
-		// Copy contents of temp directory to application directory
-		await cp(tempDirPath, application.dirPath, { recursive: true });
-		// Finally, remove the temp dir
-		await rm(tempDirPath, { recursive: true, force: true });
+		const extracted = await readdir(application.dirPath, { withFileTypes: true });
+		if (extracted.length === 1 && extracted[0].isDirectory()) {
+			const topLevelDirPath = join(application.dirPath, extracted[0].name);
+			await mkdir(asideStagingDir, { recursive: true });
+			const tempDirPath = await mkdtemp(join(asideStagingDir, '.normalize-'));
+			await cp(topLevelDirPath, tempDirPath, { recursive: true });
+			await rm(topLevelDirPath, { recursive: true, force: true });
+			await cp(tempDirPath, application.dirPath, { recursive: true });
+			await rm(tempDirPath, { recursive: true, force: true });
+		}
+	} catch (error) {
+		try {
+			await rollbackExtractedDirectory(application, asideStagingDir, asidePath);
+		} catch (rollbackError) {
+			throw new AggregateError(
+				[error, rollbackError],
+				`Failed to extract ${application.name} and restore its previous component directory`
+			);
+		}
+		throw error;
 	}
-
 	// Clean up the original tarball
 	if (shouldDeleteTarball && tarballPath) {
-		await rm(tarballPath, { force: true });
+		await rm(tarballPath, { force: true }).catch((error) =>
+			application.logger.warn(`Failed to remove temporary package ${tarballPath}:`, error)
+		);
 	}
 
 	// Remove this component's aside copies. The old worker may still hold files open
@@ -673,11 +783,76 @@ export async function extractApplication(application: Application) {
 	// earlier deploys whose workers have since exited, and a copy that survives because
 	// its worker is still live is swept by the next deploy. The failure is expected in
 	// the live-worker case, so it's logged at trace rather than as a warning.
-	if (didRenameAside) {
-		rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
-			logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
-		);
+	let settled = false;
+	const transaction: ExtractionTransaction = {
+		async commit() {
+			if (settled) return;
+			settled = true;
+			await cleanupExtractionStaging(application, asideStagingDir);
+		},
+		async rollback() {
+			if (settled) return;
+			settled = true;
+			await rollbackExtractedDirectory(application, asideStagingDir, asidePath);
+		},
+	};
+	if (deferCommit) return transaction;
+	await transaction.commit();
+}
+
+async function cleanupExtractionStaging(application: Application, asideStagingDir: string): Promise<void> {
+	try {
+		await rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+	} catch (error) {
+		logger.trace?.(`Cleanup of previous ${application.name} component directory deferred: ${error.message}`);
 	}
+}
+
+async function rollbackExtractedDirectory(
+	application: Application,
+	asideStagingDir: string,
+	asidePath: string | undefined
+): Promise<void> {
+	await mkdir(asideStagingDir, { recursive: true });
+	const retryableRenameCodes = new Set(['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES', 'EBUSY']);
+	const displaceCurrentDirectory = async () => {
+		const displacedPath = join(asideStagingDir, `.failed-${process.pid}-${Date.now()}-${randomUUID()}`);
+		let lastError: unknown;
+		for (let attempt = 0; attempt < 100; attempt++) {
+			try {
+				await rename(application.dirPath, displacedPath);
+				return;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code === 'ENOENT') return;
+				if (!retryableRenameCodes.has(code ?? '')) throw error;
+				lastError = error;
+				await delay(10);
+			}
+		}
+		throw lastError;
+	};
+
+	await displaceCurrentDirectory();
+	if (asidePath) {
+		let restored = false;
+		let restoreError: unknown;
+		for (let attempt = 0; attempt < 100; attempt++) {
+			try {
+				await rename(asidePath, application.dirPath);
+				restored = true;
+				break;
+			} catch (error) {
+				restoreError = error;
+				if (!retryableRenameCodes.has((error as NodeJS.ErrnoException).code ?? '')) break;
+				await displaceCurrentDirectory();
+				await delay(10);
+			}
+		}
+		if (!restored) throw restoreError;
+	}
+
+	await cleanupExtractionStaging(application, asideStagingDir);
 }
 
 /**
@@ -688,7 +863,7 @@ export async function extractApplication(application: Application) {
  *
  * Will return early if `node_modules` already exists within the `application.dirPath`
  *
- * This method should only be called from the main thread
+ * This method may be called from any Harper thread as part of a serialized preparation.
  */
 export async function installApplication(application: Application) {
 	let packageJSON: any;
@@ -703,7 +878,10 @@ export async function installApplication(application: Application) {
 	try {
 		// Does node_modules exist?
 		await access(join(application.dirPath, 'node_modules'), constants.F_OK);
-		application.logger.info(`Application ${application.name} already has node_modules; skipping install`);
+		application.logger.info(
+			`Application ${application.name} already has node_modules; skipping install and treating the runtime as opaque for redeploy comparison`
+		);
+		application.installationIsOpaque = true;
 		return;
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;
@@ -727,6 +905,7 @@ export async function installApplication(application: Application) {
 		);
 		// if it succeeds, return
 		if (code === 0) {
+			application.installationIsOpaque = true;
 			return;
 		}
 		if (stdout) {
@@ -789,6 +968,7 @@ export async function installApplication(application: Application) {
 
 		// if it succeeds, return
 		if (code === 0) {
+			if (application.install?.allowInstallScripts) application.installationIsOpaque = true;
 			return;
 		}
 
@@ -846,6 +1026,7 @@ export async function installApplication(application: Application) {
 
 	// if it succeeds, return
 	if (code === 0) {
+		if (application.install?.allowInstallScripts) application.installationIsOpaque = true;
 		return;
 	}
 
@@ -903,14 +1084,10 @@ export class Application {
 	npmUserconfigPath?: string;
 	#npmrcTempDir?: string;
 	#gitCredentialSession?: GitCredentialSession;
-	// Whether this component's directory did not already exist when extractApplication ran —
-	// i.e. this deploy is the component's first, as opposed to a redeploy of something already
-	// active. Defaults true and is flipped to false by extractApplication when it finds (and
-	// renames aside) a pre-existing directory for this component name. Used by deployComponent to
-	// scope its unconditional requestRestart() call to genuinely new components (harper#1806):
-	// an existing, already-loaded component already has a live file watcher (Scope/EntryHandler)
-	// that independently requests a restart if the redeploy actually needs one.
+	// Existing components rely on their runtime-equivalence checks; only a first deploy restarts unconditionally.
 	isNewComponent: boolean = true;
+	packageMetadataChanged: boolean = false;
+	installationIsOpaque: boolean = false;
 
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;
@@ -1042,7 +1219,8 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 /**
  * Extract and install the specified application.
  *
- * This method should only be called from the main thread
+ * This method may be called from any Harper thread. Same-component calls are serialized across
+ * threads by the preparation lock below.
  *
  * Bracketed with `deploy:start`/`deploy:end` lifecycle broadcasts so every
  * Harper thread's file watchers can suppress restart-on-change events while
@@ -1055,25 +1233,75 @@ export function derivePackageIdentifier(packageIdentifier: string) {
  * @returns A promise that resolves when all preparation steps complete.
  */
 export async function prepareApplication(application: Application) {
-	await broadcastDeployStart(application.name);
+	const deploymentId = await broadcastDeployStart(application.name);
 	try {
-		// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
-		// `npm install` authenticate against the private registry; always remove it afterward.
-		await application.writeTransientNpmrc();
-		try {
-			// The git credential socket only has to be up for extraction — that is where npm resolves and
-			// clones a git-reference package. Closing it before installApplication means the credential is
-			// already gone by the time the component's dependency tree (and any install script it is
-			// allowed to run) executes.
-			await application.startGitCredentialSession();
-			await extractApplication(application);
-		} finally {
-			await application.cleanupGitCredentialSession();
-		}
-		await installApplication(application);
+		const commandTimeoutMs = application.install?.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
+		await withComponentPreparationLock(
+			application.dirPath,
+			async () => {
+				const previousPackageMetadata = await readInstalledPackageMetadata(application.dirPath);
+				let extraction: ExtractionTransaction | undefined;
+				try {
+					// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
+					// `npm install` authenticate against the private registry; always remove it afterward.
+					await application.writeTransientNpmrc();
+					try {
+						// The git credential socket only has to be up for extraction — that is where npm resolves and
+						// clones a git-reference package. Closing it before installApplication means the credential is
+						// already gone by the time the component's dependency tree (and any install script it is
+						// allowed to run) executes.
+						await application.startGitCredentialSession();
+						extraction = await extractApplication(application, true);
+					} finally {
+						await application.cleanupGitCredentialSession();
+					}
+					await installApplication(application);
+					if (!application.isNewComponent) {
+						const currentPackageMetadata = await readInstalledPackageMetadata(application.dirPath);
+						application.packageMetadataChanged = installedRuntimeChanged(
+							previousPackageMetadata,
+							currentPackageMetadata,
+							application.installationIsOpaque
+						);
+					}
+					await extraction?.commit();
+				} catch (error) {
+					try {
+						await extraction?.rollback();
+					} catch (rollbackError) {
+						throw new AggregateError(
+							[error, rollbackError],
+							`Failed to prepare ${application.name} and restore its previous component directory`
+						);
+					}
+					throw error;
+				} finally {
+					await application.cleanupTransientNpmrc();
+				}
+			},
+			{
+				// The longest extraction path runs clone, tag listing, checkout, and npm pack. A custom
+				// package manager configured to warn can then fall back to npm, yielding two install
+				// commands. Bound orphaned same-process worker locks without rejecting behind a valid holder.
+				timeoutMs:
+					MAX_GIT_EXTRACTION_COMMANDS * DEFAULT_COMMAND_TIMEOUT_MS +
+					MAX_INSTALL_COMMANDS * commandTimeoutMs +
+					COMPONENT_PREPARATION_WAIT_MARGIN_MS,
+				onWait: (owner) =>
+					application.logger.info(
+						`Waiting for in-progress preparation of ${application.name}` +
+							(owner ? ` held by process ${owner.pid}, thread ${owner.threadId}` : '')
+					),
+				onReleaseError: (error) =>
+					application.logger.error(
+						`Failed to release the component preparation lock for ${application.name}:`,
+						errorForLog(error)
+					),
+				isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
+			}
+		);
 	} finally {
-		await application.cleanupTransientNpmrc();
-		broadcastDeployEnd(application.name);
+		broadcastDeployEnd(application.name, deploymentId);
 	}
 }
 
@@ -1165,10 +1393,18 @@ export async function installApplications() {
 				logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
 				continue;
 			}
-
-			applicationInstallationPromises.push(prepareApplication(application));
-
-			harperApplicationLock.applications[name] = applicationConfig;
+			// Once preparation is required, the old entry is no longer evidence of a complete
+			// installation. In particular, a failed reinstall may leave a partial directory behind;
+			// retaining the prior entry would make the next boot skip that partial component.
+			applicationInstallationPromises.push(
+				recordApplicationPreparation(
+					harperApplicationLock,
+					name,
+					applicationConfig,
+					() => prepareApplication(application),
+					(lock) => persistApplicationLock(harperApplicationLockPath, lock)
+				)
+			);
 		} catch (error) {
 			logger.error?.(`Skipping installation of application ${name} due to invalid configuration: ${error.message}`);
 		}
@@ -1178,8 +1414,60 @@ export async function installApplications() {
 	logger.debug?.(applicationInstallationStatuses);
 	logger.info?.('All root applications loaded');
 
-	// Finally, write the lock file
-	await writeFile(harperApplicationLockPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
+	// Finally, write the lock file. Every component that went through recordApplicationPreparation
+	// already persisted its own transition durably; this covers components that were skipped
+	// (matching-config, already installed) and never mutated the in-memory object at all.
+	await persistApplicationLock(harperApplicationLockPath, harperApplicationLock);
+}
+
+// Concurrent components each persist the same shared lock file. Serialize per path so two
+// writers never race the same temp filename, and so a write always reflects the latest merged
+// in-memory state rather than a stale snapshot silently clobbering a sibling's just-written change.
+const applicationLockWriteQueues = new Map<string, Promise<void>>();
+
+async function persistApplicationLock(
+	harperApplicationLockPath: string,
+	harperApplicationLock: { applications: Record<string, ApplicationConfig> }
+): Promise<void> {
+	const previous = applicationLockWriteQueues.get(harperApplicationLockPath) ?? Promise.resolve();
+	const next = previous
+		.catch(() => {})
+		.then(async () => {
+			const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
+			await writeFile(tempPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
+			await rename(tempPath, harperApplicationLockPath);
+		});
+	applicationLockWriteQueues.set(harperApplicationLockPath, next);
+	await next;
+}
+
+/**
+ * Keep the boot-time application lock honest while a reinstall is in flight. Factored as an
+ * explicit production seam so the failure transition can be tested without replacing module
+ * bindings: a stale success is removed before preparation starts and restored only on success.
+ *
+ * `persist` is durably awaited on both transitions — not just applied in memory — so a crash
+ * mid-preparation can never leave the on-disk lock file still claiming success for a directory a
+ * subsequent reinstall left partially written (which would make `installApplications`'s
+ * already-installed check at the top of this loop skip the required reinstall forever).
+ */
+export async function recordApplicationPreparation(
+	harperApplicationLock: { applications: Record<string, ApplicationConfig> },
+	name: string,
+	applicationConfig: ApplicationConfig,
+	prepare: () => Promise<void>,
+	persist: (lock: { applications: Record<string, ApplicationConfig> }) => Promise<void> = async () => {}
+): Promise<void> {
+	delete harperApplicationLock.applications[name];
+	await persist(harperApplicationLock);
+	try {
+		await prepare();
+		harperApplicationLock.applications[name] = applicationConfig;
+		await persist(harperApplicationLock);
+	} catch (error) {
+		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
+		throw error;
+	}
 }
 
 /**
@@ -1404,7 +1692,7 @@ export async function nonInteractiveSpawn(
 	command: string,
 	args: string[],
 	cwd: string,
-	timeoutMs: number = 60 * 60 * 1000,
+	timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
 	onLine?: (stream: 'stdout' | 'stderr', line: string) => void,
 	npmUserconfigPath?: string,
 	gitCredentialEnv?: Record<string, string>
@@ -1482,11 +1770,45 @@ function spawnWithEnv(
 			cwd,
 			env,
 			stdio: ['ignore', 'pipe', 'pipe'],
+			// A dedicated POSIX process group lets a timeout terminate npm plus every reify worker
+			// and install-script descendant before the component preparation lock is released.
+			detached: process.platform !== 'win32',
 		});
+		const trackedProcessId = childProcess.pid;
+		if (trackedProcessId) registerProcessGroup(trackedProcessId);
+		let processGroupIsTracked = Boolean(trackedProcessId);
+		const untrackProcessGroup = () => {
+			if (!processGroupIsTracked || !trackedProcessId) return;
+			processGroupIsTracked = false;
+			unregisterProcessGroup(trackedProcessId);
+		};
 
+		let didTimeout = false;
+		let didSettle = false;
+		let resolveClose: () => void;
+		const closePromise = new Promise<void>((resolve) => {
+			resolveClose = resolve;
+		});
 		const timeout = setTimeout(() => {
-			childProcess.kill();
-			reject(new Error(`Command\`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`));
+			didTimeout = true;
+			void terminateProcessTree(childProcess, closePromise).then(
+				() => {
+					// Only untrack once terminateProcessTree has confirmed the group is actually gone.
+					// The direct child can emit 'close' mid-grace-period (e.g. right after SIGTERM)
+					// while a same-group descendant is still alive; untracking there instead would let
+					// a worker exit in that window forget the group before it's truly empty.
+					untrackProcessGroup();
+					if (didSettle) return;
+					didSettle = true;
+					reject(new CommandTimeoutError(command, args, timeoutMs));
+				},
+				(error) => {
+					untrackProcessGroup();
+					if (didSettle) return;
+					didSettle = true;
+					reject(new CommandTimeoutError(command, args, timeoutMs, error));
+				}
+			);
 		}, timeoutMs);
 
 		// If a caller passed onLine, line-buffer stdout/stderr alongside the existing
@@ -1510,27 +1832,66 @@ function spawnWithEnv(
 			stderrSplitter?.push(chunk);
 		});
 
-		childProcess.on('error', (error) => {
-			clearTimeout(timeout);
+		let didFlushOutput = false;
+		const flushOutput = () => {
+			if (didFlushOutput) return;
+			didFlushOutput = true;
 			stdoutSplitter?.flush();
 			stderrSplitter?.flush();
+		};
+
+		childProcess.on('error', (error) => {
+			clearTimeout(timeout);
+			// See the 'close' handler: when didTimeout is true, the timeout path's own
+			// terminateProcessTree(...).then(...) owns untracking, only once it confirms the group is
+			// gone. Untracking here too could forget the group while that confirmation is still pending.
+			if (!didTimeout) untrackProcessGroup();
+			flushOutput();
 			// Print out stderr before rejecting
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
-			reject(error);
+			if (!didTimeout && !didSettle) {
+				didSettle = true;
+				reject(error);
+			}
 		});
 
-		childProcess.on('close', (code) => {
+		childProcess.on('close', async (code) => {
+			resolveClose();
 			clearTimeout(timeout);
+			// A successful direct-child exit does not prove the process group is empty: a custom
+			// installer can spawn-and-unref a descendant that inherits the group and outlives its
+			// parent (same invariant terminateProcessTree enforces on the timeout path). Confirm/
+			// terminate the whole group before letting the caller treat this command as done, or a
+			// survivor could keep mutating node_modules after the component lock is released. Skip
+			// when a timeout is already driving its own terminateProcessTree call for this process.
+			if (!didTimeout && trackedProcessId) {
+				try {
+					await terminateProcessTree(childProcess, closePromise);
+				} catch (error) {
+					untrackProcessGroup();
+					flushOutput();
+					if (!didSettle) {
+						didSettle = true;
+						reject(error);
+					}
+					return;
+				}
+				untrackProcessGroup();
+			}
+			// When didTimeout is true, the timeout path's own terminateProcessTree(...).then(...) owns
+			// untracking (only once it confirms the group is gone) — untracking here too, before that
+			// confirmation lands, is exactly the premature-forget race described above.
 			// Flush any trailing partial lines so the caller sees process output that didn't
 			// end on a newline (some package managers do this on their final progress line).
-			stdoutSplitter?.flush();
-			stderrSplitter?.flush();
+			flushOutput();
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
 			logger.loggerWithTag(`${applicationName}:spawn:${command}`).debug?.(`Process exited with code ${code}`);
+			if (didTimeout || didSettle) return;
+			didSettle = true;
 			resolve({
 				stdout,
 				stderr,
@@ -1538,6 +1899,164 @@ function spawnWithEnv(
 			});
 		});
 	});
+}
+
+const PROCESS_TERMINATION_GRACE_MS = 5000;
+const PROCESS_TERMINATION_POLL_MS = 25;
+const PROCESS_CLOSE_WAIT_MS = 5000;
+
+class CommandTimeoutError extends Error {
+	statusCode = 500;
+	constructor(command: string, args: string[], timeoutMs: number, cause?: unknown) {
+		super(`Command \`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`, { cause });
+		this.name = 'CommandTimeoutError';
+	}
+}
+
+function processGroupIsAlive(processGroupId: number): boolean {
+	try {
+		process.kill(-processGroupId, 0);
+		return true;
+	} catch (error: any) {
+		return error.code === 'EPERM';
+	}
+}
+
+async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {
+	const deadline = performance.now() + timeoutMs;
+	while (processGroupIsAlive(processGroupId)) {
+		if (performance.now() >= deadline) return false;
+		await delay(PROCESS_TERMINATION_POLL_MS);
+	}
+	return true;
+}
+
+/**
+ * Wait until the caller can positively establish that a timed-out process tree is gone. There is
+ * deliberately no deadline: releasing the component lock while a descendant can still resume and
+ * mutate node_modules is less safe than keeping that deployment wedged for operator intervention.
+ */
+export async function waitForConfirmedTermination(
+	isAlive: () => boolean | Promise<boolean>,
+	pollMs: number = PROCESS_TERMINATION_POLL_MS
+): Promise<void> {
+	while (await isAlive()) await delay(pollMs);
+}
+
+export async function waitForWindowsTreeTermination(
+	attemptTermination: () => boolean | Promise<boolean>,
+	treeIsAlive: () => boolean | null | Promise<boolean | null>,
+	pollMs: number = PROCESS_TERMINATION_POLL_MS
+): Promise<void> {
+	for (;;) {
+		// A successful taskkill exit only proves the request was accepted, not that the whole tree
+		// has actually exited — Windows termination is asynchronous, and taskkill can report overall
+		// success even when a descendant is not yet (or never) reaped. Only an explicit `false` from
+		// treeIsAlive, independently confirming no member of the tree remains, is safe to return on;
+		// `true` or `null` (unknown) must keep the loop retrying.
+		await attemptTermination();
+		if ((await treeIsAlive()) === false) return;
+		await delay(pollMs);
+	}
+}
+
+async function windowsProcessTreeIsAlive(rootPid: number): Promise<boolean | null> {
+	// Query the process table rather than probing only the parent PID: descendants retain their
+	// ParentProcessId after the parent exits, which is exactly the taskkill "process not found" race.
+	// Exit code 1 must mean "queried the process table and positively found nothing" — never
+	// "the query itself failed" (e.g. Get-CimInstance denied or WMI unavailable), which would
+	// otherwise read identically to a confirmed-gone tree and release the lock while a descendant
+	// may still be alive. ErrorActionPreference=Stop plus the wrapping try/catch turns a query
+	// failure into its own exit code (2), which the caller below already treats as unknown.
+	const script =
+		"$ErrorActionPreference = 'Stop'; try { " +
+		`$rootPid = ${rootPid}; ` +
+		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
+		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
+		'while ($frontier.Count -gt 0) { ' +
+		'$next = @(); foreach ($parentPid in $frontier) { if ($seen[$parentPid]) { continue }; ' +
+		'$seen[$parentPid] = $true; foreach ($p in $all) { ' +
+		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
+		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
+		'$frontier = $next }; ' +
+		'if ($found) { exit 0 } else { exit 1 } ' +
+		'} catch { exit 2 }';
+	return new Promise<boolean | null>((resolve) => {
+		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+			stdio: 'ignore',
+			windowsHide: true,
+		});
+		query.once('close', (code) => resolve(code === 0 ? true : code === 1 ? false : null));
+		query.once('error', () => resolve(null));
+	});
+}
+
+async function terminateWindowsProcessTree(childProcess: ChildProcess): Promise<void> {
+	if (!childProcess.pid) return;
+	const rootPid = childProcess.pid;
+	await waitForWindowsTreeTermination(
+		() =>
+			new Promise<boolean>((resolve) => {
+				const taskkill = spawn('taskkill', ['/pid', String(rootPid), '/T', '/F'], {
+					stdio: 'ignore',
+					windowsHide: true,
+				});
+				taskkill.once('close', (code) => resolve(code === 0));
+				taskkill.once('error', () => resolve(false));
+			}),
+		() => windowsProcessTreeIsAlive(rootPid)
+	);
+}
+
+async function waitForProcessClose(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
+	let timer: ReturnType<typeof setTimeout>;
+	const closeTimeout = new Promise<false>((resolve) => {
+		timer = setTimeout(() => resolve(false), PROCESS_CLOSE_WAIT_MS);
+		timer.unref?.();
+	});
+	const closed = await Promise.race([closePromise.then(() => true), closeTimeout]);
+	clearTimeout(timer!);
+	if (!closed) {
+		// A detached descendant can retain inherited pipe descriptors after its process tree was
+		// terminated. Stop waiting on those descriptors so a bounded command timeout remains bounded.
+		childProcess.stdout?.destroy();
+		childProcess.stderr?.destroy();
+	}
+}
+
+export async function terminateProcessTree(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
+	if (!childProcess.pid) {
+		await waitForProcessClose(childProcess, closePromise);
+		return;
+	}
+	if (process.platform === 'win32') {
+		await terminateWindowsProcessTree(childProcess);
+		await waitForProcessClose(childProcess, closePromise);
+		return;
+	}
+
+	// The direct child's exit does not prove the process group is empty: a custom installer can
+	// spawn-and-unref a descendant that inherits the group and outlives its parent. Probe the group
+	// itself rather than trusting childProcess.exitCode/signalCode.
+	const processGroupId = childProcess.pid;
+	if (!processGroupIsAlive(processGroupId)) {
+		await waitForProcessClose(childProcess, closePromise);
+		return;
+	}
+	try {
+		process.kill(-processGroupId, 'SIGTERM');
+	} catch (error: any) {
+		if (error.code !== 'ESRCH') throw error;
+	}
+	if (!(await waitForProcessGroupExit(processGroupId, PROCESS_TERMINATION_GRACE_MS))) {
+		try {
+			process.kill(-processGroupId, 'SIGKILL');
+		} catch (error: any) {
+			if (error.code !== 'ESRCH') throw error;
+		}
+		await waitForConfirmedTermination(() => processGroupIsAlive(processGroupId));
+	}
+	await waitForProcessClose(childProcess, closePromise);
 }
 
 export function getEnvBuiltInComponents() {

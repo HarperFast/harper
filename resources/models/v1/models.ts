@@ -27,6 +27,11 @@ export interface OAIModelList {
 
 // @ts-ignore — Resource base class is not typed for static dispatch; pattern mirrors login.ts
 export class V1Models extends Resource {
+	// Reserve this fixed route: a later app registration at the same path becomes a
+	// loud conflict (ErrorResource) instead of silently replacing the gateway and its
+	// super_user gate. See Resources.set.
+	static reservedPath = true;
+
 	static get(_target: unknown, request: unknown): OAIModelList | OpenAIErrorResponse {
 		const authError = authorizeV1Request(request as any);
 		if (authError) return authError;

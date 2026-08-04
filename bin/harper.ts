@@ -8,7 +8,7 @@ import * as cliOperations from './cliOperations.ts';
 import { packageJson } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-const { SERVICE_ACTIONS_ENUM } = hdbTerms as any;
+const { SERVICE_ACTIONS_ENUM, OPERATIONS_ENUM } = hdbTerms as any;
 if (typeof process.setSourceMapsEnabled === 'function') {
 	process.setSourceMapsEnabled(true); // this is necessary for source maps to work, at least on the main thread.
 }
@@ -23,11 +23,30 @@ Documentation: https://docs.harperdb.io/
 By default, the CLI also supports certain Operation APIs. Specify the operation name and any required parameters, and omit the 'operation' command.
 
 Commands:
+agent [message]                 - Chat with the built-in agent (interactive, or one-shot with a message; alias: chat)
 copy-db <source> <target>       - Copies a database from source path to target path
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
 install                         - Install harperdb
 <api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
+                                   To authenticate as a different user than the one being operated on
+                                   (e.g. add_user/alter_user), set HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD
+                                   or run 'harper login'. The equivalent auth_username=<value>
+                                   auth_password=<value> args also work, but a password passed as an
+                                   argument is exposed in shell history, process listings and CI logs.
+                                   A saved login token always outranks username=/password=, so a
+                                   stale token that fails to refresh will 401 rather than falling
+                                   back to them — run 'harper logout' or pass auth_username=/
+                                   auth_password= to override it.
 login [target] [username]       - Login to a remote or local Harper instance
+                                   --for-ci prints the CI/CD credentials (target + long-lived
+                                   refresh token) to stdout in dotenv format, and everything else
+                                   to stderr, so it pipes without the token hitting your screen:
+                                     harper login --for-ci | gh secret set --env-file -
+                                   Log in as a user dedicated to that one CI consumer: Harper
+                                   stores a single refresh token per user, so this revokes any
+                                   refresh token that user already holds — another runner, another
+                                   machine, or an earlier 'harper login' will 401 on its next
+                                   refresh. Two consumers cannot share a user.
 logout [target]                 - Logout from Harper and clear saved JWT
 mcp [subcommand]                - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
 register                        - Register harperdb
@@ -42,6 +61,18 @@ upgrade                         - Upgrade harperdb
 version                         - Print the version
 deploy                          - Deploy the application locally or remotely with target=<remote url>
 `;
+
+/**
+ * Format a CLI error for the terminal. Expected, user-facing errors (a `ClientError` from an
+ * operation — bad args, not found, a locked backup repo — which carry a numeric `statusCode`) get
+ * just their message, not a Node stack trace. A genuinely unexpected error keeps its stack so a bug
+ * is still debuggable. Mirrors the clean `error: <message>` output of a forwarded operation.
+ */
+export function formatCliError(error: any): string {
+	const message = `error: ${error?.message ?? error}`;
+	if (error?.stack && typeof error?.statusCode !== 'number') return `${message}\n${error.stack}`;
+	return message;
+}
 
 async function harper() {
 	let nodeResults = checkNode();
@@ -87,10 +118,13 @@ async function harper() {
 		case SERVICE_ACTIONS_ENUM.STATUS:
 			return (require('./status').default || require('./status'))();
 		case SERVICE_ACTIONS_ENUM.LOGIN: {
-			const target = process.argv[3];
-			const username = process.argv[4];
+			const args = process.argv.slice(3);
+			const forCi = args.includes('--for-ci');
+			// Flags are filtered out so they can appear anywhere without being mistaken for the
+			// positional target/username.
+			const [target, username] = args.filter((arg) => !arg.startsWith('-'));
 			const { login } = require('./login');
-			return login(target, username);
+			return login(target, username, { forCi });
 		}
 		case SERVICE_ACTIONS_ENUM.LOGOUT: {
 			const target = process.argv[3];
@@ -100,6 +134,12 @@ async function harper() {
 		case SERVICE_ACTIONS_ENUM.MCP: {
 			const { runMcpCli } = require('./mcp');
 			const code = await runMcpCli(process.argv.slice(3));
+			process.exit(code);
+		}
+		case SERVICE_ACTIONS_ENUM.CHAT:
+		case SERVICE_ACTIONS_ENUM.AGENT: {
+			const { runAgentCli } = require('./agentCli');
+			const code = await runAgentCli(process.argv.slice(3));
 			process.exit(code);
 		}
 		// eslint-disable-next-line no-fallthrough
@@ -112,6 +152,14 @@ async function harper() {
 			let targetDbPath = process.argv[4];
 			return require('./copyDb').copyDb(sourceDb, targetDbPath);
 		}
+		case OPERATIONS_ENUM.CREATE_BACKUP:
+		case OPERATIONS_ENUM.LIST_BACKUPS:
+		case OPERATIONS_ENUM.VERIFY_BACKUP:
+		case OPERATIONS_ENUM.DELETE_BACKUP:
+		case OPERATIONS_ENUM.PURGE_BACKUPS:
+		case OPERATIONS_ENUM.GET_BACKUP:
+		case OPERATIONS_ENUM.RESTORE_BACKUP:
+			return require('./backup').runBackupCommand(service);
 		case SERVICE_ACTIONS_ENUM.DEV:
 			process.env.DEV_MODE = 'true';
 		// fall through
@@ -153,7 +201,7 @@ async function harper() {
 			return require('./run').main();
 		default:
 			const cliApiOp = cliOperations.buildRequest();
-			logger.trace('calling cli operations with:', cliApiOp);
+			logger.trace('calling cli operations with:', cliOperations.redactCredentials(cliApiOp));
 			await cliOperations.cliOperations(cliApiOp);
 			return;
 	}
@@ -163,18 +211,17 @@ if (require.main === module) {
 	harper()
 		.then((message) => {
 			if (message) {
+				// console.log is the canonical terminal output for CLI results; logger.notify would
+				// print the same message a second time (its Console transport is stdout in CLI mode),
+				// so `harper help` and friends were emitted twice.
 				console.log(message);
-				logger.notify(message);
 			}
 			// Intentionally not calling `process.exit(0);` so if a CLI
 			// command resulted in a long running process (aka `run`),
 			// it continues to run.
 		})
 		.catch((error) => {
-			if (error) {
-				console.error(error);
-				logger.error(error);
-			}
+			if (error) console.error(formatCliError(error));
 			process.exit(1);
 		});
 }

@@ -19,10 +19,16 @@ import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue 
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
 import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
+import {
+	decodeProxyHeader,
+	applyProxyHeader,
+	applyDefaultPeerCertificate,
+	withProxyProtocol,
+} from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable, Writable, pipeline } from 'node:stream';
-import { mkdirSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
@@ -61,30 +67,145 @@ export const uwsServeConfigs: Record<string, any> = {};
 // backends that don't register their own Node http server (Bun, and the uWS HTTP path). Keeping
 // them out of SERVERS is what prevents a competing Node server from binding the same port.
 const fallbackServers: Record<string | number, any> = {};
-const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
+// `ino`/`dev` are set once this worker's own bind is confirmed (see recordUdsBindSuccess) and are
+// what make cleanupUdsFiles/markUdsBindFailed ownership-aware: on an overlapping restart (see
+// restartWorkers()), the replacement worker rebinds this exact path before the outgoing worker
+// exits, so by the time the outgoing worker cleans up, the identity on disk may already belong to
+// the replacement, not to it. Captured as bigint (statSync's `{ bigint: true }` form): a plain
+// Number loses precision above 2^53, which some filesystems (e.g. XFS with inode64) can exceed,
+// letting two genuinely different inodes compare equal.
+const udsCleanupPaths: { socketPath: string; yamlPath: string; identity?: { dev: bigint; ino: bigint } }[] = [];
+// Sockets whose listen() has failed (see threadServer.js's fail-soft UDS handling). A TLS mirror's
+// YAML metadata is written on its own schedule (SNICallback readiness / cert reload), independent of
+// whether the mirror socket ever actually bound, so a failed bind must both cancel any metadata write
+// still pending and remove one already on disk — otherwise a fronting proxy keeps advertising a socket
+// nothing is listening on.
+const failedUdsPaths = new Set<string>();
 
 export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
 	udsCleanupPaths.push({ socketPath, yamlPath });
 }
 
+/**
+ * Record that this worker's own bind at `socketPath` succeeded, capturing the (dev, inode) pair that
+ * proves ownership. Call right after a mirror socket starts listening (see the bind sites in
+ * threadServer.js — the Node/h2/raw-socket mirrors via listenOnDomainSocket's onListening, the Bun
+ * path right after Bun.serve() returns, and the uWS path once createUwsServer() resolves). A no-op
+ * if `socketPath` was never registered.
+ */
+export function recordUdsBindSuccess(socketPath: string) {
+	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
+	if (!entry) return;
+	try {
+		const stat = statSync(socketPath, { bigint: true });
+		entry.identity = { dev: stat.dev, ino: stat.ino };
+	} catch (error) {
+		// Extremely unlikely (we just bound this path), but silent failure here is expensive: the
+		// entry is permanently treated as unowned, so this worker leaks both files at shutdown with
+		// nothing in the logs to explain why.
+		harperLogger.warn(`Could not stat freshly bound UDS mirror at ${socketPath}`, error);
+	}
+}
+
+/**
+ * 'owned' — the (dev, inode) this worker recorded at bind time still matches what's on disk.
+ * 'foreign' — a socket exists at the path, but with a different identity (or none was ever
+ *   recorded): something else — almost always a replacement worker — currently owns it. Also the
+ *   safe default when statSync fails for any reason other than ENOENT (e.g. EACCES): we can't
+ *   confirm the path is genuinely empty, so treat it as though something we can't verify owns it.
+ * 'absent' — statSync confirmed ENOENT: nothing is on disk at the path. There is no live owner to
+ *   protect.
+ */
+function ownershipOf(entry: {
+	socketPath: string;
+	identity?: { dev: bigint; ino: bigint };
+}): 'owned' | 'foreign' | 'absent' {
+	let current: { dev: bigint; ino: bigint };
+	try {
+		const stat = statSync(entry.socketPath, { bigint: true });
+		current = { dev: stat.dev, ino: stat.ino };
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'foreign';
+	}
+	return entry.identity !== undefined && current.dev === entry.identity.dev && current.ino === entry.identity.ino
+		? 'owned'
+		: 'foreign';
+}
+
+/**
+ * Mark a Unix domain socket's listen() as failed: suppress its metadata, and remove any already
+ * written UNLESS a live socket at this path currently belongs to someone else (a replacement worker
+ * that already rebound it). Unlike cleanupUdsFiles, a failed bind never produced a socket of its own,
+ * so 'absent' here just means no bind ever won this path — not evidence of a live replacement — and
+ * is safe to retract stale metadata for (see server/DESIGN.md's UDS ownership note for why this can't
+ * require 'owned': the only real caller, an overlong path, fails before listen() ever runs, so this
+ * worker's own identity is never recorded).
+ */
+export function markUdsBindFailed(socketPath: string) {
+	failedUdsPaths.add(socketPath);
+	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
+	if (!entry || ownershipOf(entry) === 'foreign') return;
+	try {
+		unlinkSync(entry.yamlPath);
+	} catch {}
+}
+
 export function cleanupUdsFiles() {
-	for (const { socketPath, yamlPath } of udsCleanupPaths) {
+	for (const entry of udsCleanupPaths) {
+		// ownershipOf() and the unlinks below are separate syscalls, so a replacement that unlinks
+		// and rebinds in the gap between them would still lose its files — unavoidable in Node
+		// (no unlink-if-inode-matches primitive), but this narrows that window from the
+		// seconds-wide one this fix closes down to microseconds.
+		const ownership = ownershipOf(entry);
+		// Consume this entry's recorded identity on first use, regardless of outcome. This function
+		// runs twice per worker (threadServer.js's SHUTDOWN handler, while this worker's own
+		// socket is still open, then again from process.on('exit') after closeServers() has
+		// released it) — and a freed inode can be handed to an unrelated later bind before the
+		// second call runs. Leaving the stale value in place would let that second call
+		// coincidentally re-match a path it no longer has any claim to; clearing it here makes a
+		// repeat call a guaranteed no-op instead of a second chance to delete a stranger's files.
+		entry.identity = undefined;
+		// Unlike markUdsBindFailed (where 'absent' is genuinely safe — its only caller runs
+		// synchronously before any bind attempt, with no window for anyone else to be mid-flight),
+		// this function's second call (process.on('exit')) can land seconds after the first, while
+		// a concurrently-booting replacement — on the non-overlapping-restart platforms, started
+		// right after this worker's SHUTDOWN, not after it fully exits — may have already written
+		// its own fresh yaml (SNICallback.ready resolves independently of its bind) without having
+		// bound its socket yet. Treating that window's 'absent' as retractable would delete the
+		// replacement's yaml out from under it. Only 'owned' is safe here; a stale yaml this worker
+		// never bound (or no longer owns) is left for markUdsBindFailed or the startup sweep.
+		if (ownership !== 'owned') continue;
 		try {
-			unlinkSync(socketPath);
+			unlinkSync(entry.socketPath);
 		} catch {}
 		try {
-			unlinkSync(yamlPath);
+			unlinkSync(entry.yamlPath);
 		} catch {}
 	}
 }
 
 /** Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server. */
-export function writeUdsMetadata(yamlPath: string, port: number | string, secureServer: any, protocol?: string) {
+export function writeUdsMetadata(
+	yamlPath: string,
+	port: number | string,
+	secureServer: any,
+	protocol?: string,
+	mtlsForwarding = true
+) {
 	const contexts = secureServer.secureContexts;
 	let yaml = `pid: ${process.pid}\ntid: ${currentThreadId()}\nport: ${port}\n`;
 	// Which application protocol this socket speaks (absent = http/1.1, the historical
 	// default) — lets a fronting proxy route by negotiated ALPN.
 	if (protocol) yaml += `protocol: ${protocol}\n`;
+	// Whether the mirrored port verifies client certificates: a fronting proxy that
+	// terminates TLS should request client certs (mtlsRequired: reject when absent)
+	// and forward the verified chain via PROXY v2 TLVs. Only advertised when the
+	// mirror can actually decode that header (mtlsForwarding=false for the uWS
+	// mirror, which speaks X-Forwarded-For and has no PROXY parsing).
+	if (mtlsForwarding && secureServer.verifiesClientCerts) {
+		yaml += `mtls: true\n`;
+		if (secureServer.mtlsRequired) yaml += `mtlsRequired: true\n`;
+	}
 	yaml += `certificates:\n`;
 	if (contexts?.size > 0) {
 		const seen = new Set();
@@ -123,9 +244,13 @@ export function writeUdsMetadata(yamlPath: string, port: number | string, secure
 	}
 }
 
-/** Clean all files in the sockets directory. Call from main thread on process startup. */
+/**
+ * Clean all files in the sockets directory. Call from main thread on process startup, before any
+ * worker can bind. Unconditional on the current TLS_UNIXDOMAINSOCKETS setting — the directory is
+ * Harper-owned and holds nothing but mirror .sock/.yaml files, so a crash that left stale ones
+ * behind while UDS was enabled must still be swept even if this boot has since disabled it.
+ */
 export function cleanupSocketsDirectory() {
-	if (!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) return;
 	const socketsDir = join(env.getHdbBasePath(), 'sockets');
 	try {
 		for (const file of readdirSync(socketsDir)) {
@@ -689,6 +814,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			server.ports.push(port);
 			server.appliedCiphers = options.ciphers ?? null;
 			server.verifiesClientCerts = Boolean(mtls || isMtls);
+			server.mtlsRequired = Boolean(mtlsRequired);
 			options.SNICallback.initialize(server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
@@ -722,6 +848,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					secure: true,
 					handler: makeUwsHandler(port, isOperationsServer, env.get(serverPrefix + '_requestQueueLimit')),
 				};
+				// Let onWebSocket() install its wsHandler on this mirror too
+				server.udsMirrorUwsConfig = uwsServeConfigs[udsPath];
 			} else {
 				// Create a plain HTTP server (no TLS) with the same request handler
 				const udsServer = createServer(
@@ -742,12 +870,28 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				);
 
 				udsServer.isPerThreadSocket = true;
+				// Mirror the secure server's mTLS config so a client cert forwarded by the
+				// fronting proxy (PROXY v2 TLVs) authenticates exactly like one this worker
+				// terminated itself.
+				udsServer.verifiesClientCerts = server.verifiesClientCerts;
+				udsServer.mtlsRequired = server.mtlsRequired;
+				if (mtls) udsServer.mtlsConfig = mtls;
 				enableProxyProtocol(udsServer);
 				SERVERS[udsPath] = udsServer;
+				// Let onWebSocket() attach its 'upgrade' dispatch to this mirror too — a Node
+				// HTTP server with no 'upgrade' listener destroys upgrade sockets with no
+				// response and no log.
+				server.udsMirror = udsServer;
 			}
 			registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server);
+			// Skip (and don't re-arm) the write if this mirror's listen() already failed — see
+			// markUdsBindFailed(). SNICallback readiness and cert reloads are independent of the
+			// socket's bind outcome, so without this check a failed mirror could still get advertised.
+			const writeMetadata = () => {
+				if (!failedUdsPaths.has(udsPath))
+					writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+			};
 			options.SNICallback.ready.then(writeMetadata);
 			server.secureContextsListeners.push(writeMetadata);
 
@@ -769,10 +913,24 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				});
 				const h2Front = createH2CProxyFront(h2Server) as any;
 				h2Front.isPerThreadSocket = true;
+				// Same mTLS mirroring as the h1 UDS server. Set on both servers: the
+				// compat req.socket.server resolves through the accepting net server
+				// (the front), but guard against Node reassigning socket.server during
+				// the h2 connection handoff.
+				h2Front.verifiesClientCerts = server.verifiesClientCerts;
+				h2Front.mtlsRequired = server.mtlsRequired;
+				(h2Server as any).verifiesClientCerts = server.verifiesClientCerts;
+				(h2Server as any).mtlsRequired = server.mtlsRequired;
+				if (mtls) {
+					h2Front.mtlsConfig = mtls;
+					(h2Server as any).mtlsConfig = mtls;
+				}
 				SERVERS[udsPathH2] = h2Front;
 				registerUdsCleanupPaths(udsPathH2, yamlPathH2);
 
-				const writeMetadataH2 = () => writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				const writeMetadataH2 = () => {
+					if (!failedUdsPaths.has(udsPathH2)) writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				};
 				options.SNICallback.ready.then(writeMetadataH2);
 				server.secureContextsListeners.push(writeMetadataH2);
 			}
@@ -1416,8 +1574,25 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 const upgradeListeners = [],
 	upgradeChains = {};
 
+// uWS-served listeners (HARPER_UWS_HTTP ports, HARPER_UWS_UDS mirrors) accept WebSocket
+// handshakes natively in app.ws() — the Node 'upgrade' event never fires there, so
+// server.upgrade() middleware cannot run pre-handshake (auth still runs in the WS
+// connection chain, matching the Node path's upgrade-then-authorize order). Warn instead
+// of silently skipping the middleware. The default handler onWebSocket() registers is
+// exempt: its job (ws.handleUpgrade) is what uWS performs natively.
+function warnIfUpgradeMiddlewareUnreachable(listener: UpgradeListener, port: number | string) {
+	if ((listener as any).isDefaultWsUpgrade) return;
+	const server: any = httpServers[port];
+	if (server?.uws || server?.udsMirrorUwsConfig) {
+		harperLogger.warn(
+			`Upgrade middleware ('${getComponentName()}') is not applied on uWS-served listeners for port ${port}; uWS accepts WebSocket handshakes natively, so pre-handshake upgrade middleware only runs on Node-served listeners.`
+		);
+	}
+}
+
 function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 	for (const { port } of getPorts(options)) {
+		warnIfUpgradeMiddlewareUnreachable(listener, port);
 		const entry = {
 			listener,
 			port: options?.port || port,
@@ -1464,34 +1639,47 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 
 		const server = getHTTPServer(port, secure, options);
 
+		const installUwsWsHandler = (cfg: any) => {
+			if (!cfg || cfg.wsHandler) return;
+			// Registration-order complement to warnIfUpgradeMiddlewareUnreachable(): middleware
+			// registered before this uWS transport existed is equally unreachable.
+			for (const entry of upgradeListeners) {
+				if (entry.port == port && !(entry.listener as any).isDefaultWsUpgrade) {
+					harperLogger.warn(
+						`Upgrade middleware ('${entry.name}') is not applied on uWS-served listeners for port ${port}; uWS accepts WebSocket handshakes natively, so pre-handshake upgrade middleware only runs on Node-served listeners.`
+					);
+				}
+			}
+			// Honor a configured WebSocket maxPayload on the uWS transport too (else it defaults to 100 MiB).
+			if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
+			cfg.wsHandler = (ws: any, upgrade: any) => {
+				try {
+					const request: any = new UwsRequest({
+						method: 'GET',
+						url: upgrade.url,
+						headers: upgrade.headers,
+						secure,
+						ip: upgrade.ip,
+					});
+					request.isWebSocket = true;
+					const chainCompletion = httpChain[port](request);
+					websocketChains[port](ws, request, chainCompletion);
+				} catch (error) {
+					harperLogger.warn('Error in handling WS connection', error);
+					try {
+						ws.close();
+					} catch {}
+				}
+			};
+		};
+		// A uWS-served UDS mirror (HARPER_UWS_UDS) needs the wsHandler regardless of whether the
+		// port itself is uWS- or Node-backed.
+		installUwsWsHandler((server as any)?.udsMirrorUwsConfig);
 		if ((server as any)?.uws) {
 			// uWS-backed port (HARPER_UWS_HTTP): uWS owns the socket, so route upgrades through uWS's
 			// native app.ws() rather than the Node ws.WebSocketServer + server 'upgrade' event. We wire a
 			// wsHandler into the shared uwsServeConfig; createUwsServer registers app.ws() when it listens.
-			const cfg = uwsServeConfigs[port];
-			if (cfg && !cfg.wsHandler) {
-				// Honor a configured WebSocket maxPayload on the uWS transport too (else it defaults to 100 MiB).
-				if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
-				cfg.wsHandler = (ws: any, upgrade: any) => {
-					try {
-						const request: any = new UwsRequest({
-							method: 'GET',
-							url: upgrade.url,
-							headers: upgrade.headers,
-							secure,
-							ip: upgrade.ip,
-						});
-						request.isWebSocket = true;
-						const chainCompletion = httpChain[port](request);
-						websocketChains[port](ws, request, chainCompletion);
-					} catch (error) {
-						harperLogger.warn('Error in handling WS connection', error);
-						try {
-							ws.close();
-						} catch {}
-					}
-				};
-			}
+			installUwsWsHandler(uwsServeConfigs[port]);
 		} else if (!websocketServers[port]) {
 			websocketServers[port] = new WebSocketServer({
 				noServer: true,
@@ -1512,30 +1700,34 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			});
 
 			// Add the default upgrade handler if it doesn't exist.
-			onUpgrade(
-				(request, socket, head, next) => {
-					// If the request has already been upgraded, continue without upgrading
-					if (request.__harperdbRequestUpgraded || request.__harperRequestUpgraded) {
-						return next(request, socket, head);
-					}
+			const defaultUpgradeHandler = (request, socket, head, next) => {
+				// If the request has already been upgraded, continue without upgrading
+				if (request.__harperdbRequestUpgraded || request.__harperRequestUpgraded) {
+					return next(request, socket, head);
+				}
 
-					// Otherwise, upgrade the socket and then continue
-					return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
-						request.__harperdbRequestUpgraded = true;
-						request.__harperRequestUpgraded = true;
-						next(request, socket, head);
-						websocketServers[port].emit('connection', ws, request);
-					});
-				},
-				{ port }
-			);
+				// Otherwise, upgrade the socket and then continue
+				return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
+					request.__harperdbRequestUpgraded = true;
+					request.__harperRequestUpgraded = true;
+					next(request, socket, head);
+					websocketServers[port].emit('connection', ws, request);
+				});
+			};
+			(defaultUpgradeHandler as any).isDefaultWsUpgrade = true;
+			onUpgrade(defaultUpgradeHandler, { port });
 
 			// Call the upgrade middleware chain
-			server.on('upgrade', (request, socket, head) => {
+			const dispatchUpgrade = (request, socket, head) => {
 				if (upgradeChains[port]) {
 					upgradeChains[port](request, socket, head);
 				}
-			});
+			};
+			server.on('upgrade', dispatchUpgrade);
+			// The UDS mirror is a separate http.Server; without its own 'upgrade' listener
+			// Node destroys upgrade sockets silently (zero-byte close), so WS worked on the
+			// TCP port but died on the mirror.
+			(server as any).udsMirror?.on('upgrade', dispatchUpgrade);
 		}
 
 		servers.push(server);
@@ -1559,11 +1751,7 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 	return servers;
 }
 
-// PROXY protocol v1 max header length per spec: 108 bytes
-const PROXY_V1_MAX_HEADER = 108;
-const PROXY_V1_PREFIX = Buffer.from('PROXY ');
-
-export function enableProxyProtocol(httpServer) {
+export function enableProxyProtocol(httpServer, prehandoffTimeout = 10_000) {
 	// In Node.js v24+, the HTTP parser's data path goes through the C++ stream layer
 	// and does not call socket.emit('data') via JavaScript method dispatch.
 	// Overriding socket.emit or socket.push has no effect on the HTTP parser's data intake.
@@ -1574,6 +1762,9 @@ export function enableProxyProtocol(httpServer) {
 	// process.nextTick fires before any I/O callbacks, so it is guaranteed to run before
 	// the first network data chunk reaches the socket — making the interception race-free.
 	httpServer.prependListener('connection', (socket) => {
+		// TLSSocket-shaped defaults so mTLS-aware auth paths see a "no client cert"
+		// TLS connection unless the PROXY v2 header forwards a verified identity.
+		applyDefaultPeerCertificate(socket);
 		process.nextTick(() => {
 			// Capture the HTTP parser's 'data' listener(s) registered during this connection event.
 			const dataListeners = socket.listeners('data') as ((chunk: Buffer) => void)[];
@@ -1583,57 +1774,52 @@ export function enableProxyProtocol(httpServer) {
 				for (const listener of dataListeners) listener.call(socket, chunk);
 			};
 
-			let headerHandled = false;
 			// Accumulates a possibly-split PROXY header. Raw protocols (MQTT/replication) can't
 			// recover from a corrupted first packet, so we must not forward a partial header —
-			// the line can arrive across multiple data events.
+			// it can arrive across multiple data events.
 			let pending: Buffer | null = null;
-			socket.on('data', (chunk: Buffer) => {
-				if (headerHandled) return forward(chunk);
+			// Bounds how long a stalled peer can hold the pending-header buffer, matching
+			// withProxyProtocol's prehandoffTimeout for the same threat on the raw-socket path.
+			// Cleared (not just disabled) once the header resolves, so it can't fire on a later,
+			// unrelated keep-alive timeout.
+			const onPrehandoffTimeout = () => socket.destroy();
+			socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
+			const onData = (chunk: Buffer) => {
 				if (pending) chunk = Buffer.concat([pending, chunk]);
 
-				// Compare against "PROXY " for as many bytes as we have so far.
-				const cmpLen = Math.min(PROXY_V1_PREFIX.length, chunk.length);
-				if (chunk.compare(PROXY_V1_PREFIX, 0, cmpLen, 0, cmpLen) !== 0) {
-					// Not a PROXY v1 header — forward everything unchanged.
-					headerHandled = true;
-					pending = null;
-					return forward(chunk);
+				const decision = decodeProxyHeader(chunk);
+				if (decision.kind === 'incomplete') {
+					pending = chunk;
+					return;
 				}
-
-				const header = chunk.toString('latin1', 0, Math.min(PROXY_V1_MAX_HEADER, chunk.length));
-				const eol = header.indexOf('\r\n');
-				if (eol === -1) {
-					// Header not complete yet. Keep buffering until the CRLF arrives, unless we've
-					// passed the spec max without one — then it isn't a valid PROXY header.
-					if (chunk.length < PROXY_V1_MAX_HEADER) {
-						pending = chunk;
-						return;
-					}
-					headerHandled = true;
-					pending = null;
-					return forward(chunk);
-				}
-
-				// Complete header: "PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>"
-				headerHandled = true;
 				pending = null;
-				const parts = header.slice(0, eol).split(' ');
-				if (parts.length === 6) {
-					// Override the UDS socket's undefined remoteAddress/remotePort with the real client values.
-					Object.defineProperty(socket, 'remoteAddress', { value: parts[2], configurable: true });
-					Object.defineProperty(socket, 'remotePort', { value: parseInt(parts[4], 10), configurable: true });
+				socket.setTimeout(0);
+				socket.removeListener('timeout', onPrehandoffTimeout);
+				// Hand the socket back to its original listeners before forwarding. The wrapper
+				// must not outlive the header decision: protocol handoffs assume the listener
+				// they registered is the one attached (e.g. Node's HTTP upgrade path removes its
+				// parser's 'data' listener before ws takes over — with a lingering wrapper, WS
+				// frames would keep feeding the freed, re-poolable HTTP parser and corrupt
+				// whichever connection it is issued to next).
+				socket.removeListener('data', onData);
+				for (const listener of dataListeners) socket.on('data', listener);
+				if (decision.kind === 'none') {
+					// Not a PROXY header — forward everything unchanged.
+					return forward(chunk);
 				}
+				applyProxyHeader(socket, decision);
 				// Forward only the bytes after the PROXY header to the protocol parser.
-				const rest = chunk.subarray(eol + 2);
+				const rest = chunk.subarray(decision.headerLength);
 				if (rest.length > 0) forward(rest);
-			});
+			};
+			socket.on('data', onData);
 		});
 	});
 }
 
 /**
- * Front a cleartext HTTP/2 server with optional PROXY v1 handling on a Unix domain socket.
+ * Front a cleartext HTTP/2 server with optional PROXY (v1 or v2) handling on a Unix
+ * domain socket.
  *
  * enableProxyProtocol() can't be used here: Node's Http2Session consumes the socket's
  * native handle directly, so data never surfaces as JS 'data' events to intercept. The
@@ -1659,51 +1845,20 @@ export function createH2CProxyFront(h2Server, prehandoffTimeout = 10_000) {
 		sessions.add(session);
 		session.on('close', () => sessions.delete(session));
 	});
-	const front = createNetServer({ noDelay: true }, (socket) => {
-		let buf: Buffer | null = null;
-		// Until handoff the h2 session's own handlers aren't attached yet: swallow socket
-		// errors (a reset mid-header) and bound how long we'll wait for the header, so a
-		// stalled connection can't hold an fd forever.
+	// http2's compat req.socket proxies through to the underlying socket, so the
+	// overridden remoteAddress and the synthesized peer cert reach request handlers.
+	// withProxyProtocol also swallows socket errors and bounds the header wait until
+	// handoff, when the h2 session's own handlers take over.
+	const front = createNetServer(
+		{ noDelay: true },
+		withProxyProtocol((socket) => {
+			prehandoffSockets.delete(socket);
+			h2Server.emit('connection', socket);
+		}, prehandoffTimeout)
+	);
+	front.prependListener('connection', (socket) => {
 		prehandoffSockets.add(socket);
 		socket.on('close', () => prehandoffSockets.delete(socket));
-		const onPrehandoffError = () => socket.destroy();
-		socket.on('error', onPrehandoffError);
-		const onPrehandoffTimeout = () => socket.destroy();
-		socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
-		const handoff = (rest: Buffer) => {
-			prehandoffSockets.delete(socket);
-			socket.removeListener('readable', onReadable);
-			socket.removeListener('error', onPrehandoffError);
-			socket.setTimeout(0);
-			socket.removeListener('timeout', onPrehandoffTimeout);
-			if (rest.length > 0) socket.unshift(rest);
-			h2Server.emit('connection', socket);
-		};
-		const onReadable = () => {
-			let chunk: Buffer;
-			while ((chunk = socket.read()) !== null) {
-				buf = buf ? Buffer.concat([buf, chunk]) : chunk;
-				// Compare against "PROXY " for as many bytes as we have so far; a non-PROXY
-				// prefix (e.g. a direct h2 client with no fronting proxy) is handed off as-is.
-				const cmpLen = Math.min(PROXY_V1_PREFIX.length, buf.length);
-				if (buf.compare(PROXY_V1_PREFIX, 0, cmpLen, 0, cmpLen) !== 0) return handoff(buf);
-				const eol = buf.indexOf('\r\n');
-				if (eol !== -1) {
-					// Complete header: "PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>"
-					const parts = buf.toString('latin1', 0, eol).split(' ');
-					if (parts.length === 6) {
-						// Override the UDS socket's undefined remoteAddress/remotePort with the real
-						// client values; http2's compat req.socket proxies through to these.
-						Object.defineProperty(socket, 'remoteAddress', { value: parts[2], configurable: true });
-						Object.defineProperty(socket, 'remotePort', { value: parseInt(parts[4], 10), configurable: true });
-					}
-					return handoff(buf.subarray(eol + 2));
-				}
-				// No CRLF within the spec max — not a valid PROXY header after all.
-				if (buf.length >= PROXY_V1_MAX_HEADER) return handoff(buf);
-			}
-		};
-		socket.on('readable', onReadable);
 	});
 	const netClose = front.close.bind(front);
 	front.close = (callback?: (error?: Error) => void) => {

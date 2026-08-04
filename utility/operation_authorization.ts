@@ -18,6 +18,7 @@ import * as schemaDescribe from '../dataLayer/schemaDescribe.ts';
 import * as delete_ from '../dataLayer/delete.ts';
 import readAuditLog from '../dataLayer/readAuditLog.ts';
 import getBackup from '../dataLayer/getBackup.ts';
+import * as rocksdbBackup from '../dataLayer/rocksdbBackup.ts';
 import * as user from '../security/user.ts';
 import * as role from '../security/role.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -205,6 +206,30 @@ requiredPermissions.set(restart.restart.name, new (permission as any)(true, [], 
 requiredPermissions.set(restart.restartService.name, new (permission as any)(true, []));
 requiredPermissions.set(readAuditLog.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.READ_AUDIT_LOG));
 requiredPermissions.set(getBackup.name, new (permission as any)(true, [READ_PERM]));
+requiredPermissions.set(
+	rocksdbBackup.createBackup.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.CREATE_BACKUP)
+);
+requiredPermissions.set(
+	rocksdbBackup.listBackups.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.LIST_BACKUPS)
+);
+requiredPermissions.set(
+	rocksdbBackup.verifyBackup.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.VERIFY_BACKUP)
+);
+requiredPermissions.set(
+	rocksdbBackup.deleteBackup.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.DELETE_BACKUP)
+);
+requiredPermissions.set(
+	rocksdbBackup.purgeBackups.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.PURGE_BACKUPS)
+);
+requiredPermissions.set(
+	rocksdbBackup.restoreBackup.name,
+	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
+);
 requiredPermissions.set(schema.cleanupOrphanBlobs.name, new (permission as any)(true, []));
 requiredPermissions.set(
 	systemInformation.name,
@@ -408,8 +433,8 @@ export function verifyPermsAST(ast, userObject, operation) {
 		throw handleHDBError(new Error());
 	}
 	try {
-		const bucket =
-			require('../sqlTranslator/sql_statement_bucket').default || require('../sqlTranslator/sql_statement_bucket');
+		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
+		const bucket = bucketModule.default || bucketModule;
 		const alasql = require('alasql');
 
 		const permsResponse = new PermissionResponseObject();
@@ -434,6 +459,21 @@ export function verifyPermsAST(ast, userObject, operation) {
 		if (isSuperUser && !isSuSystemOperation) {
 			//admins can do (almost) anything through the hole in sheet!
 			return null;
+		}
+
+		// Fail closed on any table the statement references that did not make it into the
+		// affected-attribute map. hasPermissions() only iterates that map, so a reference missing
+		// from it is never checked — which is how an unqualified `SELECT ... FROM customers` was
+		// authorized against an empty map while the engine resolved the same bare name and read the
+		// table (GHSA-5c29-q62v-jrwf). Checked per reference, not on the map being empty overall:
+		// a statement mixing a resolvable table with an unresolvable one has a non-empty map and
+		// would otherwise slip through on the strength of the table that did resolve.
+		const unauthorizedRefs = parsedAst.getUnauthorizedTableRefs();
+		if (unauthorizedRefs.length > 0) {
+			harperLogger.info(
+				`Unauthorizable table reference(s) in verifyPermsAST(): ${unauthorizedRefs.join(', ')}. Denying operation.`
+			);
+			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 
 		const fullRolePerms = permsTranslator.getRolePermissions(userObject.role);
@@ -599,9 +639,12 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 		}
 		// Gate 2: op is SU-only but was explicitly granted via operations — allow without super_user.
 		// Without this, the SU check further below would still deny it even though it passed gate 1.
-		// TODO: ops registered with both requires_su AND non-empty CRUD perms (currently only getBackup)
-		// have their table-level CRUD check bypassed here. Should fall through for those instead of
-		// returning null unconditionally. Low risk today but worth tightening.
+		// TODO: ops registered with both requires_su AND non-empty CRUD perms have their table-level
+		// CRUD check bypassed here. Should fall through for those instead of returning null
+		// unconditionally. The managed-backup ops share this shape but self-enforce super_user in their
+		// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
+		// regardless; get_backup remains the one that relies solely on this gate. Low risk today but
+		// worth tightening.
 		if (requiredPermissions.get(op)?.requires_su) {
 			return null;
 		}

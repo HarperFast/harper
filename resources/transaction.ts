@@ -42,9 +42,6 @@ export function transaction<T>(
 	if (context.replicatedConfirmation) transaction.replicatedConfirmation = context.replicatedConfirmation;
 	if (context.sourceApply) transaction.sourceApply = true;
 	transaction.setContext(context);
-
-	// create a resource cache so that multiple requests to the same resource return the same resource
-	if (!context.resourceCache) context.resourceCache = new Map();
 	let result;
 	try {
 		result =
