@@ -174,9 +174,8 @@ function walkExportsConditions(entry: unknown, conditions: readonly string[]): s
 
 /**
  * Resolve a bare package specifier to a file:// URL using the package's exports map
- * with ESM import conditions. Used as a fallback when createRequire().resolve() throws
- * ERR_PACKAGE_PATH_NOT_EXPORTED for pure-ESM packages (exports map with only "import"
- * conditions and no "require").
+ * with ESM import conditions. Used as a fallback when the runtime's CommonJS resolver
+ * cannot match a pure-ESM package (exports map with only "import" conditions).
  */
 function resolveESMPackageExports(
 	specifier: string,

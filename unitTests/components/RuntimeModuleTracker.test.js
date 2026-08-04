@@ -74,6 +74,21 @@ describe('RuntimeModuleTracker', () => {
 		assert.equal(await this.tracker.finishDeploy(), true);
 	});
 
+	it('ignores new lower-priority extensionless resolution candidates', async () => {
+		const referrerPath = join(this.directory, 'resources.js');
+		const javascriptPath = join(this.directory, 'helper.js');
+		writeFileSync(referrerPath, 'import helper from "./helper";');
+		writeFileSync(javascriptPath, 'export default {};');
+		const initiallyResolved = createRequire(pathToFileURL(referrerPath)).resolve('./helper');
+		assert.equal(initiallyResolved, javascriptPath);
+		this.tracker.recordModule(pathToFileURL(javascriptPath).href, 'export default {};');
+		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(initiallyResolved).href);
+
+		this.tracker.beginDeploy();
+		writeFileSync(join(this.directory, 'helper.json'), '{}');
+		assert.equal(await this.tracker.finishDeploy(), false);
+	});
+
 	it('fails closed when Node resolution cache invalidation is unavailable', async () => {
 		const referrerPath = join(this.directory, 'resources.js');
 		const helperPath = join(this.directory, 'helper.js');
