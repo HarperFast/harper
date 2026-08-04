@@ -214,7 +214,7 @@ describe('extractApplication directory swap', () => {
 
 		try {
 			await started;
-			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot, 10);
 			assert(failures.get('web') instanceof ComponentPreparationLockTimeoutError);
 			await fs.access(asidePath);
 		} finally {

@@ -878,7 +878,8 @@ function extractionAsideTimestamp(name: string): number {
 }
 
 export async function recoverInterruptedComponentExtractions(
-	componentsRootDirPath: string
+	componentsRootDirPath: string,
+	waitTimeoutMs = COMPONENT_RECOVERY_WAIT_TIMEOUT_MS
 ): Promise<Map<string, Error>> {
 	const stagingRoot = join(componentsRootDirPath, ASIDE_STAGING_DIR);
 	let entries;
@@ -916,17 +917,12 @@ export async function recoverInterruptedComponentExtractions(
 							);
 						},
 						{
-							timeoutMs: COMPONENT_RECOVERY_WAIT_TIMEOUT_MS,
+							timeoutMs: waitTimeoutMs,
 							purpose: COMPONENT_RECOVERY_LOCK_PURPOSE,
-							renewTimeoutWhileOwnerAlive: false,
+							renewTimeoutWhileOwnerAlive: (owner) => owner.purpose === COMPONENT_RECOVERY_LOCK_PURPOSE,
 							onWait: (owner) => {
-								if (owner?.purpose !== COMPONENT_RECOVERY_LOCK_PURPOSE) {
-									throw new ComponentPreparationLockTimeoutError(
-										`Component preparation is still in progress for ${componentDirPath}`
-									);
-								}
 								logger.info(
-									`Waiting to recover an interrupted deployment of ${entry.name}` +
+									`Waiting to settle component deployment state for ${entry.name}` +
 										(owner ? ` held by process ${owner.pid}, thread ${owner.threadId}` : '')
 								);
 							},
@@ -1080,6 +1076,7 @@ async function rollbackExtractedDirectory(
 		let restoreError: unknown;
 		let restoreRetryDeadline: number | undefined;
 		let fallbackDisplacedPath: string | undefined;
+		let placeholderIdentity: { dev: bigint; ino: bigint } | undefined;
 		const failRestore = async (error: unknown): Promise<never> => {
 			try {
 				if (retainReplacement) {
@@ -1092,6 +1089,21 @@ async function rollbackExtractedDirectory(
 						});
 						await rename(fallbackDisplacedPath, application.dirPath);
 						transactionPaths.delete(fallbackDisplacedPath);
+					}
+				} else if (placeholderIdentity) {
+					try {
+						const current = await lstat(application.dirPath, { bigint: true });
+						if (current.dev === placeholderIdentity.dev && current.ino === placeholderIdentity.ino) {
+							await rm(application.dirPath, {
+								recursive: true,
+								force: true,
+								maxRetries: 3,
+								retryDelay: 100,
+							});
+							placeholderIdentity = undefined;
+						}
+					} catch (placeholderError) {
+						if ((placeholderError as NodeJS.ErrnoException).code !== 'ENOENT') throw placeholderError;
 					}
 				}
 				const disposablePaths = new Set(transactionPaths);
@@ -1122,6 +1134,7 @@ async function rollbackExtractedDirectory(
 				let displacedPath: string | undefined;
 				try {
 					displacedPath = await displaceCurrentDirectory();
+					placeholderIdentity = undefined;
 				} catch (displaceError) {
 					return failRestore(
 						new AggregateError(
@@ -1132,9 +1145,11 @@ async function rollbackExtractedDirectory(
 				}
 				fallbackDisplacedPath ??= displacedPath;
 				restoreRetryDeadline ??= Date.now() + 5000;
-				if (process.platform !== 'win32') {
+				if (process.platform !== 'win32' && process.getuid?.() !== 0) {
 					try {
 						await mkdir(application.dirPath, { mode: 0o000 });
+						const placeholder = await lstat(application.dirPath, { bigint: true });
+						placeholderIdentity = { dev: placeholder.dev, ino: placeholder.ino };
 					} catch (placeholderError) {
 						if ((placeholderError as NodeJS.ErrnoException).code !== 'EEXIST') {
 							return failRestore(placeholderError);
@@ -1143,7 +1158,7 @@ async function rollbackExtractedDirectory(
 				}
 				await delay(10);
 			}
-		} while (Date.now() < (restoreRetryDeadline ?? Date.now() + 5000));
+		} while (restoreRetryDeadline !== undefined && Date.now() < restoreRetryDeadline);
 		return failRestore(restoreError);
 	}
 	try {

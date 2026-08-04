@@ -140,7 +140,14 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			const appName = appEntry.name;
 			const recoveryError = failedRecoveries.get(appName);
 			if (recoveryError) {
-				if (recoveryError instanceof ComponentPreparationLockTimeoutError) continue;
+				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
+					componentLifecycle.failed(
+						appName,
+						recoveryError,
+						`Component '${appName}' is waiting for in-progress preparation to finish`
+					);
+					continue;
+				}
 				componentLifecycle.failed(
 					appName,
 					recoveryError,

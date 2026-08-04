@@ -32,7 +32,7 @@ export interface ComponentPreparationLockOptions {
 	onReleaseError?: (error: unknown) => void;
 	isOwnerAlive?: (owner: ComponentPreparationLockOwner) => boolean | Promise<boolean>;
 	purpose?: string;
-	renewTimeoutWhileOwnerAlive?: boolean;
+	renewTimeoutWhileOwnerAlive?: boolean | ((owner: ComponentPreparationLockOwner) => boolean | Promise<boolean>);
 }
 
 export class ComponentPreparationLockTimeoutError extends Error {}
@@ -270,7 +270,7 @@ async function acquireComponentPreparationLock(
 		await rm(choosingPath, { force: true }).catch(() => {});
 	}
 
-	let waitingReported = false;
+	let waitingReportedForToken: string | undefined;
 	try {
 		for (;;) {
 			const claims = await scanLiveClaims(lockRoot, lockName, options, owner.token);
@@ -282,12 +282,14 @@ async function acquireComponentPreparationLock(
 				})[0];
 			const blocker = claims.choosing[0] ?? precedingTicket;
 			if (!blocker) break;
-			if (!waitingReported) {
-				waitingReported = true;
+			if (waitingReportedForToken !== blocker.token) {
+				waitingReportedForToken = blocker.token;
 				options.onWait?.(blocker);
 			}
 			if (performance.now() >= deadline) {
-				if (options.renewTimeoutWhileOwnerAlive !== false && (await ownerLivenessConfirmed(blocker, options))) {
+				const renewOption = options.renewTimeoutWhileOwnerAlive;
+				const renewForOwner = typeof renewOption === 'function' ? await renewOption(blocker) : renewOption !== false;
+				if (renewForOwner && (await ownerLivenessConfirmed(blocker, options))) {
 					// A confirmed-live holder is allowed to finish; the deadline only bounds owners whose
 					// liveness cannot be positively established.
 					deadline = performance.now() + timeoutMs;
