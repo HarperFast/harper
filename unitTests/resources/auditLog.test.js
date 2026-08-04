@@ -130,9 +130,7 @@ describe('Audit log', () => {
 			if (key === targetKey) return Promise.reject(new Error('simulated audit entry removal failure'));
 			return originalRemove(key);
 		};
-		harperLogger.warn = () => {
-			throw new Error('simulated logging failure');
-		};
+		const warnings = [];
 
 		let unhandledRejection;
 		const onUnhandledRejection = (reason) => {
@@ -140,8 +138,20 @@ describe('Audit log', () => {
 		};
 		process.on('unhandledRejection', onUnhandledRejection);
 		try {
-			const entriesDeleted = await AuditedTable.deleteHistory(Date.now() + 60_000);
+			let entriesDeleted;
+			harperLogger.warn = (...args) => {
+				warnings.push(args);
+				throw new Error('simulated logging failure');
+			};
+			try {
+				entriesDeleted = await AuditedTable.deleteHistory(Date.now() + 60_000);
+			} finally {
+				harperLogger.warn = originalWarn;
+			}
 			assert.equal(entriesDeleted, 1, 'only the successful removal should be counted, not the rejected one');
+			assert.equal(warnings.length, 1);
+			assert.equal(warnings[0][0], 'Error removing audit entry during deleteHistory');
+			assert.equal(warnings[0][1].message, 'simulated audit entry removal failure');
 			await delay(50);
 			assert.equal(
 				unhandledRejection,
