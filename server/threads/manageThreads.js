@@ -976,7 +976,6 @@ function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
 	} catch {
 		return null;
 	}
-	let foundMember = false;
 	for (const processId of processIds) {
 		if (!/^\d+$/.test(processId)) continue;
 		let stat;
@@ -987,7 +986,6 @@ function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
 		}
 		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
 		if (Number(fields[2]) !== processGroupId) continue;
-		foundMember = true;
 		if (fields[0] !== 'Z') return true;
 	}
 	return false;

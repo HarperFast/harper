@@ -174,7 +174,7 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		// exactly the state that let the old exitCode/signalCode check skip probing the process group.
 		assert.notStrictEqual(childProcess.exitCode, null);
 
-		const sizeBeforeTermination = await waitFor(
+		await waitFor(
 			async () => {
 				try {
 					return (await require('node:fs/promises').stat(writesPath)).size;
