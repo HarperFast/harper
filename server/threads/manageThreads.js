@@ -946,7 +946,7 @@ const processGroupsByThread = new Map();
 // window component-preparation locking exists to close.
 const pendingProcessGroupTerminations = new Map();
 const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
-const ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS = 250;
+const ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS = 1000;
 const zombieGroupScanTimes = new Map();
 
 function processGroupExists(processGroupId) {
@@ -990,7 +990,7 @@ function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
 		foundMember = true;
 		if (fields[0] !== 'Z') return true;
 	}
-	return foundMember ? false : null;
+	return false;
 }
 
 function isProcessGroupAlive(processGroupId, testOptions) {
@@ -998,7 +998,10 @@ function isProcessGroupAlive(processGroupId, testOptions) {
 	const groupExists = testOptions?.processGroupExists ?? processGroupExists;
 	const readDirectory = testOptions?.readDirectory ?? readdirSync;
 	const readStat = testOptions?.readStat ?? readFileSync;
-	if (!groupExists(processGroupId)) return false;
+	if (!groupExists(processGroupId)) {
+		zombieGroupScanTimes.delete(processGroupId);
+		return false;
+	}
 	const leaderState = processGroupLeaderState(processGroupId, platform, readStat);
 	if (leaderState === 'alive' || leaderState === 'unknown') return true;
 	if (!testOptions) {
