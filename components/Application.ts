@@ -6,7 +6,7 @@ import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
 import {
 	isThreadRunning,
-	isZombieProcessGroupLeader,
+	isProcessGroupAlive,
 	registerProcessGroup,
 	unregisterProcessGroup,
 } from '../server/threads/manageThreads.js';
@@ -2522,12 +2522,7 @@ class CommandTimeoutError extends Error {
 }
 
 function processGroupIsAlive(processGroupId: number): boolean {
-	try {
-		process.kill(-processGroupId, 0);
-	} catch (error: any) {
-		return error.code === 'EPERM';
-	}
-	return !isZombieProcessGroupLeader(processGroupId);
+	return isProcessGroupAlive(processGroupId);
 }
 
 async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {

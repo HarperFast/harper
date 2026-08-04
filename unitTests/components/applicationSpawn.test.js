@@ -24,7 +24,7 @@ const {
 	waitForConfirmedTermination,
 	waitForWindowsTreeTermination,
 } = require('#src/components/Application');
-const { isZombieProcessGroupLeader } = require('#src/server/threads/manageThreads');
+const { isProcessGroupAlive } = require('#src/server/threads/manageThreads');
 
 // Write `script` to a temp .js file and return its path; auto-removed in `after`.
 let workDir;
@@ -223,19 +223,27 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		assert.equal(settled, true);
 	});
 
-	it('treats a Linux zombie process-group leader as terminated', () => {
+	it('treats a Linux process group containing only zombies as terminated', () => {
+		const zombieGroup = (processIds) =>
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => processIds,
+				readStat: (path) =>
+					path === '/proc/123/stat' ? '123 (installer worker) Z 1 123 123' : '456 (installer child) Z 1 123 123',
+			});
+		assert.equal(zombieGroup(['123', '456']), false);
 		assert.equal(
-			isZombieProcessGroupLeader(123, 'linux', () => '123 (installer worker) Z 1 123 123'),
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['123', '456'],
+				readStat: (path) =>
+					path === '/proc/123/stat' ? '123 (installer) Z 1 123 123' : '456 (still running) S 1 123 123',
+			}),
 			true
 		);
-		assert.equal(
-			isZombieProcessGroupLeader(123, 'linux', () => '123 (installer) S 1 123 123'),
-			false
-		);
-		assert.equal(
-			isZombieProcessGroupLeader(123, 'darwin', () => '123 (installer) Z 1 123 123'),
-			false
-		);
+		assert.equal(zombieGroup(['123']), false);
 	});
 
 	it('accepts a Windows taskkill miss only when the process tree is independently gone', async () => {

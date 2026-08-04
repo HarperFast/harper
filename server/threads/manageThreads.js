@@ -7,7 +7,7 @@ const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { spawn, spawnSync } = require('node:child_process');
-const { readFileSync } = require('node:fs');
+const { readdirSync, readFileSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
@@ -154,7 +154,7 @@ module.exports = {
 	onThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
-	isZombieProcessGroupLeader,
+	isProcessGroupAlive,
 	isThreadRunning,
 	waitUntilConfirmedGone,
 	restartNumber: workerData?.restartNumber || 1,
@@ -947,8 +947,6 @@ const processGroupsByThread = new Map();
 const pendingProcessGroupTerminations = new Map();
 const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
 
-// A zombie cannot mutate the component directory, but kill(pid, 0) still succeeds until it is
-// reaped. Treat a confirmed zombie process-group leader as gone so cleanup cannot poll forever.
 function isZombieProcessGroupLeader(processGroupId, platform = process.platform, readStat = readFileSync) {
 	if (platform !== 'linux') return false;
 	let stat;
@@ -961,13 +959,49 @@ function isZombieProcessGroupLeader(processGroupId, platform = process.platform,
 	return stat[stat.lastIndexOf(')') + 2] === 'Z';
 }
 
-function processGroupIsAlive(processGroupId) {
+function isProcessGroupAlive(
+	processGroupId,
+	{
+		platform = process.platform,
+		processGroupExists = (id) => {
+			try {
+				process.kill(-id, 0);
+				return true;
+			} catch (error) {
+				return error.code === 'EPERM';
+			}
+		},
+		readDirectory = readdirSync,
+		readStat = readFileSync,
+	} = {}
+) {
+	if (!processGroupExists(processGroupId)) return false;
+	if (!isZombieProcessGroupLeader(processGroupId, platform, readStat)) return true;
+	let processIds;
 	try {
-		process.kill(-processGroupId, 0);
-	} catch (error) {
-		return error.code === 'EPERM';
+		processIds = readDirectory('/proc');
+	} catch {
+		return true;
 	}
-	return !isZombieProcessGroupLeader(processGroupId);
+	let foundMember = false;
+	for (const processId of processIds) {
+		if (!/^\d+$/.test(processId)) continue;
+		let stat;
+		try {
+			stat = readStat(`/proc/${processId}/stat`, 'utf8');
+		} catch {
+			continue;
+		}
+		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+		if (Number(fields[2]) !== processGroupId) continue;
+		foundMember = true;
+		if (fields[0] !== 'Z') return true;
+	}
+	return !foundMember;
+}
+
+function processGroupIsAlive(processGroupId) {
+	return isProcessGroupAlive(processGroupId);
 }
 
 async function waitForProcessGroupExit(processGroupId) {
