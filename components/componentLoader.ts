@@ -143,13 +143,18 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 		[...failedRecoveries].filter(([, error]) => error instanceof ComponentPreparationLockTimeoutError)
 	);
 	const deferComponentLoad = (appName: string) => {
-		componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
+		const appFolder = join(CF_ROUTES_DIR, appName);
+		const appWasVisible = existsSync(appFolder);
+		if (appWasVisible) {
+			componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
+		}
 		void recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
 			.then(async () => {
 				if (loadGeneration !== componentLoadGeneration) return;
-				const appFolder = join(CF_ROUTES_DIR, appName);
 				if (!existsSync(appFolder)) {
-					statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+					if (appWasVisible) {
+						statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+					}
 					return;
 				}
 				const mountResult = tryRootConfigMount(appName);

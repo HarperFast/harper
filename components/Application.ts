@@ -485,6 +485,7 @@ const RETIRED_ASIDE_PREFIX = '.retired-';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
 const COMPONENT_RECOVERY_WAIT_TIMEOUT_MS = 30000;
+const COMPONENT_RECOVERY_TRY_TIMEOUT_MS = 250;
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
 
@@ -840,7 +841,11 @@ async function ensureExtractionStagingDirectory(asideStagingDir: string): Promis
 		if (!stagingStat.isDirectory() || stagingStat.isSymbolicLink()) {
 			throw new Error(`Component deploy staging path is not a directory: ${stagingDir}`);
 		}
-		await chmod(stagingDir, 0o700);
+		if ((stagingStat.mode & 0o777) !== 0o700) {
+			await chmod(stagingDir, 0o700).catch((error) =>
+				logger.warn(`Could not restrict component deploy staging permissions for ${stagingDir}:`, errorForLog(error))
+			);
+		}
 	}
 }
 
@@ -936,7 +941,7 @@ export async function recoverInterruptedComponentExtraction(
 			);
 		},
 		{
-			timeoutMs: waitForPreparation ? COMPONENT_RECOVERY_WAIT_TIMEOUT_MS : 0,
+			timeoutMs: waitForPreparation ? COMPONENT_RECOVERY_WAIT_TIMEOUT_MS : COMPONENT_RECOVERY_TRY_TIMEOUT_MS,
 			renewTimeoutWhileOwnerAlive: waitForPreparation,
 			onWait: (owner) => {
 				logger.info(
