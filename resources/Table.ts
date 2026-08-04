@@ -6002,8 +6002,9 @@ export function makeTable(options) {
 		const existingVersion = existingEntry?.version;
 		const existingRecord = existingEntry?.value;
 		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		const monotonicTimestamp = () =>
-			isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime();
+		const monotonicTimestamp = isRocksDB
+			? (primaryStore as RocksDatabase).getMonotonicTimestamp()
+			: getNextMonotonicTime();
 		const nextExistingVersion =
 			existingVersion == null
 				? 0
@@ -6011,7 +6012,7 @@ export function makeTable(options) {
 		const sourceTimestamp =
 			inheritedTimestamp && (existingVersion == null || inheritedTimestamp > existingVersion)
 				? inheritedTimestamp
-				: Math.max(monotonicTimestamp(), nextExistingVersion);
+				: Math.max(monotonicTimestamp, nextExistingVersion);
 		let whenResolved, timer;
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
