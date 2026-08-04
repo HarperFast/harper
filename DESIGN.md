@@ -30,7 +30,7 @@ To match v4: `OpenDBIObject` sets `randomAccessStructure = isPrimary`, and `Reco
 
 - The prompt's answer can be supplied non-interactively via `CONFIRM_DOWNGRADE` — env var or `--CONFIRM_DOWNGRADE` CLI arg; argv wins (`assignCMDENVVariables`). With no override and no TTY on stdin, the prompt throws instead of blocking on stdin forever (#2046 — services/CI hung with nothing in the log; the mismatch is also logged to hdb.log now).
 - Upgrades never prompt (see the rationale comment in `bin/upgrade.js`); only the downgrade direction confirms. `upgradeCertsPrompt()` on the 4.x upgrade path still has the block-on-stdin hazard.
-- Test-suite gotcha: `unitTests/dataLayer/hdbInfoController.test.js` pushes `--CONFIRM_DOWNGRADE yes` into `process.argv` in a `before()` without cleanup, so it leaks into every later test file in the mocha process; tests that exercise the prompt must scrub argv first (see `unitTests/upgrade/upgradePrompt.test.js`).
+- Test-suite gotcha: a suite that supplies the override via `process.argv` affects every later test file in the same mocha process — save and restore `process.argv` in `before`/`after` (see `unitTests/dataLayer/hdbInfoController.test.js`).
 
 ## getFromSource() timing: promise resolves before commit runs
 

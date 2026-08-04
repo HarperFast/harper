@@ -14,24 +14,16 @@ describe('forceDowngradePrompt — non-interactive starts', () => {
 	const upgradeObj = new UpgradeObject('5.2.0', '5.1.22');
 	let originalIsTTY;
 	let originalEnv;
-	let originalArgv;
 
 	beforeEach(() => {
 		originalIsTTY = process.stdin.isTTY;
 		originalEnv = process.env.CONFIRM_DOWNGRADE;
-		originalArgv = process.argv;
 		process.stdin.isTTY = false;
 		delete process.env.CONFIRM_DOWNGRADE;
-		// Other test files push --CONFIRM_DOWNGRADE into argv without cleanup; scrub the flag and
-		// its value so these tests control the override.
-		process.argv = process.argv.filter(
-			(arg, i, argv) => arg !== '--CONFIRM_DOWNGRADE' && argv[i - 1] !== '--CONFIRM_DOWNGRADE'
-		);
 	});
 
 	afterEach(() => {
 		process.stdin.isTTY = originalIsTTY;
-		process.argv = originalArgv;
 		if (originalEnv === undefined) delete process.env.CONFIRM_DOWNGRADE;
 		else process.env.CONFIRM_DOWNGRADE = originalEnv;
 	});
