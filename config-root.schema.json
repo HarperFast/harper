@@ -470,6 +470,16 @@
 					],
 					"description": "Enable/Configure compression (LZ4). Default: true"
 				},
+				"rocks": {
+					"type": "object",
+					"additionalProperties": true,
+					"properties": {
+						"compression": {
+							"type": ["string", "null"],
+							"description": "RocksDB block and blob compression codec for every column family. Default: null (derive from storage.compression)."
+						}
+					}
+				},
 				"compactOnStart": { "type": "boolean", "description": "Compact non-system databases on start. Default: false" },
 				"compactOnStartKeepBackup": {
 					"type": "boolean",
