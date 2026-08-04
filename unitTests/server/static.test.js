@@ -1,6 +1,9 @@
 'use strict';
 
 const assert = require('assert');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+const { join } = require('node:path');
+const { tmpdir } = require('node:os');
 const { handleApplication } = require('#src/server/static');
 
 // A minimal Scope stand-in: captures the http registration and warning log so tests can
@@ -187,6 +190,112 @@ describe('static plugin fallthrough: false warning', () => {
 });
 
 describe('static plugin ordering live reload', () => {
+	it('removes a directory-owned index when index.html unlinks', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-index-unlink-'));
+		const indexPath = join(directory, 'index.html');
+		writeFileSync(indexPath, 'index');
+
+		try {
+			const { scope, state } = fakeScope();
+			handleApplication(scope);
+			state.entryCallback({ eventType: 'addDir', entryType: 'directory', absolutePath: directory, urlPath: '/' });
+			state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: indexPath, urlPath: '/index.html' });
+			rmSync(indexPath);
+			state.entryCallback({ eventType: 'unlink', entryType: 'file', absolutePath: indexPath, urlPath: '/index.html' });
+
+			const request = { method: 'GET', isWebSocket: false, pathname: '/', url: '/', headers: {} };
+			const fallthrough = Symbol('fallthrough');
+			assert.strictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('keeps a replacement with the same URL when the old absolute file unlinks afterward', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-identity-'));
+		const oldPath = join(directory, 'web', 'index.html');
+		const newPath = join(directory, 'dist', 'index.html');
+		mkdirSync(join(directory, 'web'), { recursive: true });
+		mkdirSync(join(directory, 'dist'), { recursive: true });
+		writeFileSync(oldPath, 'old');
+		writeFileSync(newPath, 'new');
+
+		try {
+			const { scope, state } = fakeScope();
+			handleApplication(scope);
+			const entry = (eventType, absolutePath) =>
+				state.entryCallback({ eventType, entryType: 'file', absolutePath, urlPath: '/index.html' });
+			entry('add', oldPath);
+			entry('add', newPath);
+			entry('unlink', oldPath);
+
+			const request = {
+				method: 'GET',
+				isWebSocket: false,
+				pathname: '/index.html',
+				url: '/index.html',
+				headers: {},
+			};
+			const fallthrough = Symbol('fallthrough');
+			assert.notStrictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+
+			entry('unlink', newPath);
+			assert.strictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('restores a surviving colliding file when the active file unlinks', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-collision-'));
+		const oldPath = join(directory, 'web', 'index.html');
+		const newPath = join(directory, 'dist', 'index.html');
+		mkdirSync(join(directory, 'web'), { recursive: true });
+		mkdirSync(join(directory, 'dist'), { recursive: true });
+		writeFileSync(oldPath, 'old');
+		writeFileSync(newPath, 'new');
+
+		try {
+			const { scope, state } = fakeScope();
+			handleApplication(scope);
+			const entry = (eventType, absolutePath) =>
+				state.entryCallback({ eventType, entryType: 'file', absolutePath, urlPath: '/index.html' });
+			entry('add', oldPath);
+			entry('add', newPath);
+			entry('unlink', newPath);
+
+			const request = {
+				method: 'GET',
+				isWebSocket: false,
+				pathname: '/index.html',
+				url: '/index.html',
+				headers: {},
+			};
+			const fallthrough = Symbol('fallthrough');
+			assert.notStrictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+
+			entry('unlink', oldPath);
+			assert.strictEqual(
+				state.listener(request, () => fallthrough),
+				fallthrough
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('requests a restart when before or after changes', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);
@@ -201,6 +310,51 @@ describe('static plugin ordering live reload', () => {
 		handleApplication(scope);
 		scope.fireChange('urlPath');
 		assert.equal(state.restartRequests, 1);
+	});
+
+	it('keeps the registered route while only a urlPath restart is pending', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+
+		scope.fireChange('urlPath');
+		state.entryCallback({ eventType: 'unlink', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/new/asset.js' });
+
+		const fallthrough = Symbol('fallthrough');
+		assert.notStrictEqual(
+			state.listener(
+				{ method: 'GET', isWebSocket: false, pathname: '/asset.js', url: '/asset.js', headers: {} },
+				() => fallthrough
+			),
+			fallthrough
+		);
+		assert.strictEqual(
+			state.listener(
+				{ method: 'GET', isWebSocket: false, pathname: '/new/asset.js', url: '/new/asset.js', headers: {} },
+				() => fallthrough
+			),
+			fallthrough
+		);
+	});
+
+	it('applies file-selection removals while a urlPath restart is pending', () => {
+		const { scope, state } = fakeScope();
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+
+		scope.fireChange('urlPath');
+		scope.fireChange('files');
+		state.entryCallback({ eventType: 'unlink', entryType: 'file', absolutePath: __filename, urlPath: '/asset.js' });
+		state.entryCallback({ eventType: 'add', entryType: 'file', absolutePath: __filename, urlPath: '/new/asset.js' });
+
+		const fallthrough = Symbol('fallthrough');
+		for (const pathname of ['/asset.js', '/new/asset.js']) {
+			assert.strictEqual(
+				state.listener({ method: 'GET', isWebSocket: false, pathname, url: pathname, headers: {} }, () => fallthrough),
+				fallthrough
+			);
+		}
 	});
 
 	it('does not request a restart for options read per-request', () => {

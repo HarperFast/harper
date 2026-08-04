@@ -1,0 +1,6 @@
+# QA-579 — minimal fixture, just needs a real table for the "success" and
+# "failed operation" (nonexistent table) CLI exit-code cells.
+type Item @table @export {
+	id: ID @primaryKey
+	name: String
+}

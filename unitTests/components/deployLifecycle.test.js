@@ -75,5 +75,150 @@ describe('deployLifecycle', () => {
 			assert.equal(endSpy.callCount, 0);
 			assert.equal(deployLifecycle.isDeployInFlight('never-started'), false);
 		});
+
+		it('ends a deploy when its owner thread exits', () => {
+			let endCount = 0;
+			deployLifecycle.on('deploy:end', () => endCount++);
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'dead-deploy',
+				ownerThreadId: 41,
+			});
+
+			deployLifecycle._reclaimOwner(41);
+
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
+			assert.equal(endCount, 1);
+		});
+
+		it('waits for the dead owner process group before ending its deploy', async () => {
+			let releaseTermination;
+			const termination = new Promise((resolve) => {
+				releaseTermination = resolve;
+			});
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'terminating-deploy',
+				ownerThreadId: 41,
+			});
+
+			const reclaim = deployLifecycle._reclaimOwnerAfterTermination(41, () => termination);
+			await Promise.resolve();
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
+			deployLifecycle._handle({
+				name: 'bar',
+				phase: 'start',
+				deploymentId: 'late-deploy',
+				ownerThreadId: 41,
+			});
+			assert.equal(deployLifecycle.isDeployInFlight('bar'), false, 'late starts from the dead owner stay ignored');
+
+			releaseTermination();
+			await reclaim;
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
+		});
+
+		it('continues reclaiming when one component deploy:end listener throws', () => {
+			const originalError = console.error;
+			const received = [];
+			deployLifecycle.on('deploy:end', (name) => {
+				if (name === 'foo') throw new Error('consumer failed');
+			});
+			deployLifecycle.on('deploy:end', (name) => received.push(name));
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'foo-deploy',
+				ownerThreadId: 41,
+			});
+			deployLifecycle._handle({
+				name: 'bar',
+				phase: 'start',
+				deploymentId: 'bar-deploy',
+				ownerThreadId: 41,
+			});
+
+			try {
+				console.error = () => {};
+				deployLifecycle._reclaimOwner(41);
+			} finally {
+				console.error = originalError;
+			}
+
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
+			assert.equal(deployLifecycle.isDeployInFlight('bar'), false);
+			assert.deepEqual(received, ['foo', 'bar']);
+		});
+
+		it('continues deploy:start emission when one listener throws', () => {
+			const originalError = console.error;
+			const received = [];
+			deployLifecycle.on('deploy:start', () => {
+				throw new Error('consumer failed');
+			});
+			deployLifecycle.on('deploy:start', (name) => received.push(name));
+
+			try {
+				console.error = () => {};
+				deployLifecycle._handle({
+					name: 'foo',
+					phase: 'start',
+					deploymentId: 'start-listener-deploy',
+					ownerThreadId: 42,
+				});
+			} finally {
+				console.error = originalError;
+			}
+
+			assert.deepEqual(received, ['foo']);
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
+		});
+
+		it('ignores parent and current-thread exit notifications', async () => {
+			let waited = false;
+			await deployLifecycle._reclaimOwnerAfterTermination(0, async () => {
+				waited = true;
+			});
+			assert.equal(waited, false);
+		});
+
+		it('keeps an overlapping live-owner deploy active and ignores late starts from a dead owner', () => {
+			let endCount = 0;
+			deployLifecycle.on('deploy:end', () => endCount++);
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'dead-deploy',
+				ownerThreadId: 41,
+			});
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'live-deploy',
+				ownerThreadId: 42,
+			});
+
+			deployLifecycle._reclaimOwner(41);
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), true);
+			assert.equal(endCount, 0);
+
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'start',
+				deploymentId: 'late-deploy',
+				ownerThreadId: 41,
+			});
+			deployLifecycle._handle({
+				name: 'foo',
+				phase: 'end',
+				deploymentId: 'live-deploy',
+				ownerThreadId: 42,
+			});
+
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), false);
+			assert.equal(endCount, 1);
+		});
 	});
 });

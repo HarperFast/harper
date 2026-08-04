@@ -1340,8 +1340,11 @@ function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
 	}
 	if (((blobStoragePaths as any).lastUpdated ?? 0) + 60000 < now) {
 		(blobStoragePaths as any).lastUpdated = now;
-		// create a new frequency table based on the available space
-		createFrequencyTableForStoragePaths(blobStoragePaths);
+		// create a new frequency table based on the available space; fire-and-forget, so a
+		// transient stat/mkdir failure must not become an unhandled rejection
+		createFrequencyTableForStoragePaths(blobStoragePaths).catch((error) => {
+			logger.warn?.('Error creating storage path frequency table', error);
+		});
 	}
 	const nextIndex = (blobStoragePaths as any).frequencyTable[fileId % FREQUENCY_TABLE_SIZE];
 	return nextIndex;
@@ -1356,6 +1359,10 @@ async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 	if (!statfs) return; // statfs is not available on all older node versions
 	const availableSpaces = await Promise.all(
 		blobStoragePaths.map(async (path) => {
+			// This compares MULTIPLE distinct paths against each other, so it always needs the
+			// real per-path number: quota-status.json (see getStorageSpaceStats, #1976) is a
+			// single instance-wide figure that can't tell two disks apart, and would collapse
+			// every path in a multi-volume STORAGE_BLOBPATHS config to the same "available" value.
 			let stats: StatsFs;
 			try {
 				stats = await statfs(path);

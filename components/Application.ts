@@ -483,9 +483,105 @@ const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
 
+type ExtractionTransaction = {
+	commit(): Promise<void>;
+	rollback(): Promise<void>;
+};
+
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
 // module (both in source and in dist), holds no secret, and is inert without a live session.
 export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.js');
+
+const PACKAGE_LOCK_FILES = [
+	'package-lock.json',
+	'npm-shrinkwrap.json',
+	'pnpm-lock.yaml',
+	'yarn.lock',
+	'bun.lock',
+	'bun.lockb',
+];
+
+type InstalledPackageMetadata = {
+	files: Map<string, Buffer>;
+	readable: boolean;
+	hasLockfile: boolean;
+	hasInstallableDependencies: boolean;
+};
+
+export async function readInstalledPackageMetadata(directory: string): Promise<InstalledPackageMetadata> {
+	const files = new Map<string, Buffer>();
+	let readable = true;
+	let packageJSON: any;
+	await Promise.all([
+		(async () => {
+			try {
+				const contents = await readFile(join(directory, 'package.json'));
+				try {
+					packageJSON = JSON.parse(contents.toString());
+					files.set('package.json', Buffer.from(JSON.stringify(canonicalizeJSON(packageJSON))));
+				} catch {
+					files.set('package.json', contents);
+				}
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') readable = false;
+			}
+		})(),
+		...PACKAGE_LOCK_FILES.map(async (filename) => {
+			try {
+				files.set(filename, await readFile(join(directory, filename)));
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') readable = false;
+			}
+		}),
+	]);
+	return {
+		files,
+		readable,
+		hasLockfile: PACKAGE_LOCK_FILES.some((filename) => files.has(filename)),
+		hasInstallableDependencies: ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].some(
+			(field) => {
+				const dependencies = packageJSON?.[field];
+				return (
+					typeof dependencies === 'object' &&
+					dependencies !== null &&
+					!Array.isArray(dependencies) &&
+					Object.keys(dependencies).length > 0
+				);
+			}
+		),
+	};
+}
+
+export function installedPackageMetadataEqual(
+	previous: InstalledPackageMetadata,
+	current: InstalledPackageMetadata
+): boolean {
+	if (!previous.readable || !current.readable || previous.files.size !== current.files.size) return false;
+	for (const [filename, contents] of previous.files) {
+		if (!current.files.get(filename)?.equals(contents)) return false;
+	}
+	return true;
+}
+
+export function installedRuntimeChanged(
+	previous: InstalledPackageMetadata,
+	current: InstalledPackageMetadata,
+	installationIsOpaque: boolean
+): boolean {
+	return (
+		installationIsOpaque ||
+		(current.hasInstallableDependencies && !current.hasLockfile) ||
+		!installedPackageMetadataEqual(previous, current)
+	);
+}
+
+function canonicalizeJSON(value: any): any {
+	if (Array.isArray(value)) return value.map(canonicalizeJSON);
+	if (!value || typeof value !== 'object') return value;
+	const canonical: Record<string, any> = Object.create(null);
+	for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeJSON(value[key]);
+	return canonical;
+}
 
 /**
  * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
@@ -497,7 +593,10 @@ export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.j
  * This method may be called from any Harper thread. Same-component calls are serialized across
  * threads by the preparation lock below.
  */
-export async function extractApplication(application: Application) {
+export async function extractApplication(
+	application: Application,
+	deferCommit = false
+): Promise<ExtractionTransaction | undefined> {
 	// Can't specify neither
 	if (!application.payload && !application.packageIdentifier) {
 		throw new Error('Either payload or package must be provided');
@@ -507,7 +606,6 @@ export async function extractApplication(application: Application) {
 	if (application.payload && application.packageIdentifier) {
 		throw new Error('Both payload and package cannot be provided');
 	}
-
 	// Resolve the tarball from the input
 	let tarballPath: string;
 	let tarball: Readable;
@@ -576,6 +674,7 @@ export async function extractApplication(application: Application) {
 			// not have, so this gates the pack step regardless of whether a credential happens to be in
 			// play.
 			const allowScripts = !!application.install?.allowInstallScripts;
+			if (allowScripts) application.installationIsOpaque = true;
 			// `--ignore-scripts` alone isn't a reliable way to enforce that: pacote's DirFetcher runs a
 			// git source's `prepare` unconditionally on npm versions before 11.0.0 (see
 			// packGitReferenceWithoutScripts), which is exactly what Node 22's bundled npm ships. For a
@@ -630,12 +729,13 @@ export async function extractApplication(application: Application) {
 	// component, and the per-component path means a sibling component never collides
 	// with (or sweeps) another's aside.
 	const asideStagingDir = join(dirname(application.dirPath), ASIDE_STAGING_DIR, basename(application.dirPath));
-	let didRenameAside = false;
+	let asidePath: string | undefined;
 	try {
 		await access(application.dirPath, constants.F_OK);
 		await mkdir(asideStagingDir, { recursive: true });
-		await rename(application.dirPath, join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`));
-		didRenameAside = true;
+		const candidateAsidePath = join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`);
+		await rename(application.dirPath, candidateAsidePath);
+		asidePath = candidateAsidePath;
 	} catch (err) {
 		// Ignore does not exist error
 		if (err.code !== 'ENOENT') {
@@ -644,35 +744,37 @@ export async function extractApplication(application: Application) {
 	}
 	// A directory existed for this component name prior to this deploy, so this is a redeploy of
 	// an already-active component rather than a first-time deploy. See `isNewComponent` above.
-	if (didRenameAside) application.isNewComponent = false;
-	// Finally, create the application directory fresh
-	await mkdir(application.dirPath, { recursive: true });
+	if (asidePath) application.isNewComponent = false;
+	try {
+		await mkdir(application.dirPath, { recursive: true });
+		await pipeline(tarball, gunzip(), extract(application.dirPath));
 
-	// Now pipeline the tarball into maybe-gunzip then tar-fs to reliably decompress and extract the contents
-	await pipeline(tarball, gunzip(), extract(application.dirPath));
-
-	// If the extracted directory contains a single folder, move the contents up one level
-	// The `npm pack` command does this (the top-level folder is called "package")
-	// Other packing tools may have similar behavior, but the directory name is not guaranteed.
-	const extracted = await readdir(application.dirPath, { withFileTypes: true });
-	if (extracted.length === 1 && extracted[0].isDirectory()) {
-		const topLevelDirPath = join(application.dirPath, extracted[0].name);
-
-		const tempDirPath = await mkdtemp(application.dirPath);
-
-		// Copy contents of top-level directory to temp directory (in order to avoid collisions of top-level directory name and one of the contents)
-		await cp(topLevelDirPath, tempDirPath, { recursive: true });
-		// Remove top-level directory
-		await rm(topLevelDirPath, { recursive: true, force: true });
-		// Copy contents of temp directory to application directory
-		await cp(tempDirPath, application.dirPath, { recursive: true });
-		// Finally, remove the temp dir
-		await rm(tempDirPath, { recursive: true, force: true });
+		const extracted = await readdir(application.dirPath, { withFileTypes: true });
+		if (extracted.length === 1 && extracted[0].isDirectory()) {
+			const topLevelDirPath = join(application.dirPath, extracted[0].name);
+			await mkdir(asideStagingDir, { recursive: true });
+			const tempDirPath = await mkdtemp(join(asideStagingDir, '.normalize-'));
+			await cp(topLevelDirPath, tempDirPath, { recursive: true });
+			await rm(topLevelDirPath, { recursive: true, force: true });
+			await cp(tempDirPath, application.dirPath, { recursive: true });
+			await rm(tempDirPath, { recursive: true, force: true });
+		}
+	} catch (error) {
+		try {
+			await rollbackExtractedDirectory(application, asideStagingDir, asidePath);
+		} catch (rollbackError) {
+			throw new AggregateError(
+				[error, rollbackError],
+				`Failed to extract ${application.name} and restore its previous component directory`
+			);
+		}
+		throw error;
 	}
-
 	// Clean up the original tarball
 	if (shouldDeleteTarball && tarballPath) {
-		await rm(tarballPath, { force: true });
+		await rm(tarballPath, { force: true }).catch((error) =>
+			application.logger.warn(`Failed to remove temporary package ${tarballPath}:`, error)
+		);
 	}
 
 	// Remove this component's aside copies. The old worker may still hold files open
@@ -681,11 +783,76 @@ export async function extractApplication(application: Application) {
 	// earlier deploys whose workers have since exited, and a copy that survives because
 	// its worker is still live is swept by the next deploy. The failure is expected in
 	// the live-worker case, so it's logged at trace rather than as a warning.
-	if (didRenameAside) {
-		rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
-			logger.trace?.(`Deferred cleanup of previous ${application.name} component directory: ${err.message}`)
-		);
+	let settled = false;
+	const transaction: ExtractionTransaction = {
+		async commit() {
+			if (settled) return;
+			settled = true;
+			await cleanupExtractionStaging(application, asideStagingDir);
+		},
+		async rollback() {
+			if (settled) return;
+			settled = true;
+			await rollbackExtractedDirectory(application, asideStagingDir, asidePath);
+		},
+	};
+	if (deferCommit) return transaction;
+	await transaction.commit();
+}
+
+async function cleanupExtractionStaging(application: Application, asideStagingDir: string): Promise<void> {
+	try {
+		await rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+	} catch (error) {
+		logger.trace?.(`Cleanup of previous ${application.name} component directory deferred: ${error.message}`);
 	}
+}
+
+async function rollbackExtractedDirectory(
+	application: Application,
+	asideStagingDir: string,
+	asidePath: string | undefined
+): Promise<void> {
+	await mkdir(asideStagingDir, { recursive: true });
+	const retryableRenameCodes = new Set(['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES', 'EBUSY']);
+	const displaceCurrentDirectory = async () => {
+		const displacedPath = join(asideStagingDir, `.failed-${process.pid}-${Date.now()}-${randomUUID()}`);
+		let lastError: unknown;
+		for (let attempt = 0; attempt < 100; attempt++) {
+			try {
+				await rename(application.dirPath, displacedPath);
+				return;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code === 'ENOENT') return;
+				if (!retryableRenameCodes.has(code ?? '')) throw error;
+				lastError = error;
+				await delay(10);
+			}
+		}
+		throw lastError;
+	};
+
+	await displaceCurrentDirectory();
+	if (asidePath) {
+		let restored = false;
+		let restoreError: unknown;
+		for (let attempt = 0; attempt < 100; attempt++) {
+			try {
+				await rename(asidePath, application.dirPath);
+				restored = true;
+				break;
+			} catch (error) {
+				restoreError = error;
+				if (!retryableRenameCodes.has((error as NodeJS.ErrnoException).code ?? '')) break;
+				await displaceCurrentDirectory();
+				await delay(10);
+			}
+		}
+		if (!restored) throw restoreError;
+	}
+
+	await cleanupExtractionStaging(application, asideStagingDir);
 }
 
 /**
@@ -711,7 +878,10 @@ export async function installApplication(application: Application) {
 	try {
 		// Does node_modules exist?
 		await access(join(application.dirPath, 'node_modules'), constants.F_OK);
-		application.logger.info(`Application ${application.name} already has node_modules; skipping install`);
+		application.logger.info(
+			`Application ${application.name} already has node_modules; skipping install and treating the runtime as opaque for redeploy comparison`
+		);
+		application.installationIsOpaque = true;
 		return;
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;
@@ -735,6 +905,7 @@ export async function installApplication(application: Application) {
 		);
 		// if it succeeds, return
 		if (code === 0) {
+			application.installationIsOpaque = true;
 			return;
 		}
 		if (stdout) {
@@ -797,6 +968,7 @@ export async function installApplication(application: Application) {
 
 		// if it succeeds, return
 		if (code === 0) {
+			if (application.install?.allowInstallScripts) application.installationIsOpaque = true;
 			return;
 		}
 
@@ -854,6 +1026,7 @@ export async function installApplication(application: Application) {
 
 	// if it succeeds, return
 	if (code === 0) {
+		if (application.install?.allowInstallScripts) application.installationIsOpaque = true;
 		return;
 	}
 
@@ -911,14 +1084,10 @@ export class Application {
 	npmUserconfigPath?: string;
 	#npmrcTempDir?: string;
 	#gitCredentialSession?: GitCredentialSession;
-	// Whether this component's directory did not already exist when extractApplication ran —
-	// i.e. this deploy is the component's first, as opposed to a redeploy of something already
-	// active. Defaults true and is flipped to false by extractApplication when it finds (and
-	// renames aside) a pre-existing directory for this component name. Used by deployComponent to
-	// scope its unconditional requestRestart() call to genuinely new components (harper#1806):
-	// an existing, already-loaded component already has a live file watcher (Scope/EntryHandler)
-	// that independently requests a restart if the redeploy actually needs one.
+	// Existing components rely on their runtime-equivalence checks; only a first deploy restarts unconditionally.
 	isNewComponent: boolean = true;
+	packageMetadataChanged: boolean = false;
+	installationIsOpaque: boolean = false;
 
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;
@@ -1064,12 +1233,14 @@ export function derivePackageIdentifier(packageIdentifier: string) {
  * @returns A promise that resolves when all preparation steps complete.
  */
 export async function prepareApplication(application: Application) {
-	await broadcastDeployStart(application.name);
+	const deploymentId = await broadcastDeployStart(application.name);
 	try {
 		const commandTimeoutMs = application.install?.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
 		await withComponentPreparationLock(
 			application.dirPath,
 			async () => {
+				const previousPackageMetadata = await readInstalledPackageMetadata(application.dirPath);
+				let extraction: ExtractionTransaction | undefined;
 				try {
 					// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
 					// `npm install` authenticate against the private registry; always remove it afterward.
@@ -1080,11 +1251,30 @@ export async function prepareApplication(application: Application) {
 						// already gone by the time the component's dependency tree (and any install script it is
 						// allowed to run) executes.
 						await application.startGitCredentialSession();
-						await extractApplication(application);
+						extraction = await extractApplication(application, true);
 					} finally {
 						await application.cleanupGitCredentialSession();
 					}
 					await installApplication(application);
+					if (!application.isNewComponent) {
+						const currentPackageMetadata = await readInstalledPackageMetadata(application.dirPath);
+						application.packageMetadataChanged = installedRuntimeChanged(
+							previousPackageMetadata,
+							currentPackageMetadata,
+							application.installationIsOpaque
+						);
+					}
+					await extraction?.commit();
+				} catch (error) {
+					try {
+						await extraction?.rollback();
+					} catch (rollbackError) {
+						throw new AggregateError(
+							[error, rollbackError],
+							`Failed to prepare ${application.name} and restore its previous component directory`
+						);
+					}
+					throw error;
 				} finally {
 					await application.cleanupTransientNpmrc();
 				}
@@ -1111,7 +1301,7 @@ export async function prepareApplication(application: Application) {
 			}
 		);
 	} finally {
-		broadcastDeployEnd(application.name);
+		broadcastDeployEnd(application.name, deploymentId);
 	}
 }
 

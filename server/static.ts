@@ -1,5 +1,5 @@
 import { realpathSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Scope } from '../components/Scope';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
@@ -52,7 +52,7 @@ import send from 'send';
  *
  * This plugin dynamically updates its behavior based on the current configuration file. Users can make updates and immediately see the changes reflect in the next request.
  *
- * Updates to the `files` option will clear the in-memory maps and allow them to regenerate based on the new configuration (since the default EntryHandler will regenerate anyways).
+ * Updates to the `files` option incrementally add newly matched paths and remove paths that no longer match while preserving common entries.
  * Updates to `urlPath` request a restart: the HTTP route mount is registered once at load and cannot be re-registered on a live server (#1583).
  */
 /**
@@ -146,7 +146,40 @@ export function handleApplication(scope: Scope) {
 	// in-memory map of static files
 	// keys are the URL paths relative to the mount base, values are the absolute paths to the files
 	const staticFiles = new Map<string, string>();
-	const indexEntries = new Map<string, string>();
+	const indexEntries = new Map<string, string | null>();
+	const staticFileOwners = new Map<string, Map<string, string>>();
+	const indexEntryOwners = new Map<string, Map<string, string | null>>();
+
+	function setOwnedPath<Path>(
+		paths: Map<string, Path>,
+		ownersByURL: Map<string, Map<string, Path>>,
+		urlPath: string,
+		owner: string,
+		path: Path
+	) {
+		let owners = ownersByURL.get(urlPath);
+		if (!owners) ownersByURL.set(urlPath, (owners = new Map()));
+		owners.delete(owner);
+		owners.set(owner, path);
+		paths.set(urlPath, path);
+	}
+
+	function removeOwnedPath<Path>(
+		paths: Map<string, Path>,
+		ownersByURL: Map<string, Map<string, Path>>,
+		urlPath: string,
+		owner: string
+	) {
+		const owners = ownersByURL.get(urlPath);
+		if (!owners?.delete(owner)) return;
+		const replacement = [...owners.values()].at(-1);
+		if (replacement === undefined) {
+			ownersByURL.delete(urlPath);
+			paths.delete(urlPath);
+		} else {
+			paths.set(urlPath, replacement);
+		}
+	}
 
 	// The HTTP route below is registered once, with the urlPath in effect at load time; the mount
 	// cannot be re-registered at runtime. Capture the matching base once so map keys always agree
@@ -156,6 +189,9 @@ export function handleApplication(scope: Scope) {
 	// keep agreeing with the entry URL paths the file map is keyed by — but a redirect Location has
 	// to carry the application's mount too, or it would point outside the mount (#1583).
 	const externalBaseURLPath = scope.externalBasePath(baseURLPath);
+	let urlPathRestartPending = false;
+	let fileSelectionChangePending = false;
+	let entryHandler: ReturnType<Scope['handleEntry']>;
 
 	// A bare `before:` / `after:` key in YAML parses as null — treat it as unset, like before this
 	// option was validated.
@@ -187,14 +223,19 @@ export function handleApplication(scope: Scope) {
 
 	scope.options.on('change', (key) => {
 		if (key[0] === 'files') {
-			// If the files option changes, clear the maps and let the entry handler regenerate them
-			staticFiles.clear();
-			indexEntries.clear();
-			scope.logger.info(`Static files reinitialized due to change in ${key.join('.')}`);
+			fileSelectionChangePending = true;
+			const updateReady = entryHandler?.ready;
+			const clearPending = () => {
+				if (entryHandler?.ready === updateReady) fileSelectionChangePending = false;
+			};
+			updateReady?.then(clearPending, clearPending);
+			// EntryHandler updates are incremental: paths no longer matched emit unlink, newly matched
+			// paths emit add, and common unchanged paths remain valid in these maps.
+			scope.logger.info(`Static file matches updated due to change in ${key.join('.')}`);
 			return;
 		}
 		if (key[0] === 'urlPath') {
-			// The route mount cannot be changed on a live server registration — restart to apply
+			urlPathRestartPending = true;
 			scope.requestRestart();
 			return;
 		}
@@ -211,7 +252,12 @@ export function handleApplication(scope: Scope) {
 	});
 
 	// Handle entry events for the default entry handler based on the `files` and `urlPath` options
-	scope.handleEntry((entry) => {
+	entryHandler = scope.handleEntry((entry) => {
+		if (
+			urlPathRestartPending &&
+			(!fileSelectionChangePending || (entry.eventType !== 'unlink' && entry.eventType !== 'unlinkDir'))
+		)
+			return;
 		// entry.urlPath includes the component's base URL path, but when a `urlPath` is configured
 		// the routing chain strips that mount prefix from req.pathname before this plugin's handler
 		// runs — so key the maps relative to the base (#1583)
@@ -222,34 +268,43 @@ export function handleApplication(scope: Scope) {
 		switch (entry.eventType) {
 			// Directories only matter for the `index` files
 			case 'addDir':
-			case 'unlinkDir':
 				// Handle `index.html` for directories for if/when the user enables the `index` option
 				const indexPath = join(entry.absolutePath, 'index.html');
-				if (existsSync(indexPath)) {
-					indexEntries[entry.eventType === 'addDir' ? 'set' : 'delete'](urlPath, indexPath);
-				}
+				if (existsSync(indexPath)) setOwnedPath(indexEntries, indexEntryOwners, urlPath, entry.absolutePath, indexPath);
+				break;
+			case 'unlinkDir':
+				removeOwnedPath(indexEntries, indexEntryOwners, urlPath, entry.absolutePath);
 				break;
 			// Otherwise, user must specify pattern to match individual files
 			case 'add':
 				// Store the file in memory for serving
-				staticFiles.set(urlPath, entry.absolutePath);
+				setOwnedPath(staticFiles, staticFileOwners, urlPath, entry.absolutePath, entry.absolutePath);
 				// If the file is an index.html, also store it in the index entries
 				if (urlPath.endsWith('index.html')) {
 					// Without trailing slash; null -> 301 redirect to trailing slash
 					let lastSlashIndex = urlPath.lastIndexOf('/');
-					indexEntries.set(urlPath.slice(0, lastSlashIndex), null);
+					setOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex), entry.absolutePath, null);
 					// With trailing slash; serves the index.html file
-					indexEntries.set(urlPath.slice(0, lastSlashIndex + 1), entry.absolutePath);
+					setOwnedPath(
+						indexEntries,
+						indexEntryOwners,
+						urlPath.slice(0, lastSlashIndex + 1),
+						entry.absolutePath,
+						entry.absolutePath
+					);
 				}
 				break;
 			case 'unlink':
-				// Remove the file from memory when it is deleted
-				staticFiles.delete(urlPath);
+				removeOwnedPath(staticFiles, staticFileOwners, urlPath, entry.absolutePath);
 				// If the file is an index.html, remove it from the index entries as well
 				if (urlPath.endsWith('index.html')) {
 					let lastSlashIndex = urlPath.lastIndexOf('/');
-					indexEntries.delete(urlPath.slice(0, lastSlashIndex));
-					indexEntries.delete(urlPath.slice(0, lastSlashIndex + 1));
+					const directoryURLPath = urlPath.slice(0, lastSlashIndex);
+					const directoryOwner = dirname(entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, directoryURLPath, entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, directoryURLPath, directoryOwner);
+					removeOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex + 1), entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex + 1), directoryOwner);
 				}
 				break;
 		}

@@ -131,6 +131,16 @@ Future agents touching `components/deploymentRecorder.ts` for Slice B's streamin
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A lock is never stolen from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The bounded wait remains a backstop when owner liveness cannot be established.
 
+A plugin load that begins while its component is being deployed waits for that lifecycle to end before
+starting `handleApplication`; if a deploy begins during the load, the plugin timeout counts only active,
+unpaused load time. This prevents a long install from looking like a hung plugin while its entry handlers
+are deliberately paused against the intermediate tree.
+
+Extraction renames an existing component aside before writing the replacement and keeps it until
+dependency installation and metadata verification complete. Any preparation failure atomically
+renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
+wedge rollback with `ENOTEMPTY`; cleanup completes while the same-component lock is still held.
+
 A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and force-terminates it if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
@@ -625,3 +635,68 @@ runs pre-handshake there (auth is unaffected — it runs in the WS connection ch
 matching Node's upgrade-then-authorize order). No core component registers custom upgrade
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
+
+## Deploy watcher generations preserve logical entry events
+
+Component deploys pause each scope's `EntryHandler` while the component directory is replaced. A
+new chokidar instance then performs a cold-style initial scan, which reports every surviving path
+as `add`/`addDir` and cannot report paths that disappeared. Exposing those raw scan events changed
+the public `scope.handleEntry()` contract in #1806: consumers could no longer distinguish an
+unchanged file from a changed one, and deletions vanished entirely.
+
+`EntryHandler` therefore owns the deploy boundary. It retains a compact snapshot of matching paths
+(entry kind, URL path, and a SHA-256 content digest for files), assigns each watcher a monotonically
+increasing generation, and compares the resumed generation's scan with the pre-pause snapshot. The
+comparison emits only logical `add`, `change`, `unlink`, `addDir`, and `unlinkDir` events; unchanged
+entries remain silent. File contents are still read once for the event payload and are not retained
+in the snapshot. Reads and readiness are generation-scoped, and a per-path sequence prevents a slow
+read from an obsolete event from overwriting a newer state. Missing paths are synthesized as unlink
+events only after the resumed scan and all of its reads complete.
+
+Every watcher recreation uses the same comparison. The first generation compares against an empty
+snapshot and therefore retains its cold-load `add` behavior; deploy resume, configuration updates,
+and polling recovery compare against the last completed generation. This keeps file identity intact
+when watcher recovery could otherwise replay stale modules as new and ensures an update racing a
+deploy scan cannot discard its removals. New component deploys still use `Application#isNewComponent`
+to mark a restart as required for #674; other existing-component redeploys request a restart only when
+their logical entry, loaded runtime, or configuration changes require one.
+
+## Restart-free deploys require proof of runtime equivalence
+
+`EntryHandler` intentionally observes only the files a component declares in its `files` option. It
+cannot prove that the JavaScript runtime is unchanged: a watched `resources.js` can import an
+unwatched `lib/db.js`, and installed dependencies live under the watcher's ignored `node_modules`
+tree. Conversely, hashing the entire extracted tree treats unused source and generated caches as
+runtime changes and collapses restart-free deploys back into unconditional restarts.
+
+Runtime equivalence is therefore layered. A deploy can remain restart-free only when all three
+layers it uses are proven equivalent:
+
+- `EntryHandler` compares consumer-visible watched entries.
+- `ApplicationScope` records the file URL and load-time digest of every application-local module
+  that Harper's VM or compartment loader reads, including application-local package imports and
+  package self-references, together with every application-local resolution edge. After a deploy,
+  those exact logical paths are re-read and each edge is resolved again against the replacement tree
+  after evicting Node's matching resolution-cache entry. Adding a higher-priority `foo.js` ahead of a
+  previously resolved `foo.json` is therefore a runtime change even when `foo.json` itself is
+  byte-identical. For import-only package exports that Node's CommonJS resolver cannot resolve, the
+  package manifest itself is recorded as a runtime input so an exports-map retarget is also observable.
+- The deploy pipeline compares dependency metadata at the same preparation stage: the previous
+  installed tree before extraction versus the replacement tree after installation.
+
+Loader or installer paths that Harper cannot observe are conservative. Full native module loading,
+custom install commands, enabled install scripts, payloads that already contain `node_modules`, and
+installs without deterministic lock evidence mark the runtime opaque; an existing component using an
+opaque path requires a restart on redeploy. `harper deploy` omits `node_modules` by default; callers of
+`package_component` that want restart-free comparison must likewise set `skip_node_modules: true`.
+Npm dependencies delegated from the default VM loader to Node's native loader are instead covered
+by the installed package/lock comparison—otherwise the default `dependencyLoader: auto` mode would
+make nearly every application opaque. Explicit `dependencyLoader: native` remains authoritative;
+an application-local import delegated by that setting marks the runtime opaque. `package.json` is compared as parsed JSON so formatting and
+key order are irrelevant, while lockfiles remain exact installed-tree evidence. A module first
+loaded while a deploy is in flight also invalidates the old runtime rather than letting a mixed
+generation appear equivalent. This is deliberately proof-oriented: an unused new local file need
+not restart a fully observed runtime, but a changed or missing imported helper, changed resolution
+input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
+remain consumer-directed: the static plugin applies asset changes incrementally, while executable
+consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.

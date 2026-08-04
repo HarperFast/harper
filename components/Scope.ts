@@ -38,8 +38,10 @@ export type ScopeEventsMap = {
 	// file-driven work to avoid acting on intermediate states.
 	'deploy:start': [componentName: string];
 	// Fired after deploy I/O completes (success or failure). The scope's
-	// EntryHandlers have been recreated by this point; subsequent `add`/`change`
-	// events reflect the post-deploy tree.
+	// EntryHandlers have been resumed by this point; their replacement watcher
+	// generation compares the post-deploy scan with the retained pre-deploy
+	// snapshot, so subsequent events are the logical differences of that tree,
+	// not a replay of every surviving file as an `add`.
 	'deploy:end': [componentName: string];
 	[record: string]: [...args: unknown[]];
 };
@@ -64,11 +66,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#pendingInitialLoads: Set<Promise<void>>;
 	#deployStartHandler: (name: string) => void;
 	#deployEndHandler: (name: string) => void;
-	// While a deploy of this component is in flight, EntryHandler events do not
-	// drive requestRestart() — the deploy itself produces hundreds of file
-	// changes that would otherwise pile up. A single coalesced restart is
-	// triggered by the post-deploy re-scan instead.
 	#deployInFlight: boolean = false;
+	#restartRequestedDuringDeploy: boolean = false;
 	applicationScope?: ApplicationScope;
 
 	options: OptionsWatcher;
@@ -113,6 +112,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#appName);
+		this.#deployInFlight = deployLifecycle.isDeployInFlight(this.#appName);
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
@@ -254,7 +254,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	#handleError(error: unknown): void {
-		this.emit('error', error);
+		if (this.listenerCount('error') > 0) this.emit('error', error);
+		else this.#logger.error?.('Error in component scope:', error);
 	}
 
 	async close(): Promise<this> {
@@ -301,6 +302,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	#onDeployStart(componentName: string): void {
 		this.#deployInFlight = true;
+		this.#restartRequestedDuringDeploy = false;
+		this.applicationScope?.beginDeploy();
 		// Pause each EntryHandler so it stops emitting events for the
 		// intermediate filesystem state the deploy is writing, and so it
 		// releases its inotify handles while npm install is unpacking
@@ -315,25 +318,27 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	#onDeployEnd(componentName: string): void {
 		this.#deployInFlight = false;
+		const restartRequestedDuringDeploy = this.#restartRequestedDuringDeploy;
+		this.#restartRequestedDuringDeploy = false;
 
-		// Resume each EntryHandler BEFORE notifying plugins. Otherwise a plugin
-		// throwing in its deploy:end handler would abort this function and
-		// leave the watchers permanently paused (surfaced by Gemini review).
-		// The fresh chokidar watcher does an initial scan and emits add events
-		// for the post-deploy tree; the existing per-event listener calls
-		// scope.requestRestart() for each, and the restart debounce in
-		// componentLoader collapses them into a single restart cycle. Plugin
-		// handlers stay attached across the pause.
+		// Resume before notifying plugins so a throwing deploy:end listener cannot strand the watchers.
 		for (const entryHandler of this.#entryHandlers) {
-			void entryHandler.resume();
+			void entryHandler.resume().catch(() => {});
 		}
+		if (restartRequestedDuringDeploy) this.requestRestart();
+		void this.applicationScope
+			?.finishDeploy()
+			.then((runtimeChanged) => {
+				if (runtimeChanged) this.requestRestart();
+			})
+			.catch((error) => {
+				this.#logger.error?.(`Could not verify the loaded runtime after deploying ${this.#appName}:`, error);
+				this.requestRestart();
+			});
 
 		this.#safeEmit('deploy:end', componentName);
 	}
 
-	// Swallow and log listener exceptions so one buggy plugin can't stop us
-	// from running the rest of the deploy-lifecycle bookkeeping. EventEmitter
-	// by default rethrows from synchronous listeners.
 	#safeEmit(event: 'deploy:start' | 'deploy:end', componentName: string): void {
 		try {
 			this.emit(event, componentName);
@@ -350,6 +355,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			.on('unlink', this.#defaultEntryHandlerListener('unlink'))
 			.on('addDir', this.#defaultEntryHandlerListener('addDir'))
 			.on('unlinkDir', this.#defaultEntryHandlerListener('unlinkDir'));
+		if (this.#deployInFlight) entryHandler.pause();
 
 		this.#entryHandlers.push(entryHandler);
 
@@ -391,8 +397,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 					return;
 				}
 
-				// Otherwise, if an entry handler exists, update it with the new config
-				scope.#entryHandler.update(config as FileAndURLPathConfig);
+				void scope.#entryHandler.update(config as FileAndURLPathConfig).catch(() => {});
 
 				return;
 			}
@@ -520,9 +525,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	requestRestart() {
 		if (this.#deployInFlight) {
-			// Suppressed: a deploy is rewriting this component's files. The
-			// post-deploy re-scan in #onDeployEnd will trigger the coalesced
-			// restart instead.
+			this.#restartRequestedDuringDeploy = true;
 			this.#logger.debug?.(`Restart suppressed (deploy in flight) for ${this.#appName}`);
 			return;
 		}
@@ -539,6 +542,29 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		if (this.#pendingInitialLoads.size > 0) {
 			await Promise.all(this.#pendingInitialLoads);
 		}
+	}
+
+	waitForDeployCompletion(timeoutMs = 6 * 60 * 60 * 1000): Promise<void> {
+		if (!this.#deployInFlight) return Promise.resolve();
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				deployLifecycle.off('deploy:end', handleDeployEnd);
+				reject(new Error(`Timed out waiting for deployment of ${this.#appName} to complete`));
+			}, timeoutMs);
+			timer.unref?.();
+			const handleDeployEnd = (componentName: string) => {
+				if (componentName !== this.#appName || this.#deployInFlight) return;
+				deployLifecycle.off('deploy:end', handleDeployEnd);
+				clearTimeout(timer);
+				resolve();
+			};
+			deployLifecycle.on('deploy:end', handleDeployEnd);
+			if (!this.#deployInFlight) {
+				deployLifecycle.off('deploy:end', handleDeployEnd);
+				clearTimeout(timer);
+				resolve();
+			}
+		});
 	}
 
 	/**

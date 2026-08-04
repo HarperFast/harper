@@ -397,26 +397,28 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	}
 }
 
-function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
-	for (const [db, tables] of Object.entries(databases)) {
-		try {
-			const [firstTable] = Object.values(tables);
-			const storageStats = firstTable?.getStorageStats();
-			if (!storageStats) {
-				continue;
+async function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
+	await Promise.all(
+		Object.entries(databases).map(async ([db, tables]) => {
+			try {
+				const [firstTable] = Object.values(tables);
+				const storageStats = await firstTable?.getStorageStats();
+				if (!storageStats) {
+					return;
+				}
+				const metric = {
+					metric: METRIC.STORAGE_VOLUME,
+					database: db,
+					...storageStats,
+				};
+				storeMetric(analyticsTable, metric);
+				log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
+			} catch (error) {
+				// a table or db was deleted, could get an error here
+				log.warn?.(`Error getting DB volume metrics`, error);
 			}
-			const metric = {
-				metric: METRIC.STORAGE_VOLUME,
-				database: db,
-				...storageStats,
-			};
-			storeMetric(analyticsTable, metric);
-			log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
-		} catch (error) {
-			// a table or db was deleted, could get an error here
-			log.warn?.(`Error getting DB volume metrics`, error);
-		}
-	}
+		})
+	);
 }
 
 // RocksDB stat names are kebab-case with a "rocksdb." prefix (e.g. "rocksdb.block.cache.hit");
@@ -1047,7 +1049,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	storeDBSizeMetrics(analyticsTable, databases);
 
 	// database storage volume metrics
-	storeVolumeMetrics(analyticsTable, databases);
+	await storeVolumeMetrics(analyticsTable, databases);
 
 	// rocksdb engine stats (only for RocksDB-backed databases)
 	const rocksDBPeriod = lastRocksDBStatsTime ? now - lastRocksDBStatsTime : undefined;

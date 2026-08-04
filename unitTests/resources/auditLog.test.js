@@ -74,6 +74,29 @@ describe('Audit log', () => {
 		// The per-write waitForEventCount calls above already drained delivery after each write, so
 		// the full count is deterministic here — assert the tight bound rather than "a couple".
 		assert(events.length >= 4, 'Should have one live-subscription event per write');
+		// Verify the actual invariant, not just the count: the LAST delivered event per id must
+		// reflect that id's final state (an earlier, superseded event for the same id may or may
+		// not also have been delivered, so this only checks the latest, not the total count). Wait
+		// for that final-state condition directly rather than trusting the count above, since a
+		// count can in principle be satisfied by intermediate events that aren't the final state yet.
+		const lastEventById = () => {
+			const map = new Map();
+			for (const event of events) map.set(event.id, event);
+			return map;
+		};
+		await waitFor(
+			() => lastEventById().get(1)?.type === 'delete' && lastEventById().get(2)?.value?.name === 'two-changed',
+			{ timeout: 2000, message: "Should have received id 1's delete and id 2's latest put" }
+		);
+		// Compute the map once here rather than calling lastEventById() again in each assertion below
+		// (still a recomputation over `events`, just a single one instead of two).
+		const finalEventById = lastEventById();
+		assert.equal(finalEventById.get(1)?.type, 'delete', "id 1's final delivered event should be its delete");
+		assert.equal(
+			finalEventById.get(2)?.value?.name,
+			'two-changed',
+			"id 2's final delivered event should be its latest put"
+		);
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
 		setAuditRetention(0.001, 1);
 		// scheduleAuditCleanup() resolves once the pass serving the call has committed its deletions.
