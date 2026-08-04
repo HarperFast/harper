@@ -106,6 +106,7 @@ import * as password from '../utility/password.ts';
 import { server } from '../server/Server.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
+import { activeSuperUserRemains } from './superUserGuard.ts';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -401,23 +402,7 @@ async function getUsersWithRolesCache() {
 async function assertActiveSuperUserRemains(simulate: (user: User) => User | undefined): Promise<void> {
 	const users = await getUsersWithRolesCache();
 	if (!users) return;
-
-	const isActiveSuperUser = (user?: User) => Boolean(user?.active && user.role?.permission?.super_user);
-
-	// Nothing to protect when none exists — and refusing would block the repair that restores one.
-	let present = false;
-	for (const user of users.values()) {
-		if (isActiveSuperUser(user)) {
-			present = true;
-			break;
-		}
-	}
-	if (!present) return;
-
-	for (const user of users.values()) {
-		if (isActiveSuperUser(simulate(user))) return;
-	}
-
+	if (activeSuperUserRemains(users.values(), simulate)) return;
 	throw new ClientError(HDB_ERROR_MSGS.LAST_SUPER_USER, HTTP_STATUS_CODES.CONFLICT);
 }
 
