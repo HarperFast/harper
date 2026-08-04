@@ -179,7 +179,8 @@ function walkExportsConditions(entry: unknown, conditions: readonly string[]): s
  */
 function resolveESMPackageExports(
 	specifier: string,
-	fromDir: string
+	fromDir: string,
+	requireImportOnly = false
 ): { resolvedUrl: string; packageJsonUrl: string; packageJsonSource: Buffer } | null {
 	const isScoped = specifier.startsWith('@');
 	const parts = specifier.split('/');
@@ -221,6 +222,7 @@ function resolveESMPackageExports(
 		}
 
 		if (!entry) return null;
+		if (requireImportOnly && walkExportsConditions(entry, ['require', 'node', 'default'])) return null;
 
 		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
 		if (!relative) return null;
@@ -324,7 +326,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				const referrerDir = resolveReferrer.startsWith('file:')
 					? dirname(fileURLToPath(resolveReferrer))
 					: dirname(resolveReferrer);
-				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
+				const esmResolved = resolveESMPackageExports(specifier, referrerDir, (err as any)?.code === 'MODULE_NOT_FOUND');
 				if (esmResolved) {
 					scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
 					scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));

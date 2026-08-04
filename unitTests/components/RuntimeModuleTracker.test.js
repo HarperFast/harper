@@ -44,6 +44,20 @@ describe('RuntimeModuleTracker', () => {
 		assert.equal(await this.tracker.finishDeploy(), false);
 	});
 
+	it('compares package metadata semantically', async () => {
+		const packagePath = join(this.directory, 'package.json');
+		writeFileSync(packagePath, '{"name":"example","version":"1.0.0"}');
+		this.tracker.recordModule(pathToFileURL(packagePath).href, '{"name":"example","version":"1.0.0"}');
+
+		this.tracker.beginDeploy();
+		writeFileSync(packagePath, '{\n  "version": "1.0.0",\n  "name": "example"\n}\n');
+		assert.equal(await this.tracker.finishDeploy(), false);
+
+		this.tracker.beginDeploy();
+		writeFileSync(packagePath, '{"name":"example","version":"2.0.0"}');
+		assert.equal(await this.tracker.finishDeploy(), true);
+	});
+
 	it('detects a new higher-priority extensionless resolution candidate', async () => {
 		const referrerPath = join(this.directory, 'resources.js');
 		const jsonPath = join(this.directory, 'helper.json');

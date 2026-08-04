@@ -43,7 +43,7 @@ export class RuntimeModuleTracker {
 	recordModule(moduleUrl: string, source: Source): void {
 		const modulePath = this.#localPath(moduleUrl);
 		if (!modulePath) return;
-		if (!this.#modules.has(modulePath)) this.#modules.set(modulePath, digest(source));
+		if (!this.#modules.has(modulePath)) this.#modules.set(modulePath, moduleDigest(modulePath, source));
 		if (this.#deployInFlight) this.#loadedDuringDeploy = true;
 	}
 
@@ -78,7 +78,7 @@ export class RuntimeModuleTracker {
 			const changed = await Promise.all(
 				modules.slice(start, start + MODULE_COMPARE_CONCURRENCY).map(async ([modulePath, previousDigest]) => {
 					try {
-						return digest(await readFile(modulePath)) !== previousDigest;
+						return moduleDigest(modulePath, await readFile(modulePath)) !== previousDigest;
 					} catch {
 						return true;
 					}
@@ -140,9 +140,13 @@ function higherPriorityResolutionCandidates(
 	for (const extension of RESOLUTION_EXTENSIONS.slice(1)) candidates.push(resolve(basePath, `index${extension}`));
 	let resolvedIndex = candidates.indexOf(resolvedPath);
 	if (resolvedIndex === -1) {
+		let canonicalResolvedPath = resolvedPath;
+		try {
+			canonicalResolvedPath = realpathSync(resolvedPath);
+		} catch {}
 		resolvedIndex = candidates.findIndex((candidate) => {
 			try {
-				return realpathSync(candidate) === resolvedPath;
+				return realpathSync(candidate) === canonicalResolvedPath;
 			} catch {
 				return false;
 			}
@@ -158,7 +162,7 @@ function candidateState(path: string): string {
 		if (stats.isSymbolicLink()) return `link:${readlinkSync(path)}`;
 		if (stats.isDirectory()) return 'directory';
 		if (!stats.isFile()) return 'other';
-		return path.endsWith('package.json') ? `file:${digest(readFileSync(path))}` : 'file';
+		return path.endsWith('package.json') ? `file:${moduleDigest(path, readFileSync(path))}` : 'file';
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
 		return `error:${(error as NodeJS.ErrnoException).code ?? 'unknown'}`;
@@ -171,7 +175,7 @@ async function candidateStateAsync(path: string): Promise<string> {
 		if (stats.isSymbolicLink()) return `link:${await readlink(path)}`;
 		if (stats.isDirectory()) return 'directory';
 		if (!stats.isFile()) return 'other';
-		return path.endsWith('package.json') ? `file:${digest(await readFile(path))}` : 'file';
+		return path.endsWith('package.json') ? `file:${moduleDigest(path, await readFile(path))}` : 'file';
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
 		return `error:${(error as NodeJS.ErrnoException).code ?? 'unknown'}`;
@@ -195,4 +199,22 @@ function invalidateResolutionCache(specifier: string, referrerPath: string, prev
 
 function digest(source: Source): string {
 	return createHash('sha256').update(source).digest('base64');
+}
+
+function moduleDigest(path: string, source: Source): string {
+	if (path.endsWith('package.json')) {
+		try {
+			return digest(JSON.stringify(canonicalizeJSON(JSON.parse(source.toString()))));
+		} catch {}
+	}
+	return digest(source);
+}
+
+function canonicalizeJSON(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonicalizeJSON);
+	if (!value || typeof value !== 'object') return value;
+	const canonical: Record<string, unknown> = Object.create(null);
+	for (const key of Object.keys(value).sort())
+		canonical[key] = canonicalizeJSON((value as Record<string, unknown>)[key]);
+	return canonical;
 }
