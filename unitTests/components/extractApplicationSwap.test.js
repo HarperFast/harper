@@ -16,10 +16,7 @@ const {
 	Application,
 } = require('#src/components/Application');
 const { packageDirectory } = require('#src/components/packageComponent');
-const {
-	ComponentPreparationLockTimeoutError,
-	withComponentPreparationLock,
-} = require('#src/components/componentPreparationLock');
+const { withComponentPreparationLock } = require('#src/components/componentPreparationLock');
 
 async function makeFixture(files) {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-src-'));
@@ -198,33 +195,7 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
-	it('defers startup recovery while the component is actively being prepared', async function () {
-		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-startup-active-'));
-		const dirPath = path.join(componentsRoot, 'web');
-		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
-		await fs.mkdir(asidePath, { recursive: true });
-		await fs.mkdir(dirPath, { recursive: true });
-		let releasePreparation;
-		let preparationStarted;
-		const started = new Promise((resolve) => (preparationStarted = resolve));
-		const preparation = withComponentPreparationLock(dirPath, async () => {
-			preparationStarted();
-			await new Promise((resolve) => (releasePreparation = resolve));
-		});
-
-		try {
-			await started;
-			const failures = await recoverInterruptedComponentExtractions(componentsRoot, 10);
-			assert(failures.get('web') instanceof ComponentPreparationLockTimeoutError);
-			await fs.access(asidePath);
-		} finally {
-			releasePreparation?.();
-			await preparation;
-			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-		}
-	});
-
-	it('waits for another startup recovery before loading the component', async function () {
+	it('waits for active component preparation before recovering the component', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-startup-race-'));
 		const dirPath = path.join(componentsRoot, 'web');
 		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
@@ -235,14 +206,10 @@ describe('extractApplication directory swap', () => {
 		let releaseRecovery;
 		let recoveryStarted;
 		const started = new Promise((resolve) => (recoveryStarted = resolve));
-		const recovery = withComponentPreparationLock(
-			dirPath,
-			async () => {
-				recoveryStarted();
-				await new Promise((resolve) => (releaseRecovery = resolve));
-			},
-			{ purpose: 'component-recovery' }
-		);
+		const recovery = withComponentPreparationLock(dirPath, async () => {
+			recoveryStarted();
+			await new Promise((resolve) => (releaseRecovery = resolve));
+		});
 
 		try {
 			await started;

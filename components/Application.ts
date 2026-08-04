@@ -485,7 +485,6 @@ const RETIRED_ASIDE_PREFIX = '.retired-';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
 const COMPONENT_RECOVERY_WAIT_TIMEOUT_MS = 30000;
-const COMPONENT_RECOVERY_LOCK_PURPOSE = 'component-recovery';
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
 
@@ -878,8 +877,7 @@ function extractionAsideTimestamp(name: string): number {
 }
 
 export async function recoverInterruptedComponentExtractions(
-	componentsRootDirPath: string,
-	waitTimeoutMs = COMPONENT_RECOVERY_WAIT_TIMEOUT_MS
+	componentsRootDirPath: string
 ): Promise<Map<string, Error>> {
 	const stagingRoot = join(componentsRootDirPath, ASIDE_STAGING_DIR);
 	let entries;
@@ -917,9 +915,7 @@ export async function recoverInterruptedComponentExtractions(
 							);
 						},
 						{
-							timeoutMs: waitTimeoutMs,
-							purpose: COMPONENT_RECOVERY_LOCK_PURPOSE,
-							renewTimeoutWhileOwnerAlive: (owner) => owner.purpose === COMPONENT_RECOVERY_LOCK_PURPOSE,
+							timeoutMs: COMPONENT_RECOVERY_WAIT_TIMEOUT_MS,
 							onWait: (owner) => {
 								logger.info(
 									`Waiting to settle component deployment state for ${entry.name}` +
@@ -1090,7 +1086,8 @@ async function rollbackExtractedDirectory(
 						await rename(fallbackDisplacedPath, application.dirPath);
 						transactionPaths.delete(fallbackDisplacedPath);
 					}
-				} else if (placeholderIdentity) {
+				}
+				if (placeholderIdentity) {
 					try {
 						const current = await lstat(application.dirPath, { bigint: true });
 						if (current.dev === placeholderIdentity.dev && current.ino === placeholderIdentity.ino) {
@@ -1132,9 +1129,26 @@ async function rollbackExtractedDirectory(
 					return failRestore(error);
 				}
 				let displacedPath: string | undefined;
+				const displacedPlaceholderIdentity = placeholderIdentity;
 				try {
 					displacedPath = await displaceCurrentDirectory();
 					placeholderIdentity = undefined;
+					if (displacedPath && displacedPlaceholderIdentity) {
+						const displaced = await lstat(displacedPath, { bigint: true });
+						if (
+							displaced.dev === displacedPlaceholderIdentity.dev &&
+							displaced.ino === displacedPlaceholderIdentity.ino
+						) {
+							await rm(displacedPath, {
+								recursive: true,
+								force: true,
+								maxRetries: 3,
+								retryDelay: 100,
+							});
+							transactionPaths.delete(displacedPath);
+							displacedPath = undefined;
+						}
+					}
 				} catch (displaceError) {
 					return failRestore(
 						new AggregateError(
