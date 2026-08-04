@@ -313,7 +313,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			}
 			return resolved;
 		} catch (err) {
-			if ((err as any)?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+			if ((err as any)?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED' || (err as any)?.code === 'MODULE_NOT_FOUND') {
 				// Pure-ESM package: CJS resolver cannot match an exports map that only has
 				// "import" conditions (no "require"). Resolve the entry file by walking
 				// the filesystem and evaluating the exports map with ESM import conditions.
