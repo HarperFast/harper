@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785941143658,
+  "lastUpdate": 1785941147143,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -11598,6 +11598,53 @@ window.BENCHMARK_DATA = {
             "name": "concurrent-rw read p99",
             "unit": "ms",
             "value": 3927.2
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "3406de50c541f18e42a693b21e4d208f7936cc16",
+          "message": "Address PR review: fileURLToPath for the CLI guard, fix README claim\n\n- Use fileURLToPath(import.meta.url) instead of a raw file:// string\n  comparison against process.argv[1] — the latter breaks on Windows\n  path separators/drive-letter formatting (gemini-code-assist).\n- The README's \"only quick-scale/non-main runs are excluded\" claim was\n  only true for the new storage workflow; ycsb-nightly.yml's auto-push\n  has no scale gate at all, so a manual YCSB dispatch at any scale still\n  publishes today. Narrowed the doc to state the actual, differing\n  conditions for each workflow (claude bot).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-05T13:03:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/3406de50c541f18e42a693b21e4d208f7936cc16"
+        },
+        "date": 1785941146040,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 4708.56,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 4708.56,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 435.7,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1662.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 3046.3,
+            "unit": "ms"
           }
         ]
       }
