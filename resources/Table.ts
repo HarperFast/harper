@@ -5778,267 +5778,266 @@ export function makeTable(options) {
 			// belt to that suspenders, at the cost of a bounded wait on a merely slow source
 			// before the drain's fail-closed timeout below.
 			const commitPromise = transaction(sourceContext, async (_txn) => {
-					const start = performance.now();
-					let updatedRecord;
-					let hasChanges, invalidated;
-					try {
-						updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
-						invalidated = metadataFlags & INVALIDATED;
-						let version = sourceContext.lastModified || (invalidated && existingVersion);
-						hasChanges = invalidated || version > existingVersion || !existingRecord;
-						const resolveDuration = performance.now() - start;
-						recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
-						if (responseHeaders)
-							appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
-						if (expirationMs && sourceContext.expiresAt == undefined)
-							sourceContext.expiresAt = Date.now() + expirationMs;
-						if (updatedRecord) {
-							if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
-							if (updatedRecord.status > 0 && updatedRecord.headers) {
-								// if the source has a status code and headers, treat it as a response
-								const status = updatedRecord.status;
-								if (status === 304) {
-									// revalidation of our current cached record
-									updatedRecord = existingRecord;
-									version = existingVersion;
-								} else if (!CACHEABLE_STATUS_CODES.has(status)) {
-									// non-cacheable status - propagate to client without caching
-									throw new ServerError(updatedRecord.body || 'Error from source', status);
+				const start = performance.now();
+				let updatedRecord;
+				let hasChanges, invalidated;
+				try {
+					updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
+					invalidated = metadataFlags & INVALIDATED;
+					let version = sourceContext.lastModified || (invalidated && existingVersion);
+					hasChanges = invalidated || version > existingVersion || !existingRecord;
+					const resolveDuration = performance.now() - start;
+					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
+					if (responseHeaders)
+						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
+					if (expirationMs && sourceContext.expiresAt == undefined) sourceContext.expiresAt = Date.now() + expirationMs;
+					if (updatedRecord) {
+						if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
+						if (updatedRecord.status > 0 && updatedRecord.headers) {
+							// if the source has a status code and headers, treat it as a response
+							const status = updatedRecord.status;
+							if (status === 304) {
+								// revalidation of our current cached record
+								updatedRecord = existingRecord;
+								version = existingVersion;
+							} else if (!CACHEABLE_STATUS_CODES.has(status)) {
+								// non-cacheable status - propagate to client without caching
+								throw new ServerError(updatedRecord.body || 'Error from source', status);
+							} else {
+								let headers: any;
+								const sourceHeaders = updatedRecord.headers;
+								if (sourceHeaders[Symbol.iterator]) {
+									headers = {};
+									for (let [name, value] of sourceHeaders) {
+										headers[name.toLowerCase()] = value;
+									}
 								} else {
-									let headers: any;
-									const sourceHeaders = updatedRecord.headers;
-									if (sourceHeaders[Symbol.iterator]) {
-										headers = {};
-										for (let [name, value] of sourceHeaders) {
-											headers[name.toLowerCase()] = value;
-										}
-									} else {
-										headers = sourceHeaders; // just a plain object
-									}
-									const contentType = sourceHeaders.get?.('Content-Type');
-									let data: any;
-									if (contentType === 'application/json' && updatedRecord.json) {
-										// use native .json() if possible
-										data = await updatedRecord.json();
-									} else {
-										const contentTypeHandler = contentType && contentTypes.get(contentType);
-										if (contentTypeHandler?.deserialize) {
-											data = contentTypeHandler.deserialize(
-												await (contentType.startsWith('text/') ? updatedRecord.text() : updatedRecord.bytes())
-											);
-										}
-									}
-									if (data !== undefined) {
-										// we have structured data that we have parsed
-										delete headers['content-type']; // don't store the content type if we have already parsed it
-										updatedRecord = { headers, data };
-									} else {
-										updatedRecord = { headers, body: createBlob(updatedRecord.body) };
-									}
-									if (status !== 200) updatedRecord.status = status;
+									headers = sourceHeaders; // just a plain object
 								}
+								const contentType = sourceHeaders.get?.('Content-Type');
+								let data: any;
+								if (contentType === 'application/json' && updatedRecord.json) {
+									// use native .json() if possible
+									data = await updatedRecord.json();
+								} else {
+									const contentTypeHandler = contentType && contentTypes.get(contentType);
+									if (contentTypeHandler?.deserialize) {
+										data = contentTypeHandler.deserialize(
+											await (contentType.startsWith('text/') ? updatedRecord.text() : updatedRecord.bytes())
+										);
+									}
+								}
+								if (data !== undefined) {
+									// we have structured data that we have parsed
+									delete headers['content-type']; // don't store the content type if we have already parsed it
+									updatedRecord = { headers, data };
+								} else {
+									updatedRecord = { headers, body: createBlob(updatedRecord.body) };
+								}
+								if (status !== 200) updatedRecord.status = status;
 							}
-							if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();
-							// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
-							// before stamping the primary key and created/updated times below (records are immutable —
-							// 5.2 record caching relies on it — so we must not write through the frozen object).
-							if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
-							if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 						}
-						resolved = true;
-						const resolvedEntry: Entry = {
-							key: id,
-							version,
-							value: updatedRecord,
-							expiresAt: sourceContext.expiresAt,
-							metadataFlags: 0,
-							size: 0,
-							localTime: 0,
-							nodeId: 0,
-							residencyId: 0,
-						} as any;
-						// Give the plain object the RecordObject prototype so getExpiresAt/getUpdatedTime
-						// are available on the immediately-resolved entry. We mutate the prototype
-						// in-place rather than copying so that the commit callback (which adds
-						// createdAt/updatedAt to updatedRecord) is still reflected in the entry value.
-						if (updatedRecord && updatedRecord.constructor === Object) {
-							Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
-							entryMap.set(updatedRecord, resolvedEntry);
-						}
-						resolve(resolvedEntry);
-					} catch (error) {
-						error.message += ` while resolving record ${id} for ${tableName}`;
-						if (
-							existingRecord &&
-							(((error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED' || error.code === 'EAI_AGAIN') &&
-								!context?.mustRevalidate) ||
-								(context?.staleIfError &&
-									(error.statusCode === 500 ||
-										error.statusCode === 502 ||
-										error.statusCode === 503 ||
-										error.statusCode === 504)))
-						) {
-							// these are conditions under which we can use stale data after an error
-							resolve({
-								key: id,
-								version: existingVersion,
-								value: existingRecord,
-							} as any);
-							logger.trace?.(error.message, '(returned stale record)');
-						} else reject(error);
-						const resolveDuration = performance.now() - start;
-						recordAction(resolveDuration, 'cache-resolution', tableName, null, 'fail');
-						if (responseHeaders)
-							appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
-						sourceContext.transaction.abort();
-						return;
+						if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();
+						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
+						// before stamping the primary key and created/updated times below (records are immutable —
+						// 5.2 record caching relies on it — so we must not write through the frozen object).
+						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
+						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}
-					if (context?.noCacheStore || sourceContext.noCacheStore || droppingTable) {
-						// abort before we write any change. droppingTable is re-checked live (not just
-						// the noCacheStore snapshot taken at call start) because a call admitted before
-						// dropTable() began can still be sitting here after it started - the await above
-						// waited on the source, which may take arbitrarily long.
-						sourceContext.transaction.abort();
-						return;
-					}
-					const dbTxn = txnForContext(sourceContext);
-					const sourceWrite: any = {
+					resolved = true;
+					const resolvedEntry: Entry = {
 						key: id,
-						store: primaryStore,
-						entry: existingEntry,
-						nodeName: 'source',
-						commit: (txnTime, existingEntry, _retry, transaction: any) => {
-							sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
-							if (existingEntry?.version !== existingVersion) {
-								// don't do anything if the version has changed
-								sourceWrite.skipped = true;
-								return;
+						version,
+						value: updatedRecord,
+						expiresAt: sourceContext.expiresAt,
+						metadataFlags: 0,
+						size: 0,
+						localTime: 0,
+						nodeId: 0,
+						residencyId: 0,
+					} as any;
+					// Give the plain object the RecordObject prototype so getExpiresAt/getUpdatedTime
+					// are available on the immediately-resolved entry. We mutate the prototype
+					// in-place rather than copying so that the commit callback (which adds
+					// createdAt/updatedAt to updatedRecord) is still reflected in the entry value.
+					if (updatedRecord && updatedRecord.constructor === Object) {
+						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
+						entryMap.set(updatedRecord, resolvedEntry);
+					}
+					resolve(resolvedEntry);
+				} catch (error) {
+					error.message += ` while resolving record ${id} for ${tableName}`;
+					if (
+						existingRecord &&
+						(((error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED' || error.code === 'EAI_AGAIN') &&
+							!context?.mustRevalidate) ||
+							(context?.staleIfError &&
+								(error.statusCode === 500 ||
+									error.statusCode === 502 ||
+									error.statusCode === 503 ||
+									error.statusCode === 504)))
+					) {
+						// these are conditions under which we can use stale data after an error
+						resolve({
+							key: id,
+							version: existingVersion,
+							value: existingRecord,
+						} as any);
+						logger.trace?.(error.message, '(returned stale record)');
+					} else reject(error);
+					const resolveDuration = performance.now() - start;
+					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'fail');
+					if (responseHeaders)
+						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
+					sourceContext.transaction.abort();
+					return;
+				}
+				if (context?.noCacheStore || sourceContext.noCacheStore || droppingTable) {
+					// abort before we write any change. droppingTable is re-checked live (not just
+					// the noCacheStore snapshot taken at call start) because a call admitted before
+					// dropTable() began can still be sitting here after it started - the await above
+					// waited on the source, which may take arbitrarily long.
+					sourceContext.transaction.abort();
+					return;
+				}
+				const dbTxn = txnForContext(sourceContext);
+				const sourceWrite: any = {
+					key: id,
+					store: primaryStore,
+					entry: existingEntry,
+					nodeName: 'source',
+					commit: (txnTime, existingEntry, _retry, transaction: any) => {
+						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
+						if (existingEntry?.version !== existingVersion) {
+							// don't do anything if the version has changed
+							sourceWrite.skipped = true;
+							return;
+						}
+						updateIndices(id, existingRecord, updatedRecord, transaction && { transaction });
+						if (updatedRecord) {
+							if (existingEntry) {
+								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 							}
-							updateIndices(id, existingRecord, updatedRecord, transaction && { transaction });
-							if (updatedRecord) {
-								if (existingEntry) {
-									context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
-								}
-								let auditRecord: any;
-								let omitLocalRecord = false;
-								let residencyId: number;
-								if (updatedTimeProperty) {
-									updatedRecord[updatedTimeProperty.name] =
-										updatedTimeProperty.type === 'Date'
+							let auditRecord: any;
+							let omitLocalRecord = false;
+							let residencyId: number;
+							if (updatedTimeProperty) {
+								updatedRecord[updatedTimeProperty.name] =
+									updatedTimeProperty.type === 'Date'
+										? new Date(txnTime)
+										: updatedTimeProperty.type === 'String'
+											? new Date(txnTime).toISOString()
+											: txnTime;
+							}
+							if (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null) {
+								const existingCreatedTime = existingEntry?.value?.[createdTimeProperty.name];
+								if (existingCreatedTime != null) {
+									updatedRecord[createdTimeProperty.name] = existingCreatedTime;
+								} else {
+									updatedRecord[createdTimeProperty.name] =
+										createdTimeProperty.type === 'Date'
 											? new Date(txnTime)
-											: updatedTimeProperty.type === 'String'
+											: createdTimeProperty.type === 'String'
 												? new Date(txnTime).toISOString()
 												: txnTime;
 								}
-								if (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null) {
-									const existingCreatedTime = existingEntry?.value?.[createdTimeProperty.name];
-									if (existingCreatedTime != null) {
-										updatedRecord[createdTimeProperty.name] = existingCreatedTime;
+							}
+							const residency = residencyFromFunction(TableResource.getResidency(updatedRecord, context));
+							if (residency) {
+								if (!residency.includes(server.hostname)) {
+									// if we aren't in the residency list, specify that our local record should be omitted or be partial
+									auditRecord = updatedRecord;
+									omitLocalRecord = true;
+									if (TableResource.getResidencyById) {
+										// complete omission of the record that doesn't belong here
+										updatedRecord = undefined;
 									} else {
-										updatedRecord[createdTimeProperty.name] =
-											createdTimeProperty.type === 'Date'
-												? new Date(txnTime)
-												: createdTimeProperty.type === 'String'
-													? new Date(txnTime).toISOString()
-													: txnTime;
-									}
-								}
-								const residency = residencyFromFunction(TableResource.getResidency(updatedRecord, context));
-								if (residency) {
-									if (!residency.includes(server.hostname)) {
-										// if we aren't in the residency list, specify that our local record should be omitted or be partial
-										auditRecord = updatedRecord;
-										omitLocalRecord = true;
-										if (TableResource.getResidencyById) {
-											// complete omission of the record that doesn't belong here
-											updatedRecord = undefined;
-										} else {
-											// store the partial record
-											updatedRecord = null;
-											for (const name in indices) {
-												if (!updatedRecord) {
-													updatedRecord = {};
-												}
-												// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-												updatedRecord[name] = auditRecord[name];
+										// store the partial record
+										updatedRecord = null;
+										for (const name in indices) {
+											if (!updatedRecord) {
+												updatedRecord = {};
 											}
-											if (createdTimeProperty && auditRecord[createdTimeProperty.name] != null) {
-												// preserve the created timestamp in the partial record so it isn't lost when we don't have residency
-												if (!updatedRecord) updatedRecord = {};
-												updatedRecord[createdTimeProperty.name] = auditRecord[createdTimeProperty.name];
-											}
+											// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+											updatedRecord[name] = auditRecord[name];
+										}
+										if (createdTimeProperty && auditRecord[createdTimeProperty.name] != null) {
+											// preserve the created timestamp in the partial record so it isn't lost when we don't have residency
+											if (!updatedRecord) updatedRecord = {};
+											updatedRecord[createdTimeProperty.name] = auditRecord[createdTimeProperty.name];
 										}
 									}
-									residencyId = getResidencyId(residency);
 								}
-								logger.trace?.(
-									`Writing resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
-								);
-								// TODO: We are doing a double check for ifVersion that should probably be cleaned out
+								residencyId = getResidencyId(residency);
+							}
+							logger.trace?.(
+								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
+							);
+							// TODO: We are doing a double check for ifVersion that should probably be cleaned out
+							updateRecord(
+								id,
+								updatedRecord,
+								existingEntry,
+								txnTime,
+								omitLocalRecord ? INVALIDATED : 0,
+								(audit && (hasChanges || omitLocalRecord)) || null,
+								{
+									user: (sourceContext as any)?.user,
+									expiresAt: sourceContext.expiresAt,
+									residencyId,
+									transaction,
+									tableToTrack: tableName,
+								},
+								'put',
+								Boolean(invalidated),
+								auditRecord
+							);
+							// arm the eviction scanner, mirroring the .put() path
+							if (sourceContext.expiresAt) scheduleCleanup();
+						} else if (existingEntry) {
+							logger.trace?.(
+								`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
+							);
+							if (audit || trackDeletes) {
 								updateRecord(
 									id,
-									updatedRecord,
+									null,
 									existingEntry,
 									txnTime,
-									omitLocalRecord ? INVALIDATED : 0,
-									(audit && (hasChanges || omitLocalRecord)) || null,
-									{
-										user: (sourceContext as any)?.user,
-										expiresAt: sourceContext.expiresAt,
-										residencyId,
-										transaction,
-										tableToTrack: tableName,
-									},
-									'put',
-									Boolean(invalidated),
-									auditRecord
+									0,
+									(audit && hasChanges) || null,
+									{ user: (sourceContext as any)?.user, transaction, tableToTrack: tableName },
+									'delete',
+									Boolean(invalidated)
 								);
-								// arm the eviction scanner, mirroring the .put() path
-								if (sourceContext.expiresAt) scheduleCleanup();
-							} else if (existingEntry) {
-								logger.trace?.(
-									`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
-								);
-								if (audit || trackDeletes) {
-									updateRecord(
-										id,
-										null,
-										existingEntry,
-										txnTime,
-										0,
-										(audit && hasChanges) || null,
-										{ user: (sourceContext as any)?.user, transaction, tableToTrack: tableName },
-										'delete',
-										Boolean(invalidated)
-									);
-								} else {
-									removeEntry(primaryStore, existingEntry, existingVersion);
-								}
+							} else {
+								removeEntry(primaryStore, existingEntry, existingVersion);
 							}
-						},
-					};
-					// The cache-from-source write bypasses `_writeUpdate`, so wire the embed hook here
-					// too (always the originating node). It runs after the client GET has resolved with
-					// fresh source data, so it's a background commit: an embedder failure aborts the cache
-					// write via the outer error handler (row re-embeds next read) and never reaches the
-					// caller. Source-resolution errors are handled earlier, with the stale-data fallback.
-					const embedBefore = buildEmbedBefore(
-						updatedRecord,
-						sourceContext,
-						undefined,
-						TableResource.embedAttributes,
-						TableResource.userEmbedders
-					);
-					if (embedBefore) await embedBefore();
-					if (droppingTable) {
-						// Re-check right before staging the write: dropTable() may have started
-						// while we were awaiting the embed step above (harper#1381).
-						sourceContext.transaction.abort();
-						return;
-					}
-					sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
-					dbTxn.addWrite(sourceWrite);
-				});
+						}
+					},
+				};
+				// The cache-from-source write bypasses `_writeUpdate`, so wire the embed hook here
+				// too (always the originating node). It runs after the client GET has resolved with
+				// fresh source data, so it's a background commit: an embedder failure aborts the cache
+				// write via the outer error handler (row re-embeds next read) and never reaches the
+				// caller. Source-resolution errors are handled earlier, with the stale-data fallback.
+				const embedBefore = buildEmbedBefore(
+					updatedRecord,
+					sourceContext,
+					undefined,
+					TableResource.embedAttributes,
+					TableResource.userEmbedders
+				);
+				if (embedBefore) await embedBefore();
+				if (droppingTable) {
+					// Re-check right before staging the write: dropTable() may have started
+					// while we were awaiting the embed step above (harper#1381).
+					sourceContext.transaction.abort();
+					return;
+				}
+				sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
+				dbTxn.addWrite(sourceWrite);
+			});
 			pendingSourceCommits.add(commitPromise);
 			when(
 				commitPromise,
