@@ -15,6 +15,15 @@ This directory contains single-node storage and throughput benchmarks for Harper
 The three new benchmarks (ST-1, ST-2, ST-5) address gaps called out in §6.3 of the
 Harper Release Testing Strategy and §5 of the v5 Integration Test Plan.
 
+## Trend dashboard
+
+Nightly `--scale=nightly` runs on `main` of both the YCSB workload and the ST-1/ST-2/ST-5
+storage benchmarks (`perf-benchmarks-nightly.yml`) push their results via
+[`github-action-benchmark`](https://github.com/benchmark-action/github-action-benchmark)
+to the `gh-pages` branch, published at **https://harperfast.github.io/harper/**. Manual
+`workflow_dispatch` runs and `quick`-scale runs are never pushed, so the trend only reflects
+comparable nightly numbers.
+
 ## Prerequisites
 
 ```sh
