@@ -134,6 +134,9 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 		oldestAgeMs: oldestOutstandingCommit ? performance.now() - oldestOutstandingCommit.start : undefined,
 	};
 }
+// Once per process: committing under open read iterators forces a write replay, so the warning is
+// about the caller's pattern, not the individual commit.
+let replayedWritesWarned = false;
 
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
@@ -362,6 +365,9 @@ export class DatabaseTransaction implements Transaction {
 	// open-transaction limit. Once poisoned, any further addWrite/commit throws transactionOpenTooLongError
 	// so the request rolls back cleanly instead of silently committing a partial write set (issue #1407).
 	declare timedOut?: boolean;
+	// Set once the retained read handle's write intents have been released (see commit()'s
+	// outstanding-iterators branch), so a retry round cannot re-fire the release.
+	declare writesAbandoned?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -650,6 +656,14 @@ export class DatabaseTransaction implements Transaction {
 					this.writes = this.writes.filter((write) => write); // filter out removed entries
 					if (this.writes.length > 0) {
 						if (!options.transaction) {
+							if (!replayedWritesWarned) {
+								replayedWritesWarned = true;
+								harperLogger.warn?.(
+									`Committing while read iterators are still open: ${this.writes.length} staged write(s) must be re-staged and committed on a second transaction, doubling their write work` +
+										(this.startedFrom ? `, from ${this.startedFrom.resourceName}.${this.startedFrom.method}` : '') +
+										`. Fully consume (or close) iterators before committing to avoid this. Logged once per process.`
+								);
+							}
 							// Deliberately NOT marked isRetry and NOT carrying over the original's onCommit:
 							// audit/txn-log entries batch natively on the transaction they were staged into and
 							// are only durably written by that transaction's commit attempt (an abort discards
@@ -677,6 +691,23 @@ export class DatabaseTransaction implements Transaction {
 						// dedicated accounting here (as a prior version of this replay path did) used to leave
 						// write-transaction-queue-depth, the one metric that can observe a commit that never
 						// settles (harper#2001), reading zero for exactly this path.
+					}
+					// No commit will ever run on the retained handle — the replay above owns these
+					// writes — so this is the only place its write intents can be released. Left in
+					// place, other writers' coordinated-retry commits park on them until the last
+					// iterator finishes (harper#2001). Reads through the handle, including
+					// read-your-own-writes, keep working. Once only: a coordinated-retry or backoff
+					// round re-enters this branch on the same retained handle. Fenced like the other
+					// post-submit steps here: the replay commit is already in flight, so a throw must
+					// not skip onCommit/the chain-store commit below. Optional: rocksdb-js < 2.7
+					// lacks the method.
+					if (!this.writesAbandoned) {
+						this.writesAbandoned = true;
+						try {
+							(this.transaction as { abandonWrites?: () => void } | null)?.abandonWrites?.();
+						} catch (error) {
+							harperLogger.warn?.('Failed to release write intents on a retained read transaction', error);
+						}
 					}
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
@@ -1140,6 +1171,15 @@ function startMonitoringTxns() {
 }
 
 startMonitoringTxns();
+
+/**
+ * Test seam: re-arms the once-per-process replay warning. The whole unit suite shares one process,
+ * so whichever test first drives a commit under open iterators consumes the warning for every test
+ * after it.
+ */
+export function resetReplayedWritesWarning() {
+	replayedWritesWarned = false;
+}
 
 export function setTxnExpiration(ms) {
 	clearInterval(timer);
