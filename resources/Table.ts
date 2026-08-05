@@ -5777,9 +5777,7 @@ export function makeTable(options) {
 			// waiting for whatever this function is doing. Tracking the whole lifetime is the
 			// belt to that suspenders, at the cost of a bounded wait on a merely slow source
 			// before the drain's fail-closed timeout below.
-			let commitPromise: Promise<any>;
-			when(
-				(commitPromise = transaction(sourceContext, async (_txn) => {
+			const commitPromise = transaction(sourceContext, async (_txn) => {
 					const start = performance.now();
 					let updatedRecord;
 					let hasChanges, invalidated;
@@ -6040,7 +6038,10 @@ export function makeTable(options) {
 					}
 					sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
 					dbTxn.addWrite(sourceWrite);
-				})),
+				});
+			pendingSourceCommits.add(commitPromise);
+			when(
+				commitPromise,
 				() => {
 					pendingSourceCommits.delete(commitPromise);
 					primaryStore.unlock(id);
@@ -6052,7 +6053,6 @@ export function makeTable(options) {
 					// else the error was already propagated as part of the promise that we returned
 				}
 			);
-			pendingSourceCommits.add(commitPromise);
 		});
 	}
 

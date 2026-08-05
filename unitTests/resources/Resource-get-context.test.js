@@ -218,8 +218,7 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 				// getFromSource - the embed step runs after the caller's promise has resolved).
 				// Gating the embed hook (rather than source.get() itself) pins down that exact
 				// post-resolution, pre-staging window instead of merely proving dropTable() waits
-				// on an outstanding source fetch (which it deliberately no longer does - a call
-				// still waiting on the source isn't tracked as a pending commit).
+				// on the source round trip.
 				{ name: 'vector', type: 'Array', embed: { source: 'name', model: 'unused' } },
 			],
 		});
