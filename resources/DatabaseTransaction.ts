@@ -456,6 +456,11 @@ export class DatabaseTransaction implements Transaction {
 			this.timeout = Math.max(txnExpiration, this.timeoutBudget);
 		}
 		if (this.transaction) {
+			if (this.readTxnsUsed == null) {
+				this.readTxnsUsed = 1;
+				this.baseReadRefConsumed = false;
+				trackedTxns.add(this);
+			}
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
 		}
@@ -1330,11 +1335,15 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	abort(retainReadTransaction = false): void {
-		const hasOpenReadIterator = retainReadTransaction && this.transaction && this.readTxnsUsed > 1;
+		const hasOpenReadIterator =
+			retainReadTransaction &&
+			this.transaction &&
+			(this.readTxnsUsed > 1 || (this.baseReadRefConsumed && this.readTxnsUsed > 0));
 		if (hasOpenReadIterator) {
-			// Consume the transaction's base reference, leaving iterator references to release the native handle.
-			this.readTxnsUsed--;
-			this.baseReadRefConsumed = true;
+			if (!this.baseReadRefConsumed) {
+				this.doneReadTxn();
+				this.baseReadRefConsumed = true;
+			}
 		} else {
 			while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		}
@@ -1636,6 +1645,7 @@ function startMonitoringTxns() {
 						txn.dropWriteSupervision();
 						return;
 					}
+					if (txn.timedOut || txn.disconnected) continue;
 					// The commit was already acknowledged; any staged writes are riding an in-flight
 					// replay commit (see the outstanding-iterators branch in commit()) and are not the
 					// monitor's to abort — dropping them here would re-introduce the silent

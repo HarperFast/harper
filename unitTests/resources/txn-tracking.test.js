@@ -573,6 +573,59 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(508)) == null, 'the disconnected write must not commit');
 	});
 
+	it('keeps a write-first iterator safe when the poisoned callback rejects', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+		await DisconnectResource.put(509, { name: 'write-first iterator seed' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let iterator;
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(510, { name: 'must be discarded' }, context);
+				const results = await DisconnectResource.search({}, context);
+				iterator = results[Symbol.asyncIterator]();
+				await iterator.next();
+				ac.abort();
+				await DisconnectResource.put(511, { name: 'must reject' }, context);
+			}),
+			/disconnected/
+		);
+		assert.ok(context.transaction.transaction, 'callback cleanup must retain the iterator native transaction');
+		while (!(await iterator.next()).done);
+		assert.equal(context.transaction.transaction, null, 'finishing the iterator releases the native transaction');
+		assert.ok((await DisconnectResource.get(510)) == null, 'the disconnected write must not commit');
+	});
+
+	it('does not let the transaction monitor release a poisoned iterator', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+		setTxnExpiration(20);
+		try {
+			await DisconnectResource.put(512, { name: 'monitor iterator seed' }, {});
+			const ac = new AbortController();
+			const context = { signal: ac.signal };
+			await assert.rejects(
+				transaction(context, async () => {
+					const results = await DisconnectResource.search({}, context);
+					const iterator = results[Symbol.asyncIterator]();
+					await iterator.next();
+					await DisconnectResource.put(513, { name: 'must be discarded' }, context);
+					const nativeTransaction = context.transaction.transaction;
+					ac.abort();
+					await delay(100);
+					assert.equal(
+						context.transaction.transaction,
+						nativeTransaction,
+						'the monitor must not release a poisoned iterator native transaction'
+					);
+					while (!(await iterator.next()).done);
+				}),
+				/disconnected/
+			);
+		} finally {
+			setTxnExpiration(30000);
+		}
+	});
+
 	// Table.ts's txnForContext only chains a separate `next` link when the second store's `.path` differs
 	// from the head's. In this test harness setupTestDBPath() points every configured database name at the
 	// same directory (unitTests/testUtils.js), so two tables never actually get distinct store paths here

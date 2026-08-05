@@ -1,5 +1,6 @@
 import {
 	DatabaseTransaction,
+	requestAbortedError,
 	transactionOpenTooLongError,
 	type CommitOptions,
 	type TransactionWrite,
@@ -89,6 +90,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 	addWrite(operation: TransactionWrite): any {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		if (this.disconnected) throw requestAbortedError();
 		if (this.open === TRANSACTION_STATE.CLOSED) {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
@@ -124,6 +126,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	 */
 	commit(options: CommitOptions = {}): any {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		if (this.disconnected) throw requestAbortedError();
 		options = options || {};
 		let txnTime = this.timestamp;
 		if (!txnTime) txnTime = this.timestamp = options.timestamp || getNextMonotonicTime();
@@ -327,8 +330,19 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 		return txnResolution;
 	}
-	abort(): void {
-		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+	abort(retainReadTransaction = false): void {
+		const hasOpenReadIterator =
+			retainReadTransaction &&
+			this.readTxn &&
+			(this.readTxnsUsed > 1 || (this.baseReadRefConsumed && this.readTxnsUsed > 0));
+		if (hasOpenReadIterator) {
+			if (!this.baseReadRefConsumed) {
+				this.doneReadTxn();
+				this.baseReadRefConsumed = true;
+			}
+		} else {
+			while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		}
 		this.open = TRANSACTION_STATE.CLOSED;
 		this.drainCompletions();
 		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
