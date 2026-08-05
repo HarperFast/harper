@@ -8,6 +8,11 @@ const {
 	RECORD_BEARING_FLAGS,
 	endIteratorOnCorruptFrame,
 	MAX_RESYNCS_PER_ITERATION,
+	MAX_CORRUPT_FRAME_REPORTS,
+	createCorruptFrameReporter,
+	getCorruptFrameReports,
+	getDroppedCorruptFrameReportCount,
+	clearCorruptFrameReports,
 	shouldAbortStalledReplay,
 	REPLAY_NO_PROGRESS_COUNT_LIMIT,
 	REPLAY_NO_PROGRESS_TIME_LIMIT_MS,
@@ -157,14 +162,12 @@ describe('endIteratorOnCorruptFrame', () => {
 			},
 		};
 		const reported = [];
-		const wrapped = endIteratorOnCorruptFrame(source, (error, resynced, unreadableBytes) =>
-			reported.push({ error, resynced, unreadableBytes })
-		);
+		const wrapped = endIteratorOnCorruptFrame(source, (error, stopped) => reported.push({ error, stopped }));
 
 		assert.deepStrictEqual([...wrapped], ['a', 'b']);
 		assert.strictEqual(reported.length, 1);
-		assert.strictEqual(reported[0].resynced, true);
-		assert.strictEqual(reported[0].unreadableBytes, 26);
+		assert.strictEqual(reported[0].stopped, false);
+		assert.strictEqual(reported[0].error.unreadableBytes, 26);
 	});
 
 	it('stops resyncing once a log exceeds the per-iteration cap', () => {
@@ -179,13 +182,13 @@ describe('endIteratorOnCorruptFrame', () => {
 			},
 		};
 		const reported = [];
-		const wrapped = endIteratorOnCorruptFrame(source, (error, resynced) => reported.push(resynced));
+		const wrapped = endIteratorOnCorruptFrame(source, (error, stopped) => reported.push(stopped));
 
 		assert.deepStrictEqual(wrapped.next(), { done: true, value: undefined });
-		// the cap is what ends iteration, and the break that hit it is reported as not-resynced
+		// the cap is what ends iteration, and the break that hit it is reported as stopping it
 		assert.strictEqual(calls, MAX_RESYNCS_PER_ITERATION + 1);
 		assert.strictEqual(reported.length, MAX_RESYNCS_PER_ITERATION + 1);
-		assert.strictEqual(reported.at(-1), false);
+		assert.strictEqual(reported.at(-1), true);
 		// latched afterwards: no further pulls on the source
 		assert.deepStrictEqual(wrapped.next(), { done: true, value: undefined });
 		assert.strictEqual(calls, MAX_RESYNCS_PER_ITERATION + 1);
@@ -201,13 +204,31 @@ describe('endIteratorOnCorruptFrame', () => {
 			},
 		};
 		const reported = [];
-		const wrapped = endIteratorOnCorruptFrame(source, (error, resynced, unreadableBytes) =>
-			reported.push({ resynced, unreadableBytes })
+		const wrapped = endIteratorOnCorruptFrame(source, (error, stopped) =>
+			reported.push({ stopped, resyncPosition: error.resyncPosition })
 		);
 
 		assert.deepStrictEqual([...wrapped], ['a']);
-		assert.deepStrictEqual(reported, [{ resynced: false, unreadableBytes: 0 }]);
+		assert.deepStrictEqual(reported, [{ stopped: true, resyncPosition: undefined }]);
 		assert.strictEqual(calls, 2);
+	});
+
+	it('reports the cap-hit break as having stopped iteration, not as a clean resync', () => {
+		// The reporter keys severity off the error's own shape, so a mid-log break that merely hit
+		// the cap must still be distinguishable from a torn tail.
+		const source = {
+			next() {
+				const error = new RangeError('corrupt');
+				error.resyncPosition = 1;
+				throw error;
+			},
+		};
+		const reported = [];
+		const wrapped = endIteratorOnCorruptFrame(source, (error, stopped) =>
+			reported.push({ stopped, midLog: error.resyncPosition !== undefined })
+		);
+		wrapped.next();
+		assert.deepStrictEqual(reported.at(-1), { stopped: true, midLog: true });
 	});
 
 	it('does not swallow non-RangeError failures', () => {
@@ -287,6 +308,112 @@ describe('endIteratorOnCorruptFrame', () => {
 			() => endIteratorOnCorruptFrame({ next: source.next }, () => {}).throw(boom),
 			(error) => error === boom
 		);
+	});
+});
+
+// harper#2063: the reporter is what makes a lossy stream distinguishable from a healthy one, so
+// its severity choice, deduplication, and key derivation are the load-bearing parts.
+describe('createCorruptFrameReporter', () => {
+	function setup() {
+		clearCorruptFrameReports();
+		const logs = { warn: [], error: [] };
+		const reporter = createCorruptFrameReporter({
+			warn: (message, error) => logs.warn.push({ message, error }),
+			error: (message, error) => logs.error.push({ message, error }),
+		});
+		return { logs, report: reporter('local') };
+	}
+
+	function midLogError(position = 0x7d20bb, unreadableBytes = 26) {
+		const error = new RangeError(`Corrupt transaction log entry at position ${position.toString(16)} of log 2`);
+		error.logId = 2;
+		error.position = position;
+		error.resyncPosition = position + unreadableBytes;
+		error.unreadableBytes = unreadableBytes;
+		return error;
+	}
+
+	it('logs a mid-log break at error level and records the lost bytes', () => {
+		const { logs, report } = setup();
+		report(midLogError(), false);
+
+		assert.strictEqual(logs.warn.length, 0);
+		assert.strictEqual(logs.error.length, 1);
+		assert.match(logs.error[0].message, /26 byte\(s\) are unreadable/);
+		const reports = getCorruptFrameReports();
+		assert.strictEqual(reports.length, 1);
+		assert.deepStrictEqual(
+			{ log: reports[0].log, midLog: reports[0].midLog, unreadableBytes: reports[0].unreadableBytes },
+			{ log: 'local', midLog: true, unreadableBytes: 26 }
+		);
+	});
+
+	it('logs a torn tail at warn level', () => {
+		const { logs, report } = setup();
+		const error = new RangeError('truncated entry header');
+		error.logId = 2;
+		error.position = 100;
+		report(error, true);
+
+		assert.strictEqual(logs.error.length, 0);
+		assert.strictEqual(logs.warn.length, 1);
+		assert.strictEqual(getCorruptFrameReports()[0].midLog, false);
+	});
+
+	// A break that hit the resync cap lost entries just the same. Reporting it as the benign
+	// torn-tail warn would re-hide the condition #2063 exists to surface.
+	it('logs a capped mid-log break as data loss, naming it unreachable', () => {
+		const { logs, report } = setup();
+		report(midLogError(), true);
+
+		assert.strictEqual(logs.warn.length, 0);
+		assert.match(logs.error[0].message, /unreachable until it is repaired/);
+	});
+
+	it('counts repeats of the same break without re-logging it', () => {
+		const { logs, report } = setup();
+		report(midLogError(), false);
+		report(midLogError(), false);
+		report(midLogError(), false);
+
+		assert.strictEqual(logs.error.length, 1);
+		const [only] = getCorruptFrameReports();
+		assert.strictEqual(only.occurrences, 3);
+		assert.ok(only.lastSeen >= only.firstSeen);
+	});
+
+	// The first pass may sit behind 32 other breaks and hit the cap; a later pass, its cursor
+	// further along, resyncs cleanly. The report and the tracked state must follow.
+	it('updates the stopped state on a later encounter of the same break', () => {
+		const { report } = setup();
+		report(midLogError(), true);
+		assert.strictEqual(getCorruptFrameReports()[0].stoppedIteration, true);
+
+		report(midLogError(), false);
+		assert.strictEqual(getCorruptFrameReports()[0].stoppedIteration, false);
+	});
+
+	// Against a rocksdb-js with no logId/position, keying on those fields alone collapses every
+	// break on the stream onto one entry, so the second real corruption is never logged.
+	it('separates breaks by message when the error carries no logId/position', () => {
+		const { logs, report } = setup();
+		report(new RangeError('Corrupt transaction log entry at position 7d20bb of log 2'), true);
+		report(new RangeError('Corrupt transaction log entry at position 3bc071 of log 23'), true);
+
+		assert.strictEqual(getCorruptFrameReports().length, 2);
+		assert.strictEqual(logs.warn.length, 2);
+	});
+
+	it('bounds retained break sites and counts the ones it drops', () => {
+		const { logs, report } = setup();
+		for (let i = 0; i < MAX_CORRUPT_FRAME_REPORTS + 5; i++) {
+			report(midLogError(0x1000 + i * 0x100), false);
+		}
+
+		assert.strictEqual(getCorruptFrameReports().length, MAX_CORRUPT_FRAME_REPORTS);
+		assert.strictEqual(getDroppedCorruptFrameReportCount(), 5);
+		// dropped sites are still logged, so visibility never depends on retention
+		assert.strictEqual(logs.error.length, MAX_CORRUPT_FRAME_REPORTS + 5);
 	});
 });
 

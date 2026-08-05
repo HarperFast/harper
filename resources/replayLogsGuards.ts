@@ -132,10 +132,20 @@ export function shouldAbortSlowReplay(totalElapsedMs: number, timeLimitMs = REPL
 }
 
 /**
- * Maximum corrupt frames to resync past within one iteration of a single log. A log with more
- * breaks than this is damaged beyond "one interrupted append", and walking a long chain of them
- * per drain is not worth the CPU; iteration ends at that point, exactly as it did before resync
- * existed. Every break is still reported, so the count is visible rather than implied.
+ * A corrupt transaction-log frame from rocksdb-js. `resyncPosition` is set only when intact entries
+ * follow the break (a mid-log tear); its absence means end-of-log, which is also what every
+ * rocksdb-js predating the resync support reports.
+ */
+export type CorruptFrameError = RangeError & {
+	logId?: number;
+	position?: number;
+	resyncPosition?: number;
+	unreadableBytes?: number;
+};
+
+/**
+ * A log with more breaks than this in one pass is damaged beyond one interrupted append, so
+ * iteration ends rather than walking a long chain of them on every drain.
  */
 export const MAX_RESYNCS_PER_ITERATION = 32;
 
@@ -143,28 +153,15 @@ export const MAX_RESYNCS_PER_ITERATION = 32;
  * Wraps a transaction-log query iterator so a corrupt/torn frame is contained instead of escaping
  * as an uncaughtException.
  *
- * Two shapes, which must be handled differently (harper#2016, harper#2063):
- *
- * - **Torn tail** — nothing valid follows the break, so the frame really is end-of-log. Iteration
- *   ends; entries before it were already yielded. This is what open-time recovery in rocksdb-js
- *   would have truncated to anyway.
- * - **Mid-log break** — a partial append (ENOSPC/EDQUOT) the process survived, so valid entries
- *   were appended *after* it and acknowledged to clients. Treating that as end-of-log amputates
- *   every one of them: replay silently rolls the table back to the tear and replication starves
- *   the peer, permanently, because each new drain restarts from the same resume cursor and stops
- *   at the same frame. So iteration resyncs past the break and keeps delivering.
- *
- * The two are distinguished by `resyncPosition` on rocksdb-js's `CorruptFrameError`, which is the
- * offset where valid framing resumes. Against a rocksdb-js without it (or any other RangeError),
- * every break reads as a torn tail — the previous behavior.
- *
- * `onCorruptFrame` fires once per break (not once per log) and receives the number of bytes lost,
- * so a caller can escalate a mid-log break and surface it as a health signal rather than leaving
- * a wedged stream indistinguishable from a healthy one.
+ * A torn tail really is end-of-log. A mid-log break is not: a partial append the process survived
+ * has intact, already-acknowledged entries after it, so ending iteration there amputates all of
+ * them — permanently, since every later drain restarts from the same resume cursor and stops at
+ * the same frame (harper#2016, harper#2063). rocksdb-js distinguishes the two with
+ * `resyncPosition` and leaves its reader positioned there, so resuming is a further `next()`.
  */
 export function endIteratorOnCorruptFrame<T>(
 	iterator: Iterator<T>,
-	onCorruptFrame: (error: RangeError, resynced: boolean, unreadableBytes: number) => void
+	onCorruptFrame: (error: CorruptFrameError, stopped: boolean) => void
 ): IterableIterator<T> {
 	let stopped = false;
 	let resyncs = 0;
@@ -180,15 +177,9 @@ export function endIteratorOnCorruptFrame<T>(
 					// Key on the class, not the message: the framing RangeError's wording is
 					// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
 					if (!(error instanceof RangeError)) throw error;
-					// A resync position means intact entries follow, and the reader has already
-					// positioned itself there — calling next() again resumes past the break.
-					const { resyncPosition, unreadableBytes } = error as RangeError & {
-						resyncPosition?: number;
-						unreadableBytes?: number;
-					};
-					const canResync = resyncPosition !== undefined && ++resyncs <= MAX_RESYNCS_PER_ITERATION;
-					if (!canResync) stopped = true;
-					onCorruptFrame(error, canResync, unreadableBytes ?? 0);
+					const { resyncPosition } = error as CorruptFrameError;
+					if (resyncPosition === undefined || ++resyncs > MAX_RESYNCS_PER_ITERATION) stopped = true;
+					onCorruptFrame(error as CorruptFrameError, stopped);
 				}
 			}
 			return { done: true, value: undefined };
@@ -205,5 +196,118 @@ export function endIteratorOnCorruptFrame<T>(
 			if (typeof iterator.throw === 'function') return iterator.throw(error);
 			throw error;
 		},
+	};
+}
+
+/**
+ * A corrupt frame, accumulated for the life of the process. The same frame is re-encountered by
+ * every reader until each consumer's resume cursor has passed it, so this is deduplicated by
+ * location and the repeats become a count.
+ */
+export interface CorruptFrameReport {
+	log: string;
+	logId?: number;
+	position?: number;
+	/** Intact entries followed the break, so entries were lost rather than merely truncated. */
+	midLog: boolean;
+	/** Bytes skipped to resume framing; 0 when nothing valid followed the break. */
+	unreadableBytes: number;
+	/** Whether the most recent encounter ended iteration (torn tail, or the resync cap). */
+	stoppedIteration: boolean;
+	firstSeen: number;
+	lastSeen: number;
+	occurrences: number;
+}
+
+/** Distinct break sites retained. One physical corruption yields one site, so this is generous. */
+export const MAX_CORRUPT_FRAME_REPORTS = 256;
+
+const corruptFrameReports = new Map<string, CorruptFrameReport>();
+let droppedCorruptFrameReports = 0;
+
+/**
+ * Every corrupt frame seen by this process, for cluster/health status: a stream that has lost
+ * entries must be distinguishable from a healthy one without grepping logs — the field incident
+ * behind harper#2063 ran 11 days with `connected: true` throughout.
+ */
+export function getCorruptFrameReports(): CorruptFrameReport[] {
+	return [...corruptFrameReports.values()];
+}
+
+/** Distinct break sites not retained because {@link MAX_CORRUPT_FRAME_REPORTS} was reached. */
+export function getDroppedCorruptFrameReportCount(): number {
+	return droppedCorruptFrameReports;
+}
+
+// Test seam.
+export function clearCorruptFrameReports() {
+	corruptFrameReports.clear();
+	droppedCorruptFrameReports = 0;
+}
+
+// `logId`/`position` are absent on any rocksdb-js predating the resync support, and every break on
+// a stream would then collapse onto one key — folding genuinely different corruptions into a single
+// count that only ever logs once. The message carries the offset and file in text, so it separates
+// them when the fields can't.
+function corruptFrameKey(logName: string, error: CorruptFrameError): string {
+	const { logId, position } = error;
+	return logId !== undefined && position !== undefined
+		? `${logName}:${logId}:${position}`
+		: `${logName}:${error.message}`;
+}
+
+/**
+ * Records a corrupt frame and logs it once per distinct break.
+ *
+ * A mid-log break is an `error`, not a `warn`: entries after it were acknowledged and are now
+ * unreachable. Severity follows the break's own shape rather than whether this pass resynced — one
+ * that merely hit the resync cap lost entries too, and reporting it as the benign torn-tail `warn`
+ * would re-hide what harper#2063 exists to surface. A later encounter can still escalate, since
+ * the first pass may have hit the cap while a later one resyncs cleanly.
+ */
+export function createCorruptFrameReporter(logger: {
+	warn: (message: string, error?: unknown) => void;
+	error: (message: string, error?: unknown) => void;
+}) {
+	return (logName: string) => (error: CorruptFrameError, stoppedIteration: boolean) => {
+		const midLog = error.resyncPosition !== undefined;
+		const unreadableBytes = error.unreadableBytes ?? 0;
+		const now = Date.now();
+		const key = corruptFrameKey(logName, error);
+		const existing = corruptFrameReports.get(key);
+		if (existing) {
+			existing.occurrences++;
+			existing.lastSeen = now;
+			existing.stoppedIteration = stoppedIteration;
+			if (!midLog || existing.midLog) return;
+			// first time this break has been seen to have entries behind it
+			existing.midLog = true;
+			existing.unreadableBytes = unreadableBytes;
+		} else if (corruptFrameReports.size >= MAX_CORRUPT_FRAME_REPORTS) {
+			droppedCorruptFrameReports++;
+		} else {
+			corruptFrameReports.set(key, {
+				log: logName,
+				logId: error.logId,
+				position: error.position,
+				midLog,
+				unreadableBytes,
+				stoppedIteration,
+				firstSeen: now,
+				lastSeen: now,
+				occurrences: 1,
+			});
+		}
+		if (midLog) {
+			logger.error(
+				`Corrupt entry in transaction log "${logName}"; ${unreadableBytes} byte(s) are unreadable and the entries within them are lost to replay and replication. ` +
+					(stoppedIteration
+						? 'This log has too many corrupt frames to read past; entries after this point are unreachable until it is repaired or ages out.'
+						: 'Reading resumed after it.'),
+				error
+			);
+		} else {
+			logger.warn(`Stopping transaction log "${logName}" at a corrupt entry during replay`, error);
+		}
 	};
 }
