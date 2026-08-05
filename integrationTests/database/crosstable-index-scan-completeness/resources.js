@@ -2,12 +2,10 @@
 // table) WITHOUT storage.rocks.writeBufferManagerSize, which now hangs this fixture's ~20MB/
 // table seed on this machine (single request never returns, blows past undici's 300s timeout).
 //
-// Technique: force a REAL memtable flush between seeding waves via `table.primaryStore.flush()`
-// — the same mechanism already proven safe and reachable in sibling QA fixtures (qa638-
-// upgrade-sortedrun, qa731/732/746/760) that call `.flush()`/`.compact()` directly on
-// `primaryStore`/`indices[attr]` (inherited from @harperfast/rocksdb-js's RocksDatabase, NOT
-// exposed via the sandboxed `harper` module's flushDatabases() — see qa731's header). RocksDB's
-// native flush is atomic across every column family sharing the schema's on-disk directory
+// Technique: force a REAL memtable flush between seeding waves via `table.primaryStore.flush()`.
+// Fixture resource code can access the underlying table store directly; this is not exposed by
+// the sandboxed `harper` module's flushDatabases(). RocksDB's native flush is atomic across every
+// column family sharing the schema's on-disk directory
 // (atomic_flush=true), so ONE flush() call after each wave seals that wave's memtable into its
 // own SST file for primary + every index CF, across BOTH GenA and GenB. No pathological config
 // needed at all — this is candidate (a) from QA-772: no WBM cap, so no write-stall risk.
@@ -29,7 +27,6 @@ export class Probe extends Resource {
 }
 
 // POST /SeedWave/ { table, wave, keys, perKeyPerWave, bodyKb } — one wave = one transaction.
-// Identical shape to qa629/qa638's proven forced-flush seeding pattern.
 export class SeedWave extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
@@ -72,10 +69,9 @@ export class Flush extends Resource {
 }
 
 // GET /IndexStats/?table=X&attribute=repositoryId — RocksDB num-files-at-level0 proxy for
-// "how many un-merged sorted runs", carried over verbatim from qa638-upgrade-sortedrun
-// (getDBIntProperty('rocksdb.num-files-at-level0') reliably returns undefined on this
-// @harperfast/rocksdb-js build; getDBProperty('rocksdb.levelstats') is a string property that
-// DOES work, so parse the "Level 0" row's file count out of it instead).
+// "how many un-merged sorted runs". getDBIntProperty('rocksdb.num-files-at-level0') reliably
+// returns undefined on this @harperfast/rocksdb-js build; getDBProperty('rocksdb.levelstats') is
+// a string property that DOES work, so parse the "Level 0" row's file count out of it instead.
 export class IndexStats extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -112,8 +108,8 @@ export class IndexStats extends Resource {
 }
 
 // GET /Drain/?tables=GenB,GenA&scan=index|full&key=repo-7 — drain `key` across `tables` IN
-// ORDER, all within this ONE request/transaction. Identical to qa629's Drain (the actual
-// defect oracle: does the SECOND indexed table read in a request come back short?).
+// ORDER, all within this ONE request/transaction. This is the defect oracle: does the SECOND
+// indexed table read in a request come back short?
 export class Drain extends Resource {
 	static loadAsInstance = false;
 	async get(query) {

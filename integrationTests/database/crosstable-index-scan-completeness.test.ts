@@ -1,18 +1,16 @@
 /**
- * QA-772 — arm the QA-629 / F-158 / GH#1881 defect oracle (a table's rows spanning >1 on-disk
+ * QA-772 — arm the GH#1881 defect oracle (a table's rows spanning >1 on-disk
  * RocksDB sorted run) WITHOUT `storage.rocks.writeBufferManagerSize`, which now HANGS this
  * fixture's seed indefinitely on this machine (a single request writing ~20MB/table in one
  * transaction never returns, observed 3x past undici's 300s timeout on current main). With the
  * cap removed entirely, the same seed completes fast — but then RocksDB never actually flushes
  * off the memtable, so the whole dataset lives in ONE sorted run and the oracle is disarmed
- * (QA-629's own header notes this: a plain run without the WBM override passes clean on both
- * engines).
+ * (a plain run without forced flushing passes clean on both engines).
  *
  * Technique tried (cheapest-first, per QA-772):
  *   (a) no pathological config at all; force a flush BETWEEN seeding waves via
- *       `table.primaryStore.flush()` — reachable directly from fixture resource code, already
- *       proven safe/working in sibling QA fixtures (qa638-upgrade-sortedrun, qa731/732/746/760).
- *       This is the technique used below. RESULT: works, no stall, multiple sorted runs
+ *       `table.primaryStore.flush()` — reachable directly from fixture resource code. This is
+ *       the technique used below. RESULT: works, no stall, multiple sorted runs
  *       confirmed both by filesystem .sst count and by RocksDB's own level-0 file-count stat.
  *   (b)/(c) were not needed — (a) succeeded on the first attempt, so the WBM sweep and the
  *       shrink-dataset variants were not run. See the final report for the stall boundary this
@@ -23,18 +21,18 @@
  *      `{dataRootDir}/database/metrics-repro` — expect >1 per table's data, confirming multiple
  *      on-disk sorted runs exist before any read happens.
  *   2. Engine stat: GET /IndexStats/?table=GenA -> primary.l0Files (RocksDB
- *      'rocksdb.levelstats' Level-0 row), parsed the same way qa638 already validated works on
- *      this rocksdb-js build (num-files-at-level0 int-property returns undefined here).
+ *      'rocksdb.levelstats' Level-0 row). On this rocksdb-js build, the num-files-at-level0
+ *      integer property returns undefined.
  *
- * Once armed, re-runs the QA-629 Drain assertions (baseline GenA,GenB; DEFECT CHECK GenB,GenA;
+ * Once armed, re-runs the GH#1881 drain assertions (baseline GenA,GenB; DEFECT CHECK GenB,GenA;
  * full-scan control) to test whether GH#1881 (closed 2026-07-23) still reproduces on main
  * @ d112560b6.
  *
- * Single-pass control (qa629's GenASingle/GenBSingle) is NOT included here: an explicit
- * `.flush()` call can only run BETWEEN requests, never mid-transaction, so it cannot force >1
- * sorted run out of a genuinely single-transaction seed the way a WBM cap's memtable-pressure
- * backpressure could (that pressure applies mid-transaction too). That is a real, reportable
- * limitation of technique (a) relative to the original WBM-based repro, not an oversight.
+ * A single-pass control is NOT included here: an explicit `.flush()` call can only run BETWEEN
+ * requests, never mid-transaction, so it cannot force >1 sorted run out of a genuinely
+ * single-transaction seed the way a WBM cap's memtable-pressure backpressure could (that
+ * pressure applies mid-transaction too). That is a real, reportable limitation of this
+ * technique relative to the original WBM-based repro, not an oversight.
  *
  * Originally characterised against harper d112560b6.
  */
@@ -49,7 +47,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'crosstable-index-scan-completeness');
 
-// Same repro shape as QA-629, but split across more, smaller waves and flushed after every
+// Same repro shape, but split across more, smaller waves and flushed after every
 // wave rather than relying on WBM backpressure to force flushes mid-seed.
 const KEYS = 50;
 const PER_KEY_PER_WAVE = 5;
