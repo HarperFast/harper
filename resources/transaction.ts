@@ -119,7 +119,10 @@ export function transaction<T>(
 			return onCommitError(error, result);
 		}
 		if ((committed as any).then) {
-			return (committed as any).then(() => result, (error) => onCommitError(error, result));
+			return (committed as any).then(
+				() => result,
+				(error) => onCommitError(error, result)
+			);
 		} else {
 			return result;
 		}
