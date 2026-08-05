@@ -178,7 +178,14 @@ suite(
 			// than per-test so no call site can opt out: #1881's severe outcome is a read resolved
 			// against a foreign column family returning a SIBLING TABLE's row, and at the expected
 			// cardinality a count assertion passes while the caller holds another table's data.
-			for (const [table, owners] of Object.entries(body.owners ?? {}))
+			// Assert the shape rather than defaulting it: `Object.entries(body.owners ?? {})` would
+			// make this ownership check iterate NOTHING on a malformed response and pass silently,
+			// which is the vacuity this assertion exists to remove.
+			ok(
+				body.owners && typeof body.owners === 'object',
+				`Drain(${tablesCsv}) returned no owners map — cannot verify row ownership`
+			);
+			for (const [table, owners] of Object.entries(body.owners))
 				deepStrictEqual(
 					owners.filter((o) => o !== table),
 					[],

@@ -213,6 +213,10 @@ suite('QA-631 F-158 blast-radius [rocksdb]', { skip: process.platform === 'win32
 		// per-test so no call site can opt out: #1881's severe outcome is a read resolved against a
 		// foreign column family returning a SIBLING TABLE's row, and at the expected cardinality a
 		// count assertion passes while the caller holds another table's data.
+		// Assert the shape rather than defaulting it: `body?.steps ?? []` would make this ownership
+		// check iterate NOTHING on a malformed response and pass silently, which is the vacuity
+		// this assertion exists to remove.
+		assert.ok(Array.isArray(body.steps), `Drain(${steps}) returned no steps array — cannot verify row ownership`);
 		for (const step of body.steps)
 			assert.deepStrictEqual(
 				(step.owners ?? []).filter((o) => o !== step.table),

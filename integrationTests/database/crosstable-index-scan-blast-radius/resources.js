@@ -26,7 +26,7 @@
 //     full-scan touch heal a later index read of the same table" question). Returns
 //     { steps: [{table, scan, count}], key }.
 function getTable(tableName) {
-	return databases['qa631-blast'][tableName];
+	return databases['qa631-blast']?.[tableName];
 }
 
 function bodyOf(kb) {
@@ -146,7 +146,7 @@ export class Drain extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
 		const q = (name, def) => {
-			const v = query && (query.get ? query.get(name) : query[name]);
+			const v = query && (typeof query.get === 'function' ? query.get(name) : query[name]);
 			return v == null ? def : v;
 		};
 		const stepsRaw = String(q('steps', 'A:index'));
