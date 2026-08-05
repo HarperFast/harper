@@ -23,15 +23,9 @@
  *
  *     So instead, this suite covers the SIBLING encoder any Harper Resource client actually sees:
  *     contentTypes.ts's `text/event-stream` media-type `serialize()`, invoked via
- *     `resource.connect()`. It previously had a DIFFERENT, pre-existing falsy-data guard
- *     (`if (message.data) { ...emit data: line... }`) that silently OMITTED the `data:` field
- *     entirely for any falsy value (undefined/null/''/0/false) rather than crashing OR emitting
- *     an explicit empty/`null` line the way the fixed writeSSE() does — that was harper#2026
- *     (`EventSource` never dispatches a frame with an empty data buffer, so a legitimate falsy
- *     payload like `data: false` was silently never seen by the client). #2026 fixed the guard to
- *     `message.data != null` (and `message.id != null`), so only undefined/null now omit their
- *     field; this suite's assertions were updated alongside the fix. See
- *     integrationTests/qa-scratch/qa702-sse-event-data/resources.js for the full writeup.
+ *     `resource.connect()`. Its falsy-data/id guards are asserted here against absence
+ *     (undefined/null), not truthiness — see integrationTests/qa-scratch/qa702-sse-event-data/
+ *     resources.js for the full writeup.
  *
  * (b) F-133 re-characterization: does a resource.connect() async generator that throws mid-stream
  *     still hang the response? Git archaeology first: commits 06f5fcff8/8930b1ef2 ("Fix SSE hang +
@@ -275,11 +269,10 @@ suite(
 		//        itself (unreachable from here -- see file header for why, and for the actual #1863
 		//        anchor at unitTests/server/serverHelpers/progressEmitter.test.js) ────────────────────
 		//
-		// harper#2026 fix: the guard is now `message.data != null`, so only `undefined`/`null`
-		// omit the `data:` field entirely -- `''`/`0`/`false` are legitimate values and now emit
-		// their (string-coerced) `data:` line, matching the HTML EventSource spec (an empty data
-		// buffer is the only thing that gets silently discarded by a client, and now only
-		// undefined/null produce one).
+		// Only undefined/null omit the `data:` field entirely; `''`/`0`/`false` now emit their
+		// (string-coerced) line. Note `''` still won't dispatch on a real EventSource client --
+		// the HTML spec discards an empty data buffer regardless of whether the field was present
+		// or omitted -- but the wire byte-for-byte representation is what's asserted here.
 
 		const cases: Array<{ name: string; path: string; hasData: boolean; expectedData?: string }> = [
 			{ name: 'undefined', path: 'UndefinedPayload', hasData: false },
@@ -366,15 +359,29 @@ suite(
 			);
 		}
 
-		// harper#2026 fix: `id: 0` is a legitimate reconnect cursor and must now be emitted
-		// (contentTypes.ts's guard is `message.id != null`, not truthiness).
-		test('a: event.id = 0 (with real data) -- id: 0 is emitted (harper#2026 fixed)', async () => {
+		// `id: 0` is a legitimate reconnect cursor and must be emitted, not treated as absent.
+		test('a: event.id = 0 (with real data) -- id: 0 is emitted', async () => {
 			const r = await consumeSse(`${restBase}/IdZeroPayload/`, authHeaders, 15_000);
 			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
 			const payloadBlock = parseSseBlocks(r.raw).find((b) => b.event === 'payload');
 			ok(payloadBlock, `expected a 'payload' event block. raw:\n${r.raw}`);
 			strictEqual(payloadBlock!.data, 'id-zero-probe', 'data field should be unaffected by the id value');
 			strictEqual(payloadBlock!.id, '0', `expected id: 0 to be emitted; got: ${JSON.stringify(payloadBlock)}`);
+		});
+
+		// The falsy-data cases above all set `event: 'payload'`, which alone satisfies the outer
+		// envelope-detection gate regardless of `data`. This covers a message with no `event` key
+		// at all, so a falsy `data` is the only thing deciding whether the gate is entered.
+		test('a: event-less message with data = 0 -- envelope gate must not treat this as absent', async () => {
+			const r = await consumeSse(`${restBase}/ZeroPayloadNoEvent/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const blocks = parseSseBlocks(r.raw);
+			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
+			strictEqual(
+				blocks[0].data,
+				'0',
+				`expected a bare "data: 0" line, not the whole message JSON-wrapped; got: ${JSON.stringify(blocks[0])}`
+			);
 		});
 
 		// ── (b) F-133 re-characterization: generator throws mid-stream ─────────────────────────

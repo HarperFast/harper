@@ -24,11 +24,7 @@
 //     Resource over `Accept: text/event-stream`: contentTypes.ts's `text/event-stream` media type
 //     `serialize()`, invoked via `resource.connect()`. It's the client-visible "neighbour" of the
 //     guarded path — same conceptual contract (turning a `{event, data}` message into SSE wire
-//     bytes) — and previously had a DIFFERENT (already-defensive, pre-existing) falsy-data guard:
-//     `if (message.data) { ...emit a data: line... }` silently omitted the `data:` field entirely
-//     for any falsy `data` (undefined/null/''/0/false). That was harper#2026 (which also covered
-//     the identical `id: 0` omission below); the guard is now `!= null` so only undefined/null
-//     omit their field — see the test file for the assertions this fixture backs.
+//     bytes) — see the test file for the assertions this fixture backs.
 //
 // (b) Re-characterization of F-133 ("SSE hang on generator that throws mid-stream") on current
 //     main: ThrowGen below is the same shape QA-537 used to document the (at the time) still-open
@@ -78,13 +74,22 @@ export class ZeroPayload extends ssePayloadResource(0) {}
 // GET /FalsePayload/ — data: false.
 export class FalsePayload extends ssePayloadResource(false) {}
 
-// GET /IdZeroPayload/ — a real `data` value paired with `id: 0`. Same falsy-guard mechanism
-// (`if (message.id) {...}`, contentTypes.ts) drops the reconnect cursor `id: 0` exactly like it
-// drops falsy `data` above -- the other half of harper#2026, otherwise unpinned by this suite.
+// GET /IdZeroPayload/ — a real `data` value paired with `id: 0`, a legitimate reconnect cursor.
 export class IdZeroPayload extends Resource {
 	static loadAsInstance = false;
 	static async *connect() {
 		yield { event: 'payload', data: 'id-zero-probe', id: 0 };
+	}
+}
+
+// GET /ZeroPayloadNoEvent/ — falsy `data` with no `event` key at all. Exercises the outer
+// envelope-detection gate (contentTypes.ts's `if (message.data != null || message.event)`),
+// distinct from the `hasData` matrix above which always sets `event: 'payload'` and so never
+// reaches this gate.
+export class ZeroPayloadNoEvent extends Resource {
+	static loadAsInstance = false;
+	static async *connect() {
+		yield { data: 0 };
 	}
 }
 

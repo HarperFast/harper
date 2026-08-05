@@ -141,7 +141,7 @@ mediaTypes.set('text/event-stream', {
 				id: message.timestamp,
 			};
 		}
-		if (message.data || message.event) {
+		if (message.data != null || message.event) {
 			let serialized = '';
 			if (message.event) serialized += 'event: ' + message.event + '\n';
 			if (message.data != null) {
