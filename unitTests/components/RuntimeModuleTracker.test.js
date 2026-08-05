@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { pathToFileURL } = require('node:url');
@@ -56,6 +56,21 @@ describe('RuntimeModuleTracker', () => {
 
 		this.tracker.beginDeploy();
 		writeFileSync(join(this.directory, 'helper.js'), 'export default {};');
+		assert.equal(await this.tracker.finishDeploy(), true);
+	});
+
+	it('detects higher-priority candidate state changes before Node resolves them', async () => {
+		const referrerPath = join(this.directory, 'resources.js');
+		const jsonPath = join(this.directory, 'helper.json');
+		writeFileSync(referrerPath, 'import helper from "./helper";');
+		writeFileSync(jsonPath, '{}');
+		const require = createRequire(pathToFileURL(referrerPath));
+		assert.equal(require.resolve('./helper'), jsonPath);
+		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(jsonPath).href);
+
+		this.tracker.beginDeploy();
+		mkdirSync(join(this.directory, 'helper.js'));
+		assert.equal(require.resolve('./helper'), jsonPath);
 		assert.equal(await this.tracker.finishDeploy(), true);
 	});
 
