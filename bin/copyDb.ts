@@ -1,4 +1,10 @@
-import { getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases.ts';
+import {
+	getDatabases,
+	getDefaultCompression,
+	resetDatabases,
+	getRocksCompression,
+	toRocksCompression,
+} from '../resources/databases.ts';
 import { open, asBinary } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
@@ -329,6 +335,10 @@ export function shapeForStructure(value: any): any {
 
 function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: boolean } = {}) {
 	options.disableWAL ??= false;
+	// Migration creates a complete replacement database, so use the deployment codec for the files
+	// it writes; runtime opens additionally reconcile pre-existing sibling column families.
+	const legacyOptions = options as { compression?: unknown };
+	legacyOptions.compression = getRocksCompression() ?? toRocksCompression(legacyOptions.compression);
 	if (!existsSync(path)) {
 		mkdirSync(path, { recursive: true });
 	}

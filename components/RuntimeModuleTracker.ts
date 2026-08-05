@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { lstat, readFile, readlink } from 'node:fs/promises';
 import { createRequire, Module } from 'node:module';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -7,11 +8,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 type Source = string | Buffer;
 
 const MODULE_COMPARE_CONCURRENCY = 16;
+const RESOLUTION_EXTENSIONS = ['', '.js', '.json', '.node', '.ts', '.tsx', '.cjs', '.mjs'];
+
+type Resolution = {
+	resolvedUrl: string;
+	higherPriorityCandidates?: Map<string, string>;
+};
 
 export class RuntimeModuleTracker {
 	#getRoot: () => string | undefined;
 	#modules = new Map<string, string>();
-	#resolutions = new Map<string, string>();
+	#resolutions = new Map<string, Resolution>();
 	#nativeRuntime = false;
 	#deployInFlight = false;
 	#loadedDuringDeploy = false;
@@ -42,10 +49,17 @@ export class RuntimeModuleTracker {
 
 	recordResolution(specifier: string, referrer: string, resolvedUrl: string): void {
 		const referrerPath = this.#localPath(referrer);
-		if (!referrerPath || !this.#localPath(resolvedUrl)) return;
+		const resolvedPath = this.#localPath(resolvedUrl);
+		if (!referrerPath || !resolvedPath) return;
 		const key = `${referrerPath}\0${specifier}`;
 		if (!this.#resolutions.has(key)) {
-			this.#resolutions.set(key, resolvedUrl);
+			const candidates = higherPriorityResolutionCandidates(specifier, referrerPath, resolvedPath);
+			this.#resolutions.set(key, {
+				resolvedUrl,
+				higherPriorityCandidates: candidates
+					? new Map(candidates.map((candidate) => [candidate, candidateState(candidate)]))
+					: undefined,
+			});
 			if (this.#deployInFlight) this.#loadedDuringDeploy = true;
 		}
 	}
@@ -72,16 +86,27 @@ export class RuntimeModuleTracker {
 			);
 			if (changed.includes(true)) return true;
 		}
-		for (const [key, previousResolvedUrl] of this.#resolutions) {
+		for (const [key, resolution] of this.#resolutions) {
 			const separator = key.indexOf('\0');
 			const referrerPath = key.slice(0, separator);
 			const specifier = key.slice(separator + 1);
+			if (
+				resolution.higherPriorityCandidates &&
+				(
+					await Promise.all(
+						[...resolution.higherPriorityCandidates].map(
+							async ([candidate, previousState]) => (await candidateStateAsync(candidate)) !== previousState
+						)
+					)
+				).includes(true)
+			)
+				return true;
 			try {
 				// Node does not invalidate this cache when a component tree is replaced in place.
-				if (!invalidateResolutionCache(specifier, referrerPath, previousResolvedUrl)) return true;
+				if (!invalidateResolutionCache(specifier, referrerPath, resolution.resolvedUrl)) return true;
 				const resolved = createRequire(pathToFileURL(referrerPath)).resolve(specifier);
 				const resolvedUrl = isAbsolute(resolved) ? pathToFileURL(resolved).toString() : resolved;
-				if (resolvedUrl !== previousResolvedUrl) return true;
+				if (resolvedUrl !== resolution.resolvedUrl) return true;
 			} catch {
 				return true;
 			}
@@ -100,6 +125,47 @@ export class RuntimeModuleTracker {
 			(!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath))
 		)
 			return modulePath;
+	}
+}
+
+function higherPriorityResolutionCandidates(
+	specifier: string,
+	referrerPath: string,
+	resolvedPath: string
+): string[] | undefined {
+	if (!specifier.startsWith('.')) return;
+	const basePath = resolve(dirname(referrerPath), specifier);
+	const candidates = [...new Set(RESOLUTION_EXTENSIONS.map((extension) => basePath + extension))];
+	candidates.push(resolve(basePath, 'package.json'));
+	for (const extension of RESOLUTION_EXTENSIONS.slice(1)) candidates.push(resolve(basePath, `index${extension}`));
+	const resolvedIndex = candidates.indexOf(resolvedPath);
+	if (resolvedIndex === -1) return;
+	return candidates.slice(0, resolvedIndex);
+}
+
+function candidateState(path: string): string {
+	try {
+		const stats = lstatSync(path);
+		if (stats.isSymbolicLink()) return `link:${readlinkSync(path)}`;
+		if (stats.isDirectory()) return 'directory';
+		if (!stats.isFile()) return 'other';
+		return path.endsWith('package.json') ? `file:${digest(readFileSync(path))}` : 'file';
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+		return `error:${(error as NodeJS.ErrnoException).code ?? 'unknown'}`;
+	}
+}
+
+async function candidateStateAsync(path: string): Promise<string> {
+	try {
+		const stats = await lstat(path);
+		if (stats.isSymbolicLink()) return `link:${await readlink(path)}`;
+		if (stats.isDirectory()) return 'directory';
+		if (!stats.isFile()) return 'other';
+		return path.endsWith('package.json') ? `file:${digest(await readFile(path))}` : 'file';
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+		return `error:${(error as NodeJS.ErrnoException).code ?? 'unknown'}`;
 	}
 }
 
