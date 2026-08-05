@@ -1556,7 +1556,7 @@ export class DatabaseTransaction implements Transaction {
 			},
 			(error) => {
 				this.setCommitPhase(false);
-				this.abort();
+				this.abort(this.timedOut || this.disconnected);
 				throw error;
 			}
 		);
