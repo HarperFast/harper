@@ -1,4 +1,5 @@
 import {
+	COMMIT_PHASE_GRACE,
 	DatabaseTransaction,
 	transactionOpenTooLongError,
 	type CommitOptions,
@@ -148,9 +149,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				// source writes will finish (with right to refuse/abort) before proceeeding to less
 				// canonical sources.
 				if (hasBefore) {
-					// The write set is sealed and the caller is awaiting this commit while the `before` hooks
-					// (in practice, a blob's durable file write) run, so the monitor must not poison it here —
-					// see `committing` in DatabaseTransaction and issue #2062.
+					// see `committing` in DatabaseTransaction (issue #2062)
 					this.committing = true;
 					return (async () => {
 						try {
@@ -375,15 +374,14 @@ function startMonitoringTxns() {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
-				if (txn.committing) {
-					// Parked in commit()'s `before` phase (in practice a blob's durable file write, which for a
-					// large payload legitimately outruns the limit). The write set is sealed and the caller is
-					// awaiting the commit, so there is no partial write set to protect; poisoning here would
-					// abort the commit AND unlink the blobs the write still references (issue #2062).
+				if (txn.committing && ++txn.commitPhaseTicks <= COMMIT_PHASE_GRACE) {
+					// Parked in commit()'s `before` phase — core's own I/O on a sealed write set, not the
+					// application holding a transaction open; see DatabaseTransaction's monitor (issue #2062).
 					harperLogger.warn?.(
 						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work (e.g. a large blob write); letting it complete, from table: ${
 							(txn.db as any)?.name + (url ? ' path: ' + url : '')
-						}`
+						}`,
+						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : [])
 					);
 					txn.timeout = txnExpiration;
 				} else if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {

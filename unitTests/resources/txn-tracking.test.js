@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { setTxnExpiration, DatabaseTransaction, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
+const { setTxnExpiration, DatabaseTransaction, TRANSACTION_STATE, COMMIT_PHASE_GRACE } = require('#src/resources/DatabaseTransaction');
 const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -559,6 +559,52 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		slow.end();
 		await assert.rejects(committing, /open-transaction time/);
 		assert.equal(await BlobResource.get(2063), undefined, 'the poisoned write must not be committed');
+	});
+
+	// Same phantom-commit hazard reached by a plain abort rather than the monitor's poison.
+	it('a transaction aborted while parked in its pre-commit phase throws instead of resolving as success', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		const committing = transaction(context, async () => {
+			await BlobResource.put({ id: 2064, blob }, context);
+		});
+		slow.write(Buffer.alloc(16384, 'd'));
+		await waitFor(() => context.transaction?.committing, {
+			message: 'commit should park in its pre-commit phase while the blob save runs',
+		});
+		context.transaction.abort();
+		slow.end();
+		await assert.rejects(committing, /aborted while its commit was waiting/);
+		assert.equal(await BlobResource.get(2064), undefined, 'the aborted write must not be committed');
+	});
+
+	// The exemption is a grace, not an exemption forever: the transaction still pins a read snapshot, so
+	// a pre-commit source that stalls instead of finishing must eventually be poisoned like any other
+	// over-time transaction.
+	it('bounds the grace so a pre-commit source that never finishes is still aborted', async function () {
+		const stuck = new PassThrough(); // deliberately never ended
+		const blob = createBlob(stuck);
+		const context = {};
+		setExpiration(20);
+		const committing = transaction(context, async () => {
+			await BlobResource.put({ id: 2065, blob }, context);
+		});
+		committing.catch(() => {}); // settles only when the stuck source is destroyed below
+		stuck.write(Buffer.alloc(16384, 'e'));
+		try {
+			await waitFor(() => context.transaction.timedOut, {
+				timeout: 10000,
+				message: 'a commit phase that never finishes should be aborted once its grace runs out',
+			});
+		} finally {
+			setExpiration(30000);
+			stuck.destroy();
+		}
+		assert.ok(
+			context.transaction.commitPhaseTicks > COMMIT_PHASE_GRACE,
+			`should have been spared ${COMMIT_PHASE_GRACE} ticks first, got ${context.transaction.commitPhaseTicks}`
+		);
 	});
 });
 

@@ -35,6 +35,11 @@ export const TRANSACTION_STATE = {
 	LINGERING: 2,
 };
 const MAX_RETRIES = 40;
+// Over-limit monitor ticks a transaction parked in its commit phase is spared before it is aborted
+// like any other over-time transaction. Generous — the point is to let a legitimately large blob
+// write finish (at the 30s default this is ~5 minutes) — but bounded, so a pre-commit source that
+// stalls instead of finishing can't pin its read snapshot forever (issue #2062).
+export const COMMIT_PHASE_GRACE = 10;
 // Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
@@ -422,12 +427,13 @@ export class DatabaseTransaction implements Transaction {
 	// back what it asked for.
 	snapshotFree = false;
 	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
-	// most notably a blob's durable file write). The write set is sealed at that point and the caller is
-	// already awaiting the commit, so this is core's own I/O, not an application holding a transaction
-	// open — the case the open-transaction limit exists to police. The monitor leaves such a transaction
-	// alone rather than poisoning it (issue #2062); aborting mid-commit-phase salvages nothing and
-	// destroys the pre-saved blobs the write still references.
-	declare committing?: boolean;
+	// in practice a blob's durable file write). The write set is sealed and the caller is awaiting the
+	// commit, so this is core's own I/O rather than an application holding a transaction open, which is
+	// what the open-transaction limit polices: the monitor spares it for COMMIT_PHASE_GRACE ticks
+	// instead of poisoning it (issue #2062).
+	committing = false;
+	// Over-limit monitor ticks this transaction has been spared while committing.
+	commitPhaseTicks = 0;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -865,23 +871,20 @@ export class DatabaseTransaction implements Transaction {
 		this.validated = this.writes.length;
 		const completions = this.completions;
 		if (completions.length > 0) this.completions = []; // reset
-		// From here the write set is sealed and the caller is awaiting this commit; the monitor must not
-		// poison the transaction while it waits on its own pre-commit I/O (see `committing`, issue #2062).
-		this.committing = true;
+		const stagedWrites = this.writes.length;
+		if (completions.length > 0) this.committing = true;
 		return when(
 			completions.length > 0 ? Promise.all(completions) : null,
 			() => {
 				this.committing = false;
-				// The completions await above (pre-commit blob saves, `before`/`beforeIntermediate` hooks) is
-				// unbounded, so the monitor can poison and abort this transaction while we are parked in it —
-				// exactly what a multi-tens-of-MB blob write does (issue #2062). abortDueToTimeout() released
-				// the native handle, cleared the writes and unlinked their pre-saved blobs, so continuing past
-				// here commits an empty write set and resolves as SUCCESS: the caller is told its write landed
-				// when it was dropped, and — for a write carrying a blob — is left holding a blob whose file
-				// was deleted but whose fileId is still set, so its next put re-references the destroyed file
-				// (saveBlob short-circuits on an existing fileId). Surface the same error the pre-commit guards
-				// raise, so the caller rolls back rather than building on a phantom commit (issue #1407).
+				// The transaction can be aborted underneath us while we are parked in the await above — by the
+				// monitor once the commit phase outlives its grace, or through the multi-store poison chain.
+				// abort() cleared the write set and released the handle, so resuming would commit nothing and
+				// resolve as SUCCESS: the caller is told its write landed when it was dropped, and a write
+				// carrying a blob is left holding an instance whose file was unlinked (issue #2062).
 				if (this.timedOut) throw transactionOpenTooLongError();
+				if (stagedWrites > 0 && this.writes.length === 0 && !this.transaction)
+					throw new ServerError('Transaction was aborted while its commit was waiting on pre-commit work', 500);
 				if (this.writes.length > this.validated) {
 					// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
 					return this.commit(options);
@@ -1576,14 +1579,14 @@ function startMonitoringTxns() {
 						}`
 					);
 					txn.releaseReadTxn();
-				} else if (txn.committing) {
+				} else if (txn.committing && ++txn.commitPhaseTicks <= COMMIT_PHASE_GRACE) {
 					// Parked in commit()'s pre-commit await — a `before`/`beforeIntermediate` hook, in practice a
 					// blob's durable file write, which for a multi-tens-of-MB payload legitimately outruns the
 					// limit. The write set is sealed and the caller is awaiting this commit, so the limit's
-					// premise ("the application is holding a transaction open") does not hold: there is no partial
-					// write set to protect, and poisoning here would abort the commit AND unlink the blobs the
-					// write still references, leaving the caller to re-put a record pointing at a destroyed file
-					// (issue #2062). Let the commit finish; log so a genuinely stuck pre-commit is still visible.
+					// premise (the application is holding a transaction open) does not hold, and poisoning here
+					// would unlink the blobs the write still references (issue #2062). The grace is bounded
+					// because the transaction still pins a read snapshot: a source that stalls rather than
+					// finishing falls through to the abort below once it runs out.
 					harperLogger.warn?.(
 						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work (e.g. a large blob write); letting it complete, from table: ${
 							(txn.db as any)?.name + (url ? ' path: ' + url : '')
