@@ -185,13 +185,17 @@ suite(
 				body.owners && typeof body.owners === 'object',
 				`Drain(${tablesCsv}) returned no owners map — cannot verify row ownership`
 			);
-			for (const [table, owners] of Object.entries(body.owners))
+			const requestedTables = tablesCsv.split(',').map((table) => table.trim());
+			deepStrictEqual(body.order, requestedTables, `Drain(${tablesCsv}) returned an unexpected table order`);
+			for (const table of requestedTables) {
+				ok(Array.isArray(body.owners[table]), `Drain(${tablesCsv}) returned no owners for ${table}`);
 				deepStrictEqual(
-					owners.filter((o) => o !== table),
+					body.owners[table].filter((owner) => owner !== table),
 					[],
-					`Drain(${tablesCsv}) read ${table} but got rows owned by ${JSON.stringify(owners)} — ` +
+					`Drain(${tablesCsv}) read ${table} but got rows owned by ${JSON.stringify(body.owners[table])} — ` +
 						`a foreign column family answered this read`
 				);
+			}
 			return body.counts;
 		}
 
