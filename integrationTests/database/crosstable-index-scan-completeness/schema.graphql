@@ -1,5 +1,5 @@
-# QA-772 — same GenA/GenB repro shape as QA-629 (GH #1881), reused verbatim so the resulting
-# on-disk state is directly comparable to the original writeBufferManagerSize-forced repro.
+# QA-772 — GenA/GenB repro shape for GH #1881. The resulting on-disk state is directly
+# comparable to the original writeBufferManagerSize-forced repro.
 # `owner` carries the table name in the ROW. Ownership must not be inferred from the primary
 # key: the keys below deliberately COLLIDE across tables so that a read resolved against a
 # foreign column family finds a real row and returns it, which is #1881's severe mode. A

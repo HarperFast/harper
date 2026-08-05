@@ -165,7 +165,7 @@ export class Drain extends Resource {
 			const table = getTable(tableName);
 			if (!table) throw new Error(`unknown table ${tableName}`);
 			let count = 0;
-			// Track which table each returned row actually came from (by its id prefix). #1881's
+			// Track which table each returned row actually came from via its `owner` field. #1881's
 			// worse outcome is a read resolved against a foreign column family returning a SIBLING
 			// TABLE's row at the expected cardinality — invisible to a count, visible here.
 			const seen = new Set();

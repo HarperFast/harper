@@ -1,4 +1,4 @@
-// QA-772 — arm the QA-629/F-158/GH#1881 defect oracle (>1 on-disk RocksDB sorted run per
+// QA-772 — arm the F-158/GH#1881 defect oracle (>1 on-disk RocksDB sorted run per
 // table) WITHOUT storage.rocks.writeBufferManagerSize, which now hangs this fixture's ~20MB/
 // table seed on this machine (single request never returns, blows past undici's 300s timeout).
 //
@@ -125,7 +125,7 @@ export class Drain extends Resource {
 		const scan = q('scan', 'index');
 
 		const counts = {};
-		// Which table each returned row actually came from, keyed by the row-id prefix. #1881's
+		// Which table each returned row actually came from, via its `owner` field. #1881's
 		// worse outcome is a read resolved against a foreign column family returning a SIBLING
 		// TABLE's row at the expected cardinality — invisible to a count, visible here.
 		const owners = {};
