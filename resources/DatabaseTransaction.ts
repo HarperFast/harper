@@ -1291,7 +1291,7 @@ export class DatabaseTransaction implements Transaction {
 				return txnResolution;
 			},
 			(error) => {
-				this.abort();
+				this.abort(this.timedOut || this.disconnected);
 				throw error;
 			}
 		);

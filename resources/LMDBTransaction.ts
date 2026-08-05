@@ -51,6 +51,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.readTxn = (this.db as any).useReadTransaction();
 
 		this.readTxnsUsed = 1;
+		this.baseReadRefConsumed = false;
 		if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
 		trackedTxns.add(this as any);
 		return this.readTxn;
@@ -175,14 +176,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 								if (completion) await (completion.push ? Promise.all(completion) : completion);
 							}
 						} catch (error) {
-							this.abort();
+							this.abort(this.timedOut || this.disconnected);
 							throw error;
 						}
 						return this.commit(options);
 					})();
 				}
 			} catch (error) {
-				this.abort();
+				this.abort(this.timedOut || this.disconnected);
 				throw error;
 			}
 		}
