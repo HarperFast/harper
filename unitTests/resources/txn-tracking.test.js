@@ -527,6 +527,17 @@ describe('Disconnect abort', () => {
 		assert.ok(found, 'expected at least the head transaction');
 	}
 
+	function getReadTransaction(head) {
+		for (let txn = head; txn; txn = txn.next) {
+			const nativeTransaction = txn.transaction ?? txn.readTxn;
+			if (nativeTransaction) return { txn, nativeTransaction };
+		}
+	}
+
+	function setDisconnectExpiration(ms) {
+		return DisconnectResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
+	}
+
 	it('aborts a write-bearing txn when the client disconnects mid-handler, releasing the native transaction', async function () {
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
@@ -546,7 +557,6 @@ describe('Disconnect abort', () => {
 	});
 
 	it('lets an open read iterator finish after disconnecting a write-bearing transaction', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 		await DisconnectResource.put(507, { name: 'iterator seed' }, {});
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
@@ -557,16 +567,20 @@ describe('Disconnect abort', () => {
 				iterator = results[Symbol.asyncIterator]();
 				await iterator.next();
 				await DisconnectResource.put(508, { name: 'must be discarded' }, context);
-				const nativeTransaction = context.transaction.transaction;
+				const { txn: iteratorTransaction, nativeTransaction } = getReadTransaction(context.transaction);
 				ac.abort();
-				assert.equal(context.transaction.disconnected, true, 'disconnect must still poison the staged write');
+				assert.equal(iteratorTransaction.disconnected, true, 'disconnect must still poison the staged write');
 				assert.equal(
-					context.transaction.transaction,
+					iteratorTransaction.transaction ?? iteratorTransaction.readTxn,
 					nativeTransaction,
 					'the open iterator must retain its native transaction until it finishes'
 				);
 				while (!(await iterator.next()).done);
-				assert.equal(context.transaction.transaction, null, 'finishing the iterator releases the native transaction');
+				assert.equal(
+					iteratorTransaction.transaction ?? iteratorTransaction.readTxn,
+					null,
+					'finishing the iterator releases the native transaction'
+				);
 			}),
 			/disconnected/
 		);
@@ -574,7 +588,6 @@ describe('Disconnect abort', () => {
 	});
 
 	it('keeps a write-first iterator safe when the poisoned callback rejects', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 		await DisconnectResource.put(509, { name: 'write-first iterator seed' }, {});
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
@@ -590,15 +603,22 @@ describe('Disconnect abort', () => {
 			}),
 			/disconnected/
 		);
-		assert.ok(context.transaction.transaction, 'callback cleanup must retain the iterator native transaction');
+		const { txn: iteratorTransaction } = getReadTransaction(context.transaction);
+		assert.ok(
+			iteratorTransaction.transaction ?? iteratorTransaction.readTxn,
+			'callback cleanup must retain the iterator native transaction'
+		);
 		while (!(await iterator.next()).done);
-		assert.equal(context.transaction.transaction, null, 'finishing the iterator releases the native transaction');
+		assert.equal(
+			iteratorTransaction.transaction ?? iteratorTransaction.readTxn,
+			null,
+			'finishing the iterator releases the native transaction'
+		);
 		assert.ok((await DisconnectResource.get(510)) == null, 'the disconnected write must not commit');
 	});
 
 	it('does not let the transaction monitor release a poisoned iterator', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
-		setTxnExpiration(20);
+		setDisconnectExpiration(20);
 		try {
 			await DisconnectResource.put(512, { name: 'monitor iterator seed' }, {});
 			const ac = new AbortController();
@@ -609,11 +629,11 @@ describe('Disconnect abort', () => {
 					const iterator = results[Symbol.asyncIterator]();
 					await iterator.next();
 					await DisconnectResource.put(513, { name: 'must be discarded' }, context);
-					const nativeTransaction = context.transaction.transaction;
+					const { txn: iteratorTransaction, nativeTransaction } = getReadTransaction(context.transaction);
 					ac.abort();
 					await delay(100);
 					assert.equal(
-						context.transaction.transaction,
+						iteratorTransaction.transaction ?? iteratorTransaction.readTxn,
 						nativeTransaction,
 						'the monitor must not release a poisoned iterator native transaction'
 					);
@@ -622,8 +642,29 @@ describe('Disconnect abort', () => {
 				/disconnected/
 			);
 		} finally {
-			setTxnExpiration(30000);
+			setDisconnectExpiration(30000);
 		}
+	});
+
+	it('closes a returned iterator when the disconnected transaction cannot commit', async function () {
+		await DisconnectResource.put(514, { name: 'returned iterator seed' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				const results = await DisconnectResource.search({}, context);
+				await DisconnectResource.put(515, { name: 'must be discarded' }, context);
+				ac.abort();
+				return results;
+			}),
+			/disconnected/
+		);
+		assert.equal(
+			getReadTransaction(context.transaction),
+			undefined,
+			'the returned iterator must be closed when commit rejects'
+		);
+		assert.ok((await DisconnectResource.get(515)) == null, 'the disconnected write must not commit');
 	});
 
 	// Table.ts's txnForContext only chains a separate `next` link when the second store's `.path` differs
