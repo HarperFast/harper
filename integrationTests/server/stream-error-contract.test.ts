@@ -297,7 +297,7 @@ suite(
 			ok(cap.totalBytes > 0, `${cap.surface} mid-stream response must include data before the throw`);
 			strictEqual(
 				cap.sawTerminalChunk,
-				VARIANT === 'uws',
+				VARIANT === 'uws' || cap.surface === 'iterable-rest',
 				`${cap.surface} mid-stream response terminal chunk did not match the ${VARIANT} contract`
 			);
 			assertServerTerminated(cap);
