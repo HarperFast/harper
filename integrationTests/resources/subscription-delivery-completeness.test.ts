@@ -356,18 +356,19 @@ function runSuite(threadCount: 1 | 4) {
 			const { label, id, count, rate } = opts;
 			const tag = `${label}-${Date.now()}`;
 
-			const sse = track(await openSse(`${restBase}/${TABLE}/`, authHeaders));
-			ok(sse.status >= 200 && sse.status < 300, `[${label}] SSE should open, got ${sse.status}`);
-
+			let sse: SseStream | undefined;
 			let mqc: MqttClient | undefined;
 			let mqCollect: ReturnType<typeof collectMqtt> | undefined;
-			if (mqttUsable) {
-				mqc = await connectMqtt(mqttURL, baseOpts({ clientId: `qa883-${label}` }));
-				await mqttSubscribe(mqc, `${TABLE}/${id}`, 1);
-				mqCollect = collectMqtt(mqc);
-			}
-
 			try {
+				sse = track(await openSse(`${restBase}/${TABLE}/`, authHeaders));
+				ok(sse.status >= 200 && sse.status < 300, `[${label}] SSE should open, got ${sse.status}`);
+
+				if (mqttUsable) {
+					mqc = await connectMqtt(mqttURL, baseOpts({ clientId: `qa883-${label}` }));
+					await mqttSubscribe(mqc, `${TABLE}/${id}`, 1);
+					mqCollect = collectMqtt(mqc);
+				}
+
 				await sleep(400); // let subscriptions attach before we start writing
 
 				let issued = 0;
@@ -446,7 +447,7 @@ function runSuite(threadCount: 1 | 4) {
 
 				return { issued, writeMs, inProcStats, sseStats, mqStats, finalSeq };
 			} finally {
-				drop(sse);
+				if (sse) drop(sse);
 				mqCollect?.stop();
 				await endQuiet(mqc);
 			}
