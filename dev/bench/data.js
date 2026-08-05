@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785917361084,
+  "lastUpdate": 1785917364151,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8360,6 +8360,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 46.45,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "1201afb01221c87fd298babef05d12e38dc99755",
+          "message": "Close remaining bypass_auth trust gaps in MCP tokens and SQL AST checks\n\nTwo review findings on the operation-authorization refactor:\n- createTokens() still trusted a caller-supplied authObj.bypass_auth\n  field, and MCP's tool handler didn't strip it — an MCP caller could\n  spoof bypass_auth and mint tokens for an arbitrary username without a\n  password. createTokens now reads only the trusted ALS-scoped\n  isOperationAuthorizationBypassed() state; MCP strips bypass_auth/\n  bypassAuth from tool args before dispatch as defense in depth.\n- processAST() still read jsonMessage.bypass_auth from the body, so\n  trusted authorize=false SQL calls (via legacy differential dispatch)\n  were being re-authorized. processAST now consults the same ALS-scoped\n  bypass state; differential.ts's runLegacy wraps evaluateSQL in\n  runWithOperationAuthorizationBypass instead of passing bypass_auth in\n  the message body.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-27T15:25:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/1201afb01221c87fd298babef05d12e38dc99755"
+        },
+        "date": 1785917363281,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.51,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 16.85,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 22.49,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 19.63,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 25.58,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.54,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 35.34,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 16.66,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 20.17,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 48.51,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 180.86,
             "unit": "ms"
           }
         ]
