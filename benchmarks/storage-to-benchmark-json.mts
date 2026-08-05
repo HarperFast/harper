@@ -11,10 +11,15 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-interface BenchPoint {
+export interface BenchPoint {
 	name: string;
 	unit: string;
 	value: number;
+}
+
+export interface Converted {
+	throughput: BenchPoint[];
+	latency: BenchPoint[];
 }
 
 export interface Logs {
@@ -31,7 +36,7 @@ function firstMatch(log: string, pattern: RegExp): RegExpMatchArray | undefined 
 	return log.match(pattern) ?? undefined;
 }
 
-export function convert(logs: Logs): { throughput: BenchPoint[]; latency: BenchPoint[] } {
+export function convert(logs: Logs): Converted {
 	const throughput: BenchPoint[] = [];
 	const latency: BenchPoint[] = [];
 
@@ -70,24 +75,35 @@ export function convert(logs: Logs): { throughput: BenchPoint[]; latency: BenchP
 	return { throughput, latency };
 }
 
-const RESULT_PATTERNS: Record<keyof Logs, RegExp> = {
-	indexedWrite: /INDEXED_WRITE_RESULT/,
-	ttlChurn: /TTL_CHURN_RESULT/,
-	concurrentRw: /CONCURRENT_RW_RESULT/,
+const NAME_PREFIX: Record<keyof Logs, string> = {
+	indexedWrite: 'indexed-write ',
+	ttlChurn: 'ttl-churn ',
+	concurrentRw: 'concurrent-rw ',
 };
 
 /**
- * A log file that exists but has no RESULT line means its benchmark exited 0 without reporting
- * (a bug in the benchmark, not an absent run) — publishing the truncated series would leave a
- * gap in the trend history with no failed step and no regression alert to flag it.
+ * A log file that exists but yields no points (missing RESULT line) or a non-finite value
+ * (a malformed RESULT line) means its benchmark exited 0 without reporting cleanly — publishing
+ * that would leave a silent gap or a `null` in the trend history with no failed step and no
+ * regression alert to catch it. Checked against convert()'s actual output, not a marker regex,
+ * so a RESULT line that matched but failed to parse its fields is caught too.
  */
-export function assertComplete(logs: Logs): void {
-	for (const [name, pattern] of Object.entries(RESULT_PATTERNS) as [keyof Logs, RegExp][]) {
-		const log = logs[name];
-		if (log !== undefined && !pattern.test(log)) {
+export function assertComplete(logs: Logs, result: Converted): void {
+	const all = [...result.throughput, ...result.latency];
+	for (const [name, prefix] of Object.entries(NAME_PREFIX) as [keyof Logs, string][]) {
+		if (logs[name] === undefined) continue;
+		const points = all.filter((p) => p.name.startsWith(prefix));
+		if (points.length === 0) {
 			throw new Error(
-				`${name}.log was present but had no ${pattern.source} line — the benchmark exited without reporting`
+				`${name}.log was present but no metrics were parsed from it — the benchmark exited without reporting`
 			);
+		}
+		for (const p of points) {
+			if (!Number.isFinite(p.value)) {
+				throw new Error(
+					`${name}.log produced a non-finite value for "${p.name}" (${p.value}) — its RESULT line is malformed`
+				);
+			}
 		}
 	}
 }
@@ -110,8 +126,8 @@ async function main(): Promise<void> {
 		ttlChurn: await readIfPresent(join(resultsDir, 'ttl-churn.log')),
 		concurrentRw: await readIfPresent(join(resultsDir, 'concurrent-rw.log')),
 	};
-	assertComplete(logs);
 	const { throughput, latency } = convert(logs);
+	assertComplete(logs, { throughput, latency });
 
 	await mkdir(outDir, { recursive: true });
 	await writeFile(join(outDir, 'throughput.json'), JSON.stringify(throughput, null, 2));

@@ -4,7 +4,12 @@
  */
 import { test } from 'node:test';
 import { strictEqual, deepStrictEqual, throws, doesNotThrow } from 'node:assert';
-import { convert, assertComplete } from './storage-to-benchmark-json.mts';
+import { convert, assertComplete, type Logs } from './storage-to-benchmark-json.mts';
+
+// Exercises assertComplete against convert()'s real output, same as main() does.
+function checkComplete(logs: Logs): void {
+	assertComplete(logs, convert(logs));
+}
 
 test('parses indexed-write RESULT lines into per-variant throughput points', () => {
 	const indexedWrite = [
@@ -50,18 +55,23 @@ test('skips a benchmark whose log is genuinely absent rather than throwing', () 
 	const { throughput, latency } = convert({});
 	strictEqual(throughput.length, 0);
 	strictEqual(latency.length, 0);
-	doesNotThrow(() => assertComplete({}));
+	doesNotThrow(() => checkComplete({}));
 });
 
-test('assertComplete throws when a present log has no matching RESULT line', () => {
-	throws(() => assertComplete({ indexedWrite: 'no result lines here' }), /indexedWrite\.log/);
-	throws(() => assertComplete({ ttlChurn: 'benchmark crashed before reporting' }), /ttlChurn\.log/);
-	throws(() => assertComplete({ concurrentRw: 'timed out' }), /concurrentRw\.log/);
+test('assertComplete throws when a present log parses to zero points', () => {
+	throws(() => checkComplete({ indexedWrite: 'no result lines here' }), /indexedWrite\.log/);
+	throws(() => checkComplete({ ttlChurn: 'benchmark crashed before reporting' }), /ttlChurn\.log/);
+	throws(() => checkComplete({ concurrentRw: 'timed out' }), /concurrentRw\.log/);
 });
 
-test('assertComplete does not throw when every present log has its RESULT line', () => {
+test('assertComplete throws when a RESULT line matches but a field fails to parse to a finite number', () => {
+	// The marker is present, but ops_per_sec is non-numeric — Number('NaN-ish') is not finite.
+	throws(() => checkComplete({ indexedWrite: 'INDEXED_WRITE_RESULT variant=baseline ops_per_sec=NaN' }), /non-finite/);
+});
+
+test('assertComplete does not throw when every present log parses cleanly', () => {
 	doesNotThrow(() =>
-		assertComplete({
+		checkComplete({
 			indexedWrite: 'INDEXED_WRITE_RESULT variant=baseline ops_per_sec=1',
 			ttlChurn: 'TTL_CHURN_RESULT duration_s=1 peak_bytes=1 final_bytes=1 total_inserts=1 bounded=true',
 			concurrentRw: 'CONCURRENT_RW_RESULT read_ops=1 write_ops=1 read_p50_ms=1 read_p95_ms=1 read_p99_ms=1',
