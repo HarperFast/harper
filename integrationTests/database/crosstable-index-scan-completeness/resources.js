@@ -64,7 +64,7 @@ export class Flush extends Resource {
 	static loadAsInstance = false;
 	async post() {
 		const t = getTable('GenA');
-		if (typeof t.primaryStore.flush !== 'function')
+		if (typeof t?.primaryStore?.flush !== 'function')
 			throw new Error('QA-772 Flush control invalid: primaryStore.flush() not available (not RocksDB?)');
 		await t.primaryStore.flush();
 		return { ok: true };
@@ -79,8 +79,9 @@ export class Flush extends Resource {
 export class IndexStats extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
-		const tableName = (query && (query.get ? query.get('table') : query.table)) || 'GenA';
-		const attribute = (query && (query.get ? query.get('attribute') : query.attribute)) || 'repositoryId';
+		const tableName = (query && (typeof query.get === 'function' ? query.get('table') : query.table)) || 'GenA';
+		const attribute =
+			(query && (typeof query.get === 'function' ? query.get('attribute') : query.attribute)) || 'repositoryId';
 		const table = getTable(tableName);
 		if (!table) throw new Error(`unknown table ${tableName}`);
 		const primaryStore = table.primaryStore;
@@ -89,7 +90,7 @@ export class IndexStats extends Resource {
 			if (!store || typeof store.getDBIntProperty !== 'function') return { unavailable: true };
 			let levelStats;
 			try {
-				levelStats = store.getDBProperty && store.getDBProperty('rocksdb.levelstats');
+				levelStats = typeof store.getDBProperty === 'function' ? store.getDBProperty('rocksdb.levelstats') : undefined;
 			} catch (e) {
 				levelStats = `error: ${e.message}`;
 			}

@@ -79,7 +79,7 @@ function statsOf(store) {
 	if (!store || typeof store.getDBIntProperty !== 'function') return { unavailable: true };
 	let levelStats;
 	try {
-		levelStats = store.getDBProperty && store.getDBProperty('rocksdb.levelstats');
+		levelStats = typeof store.getDBProperty === 'function' ? store.getDBProperty('rocksdb.levelstats') : undefined;
 	} catch (e) {
 		levelStats = `error: ${e.message}`;
 	}
@@ -117,7 +117,7 @@ export class Flush extends Resource {
 	async post(query, body) {
 		const b = body || query || {};
 		const t = getTable('TableA');
-		if (typeof t.primaryStore.flush !== 'function')
+		if (typeof t?.primaryStore?.flush !== 'function')
 			throw new Error('QA-631 Flush control invalid: primaryStore.flush() not available (not RocksDB?)');
 		await t.primaryStore.flush();
 		const stats = {};
@@ -135,8 +135,9 @@ export class Flush extends Resource {
 export class IndexStats extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
-		const tableName = (query && (query.get ? query.get('table') : query.table)) || 'TableA';
-		const attribute = (query && (query.get ? query.get('attribute') : query.attribute)) || 'repositoryId';
+		const tableName = (query && (typeof query.get === 'function' ? query.get('table') : query.table)) || 'TableA';
+		const attribute =
+			(query && (typeof query.get === 'function' ? query.get('attribute') : query.attribute)) || 'repositoryId';
 		const { primary, index } = statsForTable(tableName, attribute);
 		return { table: tableName, attribute, primary, index };
 	}
