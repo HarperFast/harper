@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785933865339,
+  "lastUpdate": 1785941143658,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -10134,6 +10134,58 @@ window.BENCHMARK_DATA = {
             "name": "concurrent-rw write ops",
             "unit": "ops",
             "value": 370490
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "3406de50c541f18e42a693b21e4d208f7936cc16",
+          "message": "Address PR review: fileURLToPath for the CLI guard, fix README claim\n\n- Use fileURLToPath(import.meta.url) instead of a raw file:// string\n  comparison against process.argv[1] — the latter breaks on Windows\n  path separators/drive-letter formatting (gemini-code-assist).\n- The README's \"only quick-scale/non-main runs are excluded\" claim was\n  only true for the new storage workflow; ycsb-nightly.yml's auto-push\n  has no scale gate at all, so a manual YCSB dispatch at any scale still\n  publishes today. Narrowed the doc to state the actual, differing\n  conditions for each workflow (claude bot).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-05T13:03:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/3406de50c541f18e42a693b21e4d208f7936cc16"
+        },
+        "date": 1785941142200,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 28726,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 18695,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 11240,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 25131136,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 3317,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 495760,
+            "unit": "ops"
           }
         ]
       }
