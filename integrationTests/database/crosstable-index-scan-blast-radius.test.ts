@@ -1,7 +1,7 @@
 /**
  * QA-631 — F-158 (GH #1881) blast-radius characterization. GH#1881 CLOSED/FIXED 2026-07-23.
  *
- * F-158 (confirmed HIGH pre-fix, RocksDB-only, see qa629-crosstable-index-miss.test.ts): when a
+ * F-158 (confirmed HIGH pre-fix, RocksDB-only): when a
  * request reads TWO tables where the second is read via a SECONDARY INDEX, and that table's
  * rows for the queried slot span MORE THAN ONE flushed on-disk sorted run, the secondary-index
  * scan returns 0 rows even though the data is fully intact (full-scan of the same slot returns
@@ -13,18 +13,17 @@
  * in the file does NOT immunise these: a full scan warms the PRIMARY column family, and the
  * defect lives in the index-CF read path. Re-verify after any change to seeding or test order.
  *
- * QA-774 (this file): converts the original stalled RED candidate into a shipped-fix regression
- * anchor. The ORIGINAL repro forced multiple sorted runs via
+ * This file converts the original stalled RED candidate into a shipped-fix regression anchor.
+ * The ORIGINAL repro forced multiple sorted runs via
  * `storage.rocks.writeBufferManagerSize: 8388608`; on this machine that cap now HANGS this
- * fixture's ~40MB/table seed indefinitely. Per QA-772, the WBM cap is dropped ENTIRELY and
- * replaced with an explicit `table.primaryStore.flush()` call (a `/Flush/` fixture resource)
+ * fixture's ~40MB/table seed indefinitely. The WBM cap is dropped ENTIRELY and replaced with an
+ * explicit `table.primaryStore.flush()` call (a `/Flush/` fixture resource)
  * between seeding waves — RocksDB's flush is atomic across every column family sharing the
  * schema directory, so one flush() after each wave seals that wave into its own SST for the
  * primary AND every index CF, across all four tables.
  *
  * ALSO CHANGED: `restartHttpWorkers()` was removed in favor of a plain readiness poll against
- * `/Probe/` (component is pre-installed; restarting races the worker respawn and flakes on CI —
- * see qa772-flush-forcing.test.ts, which has the proven-correct poll).
+ * `/Probe/` (component is pre-installed; restarting races the worker respawn and flakes on CI).
  *
  * This file still characterizes the same three blast-radius questions (Q1 SPREAD, Q2 ORDINARY
  * REST-CLIENT REACH, Q3 FULL-SCAN HEAL) from a 4-table harness (TableA..TableD, db
@@ -39,8 +38,8 @@
  * move Level-0 files to a lower level before it is sampled.
  *
  * Harper SHA under test: d112560b6 (main). Engine: RocksDB only (this technique relies on
- * `primaryStore.flush()`, a RocksDB-only API; LMDB confirmed clean by qa629 — no LSM/sorted-run
- * structure — not re-tested here).
+ * `primaryStore.flush()`, a RocksDB-only API; LMDB has no LSM/sorted-run structure and is not
+ * re-tested here).
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -53,7 +52,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'crosstable-index-scan-blast-radius');
 
-// Same volume as qa629's confirmed repro, waved + flushed per QA-772's technique.
+// Same volume as the confirmed repro, waved and explicitly flushed.
 const KEYS = 50;
 const PER_KEY_PER_WAVE = 5;
 const WAVES = 20;

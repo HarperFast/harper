@@ -1,11 +1,11 @@
 // QA-631 — F-158 (GH #1881) blast-radius characterization: cross-table secondary-index scan
-// miss within a single request, RocksDB-only (confirmed by qa629-crosstable-index-miss).
+// miss within a single request, RocksDB-only.
 // Precondition (sharper than the issue's "write in waves" framing): the queried table's rows
 // for the slot span MORE THAN ONE flushed on-disk sorted run.
 //
-// QA-774: converted from the storage.rocks.writeBufferManagerSize: 8MB cap technique to
-// QA-772's flush-forcing technique (that WBM cap now HANGS this fixture's seed on this
-// machine). Seeding is waved as before; each wave is followed by an explicit `/Flush/` call
+// This fixture uses explicit flushes rather than the storage.rocks.writeBufferManagerSize: 8MB
+// cap technique (that WBM cap now HANGS this fixture's seed on this machine). Seeding is waved
+// as before; each wave is followed by an explicit `/Flush/` call
 // instead of relying on WBM backpressure. RocksDB's atomic_flush=true means one flush() call
 // seals that wave's memtable into its own SST for the primary AND every index CF, across all
 // four tables (they share the "qa631-blast" schema directory).
@@ -71,10 +71,10 @@ export class SeedWave extends Resource {
 // POST /Flush/ -> force every RocksDB column family sharing this schema's directory to flush
 // its memtable to a new SST file, atomically (see header). Call once between seeding waves.
 //
-// RocksDB level-0 file count proxy for "how many un-merged sorted runs", carried over from
-// qa772-flush-forcing (getDBIntProperty('rocksdb.num-files-at-level0') reliably returns
-// undefined on this @harperfast/rocksdb-js build; getDBProperty('rocksdb.levelstats') is a
-// string property that DOES work, so parse the "Level 0" row's file count out of it instead).
+// RocksDB level-0 file count proxy for "how many un-merged sorted runs". getDBIntProperty(
+// 'rocksdb.num-files-at-level0') reliably returns undefined on this @harperfast/rocksdb-js
+// build; getDBProperty('rocksdb.levelstats') is a string property that DOES work, so parse the
+// "Level 0" row's file count out of it instead.
 function statsOf(store) {
 	if (!store || typeof store.getDBIntProperty !== 'function') return { unavailable: true };
 	let levelStats;
