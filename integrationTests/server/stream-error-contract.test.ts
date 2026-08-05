@@ -300,6 +300,11 @@ suite(
 				VARIANT === 'uws' || cap.surface === 'iterable-rest',
 				`${cap.surface} mid-stream response terminal chunk did not match the ${VARIANT} contract`
 			);
+			if (cap.surface === 'iterable-rest') {
+				const body = JSON.parse(cap.decodedBody);
+				ok(Array.isArray(body), 'iterable REST mid-stream response must remain a JSON array');
+				strictEqual(body.at(-1)?.error, 'Error: QA890-iter-mid-stream');
+			}
 			assertServerTerminated(cap);
 		}
 
