@@ -124,7 +124,7 @@ export function transaction<T>(
 	// if the transaction function throws an error, we abort
 	function onError(error) {
 		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
-		transaction.abort();
+		transaction.abort(transaction.timedOut || transaction.disconnected);
 		throw error;
 	}
 }
