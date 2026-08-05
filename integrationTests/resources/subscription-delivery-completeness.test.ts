@@ -394,11 +394,12 @@ function runSuite(threadCount: 1 | 4) {
 				while (stableRounds < 3 && Date.now() < settleDeadline) {
 					const inProcTotal =
 						threadCount === 1 ? (await inProcEvents()).filter((e) => e.id === id && e.tag === tag).length : 0;
-					const total =
-						sse.events.filter((e) => sseDelivered(e)?.id === id && sseDelivered(e)?.tag === tag).length +
-						(mqCollect?.events.filter((e) => e.id === id && e.tag === tag).length ?? 0) +
-						inProcTotal;
-					if (total > 0 && total === lastTotal) stableRounds++;
+					const sseTotal = sse.events.filter((e) => sseDelivered(e)?.id === id && sseDelivered(e)?.tag === tag).length;
+					const mqttTotal = mqCollect?.events.filter((e) => e.id === id && e.tag === tag).length ?? 0;
+					const total = sseTotal + mqttTotal + inProcTotal;
+					const everyLedgerReceived =
+						sseTotal > 0 && (!mqCollect || mqttTotal > 0) && (threadCount !== 1 || inProcTotal > 0);
+					if (everyLedgerReceived && total === lastTotal) stableRounds++;
 					else stableRounds = 0;
 					lastTotal = total;
 					await sleep(300);
