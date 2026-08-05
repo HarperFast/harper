@@ -314,7 +314,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 			return resolved;
 		} catch (err) {
 			const errorCode = (err as { code?: string })?.code;
-			const isBarePackage = !specifier.startsWith('.') && !isAbsolute(specifier) && !specifier.startsWith('node:');
+			const isBarePackage = !specifier.startsWith('.') && !isAbsolute(specifier) && !specifier.includes(':');
 			if (
 				isBarePackage &&
 				(errorCode === 'ERR_PACKAGE_PATH_NOT_EXPORTED' || (process.versions.bun && errorCode === 'MODULE_NOT_FOUND'))

@@ -688,7 +688,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					const scopedJob = await pollJob(ctx, scoped.body.job_id);
 					if (tableScopeRefused) {
 						ok(
-							scopedJob.status === 'ERROR' && /not supported for RocksDB/i.test(String(scopedJob.message)),
+							scopedJob.status === 'ERROR' && /not supported for RocksDB/i.test(JSON.stringify(scopedJob.message)),
 							`table-scoped purge job must ERROR with the RocksDB refusal, got ${scopedJob.status}: ${scopedJob.message}`
 						);
 					} else {
