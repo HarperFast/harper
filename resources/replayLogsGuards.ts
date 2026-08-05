@@ -222,27 +222,32 @@ export interface CorruptFrameReport {
 /** Distinct break sites retained. One physical corruption yields one site, so this is generous. */
 export const MAX_CORRUPT_FRAME_REPORTS = 256;
 
+// Insertion-ordered, so the first key is the oldest site. Full means evicting that one rather than
+// refusing the new site: a site absent from the map cannot be deduplicated, so it would re-log on
+// every drain.
 const corruptFrameReports = new Map<string, CorruptFrameReport>();
-let droppedCorruptFrameReports = 0;
+let evictedCorruptFrameReports = 0;
 
 /**
- * Every corrupt frame seen by this process, for cluster/health status: a stream that has lost
+ * Every corrupt frame seen by this worker, for cluster/health status: a stream that has lost
  * entries must be distinguishable from a healthy one without grepping logs — the field incident
  * behind harper#2063 ran 11 days with `connected: true` throughout.
+ *
+ * Per-isolate, so a node-wide signal has to aggregate across worker threads.
  */
 export function getCorruptFrameReports(): CorruptFrameReport[] {
 	return [...corruptFrameReports.values()];
 }
 
-/** Distinct break sites not retained because {@link MAX_CORRUPT_FRAME_REPORTS} was reached. */
-export function getDroppedCorruptFrameReportCount(): number {
-	return droppedCorruptFrameReports;
+/** Break sites evicted because {@link MAX_CORRUPT_FRAME_REPORTS} was reached. */
+export function getEvictedCorruptFrameReportCount(): number {
+	return evictedCorruptFrameReports;
 }
 
 // Test seam.
 export function clearCorruptFrameReports() {
 	corruptFrameReports.clear();
-	droppedCorruptFrameReports = 0;
+	evictedCorruptFrameReports = 0;
 }
 
 // `logId`/`position` are absent on any rocksdb-js predating the resync support, and every break on
@@ -252,8 +257,8 @@ export function clearCorruptFrameReports() {
 function corruptFrameKey(logName: string, error: CorruptFrameError): string {
 	const { logId, position } = error;
 	return logId !== undefined && position !== undefined
-		? `${logName}:${logId}:${position}`
-		: `${logName}:${error.message}`;
+		? `${logName}\u0000${logId}:${position}`
+		: `${logName}\u0000${error.message}`;
 }
 
 /**
@@ -283,9 +288,11 @@ export function createCorruptFrameReporter(logger: {
 			// first time this break has been seen to have entries behind it
 			existing.midLog = true;
 			existing.unreadableBytes = unreadableBytes;
-		} else if (corruptFrameReports.size >= MAX_CORRUPT_FRAME_REPORTS) {
-			droppedCorruptFrameReports++;
 		} else {
+			if (corruptFrameReports.size >= MAX_CORRUPT_FRAME_REPORTS) {
+				corruptFrameReports.delete(corruptFrameReports.keys().next().value);
+				evictedCorruptFrameReports++;
+			}
 			corruptFrameReports.set(key, {
 				log: logName,
 				logId: error.logId,

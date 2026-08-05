@@ -37,6 +37,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	logByName: Map<string, TransactionLog> = new Map();
 	updates = 0; // the number of updates to the list of logs that have occurred
 	rootStore: RocksDatabase;
+	corruptFrameScope: string;
 	reusableIterable = true; // flag indicating that iterable can be reused to resume iterating through audit log
 	// Highest structureVersion appended to each per-node TransactionLog, tracked per tableId. Drives the
 	// per-log HAS_STRUCTURE_UPDATE flag in put(). Keyed by (log, tableId): a per-node log interleaves entries
@@ -49,6 +50,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 		super();
 		this.log = rootDatabase.useLog('local');
 		this.rootStore = rootDatabase;
+		// every database has its own 'local' log, so break reports must not share a name
+		this.corruptFrameScope = (rootDatabase as any).databaseName ?? rootDatabase.name ?? '';
 	}
 
 	/**
@@ -249,7 +252,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 					log = this.rootStore.useLog(options.log);
 				}
 			}
-			const queryIterator = endIteratorOnCorruptFrame(log.query(options), reportCorruptFrame(log.name));
+			const queryIterator = endIteratorOnCorruptFrame(
+				log.query(options),
+				reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`)
+			);
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
@@ -300,7 +306,12 @@ export class RocksTransactionLogStore extends EventEmitter {
 								// condition of potentially missing an initial update
 								queryOptions = { ...options, start: options.start ?? 0 };
 							}
-							iterators.push(endIteratorOnCorruptFrame(log.query(queryOptions), reportCorruptFrame(log.name)));
+							iterators.push(
+								endIteratorOnCorruptFrame(
+									log.query(queryOptions),
+									reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`)
+								)
+							);
 						}
 					}
 					latestUpdates = this.updates;

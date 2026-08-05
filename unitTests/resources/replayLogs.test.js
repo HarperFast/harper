@@ -11,7 +11,7 @@ const {
 	MAX_CORRUPT_FRAME_REPORTS,
 	createCorruptFrameReporter,
 	getCorruptFrameReports,
-	getDroppedCorruptFrameReportCount,
+	getEvictedCorruptFrameReportCount,
 	clearCorruptFrameReports,
 	shouldAbortStalledReplay,
 	REPLAY_NO_PROGRESS_COUNT_LIMIT,
@@ -404,16 +404,33 @@ describe('createCorruptFrameReporter', () => {
 		assert.strictEqual(logs.warn.length, 2);
 	});
 
-	it('bounds retained break sites and counts the ones it drops', () => {
+	it('bounds retained break sites by evicting the oldest', () => {
 		const { logs, report } = setup();
 		for (let i = 0; i < MAX_CORRUPT_FRAME_REPORTS + 5; i++) {
 			report(midLogError(0x1000 + i * 0x100), false);
 		}
 
 		assert.strictEqual(getCorruptFrameReports().length, MAX_CORRUPT_FRAME_REPORTS);
-		assert.strictEqual(getDroppedCorruptFrameReportCount(), 5);
-		// dropped sites are still logged, so visibility never depends on retention
+		assert.strictEqual(getEvictedCorruptFrameReportCount(), 5);
 		assert.strictEqual(logs.error.length, MAX_CORRUPT_FRAME_REPORTS + 5);
+	});
+
+	// Refusing a new site once full would leave it undeduplicated, so it would re-log on every
+	// drain — the log spam this report exists to replace.
+	it('keeps deduplicating the newest sites after the bound is reached', () => {
+		const { logs, report } = setup();
+		for (let i = 0; i < MAX_CORRUPT_FRAME_REPORTS + 5; i++) {
+			report(midLogError(0x1000 + i * 0x100), false);
+		}
+		const logsAfterFill = logs.error.length;
+
+		// re-encounter the most recent site repeatedly, as every later drain would
+		for (let i = 0; i < 10; i++) {
+			report(midLogError(0x1000 + (MAX_CORRUPT_FRAME_REPORTS + 4) * 0x100), false);
+		}
+
+		assert.strictEqual(logs.error.length, logsAfterFill);
+		assert.strictEqual(getEvictedCorruptFrameReportCount(), 5);
 	});
 });
 
