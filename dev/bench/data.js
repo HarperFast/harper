@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785933865820,
+  "lastUpdate": 1785933865339,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8572,6 +8572,2980 @@ window.BENCHMARK_DATA = {
             "name": "E scan p99 — short ranges",
             "value": 157.6,
             "unit": "ms"
+          }
+        ]
+      }
+    ],
+    "Storage Benchmarks Throughput (ST-1/ST-2/ST-5)": [
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ece7da47672d8ee175a87b39b2a21340169c376a",
+          "message": "feat: re-authorize live subscriptions; revoke on permission loss or token expiry (#1414) (#1535)\n\n* feat: re-authorize live subscriptions; revoke on permission loss or token expiry (#1414)\n\nSubscribe-time authorization is point-in-time: once an SSE/WebSocket/MQTT stream is\nopen it keeps delivering even after the principal loses access (drop_user, role or\npermission change) or the bearer token it was opened with expires. This adds a\ncontinuous re-authorization registry that terminates such subscriptions.\n\n- server/liveSubscriptionAuth.ts: a registry of live subscriptions, each with a\n  table/RBAC-level recheck and a terminate handler. Swept (1) immediately on the ITC\n  user-change broadcast — serverHandlers rebuilds the user/role cache before firing\n  listeners, so the recheck sees current permissions — and (2) on a 30s interval as a\n  backstop and to catch token expiry, which is not event-signaled. Re-auth is\n  table-level (re-runs the same allowRead the subscription was granted with against a\n  freshly-fetched user); there is NO per-record evaluation. An error during recheck\n  fails closed (revokes). Normal teardown auto-unregisters.\n\n- resources/Resource.ts: at the common authorization chokepoint\n  (authorizeActionOnResource), register the resulting subscription for both the\n  'subscribe' (MQTT) and 'connect' (SSE/WebSocket) actions. Subscriptions with no user\n  principal (internal watchers, replication, local-bypass) are skipped.\n\n- security/auth.ts: capture the bearer token's JWT exp on the authenticated user so a\n  subscription opened with it can be revoked once it expires.\n\nRe-auth interval is overridable via HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS (tests).\n\nTest: integrationTests/security/subscription-revocation.test.ts opens an SSE collection\nsubscription and asserts delivery STOPS after (1) drop_user (event-driven) and (2)\nbearer-token expiry (interval-driven), while an authorized stream keeps delivering. 2/2\npass.\n\nCloses #1414.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix: address review — fresh user in recheck context, forward end() args, format\n\n- recheck advances context.user to the freshly-fetched user before re-running allowRead,\n  so a custom allowRead reading context.user / getCurrentUser() evaluates current state\n  rather than the stale subscribe-time user (Gemini critical).\n- the wrapped subscription.end() forwards all arguments to the original end() so stream\n  cleanup semantics are preserved (Gemini high).\n- prettier formatting on the new test.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* style: prettier formatting on subscription-revocation test\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(lint): use node:assert instead of restricted node:assert/strict\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>\nCo-authored-by: Kris Zyp <kris@harperdb.io>",
+          "timestamp": "2026-07-06T23:39:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/ece7da47672d8ee175a87b39b2a21340169c376a"
+        },
+        "date": 1783425529000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 25145
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 14764
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 15149
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 35929344
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 3406
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 839622
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "a0f4a51acfa917fd544c88eec4b8893b5d04512e",
+          "message": "fix(mqtt): close last-will persistence race; give retained-message test more headroom\n\nTwo independent causes behind the flaky \"test MQTT connections and commands\"\nsuite:\n\n- \"last will should be published on connection loss\": getSession() wrote the\n  Last Will record via getLastWill().put(will) without awaiting it, before\n  CONNACK is sent. A client that connected and then disconnected abruptly\n  could race ahead of that write; session.disconnect() would then find no\n  will record and silently drop it, hanging the test until mocha's timeout.\n  Reproduced deterministically with an artificial delay before the write, and\n  confirmed the fix (await the write) closes the race. Fix: await\n  getLastWill().put(will).\n\n- \"subscribe to retained/persisted record\": already raced the real message\n  event against a backstop timer, but the backstop (8000ms) left only 2s of\n  margin under the suite's 10000ms mocha timeout, and delivery is known to\n  routinely exceed 1s on loaded CI runners. Bump this test's own timeout to\n  20000ms (same precedent as the QoS=1 reconnect test) and derive the inner\n  backstop from this.timeout() - 2000 so the two can't race each other.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-08T03:08:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/a0f4a51acfa917fd544c88eec4b8893b5d04512e"
+        },
+        "date": 1783510436000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 32862
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 15470
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 14433
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 34320704
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10007
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2618
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lavinia",
+            "username": "ldt1996",
+            "email": "lavinia@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f10eba31e88286b53f10f7cdfc29dcd45d1cabfa",
+          "message": "fix(storage): replay conflict retry on a fresh transaction after ERR_TRY_AGAIN (#1696)\n\n* fix(storage): replay conflict retry on a fresh transaction after ERR_TRY_AGAIN\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(storage): keep retries from deduping against their own audit entry\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* chore: log the swallowed abort error (review)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(storage): per-write sticky own-audit-entry marker for retry dedup (review)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(storage): abort before the MAX_RETRIES throw, pin change-feed entries in tests (review)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>\nCo-authored-by: Kris Zyp <kriszyp@gmail.com>",
+          "timestamp": "2026-07-09T11:46:49Z",
+          "url": "https://github.com/HarperFast/harper/commit/f10eba31e88286b53f10f7cdfc29dcd45d1cabfa"
+        },
+        "date": 1783598387000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 29151
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 21797
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 13342
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 35098432
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 4641
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 495055
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bd1dce0b1bbb91aeea15e5380f5b98e311f631a8",
+          "message": "feat(#914): uWebSockets.js HTTP/WebSocket backend (default-off) (#1096)\n\n* feat(http): add uWebSockets.js request adapter (spike, #914)\n\nSpike for evaluating uWS as a per-worker HTTP server on the plaintext-UDS\npath behind symphony (TLS/mTLS/HTTP-2 terminated upstream). Adds:\n\n- UwsRequest in Request.ts: a Harper request adapter modeled on BunRequest,\n  sourced from uWS-extracted method/url/headers/body. Real client IP comes\n  from X-Forwarded-For; peerCertificate/authorized are null (terminated\n  upstream).\n- uwsServer.ts: createUwsServer(), a non-SSL uWS App on a unix socket that\n  bridges each request through httpChain[port] and serializes the Harper\n  response descriptor back onto the uWS HttpResponse.\n\nBenchmarks (CPU-µs/request, vs Node http on the same UDS) show uWS holds a\n~1.56x efficiency edge with the real Request abstraction in the loop. Not yet\nwired into getUwsHTTPServer/threadServer.js; uWS is not yet a dependency.\n\nCo-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>\n\n* feat(http): wire uWS UDS server behind HARPER_UWS_UDS flag (spike, #914)\n\nMakes the per-worker plaintext-UDS mirror optionally served by uWebSockets.js\ninstead of a Node http server, gated behind the HARPER_UWS_UDS env flag\n(default off -> no behavior change). When set:\n\n- getHTTPServer registers a uwsServeConfigs entry for the UDS path instead of\n  creating the Node udsServer.\n- makeUwsHandler mirrors the Bun fetchHandler's post-processing (httpChain,\n  unhandled, universalHeaders, Server-Timing, analytics, logging) and returns a\n  Harper response descriptor; createUwsServer serializes it onto the uWS res.\n- threadServer.listenOnPorts() starts the uWS UDS servers from uwsServeConfigs.\n- uWebSockets.js added as an optionalDependency (GitHub tag; ABI-locked, no\n  musl build -> CI must build per Node major).\n\nSymphony must use sourceAddressHeader 'xForwardedFor' for these sockets (uWS\ndoes not parse the PROXY protocol). Fastify status===-1 fallback and response\nstreaming are not wired in this spike. Type-checks clean (tsc --noEmit); not\nyet exercised against a live booted Harper.\n\nCo-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>\n\n* fix(http): null-guard request._nodeRequest in unhandled() (spike, #914)\n\nunhandled() (the middleware-chain terminal) set request._nodeRequest.user when\nan authenticated request hit no route, to hand auth to a Node fallback server.\n_nodeRequest is null for both BunRequest and UwsRequest, so an authenticated\nrequest to an unmatched route threw \"Cannot set properties of null (setting\n'user')\" -> 500. Latent on the Bun path; surfaced by the live uWS-UDS bench.\n\nGuard on _nodeRequest: the handoff only applies to the Node fallback path; the\nBun/uWS adapters have no Node fallback server. With this, the uWS UDS path\nreturns 404 like Node. Verified on a live booted Harper.\n\n* fix(#914): harden uWS UDS adapter for production + add adapter unit test\n\nGraduates the uWS-behind-symphony spike toward landing by fixing the\ncorrectness issues surfaced in review and adding a regression suite.\n\n- Request body corruption (critical): Buffer.from(arrayBuffer) aliased\n  uWS's receive buffer, which is neutered/reused once the onData callback\n  returns while the body is read asynchronously in the handler. Multi-chunk\n  POST/PUT bodies came back truncated/corrupt. Copy the bytes out\n  synchronously via Buffer.from(new Uint8Array(chunk)).\n- Duplicate request headers were clobbered (headers[k] = v, last wins);\n  accumulate repeats into an array like the Node path.\n- Empty reason phrase for uncommon status codes (\"429 \"); derive the\n  status line from node:http STATUS_CODES with an \"Unknown\" fallback.\n- Route by method rather than a single app.any(hasBody:true) so bodyless\n  methods dispatch immediately and unknown methods can't stall a connection.\n- Collapse of streaming/iterable response bodies now bails when the client\n  disconnects (thread the request AbortSignal into uwsBodyToBuffer).\n- Refresh the stale adapter header comment (wiring is done).\n\nAdds unitTests/server/serverHelpers/uwsServer.test.js: exercises GET,\nbodyless OPTIONS, multi-chunk POST round-trip (guards the aliasing bug),\nduplicate headers, 404, thrown->500, and reason-phrase serialization over\na real UDS. Skips gracefully when the uWebSockets.js optional dep is absent.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(#914): address cross-model review of uWS UDS adapter\n\nFollow-up to the adapter hardening, resolving issues surfaced by the\ncross-model review (Codex + Gemini + Harper-domain adjudication).\n\n- WHATWG Response return path (significant): makeUwsHandler mutated\n  response.status/response.body, which throws for a handler that returns a\n  standard Response (read-only accessors) — a divergence from the Node/Bun\n  paths, which build a fresh descriptor. Return a new descriptor instead of\n  mutating the chain's result.\n- Write-method throttling was dropped on the uWS UDS mirror: the Node UDS\n  path routes non-GET/OPTIONS/HEAD through the request-queue throttle (503 on\n  overflow), the uWS path bypassed it. Restore parity via throttle() so\n  data-modifying bursts shed instead of saturating a worker.\n- QUERY (and other non-standard body-bearing methods) had their body\n  silently dropped: the per-method routing sent the any() fallback down the\n  bodyless path. Route known-bodyless methods explicitly and treat the\n  fallback as body-bearing (uWS still fires onData(len=0) for bodyless).\n- Shutdown shim entered the Node keep-alive drain loop and force-exited\n  noisily every shutdown (uWS close() takes no callback): wrap close() to\n  invoke the callback and omit closeIdleConnections so the drain is skipped.\n- UwsRequestBody now extends Readable, matching the RequestBody/BunRequestBody\n  contract (for-await async iteration + destroy(), not a duck-typed subset).\n- Tidy: remove abort listener on the stream-error path in uwsBodyToBuffer,\n  drop the unused AbortController param from writeResponse, add the\n  uWebSockets.js optionalDependency to package-lock.json.\n\nAdds QUERY-body-routing and 413-over-limit tests; suite now 9 green.\nThe WHATWG-Response, throttle, and shutdown-teardown paths live above the\nadapter unit boundary — flagged for the integration bench in the PR.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(#914): plaintext uWS-over-HTTP path + full streaming responses\n\nExtends the uWS adapter beyond the symphony-UDS mirror toward a fully\ncapable HTTP backend.\n\nPlaintext TCP path (HARPER_UWS_HTTP):\n- createUwsServer now accepts a `port`/`host` (app.listen, SO_REUSEPORT by\n  default) in addition to `socketPath`, so uWS can back a non-secure HTTP\n  TCP port directly — not just the UDS mirror.\n- getHTTPServer registers a uWS TCP config (and skips the Node server) for\n  non-secure app HTTP ports when HARPER_UWS_HTTP is set; threadServer's\n  start loop is generalized to UDS- or port-keyed configs.\n- This is the flag used to run the integration suite through uWS: a\n  representative slice passes 45/45 (REST/SQL, data types, dates, arrays,\n  binary/Brotli blob responses byte-exact, Content-Encoding, caching).\n\nStreaming responses:\n- normalizeUwsBody (was uwsBodyToBuffer) now passes Node streams and\n  async-iterables through as a Readable instead of buffering — buffering an\n  SSE/event-stream body never returns.\n- writeResponse streams a Readable body to uWS with real backpressure\n  (res.write + res.onWritable pause/resume) and omits Content-Length so uWS\n  uses chunked encoding. uWS only flushes headers on the first body write,\n  so text/event-stream responses emit a spec-valid ':\\n\\n' comment to open\n  the stream immediately (fixes SSE \"headers never flushed\"). Client abort\n  or a source error destroys the source and stops writing.\n- Verified: MCP SSE integration test passes 4/4 (headers flushed up front);\n  3 new adapter unit tests cover SSE, a plain Readable, and a 4 MiB\n  backpressure stream. Suite now 12 green.\n\nRemaining: WebSocket upgrade (MQTT-over-WS/subscriptions) — next.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(#914): WebSocket upgrade support on the uWS path\n\nCompletes uWS as a full HTTP+WS backend. uWS owns its sockets, so WS can't\nbe delegated to the ws library's WebSocketServer; instead the adapter uses\nuWS's native app.ws() and bridges each connection to a ws-library-shaped\nobject that Harper's existing websocket chain consumes unchanged.\n\n- UwsWebSocket (server/serverHelpers/uwsServer.ts): adapts a uWS WebSocket\n  to the subset of the ws interface Harper uses — send/close/terminate/ping,\n  'message'/'close' events, readyState, and a _socket shim exposing\n  remoteAddress + backpressure (writableNeedDrain/'drain' via\n  getBufferedAmount + the drain callback). Inbound frames are copied out of\n  uWS's neutered buffer.\n- createUwsServer accepts a wsHandler; when set it registers app.ws('/*')\n  (capturing the upgrade request's url/headers/ip, IPv4-mapped address\n  normalized) alongside the HTTP routes — both coexist on one port.\n- onWebSocket (server/http.ts) detects a uWS-backed port and wires the\n  wsHandler (build a WS UwsRequest, run httpChain auth, invoke\n  websocketChains) instead of the Node ws.WebSocketServer + 'upgrade' event.\n  Previously this crashed under HARPER_UWS_HTTP (\"server.on is not a\n  function\"), failing MQTT component load; also guards a NaN-port config.\n\nValidated through the real harness: MQTT-over-WS passes 11/11 (RS256 JWT\nauth, topic ACLs, pub/sub, $SYS monitoring); SSE 4/4 and HTTP unaffected\n(24/24 combined). 2 new adapter unit tests (HTTP+WS coexistence on one port;\nupgrade + text/binary frame round-trip); suite now 14 green.\n\nWith this, the full integration slice runs over uWS: HTTP, SSE/streaming,\nand WebSocket subscriptions.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(#914): address cross-model review of plaintext/streaming/WS uWS work\n\nFindings from the Codex+Gemini+domain review of the streaming/WS commits.\n\n- Client IP on the direct-TCP path (P1, Codex+sweep): the uWS HTTP handler\n  never captured the peer address, so request.ip was '' and local auth\n  (security/auth.ts AUTHORIZE_LOCAL, request.ip.includes('127.0.0.')) failed\n  — anonymous localhost requests got \"Must login\". The integration sweep hit\n  this: early-hints/redirector/risk-query (pass on baseline, \"pass 0\" under\n  the flag). Fix: capture res.getRemoteAddressAsText() for the TCP path\n  (left unset for UDS). AND flip UwsRequest.ip to prefer the real socket\n  address over X-Forwarded-For, so a direct client can't spoof\n  `X-Forwarded-For: 127.0.0.1` to satisfy local auth; XFF is trusted only on\n  the symphony-UDS path (where the socket has no client address).\n- HEAD body (P2, Codex): uWS has no ServerResponse HEAD guard, so a handler\n  returning a body on HEAD would send it. REST already nulls HEAD bodies;\n  enforce it in writeResponse for any other handler.\n- WebSocket maxPayload (P2, Codex): the onWebSocket uWS branch didn't forward\n  options.maxPayload, so a configured smaller WS frame limit wasn't enforced\n  (defaulted to 100 MiB). Thread it through as wsMaxPayload.\n\nGemini's headline \"Buffer.from(new Uint8Array(message)) aliases uWS memory\"\nblocker is a false positive (same conflation as last review): it COPIES —\nproven (survives source neutering) and corroborated by MQTT-over-WS 11/11\nwith async frame processing.\n\nNoted, not fixed (out of scope / parity): GraphQL POST reads _nodeRequest\nwhich is null on uWS AND Bun (pre-existing non-Node-adapter gap, needs a\nbody-based deserialize); a raw Fastify server registered on a uWS-backed\nport could collide in SERVERS (low reachability; MCP Fastify passes).\n\nIntegration sweep: 43/43 pass under HARPER_UWS_HTTP after the IP fix.\nAdapter unit suite now 16 (adds request.ip + HEAD-suppression tests).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* docs(#914): refresh uwsServer header (TCP+streaming+WS, not UDS-only)\n\n* fix(#914): deserialize GraphQL POST body via request.body\n\nThe GraphQL POST handler read the body from request._nodeRequest, the raw\nNode IncomingMessage. That is null on the Bun and uWS request adapters, so\nGraphQL POST 500'd off the Node path. Read through request.body instead —\na Readable-compatible body stream on every adapter, matching how REST.ts\nalready deserializes bodies. Verified 24/24 graphql integration tests on\nboth the Node and HARPER_UWS_HTTP paths.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(#914): don't let raw-Fastify listeners collide with the uWS HTTP port\n\nUnder HARPER_UWS_HTTP the app port is backed by uWebSockets.js and getHTTPServer\nearly-returns a { uws: true } marker before it would have called\nregisterServer(server, port). SERVERS[port] therefore stays empty. If a legacy\nFastify-routes app is then deployed, fastifyRoutes registers its raw http.Server\nvia server.http(fastify.server); with the port looking unused, registerServer set\nSERVERS[port] = fastifyServer and threadServer bound a Node http server competing\nwith uWS on the same TCP port (Codex P2).\n\nMirror the Bun path: divert non-function listeners on a uWS-backed port into the\nfallback map instead of registerServer(), so nothing lands in SERVERS to double\n-bind. Renamed bunFallbackServers -> fallbackServers since the map is now shared\nby both non-Node backends. Request-time delegation to this fallback is not yet\nwired on the uWS handler, so raw-Fastify routes are unreachable (clean, not a\ncompeting bind) under this flag - an accepted limitation of the bench vehicle,\nnoted for a parity follow-up.\n\nVerified: components.test.mjs (deploys a Fastify-routes component) 25/25 on both\nthe Node and HARPER_UWS_HTTP paths, with the Fastify registration diverting\ncleanly and no bind collision.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* feat(#914): delegate to the Fastify fallback from the uWS HTTP path\n\nCompletes the raw-Fastify story on HARPER_UWS_HTTP. Previously a legacy\ncustom-function route (server.http(fastify.server)) was diverted to the fallback\nmap to avoid a competing bind, but the uWS handler had no way to reach it, so the\nroute 404'd. Now, when the chain doesn't handle a request (status === -1) and a\nFastify instance is registered for the port, the uWS handler delegates via\nfastify.inject() — its internal router, no socket — mirroring the Bun path,\nincluding SSE streaming and the AUTHORIZE_LOCAL pre-auth user forward.\n\n- Extracted the shared inject core into injectToFastify() and routed both the Bun\n  and uWS delegation paths through it (strip forged pre-auth header, forward\n  resolved user when no Authorization, payloadAsStream for SSE).\n- fastifyRoutes now registers its app instance for the http port(s); it only ever\n  registered the http.Server, so neither Bun nor uWS could delegate to legacy\n  routes. Renamed bunFastifyInstances -> fastifyInstances /\n  registerBunFastifyInstance -> registerFastifyInstance (shared, not Bun-only).\n- UwsRequest exposes rawBody for the inject payload.\n\nVerified: fastifyRoutes-test.mjs (GET /testApp/ping -> 'pong' + REST on the same\ncomponent) passes on BOTH the Node and HARPER_UWS_HTTP paths; under uWS the route\nis served purely via inject-delegation. graphql 24/24, components 25/25,\nmcp/sse-listchanged 4/4 under the flag; 16 uWS unit tests green.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* ci(#914): run the full integration suite under HARPER_UWS_HTTP\n\nAdds a run-integration-tests-uws job mirroring the existing Bun variant: the same\n6-shard test:integration:all on Node 24, but with HARPER_UWS_HTTP=1 so the\nplaintext app HTTP port(s) are served by uWebSockets.js. Secure/replication/ops\npaths keep running on Node, so this gives continuous coverage of the uWS\nrequest/streaming/WS/GraphQL/Fastify-fallback path across the whole suite instead\nof relying on a manual local flag.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* ci(#914): make the uWS integration job informational (non-blocking)\n\nThe first full-suite run under HARPER_UWS_HTTP surfaced two known uWS-path gaps\n(Bun and Node are green on the same tests):\n  - static-file serving via `send` never flushes headers on the uWS response\n    (client HeadersTimeout) — the deploy/static-access tests hang;\n  - multiple Set-Cookie headers collapse to one (the WHATWG Headers comma-join\n    limitation Harper-on-Bun already skips).\nNeither is a regression from the Fastify-delegation work. Mark the job\ncontinue-on-error so it reports the per-shard uWS signal without gating merges;\nremove once the gaps are closed.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(#914): serve static files (send SendStream) on the uWS HTTP path\n\nStatic handlers return a `send` SendStream, which only begins work when piped to\na Node ServerResponse and writes its own headers there. The uWS path has no such\nobject: it treated the stream as a plain Readable and attached .on('data') (which\nnever starts a SendStream), and uWS only flushes status/headers on the first body\nwrite — so static responses hung and the client saw a HeadersTimeout. This is why\nevery deploy+access integration test (deployed apps serve a static site) timed out\nunder the flag.\n\nPipe the SendStream into a Writable shim that captures the headers it writes\n(setHeader/writeHead) onto the response Headers and buffers the file, mirroring the\nBun fetchHandler's SendStream path (incl. finished:false so on-finished doesn't\ntear down early). Gated on handlesHeaders, which only static.ts sets, so real\nstreaming/SSE bodies keep streaming through normalizeUwsBody.\n\nVerified: deploy/deploy-from-source.test.ts (deploys an app with a web/ static\nsite, polls the static index, asserts the served HTML) now passes 4/4 under\nHARPER_UWS_HTTP — previously deploy+access both hung ~300s.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(#914): preserve multiple Set-Cookie headers on the uWS HTTP path\n\nA WHATWG Headers comma-joins Set-Cookie when iterated, which merges multiple\ncookies into one and corrupts values containing commas (e.g. `expires=` dates).\nThe uWS response path iterated the headers directly (and writeResponse converted a\nWHATWG Headers via `new Headers()`, comma-joining before serialization), so a\nresponse setting N cookies reached the client as 1.\n\n- writeHeaders now emits Set-Cookie individually via getSetCookie() when present\n  (WHATWG), skipping the joined entry; a Harper Headers stores them as an array,\n  already handled by the array branch.\n- writeResponse keeps an existing Headers-like object (Harper or WHATWG) as-is\n  instead of round-tripping a WHATWG Headers through `new Headers()` (which would\n  comma-join before writeHeaders could split it), wrapping only plain objects.\n- the Fastify-delegation path keeps Set-Cookie multi-valued instead of comma-\n  joining inject()'s array.\n\nThis is the multi-Set-Cookie limitation Harper-on-Bun documents and skips; uWS now\nhandles it correctly. Verified: headers.test.mjs 2/2 under HARPER_UWS_HTTP (was\n0/2); graphql/components/mcp-sse/deploy-from-source/fastifyRoutes all green under\nthe flag; 16 uWS unit tests green.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* ci(#914): gate on the uWS integration job (full suite now green)\n\nThe full test:integration:all suite passes on all 6 shards under HARPER_UWS_HTTP\n(CI run 28724670219) now that the static-`send` and multiple-Set-Cookie gaps are\nfixed, so the job no longer needs continue-on-error — make it a required check\nalongside the Node and Bun variants.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(#914): address cross-model review of the uWS Fastify/static/header work\n\nCross-model review (Codex + Gemini + Harper-domain adjudication) of the new uWS\nwork. Both outside-model legs led with false positives (request.headers.asObject\n'undefined' → auth bypass, and Set-Cookie comma-coercion) — both refuted: headers\nis a RequestHeaders with a real .asObject used across the REST path, and the uWS\nHeaders is Harper's Map-based class that preserves Set-Cookie arrays. The\nINTERNAL_USER_HEADER pre-auth forward was probed and is spoof-safe (client-supplied\nheader is stripped before the user is re-added). Real items addressed:\n\n- bufferSendStream no longer swallows send's status: capture statusCode / writeHead\n  status and return it, so a 304 (conditional GET) or 206/416 (Range) is honored\n  instead of flattened to 200. (End-to-end 304/Range is still gated upstream by\n  send not reading Harper's RequestHeaders — a pre-existing limitation on all\n  backends incl. Node, verified by probe; left as a separate follow-up.)\n- avoid re-copying already-Buffer chunks when draining a delegated Fastify response.\n- document the lowercased-'authorization' contract in injectToFastify.\n- refresh the fallback-divert comment: request-time delegation IS now wired, and\n  the { uws: true } marker is guaranteed set by the getServer(port) call above.\n\nRegression under HARPER_UWS_HTTP: deploy-from-source 4/4 (static), headers 2/2\n(Set-Cookie), fastifyRoutes 2/2 (delegation), 16 uWS unit tests.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* feat(#914): stream uWS request bodies + address review comments\n\nFeed the uWS request body into a push-based Readable and dispatch the\nhandler on headers instead of buffering the whole body and dispatching on\nthe last chunk. streamToBuffer (contentTypes.ts) already owns\nconcatenation and the HTTP_MAXREQUESTBODYSIZE limit and is the entry point\nfor the upcoming streaming deserializers, so the adapter no longer\nconcatenates (drops the O(n^2) Buffer.concat) or enforces its own body\nlimit; maxBodyBytes is demoted to a coarse socket-level DoS ceiling since\nuWS offers no inbound backpressure. The Fastify-delegation path passes the\nbody stream to inject() (light-my-request consumes it), so rawBody is gone.\n\nAlso address review feedback:\n- use when() so a synchronous handler stays synchronous (no extra promise)\n- rename logBunRequest -> logHttpRequest (shared Bun/uWS path)\n- correct the stale \"WebSocket upgrades are not yet wired\" comment\n- reword the SPIKE/spike comments now that this is graduating\n- document uWebSockets.js in dependencies.md\n\nAdds a test asserting the handler is dispatched before the request body\nends (proves streaming, not full buffering).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(uws): guard 413 write against completed response + test XFF spoofing defense (#914)\n\nAddress cb1kenobi PR review:\n- Track responseCompleted in onRequest and guard all three response-write\n  sites (handler result, error, 413). The handler can respond (or start\n  streaming) without consuming the body; a later over-limit 413 would then\n  write to an already-completed uWS response and abort the process.\n- Add unit tests for request.ip trust boundary: a spoofed X-Forwarded-For\n  must not override the authoritative TCP peer address, while the UDS path\n  (no socket peer) still honors the trusted proxy's XFF.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix: sync package-lock with merged package.json (prettier 3.9.5, globals 17.7.0, aws-sdk lib-storage 3.1076.0)\n\nThe npm-merge-driver left the lock resolved to the branch's older\nversions while package.json took main's bumps, breaking npm ci.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* style: reformat uwsServer.ts per prettier 3.9.5 (trailing comment placement)\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.7 <noreply@anthropic.com>\nCo-authored-by: Kris Zyp <kris@harperdb.io>",
+          "timestamp": "2026-07-10T05:51:34Z",
+          "url": "https://github.com/HarperFast/harper/commit/bd1dce0b1bbb91aeea15e5380f5b98e311f631a8"
+        },
+        "date": 1783684739000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 15746
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 15816
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 12979
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 34163008
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10849
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 3591
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f55de88a610e53cef28f06c99735a4d21417c72d",
+          "message": "feat(server): surface external port conflicts on all platforms; single-worker default without SO_REUSEPORT (#1605)\n\n* feat(server): surface external port conflicts on all platforms; single-worker default without SO_REUSEPORT\n\nlistenOnPorts() used to swallow every EADDRINUSE (a workaround for a Node\n<20.11.1 reusePort bug now outside Harper's supported range), hiding real\nexternal squatters: an unrelated process holding e.g. the MQTT port silently\nreceived Harper's traffic with no error anywhere (original symptom: a second\nHarper instance on 8883).\n\nEvery EADDRINUSE with an in-process explanation is now structurally ruled out,\nso the remaining ones are logged loudly (port + owning component + error):\n- reusePort listeners (Linux): siblings share the port and never collide, even\n  across overlapping restarts — any EADDRINUSE is external.\n- Main thread (HTTP/operations ports): binds before any worker, never restarts —\n  any EADDRINUSE is external.\n- Dedicated listeners (onSocket, e.g. MQTT — never bound by the main thread):\n  when exclusive (macOS/Windows), bound only by a single owner worker (lowest\n  eligible index) instead of every worker racing; combined with non-overlapping\n  restarts (below), the owner's EADDRINUSE is external.\nThe one remaining benign case — a worker's exclusive HTTP bind losing to the\nmain thread on macOS/Windows — stays silently swallowed. All cases still\nresolve so a squatted port never stalls boot.\n\nrestartWorkers() no longer pre-starts replacement HTTP workers on macOS\n(canPreStartReplacement now excludes darwin, like Windows/Bun): without working\nSO_REUSEPORT the replacement could never bind ports the old worker still held —\nits EADDRINUSE was swallowed and worker-owned listeners like MQTT were left\npermanently unbound after every component-reload restart. The main thread keeps\nserving the HTTP ports throughout, so only worker-owned listeners see the brief\nshutdown-first gap.\n\nthreads.count now defaults to 1 on macOS/Windows (setDefaultThreads): without\nSO_REUSEPORT, additional HTTP workers can never share the server ports, so the\nCPU-based default just spawned workers that serve no direct TCP traffic. An\nexplicit threads.count still overrides.\n\nAdds an integration test that squats the MQTT secure port before boot and\nasserts the conflict is logged and Harper still starts — on every platform.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(lint): use node:assert not node:assert/strict in external-port-conflict test\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-10T22:22:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/f55de88a610e53cef28f06c99735a4d21417c72d"
+        },
+        "date": 1783768882000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 23692
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 15917
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 15240
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 36285952
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 9396
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 1266
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "31de6a3bebc5fec85a8eba98087fda00dbc3f477",
+          "message": "fix: pin uWebSockets.js via tarball URL, not a github: git spec\n\nSame issue as harper-pro#561: the github: shorthand\n(github:uNetworking/uWebSockets.js#v20.68.0) gets re-resolved by npm as\ngit+ssh://github.com/... on any npm install. Our Docker build stage has\nno SSH credentials for github.com, so npm silently skips the (optional)\ndependency and the shipped image never bundles the native addon —\nHARPER_UWS_UDS / HARPER_UWS_HTTP are inert even when set.\n\nAn explicit git+https:// spec doesn't fix this either — confirmed with\na clean npm cache that npm/hosted-git-info canonicalizes ANY\ngithub.com git dependency back to git+ssh:// regardless of requested\nprotocol. Switching to a plain tarball URL\n(https://.../archive/<sha>.tar.gz) sidesteps hosted-git-info entirely:\nnpm treats it as a remote-tarball dependency, resolved stays a plain\nhttps URL with a pinned integrity hash, and it can't regress on a\nfuture npm install.\n\nVerified npm ci installs all 15 native .node binaries in a\nHOME-stripped, credential-less environment (matching the Docker build\nstage) both before and after a full npm install regenerates the\nlockfile from package.json.",
+          "timestamp": "2026-07-11T22:53:13Z",
+          "url": "https://github.com/HarperFast/harper/commit/31de6a3bebc5fec85a8eba98087fda00dbc3f477"
+        },
+        "date": 1783855434000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 16952
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 15049
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 14151
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 35653440
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 12070
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 4678
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8bf5921e06349611773b4c1d4363088801d3b974",
+          "message": "ci(review): canary Claude reviews on claude-sonnet-5 (harper only) (#1759)\n\nOverride the reusable's model default (claude-sonnet-4-6) for this\nrepo's claude-review caller. harper is the A/B canary: highest review\ntraffic, and every ai-review-log entry records Model:, so calibration\ncan compare sonnet-5 vs sonnet-4-6 verdict mix directly at the same\nprompt ref (9cf49d2). Intro pricing ($2/$10 through 2026-08-31) offsets\nthe new tokenizer (~30% more tokens for equivalent text).\n\nWatch item: Sonnet 5 follows blocker-only severity instructions more\nliterally (documented code-review-harness effect) — if the deflation\nrate rises in the next calibration cycle, add coverage-first reporting\nto the run-notes surface before fleet rollout; if clean, promote to the\nreusable default.\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-13T00:05:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/8bf5921e06349611773b4c1d4363088801d3b974"
+        },
+        "date": 1783944022000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 22576
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 12735
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 11000
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 30499264
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10121
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 3336
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "56f8891b933e4638c9f622a0030570de4fd711a8",
+          "message": "fix(deps): update all non-major dependencies",
+          "timestamp": "2026-07-14T00:14:28Z",
+          "url": "https://github.com/HarperFast/harper/commit/56f8891b933e4638c9f622a0030570de4fd711a8"
+        },
+        "date": 1784028540000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 15753
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 11434
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 11552
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 24449856
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 8095
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 1670
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "182971ad16a3ba6986ffae194067965505d5bfa8",
+          "message": "Typed, discoverable resources — code-first defineTable + per-method request contract (RFC 0001) (#1767)\n\n* feat(resources): typed, discoverable resources — code-first defineTable + per-method request contract\n\nImplements RFC 0001 (design PR #1503): the mergeable implementation of both\nauthoring front-ends, integrated onto current main.\n\nPillar 1/2b — code-first schema (resources/defineTable.ts):\n  `defineTable(name, shape, opts)` + `types` author a table in TypeScript and\n  eagerly register through the same `table()` factory GraphQL drives — the return\n  IS the live class, with per-verb shapes inferred as `$record/$insert/$upsert/\n  $patch/$query` projections. Relations via lazy thunks (+ relationOf/hasManyOf\n  escape hatch for mutual pairs).\n\nPillar 2 — per-method request contract (resources/withSchema.ts):\n  `defineResource(contract, impl)` (function form) + `Resource.withSchema(contract)`\n  (class form). Handler types are derived from a runtime contract; a handler gets\n  the SAME RequestTarget, structurally narrowed (subset, not fork). Each declared\n  verb validates/coerces query/body before dispatch and throws a structured 400\n  (ValidationError, per-field {path,code,message}[]). Built-in `t`/`schemaOf`\n  reduce to JsonSchemaFragment — one vocabulary across table fields, query, and\n  bodies; a defineTable projection slots into a contract body via\n  schemaOf({ table, projection }). Nullability: non-nullable by default, `.nullable`\n  opts into null (table-derived bodies mirror Table.validate).\n\nCross-cutting:\n  - ValidationError (extends ClientError, 400); Table.validate refactored to the\n    same structured shape (HTTP-title message preserved).\n  - OpenAPI emits declared query/body/response for parameterised routes.\n  - MCP drives tool input/output off the contract and binds arbitrary path params\n    + query (applyContractInputs), lifting the generated-verb binding restriction\n    for contract resources.\n  - Shared attributeToFragment hardened with a nested-object branch; derive.ts\n    Object/Array projection bugfix.\n\nIntegration with main (the RFC branch was ~1007 lines behind on these files):\n  merged with main's newer MCP paramroutes work (paramBinding gating, isSimpleIdRoute,\n  mcpResources) and the liveResource authz fix — a request contract now exempts a\n  resource from the generated-handler binding restriction.\n\nDesign summary in resources/DESIGN.md; full RFC + type spikes remain in #1503.\nType contract verified against built exports in docs/rfcs/spikes/0001/*-real.check.ts.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(withSchema): address PR review — validation hardening + lint-safe test import\n\n- scope the Date type-check exception to string/date-time fields (a Date must not\n  pass validation for number/boolean/array/object schemas)\n- override target.getAll alongside get so multi-value query params read coerced\n- reject empty/whitespace numeric query params instead of Number('')→0\n- harden MCP wrapError: read the untrusted err's props inside a try/catch (revoked\n  Proxy / throwing getters must not crash the error path)\n- application-contract.test.js: require('assert') + strict methods (node:assert/strict\n  is oxlint-banned via no-restricted-imports)\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* refactor: rename withSchema.ts → defineResource.ts; drop spike/RFC artifacts\n\n- rename resources/withSchema.ts → resources/defineResource.ts (defineResource is\n  the primary API; Resource.withSchema stays the class-form name) + the test file\n- remove docs/rfcs/ (the *-real.check.ts type-contract proofs + tsconfig) — a real\n  PR shouldn't carry spike/RFC scaffolding; those live in the design PR (#1503)\n- strip references to the spikes and the RFC doc (which are not in this PR) from\n  code/test comments and resources/DESIGN.md; keep the #1503 pointer for the record\n\nNo behavior change. 100 unit tests green.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* test(types): re-add public type-contract tests + wire into CI\n\nStandalone type-tests under unitTests/types/ (no spike/RFC framing): assert the\nSHIPPED public types (imported from the built dist) against the contract —\ndefineTable projections + relations, and the defineResource/withSchema handler\ninference, narrowed target, subset property, and negative (@ts-expect-error) cases.\n\n- unitTests/types/{defineResource,defineTable}.type-test.ts + tsconfig.json (strict,\n  noEmit, skipLibCheck; isolated from the main build/typecheck, which don't include\n  unitTests/, and from mocha, which only loads js/mjs)\n- `npm run test:types` (tsc --project unitTests/types/tsconfig.json)\n- CI: a \"Type contract tests\" step in unit-test.yml (after Build, gated to one Node\n  version) so a regression in the public type surface fails CI\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-07-14T19:37:17Z",
+          "url": "https://github.com/HarperFast/harper/commit/182971ad16a3ba6986ffae194067965505d5bfa8"
+        },
+        "date": 1784115004000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 19952
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 14152
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 13042
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 30032960
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 3081
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 805997
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3dbcf7b9e1eb107f1f242d9a01d74c5d67f06b02",
+          "message": "Reshape deploy_component registryAuth into a general-purpose credentials array (#1797)\n\n* Reshape deploy_component registryAuth into a general-purpose credentials array\n\n`registryAuth` was an npm-only array of `{ registry, token|secret, scope }`\nentries. Rename it to `credentials` and treat the array as kind-heterogeneous:\nan entry's kind is implied by its identifying key (`registry` = npm registry\nauth) rather than a discriminator field, so a git-host kind keyed by `host`\n(#1792) becomes another item alternative rather than another schema rewrite.\n\nThe ingest/resolve pipeline, secrets-store integration, reference-only\nreplication, and every security invariant from #1717 are unchanged — this is a\nrename plus the seams for a second kind. Identifiers follow: ingestRegistryAuth\n→ ingestCredentials, resolveRegistryAuth → resolveCredentials, and the persisted\nforms (applicationConfig.credentials, hdb_deployment.credentials) match the\noperation field.\n\nSince #1717 has not shipped in a GA release, this is a clean break rather than an\nalias. Because operation validation allows unknown keys, a stale `registryAuth`\nis explicitly rejected — otherwise the deploy would silently install with no\ncredentials. It also stays in the operations-log strip list, since that redaction\nruns ahead of validation and a stale caller's token must not reach the log.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Filter Application.registryCredentials to registry-shaped entries\n\nThe credentials array is kind-heterogeneous by design (registry today,\na planned git-host kind later), but Application's constructor assigned\nit straight to registryCredentials, which buildNpmrcContent assumes is\nregistry-shaped. Filter defensively so a future non-registry entry\ncan't reach it.\n\nAddresses gemini-code-assist review comment on PR #1797.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Authenticate private git-reference deploys from an in-memory credential (#1799)\n\n* Authenticate private git-reference deploys from an in-memory credential\n\nA `github:org/repo` package against a private repo needs a credential for the\n`git ls-remote`/`git clone` npm shells out to. Every obvious way to supply one\npersists it: userinfo in the URL lands in the package spec and the lockfile, a\ncredential helper or `.npmrc` is a file, and an env var is readable by every\ndescendant process.\n\nInstead the token stays in the deploying process's memory and is served over a\nper-deploy Unix socket in a 0700 directory. git is pointed at\ngitCredentialHelper.js — a secret-free script that relays git's request over\nthat socket — and the socket dies with the spawn that needed it. The token\nreaches disk, argv, the package spec, the operation body and the operations log\nnowhere along the way.\n\nThe credential rides as a second kind in the `credentials` array from #1797:\n`{ host, token|secret, username? }`, discriminated by `host` the way npm entries\nare by `registry`. Ingest, seal-into-hdb_secret, grant-check, resolve-at-use and\nreplicate-as-reference are the existing #1717 paths, unchanged — only the\nderived secret name (`deploy.<component>.<host>`) and the injection mechanism are\nnew. resolveCredentials now rejects an unrecognized kind rather than resolving it\ninto a half-empty entry, symmetric with the guard ingestCredentials already had.\n\nWiring, in order of preference: `credential.helper` via GIT_CONFIG_* (structured\nkey=value protocol, no prompt parsing) with GIT_ASKPASS as the fallback for git\n< 2.31, which ignores GIT_CONFIG_*. Inherited credential helpers are reset to\nempty first, so a machine configured with `credential.helper=store` cannot write\nthis token to ~/.git-credentials when git reports the successful authentication\nback to its helper chain. The askpass path decides username-vs-password prompt\nstructurally (userinfo present in the echoed URL) rather than by matching\nEnglish, since git localizes those prompts.\n\nOnly the spawn that clones (`npm pack`) is given this environment. The\n`npm install` that follows — where a dependency's install script can run — never\nsees it, and the socket is already closed by then.\n\nRefs #1792. Stacked on #1797.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Keep the git credential out of reach of clone-time install scripts\n\nPacking a git reference is not just a download. npm clones the repo and, when\nits manifest has a prepare/build/install script, runs `npm install` inside the\nclone and then that script — so the repository's own code and its dependencies'\ninstall scripts execute on this node, inside the clone spawn, inheriting its\nenvironment. Verified against real npm: a transitive dependency's `preinstall`\nsees HARPER_GIT_CREDENTIAL_SOCKET and can ask the socket for the token. That is\nexactly the reach #1792 says the credential must not have, and closing the\nsocket before `npm install` did not close it, because this all happens earlier,\nduring `npm pack`.\n\nSo a credentialed clone runs with `--ignore-scripts` unless the deploy set\ninstall_allow_scripts, which is the operator explicitly asking for that code to\nrun here; that case is allowed and logged, naming the exposure it accepts. Note\nthis also means a git-reference deploy runs scripts at pack time regardless of\ninstall_allow_scripts today — the flag only ever reached the install spawn. That\ninconsistency is left alone here (fixing it changes behavior for existing public\ngit deploys) but is worth its own issue.\n\nWindows now fails closed instead of serving the credential over a named pipe: a\npipe is created with a default security descriptor that can leave it readable by\nother local users, and the whole confinement argument rests on the 0700\ndirectory a Unix socket sits in. Better to refuse than to offer a quietly weaker\nchannel.\n\nAlso from review: cap the request a peer can stream at the socket (an unbounded\n`request +=` was an OOM), and remove the socket's temp directory when listen()\nfails, since no session is returned and nothing would otherwise clean it up.\n\nRefs #1792.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Harden the git credential channel against persistence and downgrade\n\nA second cross-model review pass (Codex) surfaced several ways the credential\ncould still escape memory:\n\n- **Cleartext transport.** git asks for `http://` credentials exactly as it\n  asks for `https://`, so a `git+http://` package (or a remote downgraded by a\n  redirect) would put the token on the wire in the clear. answerFor now serves\n  only over https, with an exemption for loopback (where no network is involved\n  and the integration tests run).\n\n- **git < 2.31.** Those versions ignore GIT_CONFIG_* entirely, so the\n  credential.helper reset that stops an inherited `store` helper from writing the\n  token to ~/.git-credentials is silently dead — and the GIT_ASKPASS fallback\n  would still feed that helper a successful credential to persist. There is no way\n  to disable an inherited helper on those versions, so the session now refuses to\n  start on one rather than leak. (The reset itself is verified end-to-end against\n  a real clone with both a global and a URL-scoped `store` helper configured; the\n  earlier concern that a URL-scoped helper bypasses the reset did not reproduce —\n  git's credential machinery honors the reset, `--get-urlmatch` merely shows raw\n  config.)\n\n- **Newline in a resolved token.** A literal token is schema-rejected for CR/LF,\n  but one resolved from an hdb_secret row was not — and git's protocol is\n  line-based (askpass reads only the first line), so such a token would truncate\n  or inject protocol attributes. Guarded at the serve boundary, matching the\n  .npmrc writer.\n\n- **Unknown keys persisting.** Operation validation runs allowUnknown, so a\n  credential entry like `{host, secret, password: \"literal\"}` would carry that\n  stray field through ingest into config, hdb_deployment, and replication. Both\n  entry schemas are now `.unknown(false)`, and each forbids the other's\n  discriminator. assertApplicationConfig likewise rejects an entry that is both\n  kinds or carries a literal token, rather than coercing it to one kind.\n\nRefs #1792.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Warn on duplicate git-credential hosts; lock in the no-custody strip\n\nReview follow-ups. Two entries for the same host in one deploy silently\nlast-write-wins (they also seal to the same derived secret name), so warn rather\nthan drop quietly. And a regression test pins the security property that a\nliteral git token on a node without custody yields no persistable reference and\nis therefore stripped from the replicated op body.\n\nRefs #1792.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Address 5 review comments; fix a backpressure bug hanging the OOM-cap test\n\n- close(): snapshot the connections Set before destroying, so destroy()'s\n  synchronous 'close' listener (which deletes from the same Set) can't skip\n  a connection mid-iteration.\n- answerFor(): guard against a non-object request before touching .host.\n- parseAskpassPrompt(): move the URL parse+decode inside the existing\n  try/catch so a malformed percent-encoded username can't throw past it.\n- gitCredentialClone.test.js: resolve GIT_HTTP_BACKEND in a try/catch so a\n  missing git binary can't crash the whole suite loader before before()\n  gets a chance to skip; before() now also checks for that case.\n- operationsValidation.js: cap the git credential entry's token at\n  SECRET_MAX_LENGTH, matching the same limit already applied elsewhere.\n\nAlso fixes an unrelated pre-existing bug found while verifying: the OOM-cap\ntest's write loop gave up permanently the first time socket.write() returned\nfalse for backpressure (the `&&` chain short-circuits), which happens well\nbefore the server-side 64KB cap is reached — so the test hung forever\nwaiting for a 'close' the server had no reason to send. Confirmed via a\nclean-checkout diff that this predates this task's changes. The production\ncap-enforcement logic itself was already correct; only the test's flow\ncontrol was wrong. Now resumes writing on 'drain' instead of giving up.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Update components/secretOperations.ts\n\nCo-authored-by: Chris Barber <chris@harperdb.io>\n\n* Fix CI: git-secret naming test drift, and prepare-script leak on npm<11\n\nsecretOperations.test.js still asserted the pre-review-fix secret name\n(deploy.<app>.<host>); a prior commit on this branch added the `.git`\nkind segment to deriveGitSecretName to close a same-host collision\nbetween git and registry secrets (per review), but didn't update the\ntests that pin the literal name. Update the 5 affected assertions to\nthe new, collision-safe name and note why in deriveGitSecretName's doc\ncomment.\n\nAlso fix a real Node-22-only failure: a credentialed git clone relied\non `npm pack --ignore-scripts <git-url>` to keep a repository's\nprepare script from running while the credential socket is reachable.\npacote's DirFetcher runs `prepare` unconditionally on npm <11.0.0 (the\nignoreScripts guard was only added upstream in npm 11) — exactly what\nNode 22's bundled npm ships, confirmed by reproducing against the real\nnpm 10.9.8 binary. For a recognized git-reference identifier with\nscripts disallowed, clone it ourselves (still authenticated via the\ncredential session's env) and strip its lifecycle scripts before\npacking, sidestepping the buggy npm code path entirely — the same\nmechanism harper#1819 lands for the uncredentialed case.\n\nVerified against npm 10.9.8: the prepare-script test fails identically\nto CI on the pre-fix code and passes reliably with the fix.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Resolve hosted-git shorthand (github:/gitlab:/bitbucket:/gist:) in parseGitReference\n\nderivePackageIdentifier defaults a bare owner/repo package identifier to\ngithub:owner/repo, but parseGitReference only recognized explicit\ngit+.../git:// URL forms, so that shorthand — the PR's own worked example —\nfell through to the npm pack --ignore-scripts fallback documented as\nunreliable on npm <11. Extend parseGitReference to resolve github:, gitlab:,\nbitbucket:, and gist: shorthand to a concrete https clone URL so it routes\nthrough the clone-and-strip-scripts path instead.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus <noreply@anthropic.com>\nCo-authored-by: Chris Barber <chris@harperdb.io>\n\n* Resolve npm-style semver: committishes before git checkout\n\n#1799's own worked example (`github:my-org/my-app#semver:v1.2.3`) documented a\ncommittish naming a semver range, but packGitReferenceWithoutScripts passed it\nstraight to `git checkout`, which has no notion of npm's `semver:` syntax and\nsimply failed.\n\nAdds resolveCommittish(), which lists the clone's tags and resolves the range\nagainst them with the `semver` package (already a direct dependency), matching\nnpm's own git-dependency resolution: tags may carry a prefix ahead of the\nversion (`release-v1.2.3`), a percent-encoded range is decoded, and the\nresolved ref is checked out as `refs/tags/<name>` to avoid an ambiguous\nsame-named branch. A non-semver committish is unaffected.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Reject unsafe tag names before checkout in semver-committish resolution\n\nThe automated PR review on the previous commit found that resolveCommittish\nonly validated the semver-shaped suffix it matched in a tag name (e.g. the\n`v1.2.3` in `release-v1.2.3`), not the full tag string. Since git ref names\npermit shell metacharacters (`$`, backticks, `;`, `&`, `|`, parens — only\nwhitespace and a few other forms are disallowed), and nonInteractiveSpawn\nruns through a shell with no argument escaping, a tag name from the cloned\nrepository such as `$(touch${IFS}/tmp/x)v9.9.9` would execute as a command\nsubstitution on checkout — reachable specifically because semver resolution\npicks a tag out of the (untrusted, upstream) repo's own tag list, unlike a\nliteral committish which the deploying operator supplies directly.\n\nAdds a conservative safe-charset check on the full tag name; a tag failing\nit is excluded from resolution rather than sanitized, so it can never reach\nthe checkout spawn. Confirmed exploitable pre-fix (marker file executes) and\nblocked post-fix via a new regression test.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus <noreply@anthropic.com>\nCo-authored-by: Chris Barber <chris@harperdb.io>",
+          "timestamp": "2026-07-15T23:03:58Z",
+          "url": "https://github.com/HarperFast/harper/commit/3dbcf7b9e1eb107f1f242d9a01d74c5d67f06b02"
+        },
+        "date": 1784201439000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 13809
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 12484
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 12944
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 28852096
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 11682
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2391
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bf0c51a69c0b875e755b55a8036ace486aa5a1e9",
+          "message": "Merge pull request #1285: New SQL engine on the Resource API (phases 0-5)\n\nNew SQL engine on the Resource API (phases 0-4; phase-5 cutover gated)",
+          "timestamp": "2026-07-17T11:10:18Z",
+          "url": "https://github.com/HarperFast/harper/commit/bf0c51a69c0b875e755b55a8036ace486aa5a1e9"
+        },
+        "date": 1784287680000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 15247
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 12826
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 12534
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 27314048
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 2849
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 764849
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "56a2bace9f27526d9066a1d05ff9161d012ecab6",
+          "message": "fix(tls): honor `ciphers`/`SECLEVEL` from every configured source when building TLS listeners (#1841)\n\n* fix(tls): honor ciphers/SECLEVEL from every configured source when building TLS listeners\n\nA TLS listener has exactly one effective cipher string: OpenSSL takes the\ncipher list (and any @SECLEVEL, which governs client-cert chain\nverification) from the context the server was created with; SNI-swapped\ncontexts don't carry their own cipher list onto the connection. Harper\napplied only tls.ciphers ?? tls[0].ciphers and silently ignored every\nother configured value — tls[] entries beyond [0] and certificate\nrecords, including client-CA records carrying DEFAULT@SECLEVEL=0 for\nSHA-1-signed chains, which then failed with authorizationError\nUNSPECIFIED on valid in-date certs.\n\nresolveEffectiveTlsCiphers (security/keys.ts) now resolves the listener\nstring from all sources: top-level tls.ciphers wins; otherwise tls[]\nentries plus relevant cert records (uses-matched, and authorities when\nthe listener verifies client certs) are candidates, with the lowest\nexplicit @SECLEVEL winning conflicts and everything ignored logged.\nPost-boot changes to the resolved value warn (once per value) that a\nrestart is required. Bun path untouched (BoringSSL has no @SECLEVEL).\n\nCloses #1840\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* test(tls): guard seclevel test teardown when setup fails early\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(tls): compose suite and minimum SECLEVEL per listener instead of picking one cipher string\n\nAddresses the external review on #1841: config array entries are now\nrelevance-filtered like certificate records (CA entries only when the\nlistener verifies client certs; uses matched with the selector's\ntolerant rule incl. legacy 'https' and no-uses generics), the suite\nlist is preserved from the highest-priority suite-bearing candidate\nwith only the minimum explicit @SECLEVEL composed on (no assumed\nruntime default level), and the operations API listener resolves from\noperationsApi.tls before root tls so an inherited-certificate override\nis no longer ignored.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-17T20:39:05Z",
+          "url": "https://github.com/HarperFast/harper/commit/56a2bace9f27526d9066a1d05ff9161d012ecab6"
+        },
+        "date": 1784373627000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 20707
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 13120
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 13984
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 32207872
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 11656
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 4848
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8b1c12b6b0de289f9b1657b3b66a9f43209adcb9",
+          "message": "Merge pull request #1385 from HarperFast/kris/nextjs-caller-ci\n\nci: run Next.js adapter integration suite against harper PRs (downstream gate)",
+          "timestamp": "2026-07-18T21:23:10Z",
+          "url": "https://github.com/HarperFast/harper/commit/8b1c12b6b0de289f9b1657b3b66a9f43209adcb9"
+        },
+        "date": 1784460185000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 20543
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 15686
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 12727
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 31884160
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 11744
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2538
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1e2877d0f19535352d4e70b5a0db36388eee6ded",
+          "message": "Merge pull request #1825 from HarperFast/fix/typed-resources-sandbox-exports\n\nfix(sandbox): wire the six typed-resources exports into the component sandbox",
+          "timestamp": "2026-07-20T04:17:11Z",
+          "url": "https://github.com/HarperFast/harper/commit/1e2877d0f19535352d4e70b5a0db36388eee6ded"
+        },
+        "date": 1784548487000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 18093
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 14292
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 13797
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 29915200
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10012
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2327
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "jcohen-hdb",
+            "username": "jcohen-hdb",
+            "email": "jacob@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "1e1edc666ad373a0fbfec4df4d3f0e130be13529",
+          "message": "Ignore node_modules symlinked into integration fixtures by dev-mode boots\n\nharper dev <fixture> runs symlinkHarperModule against the component dir,\nplanting node_modules/harper inside integrationTests/fixtures/* — untracked\nand unignored, it has previously slipped into a commit (#1828 required an\namend). Discovered during runtime verification of this branch.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-21T02:16:25Z",
+          "url": "https://github.com/HarperFast/harper/commit/1e1edc666ad373a0fbfec4df4d3f0e130be13529"
+        },
+        "date": 1784633636000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 17993
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 13137
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 13193
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 25443392
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 9215
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2010
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "07c2bbcb9ec535a7d0c529cc47301bfc33c8ed31",
+          "message": "Pin Bun version in integration CI\n\nAvoid setup-bun's floating-version tag lookup so transient GitHub API failures do not fan out across all Bun shards.\n\nCo-Authored-By: Codex <noreply@openai.com>",
+          "timestamp": "2026-07-22T11:20:50Z",
+          "url": "https://github.com/HarperFast/harper/commit/07c2bbcb9ec535a7d0c529cc47301bfc33c8ed31"
+        },
+        "date": 1784720037000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 27399
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 18706
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 17911
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 33254720
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10829
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2396
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "cda8d63f6154b1cc9e766e561d7a6ce17b0a85fa",
+          "message": "Fix indentation drift in getStringPrefixUpperBound\n\nApplying Gemini's suggested diff verbatim left the function body one\ntab shallow, failing prettier --check.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-22T23:34:08Z",
+          "url": "https://github.com/HarperFast/harper/commit/cda8d63f6154b1cc9e766e561d7a6ce17b0a85fa"
+        },
+        "date": 1784806567000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 21351
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 19808
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 13803
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 34964288
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10073
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2028
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b8c843a24a4b2b3f002a2b786415333fd7f3b597",
+          "message": "fix(query): stop query planning from mutating the caller's conditions (#1911)\n\n* fix(query): stop query planning from mutating the caller's conditions\n\nTable.search()/get() took the caller's conditions by reference and annotated\nthem in place as it planned the query: it pushes a `{ comparator: 'sort' }`\npseudo-condition for index-order alignment, sets `descending`, caches\n`estimated_count`, collapses chained conditions, and coerces values — all on\nthe caller's entry objects. A caller that reuses the same array or condition\nobjects across queries (a natural pattern for a module-level `const`) then hits\nleaked state: a kept sort pseudo-condition is treated as a real valueless\ncondition and throws `Invalid value for attribute … \"undefined\"`; a stale\n`descending` silently reverses a later scan; a cached `estimated_count`\nmisplans. Whether it surfaced depended on live index estimates, so it read as\nphantom nondeterminism.\n\nClone the conditions array and every entry (recursing into nested and/or groups)\nat intake, so all downstream planning mutation happens on our own objects and\nnever reaches the caller. Entries are small and shallow, so the copy is\nnegligible next to the query itself.\n\nFixes harper#1572.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_0188G62J9fZQg4J9rVuqLzjy\n\n* test(query): make the array-form target guard assert entry immutability\n\nPost-review follow-up. The array-form-target regression case only checked array\nlength + absence of a sort pseudo-condition, which don't change on that path\n(no sort → no push) — so it passed with or without the fix. Assert instead that\nthe caller's condition entry is untouched: its Date-typed bound stays the\noriginal string (not coerced in place) and no estimated_count is annotated. Now\nfails on origin/main and passes with the fix, like the other three cases.\n\nAlso note in cloneConditions why chainedConditions sub-entries are left shared\n(read-only during planning).\n\nComment generated by kAIle (Claude Opus 4.8)\n\n* refactor(query): hoist cloneConditions to module scope; plain node:assert in test\n\nReview follow-up (both non-blocking):\n- cloneConditions is stateless (no closure over search/makeTable), so hoist it\n  to module scope rather than re-creating the function on every search() call.\n- Use plain node:assert in the regression test per house style, with explicit\n  strictEqual/deepStrictEqual where strict semantics are wanted.\n\nComment generated by kAIle (Claude Opus 4.8)\n\n---------\n\nCo-authored-by: Kyle Bernhardy <kyle.bernhardy@gmail.com>\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-07-24T00:33:14Z",
+          "url": "https://github.com/HarperFast/harper/commit/b8c843a24a4b2b3f002a2b786415333fd7f3b597"
+        },
+        "date": 1784892701000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 21811
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 17484
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 12018
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 32657792
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10169
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 1606
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d112560b6244cf5c914d047a8178942f841d5c6e",
+          "message": "chore(ci): bump mention + issue-to-pr pins to 54d9e61 (Opus 5) (#1938)\n\nCompletes the Opus 5 rollout for this repo: the @claude mention\n'deep' path and the claude-fix:bug/:test escalation now run\nclaude-opus-5 (ai-review-prompts#79). Reusable interface unchanged\nacross the jump — the i2p reusable's only delta since the old pin is\nthe model swap itself; mention's delta is the model bumps plus a\nnet-reverted permissions pair (#39/#40).\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-24T23:34:11Z",
+          "url": "https://github.com/HarperFast/harper/commit/d112560b6244cf5c914d047a8178942f841d5c6e"
+        },
+        "date": 1784978680000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 29709
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 19058
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 11250
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 29991296
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 9566
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2289
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d112560b6244cf5c914d047a8178942f841d5c6e",
+          "message": "chore(ci): bump mention + issue-to-pr pins to 54d9e61 (Opus 5) (#1938)\n\nCompletes the Opus 5 rollout for this repo: the @claude mention\n'deep' path and the claude-fix:bug/:test escalation now run\nclaude-opus-5 (ai-review-prompts#79). Reusable interface unchanged\nacross the jump — the i2p reusable's only delta since the old pin is\nthe model swap itself; mention's delta is the model bumps plus a\nnet-reverted permissions pair (#39/#40).\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-24T23:34:11Z",
+          "url": "https://github.com/HarperFast/harper/commit/d112560b6244cf5c914d047a8178942f841d5c6e"
+        },
+        "date": 1785065224000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 23074
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 13505
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 11529
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 34915776
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10524
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 4050
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "fe3994f4031714027098f6ce250fa78e1264107b",
+          "message": "test(txn): afterEach stub-restore safety net + unref race timers (bot review)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-27T04:46:02Z",
+          "url": "https://github.com/HarperFast/harper/commit/fe3994f4031714027098f6ce250fa78e1264107b"
+        },
+        "date": 1785153777000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 33736
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 18576
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 14677
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 34188160
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 9795
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 4130
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "3e317c7f58f9263de64fd11cac8a0052831d16f8",
+          "message": "Update integrationTests/upgrade/qa606-upgrade-structgrowth/resources.js\n\nCo-authored-by: Chris Barber <chris@harperdb.io>",
+          "timestamp": "2026-07-28T11:32:18Z",
+          "url": "https://github.com/HarperFast/harper/commit/3e317c7f58f9263de64fd11cac8a0052831d16f8"
+        },
+        "date": 1785238745000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 16640
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 15447
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 21691
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 36660736
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 11261
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 4867
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "35c1f423b9e05ac858ec14bec4346d06d274c2e1",
+          "message": "fix(cli): refresh expired agent tokens; fix --once approval hang\n\nAddress heskew's two remaining non-blocking review notes on #1553:\n\n- `harper agent` hard-failed on an expired stored operation token instead\n  of self-healing via the refresh_token, unlike cliOperations.ts. Extract\n  the refresh logic into a shared `refreshExpiredOperationToken` helper in\n  cliOperations.ts and call it from both cliOperations and agentCli, so the\n  two transports can't drift again.\n- `--once` against a real TTY drains stdin via readAllStdin() before the\n  first turn; if that turn then needed approval, resolveApprovals() built a\n  new readline on the already-ended stdin and question() never resolved.\n  Track actual stdin consumption (opts.stdinConsumed) instead of relying on\n  isTTY, and fail loudly in that case like the non-TTY path already does.\n\nRefs #1553\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-28T23:46:42Z",
+          "url": "https://github.com/HarperFast/harper/commit/35c1f423b9e05ac858ec14bec4346d06d274c2e1"
+        },
+        "date": 1785325381000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 29954
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 16858
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 23335
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 34249664
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10983
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 1006
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b04af4d08dc96ffd6f657991b4fe105528e88c98",
+          "message": "Merge pull request #1956 from HarperFast/fix/instance-post-create\n\nfix(resources): restore v4 super.post create on collection posts",
+          "timestamp": "2026-07-29T23:58:36Z",
+          "url": "https://github.com/HarperFast/harper/commit/b04af4d08dc96ffd6f657991b4fe105528e88c98"
+        },
+        "date": 1785411323000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 30148
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 16559
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 18682
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 29543040
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 8512
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2793
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "fd4be1612c543a16d40ee4aa1d4d2d5091aa1b20",
+          "message": "Release v5.2.0-beta.4",
+          "timestamp": "2026-07-31T03:37:46Z",
+          "url": "https://github.com/HarperFast/harper/commit/fd4be1612c543a16d40ee4aa1d4d2d5091aa1b20"
+        },
+        "date": 1785498060000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 23190
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 15391
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 14512
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 33876416
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10960
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2080
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "b852a722c4abe562cab72a2f25313664fa74547d",
+          "message": "Widen atomicWriteFile's Windows rename-retry budget and sleep without spinning\n\nThe ~910ms backoff budget (8 retries, 200ms cap) was exhausted twice in a row\nby the same test on a Windows CI runner (harper#2036) - an AV real-time scan\ncan hold harper-config.yaml for over a second. Widen to 12 retries with a\n500ms cap (~3.6s worst case), and replace the performance.now() busy-spin\nwith a timeout-only Atomics.wait so the wait is CPU-idle, which is what makes\nthe longer budget affordable.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-01T02:50:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/b852a722c4abe562cab72a2f25313664fa74547d"
+        },
+        "date": 1785583611000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 32130
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 21721
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 19134
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 34603008
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 10663
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 4460
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "b852a722c4abe562cab72a2f25313664fa74547d",
+          "message": "Widen atomicWriteFile's Windows rename-retry budget and sleep without spinning\n\nThe ~910ms backoff budget (8 retries, 200ms cap) was exhausted twice in a row\nby the same test on a Windows CI runner (harper#2036) - an AV real-time scan\ncan hold harper-config.yaml for over a second. Widen to 12 retries with a\n500ms cap (~3.6s worst case), and replace the performance.now() busy-spin\nwith a timeout-only Atomics.wait so the wait is CPU-idle, which is what makes\nthe longer budget affordable.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-01T02:50:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/b852a722c4abe562cab72a2f25313664fa74547d"
+        },
+        "date": 1785669947000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 32342
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 14955
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 14008
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 32126144
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 9756
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 2889
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "f3246b9982eec796599740931f1c236e94957cd5",
+          "message": "ci: invert canary conclusion polarity so it doesn't poison nightly-gate\n\nPer cross-model review (domain adjudication) — the sharpest finding\nacross this whole review cycle: moving the canary to its own workflow\nfixed integration-tests.yml's conclusion, but the nightly-gate triage\nroutine sweeps every `--event schedule` workflow with no per-workflow\nallowlist. Wiring the test step's raw exit code to the job conclusion\nwould make the every-night-until-fixed EXPECTED outcome (harper#2025\nstill reproducing) a permanent red that nightly-gate dutifully triages\nforever — while the one outcome anyone actually wants to hear about,\nthe defect clearing upstream, would be silently green and fire no\nalert. Backwards polarity for every consumer.\n\nInvert it: the canary tests failing (matching harper#2025) is now this\njob's SUCCESS; the tests unexpectedly passing is what fails it loudly,\nwith an ::error:: pointing at removing the pin. Also restores the\ncoverage-scope note that got dropped in the move to the standalone\nfile, adds a least-privilege permissions block, and cross-references\nthe duplicated pin-version constant between the two files.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-03T12:02:20Z",
+          "url": "https://github.com/HarperFast/harper/commit/f3246b9982eec796599740931f1c236e94957cd5"
+        },
+        "date": 1785758633000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 6857
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 5910
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 5641
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 9306368
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 3221
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 766
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "b4196a3b4d32eac6c73c353fc5970f7a01ca5fe1",
+          "message": "test(server): pin both HTTP servers' mid-stream SSE throw shapes (uWS divergence)\n\n`b: ThrowGen (throws after 2 of 5) over SSE` was the sole failure on\n`Integration Tests 5/6 (uWS HTTP)`; every other shard was green. Rather\nthan assume the assertion over-reached, QA-886 characterized the two\nservers byte-for-byte on the identical workload.\n\nBoth deliver exactly the two pre-throw events (`{\"n\":0}`, `{\"n\":1}`),\nbyte-identical modulo a uWS-only leading `:\\n\\n` header-flush comment.\nThey diverge only at termination:\n\n- Node (`server/http.ts` pipeBodyToResponse, ~426-461) closes the socket\n  WITHOUT the terminal `0\\r\\n\\r\\n` chunk, deliberately -- its own comment\n  says this \"correctly signals a failed/truncated transfer... instead of\n  implying it completed\". The incomplete chunked framing is the only\n  signal a client gets, and it is the intended one.\n- uWS (`server/serverHelpers/uwsServer.ts` streamResponse, ~340-356)\n  routes the source's 'error' and 'end' handlers through the SAME\n  `finish(true)` -> `res.end()` path, so it DOES write the terminal\n  chunk. The wire response becomes byte-indistinguishable from a\n  generator that legitimately finished: a mid-stream failure is silently\n  presented to the client as success.\n\nSo the spec was right and the uWS path is wrong. `HttpResponse.close()`\nis available and is the correct primitive for the error branch; that is a\nproduct fix, tracked separately as F-272 and not made here.\n\nThis change pins BOTH shapes explicitly rather than skipping under uWS,\nso the divergence stays visible in the suite and cannot drift or be\n\"fixed\" in the wrong direction unnoticed. Verified locally at\n`c28e5f83f`: 11/11 green under Node and 11/11 under HARPER_UWS_HTTP=1.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-04T11:40:48Z",
+          "url": "https://github.com/HarperFast/harper/commit/b4196a3b4d32eac6c73c353fc5970f7a01ca5fe1"
+        },
+        "date": 1785843749000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 30682
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 16470
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 13408
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 29251072
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 5006
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 1536
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "ffef12f8c8992eb86c5014d85d4bd273df8f18d5",
+          "message": "Test Bun resolution candidate tracking directly\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-08-05T11:21:29Z",
+          "url": "https://github.com/HarperFast/harper/commit/ffef12f8c8992eb86c5014d85d4bd273df8f18d5"
+        },
+        "date": 1785929980000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "unit": "ops/sec",
+            "value": 20473
+          },
+          {
+            "name": "indexed-write indexed3",
+            "unit": "ops/sec",
+            "value": 18032
+          },
+          {
+            "name": "indexed-write indexed5",
+            "unit": "ops/sec",
+            "value": 13149
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "unit": "records",
+            "value": 22312512
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "unit": "ops",
+            "value": 3161
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "unit": "ops",
+            "value": 370490
+          }
+        ]
+      }
+    ],
+    "Storage Benchmarks Latency/Size (ST-1/ST-2/ST-5)": [
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ece7da47672d8ee175a87b39b2a21340169c376a",
+          "message": "feat: re-authorize live subscriptions; revoke on permission loss or token expiry (#1414) (#1535)\n\n* feat: re-authorize live subscriptions; revoke on permission loss or token expiry (#1414)\n\nSubscribe-time authorization is point-in-time: once an SSE/WebSocket/MQTT stream is\nopen it keeps delivering even after the principal loses access (drop_user, role or\npermission change) or the bearer token it was opened with expires. This adds a\ncontinuous re-authorization registry that terminates such subscriptions.\n\n- server/liveSubscriptionAuth.ts: a registry of live subscriptions, each with a\n  table/RBAC-level recheck and a terminate handler. Swept (1) immediately on the ITC\n  user-change broadcast — serverHandlers rebuilds the user/role cache before firing\n  listeners, so the recheck sees current permissions — and (2) on a 30s interval as a\n  backstop and to catch token expiry, which is not event-signaled. Re-auth is\n  table-level (re-runs the same allowRead the subscription was granted with against a\n  freshly-fetched user); there is NO per-record evaluation. An error during recheck\n  fails closed (revokes). Normal teardown auto-unregisters.\n\n- resources/Resource.ts: at the common authorization chokepoint\n  (authorizeActionOnResource), register the resulting subscription for both the\n  'subscribe' (MQTT) and 'connect' (SSE/WebSocket) actions. Subscriptions with no user\n  principal (internal watchers, replication, local-bypass) are skipped.\n\n- security/auth.ts: capture the bearer token's JWT exp on the authenticated user so a\n  subscription opened with it can be revoked once it expires.\n\nRe-auth interval is overridable via HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS (tests).\n\nTest: integrationTests/security/subscription-revocation.test.ts opens an SSE collection\nsubscription and asserts delivery STOPS after (1) drop_user (event-driven) and (2)\nbearer-token expiry (interval-driven), while an authorized stream keeps delivering. 2/2\npass.\n\nCloses #1414.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix: address review — fresh user in recheck context, forward end() args, format\n\n- recheck advances context.user to the freshly-fetched user before re-running allowRead,\n  so a custom allowRead reading context.user / getCurrentUser() evaluates current state\n  rather than the stale subscribe-time user (Gemini critical).\n- the wrapped subscription.end() forwards all arguments to the original end() so stream\n  cleanup semantics are preserved (Gemini high).\n- prettier formatting on the new test.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* style: prettier formatting on subscription-revocation test\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(lint): use node:assert instead of restricted node:assert/strict\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>\nCo-authored-by: Kris Zyp <kris@harperdb.io>",
+          "timestamp": "2026-07-06T23:39:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/ece7da47672d8ee175a87b39b2a21340169c376a"
+        },
+        "date": 1783425529000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 10118.76
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 10118.76
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 452.9
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 1453.3
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 1915
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "a0f4a51acfa917fd544c88eec4b8893b5d04512e",
+          "message": "fix(mqtt): close last-will persistence race; give retained-message test more headroom\n\nTwo independent causes behind the flaky \"test MQTT connections and commands\"\nsuite:\n\n- \"last will should be published on connection loss\": getSession() wrote the\n  Last Will record via getLastWill().put(will) without awaiting it, before\n  CONNACK is sent. A client that connected and then disconnected abruptly\n  could race ahead of that write; session.disconnect() would then find no\n  will record and silently drop it, hanging the test until mocha's timeout.\n  Reproduced deterministically with an artificial delay before the write, and\n  confirmed the fix (await the write) closes the race. Fix: await\n  getLastWill().put(will).\n\n- \"subscribe to retained/persisted record\": already raced the real message\n  event against a backstop timer, but the backstop (8000ms) left only 2s of\n  margin under the suite's 10000ms mocha timeout, and delivery is known to\n  routinely exceed 1s on loaded CI runners. Bump this test's own timeout to\n  20000ms (same precedent as the QoS=1 reconnect test) and derive the inner\n  backstop from this.timeout() - 2000 so the two can't race each other.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-08T03:08:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/a0f4a51acfa917fd544c88eec4b8893b5d04512e"
+        },
+        "date": 1783510436000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9712.09
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9712.09
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 155.1
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 439.9
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 714.9
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lavinia",
+            "username": "ldt1996",
+            "email": "lavinia@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f10eba31e88286b53f10f7cdfc29dcd45d1cabfa",
+          "message": "fix(storage): replay conflict retry on a fresh transaction after ERR_TRY_AGAIN (#1696)\n\n* fix(storage): replay conflict retry on a fresh transaction after ERR_TRY_AGAIN\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(storage): keep retries from deduping against their own audit entry\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* chore: log the swallowed abort error (review)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(storage): per-write sticky own-audit-entry marker for retry dedup (review)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(storage): abort before the MAX_RETRIES throw, pin change-feed entries in tests (review)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>\nCo-authored-by: Kris Zyp <kriszyp@gmail.com>",
+          "timestamp": "2026-07-09T11:46:49Z",
+          "url": "https://github.com/HarperFast/harper/commit/f10eba31e88286b53f10f7cdfc29dcd45d1cabfa"
+        },
+        "date": 1783598387000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9903.27
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9903.27
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 271.2
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 1296.3
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 1748.8
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bd1dce0b1bbb91aeea15e5380f5b98e311f631a8",
+          "message": "feat(#914): uWebSockets.js HTTP/WebSocket backend (default-off) (#1096)\n\n* feat(http): add uWebSockets.js request adapter (spike, #914)\n\nSpike for evaluating uWS as a per-worker HTTP server on the plaintext-UDS\npath behind symphony (TLS/mTLS/HTTP-2 terminated upstream). Adds:\n\n- UwsRequest in Request.ts: a Harper request adapter modeled on BunRequest,\n  sourced from uWS-extracted method/url/headers/body. Real client IP comes\n  from X-Forwarded-For; peerCertificate/authorized are null (terminated\n  upstream).\n- uwsServer.ts: createUwsServer(), a non-SSL uWS App on a unix socket that\n  bridges each request through httpChain[port] and serializes the Harper\n  response descriptor back onto the uWS HttpResponse.\n\nBenchmarks (CPU-µs/request, vs Node http on the same UDS) show uWS holds a\n~1.56x efficiency edge with the real Request abstraction in the loop. Not yet\nwired into getUwsHTTPServer/threadServer.js; uWS is not yet a dependency.\n\nCo-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>\n\n* feat(http): wire uWS UDS server behind HARPER_UWS_UDS flag (spike, #914)\n\nMakes the per-worker plaintext-UDS mirror optionally served by uWebSockets.js\ninstead of a Node http server, gated behind the HARPER_UWS_UDS env flag\n(default off -> no behavior change). When set:\n\n- getHTTPServer registers a uwsServeConfigs entry for the UDS path instead of\n  creating the Node udsServer.\n- makeUwsHandler mirrors the Bun fetchHandler's post-processing (httpChain,\n  unhandled, universalHeaders, Server-Timing, analytics, logging) and returns a\n  Harper response descriptor; createUwsServer serializes it onto the uWS res.\n- threadServer.listenOnPorts() starts the uWS UDS servers from uwsServeConfigs.\n- uWebSockets.js added as an optionalDependency (GitHub tag; ABI-locked, no\n  musl build -> CI must build per Node major).\n\nSymphony must use sourceAddressHeader 'xForwardedFor' for these sockets (uWS\ndoes not parse the PROXY protocol). Fastify status===-1 fallback and response\nstreaming are not wired in this spike. Type-checks clean (tsc --noEmit); not\nyet exercised against a live booted Harper.\n\nCo-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>\n\n* fix(http): null-guard request._nodeRequest in unhandled() (spike, #914)\n\nunhandled() (the middleware-chain terminal) set request._nodeRequest.user when\nan authenticated request hit no route, to hand auth to a Node fallback server.\n_nodeRequest is null for both BunRequest and UwsRequest, so an authenticated\nrequest to an unmatched route threw \"Cannot set properties of null (setting\n'user')\" -> 500. Latent on the Bun path; surfaced by the live uWS-UDS bench.\n\nGuard on _nodeRequest: the handoff only applies to the Node fallback path; the\nBun/uWS adapters have no Node fallback server. With this, the uWS UDS path\nreturns 404 like Node. Verified on a live booted Harper.\n\n* fix(#914): harden uWS UDS adapter for production + add adapter unit test\n\nGraduates the uWS-behind-symphony spike toward landing by fixing the\ncorrectness issues surfaced in review and adding a regression suite.\n\n- Request body corruption (critical): Buffer.from(arrayBuffer) aliased\n  uWS's receive buffer, which is neutered/reused once the onData callback\n  returns while the body is read asynchronously in the handler. Multi-chunk\n  POST/PUT bodies came back truncated/corrupt. Copy the bytes out\n  synchronously via Buffer.from(new Uint8Array(chunk)).\n- Duplicate request headers were clobbered (headers[k] = v, last wins);\n  accumulate repeats into an array like the Node path.\n- Empty reason phrase for uncommon status codes (\"429 \"); derive the\n  status line from node:http STATUS_CODES with an \"Unknown\" fallback.\n- Route by method rather than a single app.any(hasBody:true) so bodyless\n  methods dispatch immediately and unknown methods can't stall a connection.\n- Collapse of streaming/iterable response bodies now bails when the client\n  disconnects (thread the request AbortSignal into uwsBodyToBuffer).\n- Refresh the stale adapter header comment (wiring is done).\n\nAdds unitTests/server/serverHelpers/uwsServer.test.js: exercises GET,\nbodyless OPTIONS, multi-chunk POST round-trip (guards the aliasing bug),\nduplicate headers, 404, thrown->500, and reason-phrase serialization over\na real UDS. Skips gracefully when the uWebSockets.js optional dep is absent.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(#914): address cross-model review of uWS UDS adapter\n\nFollow-up to the adapter hardening, resolving issues surfaced by the\ncross-model review (Codex + Gemini + Harper-domain adjudication).\n\n- WHATWG Response return path (significant): makeUwsHandler mutated\n  response.status/response.body, which throws for a handler that returns a\n  standard Response (read-only accessors) — a divergence from the Node/Bun\n  paths, which build a fresh descriptor. Return a new descriptor instead of\n  mutating the chain's result.\n- Write-method throttling was dropped on the uWS UDS mirror: the Node UDS\n  path routes non-GET/OPTIONS/HEAD through the request-queue throttle (503 on\n  overflow), the uWS path bypassed it. Restore parity via throttle() so\n  data-modifying bursts shed instead of saturating a worker.\n- QUERY (and other non-standard body-bearing methods) had their body\n  silently dropped: the per-method routing sent the any() fallback down the\n  bodyless path. Route known-bodyless methods explicitly and treat the\n  fallback as body-bearing (uWS still fires onData(len=0) for bodyless).\n- Shutdown shim entered the Node keep-alive drain loop and force-exited\n  noisily every shutdown (uWS close() takes no callback): wrap close() to\n  invoke the callback and omit closeIdleConnections so the drain is skipped.\n- UwsRequestBody now extends Readable, matching the RequestBody/BunRequestBody\n  contract (for-await async iteration + destroy(), not a duck-typed subset).\n- Tidy: remove abort listener on the stream-error path in uwsBodyToBuffer,\n  drop the unused AbortController param from writeResponse, add the\n  uWebSockets.js optionalDependency to package-lock.json.\n\nAdds QUERY-body-routing and 413-over-limit tests; suite now 9 green.\nThe WHATWG-Response, throttle, and shutdown-teardown paths live above the\nadapter unit boundary — flagged for the integration bench in the PR.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(#914): plaintext uWS-over-HTTP path + full streaming responses\n\nExtends the uWS adapter beyond the symphony-UDS mirror toward a fully\ncapable HTTP backend.\n\nPlaintext TCP path (HARPER_UWS_HTTP):\n- createUwsServer now accepts a `port`/`host` (app.listen, SO_REUSEPORT by\n  default) in addition to `socketPath`, so uWS can back a non-secure HTTP\n  TCP port directly — not just the UDS mirror.\n- getHTTPServer registers a uWS TCP config (and skips the Node server) for\n  non-secure app HTTP ports when HARPER_UWS_HTTP is set; threadServer's\n  start loop is generalized to UDS- or port-keyed configs.\n- This is the flag used to run the integration suite through uWS: a\n  representative slice passes 45/45 (REST/SQL, data types, dates, arrays,\n  binary/Brotli blob responses byte-exact, Content-Encoding, caching).\n\nStreaming responses:\n- normalizeUwsBody (was uwsBodyToBuffer) now passes Node streams and\n  async-iterables through as a Readable instead of buffering — buffering an\n  SSE/event-stream body never returns.\n- writeResponse streams a Readable body to uWS with real backpressure\n  (res.write + res.onWritable pause/resume) and omits Content-Length so uWS\n  uses chunked encoding. uWS only flushes headers on the first body write,\n  so text/event-stream responses emit a spec-valid ':\\n\\n' comment to open\n  the stream immediately (fixes SSE \"headers never flushed\"). Client abort\n  or a source error destroys the source and stops writing.\n- Verified: MCP SSE integration test passes 4/4 (headers flushed up front);\n  3 new adapter unit tests cover SSE, a plain Readable, and a 4 MiB\n  backpressure stream. Suite now 12 green.\n\nRemaining: WebSocket upgrade (MQTT-over-WS/subscriptions) — next.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(#914): WebSocket upgrade support on the uWS path\n\nCompletes uWS as a full HTTP+WS backend. uWS owns its sockets, so WS can't\nbe delegated to the ws library's WebSocketServer; instead the adapter uses\nuWS's native app.ws() and bridges each connection to a ws-library-shaped\nobject that Harper's existing websocket chain consumes unchanged.\n\n- UwsWebSocket (server/serverHelpers/uwsServer.ts): adapts a uWS WebSocket\n  to the subset of the ws interface Harper uses — send/close/terminate/ping,\n  'message'/'close' events, readyState, and a _socket shim exposing\n  remoteAddress + backpressure (writableNeedDrain/'drain' via\n  getBufferedAmount + the drain callback). Inbound frames are copied out of\n  uWS's neutered buffer.\n- createUwsServer accepts a wsHandler; when set it registers app.ws('/*')\n  (capturing the upgrade request's url/headers/ip, IPv4-mapped address\n  normalized) alongside the HTTP routes — both coexist on one port.\n- onWebSocket (server/http.ts) detects a uWS-backed port and wires the\n  wsHandler (build a WS UwsRequest, run httpChain auth, invoke\n  websocketChains) instead of the Node ws.WebSocketServer + 'upgrade' event.\n  Previously this crashed under HARPER_UWS_HTTP (\"server.on is not a\n  function\"), failing MQTT component load; also guards a NaN-port config.\n\nValidated through the real harness: MQTT-over-WS passes 11/11 (RS256 JWT\nauth, topic ACLs, pub/sub, $SYS monitoring); SSE 4/4 and HTTP unaffected\n(24/24 combined). 2 new adapter unit tests (HTTP+WS coexistence on one port;\nupgrade + text/binary frame round-trip); suite now 14 green.\n\nWith this, the full integration slice runs over uWS: HTTP, SSE/streaming,\nand WebSocket subscriptions.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(#914): address cross-model review of plaintext/streaming/WS uWS work\n\nFindings from the Codex+Gemini+domain review of the streaming/WS commits.\n\n- Client IP on the direct-TCP path (P1, Codex+sweep): the uWS HTTP handler\n  never captured the peer address, so request.ip was '' and local auth\n  (security/auth.ts AUTHORIZE_LOCAL, request.ip.includes('127.0.0.')) failed\n  — anonymous localhost requests got \"Must login\". The integration sweep hit\n  this: early-hints/redirector/risk-query (pass on baseline, \"pass 0\" under\n  the flag). Fix: capture res.getRemoteAddressAsText() for the TCP path\n  (left unset for UDS). AND flip UwsRequest.ip to prefer the real socket\n  address over X-Forwarded-For, so a direct client can't spoof\n  `X-Forwarded-For: 127.0.0.1` to satisfy local auth; XFF is trusted only on\n  the symphony-UDS path (where the socket has no client address).\n- HEAD body (P2, Codex): uWS has no ServerResponse HEAD guard, so a handler\n  returning a body on HEAD would send it. REST already nulls HEAD bodies;\n  enforce it in writeResponse for any other handler.\n- WebSocket maxPayload (P2, Codex): the onWebSocket uWS branch didn't forward\n  options.maxPayload, so a configured smaller WS frame limit wasn't enforced\n  (defaulted to 100 MiB). Thread it through as wsMaxPayload.\n\nGemini's headline \"Buffer.from(new Uint8Array(message)) aliases uWS memory\"\nblocker is a false positive (same conflation as last review): it COPIES —\nproven (survives source neutering) and corroborated by MQTT-over-WS 11/11\nwith async frame processing.\n\nNoted, not fixed (out of scope / parity): GraphQL POST reads _nodeRequest\nwhich is null on uWS AND Bun (pre-existing non-Node-adapter gap, needs a\nbody-based deserialize); a raw Fastify server registered on a uWS-backed\nport could collide in SERVERS (low reachability; MCP Fastify passes).\n\nIntegration sweep: 43/43 pass under HARPER_UWS_HTTP after the IP fix.\nAdapter unit suite now 16 (adds request.ip + HEAD-suppression tests).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* docs(#914): refresh uwsServer header (TCP+streaming+WS, not UDS-only)\n\n* fix(#914): deserialize GraphQL POST body via request.body\n\nThe GraphQL POST handler read the body from request._nodeRequest, the raw\nNode IncomingMessage. That is null on the Bun and uWS request adapters, so\nGraphQL POST 500'd off the Node path. Read through request.body instead —\na Readable-compatible body stream on every adapter, matching how REST.ts\nalready deserializes bodies. Verified 24/24 graphql integration tests on\nboth the Node and HARPER_UWS_HTTP paths.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(#914): don't let raw-Fastify listeners collide with the uWS HTTP port\n\nUnder HARPER_UWS_HTTP the app port is backed by uWebSockets.js and getHTTPServer\nearly-returns a { uws: true } marker before it would have called\nregisterServer(server, port). SERVERS[port] therefore stays empty. If a legacy\nFastify-routes app is then deployed, fastifyRoutes registers its raw http.Server\nvia server.http(fastify.server); with the port looking unused, registerServer set\nSERVERS[port] = fastifyServer and threadServer bound a Node http server competing\nwith uWS on the same TCP port (Codex P2).\n\nMirror the Bun path: divert non-function listeners on a uWS-backed port into the\nfallback map instead of registerServer(), so nothing lands in SERVERS to double\n-bind. Renamed bunFallbackServers -> fallbackServers since the map is now shared\nby both non-Node backends. Request-time delegation to this fallback is not yet\nwired on the uWS handler, so raw-Fastify routes are unreachable (clean, not a\ncompeting bind) under this flag - an accepted limitation of the bench vehicle,\nnoted for a parity follow-up.\n\nVerified: components.test.mjs (deploys a Fastify-routes component) 25/25 on both\nthe Node and HARPER_UWS_HTTP paths, with the Fastify registration diverting\ncleanly and no bind collision.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* feat(#914): delegate to the Fastify fallback from the uWS HTTP path\n\nCompletes the raw-Fastify story on HARPER_UWS_HTTP. Previously a legacy\ncustom-function route (server.http(fastify.server)) was diverted to the fallback\nmap to avoid a competing bind, but the uWS handler had no way to reach it, so the\nroute 404'd. Now, when the chain doesn't handle a request (status === -1) and a\nFastify instance is registered for the port, the uWS handler delegates via\nfastify.inject() — its internal router, no socket — mirroring the Bun path,\nincluding SSE streaming and the AUTHORIZE_LOCAL pre-auth user forward.\n\n- Extracted the shared inject core into injectToFastify() and routed both the Bun\n  and uWS delegation paths through it (strip forged pre-auth header, forward\n  resolved user when no Authorization, payloadAsStream for SSE).\n- fastifyRoutes now registers its app instance for the http port(s); it only ever\n  registered the http.Server, so neither Bun nor uWS could delegate to legacy\n  routes. Renamed bunFastifyInstances -> fastifyInstances /\n  registerBunFastifyInstance -> registerFastifyInstance (shared, not Bun-only).\n- UwsRequest exposes rawBody for the inject payload.\n\nVerified: fastifyRoutes-test.mjs (GET /testApp/ping -> 'pong' + REST on the same\ncomponent) passes on BOTH the Node and HARPER_UWS_HTTP paths; under uWS the route\nis served purely via inject-delegation. graphql 24/24, components 25/25,\nmcp/sse-listchanged 4/4 under the flag; 16 uWS unit tests green.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* ci(#914): run the full integration suite under HARPER_UWS_HTTP\n\nAdds a run-integration-tests-uws job mirroring the existing Bun variant: the same\n6-shard test:integration:all on Node 24, but with HARPER_UWS_HTTP=1 so the\nplaintext app HTTP port(s) are served by uWebSockets.js. Secure/replication/ops\npaths keep running on Node, so this gives continuous coverage of the uWS\nrequest/streaming/WS/GraphQL/Fastify-fallback path across the whole suite instead\nof relying on a manual local flag.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* ci(#914): make the uWS integration job informational (non-blocking)\n\nThe first full-suite run under HARPER_UWS_HTTP surfaced two known uWS-path gaps\n(Bun and Node are green on the same tests):\n  - static-file serving via `send` never flushes headers on the uWS response\n    (client HeadersTimeout) — the deploy/static-access tests hang;\n  - multiple Set-Cookie headers collapse to one (the WHATWG Headers comma-join\n    limitation Harper-on-Bun already skips).\nNeither is a regression from the Fastify-delegation work. Mark the job\ncontinue-on-error so it reports the per-shard uWS signal without gating merges;\nremove once the gaps are closed.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(#914): serve static files (send SendStream) on the uWS HTTP path\n\nStatic handlers return a `send` SendStream, which only begins work when piped to\na Node ServerResponse and writes its own headers there. The uWS path has no such\nobject: it treated the stream as a plain Readable and attached .on('data') (which\nnever starts a SendStream), and uWS only flushes status/headers on the first body\nwrite — so static responses hung and the client saw a HeadersTimeout. This is why\nevery deploy+access integration test (deployed apps serve a static site) timed out\nunder the flag.\n\nPipe the SendStream into a Writable shim that captures the headers it writes\n(setHeader/writeHead) onto the response Headers and buffers the file, mirroring the\nBun fetchHandler's SendStream path (incl. finished:false so on-finished doesn't\ntear down early). Gated on handlesHeaders, which only static.ts sets, so real\nstreaming/SSE bodies keep streaming through normalizeUwsBody.\n\nVerified: deploy/deploy-from-source.test.ts (deploys an app with a web/ static\nsite, polls the static index, asserts the served HTML) now passes 4/4 under\nHARPER_UWS_HTTP — previously deploy+access both hung ~300s.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(#914): preserve multiple Set-Cookie headers on the uWS HTTP path\n\nA WHATWG Headers comma-joins Set-Cookie when iterated, which merges multiple\ncookies into one and corrupts values containing commas (e.g. `expires=` dates).\nThe uWS response path iterated the headers directly (and writeResponse converted a\nWHATWG Headers via `new Headers()`, comma-joining before serialization), so a\nresponse setting N cookies reached the client as 1.\n\n- writeHeaders now emits Set-Cookie individually via getSetCookie() when present\n  (WHATWG), skipping the joined entry; a Harper Headers stores them as an array,\n  already handled by the array branch.\n- writeResponse keeps an existing Headers-like object (Harper or WHATWG) as-is\n  instead of round-tripping a WHATWG Headers through `new Headers()` (which would\n  comma-join before writeHeaders could split it), wrapping only plain objects.\n- the Fastify-delegation path keeps Set-Cookie multi-valued instead of comma-\n  joining inject()'s array.\n\nThis is the multi-Set-Cookie limitation Harper-on-Bun documents and skips; uWS now\nhandles it correctly. Verified: headers.test.mjs 2/2 under HARPER_UWS_HTTP (was\n0/2); graphql/components/mcp-sse/deploy-from-source/fastifyRoutes all green under\nthe flag; 16 uWS unit tests green.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* ci(#914): gate on the uWS integration job (full suite now green)\n\nThe full test:integration:all suite passes on all 6 shards under HARPER_UWS_HTTP\n(CI run 28724670219) now that the static-`send` and multiple-Set-Cookie gaps are\nfixed, so the job no longer needs continue-on-error — make it a required check\nalongside the Node and Bun variants.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(#914): address cross-model review of the uWS Fastify/static/header work\n\nCross-model review (Codex + Gemini + Harper-domain adjudication) of the new uWS\nwork. Both outside-model legs led with false positives (request.headers.asObject\n'undefined' → auth bypass, and Set-Cookie comma-coercion) — both refuted: headers\nis a RequestHeaders with a real .asObject used across the REST path, and the uWS\nHeaders is Harper's Map-based class that preserves Set-Cookie arrays. The\nINTERNAL_USER_HEADER pre-auth forward was probed and is spoof-safe (client-supplied\nheader is stripped before the user is re-added). Real items addressed:\n\n- bufferSendStream no longer swallows send's status: capture statusCode / writeHead\n  status and return it, so a 304 (conditional GET) or 206/416 (Range) is honored\n  instead of flattened to 200. (End-to-end 304/Range is still gated upstream by\n  send not reading Harper's RequestHeaders — a pre-existing limitation on all\n  backends incl. Node, verified by probe; left as a separate follow-up.)\n- avoid re-copying already-Buffer chunks when draining a delegated Fastify response.\n- document the lowercased-'authorization' contract in injectToFastify.\n- refresh the fallback-divert comment: request-time delegation IS now wired, and\n  the { uws: true } marker is guaranteed set by the getServer(port) call above.\n\nRegression under HARPER_UWS_HTTP: deploy-from-source 4/4 (static), headers 2/2\n(Set-Cookie), fastifyRoutes 2/2 (delegation), 16 uWS unit tests.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* feat(#914): stream uWS request bodies + address review comments\n\nFeed the uWS request body into a push-based Readable and dispatch the\nhandler on headers instead of buffering the whole body and dispatching on\nthe last chunk. streamToBuffer (contentTypes.ts) already owns\nconcatenation and the HTTP_MAXREQUESTBODYSIZE limit and is the entry point\nfor the upcoming streaming deserializers, so the adapter no longer\nconcatenates (drops the O(n^2) Buffer.concat) or enforces its own body\nlimit; maxBodyBytes is demoted to a coarse socket-level DoS ceiling since\nuWS offers no inbound backpressure. The Fastify-delegation path passes the\nbody stream to inject() (light-my-request consumes it), so rawBody is gone.\n\nAlso address review feedback:\n- use when() so a synchronous handler stays synchronous (no extra promise)\n- rename logBunRequest -> logHttpRequest (shared Bun/uWS path)\n- correct the stale \"WebSocket upgrades are not yet wired\" comment\n- reword the SPIKE/spike comments now that this is graduating\n- document uWebSockets.js in dependencies.md\n\nAdds a test asserting the handler is dispatched before the request body\nends (proves streaming, not full buffering).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(uws): guard 413 write against completed response + test XFF spoofing defense (#914)\n\nAddress cb1kenobi PR review:\n- Track responseCompleted in onRequest and guard all three response-write\n  sites (handler result, error, 413). The handler can respond (or start\n  streaming) without consuming the body; a later over-limit 413 would then\n  write to an already-completed uWS response and abort the process.\n- Add unit tests for request.ip trust boundary: a spoofed X-Forwarded-For\n  must not override the authoritative TCP peer address, while the UDS path\n  (no socket peer) still honors the trusted proxy's XFF.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix: sync package-lock with merged package.json (prettier 3.9.5, globals 17.7.0, aws-sdk lib-storage 3.1076.0)\n\nThe npm-merge-driver left the lock resolved to the branch's older\nversions while package.json took main's bumps, breaking npm ci.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* style: reformat uwsServer.ts per prettier 3.9.5 (trailing comment placement)\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.7 <noreply@anthropic.com>\nCo-authored-by: Kris Zyp <kris@harperdb.io>",
+          "timestamp": "2026-07-10T05:51:34Z",
+          "url": "https://github.com/HarperFast/harper/commit/bd1dce0b1bbb91aeea15e5380f5b98e311f631a8"
+        },
+        "date": 1783684739000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9755.74
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9755.74
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 173
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 399.8
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 806.9
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f55de88a610e53cef28f06c99735a4d21417c72d",
+          "message": "feat(server): surface external port conflicts on all platforms; single-worker default without SO_REUSEPORT (#1605)\n\n* feat(server): surface external port conflicts on all platforms; single-worker default without SO_REUSEPORT\n\nlistenOnPorts() used to swallow every EADDRINUSE (a workaround for a Node\n<20.11.1 reusePort bug now outside Harper's supported range), hiding real\nexternal squatters: an unrelated process holding e.g. the MQTT port silently\nreceived Harper's traffic with no error anywhere (original symptom: a second\nHarper instance on 8883).\n\nEvery EADDRINUSE with an in-process explanation is now structurally ruled out,\nso the remaining ones are logged loudly (port + owning component + error):\n- reusePort listeners (Linux): siblings share the port and never collide, even\n  across overlapping restarts — any EADDRINUSE is external.\n- Main thread (HTTP/operations ports): binds before any worker, never restarts —\n  any EADDRINUSE is external.\n- Dedicated listeners (onSocket, e.g. MQTT — never bound by the main thread):\n  when exclusive (macOS/Windows), bound only by a single owner worker (lowest\n  eligible index) instead of every worker racing; combined with non-overlapping\n  restarts (below), the owner's EADDRINUSE is external.\nThe one remaining benign case — a worker's exclusive HTTP bind losing to the\nmain thread on macOS/Windows — stays silently swallowed. All cases still\nresolve so a squatted port never stalls boot.\n\nrestartWorkers() no longer pre-starts replacement HTTP workers on macOS\n(canPreStartReplacement now excludes darwin, like Windows/Bun): without working\nSO_REUSEPORT the replacement could never bind ports the old worker still held —\nits EADDRINUSE was swallowed and worker-owned listeners like MQTT were left\npermanently unbound after every component-reload restart. The main thread keeps\nserving the HTTP ports throughout, so only worker-owned listeners see the brief\nshutdown-first gap.\n\nthreads.count now defaults to 1 on macOS/Windows (setDefaultThreads): without\nSO_REUSEPORT, additional HTTP workers can never share the server ports, so the\nCPU-based default just spawned workers that serve no direct TCP traffic. An\nexplicit threads.count still overrides.\n\nAdds an integration test that squats the MQTT secure port before boot and\nasserts the conflict is logged and Harper still starts — on every platform.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(lint): use node:assert not node:assert/strict in external-port-conflict test\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-10T22:22:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/f55de88a610e53cef28f06c99735a4d21417c72d"
+        },
+        "date": 1783768882000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 10324.4
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 10324.4
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 181.8
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 362.2
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 590.7
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "31de6a3bebc5fec85a8eba98087fda00dbc3f477",
+          "message": "fix: pin uWebSockets.js via tarball URL, not a github: git spec\n\nSame issue as harper-pro#561: the github: shorthand\n(github:uNetworking/uWebSockets.js#v20.68.0) gets re-resolved by npm as\ngit+ssh://github.com/... on any npm install. Our Docker build stage has\nno SSH credentials for github.com, so npm silently skips the (optional)\ndependency and the shipped image never bundles the native addon —\nHARPER_UWS_UDS / HARPER_UWS_HTTP are inert even when set.\n\nAn explicit git+https:// spec doesn't fix this either — confirmed with\na clean npm cache that npm/hosted-git-info canonicalizes ANY\ngithub.com git dependency back to git+ssh:// regardless of requested\nprotocol. Switching to a plain tarball URL\n(https://.../archive/<sha>.tar.gz) sidesteps hosted-git-info entirely:\nnpm treats it as a remote-tarball dependency, resolved stays a plain\nhttps URL with a pinned integrity hash, and it can't regress on a\nfuture npm install.\n\nVerified npm ci installs all 15 native .node binaries in a\nHOME-stripped, credential-less environment (matching the Docker build\nstage) both before and after a full npm install regenerates the\nlockfile from package.json.",
+          "timestamp": "2026-07-11T22:53:13Z",
+          "url": "https://github.com/HarperFast/harper/commit/31de6a3bebc5fec85a8eba98087fda00dbc3f477"
+        },
+        "date": 1783855434000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 10175.76
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 10175.76
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 134.2
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 378.3
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 512.6
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8bf5921e06349611773b4c1d4363088801d3b974",
+          "message": "ci(review): canary Claude reviews on claude-sonnet-5 (harper only) (#1759)\n\nOverride the reusable's model default (claude-sonnet-4-6) for this\nrepo's claude-review caller. harper is the A/B canary: highest review\ntraffic, and every ai-review-log entry records Model:, so calibration\ncan compare sonnet-5 vs sonnet-4-6 verdict mix directly at the same\nprompt ref (9cf49d2). Intro pricing ($2/$10 through 2026-08-31) offsets\nthe new tokenizer (~30% more tokens for equivalent text).\n\nWatch item: Sonnet 5 follows blocker-only severity instructions more\nliterally (documented code-review-harness effect) — if the deflation\nrate rises in the next calibration cycle, add coverage-first reporting\nto the run-notes surface before fleet rollout; if clean, promote to the\nreusable default.\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-13T00:05:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/8bf5921e06349611773b4c1d4363088801d3b974"
+        },
+        "date": 1783944022000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 8799.72
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 8799.72
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 129.9
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 515.8
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 1126.1
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "56f8891b933e4638c9f622a0030570de4fd711a8",
+          "message": "fix(deps): update all non-major dependencies",
+          "timestamp": "2026-07-14T00:14:28Z",
+          "url": "https://github.com/HarperFast/harper/commit/56f8891b933e4638c9f622a0030570de4fd711a8"
+        },
+        "date": 1784028540000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 7179.26
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 7179.26
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 190.3
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 682.8
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 1178.1
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "182971ad16a3ba6986ffae194067965505d5bfa8",
+          "message": "Typed, discoverable resources — code-first defineTable + per-method request contract (RFC 0001) (#1767)\n\n* feat(resources): typed, discoverable resources — code-first defineTable + per-method request contract\n\nImplements RFC 0001 (design PR #1503): the mergeable implementation of both\nauthoring front-ends, integrated onto current main.\n\nPillar 1/2b — code-first schema (resources/defineTable.ts):\n  `defineTable(name, shape, opts)` + `types` author a table in TypeScript and\n  eagerly register through the same `table()` factory GraphQL drives — the return\n  IS the live class, with per-verb shapes inferred as `$record/$insert/$upsert/\n  $patch/$query` projections. Relations via lazy thunks (+ relationOf/hasManyOf\n  escape hatch for mutual pairs).\n\nPillar 2 — per-method request contract (resources/withSchema.ts):\n  `defineResource(contract, impl)` (function form) + `Resource.withSchema(contract)`\n  (class form). Handler types are derived from a runtime contract; a handler gets\n  the SAME RequestTarget, structurally narrowed (subset, not fork). Each declared\n  verb validates/coerces query/body before dispatch and throws a structured 400\n  (ValidationError, per-field {path,code,message}[]). Built-in `t`/`schemaOf`\n  reduce to JsonSchemaFragment — one vocabulary across table fields, query, and\n  bodies; a defineTable projection slots into a contract body via\n  schemaOf({ table, projection }). Nullability: non-nullable by default, `.nullable`\n  opts into null (table-derived bodies mirror Table.validate).\n\nCross-cutting:\n  - ValidationError (extends ClientError, 400); Table.validate refactored to the\n    same structured shape (HTTP-title message preserved).\n  - OpenAPI emits declared query/body/response for parameterised routes.\n  - MCP drives tool input/output off the contract and binds arbitrary path params\n    + query (applyContractInputs), lifting the generated-verb binding restriction\n    for contract resources.\n  - Shared attributeToFragment hardened with a nested-object branch; derive.ts\n    Object/Array projection bugfix.\n\nIntegration with main (the RFC branch was ~1007 lines behind on these files):\n  merged with main's newer MCP paramroutes work (paramBinding gating, isSimpleIdRoute,\n  mcpResources) and the liveResource authz fix — a request contract now exempts a\n  resource from the generated-handler binding restriction.\n\nDesign summary in resources/DESIGN.md; full RFC + type spikes remain in #1503.\nType contract verified against built exports in docs/rfcs/spikes/0001/*-real.check.ts.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* fix(withSchema): address PR review — validation hardening + lint-safe test import\n\n- scope the Date type-check exception to string/date-time fields (a Date must not\n  pass validation for number/boolean/array/object schemas)\n- override target.getAll alongside get so multi-value query params read coerced\n- reject empty/whitespace numeric query params instead of Number('')→0\n- harden MCP wrapError: read the untrusted err's props inside a try/catch (revoked\n  Proxy / throwing getters must not crash the error path)\n- application-contract.test.js: require('assert') + strict methods (node:assert/strict\n  is oxlint-banned via no-restricted-imports)\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* refactor: rename withSchema.ts → defineResource.ts; drop spike/RFC artifacts\n\n- rename resources/withSchema.ts → resources/defineResource.ts (defineResource is\n  the primary API; Resource.withSchema stays the class-form name) + the test file\n- remove docs/rfcs/ (the *-real.check.ts type-contract proofs + tsconfig) — a real\n  PR shouldn't carry spike/RFC scaffolding; those live in the design PR (#1503)\n- strip references to the spikes and the RFC doc (which are not in this PR) from\n  code/test comments and resources/DESIGN.md; keep the #1503 pointer for the record\n\nNo behavior change. 100 unit tests green.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* test(types): re-add public type-contract tests + wire into CI\n\nStandalone type-tests under unitTests/types/ (no spike/RFC framing): assert the\nSHIPPED public types (imported from the built dist) against the contract —\ndefineTable projections + relations, and the defineResource/withSchema handler\ninference, narrowed target, subset property, and negative (@ts-expect-error) cases.\n\n- unitTests/types/{defineResource,defineTable}.type-test.ts + tsconfig.json (strict,\n  noEmit, skipLibCheck; isolated from the main build/typecheck, which don't include\n  unitTests/, and from mocha, which only loads js/mjs)\n- `npm run test:types` (tsc --project unitTests/types/tsconfig.json)\n- CI: a \"Type contract tests\" step in unit-test.yml (after Build, gated to one Node\n  version) so a regression in the public type surface fails CI\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-07-14T19:37:17Z",
+          "url": "https://github.com/HarperFast/harper/commit/182971ad16a3ba6986ffae194067965505d5bfa8"
+        },
+        "date": 1784115004000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 8685.21
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 8685.21
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 467.4
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 1585.9
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 3342.1
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3dbcf7b9e1eb107f1f242d9a01d74c5d67f06b02",
+          "message": "Reshape deploy_component registryAuth into a general-purpose credentials array (#1797)\n\n* Reshape deploy_component registryAuth into a general-purpose credentials array\n\n`registryAuth` was an npm-only array of `{ registry, token|secret, scope }`\nentries. Rename it to `credentials` and treat the array as kind-heterogeneous:\nan entry's kind is implied by its identifying key (`registry` = npm registry\nauth) rather than a discriminator field, so a git-host kind keyed by `host`\n(#1792) becomes another item alternative rather than another schema rewrite.\n\nThe ingest/resolve pipeline, secrets-store integration, reference-only\nreplication, and every security invariant from #1717 are unchanged — this is a\nrename plus the seams for a second kind. Identifiers follow: ingestRegistryAuth\n→ ingestCredentials, resolveRegistryAuth → resolveCredentials, and the persisted\nforms (applicationConfig.credentials, hdb_deployment.credentials) match the\noperation field.\n\nSince #1717 has not shipped in a GA release, this is a clean break rather than an\nalias. Because operation validation allows unknown keys, a stale `registryAuth`\nis explicitly rejected — otherwise the deploy would silently install with no\ncredentials. It also stays in the operations-log strip list, since that redaction\nruns ahead of validation and a stale caller's token must not reach the log.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Filter Application.registryCredentials to registry-shaped entries\n\nThe credentials array is kind-heterogeneous by design (registry today,\na planned git-host kind later), but Application's constructor assigned\nit straight to registryCredentials, which buildNpmrcContent assumes is\nregistry-shaped. Filter defensively so a future non-registry entry\ncan't reach it.\n\nAddresses gemini-code-assist review comment on PR #1797.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Authenticate private git-reference deploys from an in-memory credential (#1799)\n\n* Authenticate private git-reference deploys from an in-memory credential\n\nA `github:org/repo` package against a private repo needs a credential for the\n`git ls-remote`/`git clone` npm shells out to. Every obvious way to supply one\npersists it: userinfo in the URL lands in the package spec and the lockfile, a\ncredential helper or `.npmrc` is a file, and an env var is readable by every\ndescendant process.\n\nInstead the token stays in the deploying process's memory and is served over a\nper-deploy Unix socket in a 0700 directory. git is pointed at\ngitCredentialHelper.js — a secret-free script that relays git's request over\nthat socket — and the socket dies with the spawn that needed it. The token\nreaches disk, argv, the package spec, the operation body and the operations log\nnowhere along the way.\n\nThe credential rides as a second kind in the `credentials` array from #1797:\n`{ host, token|secret, username? }`, discriminated by `host` the way npm entries\nare by `registry`. Ingest, seal-into-hdb_secret, grant-check, resolve-at-use and\nreplicate-as-reference are the existing #1717 paths, unchanged — only the\nderived secret name (`deploy.<component>.<host>`) and the injection mechanism are\nnew. resolveCredentials now rejects an unrecognized kind rather than resolving it\ninto a half-empty entry, symmetric with the guard ingestCredentials already had.\n\nWiring, in order of preference: `credential.helper` via GIT_CONFIG_* (structured\nkey=value protocol, no prompt parsing) with GIT_ASKPASS as the fallback for git\n< 2.31, which ignores GIT_CONFIG_*. Inherited credential helpers are reset to\nempty first, so a machine configured with `credential.helper=store` cannot write\nthis token to ~/.git-credentials when git reports the successful authentication\nback to its helper chain. The askpass path decides username-vs-password prompt\nstructurally (userinfo present in the echoed URL) rather than by matching\nEnglish, since git localizes those prompts.\n\nOnly the spawn that clones (`npm pack`) is given this environment. The\n`npm install` that follows — where a dependency's install script can run — never\nsees it, and the socket is already closed by then.\n\nRefs #1792. Stacked on #1797.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Keep the git credential out of reach of clone-time install scripts\n\nPacking a git reference is not just a download. npm clones the repo and, when\nits manifest has a prepare/build/install script, runs `npm install` inside the\nclone and then that script — so the repository's own code and its dependencies'\ninstall scripts execute on this node, inside the clone spawn, inheriting its\nenvironment. Verified against real npm: a transitive dependency's `preinstall`\nsees HARPER_GIT_CREDENTIAL_SOCKET and can ask the socket for the token. That is\nexactly the reach #1792 says the credential must not have, and closing the\nsocket before `npm install` did not close it, because this all happens earlier,\nduring `npm pack`.\n\nSo a credentialed clone runs with `--ignore-scripts` unless the deploy set\ninstall_allow_scripts, which is the operator explicitly asking for that code to\nrun here; that case is allowed and logged, naming the exposure it accepts. Note\nthis also means a git-reference deploy runs scripts at pack time regardless of\ninstall_allow_scripts today — the flag only ever reached the install spawn. That\ninconsistency is left alone here (fixing it changes behavior for existing public\ngit deploys) but is worth its own issue.\n\nWindows now fails closed instead of serving the credential over a named pipe: a\npipe is created with a default security descriptor that can leave it readable by\nother local users, and the whole confinement argument rests on the 0700\ndirectory a Unix socket sits in. Better to refuse than to offer a quietly weaker\nchannel.\n\nAlso from review: cap the request a peer can stream at the socket (an unbounded\n`request +=` was an OOM), and remove the socket's temp directory when listen()\nfails, since no session is returned and nothing would otherwise clean it up.\n\nRefs #1792.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Harden the git credential channel against persistence and downgrade\n\nA second cross-model review pass (Codex) surfaced several ways the credential\ncould still escape memory:\n\n- **Cleartext transport.** git asks for `http://` credentials exactly as it\n  asks for `https://`, so a `git+http://` package (or a remote downgraded by a\n  redirect) would put the token on the wire in the clear. answerFor now serves\n  only over https, with an exemption for loopback (where no network is involved\n  and the integration tests run).\n\n- **git < 2.31.** Those versions ignore GIT_CONFIG_* entirely, so the\n  credential.helper reset that stops an inherited `store` helper from writing the\n  token to ~/.git-credentials is silently dead — and the GIT_ASKPASS fallback\n  would still feed that helper a successful credential to persist. There is no way\n  to disable an inherited helper on those versions, so the session now refuses to\n  start on one rather than leak. (The reset itself is verified end-to-end against\n  a real clone with both a global and a URL-scoped `store` helper configured; the\n  earlier concern that a URL-scoped helper bypasses the reset did not reproduce —\n  git's credential machinery honors the reset, `--get-urlmatch` merely shows raw\n  config.)\n\n- **Newline in a resolved token.** A literal token is schema-rejected for CR/LF,\n  but one resolved from an hdb_secret row was not — and git's protocol is\n  line-based (askpass reads only the first line), so such a token would truncate\n  or inject protocol attributes. Guarded at the serve boundary, matching the\n  .npmrc writer.\n\n- **Unknown keys persisting.** Operation validation runs allowUnknown, so a\n  credential entry like `{host, secret, password: \"literal\"}` would carry that\n  stray field through ingest into config, hdb_deployment, and replication. Both\n  entry schemas are now `.unknown(false)`, and each forbids the other's\n  discriminator. assertApplicationConfig likewise rejects an entry that is both\n  kinds or carries a literal token, rather than coercing it to one kind.\n\nRefs #1792.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Warn on duplicate git-credential hosts; lock in the no-custody strip\n\nReview follow-ups. Two entries for the same host in one deploy silently\nlast-write-wins (they also seal to the same derived secret name), so warn rather\nthan drop quietly. And a regression test pins the security property that a\nliteral git token on a node without custody yields no persistable reference and\nis therefore stripped from the replicated op body.\n\nRefs #1792.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Address 5 review comments; fix a backpressure bug hanging the OOM-cap test\n\n- close(): snapshot the connections Set before destroying, so destroy()'s\n  synchronous 'close' listener (which deletes from the same Set) can't skip\n  a connection mid-iteration.\n- answerFor(): guard against a non-object request before touching .host.\n- parseAskpassPrompt(): move the URL parse+decode inside the existing\n  try/catch so a malformed percent-encoded username can't throw past it.\n- gitCredentialClone.test.js: resolve GIT_HTTP_BACKEND in a try/catch so a\n  missing git binary can't crash the whole suite loader before before()\n  gets a chance to skip; before() now also checks for that case.\n- operationsValidation.js: cap the git credential entry's token at\n  SECRET_MAX_LENGTH, matching the same limit already applied elsewhere.\n\nAlso fixes an unrelated pre-existing bug found while verifying: the OOM-cap\ntest's write loop gave up permanently the first time socket.write() returned\nfalse for backpressure (the `&&` chain short-circuits), which happens well\nbefore the server-side 64KB cap is reached — so the test hung forever\nwaiting for a 'close' the server had no reason to send. Confirmed via a\nclean-checkout diff that this predates this task's changes. The production\ncap-enforcement logic itself was already correct; only the test's flow\ncontrol was wrong. Now resumes writing on 'drain' instead of giving up.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Update components/secretOperations.ts\n\nCo-authored-by: Chris Barber <chris@harperdb.io>\n\n* Fix CI: git-secret naming test drift, and prepare-script leak on npm<11\n\nsecretOperations.test.js still asserted the pre-review-fix secret name\n(deploy.<app>.<host>); a prior commit on this branch added the `.git`\nkind segment to deriveGitSecretName to close a same-host collision\nbetween git and registry secrets (per review), but didn't update the\ntests that pin the literal name. Update the 5 affected assertions to\nthe new, collision-safe name and note why in deriveGitSecretName's doc\ncomment.\n\nAlso fix a real Node-22-only failure: a credentialed git clone relied\non `npm pack --ignore-scripts <git-url>` to keep a repository's\nprepare script from running while the credential socket is reachable.\npacote's DirFetcher runs `prepare` unconditionally on npm <11.0.0 (the\nignoreScripts guard was only added upstream in npm 11) — exactly what\nNode 22's bundled npm ships, confirmed by reproducing against the real\nnpm 10.9.8 binary. For a recognized git-reference identifier with\nscripts disallowed, clone it ourselves (still authenticated via the\ncredential session's env) and strip its lifecycle scripts before\npacking, sidestepping the buggy npm code path entirely — the same\nmechanism harper#1819 lands for the uncredentialed case.\n\nVerified against npm 10.9.8: the prepare-script test fails identically\nto CI on the pre-fix code and passes reliably with the fix.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Resolve hosted-git shorthand (github:/gitlab:/bitbucket:/gist:) in parseGitReference\n\nderivePackageIdentifier defaults a bare owner/repo package identifier to\ngithub:owner/repo, but parseGitReference only recognized explicit\ngit+.../git:// URL forms, so that shorthand — the PR's own worked example —\nfell through to the npm pack --ignore-scripts fallback documented as\nunreliable on npm <11. Extend parseGitReference to resolve github:, gitlab:,\nbitbucket:, and gist: shorthand to a concrete https clone URL so it routes\nthrough the clone-and-strip-scripts path instead.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus <noreply@anthropic.com>\nCo-authored-by: Chris Barber <chris@harperdb.io>\n\n* Resolve npm-style semver: committishes before git checkout\n\n#1799's own worked example (`github:my-org/my-app#semver:v1.2.3`) documented a\ncommittish naming a semver range, but packGitReferenceWithoutScripts passed it\nstraight to `git checkout`, which has no notion of npm's `semver:` syntax and\nsimply failed.\n\nAdds resolveCommittish(), which lists the clone's tags and resolves the range\nagainst them with the `semver` package (already a direct dependency), matching\nnpm's own git-dependency resolution: tags may carry a prefix ahead of the\nversion (`release-v1.2.3`), a percent-encoded range is decoded, and the\nresolved ref is checked out as `refs/tags/<name>` to avoid an ambiguous\nsame-named branch. A non-semver committish is unaffected.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Reject unsafe tag names before checkout in semver-committish resolution\n\nThe automated PR review on the previous commit found that resolveCommittish\nonly validated the semver-shaped suffix it matched in a tag name (e.g. the\n`v1.2.3` in `release-v1.2.3`), not the full tag string. Since git ref names\npermit shell metacharacters (`$`, backticks, `;`, `&`, `|`, parens — only\nwhitespace and a few other forms are disallowed), and nonInteractiveSpawn\nruns through a shell with no argument escaping, a tag name from the cloned\nrepository such as `$(touch${IFS}/tmp/x)v9.9.9` would execute as a command\nsubstitution on checkout — reachable specifically because semver resolution\npicks a tag out of the (untrusted, upstream) repo's own tag list, unlike a\nliteral committish which the deploying operator supplies directly.\n\nAdds a conservative safe-charset check on the full tag name; a tag failing\nit is excluded from resolution rather than sanitized, so it can never reach\nthe checkout spawn. Confirmed exploitable pre-fix (marker file executes) and\nblocked post-fix via a new regression test.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus <noreply@anthropic.com>\nCo-authored-by: Chris Barber <chris@harperdb.io>",
+          "timestamp": "2026-07-15T23:03:58Z",
+          "url": "https://github.com/HarperFast/harper/commit/3dbcf7b9e1eb107f1f242d9a01d74c5d67f06b02"
+        },
+        "date": 1784201439000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 8352.35
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 8352.35
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 141.8
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 340.3
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 455.9
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bf0c51a69c0b875e755b55a8036ace486aa5a1e9",
+          "message": "Merge pull request #1285: New SQL engine on the Resource API (phases 0-5)\n\nNew SQL engine on the Resource API (phases 0-4; phase-5 cutover gated)",
+          "timestamp": "2026-07-17T11:10:18Z",
+          "url": "https://github.com/HarperFast/harper/commit/bf0c51a69c0b875e755b55a8036ace486aa5a1e9"
+        },
+        "date": 1784287680000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 8082.13
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 8082.13
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 483.2
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 1751.1
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 2235.8
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "56a2bace9f27526d9066a1d05ff9161d012ecab6",
+          "message": "fix(tls): honor `ciphers`/`SECLEVEL` from every configured source when building TLS listeners (#1841)\n\n* fix(tls): honor ciphers/SECLEVEL from every configured source when building TLS listeners\n\nA TLS listener has exactly one effective cipher string: OpenSSL takes the\ncipher list (and any @SECLEVEL, which governs client-cert chain\nverification) from the context the server was created with; SNI-swapped\ncontexts don't carry their own cipher list onto the connection. Harper\napplied only tls.ciphers ?? tls[0].ciphers and silently ignored every\nother configured value — tls[] entries beyond [0] and certificate\nrecords, including client-CA records carrying DEFAULT@SECLEVEL=0 for\nSHA-1-signed chains, which then failed with authorizationError\nUNSPECIFIED on valid in-date certs.\n\nresolveEffectiveTlsCiphers (security/keys.ts) now resolves the listener\nstring from all sources: top-level tls.ciphers wins; otherwise tls[]\nentries plus relevant cert records (uses-matched, and authorities when\nthe listener verifies client certs) are candidates, with the lowest\nexplicit @SECLEVEL winning conflicts and everything ignored logged.\nPost-boot changes to the resolved value warn (once per value) that a\nrestart is required. Bun path untouched (BoringSSL has no @SECLEVEL).\n\nCloses #1840\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* test(tls): guard seclevel test teardown when setup fails early\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(tls): compose suite and minimum SECLEVEL per listener instead of picking one cipher string\n\nAddresses the external review on #1841: config array entries are now\nrelevance-filtered like certificate records (CA entries only when the\nlistener verifies client certs; uses matched with the selector's\ntolerant rule incl. legacy 'https' and no-uses generics), the suite\nlist is preserved from the highest-priority suite-bearing candidate\nwith only the minimum explicit @SECLEVEL composed on (no assumed\nruntime default level), and the operations API listener resolves from\noperationsApi.tls before root tls so an inherited-certificate override\nis no longer ignored.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-17T20:39:05Z",
+          "url": "https://github.com/HarperFast/harper/commit/56a2bace9f27526d9066a1d05ff9161d012ecab6"
+        },
+        "date": 1784373627000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9259.53
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9259.53
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 135.3
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 392.6
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 487.1
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8b1c12b6b0de289f9b1657b3b66a9f43209adcb9",
+          "message": "Merge pull request #1385 from HarperFast/kris/nextjs-caller-ci\n\nci: run Next.js adapter integration suite against harper PRs (downstream gate)",
+          "timestamp": "2026-07-18T21:23:10Z",
+          "url": "https://github.com/HarperFast/harper/commit/8b1c12b6b0de289f9b1657b3b66a9f43209adcb9"
+        },
+        "date": 1784460185000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9161.23
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9161.23
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 140
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 340.2
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 409.2
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1e2877d0f19535352d4e70b5a0db36388eee6ded",
+          "message": "Merge pull request #1825 from HarperFast/fix/typed-resources-sandbox-exports\n\nfix(sandbox): wire the six typed-resources exports into the component sandbox",
+          "timestamp": "2026-07-20T04:17:11Z",
+          "url": "https://github.com/HarperFast/harper/commit/1e2877d0f19535352d4e70b5a0db36388eee6ded"
+        },
+        "date": 1784548487000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 8613.42
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 8613.42
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 136.9
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 474.1
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 927.6
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "jcohen-hdb",
+            "username": "jcohen-hdb",
+            "email": "jacob@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "1e1edc666ad373a0fbfec4df4d3f0e130be13529",
+          "message": "Ignore node_modules symlinked into integration fixtures by dev-mode boots\n\nharper dev <fixture> runs symlinkHarperModule against the component dir,\nplanting node_modules/harper inside integrationTests/fixtures/* — untracked\nand unignored, it has previously slipped into a commit (#1828 required an\namend). Discovered during runtime verification of this branch.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-21T02:16:25Z",
+          "url": "https://github.com/HarperFast/harper/commit/1e1edc666ad373a0fbfec4df4d3f0e130be13529"
+        },
+        "date": 1784633636000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 7436.32
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 7436.32
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 153.6
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 536.7
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 1022.9
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "07c2bbcb9ec535a7d0c529cc47301bfc33c8ed31",
+          "message": "Pin Bun version in integration CI\n\nAvoid setup-bun's floating-version tag lookup so transient GitHub API failures do not fan out across all Bun shards.\n\nCo-Authored-By: Codex <noreply@openai.com>",
+          "timestamp": "2026-07-22T11:20:50Z",
+          "url": "https://github.com/HarperFast/harper/commit/07c2bbcb9ec535a7d0c529cc47301bfc33c8ed31"
+        },
+        "date": 1784720037000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9508.3
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9508.3
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 143.2
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 403
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 619.3
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "cda8d63f6154b1cc9e766e561d7a6ce17b0a85fa",
+          "message": "Fix indentation drift in getStringPrefixUpperBound\n\nApplying Gemini's suggested diff verbatim left the function body one\ntab shallow, failing prettier --check.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-22T23:34:08Z",
+          "url": "https://github.com/HarperFast/harper/commit/cda8d63f6154b1cc9e766e561d7a6ce17b0a85fa"
+        },
+        "date": 1784806567000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9972.74
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9972.74
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 155.1
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 439.8
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 790.8
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b8c843a24a4b2b3f002a2b786415333fd7f3b597",
+          "message": "fix(query): stop query planning from mutating the caller's conditions (#1911)\n\n* fix(query): stop query planning from mutating the caller's conditions\n\nTable.search()/get() took the caller's conditions by reference and annotated\nthem in place as it planned the query: it pushes a `{ comparator: 'sort' }`\npseudo-condition for index-order alignment, sets `descending`, caches\n`estimated_count`, collapses chained conditions, and coerces values — all on\nthe caller's entry objects. A caller that reuses the same array or condition\nobjects across queries (a natural pattern for a module-level `const`) then hits\nleaked state: a kept sort pseudo-condition is treated as a real valueless\ncondition and throws `Invalid value for attribute … \"undefined\"`; a stale\n`descending` silently reverses a later scan; a cached `estimated_count`\nmisplans. Whether it surfaced depended on live index estimates, so it read as\nphantom nondeterminism.\n\nClone the conditions array and every entry (recursing into nested and/or groups)\nat intake, so all downstream planning mutation happens on our own objects and\nnever reaches the caller. Entries are small and shallow, so the copy is\nnegligible next to the query itself.\n\nFixes harper#1572.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_0188G62J9fZQg4J9rVuqLzjy\n\n* test(query): make the array-form target guard assert entry immutability\n\nPost-review follow-up. The array-form-target regression case only checked array\nlength + absence of a sort pseudo-condition, which don't change on that path\n(no sort → no push) — so it passed with or without the fix. Assert instead that\nthe caller's condition entry is untouched: its Date-typed bound stays the\noriginal string (not coerced in place) and no estimated_count is annotated. Now\nfails on origin/main and passes with the fix, like the other three cases.\n\nAlso note in cloneConditions why chainedConditions sub-entries are left shared\n(read-only during planning).\n\nComment generated by kAIle (Claude Opus 4.8)\n\n* refactor(query): hoist cloneConditions to module scope; plain node:assert in test\n\nReview follow-up (both non-blocking):\n- cloneConditions is stateless (no closure over search/makeTable), so hoist it\n  to module scope rather than re-creating the function on every search() call.\n- Use plain node:assert in the regression test per house style, with explicit\n  strictEqual/deepStrictEqual where strict semantics are wanted.\n\nComment generated by kAIle (Claude Opus 4.8)\n\n---------\n\nCo-authored-by: Kyle Bernhardy <kyle.bernhardy@gmail.com>\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-07-24T00:33:14Z",
+          "url": "https://github.com/HarperFast/harper/commit/b8c843a24a4b2b3f002a2b786415333fd7f3b597"
+        },
+        "date": 1784892701000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9368.3
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9368.3
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 161
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 427.3
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 759.4
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d112560b6244cf5c914d047a8178942f841d5c6e",
+          "message": "chore(ci): bump mention + issue-to-pr pins to 54d9e61 (Opus 5) (#1938)\n\nCompletes the Opus 5 rollout for this repo: the @claude mention\n'deep' path and the claude-fix:bug/:test escalation now run\nclaude-opus-5 (ai-review-prompts#79). Reusable interface unchanged\nacross the jump — the i2p reusable's only delta since the old pin is\nthe model swap itself; mention's delta is the model bumps plus a\nnet-reverted permissions pair (#39/#40).\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-24T23:34:11Z",
+          "url": "https://github.com/HarperFast/harper/commit/d112560b6244cf5c914d047a8178942f841d5c6e"
+        },
+        "date": 1784978680000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 8657.58
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 8657.58
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 150.3
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 547.1
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 904.3
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d112560b6244cf5c914d047a8178942f841d5c6e",
+          "message": "chore(ci): bump mention + issue-to-pr pins to 54d9e61 (Opus 5) (#1938)\n\nCompletes the Opus 5 rollout for this repo: the @claude mention\n'deep' path and the claude-fix:bug/:test escalation now run\nclaude-opus-5 (ai-review-prompts#79). Reusable interface unchanged\nacross the jump — the i2p reusable's only delta since the old pin is\nthe model swap itself; mention's delta is the model bumps plus a\nnet-reverted permissions pair (#39/#40).\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-24T23:34:11Z",
+          "url": "https://github.com/HarperFast/harper/commit/d112560b6244cf5c914d047a8178942f841d5c6e"
+        },
+        "date": 1785065224000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9965.86
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9965.86
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 132.9
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 512.8
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 866.4
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "fe3994f4031714027098f6ce250fa78e1264107b",
+          "message": "test(txn): afterEach stub-restore safety net + unref race timers (bot review)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-27T04:46:02Z",
+          "url": "https://github.com/HarperFast/harper/commit/fe3994f4031714027098f6ce250fa78e1264107b"
+        },
+        "date": 1785153777000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9751.8
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9751.8
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 139.3
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 533.7
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 931.3
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "3e317c7f58f9263de64fd11cac8a0052831d16f8",
+          "message": "Update integrationTests/upgrade/qa606-upgrade-structgrowth/resources.js\n\nCo-authored-by: Chris Barber <chris@harperdb.io>",
+          "timestamp": "2026-07-28T11:32:18Z",
+          "url": "https://github.com/HarperFast/harper/commit/3e317c7f58f9263de64fd11cac8a0052831d16f8"
+        },
+        "date": 1785238745000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 10435.88
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 10435.88
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 140.2
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 429.8
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 569.6
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "35c1f423b9e05ac858ec14bec4346d06d274c2e1",
+          "message": "fix(cli): refresh expired agent tokens; fix --once approval hang\n\nAddress heskew's two remaining non-blocking review notes on #1553:\n\n- `harper agent` hard-failed on an expired stored operation token instead\n  of self-healing via the refresh_token, unlike cliOperations.ts. Extract\n  the refresh logic into a shared `refreshExpiredOperationToken` helper in\n  cliOperations.ts and call it from both cliOperations and agentCli, so the\n  two transports can't drift again.\n- `--once` against a real TTY drains stdin via readAllStdin() before the\n  first turn; if that turn then needed approval, resolveApprovals() built a\n  new readline on the already-ended stdin and question() never resolved.\n  Track actual stdin consumption (opts.stdinConsumed) instead of relying on\n  isTTY, and fail loudly in that case like the non-TTY path already does.\n\nRefs #1553\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-28T23:46:42Z",
+          "url": "https://github.com/HarperFast/harper/commit/35c1f423b9e05ac858ec14bec4346d06d274c2e1"
+        },
+        "date": 1785325381000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9761.7
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9761.7
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 150.2
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 339.7
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 551
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b04af4d08dc96ffd6f657991b4fe105528e88c98",
+          "message": "Merge pull request #1956 from HarperFast/fix/instance-post-create\n\nfix(resources): restore v4 super.post create on collection posts",
+          "timestamp": "2026-07-29T23:58:36Z",
+          "url": "https://github.com/HarperFast/harper/commit/b04af4d08dc96ffd6f657991b4fe105528e88c98"
+        },
+        "date": 1785411323000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 8539.54
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 8539.54
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 147.3
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 624.2
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 1349.2
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "fd4be1612c543a16d40ee4aa1d4d2d5091aa1b20",
+          "message": "Release v5.2.0-beta.4",
+          "timestamp": "2026-07-31T03:37:46Z",
+          "url": "https://github.com/HarperFast/harper/commit/fd4be1612c543a16d40ee4aa1d4d2d5091aa1b20"
+        },
+        "date": 1785498060000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 9709.28
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 9709.28
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 135.8
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 427.7
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 782.2
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "b852a722c4abe562cab72a2f25313664fa74547d",
+          "message": "Widen atomicWriteFile's Windows rename-retry budget and sleep without spinning\n\nThe ~910ms backoff budget (8 retries, 200ms cap) was exhausted twice in a row\nby the same test on a Windows CI runner (harper#2036) - an AV real-time scan\ncan hold harper-config.yaml for over a second. Widen to 12 retries with a\n500ms cap (~3.6s worst case), and replace the performance.now() busy-spin\nwith a timeout-only Atomics.wait so the wait is CPU-idle, which is what makes\nthe longer budget affordable.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-01T02:50:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/b852a722c4abe562cab72a2f25313664fa74547d"
+        },
+        "date": 1785583611000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 6180.01
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 6180.01
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 129.8
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 489.2
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 871.6
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "b852a722c4abe562cab72a2f25313664fa74547d",
+          "message": "Widen atomicWriteFile's Windows rename-retry budget and sleep without spinning\n\nThe ~910ms backoff budget (8 retries, 200ms cap) was exhausted twice in a row\nby the same test on a Windows CI runner (harper#2036) - an AV real-time scan\ncan hold harper-config.yaml for over a second. Widen to 12 retries with a\n500ms cap (~3.6s worst case), and replace the performance.now() busy-spin\nwith a timeout-only Atomics.wait so the wait is CPU-idle, which is what makes\nthe longer budget affordable.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-01T02:50:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/b852a722c4abe562cab72a2f25313664fa74547d"
+        },
+        "date": 1785669947000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 5773.98
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 5773.98
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 141.6
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 561.8
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 978.9
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "f3246b9982eec796599740931f1c236e94957cd5",
+          "message": "ci: invert canary conclusion polarity so it doesn't poison nightly-gate\n\nPer cross-model review (domain adjudication) — the sharpest finding\nacross this whole review cycle: moving the canary to its own workflow\nfixed integration-tests.yml's conclusion, but the nightly-gate triage\nroutine sweeps every `--event schedule` workflow with no per-workflow\nallowlist. Wiring the test step's raw exit code to the job conclusion\nwould make the every-night-until-fixed EXPECTED outcome (harper#2025\nstill reproducing) a permanent red that nightly-gate dutifully triages\nforever — while the one outcome anyone actually wants to hear about,\nthe defect clearing upstream, would be silently green and fire no\nalert. Backwards polarity for every consumer.\n\nInvert it: the canary tests failing (matching harper#2025) is now this\njob's SUCCESS; the tests unexpectedly passing is what fails it loudly,\nwith an ::error:: pointing at removing the pin. Also restores the\ncoverage-scope note that got dropped in the move to the standalone\nfile, adds a least-privilege permissions block, and cross-references\nthe duplicated pin-version constant between the two files.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-03T12:02:20Z",
+          "url": "https://github.com/HarperFast/harper/commit/f3246b9982eec796599740931f1c236e94957cd5"
+        },
+        "date": 1785758633000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 2199.4
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 2199.4
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 418.8
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 2225.1
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 3306.8
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "b4196a3b4d32eac6c73c353fc5970f7a01ca5fe1",
+          "message": "test(server): pin both HTTP servers' mid-stream SSE throw shapes (uWS divergence)\n\n`b: ThrowGen (throws after 2 of 5) over SSE` was the sole failure on\n`Integration Tests 5/6 (uWS HTTP)`; every other shard was green. Rather\nthan assume the assertion over-reached, QA-886 characterized the two\nservers byte-for-byte on the identical workload.\n\nBoth deliver exactly the two pre-throw events (`{\"n\":0}`, `{\"n\":1}`),\nbyte-identical modulo a uWS-only leading `:\\n\\n` header-flush comment.\nThey diverge only at termination:\n\n- Node (`server/http.ts` pipeBodyToResponse, ~426-461) closes the socket\n  WITHOUT the terminal `0\\r\\n\\r\\n` chunk, deliberately -- its own comment\n  says this \"correctly signals a failed/truncated transfer... instead of\n  implying it completed\". The incomplete chunked framing is the only\n  signal a client gets, and it is the intended one.\n- uWS (`server/serverHelpers/uwsServer.ts` streamResponse, ~340-356)\n  routes the source's 'error' and 'end' handlers through the SAME\n  `finish(true)` -> `res.end()` path, so it DOES write the terminal\n  chunk. The wire response becomes byte-indistinguishable from a\n  generator that legitimately finished: a mid-stream failure is silently\n  presented to the client as success.\n\nSo the spec was right and the uWS path is wrong. `HttpResponse.close()`\nis available and is the correct primitive for the error branch; that is a\nproduct fix, tracked separately as F-272 and not made here.\n\nThis change pins BOTH shapes explicitly rather than skipping under uWS,\nso the divergence stays visible in the suite and cannot drift or be\n\"fixed\" in the wrong direction unnoticed. Verified locally at\n`c28e5f83f`: 11/11 green under Node and 11/11 under HARPER_UWS_HTTP=1.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-04T11:40:48Z",
+          "url": "https://github.com/HarperFast/harper/commit/b4196a3b4d32eac6c73c353fc5970f7a01ca5fe1"
+        },
+        "date": 1785843749000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 5339.82
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 5339.82
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 276.8
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 1145.2
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 1772.7
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "ffef12f8c8992eb86c5014d85d4bd273df8f18d5",
+          "message": "Test Bun resolution candidate tracking directly\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-08-05T11:21:29Z",
+          "url": "https://github.com/HarperFast/harper/commit/ffef12f8c8992eb86c5014d85d4bd273df8f18d5"
+        },
+        "date": 1785929980000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "unit": "MB",
+            "value": 4266.22
+          },
+          {
+            "name": "ttl-churn final size",
+            "unit": "MB",
+            "value": 4266.22
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "unit": "ms",
+            "value": 308.9
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "unit": "ms",
+            "value": 1944.3
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "unit": "ms",
+            "value": 3927.2
           }
         ]
       }
