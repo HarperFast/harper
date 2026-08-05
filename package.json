@@ -63,6 +63,7 @@
 		"lint:fix": "npm run lint -- --fix",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
+		"test:bench": "node --test \"benchmarks/**/*.test.mts\"",
 		"test:integration": "harper-integration-test-run",
 		"test:integration:all": "npm run test:integration -- \"integrationTests/**/*.test.ts\" \"integrationTests/**/*.test.mjs\"",
 		"test:integration:mcp": "npm run test:integration -- \"integrationTests/mcp/**/*.test.ts\"",

@@ -47,6 +47,9 @@ jobs:
         if: matrix.node-version == 22
         run: npm run test:types # strict tsc over unitTests/types/ — asserts the shipped public types
 
+      - name: Benchmark unit tests
+        run: npm run test:bench # pure-logic tests for benchmarks/ converters; doesn't need a running Harper instance
+
       - name: Setup Harper
         env:
           DEFAULTS_MODE: 'dev'
