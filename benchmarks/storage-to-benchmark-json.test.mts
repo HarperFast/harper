@@ -6,7 +6,6 @@ import { test } from 'node:test';
 import { strictEqual, deepStrictEqual, throws, doesNotThrow } from 'node:assert';
 import { convert, assertComplete, type Logs } from './storage-to-benchmark-json.mts';
 
-// Exercises assertComplete against convert()'s real output, same as main() does.
 function checkComplete(logs: Logs): void {
 	assertComplete(logs, convert(logs));
 }
