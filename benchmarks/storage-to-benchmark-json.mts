@@ -82,11 +82,9 @@ const NAME_PREFIX: Record<keyof Logs, string> = {
 };
 
 /**
- * A log file that exists but yields no points (missing RESULT line) or a non-finite value
- * (a malformed RESULT line) means its benchmark exited 0 without reporting cleanly — publishing
- * that would leave a silent gap or a `null` in the trend history with no failed step and no
- * regression alert to catch it. Checked against convert()'s actual output, not a marker regex,
- * so a RESULT line that matched but failed to parse its fields is caught too.
+ * A log file that exists but yields no points, or a non-finite value, means its benchmark
+ * exited 0 without reporting cleanly — publishing that would leave a silent gap or a `null`
+ * in the trend history with no failed step and no regression alert to catch it.
  */
 export function assertComplete(logs: Logs, result: Converted): void {
 	const all = [...result.throughput, ...result.latency];
