@@ -36,9 +36,10 @@ export const TRANSACTION_STATE = {
 };
 const MAX_RETRIES = 40;
 // Over-limit monitor ticks a transaction parked in its commit phase is spared before it is aborted
-// like any other over-time transaction. Generous — the point is to let a legitimately large blob
-// write finish (at the 30s default this is ~5 minutes) — but bounded, so a pre-commit source that
-// stalls instead of finishing can't pin its read snapshot forever (issue #2062).
+// like any other over-time transaction. Sparing re-arms `timeout`, so each of these costs two
+// monitor intervals — roughly 10 minutes at the 30s default. Generous, so a legitimately large blob
+// write finishes, but bounded, so a pre-commit source that stalls instead of finishing can't pin its
+// read snapshot forever (issue #2062).
 export const COMMIT_PHASE_GRACE = 10;
 // Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
 // cap (see the commit rejection handler), don't grow the delay unbounded.
@@ -432,7 +433,6 @@ export class DatabaseTransaction implements Transaction {
 	// what the open-transaction limit polices: the monitor spares it for COMMIT_PHASE_GRACE ticks
 	// instead of poisoning it (issue #2062).
 	committing = false;
-	// Over-limit monitor ticks this transaction has been spared while committing.
 	commitPhaseTicks = 0;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
@@ -872,7 +872,10 @@ export class DatabaseTransaction implements Transaction {
 		const completions = this.completions;
 		if (completions.length > 0) this.completions = []; // reset
 		const stagedWrites = this.writes.length;
-		if (completions.length > 0) this.committing = true;
+		if (completions.length > 0) {
+			this.committing = true;
+			this.commitPhaseTicks = 0; // each commit phase (including a retry round's) gets the full grace
+		}
 		return when(
 			completions.length > 0 ? Promise.all(completions) : null,
 			() => {
@@ -1579,14 +1582,21 @@ function startMonitoringTxns() {
 						}`
 					);
 					txn.releaseReadTxn();
-				} else if (txn.committing && ++txn.commitPhaseTicks <= COMMIT_PHASE_GRACE) {
+				} else if (
+					txn.committing &&
+					(txn.sourceApply || txn.isReplay || ++txn.commitPhaseTicks <= COMMIT_PHASE_GRACE)
+				) {
 					// Parked in commit()'s pre-commit await — a `before`/`beforeIntermediate` hook, in practice a
 					// blob's durable file write, which for a multi-tens-of-MB payload legitimately outruns the
 					// limit. The write set is sealed and the caller is awaiting this commit, so the limit's
 					// premise (the application is holding a transaction open) does not hold, and poisoning here
 					// would unlink the blobs the write still references (issue #2062). The grace is bounded
 					// because the transaction still pins a read snapshot: a source that stalls rather than
-					// finishing falls through to the abort below once it runs out.
+					// finishing falls through to the abort below once it runs out. A canonical-source apply or
+					// replay is spared for as long as it takes: neither aborting it (harper-pro#348) nor the
+					// force-commit below — which would durably commit a record whose blob file is still being
+					// written — is acceptable, and their blob sources are bounded by the receive-side idle
+					// watchdog instead.
 					harperLogger.warn?.(
 						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work (e.g. a large blob write); letting it complete, from table: ${
 							(txn.db as any)?.name + (url ? ' path: ' + url : '')

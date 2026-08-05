@@ -7,6 +7,7 @@ import {
 	type CommitResolution,
 } from './DatabaseTransaction';
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
+import { ServerError } from '../utility/errors/hdbError.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context } from './ResourceInterface.ts';
@@ -151,6 +152,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 				if (hasBefore) {
 					// see `committing` in DatabaseTransaction (issue #2062)
 					this.committing = true;
+					this.commitPhaseTicks = 0;
+					const stagedWrites = this.writes.length;
 					return (async () => {
 						try {
 							for (let phase = 0; phase < 2; phase++) {
@@ -175,6 +178,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 							throw error;
 						}
 						this.committing = false;
+						// aborted underneath us while parked above: resuming would commit an empty write set and
+						// resolve as a success the caller never got (DatabaseTransaction's twin guard, #2062)
+						if (this.timedOut) throw transactionOpenTooLongError();
+						if (stagedWrites > 0 && this.writes.length === 0)
+							throw new ServerError('Transaction was aborted while its commit was waiting on pre-commit work', 500);
 						return this.commit(options);
 					})();
 				}
@@ -374,9 +382,8 @@ function startMonitoringTxns() {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
-				if (txn.committing && ++txn.commitPhaseTicks <= COMMIT_PHASE_GRACE) {
-					// Parked in commit()'s `before` phase — core's own I/O on a sealed write set, not the
-					// application holding a transaction open; see DatabaseTransaction's monitor (issue #2062).
+				if (txn.committing && (txn.sourceApply || txn.isReplay || ++txn.commitPhaseTicks <= COMMIT_PHASE_GRACE)) {
+					// see DatabaseTransaction's monitor (issue #2062)
 					harperLogger.warn?.(
 						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work (e.g. a large blob write); letting it complete, from table: ${
 							(txn.db as any)?.name + (url ? ' path: ' + url : '')

@@ -579,6 +579,31 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		assert.equal(await BlobResource.get(2064), undefined, 'the aborted write must not be committed');
 	});
 
+	// A canonical-source apply must never be aborted (harper-pro#348) — but neither may it be
+	// force-committed while its blob file is still being written, which would durably commit a record
+	// pointing at an incomplete file on the replica. It is spared for as long as the write takes.
+	it('never force-commits a source-apply parked in its pre-commit phase', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = { sourceApply: true };
+		setExpiration(20);
+		try {
+			const committing = transaction(context, async () => {
+				await BlobResource.put({ id: 2066, blob }, context);
+			});
+			slow.write(Buffer.alloc(16384, 'f'));
+			await delay(600); // many ticks, well past COMMIT_PHASE_GRACE
+			assert.equal(await BlobResource.get(2066), undefined, 'must not be committed while the blob is still writing');
+			assert.ok(!context.transaction.timedOut, 'a source apply must not be poisoned');
+			slow.end(Buffer.alloc(16384, 'g'));
+			await committing;
+		} finally {
+			setExpiration(30000);
+		}
+		const stored = await BlobResource.get(2066);
+		assert.equal((await stored.blob.bytes()).length, 32768, 'the apply commits once its blob has landed');
+	});
+
 	// The exemption is a grace, not an exemption forever: the transaction still pins a read snapshot, so
 	// a pre-commit source that stalls instead of finishing must eventually be poisoned like any other
 	// over-time transaction.
