@@ -220,6 +220,7 @@ suite('QA-631 F-158 blast-radius [rocksdb]', { skip: process.platform === 'win32
 		);
 		for (const step of body.steps) {
 			assert.ok(Array.isArray(step.owners), `Drain(${steps}) returned no owners for ${step.table}`);
+			assert.ok(typeof step.count === 'number', `Drain(${steps}) returned no count for ${step.table}`);
 			assert.deepStrictEqual(
 				step.owners.filter((owner) => owner !== step.table),
 				[],
