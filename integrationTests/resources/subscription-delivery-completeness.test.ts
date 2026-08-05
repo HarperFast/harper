@@ -550,11 +550,19 @@ function runSuite(threadCount: 1 | 4) {
 					let stableRounds = 0;
 					let lastTotal = -1;
 					while (stableRounds < 3 && Date.now() < settleDeadline) {
-						const total =
-							sse.events.filter((e) => sseDelivered(e)?.tag === tag).length +
-							(mqCollect?.events.filter((e) => e.tag === tag).length ?? 0) +
-							(await inProcEvents()).filter((e) => e.tag === tag).length;
-						if (total > 0 && total === lastTotal) stableRounds++;
+						const inProcEventsForTag = (await inProcEvents()).filter((e) => e.tag === tag);
+						const sseEventsForTag = sse.events.map(sseDelivered).filter((e): e is Delivered => e?.tag === tag);
+						const mqttEventsForTag = mqCollect?.events.filter((e) => e.tag === tag) ?? [];
+						const total = sseEventsForTag.length + mqttEventsForTag.length + inProcEventsForTag.length;
+						const everyLedgerReceived = Array.from({ length: IDS }, (_, i) => {
+							const id = runId(i);
+							return (
+								sseEventsForTag.some((e) => e.id === id) &&
+								mqttEventsForTag.some((e) => e.id === id) &&
+								inProcEventsForTag.some((e) => e.id === id)
+							);
+						}).every(Boolean);
+						if (everyLedgerReceived && total === lastTotal) stableRounds++;
 						else stableRounds = 0;
 						lastTotal = total;
 						await sleep(300);
@@ -605,6 +613,11 @@ function runSuite(threadCount: 1 | 4) {
 						const finalSeq = (finalRes.body as any)?.seq;
 						const ip = analyze(inProc, id, issued);
 						ok(ip.receivedCount > 0, `in-process probe must deliver at least one event for ${id}`);
+						strictEqual(
+							ip.last,
+							finalSeq,
+							`in-process terminal value for ${id} must match final stored seq ${finalSeq}, got ${ip.last}`
+						);
 						const se = analyze(sseEvents, id, issued);
 						ok(se.receivedCount > 0, `SSE must deliver at least one event for ${id}`);
 						strictEqual(
