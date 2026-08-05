@@ -91,6 +91,7 @@ suite(
 	(ctx: ContextWithHarper) => {
 		let client: ReturnType<typeof createApiClient>;
 		let httpURL: string;
+		let oracle: { sstTotal: number; sstByDir: Record<string, number> };
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
@@ -154,6 +155,11 @@ suite(
 			console.log(
 				`[QA-772] seeded+flushed GenA, GenB: ${KEYS} keys x ${PER_KEY_PER_WAVE} x ${WAVES} waves each in ${Date.now() - t0}ms, no WBM cap`
 			);
+			const dataRootDir = (ctx.harper as any).dataRootDir as string;
+			ok(dataRootDir, 'ctx.harper.dataRootDir must be set');
+			const { total, byDir } = countSstFiles(join(dataRootDir, 'database', 'metrics-repro'));
+			oracle = { sstTotal: total, sstByDir: byDir };
+			console.log(`[QA-772] .sst files under database/metrics-repro: total=${oracle.sstTotal}`, oracle.sstByDir);
 		});
 
 		after(async () => {
@@ -182,13 +188,18 @@ suite(
 			// make this ownership check iterate NOTHING on a malformed response and pass silently,
 			// which is the vacuity this assertion exists to remove.
 			ok(
-				body.owners && typeof body.owners === 'object',
+				body.owners && typeof body.owners === 'object' && !Array.isArray(body.owners),
 				`Drain(${tablesCsv}) returned no owners map — cannot verify row ownership`
+			);
+			ok(
+				body.counts && typeof body.counts === 'object' && !Array.isArray(body.counts),
+				`Drain(${tablesCsv}) returned no counts map — cannot verify result cardinality`
 			);
 			const requestedTables = tablesCsv.split(',').map((table) => table.trim());
 			deepStrictEqual(body.order, requestedTables, `Drain(${tablesCsv}) returned an unexpected table order`);
 			for (const table of requestedTables) {
 				ok(Array.isArray(body.owners[table]), `Drain(${tablesCsv}) returned no owners for ${table}`);
+				ok(typeof body.counts[table] === 'number', `Drain(${tablesCsv}) returned no count for ${table}`);
 				deepStrictEqual(
 					body.owners[table].filter((owner) => owner !== table),
 					[],
@@ -205,11 +216,7 @@ suite(
 		// the check runs, so a `>1 sorted run per CF` assertion would fail on correct behaviour.
 		// The real proof this suite can detect the defect is the fails-on-base run in the header.
 		test('oracle precondition: filesystem shows multiple .sst files under dataRootDir', () => {
-			const dataRootDir = (ctx.harper as any).dataRootDir as string;
-			ok(dataRootDir, 'ctx.harper.dataRootDir must be set');
-			const { total, byDir } = countSstFiles(join(dataRootDir, 'database', 'metrics-repro'));
-			console.log(`[QA-772] .sst files under database/metrics-repro: total=${total}`, byDir);
-			ok(total > 1, `expected >1 .sst file across metrics-repro's column families, found ${total}`);
+			ok(oracle.sstTotal > 1, `expected >1 .sst file across metrics-repro's column families, found ${oracle.sstTotal}`);
 		});
 
 		test('diagnostic (not a gate): RocksDB level-0 file counts for GenA/GenB, primary + index CF', async () => {
