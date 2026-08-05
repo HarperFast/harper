@@ -188,7 +188,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 			}
 		}
 		// release the read snapshot so we don't keep it open longer than necessary
-		if (!retries) this.doneReadTxn();
+		if (!retries) {
+			this.baseReadRefConsumed = true;
+			this.doneReadTxn();
+		}
 		this.open = options?.doneWriting ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.OPEN;
 		let resolution;
 		const completions = [];
