@@ -676,7 +676,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					const scoped = await rawOp(ctx, {
 						operation: 'delete_transaction_logs_before',
 						schema: SCHEMA,
-							table: TABLE,
+						table: TABLE,
 						timestamp: cutoffTimestamp,
 					});
 					ok(
