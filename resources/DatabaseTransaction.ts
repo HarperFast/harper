@@ -1329,10 +1329,19 @@ export class DatabaseTransaction implements Transaction {
 		this.writesAbandoned = false;
 	}
 
-	abort(): void {
-		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
-		// Defensively release any native handle whose reference bookkeeping was already consumed.
-		if (this.transaction) this.releaseReadTxn();
+	abort(retainReadTransaction = false): void {
+		const hasOpenReadIterator = retainReadTransaction && this.transaction && this.readTxnsUsed > 1;
+		if (hasOpenReadIterator) {
+			// Consume the transaction's base reference, leaving iterator references to release the native handle.
+			this.readTxnsUsed--;
+			this.baseReadRefConsumed = true;
+		} else {
+			while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		}
+		// A write-only transaction never took a read reference (getReadTxn was never called), so the
+		// loop above releases nothing even though save() created a native handle. Keep an iterator's
+	// handle alive, but release every other remaining handle through the shared cleanup path.
+		if (this.transaction && !hasOpenReadIterator) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
 		this.drainCompletions();
 		try {
@@ -1433,7 +1442,9 @@ export class DatabaseTransaction implements Transaction {
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			try {
-				txn.abort();
+				// An iterator's native cursor is owned by this transaction. Drop the staged writes now, but
+				// leave its handle for doneReadTxn() so the iterator can finish without using a freed handle.
+				txn.abort(true);
 			} catch (error) {
 				harperLogger.debug?.(`Error aborting ${reason} transaction in chain`, error);
 			}

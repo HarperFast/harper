@@ -545,6 +545,34 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(501)) == null, 'the orphaned write must not have been committed');
 	});
 
+	it('lets an open read iterator finish after disconnecting a write-bearing transaction', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+		await DisconnectResource.put(507, { name: 'iterator seed' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let iterator;
+		await assert.rejects(
+			transaction(context, async () => {
+				const results = await DisconnectResource.search({}, context);
+				iterator = results[Symbol.asyncIterator]();
+				await iterator.next();
+				await DisconnectResource.put(508, { name: 'must be discarded' }, context);
+				const nativeTransaction = context.transaction.transaction;
+				ac.abort();
+				assert.equal(context.transaction.disconnected, true, 'disconnect must still poison the staged write');
+				assert.equal(
+					context.transaction.transaction,
+					nativeTransaction,
+					'the open iterator must retain its native transaction until it finishes'
+				);
+				while (!(await iterator.next()).done);
+				assert.equal(context.transaction.transaction, null, 'finishing the iterator releases the native transaction');
+			}),
+			/disconnected/
+		);
+		assert.ok((await DisconnectResource.get(508)) == null, 'the disconnected write must not commit');
+	});
+
 	// Table.ts's txnForContext only chains a separate `next` link when the second store's `.path` differs
 	// from the head's. In this test harness setupTestDBPath() points every configured database name at the
 	// same directory (unitTests/testUtils.js), so two tables never actually get distinct store paths here
