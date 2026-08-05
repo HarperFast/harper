@@ -112,14 +112,22 @@ export function transaction<T>(
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
 		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
-		const committed = transaction.commit({ doneWriting: true });
+		let committed;
+		try {
+			committed = transaction.commit({ doneWriting: true });
+		} catch (error) {
+			return onCommitError(error, result);
+		}
 		if ((committed as any).then) {
-			return (committed as any).then(() => {
-				return result;
-			});
+			return (committed as any).then(() => result, (error) => onCommitError(error, result));
 		} else {
 			return result;
 		}
+	}
+	function onCommitError(error, result) {
+		result?.onDone?.();
+		transaction.abort(transaction.timedOut || transaction.disconnected);
+		throw error;
 	}
 	// if the transaction function throws an error, we abort
 	function onError(error) {
