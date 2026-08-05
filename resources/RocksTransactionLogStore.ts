@@ -50,8 +50,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 		super();
 		this.log = rootDatabase.useLog('local');
 		this.rootStore = rootDatabase;
-		// every database has its own 'local' log, so break reports must not share a name
-		this.corruptFrameScope = (rootDatabase as any).databaseName ?? rootDatabase.name ?? '';
+		// Break reports are keyed per log name, but every store has its own 'local' log, so they
+		// need a scope. The path, not `databaseName`: one root store can back several logical
+		// databases and they share these logs, and `databaseName` is not set on it yet here.
+		this.corruptFrameScope = rootDatabase.path;
 	}
 
 	/**
