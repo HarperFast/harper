@@ -10,6 +10,7 @@
  */
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export interface BenchPoint {
 	name: string;
@@ -133,7 +134,7 @@ async function main(): Promise<void> {
 	console.log(`wrote ${throughput.length} throughput + ${latency.length} latency metrics to ${outDir}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 	main().catch((error) => {
 		console.error(error);
 		process.exit(1);
