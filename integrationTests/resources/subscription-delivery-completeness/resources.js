@@ -20,6 +20,7 @@ const G = (globalThis.__QA883__ ??= {
 	events: [], // {id, version, value, seq, type, at}
 	error: null,
 });
+const MAX_EVENTS = 5000;
 
 async function startInProcessSubscription() {
 	if (G.started) return;
@@ -41,6 +42,7 @@ async function startInProcessSubscription() {
 					type: event.type,
 					at: Date.now(),
 				});
+				if (G.events.length > MAX_EVENTS) G.events.splice(0, G.events.length - MAX_EVENTS);
 			}
 		})().catch((err) => {
 			G.error = String((err && err.stack) || err);

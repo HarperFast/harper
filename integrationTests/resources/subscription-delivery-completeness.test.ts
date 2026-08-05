@@ -122,6 +122,10 @@ function openSse(urlStr: string, headers: Record<string, string>): Promise<SseSt
 						buffer = buffer.slice(sep + 2);
 					}
 				});
+				res.on('end', () => {
+					if (buffer.trim()) parseFrame(buffer);
+					buffer = '';
+				});
 				res.on('error', () => {});
 				resolvePromise(stream);
 			}
@@ -174,6 +178,7 @@ function connectMqtt(url: string, opts: IClientOptions): Promise<MqttClient> {
 		};
 		const onConnect = () => {
 			client.removeListener('error', onError);
+			client.on('error', () => {});
 			resolvePromise(client);
 		};
 		client.once('error', onError);
@@ -493,7 +498,8 @@ function runSuite(threadCount: 1 | 4) {
 					`MQTT last-delivered seq must match final stored seq ${finalSeq}, got ${mqStats.last}`
 				);
 			}
-			if (inProcStats && inProcStats.receivedCount > 0) {
+			if (inProcStats) {
+				ok(inProcStats.receivedCount > 0, 'in-process probe must deliver at least one event under burst');
 				strictEqual(
 					inProcStats.last,
 					finalSeq,
@@ -510,108 +516,114 @@ function runSuite(threadCount: 1 | 4) {
 				const runId = (i: number) => `many-${tag}-${i}`;
 
 				const sse = track(await openSse(`${restBase}/${TABLE}/`, authHeaders));
-				ok(sse.status >= 200 && sse.status < 300, `SSE collection should open, got ${sse.status}`);
-
 				let mqc: MqttClient | undefined;
 				let mqCollect: ReturnType<typeof collectMqtt> | undefined;
-				if (mqttUsable) {
-					mqc = await connectMqtt(mqttURL, baseOpts({ clientId: 'qa883-many' }));
-					await mqttSubscribe(mqc, `${TABLE}/#`, 1);
-					mqCollect = collectMqtt(mqc);
-				}
-
-				await sleep(400);
-
-				const puts: Array<{ id: string; request: ReturnType<typeof restPut> }> = [];
-				for (let i = 0; i < IDS; i++) {
-					const id = runId(i);
-					for (let seq = 1; seq <= PER_ID; seq++) puts.push({ id, request: restPut(id, { id, value: seq, seq, tag }) });
-				}
-				const t0 = Date.now();
-				const results = await Promise.all(puts.map((put) => put.request));
-				const writeMs = Date.now() - t0;
-				const issuedById = new Map<string, number>();
-				for (const [index, result] of results.entries()) {
-					if (result.status === 204) {
-						const id = puts[index].id;
-						issuedById.set(id, (issuedById.get(id) ?? 0) + 1);
+				try {
+					ok(sse.status >= 200 && sse.status < 300, `SSE collection should open, got ${sse.status}`);
+					if (mqttUsable) {
+						mqc = await connectMqtt(mqttURL, baseOpts({ clientId: 'qa883-many' }));
+						await mqttSubscribe(mqc, `${TABLE}/#`, 1);
+						mqCollect = collectMqtt(mqc);
 					}
-				}
-				const issuedTotal = [...issuedById.values()].reduce((total, issued) => total + issued, 0);
 
-				const settleDeadline = Date.now() + 15_000;
-				let stableRounds = 0;
-				let lastTotal = -1;
-				while (stableRounds < 3 && Date.now() < settleDeadline) {
-					const total =
-						sse.events.filter((e) => sseDelivered(e)?.tag === tag).length +
-						(mqCollect?.events.filter((e) => e.tag === tag).length ?? 0);
-					if (total === lastTotal) stableRounds++;
-					else stableRounds = 0;
-					lastTotal = total;
-					await sleep(300);
-				}
-				ok(stableRounds === 3, 'many-id subscriptions did not settle before the deadline');
+					await sleep(400);
 
-				const inProc = threadCount === 1 ? (await inProcEvents()).filter((e) => e.tag === tag) : [];
-				const sseEvents = sse.events.map(sseDelivered).filter((e): e is Delivered => e?.tag === tag);
-				mqCollect?.stop();
-				const mqEvents = mqCollect?.events.filter((e) => e.tag === tag) ?? [];
+					const puts: Array<{ id: string; request: ReturnType<typeof restPut> }> = [];
+					for (let i = 0; i < IDS; i++) {
+						const id = runId(i);
+						for (let seq = 1; seq <= PER_ID; seq++)
+							puts.push({ id, request: restPut(id, { id, value: seq, seq, tag }) });
+					}
+					const t0 = Date.now();
+					const results = await Promise.all(puts.map((put) => put.request));
+					const writeMs = Date.now() - t0;
+					const issuedById = new Map<string, number>();
+					for (const [index, result] of results.entries()) {
+						if (result.status === 204) {
+							const id = puts[index].id;
+							issuedById.set(id, (issuedById.get(id) ?? 0) + 1);
+						}
+					}
+					const issuedTotal = [...issuedById.values()].reduce((total, issued) => total + issued, 0);
 
-				const perIdRows: string[] = [];
-				let inProcDroppedTotal = 0;
-				let sseDroppedTotal = 0;
-				let mqDroppedTotal = 0;
-				for (let i = 0; i < IDS; i++) {
-					const id = runId(i);
-					const issued = issuedById.get(id) ?? 0;
-					const ip = analyze(inProc, id, issued);
-					const se = analyze(sseEvents, id, issued);
-					const mq = mqCollect ? analyze(mqEvents, id, issued) : undefined;
-					inProcDroppedTotal += threadCount === 1 ? ip.dropped : 0;
-					sseDroppedTotal += se.dropped;
-					mqDroppedTotal += mq?.dropped ?? 0;
-					perIdRows.push(
-						`    ${id}: in-proc drop=${threadCount === 1 ? ip.dropped : 'N/A'} sse drop=${se.dropped} mqtt drop=${mq ? mq.dropped : 'N/A'}`
+					const settleDeadline = Date.now() + 15_000;
+					let stableRounds = 0;
+					let lastTotal = -1;
+					while (stableRounds < 3 && Date.now() < settleDeadline) {
+						const total =
+							sse.events.filter((e) => sseDelivered(e)?.tag === tag).length +
+							(mqCollect?.events.filter((e) => e.tag === tag).length ?? 0) +
+							(await inProcEvents()).filter((e) => e.tag === tag).length;
+						if (total > 0 && total === lastTotal) stableRounds++;
+						else stableRounds = 0;
+						lastTotal = total;
+						await sleep(300);
+					}
+					ok(stableRounds === 3, 'many-id subscriptions did not settle before the deadline');
+
+					const inProc = (await inProcEvents()).filter((e) => e.tag === tag);
+					const sseEvents = sse.events.map(sseDelivered).filter((e): e is Delivered => e?.tag === tag);
+					mqCollect?.stop();
+					const mqEvents = mqCollect?.events.filter((e) => e.tag === tag) ?? [];
+
+					const perIdRows: string[] = [];
+					let inProcDroppedTotal = 0;
+					let sseDroppedTotal = 0;
+					let mqDroppedTotal = 0;
+					for (let i = 0; i < IDS; i++) {
+						const id = runId(i);
+						const issued = issuedById.get(id) ?? 0;
+						const ip = analyze(inProc, id, issued);
+						const se = analyze(sseEvents, id, issued);
+						const mq = mqCollect ? analyze(mqEvents, id, issued) : undefined;
+						inProcDroppedTotal += threadCount === 1 ? ip.dropped : 0;
+						sseDroppedTotal += se.dropped;
+						mqDroppedTotal += mq?.dropped ?? 0;
+						perIdRows.push(
+							`    ${id}: in-proc drop=${threadCount === 1 ? ip.dropped : 'N/A'} sse drop=${se.dropped} mqtt drop=${mq ? mq.dropped : 'N/A'}`
+						);
+					}
+
+					console.log(
+						`\n[QA-883][many-ids] ${IDS} ids x ${PER_ID} writes, all fired concurrently (writeMs=${writeMs}, issued=${issuedTotal}/${IDS * PER_ID}):\n` +
+							(threadCount === 1 ? `  in-proc total dropped=${inProcDroppedTotal}/${IDS * PER_ID}\n` : '') +
+							`  SSE total dropped=${sseDroppedTotal}/${IDS * PER_ID}\n` +
+							`  MQTT total dropped=${mqDroppedTotal}/${IDS * PER_ID}\n` +
+							perIdRows.join('\n')
 					);
-				}
 
-				console.log(
-					`\n[QA-883][many-ids] ${IDS} ids x ${PER_ID} writes, all fired concurrently (writeMs=${writeMs}, issued=${issuedTotal}/${IDS * PER_ID}):\n` +
-						(threadCount === 1 ? `  in-proc total dropped=${inProcDroppedTotal}/${IDS * PER_ID}\n` : '') +
-						`  SSE total dropped=${sseDroppedTotal}/${IDS * PER_ID}\n` +
-						`  MQTT total dropped=${mqDroppedTotal}/${IDS * PER_ID}\n` +
-						perIdRows.join('\n')
-				);
-
-				drop(sse);
-				await endQuiet(mqc);
-
-				// No hard assertion here beyond "every id delivers its terminal value" — this test is
-				// characterizing the drop RATE under cross-id load, not asserting a specific number.
-				for (let i = 0; i < IDS; i++) {
-					const id = runId(i);
-					const issued = issuedById.get(id) ?? 0;
-					strictEqual(issued, PER_ID, `all writes for ${id} must succeed before measuring delivery`);
-					const finalRes = await request(restBase)
-						.get(`/${TABLE}/${encodeURIComponent(id)}`)
-						.set(client.headers);
-					strictEqual(finalRes.status, 200, `final GET for ${id} must succeed`);
-					const finalSeq = (finalRes.body as any)?.seq;
-					const se = analyze(sseEvents, id, issued);
-					ok(se.receivedCount > 0, `SSE must deliver at least one event for ${id}`);
-					strictEqual(
-						se.last,
-						finalSeq,
-						`SSE terminal value for ${id} must match final stored seq ${finalSeq}, got ${se.last}`
-					);
-					const mq = analyze(mqEvents, id, issued);
-					ok(mq.receivedCount > 0, `MQTT must deliver at least one event for ${id}`);
-					strictEqual(
-						mq.last,
-						finalSeq,
-						`MQTT terminal value for ${id} must match final stored seq ${finalSeq}, got ${mq.last}`
-					);
+					// No hard assertion here beyond "every id delivers its terminal value" — this test is
+					// characterizing the drop RATE under cross-id load, not asserting a specific number.
+					for (let i = 0; i < IDS; i++) {
+						const id = runId(i);
+						const issued = issuedById.get(id) ?? 0;
+						strictEqual(issued, PER_ID, `all writes for ${id} must succeed before measuring delivery`);
+						const finalRes = await request(restBase)
+							.get(`/${TABLE}/${encodeURIComponent(id)}`)
+							.set(client.headers);
+						strictEqual(finalRes.status, 200, `final GET for ${id} must succeed`);
+						const finalSeq = (finalRes.body as any)?.seq;
+						const ip = analyze(inProc, id, issued);
+						ok(ip.receivedCount > 0, `in-process probe must deliver at least one event for ${id}`);
+						const se = analyze(sseEvents, id, issued);
+						ok(se.receivedCount > 0, `SSE must deliver at least one event for ${id}`);
+						strictEqual(
+							se.last,
+							finalSeq,
+							`SSE terminal value for ${id} must match final stored seq ${finalSeq}, got ${se.last}`
+						);
+						const mq = analyze(mqEvents, id, issued);
+						ok(mq.receivedCount > 0, `MQTT must deliver at least one event for ${id}`);
+						strictEqual(
+							mq.last,
+							finalSeq,
+							`MQTT terminal value for ${id} must match final stored seq ${finalSeq}, got ${mq.last}`
+						);
+					}
+				} finally {
+					drop(sse);
+					mqCollect?.stop();
+					await endQuiet(mqc);
 				}
 			});
 		}

@@ -76,7 +76,8 @@ function parseHttpRaw(buf: Buffer): {
 	const headerText = buf.subarray(0, headerEnd).toString('latin1');
 	const bodyRaw = buf.subarray(headerEnd + 4);
 	const lines = headerText.split('\r\n');
-	const status = Number.parseInt(lines[0].split(' ')[1], 10);
+	const parsedStatus = Number.parseInt(lines[0]?.split(' ')[1] ?? '', 10);
+	const status = Number.isSafeInteger(parsedStatus) ? parsedStatus : null;
 	const headers: Record<string, string> = {};
 	for (const l of lines.slice(1)) {
 		const idx = l.indexOf(':');
