@@ -2394,6 +2394,10 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: 
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (!storageInfo?.fileId || (blob as FileBackedBlob).saveInRecord) continue; // no file written, nothing to clean up
 		if (retainedFileIds?.has(storageInfo.fileId)) continue; // the committed record still references this blob
+		// Tombstone the instance as soon as the deletion is DECIDED, not when the unlink is issued: the
+		// unlink waits for an in-flight save to settle, and a re-store in that window would otherwise
+		// mint a reference to a file that is already condemned (issue #2062).
+		storageInfo.discarded = true;
 		const settle = storageInfo.saving ?? Promise.resolve();
 		settle.then(
 			() => deleteBlob(blob),

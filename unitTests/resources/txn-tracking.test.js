@@ -519,6 +519,12 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		return BlobResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
 	}
 
+	// The table's writes live on whichever link of the context's transaction chain owns its database —
+	// on LMDB that is never the head (txnForContext only claims an unclaimed head for RocksDB).
+	function committingTxn(context) {
+		for (let txn = context.transaction; txn; txn = txn.next) if (txn.committing) return txn;
+	}
+
 	it('lets a commit whose blob save outruns the limit finish, keeping the record and its blob', async function () {
 		const slow = new PassThrough();
 		const blob = createBlob(slow);
@@ -552,10 +558,10 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 			await BlobResource.put({ id: 2063, blob }, context);
 		});
 		slow.write(Buffer.alloc(16384, 'c'));
-		await waitFor(() => context.transaction?.committing, {
+		const parked = await waitFor(() => committingTxn(context), {
 			message: 'commit should park in its pre-commit phase while the blob save runs',
 		});
-		context.transaction.abortDueToTimeout();
+		parked.abortDueToTimeout();
 		slow.end();
 		await assert.rejects(committing, /open-transaction time/);
 		assert.equal(await BlobResource.get(2063), undefined, 'the poisoned write must not be committed');
@@ -570,10 +576,10 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 			await BlobResource.put({ id: 2064, blob }, context);
 		});
 		slow.write(Buffer.alloc(16384, 'd'));
-		await waitFor(() => context.transaction?.committing, {
+		const parked = await waitFor(() => committingTxn(context), {
 			message: 'commit should park in its pre-commit phase while the blob save runs',
 		});
-		context.transaction.abort();
+		parked.abort();
 		slow.end();
 		await assert.rejects(committing, /aborted while its commit was waiting/);
 		assert.equal(await BlobResource.get(2064), undefined, 'the aborted write must not be committed');
@@ -594,7 +600,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 			slow.write(Buffer.alloc(16384, 'f'));
 			await delay(600); // many ticks, well past COMMIT_PHASE_GRACE
 			assert.equal(await BlobResource.get(2066), undefined, 'must not be committed while the blob is still writing');
-			assert.ok(!context.transaction.timedOut, 'a source apply must not be poisoned');
+			assert.ok(!committingTxn(context) || !committingTxn(context).timedOut, 'a source apply must not be poisoned');
 			slow.end(Buffer.alloc(16384, 'g'));
 			await committing;
 		} finally {
@@ -617,8 +623,10 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		});
 		committing.catch(() => {}); // settles only when the stuck source is destroyed below
 		stuck.write(Buffer.alloc(16384, 'e'));
+		let parked;
 		try {
-			await waitFor(() => context.transaction.timedOut, {
+			parked = await waitFor(() => committingTxn(context), { message: 'commit should park in its pre-commit phase' });
+			await waitFor(() => parked.timedOut, {
 				timeout: 10000,
 				message: 'a commit phase that never finishes should be aborted once its grace runs out',
 			});
@@ -627,8 +635,8 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 			stuck.destroy();
 		}
 		assert.ok(
-			context.transaction.commitPhaseTicks > COMMIT_PHASE_GRACE,
-			`should have been spared ${COMMIT_PHASE_GRACE} ticks first, got ${context.transaction.commitPhaseTicks}`
+			parked.commitPhaseTicks > COMMIT_PHASE_GRACE,
+			`should have been spared ${COMMIT_PHASE_GRACE} ticks first, got ${parked.commitPhaseTicks}`
 		);
 	});
 });
