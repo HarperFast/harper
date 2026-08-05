@@ -667,16 +667,56 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						`NON-VACUOUS PRECONDITION: WARM read_audit_log(${sampleId}) must see the pre-cutoff insert entry before the purge, got ${JSON.stringify(preWarmEntries)}`
 					);
 
-					const ack = await rawOp(ctx, {
+					// A TABLE-scoped purge is REFUSED on RocksDB as of 4bd781787: all tables in a
+					// database share one transaction log, so honouring `table` would destroy log
+					// entries the caller never asked to delete. LMDB keeps a log per table, so
+					// there the same call is legitimate and still completes. This arm asserted the
+					// pre-fix RocksDB behaviour and went permanently red when the fix landed.
+					const tableScopeRefused = engine === 'rocksdb';
+					const scoped = await rawOp(ctx, {
 						operation: 'delete_transaction_logs_before',
 						...(engine === 'rocksdb' ? { database: SCHEMA } : { schema: SCHEMA, table: TABLE }),
 						timestamp: cutoffTimestamp,
 					});
 					ok(
-						ack.status === 200 && ack.body?.job_id,
-						`delete_transaction_logs_before should return a job_id, got ${ack.text.slice(0, 300)}`
+						scoped.status === 200 && scoped.body?.job_id,
+						`table-scoped purge should still ACK with a job_id, got ${scoped.status}: ${scoped.text.slice(0, 300)}`
 					);
-					const jobResult = await pollJob(ctx, ack.body.job_id);
+					// The rejection is enforced when the job RUNS, not when the request is validated,
+					// so the ack is a normal 200 and the refusal only shows up in the job record.
+					const scopedJob = await pollJob(ctx, scoped.body.job_id);
+					if (tableScopeRefused) {
+						ok(
+							scopedJob.status === 'ERROR' && /not supported for RocksDB/i.test(String(scopedJob.message)),
+							`table-scoped purge job must ERROR with the RocksDB refusal, got ${scopedJob.status}: ${scopedJob.message}`
+						);
+					} else {
+						ok(
+							scopedJob.status === 'COMPLETE',
+							`table-scoped purge is supported on ${engine} and should COMPLETE, got ${scopedJob.status}: ${scopedJob.message}`
+						);
+					}
+					findings.push(`5. table-scoped purge on ${engine}: ${scopedJob.status} ${scopedJob.message ?? ''}`);
+
+					// The arm's actual question is whether an audit purge in this process produces the
+					// F-225 phantom, and it needs a purge that actually ran. Where the table-scoped
+					// form was refused, re-issue DATABASE-scoped — the form the refusal directs you
+					// to, and equivalent here because this fixture declares one table in `data`.
+					// Where it was accepted it already did the work, so reusing that job avoids a
+					// second purge finding nothing left to delete.
+					let jobResult = scopedJob;
+					if (tableScopeRefused) {
+						const ack = await rawOp(ctx, {
+							operation: 'delete_transaction_logs_before',
+							schema: SCHEMA,
+							timestamp: cutoffTimestamp,
+						});
+						ok(
+							ack.status === 200 && ack.body?.job_id,
+							`database-scoped delete_transaction_logs_before should return a job_id, got ${ack.text.slice(0, 300)}`
+						);
+						jobResult = await pollJob(ctx, ack.body.job_id);
+					}
 					const entriesDeleted = jobResult.result?.entries_deleted ?? jobResult.result?.transactions_deleted ?? 0;
 					findings.push(`5. audit purge job: status=${jobResult.status} result=${JSON.stringify(jobResult.result)}`);
 					ok(
