@@ -219,11 +219,18 @@ describe.skip('Test hdbInfoController module ', function () {
 			insert_stub.resolves();
 		});
 
+		let originalArgv;
+
 		before(() => {
 			version_stub = sandbox.stub(packageJson, 'version').get(() => '4.0.0');
 			hasUpgradesRequired_stub = sandbox.stub(directiveManager, 'hasUpgradesRequired').returns(true);
 			sandbox.stub().returns();
-			process.argv.push('--CONFIRM_DOWNGRADE', 'yes');
+			originalArgv = process.argv;
+			process.argv = [...process.argv, '--CONFIRM_DOWNGRADE', 'yes'];
+		});
+
+		after(() => {
+			process.argv = originalArgv;
 		});
 
 		it('getVersionUpdateInfo nominal test', async () => {
