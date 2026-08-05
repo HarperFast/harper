@@ -1,0 +1,11 @@
+# Fixture for MCP application-profile row-level RBAC enforcement (#1487).
+# The Doc table's resources.js subclass overrides allowRead/allowCreate/
+# allowUpdate/allowDelete to enforce owner-only access; the MCP verb tools must
+# honor those overrides (parity with REST), not just table-level RBAC.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true
+databases:
+  - name: data
