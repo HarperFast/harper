@@ -31,7 +31,6 @@ function firstMatch(log: string, pattern: RegExp): RegExpMatchArray | undefined 
 	return log.match(pattern) ?? undefined;
 }
 
-/** Pure conversion of the three raw log bodies into the two benchmark series arrays. */
 export function convert(logs: Logs): { throughput: BenchPoint[]; latency: BenchPoint[] } {
 	const throughput: BenchPoint[] = [];
 	const latency: BenchPoint[] = [];
@@ -71,11 +70,34 @@ export function convert(logs: Logs): { throughput: BenchPoint[]; latency: BenchP
 	return { throughput, latency };
 }
 
+const RESULT_PATTERNS: Record<keyof Logs, RegExp> = {
+	indexedWrite: /INDEXED_WRITE_RESULT/,
+	ttlChurn: /TTL_CHURN_RESULT/,
+	concurrentRw: /CONCURRENT_RW_RESULT/,
+};
+
+/**
+ * A log file that exists but has no RESULT line means its benchmark exited 0 without reporting
+ * (a bug in the benchmark, not an absent run) — publishing the truncated series would leave a
+ * gap in the trend history with no failed step and no regression alert to flag it.
+ */
+export function assertComplete(logs: Logs): void {
+	for (const [name, pattern] of Object.entries(RESULT_PATTERNS) as [keyof Logs, RegExp][]) {
+		const log = logs[name];
+		if (log !== undefined && !pattern.test(log)) {
+			throw new Error(
+				`${name}.log was present but had no ${pattern.source} line — the benchmark exited without reporting`
+			);
+		}
+	}
+}
+
 async function readIfPresent(path: string): Promise<string | undefined> {
 	try {
 		return await readFile(path, 'utf8');
-	} catch {
-		return undefined;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+		throw error;
 	}
 }
 
@@ -88,6 +110,7 @@ async function main(): Promise<void> {
 		ttlChurn: await readIfPresent(join(resultsDir, 'ttl-churn.log')),
 		concurrentRw: await readIfPresent(join(resultsDir, 'concurrent-rw.log')),
 	};
+	assertComplete(logs);
 	const { throughput, latency } = convert(logs);
 
 	await mkdir(outDir, { recursive: true });
@@ -96,7 +119,6 @@ async function main(): Promise<void> {
 	console.log(`wrote ${throughput.length} throughput + ${latency.length} latency metrics to ${outDir}`);
 }
 
-// Only run as a CLI; stays inert when imported (e.g. by the test module).
 if (import.meta.url === `file://${process.argv[1]}`) {
 	main().catch((error) => {
 		console.error(error);
