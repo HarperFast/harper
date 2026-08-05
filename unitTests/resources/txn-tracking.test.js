@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { setTxnExpiration } = require('#src/resources/DatabaseTransaction');
+const { setTxnExpiration, DatabaseTransaction, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -9,6 +9,7 @@ const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 describe('Txn Expiration', () => {
 	let SlowResource,
 		performedDBInteractions = false;
@@ -84,8 +85,11 @@ describe('Write txn timeout', () => {
 				{ name: 't', indexed: true },
 			],
 		});
-		// a second table so a single transaction can span two databases (writes to the second live on the
-		// transaction's `next` chain), exercising the multi-store classification path
+		// A second table for the multi-store classification path. Note it shares `test` with
+		// IndexedResource, and the `next` chain is per-DATABASE, so both tables resolve to the same
+		// transaction link — a `next` link does not actually form here (a second `database:` in this
+		// suite resolves to the same store), which is why the chain-walk test below builds its links
+		// directly instead of going through the resource API.
 		OtherResource = table({
 			table: 'OtherTxnTable',
 			database: 'test',
@@ -120,6 +124,172 @@ describe('Write txn timeout', () => {
 				matches.push(entry);
 			}
 			assert.equal(matches.length, 0, 'timed-out write should not leave an orphaned index entry');
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	// A handler that keeps reading must not extend the limit once it is holding uncommitted writes:
+	// those hold write intents other writers' commits park on (harper#2001). The read-only arm below
+	// pins the other half — reads alone still re-arm. RocksDB-only: LMDBTransaction.getReadTxn()
+	// re-arms unconditionally, and that engine has no verification-table park to wedge.
+	it('does not let reads extend the limit for a txn holding uncommitted writes', async function () {
+		if (isLMDB) this.skip();
+		setExpiration(20);
+		try {
+			const context = {};
+			await assert.rejects(
+				transaction(context, async () => {
+					await IndexedResource.put(401, { t: 4001 }, context);
+					// Read repeatedly, well past the limit: pre-fix each read reset the clock and the
+					// monitor never fired.
+					for (let i = 0; i < 15; i++) {
+						await IndexedResource.get(401, context);
+						await delay(15);
+					}
+				}),
+				/open-transaction time/
+			);
+			assert.ok((await IndexedResource.get(401)) == null, 'the aborted write must not be committed');
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	// The limit is an IDLE limit, so work in progress must not be killed: a transaction that keeps
+	// writing stays alive indefinitely, and only goes over when it stops. This is the counterpart to
+	// the arm above — reads don't extend a write-holding transaction, but writes do.
+	it('lets continued writes extend the limit well past it', async function () {
+		if (isLMDB) this.skip();
+		setExpiration(20);
+		try {
+			const context = {};
+			// Same total duration and cadence as the read-loop arm above, writing instead of reading.
+			await transaction(context, async () => {
+				for (let i = 0; i < 15; i++) {
+					await IndexedResource.put(500 + i, { t: 5000 + i }, context);
+					await delay(15);
+				}
+			});
+			assert.ok(await IndexedResource.get(514), 'a continuously-writing transaction must commit normally');
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	// Direct-construction unit check of the chain walk: a head that holds NO writes of its own but
+	// whose `next` link does must not re-arm on a read. Driving this through the resource API is not
+	// reliable here — a second `database:` in this suite resolves to the same store, so no `next`
+	// link forms — so the links are built directly, as sourceApplyConflictRetry.test.js does.
+	it('does not re-arm the head on a read when the next chain holds the writes', function () {
+		if (isLMDB) this.skip();
+		const head = new DatabaseTransaction();
+		const next = new DatabaseTransaction();
+		head.next = next;
+		head.open = TRANSACTION_STATE.OPEN;
+		next.open = TRANSACTION_STATE.OPEN;
+		head.writes = [];
+		next.writes = [{ key: 'pending' }];
+		head.transaction = {}; // stand-in native read txn so getReadTxn returns before allocating one
+		assert.ok(head.hasPendingWrites(), "test setup: the head must see the next chain's write");
+
+		head.timeout = 5;
+		head.getReadTxn();
+		assert.equal(head.timeout, 5, 'a read must not re-arm a head whose next chain holds writes');
+
+		// Control: with the chain drained the same read re-arms normally.
+		next.writes = [];
+		head.timeout = 5;
+		head.getReadTxn();
+		assert.ok(head.timeout > 5, 'a read must still re-arm once no link holds writes');
+	});
+
+	// chainStillActive must tell "written recently" apart from "read recently": a next link with no
+	// writes of its own re-arms its own `timeout` on every read (the fast path above), so using that
+	// same field to decide the chain is write-active would let unrelated reads on the next link keep
+	// a write-holding head immortal — the harper#2001 shape, shifted onto a second store.
+	it('does not treat repeated reads on a write-free next link as write activity (chainStillActive)', async function () {
+		if (isLMDB) this.skip();
+		const trackedTxns = setExpiration(20);
+		try {
+			const head = new DatabaseTransaction();
+			head.open = TRANSACTION_STATE.OPEN;
+			head.writes = [{ key: 'pending' }]; // head itself holds the write
+			head.transaction = { abort() {} }; // stand-in native handle, as the chain-walk test above uses
+			head.readTxnsUsed = 1; // as a real getReadTxn() would leave behind
+			trackedTxns.add(head); // ...and as a real getReadTxn() would track it
+			head.timeout = 20;
+
+			const next = new DatabaseTransaction();
+			head.next = next;
+			next.open = TRANSACTION_STATE.OPEN;
+			next.transaction = { abort() {} };
+
+			// Read next repeatedly, well past the limit: each read re-arms next.timeout via the fast
+			// path, but must never touch writeTimeout — the signal chainStillActive actually consults.
+			for (let i = 0; i < 8; i++) {
+				next.getReadTxn();
+				assert.ok(next.timeout > 0, "test setup: next's own idle timeout does re-arm on reads");
+				await delay(15);
+			}
+			assert.ok(!next.writeTimeout, 'reads on a write-free link must never set writeTimeout');
+			assert.ok(
+				!trackedTxns.has(head),
+				'the head must not be kept immortal by unrelated reads on a write-free next link'
+			);
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	// The other half of the same fix: a next link that receives a write but is never itself read (a
+	// blind write to a second database) is never added to trackedTxns, so nothing else decays it.
+	// Pre-fix, chainStillActive treated its permanently-armed timeout as ongoing write activity and
+	// kept the head immortal forever — a regression inside this PR's own target scenario.
+	it('reaps an idle chain whose next link received a write but was never itself read (chainStillActive decay)', async function () {
+		if (isLMDB) this.skip();
+		const trackedTxns = setExpiration(20);
+		try {
+			const head = new DatabaseTransaction();
+			head.open = TRANSACTION_STATE.OPEN;
+			head.transaction = { abort() {} };
+			head.readTxnsUsed = 1;
+			trackedTxns.add(head);
+			head.timeout = 20;
+
+			const next = new DatabaseTransaction();
+			head.next = next;
+			next.open = TRANSACTION_STATE.OPEN;
+			next.writes = [{ key: 'pending' }]; // as addWrite would leave staged
+			next.writeTimeout = 20; // as addWrite would set — but next.getReadTxn() is never called
+
+			assert.ok(!trackedTxns.has(next), 'test setup: next must not be tracked — it is never itself read');
+			assert.ok(head.hasPendingWrites(), "test setup: head must see the next chain's write");
+
+			await delay(150); // several monitor cycles with nothing touching either link
+			assert.ok(
+				!trackedTxns.has(head),
+				'an idle chain whose only write lives on an untracked next link must eventually be reaped'
+			);
+		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	it('still lets reads extend the limit for a read-only txn', async function () {
+		if (isLMDB) this.skip();
+		await IndexedResource.put(402, { t: 4002 });
+		setExpiration(20);
+		try {
+			const context = {};
+			// Same duration and read cadence as the arm above, without a write: the transaction holds
+			// no write intents, so continued reads legitimately keep it alive.
+			await transaction(context, async () => {
+				for (let i = 0; i < 15; i++) {
+					assert.ok(await IndexedResource.get(402, context));
+					await delay(15);
+				}
+			});
 		} finally {
 			setExpiration(30000);
 		}
