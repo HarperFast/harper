@@ -675,7 +675,8 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					const tableScopeRefused = engine === 'rocksdb';
 					const scoped = await rawOp(ctx, {
 						operation: 'delete_transaction_logs_before',
-						...(engine === 'rocksdb' ? { database: SCHEMA } : { schema: SCHEMA, table: TABLE }),
+						schema: SCHEMA,
+							table: TABLE,
 						timestamp: cutoffTimestamp,
 					});
 					ok(
