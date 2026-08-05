@@ -13,7 +13,7 @@
 // needed at all — this is candidate (a) from QA-772: no WBM cap, so no write-stall risk.
 
 function getTable(tableName) {
-	return databases['metrics-repro'][tableName];
+	return databases['metrics-repro']?.[tableName];
 }
 
 function bodyOf(kb) {
@@ -117,7 +117,7 @@ export class Drain extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
 		const q = (name, def) => {
-			const v = query && (query.get ? query.get(name) : query[name]);
+			const v = query && (typeof query.get === 'function' ? query.get(name) : query[name]);
 			return v == null ? def : v;
 		};
 		const tableNames = String(q('tables', 'GenB,GenA'))
