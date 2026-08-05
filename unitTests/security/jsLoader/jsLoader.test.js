@@ -222,6 +222,33 @@ describe('pure-ESM package resolution', () => {
 		expect(resolutions).not.to.include('pure-esm-pkg');
 		expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/package.json'))).to.equal(true);
 	});
+
+	it('uses the ESM fallback for Bun MODULE_NOT_FOUND errors from bare packages', async () => {
+		const runtimeRoot = mkdtempSync(join(tmpdir(), 'harper-js-loader-bun-esm-'));
+		const packageRoot = join(runtimeRoot, 'node_modules', 'bun-esm-only-pkg');
+		const originalBun = Object.getOwnPropertyDescriptor(process.versions, 'bun');
+		try {
+			mkdirSync(packageRoot, { recursive: true });
+			writeFileSync(
+				join(packageRoot, 'package.json'),
+				JSON.stringify({
+					name: 'bun-esm-only-pkg',
+					type: 'module',
+					exports: { '.': { import: './index.mjs', require: './missing.cjs' } },
+				})
+			);
+			writeFileSync(join(packageRoot, 'index.mjs'), "export const value = 'bun-esm-only';\n");
+			writeFileSync(join(runtimeRoot, 'entry.mjs'), "export { value } from 'bun-esm-only-pkg';\n");
+			Object.defineProperty(process.versions, 'bun', { configurable: true, value: 'test' });
+
+			const result = await scopedImport(join(runtimeRoot, 'entry.mjs'), { ...vmScope(), runtimeRoot });
+			expect(result.value).to.equal('bun-esm-only');
+		} finally {
+			if (originalBun) Object.defineProperty(process.versions, 'bun', originalBun);
+			else delete process.versions.bun;
+			rmSync(runtimeRoot, { recursive: true, force: true });
+		}
+	});
 });
 
 describe('native addon delegation', () => {
