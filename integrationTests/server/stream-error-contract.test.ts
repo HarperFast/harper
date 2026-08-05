@@ -292,6 +292,17 @@ suite(
 			}
 		});
 
+		function assertMidStreamTermination(cap: RawCapture) {
+			strictEqual(cap.status, 200, `${cap.surface} mid-stream response should start 200, got ${cap.status}`);
+			ok(cap.totalBytes > 0, `${cap.surface} mid-stream response must include data before the throw`);
+			strictEqual(
+				cap.sawTerminalChunk,
+				VARIANT === 'uws',
+				`${cap.surface} mid-stream response terminal chunk did not match the ${VARIANT} contract`
+			);
+			assertServerTerminated(cap);
+		}
+
 		// ── Controls: clean completion baselines, one per surface ────────────────────────────────
 
 		test('control: SseHealth clean completion', { timeout: 20_000 }, async () => {
@@ -381,9 +392,7 @@ suite(
 			console.log(
 				`[QA-890][sse/mid] status=${cap.status} totalBytes=${cap.totalBytes} sawTerminalChunk=${cap.sawTerminalChunk}`
 			);
-			ok(cap.status === 200, `SSE mid-stream response should start 200, got ${cap.status}`);
-			ok(cap.totalBytes > 0, 'SSE mid-stream response must include data before the throw');
-			assertServerTerminated(cap);
+			assertMidStreamTermination(cap);
 		});
 
 		test('ndjson: mid-stream throw (2 of 5) -- raw byte capture', { timeout: 20_000 }, async () => {
@@ -399,9 +408,7 @@ suite(
 			console.log(
 				`[QA-890][ndjson/mid] status=${cap.status} totalBytes=${cap.totalBytes} sawTerminalChunk=${cap.sawTerminalChunk}`
 			);
-			ok(cap.status === 200, `NDJSON mid-stream response should start 200, got ${cap.status}`);
-			ok(cap.totalBytes > 0, 'NDJSON mid-stream response must include data before the throw');
-			assertServerTerminated(cap);
+			assertMidStreamTermination(cap);
 		});
 
 		test('iterable-rest: mid-stream throw (2 of 5) -- raw byte capture', { timeout: 20_000 }, async () => {
@@ -417,9 +424,7 @@ suite(
 			console.log(
 				`[QA-890][iterable-rest/mid] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
 			);
-			ok(cap.status === 200, `iterable REST mid-stream response should start 200, got ${cap.status}`);
-			ok(cap.totalBytes > 0, 'iterable REST mid-stream response must include data before the throw');
-			assertServerTerminated(cap);
+			assertMidStreamTermination(cap);
 		});
 
 		test('Z: liveness canary -- worker survived every throw shape above', { timeout: 30_000 }, async () => {
@@ -430,6 +435,9 @@ suite(
 			console.log(`[QA-890][Z] probe counters: ${p ? JSON.stringify(p) : 'DEAD'}`);
 			ok(p !== null, 'Harper must still respond to Probe/ after all streaming cases');
 			strictEqual(p.status, 200, `Probe/ must 200, got ${p.status}`);
+			for (const name of ['ssePreYield', 'sseMidStream', 'sseHealth', 'iterPreYield', 'iterMidStream', 'iterHealth']) {
+				strictEqual(p[name]?.opened, p[name]?.closed, `${name} generator was not closed`);
+			}
 		});
 	}
 );

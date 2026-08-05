@@ -59,6 +59,7 @@ import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 import request from 'supertest';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { waitFor } from '../../unitTests/waitFor.js';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from './../apiTests/utils/client.mjs';
 
@@ -238,6 +239,10 @@ function analyze(delivered: Delivered[], id: string, issued: number) {
 	};
 }
 
+function lastDeliveredSeq(delivered: Delivered[], id: string, tag: string) {
+	return delivered.filter((event) => event.id === id && event.tag === tag).at(-1)?.seq;
+}
+
 function runSuite(threadCount: 1 | 4) {
 	suite(`QA-883 subscription coalescing [threads=${threadCount}]`, { skip: skipSuite }, (ctx: ContextWithHarper) => {
 		let client: ReturnType<typeof createApiClient>;
@@ -347,14 +352,8 @@ function runSuite(threadCount: 1 | 4) {
 		 * rate 'burst' = all `count` writes fired via Promise.all with no await between issuance —
 		 *                genuine overlapping/concurrent commits, "tight loop, no await between".
 		 */
-		async function driveAndMeasure(opts: {
-			label: string;
-			id: string;
-			count: number;
-			rate: 'slow' | 'burst';
-			settleMs?: number;
-		}) {
-			const { label, id, count, rate, settleMs = 150 } = opts;
+		async function driveAndMeasure(opts: { label: string; id: string; count: number; rate: 'slow' | 'burst' }) {
+			const { label, id, count, rate } = opts;
 			const tag = `${label}-${Date.now()}`;
 
 			const sse = track(await openSse(`${restBase}/${TABLE}/`, authHeaders));
@@ -376,8 +375,21 @@ function runSuite(threadCount: 1 | 4) {
 				if (rate === 'slow') {
 					for (let seq = 1; seq <= count; seq++) {
 						const res = await restPut(id, { id, value: seq, seq, tag });
-						if (res.status === 204) issued++;
-						await sleep(settleMs);
+						strictEqual(res.status, 204, `[${label}] write ${seq} must succeed before measuring delivery`);
+						issued++;
+						await waitFor(
+							async () => {
+								const inProc = threadCount === 1 ? await inProcEvents() : [];
+								const sseEvents = sse.events.map(sseDelivered).filter((event): event is Delivered => !!event);
+								const mqttEvents = mqCollect?.events ?? [];
+								return (
+									lastDeliveredSeq(sseEvents, id, tag) === seq &&
+									(!mqCollect || lastDeliveredSeq(mqttEvents, id, tag) === seq) &&
+									(threadCount !== 1 || lastDeliveredSeq(inProc, id, tag) === seq)
+								);
+							},
+							{ timeout: 15_000, interval: 50, message: `[${label}] write ${seq} was not delivered on every surface` }
+						);
 					}
 				} else {
 					const puts = [];
@@ -387,24 +399,24 @@ function runSuite(threadCount: 1 | 4) {
 				}
 				const writeMs = Date.now() - t0;
 
-				// Wait until each surface's delivery count stops moving instead of assuming a fixed delay.
-				const settleDeadline = Date.now() + Math.min(15_000, 3_000 + count * 30);
-				let stableRounds = 0;
-				let lastTotal = -1;
-				while (stableRounds < 3 && Date.now() < settleDeadline) {
-					const inProcTotal =
-						threadCount === 1 ? (await inProcEvents()).filter((e) => e.id === id && e.tag === tag).length : 0;
-					const sseTotal = sse.events.filter((e) => sseDelivered(e)?.id === id && sseDelivered(e)?.tag === tag).length;
-					const mqttTotal = mqCollect?.events.filter((e) => e.id === id && e.tag === tag).length ?? 0;
-					const total = sseTotal + mqttTotal + inProcTotal;
-					const everyLedgerReceived =
-						sseTotal > 0 && (!mqCollect || mqttTotal > 0) && (threadCount !== 1 || inProcTotal > 0);
-					if (everyLedgerReceived && total === lastTotal) stableRounds++;
-					else stableRounds = 0;
-					lastTotal = total;
-					await sleep(300);
-				}
-				ok(stableRounds === 3, `[${label}] subscriptions did not settle before the deadline`);
+				const finalRes = await request(restBase)
+					.get(`/${TABLE}/${encodeURIComponent(id)}`)
+					.set(client.headers);
+				strictEqual(finalRes.status, 200, `[${label}] final GET must succeed`);
+				const finalSeq = (finalRes.body as any)?.seq;
+				await waitFor(
+					async () => {
+						const inProc = threadCount === 1 ? await inProcEvents() : [];
+						const sseEvents = sse.events.map(sseDelivered).filter((event): event is Delivered => !!event);
+						const mqttEvents = mqCollect?.events ?? [];
+						return (
+							lastDeliveredSeq(sseEvents, id, tag) === finalSeq &&
+							(!mqCollect || lastDeliveredSeq(mqttEvents, id, tag) === finalSeq) &&
+							(threadCount !== 1 || lastDeliveredSeq(inProc, id, tag) === finalSeq)
+						);
+					},
+					{ timeout: 15_000, interval: 50, message: `[${label}] final value was not delivered on every surface` }
+				);
 
 				const sseDeliveredEvents = sse.events
 					.map(sseDelivered)
@@ -424,14 +436,6 @@ function runSuite(threadCount: 1 | 4) {
 					const inProcOwn = inProc.filter((e) => e.id === id && e.tag === tag);
 					inProcStats = analyze(inProcOwn, id, issued);
 				}
-
-				// Ground truth for terminal-value correctness (meaningful even under concurrent/unordered
-				// commits, where our own issuance-order `seq` labels do NOT define commit order): the
-				// actual stored record after everything settles.
-				const finalRes = await request(restBase)
-					.get(`/${TABLE}/${encodeURIComponent(id)}`)
-					.set(client.headers);
-				const finalSeq = (finalRes.body as any)?.seq;
 
 				console.log(
 					`\n[QA-883][${label}] rate=${rate} threads=${threadCount} id=${id} issued=${issued} writeMs=${writeMs} finalStoredSeq=${finalSeq}\n` +
@@ -455,7 +459,6 @@ function runSuite(threadCount: 1 | 4) {
 				id: `slow-${threadCount}`,
 				count: COUNT,
 				rate: 'slow',
-				settleMs: 200,
 			});
 			strictEqual(issued, COUNT, `all ${COUNT} slow writes must succeed before measuring delivery`);
 
@@ -547,28 +550,34 @@ function runSuite(threadCount: 1 | 4) {
 					}
 					const issuedTotal = [...issuedById.values()].reduce((total, issued) => total + issued, 0);
 
-					const settleDeadline = Date.now() + 15_000;
-					let stableRounds = 0;
-					let lastTotal = -1;
-					while (stableRounds < 3 && Date.now() < settleDeadline) {
-						const inProcEventsForTag = (await inProcEvents()).filter((e) => e.tag === tag);
-						const sseEventsForTag = sse.events.map(sseDelivered).filter((e): e is Delivered => e?.tag === tag);
-						const mqttEventsForTag = mqCollect?.events.filter((e) => e.tag === tag) ?? [];
-						const total = sseEventsForTag.length + mqttEventsForTag.length + inProcEventsForTag.length;
-						const everyLedgerReceived = Array.from({ length: IDS }, (_, i) => {
-							const id = runId(i);
-							return (
-								sseEventsForTag.some((e) => e.id === id) &&
-								mqttEventsForTag.some((e) => e.id === id) &&
-								inProcEventsForTag.some((e) => e.id === id)
-							);
-						}).every(Boolean);
-						if (everyLedgerReceived && total === lastTotal) stableRounds++;
-						else stableRounds = 0;
-						lastTotal = total;
-						await sleep(300);
+					const finalSeqById = new Map<string, number>();
+					for (let i = 0; i < IDS; i++) {
+						const id = runId(i);
+						const finalRes = await request(restBase)
+							.get(`/${TABLE}/${encodeURIComponent(id)}`)
+							.set(client.headers);
+						strictEqual(finalRes.status, 200, `final GET for ${id} must succeed`);
+						finalSeqById.set(id, (finalRes.body as any)?.seq);
 					}
-					ok(stableRounds === 3, 'many-id subscriptions did not settle before the deadline');
+					await waitFor(
+						async () => {
+							const inProcEventsForTag = (await inProcEvents()).filter((event) => event.tag === tag);
+							const sseEventsForTag = sse.events
+								.map(sseDelivered)
+								.filter((event): event is Delivered => event?.tag === tag);
+							const mqttEventsForTag = mqCollect?.events.filter((event) => event.tag === tag) ?? [];
+							return Array.from({ length: IDS }, (_, i) => {
+								const id = runId(i);
+								const finalSeq = finalSeqById.get(id);
+								return (
+									lastDeliveredSeq(sseEventsForTag, id, tag) === finalSeq &&
+									lastDeliveredSeq(mqttEventsForTag, id, tag) === finalSeq &&
+									lastDeliveredSeq(inProcEventsForTag, id, tag) === finalSeq
+								);
+							}).every(Boolean);
+						},
+						{ timeout: 15_000, interval: 50, message: 'many-id final values were not delivered on every surface' }
+					);
 
 					const inProc = (await inProcEvents()).filter((e) => e.tag === tag);
 					const sseEvents = sse.events.map(sseDelivered).filter((e): e is Delivered => e?.tag === tag);
@@ -607,11 +616,7 @@ function runSuite(threadCount: 1 | 4) {
 						const id = runId(i);
 						const issued = issuedById.get(id) ?? 0;
 						strictEqual(issued, PER_ID, `all writes for ${id} must succeed before measuring delivery`);
-						const finalRes = await request(restBase)
-							.get(`/${TABLE}/${encodeURIComponent(id)}`)
-							.set(client.headers);
-						strictEqual(finalRes.status, 200, `final GET for ${id} must succeed`);
-						const finalSeq = (finalRes.body as any)?.seq;
+						const finalSeq = finalSeqById.get(id);
 						const ip = analyze(inProc, id, issued);
 						ok(ip.receivedCount > 0, `in-process probe must deliver at least one event for ${id}`);
 						strictEqual(
