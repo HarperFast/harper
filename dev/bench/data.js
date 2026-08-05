@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785830890190,
+  "lastUpdate": 1785917361084,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -3530,6 +3530,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1019.62,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "1201afb01221c87fd298babef05d12e38dc99755",
+          "message": "Close remaining bypass_auth trust gaps in MCP tokens and SQL AST checks\n\nTwo review findings on the operation-authorization refactor:\n- createTokens() still trusted a caller-supplied authObj.bypass_auth\n  field, and MCP's tool handler didn't strip it — an MCP caller could\n  spoof bypass_auth and mint tokens for an arbitrary username without a\n  password. createTokens now reads only the trusted ALS-scoped\n  isOperationAuthorizationBypassed() state; MCP strips bypass_auth/\n  bypassAuth from tool args before dispatch as defense in depth.\n- processAST() still read jsonMessage.bypass_auth from the body, so\n  trusted authorize=false SQL calls (via legacy differential dispatch)\n  were being re-authorized. processAST now consults the same ALS-scoped\n  bypass state; differential.ts's runLegacy wraps evaluateSQL in\n  runWithOperationAuthorizationBypass instead of passing bypass_auth in\n  the message body.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-27T15:25:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/1201afb01221c87fd298babef05d12e38dc99755"
+        },
+        "date": 1785917359912,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6280.42,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8095.4,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 7730.37,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6513.9,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4935.75,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8066.38,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1027.84,
             "unit": "ops/sec"
           }
         ]
