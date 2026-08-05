@@ -132,34 +132,66 @@ export function shouldAbortSlowReplay(totalElapsedMs: number, timeLimitMs = REPL
 }
 
 /**
- * Wraps a transaction-log query iterator so a corrupt/torn frame ends that log's iteration
- * cleanly instead of escaping as an uncaughtException. rocksdb-js throws a bounded RangeError
- * when an entry's framing is broken; framing loss means the next entry can't be located, so the
- * frame marks end-of-log (entries before it were already yielded) and startup replay /
- * replication broadcast continue. `onCorruptFrame` fires once, latched — kept a callback (not a
- * direct log) so this module stays out of the Harper module graph and is unit-testable.
+ * Maximum corrupt frames to resync past within one iteration of a single log. A log with more
+ * breaks than this is damaged beyond "one interrupted append", and walking a long chain of them
+ * per drain is not worth the CPU; iteration ends at that point, exactly as it did before resync
+ * existed. Every break is still reported, so the count is visible rather than implied.
+ */
+export const MAX_RESYNCS_PER_ITERATION = 32;
+
+/**
+ * Wraps a transaction-log query iterator so a corrupt/torn frame is contained instead of escaping
+ * as an uncaughtException.
+ *
+ * Two shapes, which must be handled differently (harper#2016, harper#2063):
+ *
+ * - **Torn tail** — nothing valid follows the break, so the frame really is end-of-log. Iteration
+ *   ends; entries before it were already yielded. This is what open-time recovery in rocksdb-js
+ *   would have truncated to anyway.
+ * - **Mid-log break** — a partial append (ENOSPC/EDQUOT) the process survived, so valid entries
+ *   were appended *after* it and acknowledged to clients. Treating that as end-of-log amputates
+ *   every one of them: replay silently rolls the table back to the tear and replication starves
+ *   the peer, permanently, because each new drain restarts from the same resume cursor and stops
+ *   at the same frame. So iteration resyncs past the break and keeps delivering.
+ *
+ * The two are distinguished by `resyncPosition` on rocksdb-js's `CorruptFrameError`, which is the
+ * offset where valid framing resumes. Against a rocksdb-js without it (or any other RangeError),
+ * every break reads as a torn tail — the previous behavior.
+ *
+ * `onCorruptFrame` fires once per break (not once per log) and receives the number of bytes lost,
+ * so a caller can escalate a mid-log break and surface it as a health signal rather than leaving
+ * a wedged stream indistinguishable from a healthy one.
  */
 export function endIteratorOnCorruptFrame<T>(
 	iterator: Iterator<T>,
-	onCorruptFrame: (error: RangeError) => void
+	onCorruptFrame: (error: RangeError, resynced: boolean, unreadableBytes: number) => void
 ): IterableIterator<T> {
 	let stopped = false;
+	let resyncs = 0;
 	return {
 		[Symbol.iterator]() {
 			return this;
 		},
 		next(): IteratorResult<T> {
-			if (stopped) return { done: true, value: undefined };
-			try {
-				return iterator.next();
-			} catch (error) {
-				// Key on the class, not the message: the framing RangeError's wording is
-				// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
-				if (!(error instanceof RangeError)) throw error;
-				stopped = true;
-				onCorruptFrame(error);
-				return { done: true, value: undefined };
+			while (!stopped) {
+				try {
+					return iterator.next();
+				} catch (error) {
+					// Key on the class, not the message: the framing RangeError's wording is
+					// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
+					if (!(error instanceof RangeError)) throw error;
+					// A resync position means intact entries follow, and the reader has already
+					// positioned itself there — calling next() again resumes past the break.
+					const { resyncPosition, unreadableBytes } = error as RangeError & {
+						resyncPosition?: number;
+						unreadableBytes?: number;
+					};
+					const canResync = resyncPosition !== undefined && ++resyncs <= MAX_RESYNCS_PER_ITERATION;
+					if (!canResync) stopped = true;
+					onCorruptFrame(error, canResync, unreadableBytes ?? 0);
+				}
 			}
+			return { done: true, value: undefined };
 		},
 		// Forward early termination (for-of break/return/throw) so the source's cleanup runs;
 		// mark stopped first. Current rocksdb-js implements neither — hence the protocol defaults.

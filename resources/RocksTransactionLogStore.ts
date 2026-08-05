@@ -23,11 +23,84 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	removeLog(logName: string);
 };
 
-// Logs (once per log) when a corrupt frame ends a query iterator early; see
-// endIteratorOnCorruptFrame in replayLogsGuards.ts for why this is end-of-log, not a crash.
-function warnCorruptFrame(logName: string) {
-	return (error: RangeError) =>
-		harperLogger.warn(`Stopping transaction log "${logName}" at a corrupt entry during replay`, error);
+/**
+ * A corrupt transaction-log frame, accumulated across every drain and boot for the life of the
+ * process. A break is not a per-drain event: the same frame is re-encountered by each new reader
+ * until every consumer's resume cursor has passed it, and before harper#2063 that condition was
+ * observable only as repeating log lines. Keyed by (log, file, offset) so the log line is emitted
+ * once per distinct break and the repeats become a count.
+ *
+ * Deliberately a *report*, not an exclusion list. Excluding the log would be worse than the break:
+ * `excludeLogs` is keyed on the log *name*, i.e. an entire per-node stream (`'local'` is this
+ * node's own writes), so dropping it stops every future entry on that stream from replicating —
+ * turning one lost frame into a permanently dead stream. Resyncing past the break keeps the stream
+ * alive; this makes the loss visible.
+ */
+export interface CorruptFrameReport {
+	log: string;
+	logId?: number;
+	position?: number;
+	/** Bytes skipped to resume framing; 0 when nothing valid followed the break. */
+	unreadableBytes: number;
+	/** `false` when the break ended iteration (a torn tail, or the resync cap was hit). */
+	resynced: boolean;
+	firstSeen: number;
+	lastSeen: number;
+	occurrences: number;
+}
+
+const corruptFrameReports = new Map<string, CorruptFrameReport>();
+
+/**
+ * Every corrupt transaction-log frame seen by this process. Consumed by cluster/health status so a
+ * stream that has lost entries is distinguishable from a healthy one without grepping logs —
+ * the field incident behind harper#2063 ran 11 days with `connected: true` throughout.
+ */
+export function getCorruptFrameReports(): CorruptFrameReport[] {
+	return [...corruptFrameReports.values()];
+}
+
+// Test seam; there is no production reason to forget a break.
+export function clearCorruptFrameReports() {
+	corruptFrameReports.clear();
+}
+
+/**
+ * Records a corrupt frame and logs it once per distinct break. A mid-log break is an `error`, not a
+ * `warn`: entries written and acknowledged after it were skipped, so this is data loss, not a
+ * tolerable end-of-log. A torn tail stays a `warn` — nothing followed it to lose.
+ */
+function reportCorruptFrame(logName: string) {
+	return (error: RangeError, resynced: boolean, unreadableBytes: number) => {
+		const { logId, position } = error as RangeError & { logId?: number; position?: number };
+		const key = `${logName}:${logId}:${position}`;
+		const now = Date.now();
+		const existing = corruptFrameReports.get(key);
+		if (existing) {
+			existing.occurrences++;
+			existing.lastSeen = now;
+			return;
+		}
+		corruptFrameReports.set(key, {
+			log: logName,
+			logId,
+			position,
+			unreadableBytes,
+			resynced,
+			firstSeen: now,
+			lastSeen: now,
+			occurrences: 1,
+		});
+		if (resynced) {
+			harperLogger.error(
+				`Corrupt entry in transaction log "${logName}"; skipped ${unreadableBytes} unreadable byte(s) and resumed reading after it. ` +
+					`Entries within that span are lost to replay and replication and cannot be recovered from this log.`,
+				error
+			);
+		} else {
+			harperLogger.warn(`Stopping transaction log "${logName}" at a corrupt entry during replay`, error);
+		}
+	};
 }
 
 /**
@@ -254,7 +327,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					log = this.rootStore.useLog(options.log);
 				}
 			}
-			const queryIterator = endIteratorOnCorruptFrame(log.query(options), warnCorruptFrame(log.name));
+			const queryIterator = endIteratorOnCorruptFrame(log.query(options), reportCorruptFrame(log.name));
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
@@ -305,7 +378,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								// condition of potentially missing an initial update
 								queryOptions = { ...options, start: options.start ?? 0 };
 							}
-							iterators.push(endIteratorOnCorruptFrame(log.query(queryOptions), warnCorruptFrame(log.name)));
+							iterators.push(endIteratorOnCorruptFrame(log.query(queryOptions), reportCorruptFrame(log.name)));
 						}
 					}
 					latestUpdates = this.updates;

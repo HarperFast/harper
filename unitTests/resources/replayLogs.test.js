@@ -7,6 +7,7 @@ const {
 	isUndecodableValidatedWrite,
 	RECORD_BEARING_FLAGS,
 	endIteratorOnCorruptFrame,
+	MAX_RESYNCS_PER_ITERATION,
 	shouldAbortStalledReplay,
 	REPLAY_NO_PROGRESS_COUNT_LIMIT,
 	REPLAY_NO_PROGRESS_TIME_LIMIT_MS,
@@ -133,6 +134,80 @@ describe('endIteratorOnCorruptFrame', () => {
 		assert.deepStrictEqual(wrapped.next(), { done: true, value: undefined });
 		assert.strictEqual(calls, 3);
 		assert.strictEqual(reported.length, 1);
+	});
+
+	// harper#2016 / harper#2063: a mid-log break has intact, already-acknowledged entries behind
+	// it. rocksdb-js reports where framing resumes and leaves the reader positioned there, so the
+	// wrapper must keep pulling — treating it as end-of-log amputates every later entry, and every
+	// future drain restarts from the same cursor and stops at the same frame.
+	it('resyncs past a mid-log corrupt frame and keeps yielding the entries after it', () => {
+		let calls = 0;
+		const source = {
+			next() {
+				calls++;
+				if (calls === 1) return { done: false, value: 'a' };
+				if (calls === 2) {
+					const error = new RangeError('declared length 1778384896 overruns the log (limit=5439)');
+					error.resyncPosition = 0x7d3f;
+					error.unreadableBytes = 26;
+					throw error;
+				}
+				if (calls === 3) return { done: false, value: 'b' };
+				return { done: true, value: undefined };
+			},
+		};
+		const reported = [];
+		const wrapped = endIteratorOnCorruptFrame(source, (error, resynced, unreadableBytes) =>
+			reported.push({ error, resynced, unreadableBytes })
+		);
+
+		assert.deepStrictEqual([...wrapped], ['a', 'b']);
+		assert.strictEqual(reported.length, 1);
+		assert.strictEqual(reported[0].resynced, true);
+		assert.strictEqual(reported[0].unreadableBytes, 26);
+	});
+
+	it('stops resyncing once a log exceeds the per-iteration cap', () => {
+		let calls = 0;
+		const source = {
+			next() {
+				calls++;
+				const error = new RangeError('corrupt');
+				error.resyncPosition = calls * 100;
+				error.unreadableBytes = 8;
+				throw error;
+			},
+		};
+		const reported = [];
+		const wrapped = endIteratorOnCorruptFrame(source, (error, resynced) => reported.push(resynced));
+
+		assert.deepStrictEqual(wrapped.next(), { done: true, value: undefined });
+		// the cap is what ends iteration, and the break that hit it is reported as not-resynced
+		assert.strictEqual(calls, MAX_RESYNCS_PER_ITERATION + 1);
+		assert.strictEqual(reported.length, MAX_RESYNCS_PER_ITERATION + 1);
+		assert.strictEqual(reported.at(-1), false);
+		// latched afterwards: no further pulls on the source
+		assert.deepStrictEqual(wrapped.next(), { done: true, value: undefined });
+		assert.strictEqual(calls, MAX_RESYNCS_PER_ITERATION + 1);
+	});
+
+	it('treats a RangeError with no resync position as end-of-log (older rocksdb-js)', () => {
+		let calls = 0;
+		const source = {
+			next() {
+				calls++;
+				if (calls === 1) return { done: false, value: 'a' };
+				throw new RangeError('truncated entry header');
+			},
+		};
+		const reported = [];
+		const wrapped = endIteratorOnCorruptFrame(source, (error, resynced, unreadableBytes) =>
+			reported.push({ resynced, unreadableBytes })
+		);
+
+		assert.deepStrictEqual([...wrapped], ['a']);
+		assert.deepStrictEqual(reported, [{ resynced: false, unreadableBytes: 0 }]);
+		assert.strictEqual(calls, 2);
 	});
 
 	it('does not swallow non-RangeError failures', () => {
