@@ -144,12 +144,12 @@ mediaTypes.set('text/event-stream', {
 		if (message.data || message.event) {
 			let serialized = '';
 			if (message.event) serialized += 'event: ' + message.event + '\n';
-			if (message.data) {
+			if (message.data != null) {
 				let data = message.data;
 				if (typeof data === 'object') data = JSONStringify(data);
 				serialized += 'data: ' + data + '\n';
 			}
-			if (message.id) serialized += 'id: ' + message.id + '\n';
+			if (message.id != null) serialized += 'id: ' + message.id + '\n';
 			if (message.retry) serialized += 'retry: ' + message.retry + '\n';
 			return serialized + '\n';
 		} else {

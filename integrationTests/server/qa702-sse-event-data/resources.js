@@ -24,12 +24,11 @@
 //     Resource over `Accept: text/event-stream`: contentTypes.ts's `text/event-stream` media type
 //     `serialize()`, invoked via `resource.connect()`. It's the client-visible "neighbour" of the
 //     guarded path — same conceptual contract (turning a `{event, data}` message into SSE wire
-//     bytes) — and, as this suite documents, has a DIFFERENT (already-defensive, pre-existing)
-//     falsy-data guard: `if (message.data) { ...emit a data: line... }` silently OMITS the `data:`
-//     field entirely for any falsy `data` (undefined/null/''/0/false), rather than crashing OR
-//     emitting an explicit empty/`null` line the way the fixed writeSSE() does. That's a KNOWN
-//     DEFECT tracked as harper#2026 (which also covers the identical `id: 0` omission below), not
-//     a crash and not an intended contract — see the test file for the assertions this fixture backs.
+//     bytes) — and previously had a DIFFERENT (already-defensive, pre-existing) falsy-data guard:
+//     `if (message.data) { ...emit a data: line... }` silently omitted the `data:` field entirely
+//     for any falsy `data` (undefined/null/''/0/false). That was harper#2026 (which also covered
+//     the identical `id: 0` omission below); the guard is now `!= null` so only undefined/null
+//     omit their field — see the test file for the assertions this fixture backs.
 //
 // (b) Re-characterization of F-133 ("SSE hang on generator that throws mid-stream") on current
 //     main: ThrowGen below is the same shape QA-537 used to document the (at the time) still-open

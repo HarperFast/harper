@@ -23,16 +23,14 @@
  *
  *     So instead, this suite covers the SIBLING encoder any Harper Resource client actually sees:
  *     contentTypes.ts's `text/event-stream` media-type `serialize()`, invoked via
- *     `resource.connect()`. It has a DIFFERENT, pre-existing falsy-data guard
- *     (`if (message.data) { ...emit data: line... }`) that silently OMITS the `data:` field
+ *     `resource.connect()`. It previously had a DIFFERENT, pre-existing falsy-data guard
+ *     (`if (message.data) { ...emit data: line... }`) that silently OMITTED the `data:` field
  *     entirely for any falsy value (undefined/null/''/0/false) rather than crashing OR emitting
- *     an explicit empty/`null` line the way the fixed writeSSE() does — a KNOWN DEFECT on this code
- *     path (harper#2026: `EventSource` never dispatches a frame with an empty data buffer, so a
- *     legitimate falsy payload like `data: false` is silently never seen by the client), not a
- *     #1863 regression check and not an intended contract. Pinned deliberately so the fix in
- *     harper#2026 shows up here as an expected assertion update, not a surprise regression. Flagged
- *     rather than fixed in THIS PR since changing the encoder is a production-code, cross-encoder
- *     decision (see above), not a test fix. See
+ *     an explicit empty/`null` line the way the fixed writeSSE() does — that was harper#2026
+ *     (`EventSource` never dispatches a frame with an empty data buffer, so a legitimate falsy
+ *     payload like `data: false` was silently never seen by the client). #2026 fixed the guard to
+ *     `message.data != null` (and `message.id != null`), so only undefined/null now omit their
+ *     field; this suite's assertions were updated alongside the fix. See
  *     integrationTests/qa-scratch/qa702-sse-event-data/resources.js for the full writeup.
  *
  * (b) F-133 re-characterization: does a resource.connect() async generator that throws mid-stream
@@ -277,18 +275,18 @@ suite(
 		//        itself (unreachable from here -- see file header for why, and for the actual #1863
 		//        anchor at unitTests/server/serverHelpers/progressEmitter.test.js) ────────────────────
 		//
-		// `hasData: false` cases exercise this encoder's OWN (pre-existing, different) falsy guard
-		// -- `if (message.data) {...}` -- which OMITS the `data:` field entirely for a falsy value,
-		// rather than crashing (the #1863 bug, on the other encoder) or emitting an explicit
-		// empty/`null` line (writeSSE()'s fixed behavior). That's the actual, current wire contract
-		// on THIS encoder; asserted here, not assumed.
+		// harper#2026 fix: the guard is now `message.data != null`, so only `undefined`/`null`
+		// omit the `data:` field entirely -- `''`/`0`/`false` are legitimate values and now emit
+		// their (string-coerced) `data:` line, matching the HTML EventSource spec (an empty data
+		// buffer is the only thing that gets silently discarded by a client, and now only
+		// undefined/null produce one).
 
 		const cases: Array<{ name: string; path: string; hasData: boolean; expectedData?: string }> = [
 			{ name: 'undefined', path: 'UndefinedPayload', hasData: false },
 			{ name: 'null', path: 'NullPayload', hasData: false },
-			{ name: 'empty string', path: 'EmptyStringPayload', hasData: false },
-			{ name: '0', path: 'ZeroPayload', hasData: false },
-			{ name: 'false', path: 'FalsePayload', hasData: false },
+			{ name: 'empty string', path: 'EmptyStringPayload', hasData: true, expectedData: '' },
+			{ name: '0', path: 'ZeroPayload', hasData: true, expectedData: '0' },
+			{ name: 'false', path: 'FalsePayload', hasData: true, expectedData: 'false' },
 			{
 				name: 'plain object (no "data" key)',
 				path: 'PlainObjectPayload',
@@ -345,7 +343,7 @@ suite(
 						strictEqual(
 							'data' in payloadBlock!,
 							false,
-							`expected NO data: field for falsy value ${c.name} -- pinning a KNOWN DEFECT (harper#2026: EventSource never dispatches an empty-data frame, so a client silently never sees a legitimate falsy payload), not an intended contract; got: ${JSON.stringify(payloadBlock)}`
+							`expected NO data: field for ${c.name} -- absence (undefined/null), not falsiness, is what omits the data: line; got: ${JSON.stringify(payloadBlock)}`
 						);
 					}
 
@@ -368,20 +366,15 @@ suite(
 			);
 		}
 
-		// harper#2026 has an `id: 0` half too (contentTypes.ts:152's `if (message.id)` drops the
-		// reconnect cursor `id: 0` by the identical mechanism), otherwise unpinned by the `hasData`
-		// matrix above -- pin it explicitly so #2026's eventual fix updates this assertion too.
-		test('a: event.id = 0 (with real data) -- id: 0 silently omitted, KNOWN DEFECT harper#2026', async () => {
+		// harper#2026 fix: `id: 0` is a legitimate reconnect cursor and must now be emitted
+		// (contentTypes.ts's guard is `message.id != null`, not truthiness).
+		test('a: event.id = 0 (with real data) -- id: 0 is emitted (harper#2026 fixed)', async () => {
 			const r = await consumeSse(`${restBase}/IdZeroPayload/`, authHeaders, 15_000);
 			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
 			const payloadBlock = parseSseBlocks(r.raw).find((b) => b.event === 'payload');
 			ok(payloadBlock, `expected a 'payload' event block. raw:\n${r.raw}`);
 			strictEqual(payloadBlock!.data, 'id-zero-probe', 'data field should be unaffected by the id value');
-			strictEqual(
-				'id' in payloadBlock!,
-				false,
-				`expected NO id: field for id=0 -- pinning KNOWN DEFECT harper#2026, not an intended contract; got: ${JSON.stringify(payloadBlock)}`
-			);
+			strictEqual(payloadBlock!.id, '0', `expected id: 0 to be emitted; got: ${JSON.stringify(payloadBlock)}`);
 		});
 
 		// ── (b) F-133 re-characterization: generator throws mid-stream ─────────────────────────
