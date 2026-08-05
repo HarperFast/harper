@@ -64,6 +64,11 @@ type StorageInfo = {
 	saved?: boolean; // saving settled successfully; distinguishes durable from still-streaming when fileId is already assigned
 	asString?: string;
 	deleteOnFailure?: boolean;
+	// This blob's file has been unlinked (deleteBlob). The blob object outlives its file — the fileId
+	// stays set, and saveBlob short-circuits on a set fileId — so without this marker a caller still
+	// holding the instance (the deploy recorder re-puts the same record object across a deploy) would
+	// silently re-encode a reference to a destroyed file. See issue #2062.
+	discarded?: boolean;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -1276,6 +1281,9 @@ function runReclamation(): void {
 		// Keep the entry until the unlink lands so a concurrent re-reference can tell that the file is
 		// already going away instead of silently adopting a doomed path.
 		pending.unlinking = true;
+		// Once reclamation has claimed this file, a later write must not preserve its soon-to-be-deleted
+		// fileId. The retention window above still permits legitimate re-references before this point.
+		if (storageInfo) storageInfo.discarded = true;
 		unlink(filePath, (error) => {
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;
@@ -1345,6 +1353,15 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
 		storageInfoForBlob.set(blob, storageInfo);
 	} else {
+		if (storageInfo.discarded) {
+			// The file this blob was saved to has been deleted (an aborted/skipped write's cleanup, or an
+			// explicit delete). Re-storing it would commit a reference to a file that no longer exists —
+			// a permanently unreadable record, and for a replicated one a blob the peer can never fetch.
+			// Fail here, where the cause is still known, instead of at the eventual read (issue #2062).
+			throw new Error(
+				'Blob was discarded (its file was deleted by an aborted or superseded write) and can no longer be stored; the data must be re-supplied'
+			);
+		}
 		if (storageInfo.fileId) return storageInfo; // if there is any file id, we are already saving and can return the info
 		storageInfo.store = currentStore;
 	}

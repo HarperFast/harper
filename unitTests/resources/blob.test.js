@@ -11,6 +11,7 @@ const {
 	blobFileMissingOrIncomplete,
 	repairBlobFile,
 	getFilePathForBlob,
+	deleteBlob,
 	setDeletionDelay,
 	holdBlobFile,
 	getBlobHoldStateForTesting,
@@ -1007,6 +1008,28 @@ describe('Blob test', () => {
 		assert(ids.has(getFileId(blob)));
 		assert.equal(collectRetainedFileIds(null), undefined); // no record
 		assert.equal(collectRetainedFileIds({ no: 'blobs' }), undefined); // no blobs → no set allocated
+	});
+	it('#2062: a blob whose file was deleted cannot be silently re-stored', async () => {
+		// A blob instance outlives its file: the fileId stays set and saveBlob short-circuits on it, so a
+		// caller still holding the instance (the deploy recorder re-puts the same record object across a
+		// deploy) would otherwise mint a second reference to a destroyed file — a permanently unreadable
+		// record, and one replication can never satisfy on a peer. Fail where the cause is still known.
+		setDeletionDelay(0);
+		const blob = createBlob(Buffer.alloc(20000, 'e'));
+		const record = { id: 2062, blob };
+		await BlobTest.put(record);
+		const filePath = getFilePathForBlob(blob);
+		deleteBlob(blob); // as an aborted/skipped write's cleanup does
+		await waitFor(() => !existsSync(filePath), { message: `discarded blob ${filePath} should be deleted` });
+		// the failure surfaces synchronously from the record encode, so catch rather than assert.rejects
+		let storeError;
+		try {
+			await BlobTest.put(record);
+		} catch (error) {
+			storeError = error;
+		}
+		assert.match(storeError?.message ?? '', /discarded/, 're-storing a discarded blob must fail loudly');
+		await BlobTest.delete(2062); // leave no record referencing the destroyed file
 	});
 	it('cleanupUnusedBlobs is a no-op for unsaved blobs and clears the list', () => {
 		const unsavedBlob = createBlob(Buffer.from('not yet saved'));

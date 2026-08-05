@@ -8,8 +8,11 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
+const { PassThrough } = require('node:stream');
 const { RocksDatabase, registryStatus } = require('@harperfast/rocksdb-js');
+const { createBlob } = require('#src/resources/blob');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const { waitFor } = require('../waitFor.js');
 describe('Txn Expiration', () => {
 	let SlowResource,
 		performedDBInteractions = false;
@@ -488,6 +491,74 @@ describe('Write txn timeout', () => {
 			assert.strictEqual(aborted, 1, 'a failed direct commit must release the handle it orphaned');
 			assert.strictEqual(txn.transaction, null);
 		});
+	});
+});
+
+// The open-transaction limit polices the APPLICATION holding a transaction open with an unfinished write
+// set. Once commit() has been entered the write set is sealed and the caller is awaiting the commit, so
+// time spent in the pre-commit phase (`before`/`beforeIntermediate` — in practice a blob's durable file
+// write) is core's own I/O and must not be poisoned: a multi-tens-of-MB deploy payload legitimately takes
+// longer than the limit, and aborting there both drops the write and unlinks the blob the write
+// references, leaving the caller holding a blob whose file is gone (issue #2062).
+describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', () => {
+	let BlobResource;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		BlobResource = table({
+			table: 'CommitPhaseBlobTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+
+	function setExpiration(ms) {
+		return BlobResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
+	}
+
+	it('lets a commit whose blob save outruns the limit finish, keeping the record and its blob', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		setExpiration(20);
+		try {
+			const context = {};
+			const committing = transaction(context, async () => {
+				await BlobResource.put({ id: 2062, blob }, context);
+			});
+			slow.write(Buffer.alloc(16384, 'a'));
+			await delay(150); // the monitor fires repeatedly while the commit waits on the blob write
+			slow.end(Buffer.alloc(16384, 'b'));
+			await committing;
+		} finally {
+			setExpiration(30000);
+		}
+		const stored = await BlobResource.get(2062);
+		assert.ok(stored, 'the write must not be dropped while its blob save runs past the limit');
+		assert.equal((await stored.blob.bytes()).length, 32768, 'the blob file must survive the commit');
+	});
+
+	// Belt and braces for the same window: a transaction can still be poisoned while parked there via the
+	// multi-store chain (abortDueToTimeout poisons every link). The in-flight commit must observe that and
+	// throw, not resume and resolve as a success with an empty (cleared) write set — a phantom commit that
+	// tells the caller its write landed and leaves it holding a blob whose file was just unlinked.
+	it('a transaction poisoned while parked in its pre-commit phase throws instead of resolving as success', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		const committing = transaction(context, async () => {
+			await BlobResource.put({ id: 2063, blob }, context);
+		});
+		slow.write(Buffer.alloc(16384, 'c'));
+		await waitFor(() => context.transaction?.committing, {
+			message: 'commit should park in its pre-commit phase while the blob save runs',
+		});
+		context.transaction.abortDueToTimeout();
+		slow.end();
+		await assert.rejects(committing, /open-transaction time/);
+		assert.equal(await BlobResource.get(2063), undefined, 'the poisoned write must not be committed');
 	});
 });
 

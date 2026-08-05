@@ -421,6 +421,13 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
+	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
+	// most notably a blob's durable file write). The write set is sealed at that point and the caller is
+	// already awaiting the commit, so this is core's own I/O, not an application holding a transaction
+	// open — the case the open-transaction limit exists to police. The monitor leaves such a transaction
+	// alone rather than poisoning it (issue #2062); aborting mid-commit-phase salvages nothing and
+	// destroys the pre-saved blobs the write still references.
+	declare committing?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -858,9 +865,23 @@ export class DatabaseTransaction implements Transaction {
 		this.validated = this.writes.length;
 		const completions = this.completions;
 		if (completions.length > 0) this.completions = []; // reset
+		// From here the write set is sealed and the caller is awaiting this commit; the monitor must not
+		// poison the transaction while it waits on its own pre-commit I/O (see `committing`, issue #2062).
+		this.committing = true;
 		return when(
 			completions.length > 0 ? Promise.all(completions) : null,
 			() => {
+				this.committing = false;
+				// The completions await above (pre-commit blob saves, `before`/`beforeIntermediate` hooks) is
+				// unbounded, so the monitor can poison and abort this transaction while we are parked in it —
+				// exactly what a multi-tens-of-MB blob write does (issue #2062). abortDueToTimeout() released
+				// the native handle, cleared the writes and unlinked their pre-saved blobs, so continuing past
+				// here commits an empty write set and resolves as SUCCESS: the caller is told its write landed
+				// when it was dropped, and — for a write carrying a blob — is left holding a blob whose file
+				// was deleted but whose fileId is still set, so its next put re-references the destroyed file
+				// (saveBlob short-circuits on an existing fileId). Surface the same error the pre-commit guards
+				// raise, so the caller rolls back rather than building on a phantom commit (issue #1407).
+				if (this.timedOut) throw transactionOpenTooLongError();
 				if (this.writes.length > this.validated) {
 					// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
 					return this.commit(options);
@@ -1222,6 +1243,7 @@ export class DatabaseTransaction implements Transaction {
 				return txnResolution;
 			},
 			(error) => {
+				this.committing = false;
 				this.abort();
 				throw error;
 			}
@@ -1554,6 +1576,21 @@ function startMonitoringTxns() {
 						}`
 					);
 					txn.releaseReadTxn();
+				} else if (txn.committing) {
+					// Parked in commit()'s pre-commit await — a `before`/`beforeIntermediate` hook, in practice a
+					// blob's durable file write, which for a multi-tens-of-MB payload legitimately outruns the
+					// limit. The write set is sealed and the caller is awaiting this commit, so the limit's
+					// premise ("the application is holding a transaction open") does not hold: there is no partial
+					// write set to protect, and poisoning here would abort the commit AND unlink the blobs the
+					// write still references, leaving the caller to re-put a record pointing at a destroyed file
+					// (issue #2062). Let the commit finish; log so a genuinely stuck pre-commit is still visible.
+					harperLogger.warn?.(
+						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work (e.g. a large blob write); letting it complete, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`,
+						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : [])
+					);
+					txn.timeout = txnExpiration;
 				} else if (txn.hasPendingWrites() && chainStillActive(txn)) {
 					// A later link in the chain was written recently (writes re-arm only the link that
 					// receives them, and a multi-store transaction can be writing database B while this
