@@ -230,6 +230,8 @@ All properties are optional:
 | `startTime`          | Start from a past time (catch-up of historical messages). Cannot be used with `previousCount`. |
 | `previousCount`      | Return the last N updates/messages. Cannot be used with `startTime`.                           |
 | `omitCurrent`        | Do not send the current/retained record as the first update.                                   |
+| `rowFilter`          | Synchronous JavaScript predicate applied to authoritative row values.                          |
+| `eventFilter`        | Synchronous JavaScript predicate for events that may not carry an authoritative row.           |
 
 ---
 
@@ -1080,7 +1082,8 @@ Properties:
 - `search` — The query/search string portion of the URL
 - `id` — Primary key derived from the path
 - `isCollection` — `true` when the request targets a collection
-- `checkPermission` — Set to indicate authorization should be performed; has `action`, `resource`, and `user` sub-properties
+- `rowFilter` — Synchronous JavaScript predicate applied to candidate records during search. It cannot be set by REST or QUERY request data.
+- `checkPermission` — Framework-owned, one-shot request to run legacy operation authorization. Harper arms it for permission-checked dispatches. Trusted server-side code making a subsequent direct Resource call may set it to `true`, causing built-in table gates to derive permissions from `context.user`. Never accept or copy this field or a permission object from client data.
 
 Standard `URLSearchParams` methods are available:
 

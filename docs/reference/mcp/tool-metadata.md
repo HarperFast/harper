@@ -83,7 +83,7 @@ Given a `Product` table with type-level and field-level docstrings:
 ```json
 {
 	"name": "get_Product",
-	"description": "Product catalog row — what shows up in the storefront listing, search, and inventory feeds. One row per SKU.\n\nFetches a single Product record by sku. Runtime RBAC (allowGet) enforces per-record access at call time.",
+	"description": "Product catalog row — what shows up in the storefront listing, search, and inventory feeds. One row per SKU.\n\nFetches a single Product record by sku. Runtime RBAC (allowRead) enforces operation access at call time.",
 	"inputSchema": {
 		"type": "object",
 		"properties": {

@@ -106,9 +106,11 @@ class Orders extends Tables.orders {
 }
 ```
 
-The corresponding instance method runs through Harper's normal `transactional()` envelope, so per-record `allow*` predicates and audit logging behave the same way as regular verb dispatch.
+The MCP transport audits the `tools/call`, but invokes the custom instance method directly. It does not open a Resource transaction or run an `allow*` gate automatically.
 
-**Custom tools are exposed to any MCP session — including anonymous, unauthenticated ones.** Unlike the auto-generated verb tools (which are RBAC-filtered per user at `tools/list` time and enforce table permissions on call), the MCP layer performs no authentication or ACL check for a custom tool: it is listed to every session and its method executes even when no user is logged in (`context.user` may be empty). Access control is entirely the method's responsibility — to restrict a tool to authenticated users or specific roles, check `context.user` (or rely on the per-record `allow*` predicates its data access triggers) inside the method and throw when the caller doesn't qualify.
+**Custom tools are exposed to any MCP session — including anonymous, unauthenticated ones.** Unlike the auto-generated verb tools (which are RBAC-filtered per user at `tools/list` time and enforce table permissions on call), the MCP layer performs no authentication or ACL check for a custom tool: it is listed to every session and its method executes even when no user is logged in (`context.user` may be empty). Access control is entirely the method's responsibility — to restrict a tool to authenticated users or specific roles, check `context.user` inside the method and throw when the caller doesn't qualify.
+
+A custom method must pass an armed context or target when delegating to a static Resource operation. The MCP-created instance context carries the authenticated user and a one-shot `authorize` flag, so the first call can use `Orders.get(target, this.getContext())`; that flag is consumed by the first static Resource operation. For every later delegated operation, use a fresh `RequestTarget`, set `target.checkPermission = true` so authorization derives from `context.user`, and pass `this.getContext()`. Never accept `checkPermission` from tool arguments or other client input.
 
 ### `exportTypes` gating
 

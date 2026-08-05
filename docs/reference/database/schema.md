@@ -546,35 +546,79 @@ let results = Document.search(
 
 `vectorFilter` is available from the JavaScript API only (it cannot be expressed in a REST query string). The function receives the candidate record and must return a boolean — `true` to include the record in results, `false` to exclude it (it still routes traversal either way). It must be synchronous, side-effect free, and fast — it can run once per candidate record visited during traversal (verdicts are memoized per query). Records passed to it are frozen.
 
-### Record-Level Access Control (Record-Scoped `allowRead`)
+### Row-Level Access Control with Explicit Filters
 
 <VersionBadge version="v5.2.0" />
 
-Overriding `allowRead(user, target, context)` on a table resource makes it a **record-scoped** check: during query execution it is evaluated once per record with `this` bound to the record, so row-level logic reads naturally from `this`. For vector queries the check participates in the graph traversal, so a restricted user receives the k nearest records _they are allowed to see_ rather than "nearest k, minus redacted" (which under-fills results and reveals that nearby restricted records exist):
+Use a `rowFilter` function on a search target or subscription request when access depends on each record. Attach the filter in an operation override after deciding that the request itself is allowed to proceed. This keeps authorization ahead of query planning and table scans while still filtering the returned or delivered rows:
 
 ```javascript
+function canReadReport(record, context) {
+	const user = context.user;
+	if (user?.role?.permission?.super_user) return true;
+	return user?.username != null && record.ownerId != null && record.ownerId === user.username;
+}
+
 export class Reports extends tables.Reports {
-	allowRead(user, target, context) {
-		// Compose the table/RBAC grant first, so losing the role's read denies (at request entry and
-		// when a live subscription is re-authorized). super.allowRead is safe to call at any scope.
-		if (!super.allowRead(user, target, context)) return false;
-		if (user.role.permission.super_user) return true;
-		// Collection scope — a whole-table subscribe or the subscription re-auth check — has no record
-		// loaded (`this.ownerId` is undefined). Return true to open the connection; rows are filtered
-		// per record during delivery / query execution.
-		if (this.ownerId == null) return true;
-		return this.ownerId === user.id; // per record
+	get(target) {
+		const context = this.getContext();
+		if (target.isCollection) {
+			target.rowFilter = canReadReport;
+		} else if (!canReadReport(this, context)) {
+			return new Response(null, { status: 404 });
+		}
+		return super.get(target);
+	}
+
+	search(target) {
+		target.rowFilter = canReadReport;
+		return super.search(target);
+	}
+
+	subscribe(request) {
+		request.rowFilter = canReadReport;
+		return super.subscribe(request);
 	}
 }
 ```
 
-How the one definition applies at each scope (when permission checking is active, e.g. any external request):
+`rowFilter` is available only from the JavaScript API; clients cannot set it through REST or QUERY request data. It receives the candidate record and the live request or subscription context. It must be synchronous, side-effect free, and fast. Ordinary object and array records are passed as shallow read-only views. Throwing an error or returning a promise aborts a query; on a subscription it terminates the stream. The filter is enforced across normal index and range searches, OR queries, HNSW traversal, source-revalidated records, subscription snapshots, and live row events.
 
-- **Collection queries** (REST collection `GET`, `search()`, including vector sorts) — evaluated per record; rows failing the check are filtered out of results. The default (non-overridden) `allowRead` is a table-level RBAC check and continues to run once at request entry with no per-record cost.
-- **Single-record `get(id)`** — evaluated at request entry with the record loaded (attribute reads like `this.ownerId` resolve against the record); a denied record returns a 403.
-- **Subscriptions** (SSE, WebSocket, MQTT) — the entry check grants the connection at subscribe time (evaluated at collection scope — return the base grant to open), then delivery is filtered per event so a subscriber receives only the row-change events for records the check permits. A live subscription is periodically re-authorized by re-running this same `allowRead` against the current user, so revoking the role's read (or, for a connection-level override, its grant) tears the subscription down. Delete tombstones and published message payloads do not carry the full record, so an override keyed on row fields will deny those event types.
+`rowFilter` does not apply to a direct primary-key `get`. The example performs that check in `get()` after the default instance-loading flow has loaded the record. It therefore assumes the default `loadAsInstance` behavior. A false-mode handler must explicitly load any record data it needs before making the same decision.
 
-Constraints: the check must be synchronous, side-effect free, and fast — it can run once per candidate record visited during traversal (verdicts are memoized per query). `this` is the frozen record during per-record evaluation. A thrown exception denies that record (fail closed). On caching tables the check is enforced against the record actually returned, after any source revalidation.
+For vector queries, `rowFilter` participates in HNSW traversal. A caller therefore receives the k nearest _matching_ records rather than "nearest k, minus filtered records." `rowFilter` can apply to every candidate visited; prefer indexed query conditions for predicates that can be expressed declaratively.
+
+`rowFilter` applies only when a non-raw `put` or `invalidate` event carries an authoritative row value. Delete tombstones, value-less invalidations, raw events, and published messages may not contain the complete current record. A subscription that needs such events can also provide an `eventFilter`:
+
+```javascript
+subscribe(request) {
+	request.rowFilter = canReadReport;
+	request.eventFilter = (event, context) => {
+		const rowEvent = event.type === 'put' || event.type === 'invalidate';
+		if (!request.rawEvents && rowEvent && event.value != null) return true;
+		const username = context.user?.username;
+		const ownerPrefix = username == null ? null : `${encodeURIComponent(username)}:`;
+		return (
+			ownerPrefix != null &&
+			(rowEvent || event.type === 'delete') &&
+			String(event.id).startsWith(ownerPrefix)
+		);
+	};
+	return super.subscribe(request);
+}
+```
+
+This example assumes report IDs are created with the same `encodeURIComponent(username) + ':'` owner prefix, allowing value-less events to be authorized without loading the deleted or invalidated record. Encoding the owner segment prevents one username from being a raw string prefix of another owner's IDs.
+
+`eventFilter` receives a shallow read-only view of every non-control event and the live context. It has the same synchronous and fail-closed requirements as `rowFilter` and is composed with it for authoritative row events. When a subscription has a `rowFilter`, non-row events are withheld unless an `eventFilter` explicitly accepts them. Transaction and reload control events continue to pass so the subscription remains coherent.
+
+Live subscriptions are periodically re-authorized with a freshly loaded user. This recheck reruns the operation-level `allowRead` grant; it does not call a custom `subscribe()` override again. The `rowFilter` and `eventFilter` callbacks receive the refreshed context for subsequent events. If an application-specific connection grant must terminate an existing stream when revoked, keep that revocable grant in an `allowRead` override composed with `super.allowRead`; admission logic that runs only in `subscribe()` cannot provide that teardown behavior.
+
+The legacy `allowRead`, `allowUpdate`, `allowCreate`, and `allowDelete` hooks are deprecated operation-level gates. When permission checking is active, Harper's standard instance flow evaluates the relevant hook once for the operation rather than once per row. Built-in table handlers with `loadAsInstance = false` likewise use one request/collection-scoped verdict; custom false-mode handlers remain responsible for authorization unless they delegate to those built-in handlers.
+
+Put application authorization and access-control decisions that need the complete target and context in operation overrides such as `get`, `put`, and `delete`. Collection operation overrides run before query planning or table scans and can attach a `rowFilter` or indexed conditions when an admitted request needs row-level narrowing. In the default single-record `get` flow, the record instance is loaded before the operation override runs, so its fields are available through `this`.
+
+See the [`RequestTarget`](../resources/resource-api.md#requesttarget) and [`SubscriptionRequest`](../resources/resource-api.md#subscriptionrequest-options) references for the filter properties.
 
 ### Tuning Filtered Traversal
 
