@@ -8,6 +8,8 @@ const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const { TEST_JSON_SUPER_USER, TEST_JSON_NON_SU } = require('../../test_data');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
+const registeredOperations = require('#src/server/serverHelpers/registeredOperations');
+const operationAuthorizationState = require('#src/server/serverHelpers/operationAuthorizationState');
 const { runWithDeployValidationGuard } = require('#src/server/serverHelpers/deployValidationState');
 const quota = require('#src/components/mcp/quota');
 const operation_function_caller = require('#src/utility/OperationFunctionCaller');
@@ -53,6 +55,147 @@ describe('Test serverUtilities.js module ', () => {
 
 			assert.ok(test_result.statusCode === 400);
 			assert.ok(test_result.http_resp_msg === "Operation 'blah' not found");
+		});
+
+		it('does not trust own or inherited bypass_auth request properties', function () {
+			for (const inherited of [false, true]) {
+				const request = testUtils.deepClone(TEST_JSON_NON_SU);
+				request.operation = 'add_user';
+				if (inherited) Object.setPrototypeOf(request, { bypass_auth: true });
+				else request.bypass_auth = true;
+
+				assert.throws(() => serverUtilities.chooseOperation(request));
+			}
+		});
+
+		it('accepts authorization bypass only through separate trusted dispatch state', function () {
+			const request = testUtils.deepClone(TEST_JSON_NON_SU);
+			request.operation = 'add_user';
+			assert.doesNotThrow(() => serverUtilities.chooseOperation(request, true));
+		});
+	});
+
+	describe('registered operation authorization envelope', function () {
+		it('forwards bypass state outside the operation body', async function () {
+			const operationName = 'test_remote_bypass_envelope';
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return false;
+				},
+			};
+			try {
+				registeredOperations.operationRegisteredHandler({
+					message: { name: operationName, originator: 17 },
+				});
+				const forward = registeredOperations.getRemoteOperationFunction(operationName, true);
+				assert.strictEqual(typeof forward, 'function');
+
+				await assert.rejects(
+					forward({ operation: operationName, bypass_auth: false }),
+					/no worker thread is available/
+				);
+
+				assert.strictEqual(sentMessages.length, 1);
+				assert.strictEqual(sentMessages[0].message.bypassAuth, true);
+				assert.strictEqual(sentMessages[0].message.body.bypass_auth, false);
+			} finally {
+				global.threads = originalThreads;
+			}
+		});
+
+		it('dispatches only the bypass state from the trusted worker envelope', async function () {
+			const calls = [];
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return true;
+				},
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation(body, bypassAuth) {
+					calls.push({ body, bypassAuth });
+					return () => {};
+				},
+				async processLocalTransaction() {
+					return { bypassed: operationAuthorizationState.isOperationAuthorizationBypassed() };
+				},
+			});
+			try {
+				const body = { operation: 'test_worker_bypass_envelope', bypass_auth: true };
+				await registeredOperations.operationExecuteRequestHandler({
+					message: { requestId: 23, body, bypassAuth: false, originator: 1 },
+				});
+
+				assert.deepStrictEqual(calls, [{ body, bypassAuth: false }]);
+				assert.strictEqual(sentMessages[0].message.result.bypassed, false);
+			} finally {
+				registeredOperations.setLocalOperationDispatch({
+					chooseOperation: serverUtilities.chooseOperation,
+					processLocalTransaction: serverUtilities.processLocalTransaction,
+				});
+				global.threads = originalThreads;
+			}
+		});
+
+		it('exposes trusted worker bypass state to the operation without adding it to the body', async function () {
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return true;
+				},
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					return () => {};
+				},
+				async processLocalTransaction({ body }) {
+					return {
+						bypassed: operationAuthorizationState.isOperationAuthorizationBypassed(),
+						bodyHasBypass: Object.hasOwn(body, 'bypass_auth') || Object.hasOwn(body, 'bypassAuth'),
+					};
+				},
+			});
+			try {
+				await registeredOperations.operationExecuteRequestHandler({
+					message: {
+						requestId: 24,
+						body: { operation: 'test_worker_bypass_context' },
+						bypassAuth: true,
+						originator: 1,
+					},
+				});
+
+				assert.deepStrictEqual(sentMessages[0].message.result, { bypassed: true, bodyHasBypass: false });
+			} finally {
+				registeredOperations.setLocalOperationDispatch({
+					chooseOperation: serverUtilities.chooseOperation,
+					processLocalTransaction: serverUtilities.processLocalTransaction,
+				});
+				global.threads = originalThreads;
+			}
+		});
+	});
+
+	describe('operation authorization state', function () {
+		it('is scoped across awaits and restores nested authorization', async function () {
+			assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
+			await operationAuthorizationState.runWithOperationAuthorizationBypass(true, async () => {
+				assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), true);
+				await Promise.resolve();
+				assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), true);
+				operationAuthorizationState.runWithOperationAuthorizationBypass(false, () => {
+					assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
+				});
+				assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), true);
+			});
+			assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
 		});
 	});
 
@@ -590,6 +733,29 @@ describe('Test serverUtilities.js module ', () => {
 
 		before(function () {
 			server.registerOperation({ name: SU_OP, execute: async () => ({ ok: true }), requiresSuperUser: true });
+		});
+
+		it('keeps server.operation bypass state separate from the operation body', async function () {
+			const request = { operation: SU_OP };
+			const context = { user: nonSuRequest(SU_OP).hdb_user };
+
+			const result = await serverUtilities.operation(request, context, false);
+
+			assert.deepStrictEqual(result, { ok: true });
+			assert.strictEqual(Object.hasOwn(request, 'bypass_auth'), false);
+		});
+
+		it('does not let an operation body override server.operation authorization', async function () {
+			const request = { operation: SU_OP, bypass_auth: true };
+			const context = { user: nonSuRequest(SU_OP).hdb_user };
+			let denied = false;
+
+			try {
+				await serverUtilities.operation(request, context, true);
+			} catch {
+				denied = true;
+			}
+			assert.strictEqual(denied, true);
 		});
 
 		after(function () {

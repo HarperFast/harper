@@ -44,6 +44,20 @@ describe('multipartParser', () => {
 		assert.strictEqual(body.payload, undefined);
 	});
 
+	for (const unsafeName of ['__proto__', 'constructor', 'prototype']) {
+		it(`rejects the prototype-mutating field name "${unsafeName}"`, async () => {
+			const fields = { operation: 'add_user' };
+			Object.defineProperty(fields, unsafeName, {
+				value: { bypass_auth: true },
+				enumerable: true,
+			});
+			const built = buildMultipartBody(fields);
+
+			await assert.rejects(parse(built.contentType, built.stream), /is not allowed/);
+			assert.strictEqual(built.stream.destroyed, true, 'malicious request stream should be destroyed');
+		});
+	}
+
 	it('exposes the file part as a Readable on body.payload and streams its contents intact', async () => {
 		const expected = Buffer.alloc(64 * 1024).fill(0xab); // 64 KB so we cross at least one busboy chunk boundary
 		const built = buildMultipartBody(

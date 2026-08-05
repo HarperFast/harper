@@ -303,6 +303,12 @@ export function makeOperationToolHandler(operationName: string) {
 			operation: operationName,
 			hdb_user: context.user,
 		};
+		// Authorization bypass is internal dispatch state, never client-supplied tool
+		// arguments — mirrors handlePostRequest's stripping in serverHandlers.js. Without
+		// this, a caller-supplied `bypass_auth`/`bypassAuth` argument would reach handlers
+		// (e.g. createTokens) that trust it directly from the body.
+		delete body.bypass_auth;
+		delete body.bypassAuth;
 		if (STREAMING_OPERATIONS.has(operationName)) {
 			// Reject before the handler runs at all — see STREAMING_OPERATIONS' comment for why
 			// destroying an already-returned stream isn't sufficient cleanup for these producers.

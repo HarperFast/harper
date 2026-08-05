@@ -11,6 +11,7 @@
  */
 
 import { EngineUnsupportedError } from '../errors.ts';
+import { runWithOperationAuthorizationBypass } from '../../server/serverHelpers/operationAuthorizationState.ts';
 
 export interface DifferentialOptions {
 	hdb_user?: unknown;
@@ -35,15 +36,19 @@ function loadLegacy(): SqlTranslator {
 
 function runLegacy(sql: string, opts: DifferentialOptions): Promise<unknown> {
 	const translator = loadLegacy();
-	return new Promise((resolve, reject) => {
-		translator.evaluateSQL(
-			{ sql, hdb_user: opts.hdb_user, bypass_auth: opts.bypass_auth ?? true },
-			(err: unknown, data: unknown) => {
-				if (err) reject(err);
-				else resolve(data);
-			}
-		);
-	});
+	// The bypass is trusted dispatch/async-context state (see operationAuthorizationState.ts),
+	// not a jsonMessage field the SQL translator reads directly — evaluateSQL's permission
+	// check now consults isOperationAuthorizationBypassed() instead.
+	return runWithOperationAuthorizationBypass(
+		opts.bypass_auth ?? true,
+		() =>
+			new Promise((resolve, reject) => {
+				translator.evaluateSQL({ sql, hdb_user: opts.hdb_user }, (err: unknown, data: unknown) => {
+					if (err) reject(err);
+					else resolve(data);
+				});
+			})
+	);
 }
 
 async function runV2(sql: string, opts: DifferentialOptions): Promise<unknown> {
