@@ -151,7 +151,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const elementResource = resourceClass.getResource(target, request, {
 						async: true,
 					});
-					// `query`, not `request`: put() is (target, record), so a context here becomes record data.
+					// `query`, not `request`: the second argument is the target, and Table's back-compat
+					// argument shift only recognizes one that is a RequestTarget — a context becomes the record.
 					if (typeof elementResource.then === 'function')
 						results.push(elementResource.then((resource) => resource.put(element, query)));
 					else results.push(elementResource.put(element, query));
