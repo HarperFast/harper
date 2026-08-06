@@ -358,7 +358,7 @@ async function copyDbEnvironment(
 			if (isPrimary) await verifyStructuresCopied(sourceDbi, targetDbi, key);
 		}
 		if (sourceAuditStore) {
-			// Both handles belong to their own environment: a target handle opened on the source env
+			// Each handle belongs to its own environment: a "target" handle opened on the source env
 			// writes the audit log back into the source and leaves the copy without one.
 			const sourceAuditDbi = rootStore.openDB(AUDIT_STORE_NAME, { create: false, ...AUDIT_STORE_OPTIONS });
 			if (!sourceAuditDbi) throw new Error(`Could not open the audit store of ${sourceDatabase} to copy it`);
@@ -473,19 +473,16 @@ async function copyDbEnvironment(
 						'bytes'
 					);
 				} catch (error) {
-					// Resume from the last key read, which re-copies it (a put of identical bytes, and a
-					// dupSort pair, is idempotent) and continues in order. Advancing the key instead — as
-					// this did, bumping a string to `<prefix>z` — jumps the copy over every key in
-					// between and then reports success, which is the corruption this function is being
-					// fixed for. A key that cannot be read at all exhausts the retries and fails.
+					// Resume from the last key read, never past it: re-copying that key is idempotent (an
+					// identical put, and an identical dupSort pair, is a no-op) while advancing the key
+					// would jump the copy over everything in between and still reach the success path.
 					console.error(
 						`Error iterating ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,
 						error
 					);
 				}
 			}
-			// A copy that lost entries or stopped part-way through a DBI used to log and carry on,
-			// reporting success and exiting 0.
+			// A copy that lost entries, or stopped part-way through a DBI, must not report success
 			if (!completed)
 				throw new Error(
 					`Copy of ${sourceDatabase} to ${targetDatabasePath} could not get past key ` +

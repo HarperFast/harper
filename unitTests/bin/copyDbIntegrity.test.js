@@ -1,12 +1,10 @@
 const fs = require('fs-extra');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const path = require('node:path');
-const sinon = require('sinon');
 const { open } = require('lmdb');
 const env_mgr = require('#src/utility/environment/environmentManager');
 const { table, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const config_utils = require('#src/config/configUtils');
 const copyDB = require('#src/bin/copyDb');
 const audit_store = require('#src/resources/auditStore');
 const OpenEnvironmentObject = require('#src/utility/lmdb/OpenEnvironmentObject').default;
@@ -34,7 +32,6 @@ describe('copy-db integrity (harper#2048)', () => {
 	const DATABASE = 'copy-integrity';
 	const RECORD_COUNT = 3000; // enough entries to cross copyDbi's 5000-outstanding-write await fence
 	const DUPLICATE_COUNT = 20;
-	const sandbox = sinon.createSandbox();
 	let storage_path;
 	let storage_path_before;
 	let root_path_before;
@@ -67,7 +64,6 @@ describe('copy-db integrity (harper#2048)', () => {
 		});
 
 	before(async () => {
-		sandbox.stub(config_utils, 'updateConfigValue');
 		storage_path = path.resolve(__dirname, '../envDir/copyIntegrity');
 		storage_path_before = env_mgr.get('storage_path');
 		root_path_before = env_mgr.get('rootPath');
@@ -112,7 +108,7 @@ describe('copy-db integrity (harper#2048)', () => {
 	});
 
 	beforeEach(async () => {
-		audit_store.auditRetention = audit_retention_before;
+		audit_store.setAuditRetention(audit_retention_before);
 		open_copies = [];
 	});
 
@@ -127,8 +123,7 @@ describe('copy-db integrity (harper#2048)', () => {
 	});
 
 	after(async () => {
-		sandbox.restore();
-		audit_store.auditRetention = audit_retention_before;
+		audit_store.setAuditRetention(audit_retention_before);
 		await fs.remove(storage_path);
 		env_mgr.setProperty('storage_path', storage_path_before);
 		env_mgr.setProperty('rootPath', root_path_before);
@@ -163,7 +158,7 @@ describe('copy-db integrity (harper#2048)', () => {
 		for (let i = 0; i < RECORD_COUNT; i++) {
 			if (records.get(i)?.b === 'v' + i) readable++;
 		}
-		assert.equal(readable, RECORD_COUNT, 'every record in the copy should still decode');
+		assert.strictEqual(readable, RECORD_COUNT, 'every record in the copy should still decode');
 	});
 
 	it('keeps every duplicate of a dupSort secondary index', async () => {
@@ -171,21 +166,21 @@ describe('copy-db integrity (harper#2048)', () => {
 		// the deleted record dropped its index entries; the blob-bearing record shares the value
 		const expected = DUPLICATE_COUNT - 1 + 1;
 		const indexed = Array.from(copy.index(Wide.indices.groupingAttributeName).getValues('sharedIndexedValue'));
-		assert.equal(indexed.length, expected, 'the index should still hold one entry per record');
+		assert.strictEqual(indexed.length, expected, 'the index should still hold one entry per record');
 	});
 
 	it('keeps a tombstone that is still inside the audit-retention window', async () => {
 		const copy = await copyForInspection('fresh-tombstone');
 		const entry = copy.primary(Wide.primaryStore).getEntry(deleted_fresh_id);
 		assert.ok(entry, 'the delete tombstone should be copied while it is inside audit retention');
-		assert.equal(entry.value, null, 'a tombstone is a null value with a version');
+		assert.strictEqual(entry.value, null, 'a tombstone is a null value with a version');
 		assert.ok(entry.version > 0, 'the tombstone keeps its version');
 	});
 
 	it('drops a tombstone that is past the audit-retention window', async () => {
-		audit_store.auditRetention = -1000; // every existing tombstone is now past retention
+		audit_store.setAuditRetention(-1000); // every existing tombstone is now past retention
 		const copy = await copyForInspection('expired-tombstone');
-		assert.equal(
+		assert.strictEqual(
 			copy.primary(Wide.primaryStore).getEntry(deleted_fresh_id),
 			undefined,
 			'an expired tombstone is purged by the copy'
@@ -201,7 +196,7 @@ describe('copy-db integrity (harper#2048)', () => {
 		const sourceFiles = await listFiles(blob_root);
 		assert.ok(sourceFiles.length > 0, 'the fixture wrote at least one blob file');
 		const copiedFiles = await listFiles(path.join(blob_copy_root, '0'));
-		assert.deepEqual(copiedFiles, sourceFiles, 'every blob file is copied, at its original relative path');
+		assert.deepStrictEqual(copiedFiles, sourceFiles, 'every blob file is copied, at its original relative path');
 		for (const relative_path of sourceFiles) {
 			assert.ok(
 				(await fs.readFile(path.join(blob_root, relative_path))).equals(
@@ -250,7 +245,7 @@ describe('copy-db integrity (harper#2048)', () => {
 		await copyDB.copyDb(DATABASE, copy_path, { blobs: 'preserve-source-roots' });
 
 		// the source is unchanged: the copy must not write anything back into it
-		assert.deepEqual(readAuditEntries(source_audit), source_entries, 'the source audit log is untouched');
+		assert.deepStrictEqual(readAuditEntries(source_audit), source_entries, 'the source audit log is untouched');
 
 		const copy_env = open(new OpenEnvironmentObject(copy_path));
 		try {
@@ -259,7 +254,7 @@ describe('copy-db integrity (harper#2048)', () => {
 				...audit_store.AUDIT_STORE_OPTIONS,
 			});
 			assert.ok(copied_audit, 'the copy has an audit store');
-			assert.deepEqual(readAuditEntries(copied_audit), source_entries, 'the copied audit log matches the source');
+			assert.deepStrictEqual(readAuditEntries(copied_audit), source_entries, 'the copied audit log matches the source');
 		} finally {
 			copy_env.close();
 		}
