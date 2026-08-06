@@ -64,7 +64,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			// flag on the encoder unconditionally would penalize every non-cached/LMDB read. `decoderCopies`
 			// is derived once at store-open and read live per get, so flipping it here (after open, before
 			// any read) takes effect. Follow-up: a public rocksdb-js per-store stable-read option.
-			(this.store as any).decoderCopies = false;
+			this.store.decoderCopies = false;
 		}
 	}
 
