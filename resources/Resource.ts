@@ -143,19 +143,30 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		function (resource: any, query: RequestTarget, request: Context, data: any) {
 			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
 				const results = [];
-				for (const element of data) {
-					const resourceClass = resource.constructor;
-					const id = element[resourceClass.primaryKey];
-					let target = new RequestTarget();
-					target.id = id;
-					const elementResource = resourceClass.getResource(target, request, {
-						async: true,
+				try {
+					for (const element of data) {
+						const resourceClass = resource.constructor;
+						const id = element[resourceClass.primaryKey];
+						let target = new RequestTarget();
+						target.id = id;
+						const elementResource = resourceClass.getResource(target, request, {
+							async: true,
+						});
+						// `query`, not `request`: the second argument is the target, and Table's back-compat
+						// argument shift only recognizes one that is a RequestTarget — a context becomes the record.
+						if (typeof elementResource.then === 'function')
+							results.push(elementResource.then((resource) => resource.put(element, query)));
+						else results.push(elementResource.put(element, query));
+					}
+				} catch (error) {
+					// A malformed element (null, or one whose id is unusable) throws here mid-loop, after
+					// earlier elements' writes are already in flight. Those have to be settled before the
+					// batch fails, or a later rejection reaches no handler and becomes an unhandled
+					// rejection that can take the process down. The batch still fails whole: the
+					// transaction rolls every element back.
+					return Promise.allSettled(results).then(() => {
+						throw error;
 					});
-					// `query`, not `request`: the second argument is the target, and Table's back-compat
-					// argument shift only recognizes one that is a RequestTarget — a context becomes the record.
-					if (typeof elementResource.then === 'function')
-						results.push(elementResource.then((resource) => resource.put(element, query)));
-					else results.push(elementResource.put(element, query));
 				}
 				return Promise.all(results);
 			}

@@ -104,6 +104,8 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 
 **Array PUT is a collection dispatch in both modes.** `Class.put(batch, context)` arrives with no target, so `transactional` synthesizes one — and the collection it inferred from the null id has to carry over onto it, or the resource resolves as a single record with a null primary key and the batch never fans out. Default (instance) mode then dispatches per element through `getResource`, and each element call must carry the normalized target in the second position, not the context: `Table`'s back-compat `put(target, record)` shift only recognizes a target that is a `RequestTarget`, so a context there is taken for the record and staged as record data (harper#2000). A default-mode `put()` override consequently sees one call per element; a component that needs the whole array in one call belongs in `loadAsInstance === false` mode.
 
+**A malformed element fails the whole batch, and never abandons a sibling write.** The dispatch loop starts each element's write as it goes, so an element that throws _synchronously_ — `null`, or an id the store rejects — aborts the loop with earlier writes already in flight. Those are settled before the batch rejects: otherwise a sibling that rejects afterwards has no handler and surfaces as an unhandled rejection. The batch then fails with the malformed element's own error, since that is what the caller has to fix, and the surrounding transaction rolls every element back — array PUT is all-or-nothing, not per-element reporting.
+
 ---
 
 ## Path routing & parameterised routes
