@@ -4,9 +4,11 @@
  * The unit tests for that fix drive `Class.put(...)` directly. This one goes through the real
  * request path, so it holds the wiring the unit tests cannot see: the deserialized array body,
  * the collection `RequestTarget` that `http.ts` infers from a trailing-slash path, and the
- * response. If a future change leaves `isCollection` unset on a parsed collection target, the
- * array is staged as one null-primary-key record again and the whole unit suite still passes —
- * this test is what fails.
+ * response. That inference is load-bearing rather than incidental — the same array PUT to the
+ * same table without the trailing slash returns `400 Invalid primary key of null`, which is
+ * defect 1's exact signature. It is asserted below as the negative control, so a change that
+ * stops marking a parsed collection target as a collection fails here while the entire unit
+ * suite, which supplies its own target, stays green.
  *
  * Also covers the malformed-element contract: a batch containing `null` fails whole, persists
  * nothing, and — the actual defect — does not abandon a sibling write.
@@ -15,7 +17,7 @@
  *   npm run test:integration -- "integrationTests/database/array-put-rest.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, ok } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
@@ -80,6 +82,19 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 		// Each element landed under its own id with its own fields — not one merged record.
 		const one = await fetch(`${httpURL}/Batch/rest-a`, { headers: { Authorization: auth } });
 		deepStrictEqual(await one.json(), { id: 'rest-a', kind: 'rest-ok', label: 'one' });
+	});
+
+	// Negative control for the test above: without the trailing slash the target is not a
+	// collection, so the array is staged as one record with a null primary key. This is what a
+	// regression in collection-target inference would turn the trailing-slash case into.
+	test('the same array PUT without a collection target is rejected', async () => {
+		const response = await fetch(`${httpURL}/Batch`, {
+			method: 'PUT',
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+			body: JSON.stringify([{ id: 'rest-ns-a', kind: 'rest-ns' }]),
+		});
+		strictEqual(response.status, 400);
+		deepStrictEqual(await idsOf('rest-ns'), []);
 	});
 
 	test('a malformed element fails the whole batch and persists nothing', async () => {
