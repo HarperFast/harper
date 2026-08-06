@@ -138,6 +138,20 @@ export class RecordEncoder extends StructonEncoder {
 	// enabling race-safe cache verification of graph nodes during traversal. Unlike primary-record
 	// writes, this never reads or clears the shared timestampNextEncoding global (harper#1307).
 	autoVersion = false;
+	// Tell the storage layer (lmdb-js / rocksdb-js) that decode needs a stable, non-reused read
+	// buffer. Both engines otherwise treat the decoder as one that consumes the value synchronously
+	// and hand it their preallocated, reused read buffer (decoderCopies = !decoder.needsStableBuffer)
+	// — safe only if nothing touches that buffer between the get and the end of decode. The record
+	// cache added in 5.2.0 (PrimaryRocksDatabase) opts the primary store into rocksdb-js's
+	// VerificationTable and reads with populateVersion/expectedVersion; that version-tracking read
+	// invalidates the shared buffer out from under the decode that consumes it, so decode reads
+	// garbage ("Data read, but end of buffer not reached"). 5.1.x never enabled that read path (it
+	// opened the primary store plainly — the rocksdb-js VT capability existed but was unused), which
+	// is why the same reused-buffer decoder was safe there and why disabling the cache hides it.
+	// (structon already slices src before a mid-decode getStructures load, so nested structure reads
+	// are not the cause — this is specifically the VT version read.) Read off the decoder at
+	// store-open by rocksdb-js (index.cjs) and lmdb-js (open.js); neither ships a type for it.
+	needsStableBuffer = true;
 	constructor(options) {
 		options.useBigIntExtension = true;
 		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the

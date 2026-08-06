@@ -283,7 +283,21 @@ export function toRocksCompression(compression: unknown): unknown {
 	return compression;
 }
 
-function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
+function openRocksDatabase(
+	path: string,
+	// `cache` is a Harper-only flag (not a rocksdb-js option): PrimaryRocksDatabase reads it to enable
+	// the record cache (WeakLRUCache + VerificationTable). Typing the options here (instead of `as any`
+	// at call sites, which silenced type checking on the whole object) keeps `cache` and every other
+	// field checked. `encoding` is widened to OpenDBIObject's union because callers pass an OpenDBIObject
+	// (dbiInit), whose LMDB-era 'string'/'json' members aren't in rocksdb-js's Encoding — but are never
+	// produced for a RocksDB store (OpenDBIObject only ever sets 'msgpack'/'ordered-binary'); it's
+	// narrowed back to the rocksdb-js shape once at the store constructors below.
+	options: Omit<RocksDatabaseOptions, 'encoding'> & {
+		dupSort?: boolean;
+		cache?: boolean;
+		encoding?: OpenDBIObject['encoding'];
+	}
+) {
 	options.disableWAL ??= true;
 	const legacyOptions = options as { compression?: unknown };
 	// A configured codec applies to every column family, overriding whatever per-table metadata
@@ -326,10 +340,14 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 		mkdirSync(path, { recursive: true });
 	}
 	let db: RocksRootDatabase;
+	// Narrow the OpenDBIObject-shaped options back to the rocksdb-js shape in one place: `encoding` is
+	// always a rocksdb-js-valid value at runtime (see the parameter note), the LMDB-only members just
+	// aren't reachable here.
+	const rocksOptions = options as RocksDatabaseOptions & { dupSort?: boolean; cache?: boolean };
 	if (options.dupSort) {
-		db = new RocksIndexStore(path, options).open() as any;
+		db = new RocksIndexStore(path, rocksOptions).open() as any;
 	} else {
-		db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksRootDatabase;
+		db = new PrimaryRocksDatabase(path, rocksOptions).open() as unknown as RocksRootDatabase;
 		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
 		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
 		db.put = db.putSync as any;
@@ -873,7 +891,7 @@ function initStores(
 				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
 			if (rootStore instanceof RocksDatabase) {
 				primaryStore = handleLocalTimeForGets(
-					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any),
+					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true }),
 					rootStore
 				);
 			} else {
@@ -1457,7 +1475,7 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 			...dbiInit,
 			name: dbiKey,
 			cache: isCustomObjectIndex,
-		} as any) as any;
+		}) as any;
 		(dbi as any).rootStore = rootStore;
 		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
 		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
@@ -1684,7 +1702,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// entry), but an interrupted drop just completed above can leave the physical CF
 				// behind under its old codec even though the catalog entry is gone — same fallback
 				// as the reconcile paths covers that remnant case too.
-				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
+				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true });
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}

@@ -14,8 +14,8 @@ import { entryMap, METADATA, type Entry } from './RecordEncoder.ts';
  * handleLocalTimeForGets. Call initStore(rootStore) after open() — or let
  * handleLocalTimeForGets delegate to it automatically via the isPrimaryRocksDatabase marker.
  *
- * Caching is enabled by default; pass { cache: false } to disable (useful for benchmarking
- * or stores where version tracking is not desired).
+ * Caching is opt-in: pass { cache: true } to enable the WeakLRUCache + VerificationTable (the primary
+ * and versioned-index stores do). Omitted/false leaves it off (plain reads, no version tracking).
  *
  * Cache freshness pattern (using the rocksdb-js VT API):
  *   1. verifyVersion(key, cached.version)  → true  → return cached entry (no disk I/O)
@@ -34,7 +34,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	}
 
 	constructor(pathOrStore: string | Store, options?: RocksDatabaseOptions & { cache?: boolean }) {
-		const enableCache = (options as any)?.cache === true;
+		const enableCache = options?.cache === true;
 		super(pathOrStore, enableCache ? { ...options, verificationTable: true } : options);
 		if (enableCache) {
 			this.#cache = new WeakLRUCache();
