@@ -190,7 +190,7 @@ function parseSseBlocks(raw: string): Array<Record<string, string>> {
 			}
 			return out;
 		})
-		.filter((rec) => 'event' in rec || 'data' in rec);
+		.filter((rec) => 'event' in rec || 'data' in rec || 'id' in rec || 'retry' in rec);
 }
 
 function readLogSafe(logPath: string): string {
@@ -381,6 +381,21 @@ suite(
 				blocks[0].data,
 				'0',
 				`expected a bare "data: 0" line, not the whole message JSON-wrapped; got: ${JSON.stringify(blocks[0])}`
+			);
+		});
+
+		// A standalone `id` (no data/event/retry) must also open the envelope gate, not fall to
+		// the else branch and get JSON-wrapped as a bogus data frame.
+		test('a: standalone id (no data/event) -- envelope gate must not treat this as absent', async () => {
+			const r = await consumeSse(`${restBase}/StandaloneIdPayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const blocks = parseSseBlocks(r.raw);
+			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
+			strictEqual('data' in blocks[0], false, `expected no data: line; got: ${JSON.stringify(blocks[0])}`);
+			strictEqual(
+				blocks[0].id,
+				'42',
+				`expected a bare "id: 42" line, not the whole message JSON-wrapped; got: ${JSON.stringify(blocks[0])}`
 			);
 		});
 

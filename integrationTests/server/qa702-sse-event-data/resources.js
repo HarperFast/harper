@@ -82,14 +82,22 @@ export class IdZeroPayload extends Resource {
 	}
 }
 
-// GET /ZeroPayloadNoEvent/ — falsy `data` with no `event` key at all. Exercises the outer
-// envelope-detection gate (contentTypes.ts's `if (message.data != null || message.event)`),
-// distinct from the `hasData` matrix above which always sets `event: 'payload'` and so never
-// reaches this gate.
+// GET /ZeroPayloadNoEvent/ — falsy `data` with no `event`/`id`/`retry` key at all. Exercises
+// the outer envelope-detection gate, distinct from the `hasData` matrix above which always sets
+// `event: 'payload'` and so never reaches this gate.
 export class ZeroPayloadNoEvent extends Resource {
 	static loadAsInstance = false;
 	static async *connect() {
 		yield { data: 0 };
+	}
+}
+
+// GET /StandaloneIdPayload/ — an `id` with no `data`/`event`/`retry` key at all: the envelope
+// gate's `id`-only path.
+export class StandaloneIdPayload extends Resource {
+	static loadAsInstance = false;
+	static async *connect() {
+		yield { id: 42 };
 	}
 }
 

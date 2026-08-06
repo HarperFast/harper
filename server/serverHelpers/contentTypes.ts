@@ -141,7 +141,7 @@ mediaTypes.set('text/event-stream', {
 				id: message.timestamp,
 			};
 		}
-		if (message.data != null || message.event) {
+		if (message.data != null || message.event || message.id != null || message.retry != null) {
 			let serialized = '';
 			if (message.event) serialized += 'event: ' + message.event + '\n';
 			if (message.data != null) {
@@ -150,7 +150,7 @@ mediaTypes.set('text/event-stream', {
 				serialized += 'data: ' + data + '\n';
 			}
 			if (message.id != null) serialized += 'id: ' + message.id + '\n';
-			if (message.retry) serialized += 'retry: ' + message.retry + '\n';
+			if (message.retry != null) serialized += 'retry: ' + message.retry + '\n';
 			return serialized + '\n';
 		} else {
 			if (typeof message === 'object') return `data: ${JSONStringify(message)}\n\n`;
