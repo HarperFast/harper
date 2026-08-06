@@ -1,17 +1,11 @@
 /**
- * Array PUT over REST — the end-to-end half of harper#2000.
+ * Array PUT over REST (harper#2000).
  *
- * The unit tests for that fix drive `Class.put(...)` directly. This one goes through the real
- * request path, so it holds the wiring the unit tests cannot see: the deserialized array body,
- * the collection `RequestTarget` that `http.ts` infers from a trailing-slash path, and the
- * response. That inference is load-bearing rather than incidental: the same array PUT to the same
- * table without the trailing slash returns `400 Invalid primary key of null`, asserted below as the
- * negative control. So a change that stops marking a parsed collection target as a collection fails
- * here, while the unit suite — which supplies its own target — stays green.
- *
- * Also covers the malformed-element contract at this layer: a batch containing `null` fails whole,
- * as a 400, and persists nothing. Sibling abandonment is asserted in the unit tests, which can watch
- * for an unhandled rejection; here the only equivalent signal is that the worker still serves.
+ * Covers what a unit test calling `Class.put(...)` cannot: the deserialized array body, the
+ * collection `RequestTarget` inferred from a trailing-slash path, and the response. That inference
+ * is load-bearing — the same array PUT without the trailing slash is a 400, kept below as a negative
+ * control — so a change that stops marking a parsed collection target as a collection fails here
+ * while the unit suite, which supplies its own target, stays green.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/array-put-rest.test.ts"
