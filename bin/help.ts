@@ -8,6 +8,10 @@
 const MAX_WIDTH = 120;
 const INDENT = 2; // leading spaces for command names and detail blocks
 const DASH = ' - '; // separator between a command name and its description
+// Minimum description width for the two-column command layout. On terminals too narrow for it
+// (width < descCol + this), command rows stack the name above an indented description instead of
+// overflowing. Set to the widest word in any command description so two-column never overflows.
+const MIN_DESC_WIDTH = 20;
 
 /** A paragraph of prose, reflowed to the target width at `indent` spaces. */
 interface TextBlock {
@@ -172,10 +176,17 @@ function wrap(text: string, width: number): string[] {
 
 function renderBlock(block: Block, width: number, nameWidth: number, descCol: number): string[] {
 	if ('commands' in block) {
+		// Two columns when the terminal leaves a readable description column; otherwise stack the name
+		// above an indented description so narrow terminals don't overflow the command rows.
+		const twoColumn = width - descCol >= MIN_DESC_WIDTH;
 		return block.commands.flatMap(([name, description]) => {
-			const wrapped = wrap(description, Math.max(1, width - descCol));
-			const head = pad(INDENT) + name.padEnd(nameWidth) + DASH;
-			return [head + (wrapped[0] ?? ''), ...wrapped.slice(1).map((line) => pad(descCol) + line)];
+			if (twoColumn) {
+				const wrapped = wrap(description, width - descCol);
+				const head = pad(INDENT) + name.padEnd(nameWidth) + DASH;
+				return [head + (wrapped[0] ?? ''), ...wrapped.slice(1).map((line) => pad(descCol) + line)];
+			}
+			const detail = INDENT * 2;
+			return [pad(INDENT) + name, ...wrap(description, Math.max(1, width - detail)).map((line) => pad(detail) + line)];
 		});
 	}
 	if ('pre' in block) return [pad(block.indent ?? 0) + block.pre];

@@ -83,6 +83,20 @@ describe('bin/help.ts help()', () => {
 		assert.strictEqual(dashColumns.size, 1, `command rows should share one dash column, saw ${[...dashColumns]}`);
 	});
 
+	it('stacks command rows on terminals too narrow for the two-column layout', () => {
+		process.stdout.columns = 30;
+		const output = help();
+		// At 30 columns the two-column layout would overflow, so command rows switch to a stacked form:
+		// no aligned "name - description" rows remain...
+		assert.ok(!/^ {2}\S.* - \S/m.test(output), 'expected no two-column command rows at 30 columns');
+		// ...and the Server section (nothing but command rows) fits within the terminal.
+		const server = output.split('\n\n').find((block) => block.startsWith('Server'));
+		for (const line of server.split('\n')) {
+			assert.ok(line.length <= 30, `Server row exceeds 30 columns: ${JSON.stringify(line)}`);
+		}
+		assert.ok(server.includes('Starts a separate'), 'a wrapped command description should still render when stacked');
+	});
+
 	it('renders every command and the usage header', () => {
 		process.stdout.columns = 120;
 		const output = help();
