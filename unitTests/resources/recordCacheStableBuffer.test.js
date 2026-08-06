@@ -1,6 +1,5 @@
-require('../testUtils');
-const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
+const assert = require('node:assert');
 const { table } = require('#src/resources/databases');
 const { RecordEncoder } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
