@@ -359,7 +359,6 @@ suite(
 			);
 		}
 
-		// `id: 0` is a legitimate reconnect cursor and must be emitted, not treated as absent.
 		test('a: event.id = 0 (with real data) -- id: 0 is emitted', async () => {
 			const r = await consumeSse(`${restBase}/IdZeroPayload/`, authHeaders, 15_000);
 			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
@@ -369,9 +368,14 @@ suite(
 			strictEqual(payloadBlock!.id, '0', `expected id: 0 to be emitted; got: ${JSON.stringify(payloadBlock)}`);
 		});
 
-		// The falsy-data cases above all set `event: 'payload'`, which alone satisfies the outer
-		// envelope-detection gate regardless of `data`. This covers a message with no `event` key
-		// at all, so a falsy `data` is the only thing deciding whether the gate is entered.
+		test('a: event.retry = 0 (with real data) -- retry: 0 is emitted', async () => {
+			const r = await consumeSse(`${restBase}/RetryZeroPayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const payloadBlock = parseSseBlocks(r.raw).find((b) => b.event === 'payload');
+			ok(payloadBlock, `expected a 'payload' event block. raw:\n${r.raw}`);
+			strictEqual(payloadBlock!.retry, '0', `expected retry: 0 to be emitted; got: ${JSON.stringify(payloadBlock)}`);
+		});
+
 		test('a: event-less message with data = 0 -- envelope gate must not treat this as absent', async () => {
 			const r = await consumeSse(`${restBase}/ZeroPayloadNoEvent/`, authHeaders, 15_000);
 			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
@@ -384,11 +388,6 @@ suite(
 			);
 		});
 
-		// `id`/`retry` are deliberately NOT envelope-detection signals: widening the gate to them
-		// was tried in review and reverted, because a plain data object with a real `id` field
-		// (extremely common) would otherwise have that field peeled into an `id:` line while the
-		// rest of the object is silently dropped. A plain object containing an `id` key must still
-		// be JSON-wrapped wholesale, like any other plain object with no `data`/`event` key.
 		test('a: plain object with an "id" key (no data/event) -- must be JSON-wrapped, not misread as an SSE id', async () => {
 			const r = await consumeSse(`${restBase}/IdKeyPlainObjectPayload/`, authHeaders, 15_000);
 			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
