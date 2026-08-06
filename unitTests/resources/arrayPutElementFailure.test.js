@@ -1,6 +1,5 @@
-// A malformed element throws synchronously inside the built-in array PUT dispatch loop, after
-// earlier elements' writes are already in flight. Those writes must be settled before the batch
-// fails, or a later rejection reaches no handler and becomes an unhandled rejection.
+// Failure handling for the built-in array PUT fan-out: a batch fails whole, abandons no sibling
+// write, commits no element, and classifies a malformed body as the client's error.
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -81,8 +80,7 @@ describe('array put element failure', () => {
 		const { error, unhandled } = await withRejectionWatch(() =>
 			Docs.put(collectionTarget(), [{ id: 'fail-null-a', kind: 'fail-null' }, null], {})
 		);
-		// A malformed body is the client's error, not an internal one: named position, 400, and no
-		// engine-generated TypeError text reaching the caller.
+		// A malformed body is the client's error: named position, 400, no engine wording.
 		assert.match(error?.message ?? '', /Array element at index 1 is null/);
 		assert.strictEqual(error.statusCode, 400);
 		assert.deepStrictEqual(unhandled, []);
@@ -98,10 +96,8 @@ describe('array put element failure', () => {
 		assert.deepStrictEqual(await idsOf('fail-pk'), []);
 	});
 
-	// The async-resolution counterpart, and the load-bearing one. With `Promise.all` the batch rejected
-	// on the first element while a slower element was still resolving its resource; that element then
-	// staged its write outside the failed batch and committed on its own, leaving a partially applied
-	// array PUT. The watch has to outlast the late element or this passes by not looking.
+	// With `Promise.all` the slower element committed outside the failed batch. The watch has to
+	// outlast that element or this test passes by not looking.
 	it('does not partially apply a batch when an element rejects while an async sibling resolves', async function () {
 		let latePuts = 0;
 		class AsyncMixed extends Docs {
@@ -126,26 +122,32 @@ describe('array put element failure', () => {
 					],
 					{}
 				),
-			// Outlast the late element so its settlement happens while the watch is still installed;
-			// otherwise this test would pass by simply not looking.
 			400
 		);
 		assert.strictEqual(error?.message, 'async element write failed');
 		assert.strictEqual(latePuts, 1, 'the late element must have run inside the watch window');
 		assert.deepStrictEqual(unhandled, []);
-		// Read past the query layer too: the partial-apply bug committed this row to the store.
+		// Past the query layer: the partial-apply bug committed this row.
 		assert.strictEqual(Docs.primaryStore.getSync('async-late'), undefined);
 		assert.deepStrictEqual(await idsOf('fail-async'), []);
 	});
 
-	// Deterministic selection: `Promise.all` rejected with whichever failure landed first in time, so
-	// the reported error moved with scheduling. The batch now reports the earliest-index failure.
-	it('reports the earliest-index failure when several elements fail', async function () {
+	// Index, not arrival order: the later index rejects FIRST here, so this cannot pass by coincidence.
+	it('reports the earliest-index failure even when a later element fails sooner', async function () {
+		const order = [];
 		class TwoFailures extends Docs {
 			put(record, target) {
-				if (record?.id === 'multi-b') return Promise.reject(new Error('second element failed'));
-				// Reject sooner in wall-clock time than the earlier-index element, to prove index wins.
-				if (record?.id === 'multi-c') return Promise.reject(new Error('third element failed'));
+				if (record?.id === 'multi-b')
+					return new Promise((_resolve, reject) =>
+						setTimeout(() => {
+							order.push('multi-b');
+							reject(new Error('second element failed'));
+						}, 80)
+					);
+				if (record?.id === 'multi-c') {
+					order.push('multi-c');
+					return Promise.reject(new Error('third element failed'));
+				}
 				return super.put(record, target);
 			}
 		}
@@ -160,6 +162,7 @@ describe('array put element failure', () => {
 				{}
 			)
 		);
+		assert.deepStrictEqual(order, ['multi-c', 'multi-b']);
 		assert.strictEqual(error?.message, 'second element failed');
 		assert.deepStrictEqual(unhandled, []);
 		assert.deepStrictEqual(await idsOf('fail-multi'), []);

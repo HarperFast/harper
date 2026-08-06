@@ -142,16 +142,17 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static put = transactional(
 		function (resource: any, query: RequestTarget, request: Context, data: any) {
 			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
+				const resourceClass = resource.constructor;
+				const primaryKey = resourceClass.primaryKey;
 				const results = [];
 				try {
-					for (const [index, element] of data.entries()) {
-						const resourceClass = resource.constructor;
+					for (let index = 0; index < data.length; index++) {
+						const element = data[index];
 						// A bare dereference would reach the client as a 500 carrying V8's wording.
 						if (element == null)
 							throw new ClientError(`Array element at index ${index} is ${element}, expected a record`);
-						const id = element[resourceClass.primaryKey];
-						let target = new RequestTarget();
-						target.id = id;
+						const target = new RequestTarget();
+						target.id = element[primaryKey];
 						const elementResource = resourceClass.getResource(target, request, {
 							async: true,
 						});
@@ -586,10 +587,11 @@ export function snakeCase(camelCase: string) {
  */
 function settleElements(results: any[]): Promise<any[]> {
 	return Promise.allSettled(results).then((settled) => {
-		const values = [];
-		for (const element of settled) {
+		const values = new Array(settled.length);
+		for (let index = 0; index < settled.length; index++) {
+			const element = settled[index];
 			if (element.status === 'rejected') throw element.reason;
-			values.push(element.value);
+			values[index] = element.value;
 		}
 		return values;
 	});

@@ -79,14 +79,13 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 		ok(response.ok, `array PUT failed with ${response.status}: ${await response.text()}`);
 		deepStrictEqual(await idsOf('rest-ok'), ['rest-a', 'rest-b']);
 
-		// Each element landed under its own id with its own fields — not one merged record.
+		// Each element under its own id with its own fields, not one merged record.
 		const one = await fetch(`${httpURL}/Batch/rest-a`, { headers: { Authorization: auth } });
 		deepStrictEqual(await one.json(), { id: 'rest-a', kind: 'rest-ok', label: 'one' });
 	});
 
-	// Negative control for the test above: without the trailing slash the target is not a
-	// collection, so the array is staged as one record with a null primary key. This is what a
-	// regression in collection-target inference would turn the trailing-slash case into.
+	// Negative control: without the trailing slash the target is not a collection, so the array is
+	// staged as one record with a null primary key.
 	test('the same array PUT without a collection target is rejected', async () => {
 		const response = await fetch(`${httpURL}/Batch`, {
 			method: 'PUT',
@@ -99,16 +98,19 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 
 	test('a malformed element fails the whole batch and persists nothing', async () => {
 		const response = await putCollection([{ id: 'rest-bad-a', kind: 'rest-bad', label: 'one' }, null]);
-		// 400, not 500: a malformed body is the client's to fix, and the null element used to reach
-		// here as a raw TypeError carrying V8's wording.
+		// 400, not 500, and the body names the offending position instead of relaying the raw
+		// `TypeError: Cannot read properties of null` this used to surface.
 		strictEqual(response.status, 400);
+		const problem = (await response.json()) as { code: string; title: string };
+		strictEqual(problem.code, 'ClientError');
+		ok(problem.title.includes('index 1'), `expected the offending index in ${problem.title}`);
+		ok(!/TypeError|Cannot read properties/.test(problem.title), `engine wording leaked: ${problem.title}`);
 		deepStrictEqual(await idsOf('rest-bad'), []);
 	});
 
 	test('the instance survived the malformed batch and still serves writes', async () => {
-		// Liveness only. It does not prove a sibling write was settled — the sibling here resolves
-		// rather than rejecting, and the unit tests own that assertion. What it catches is the worker
-		// being gone after a failed batch, which is how the unhandled rejection would present.
+		// Liveness only: the unit tests own the sibling-settlement assertion. This catches the worker
+		// being gone after a failed batch, which is how an unhandled rejection would present.
 		const response = await putCollection([{ id: 'rest-after-a', kind: 'rest-after', label: 'still here' }]);
 		ok(response.ok, `post-failure array PUT failed with ${response.status}`);
 		deepStrictEqual(await idsOf('rest-after'), ['rest-after-a']);

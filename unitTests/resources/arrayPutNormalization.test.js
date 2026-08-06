@@ -92,9 +92,8 @@ describe('default-mode array put normalization', () => {
 		assert.deepStrictEqual(await idsOf('override'), ['override-a', 'override-b']);
 	});
 
-	// A non-Table Resource never reaches storage, so it is the one shape whose whole-array `put()`
-	// worked programmatically before this change. It fans out now, which is what the same class
-	// already got from a collection target — the two call paths no longer disagree.
+	// The one shape whose whole-array `put()` worked programmatically before this change; it now
+	// matches what the same class already got from a collection target.
 	it('fans out for a plain non-Table Resource the same way a collection target does', async function () {
 		const programmatic = [];
 		const viaTarget = [];
@@ -127,7 +126,6 @@ describe('default-mode array put normalization', () => {
 		const second = { id: 'order-2' };
 		const third = { id: 'order-3' };
 		const resolved = await Widget.put([first, second, third], {});
-		// Order follows the request, and each entry is the element's own returned object, not a copy.
 		assert.strictEqual(resolved.length, 3);
 		assert.strictEqual(resolved[0], first);
 		assert.strictEqual(resolved[1], second);
@@ -147,8 +145,7 @@ describe('default-mode array put normalization', () => {
 			],
 			{ user: alice }
 		);
-		// Whole records, not a projection: the defect staged the request context as record data, so
-		// anything the dispatch leaks into the element shows up as an extra attribute here.
+		// Whole records, not a projection: anything the dispatch leaks in shows up as an extra attribute.
 		const stored = (await recordsOf('async-element'))
 			.map((record) => ({ ...record }))
 			.sort((a, b) => (a.id < b.id ? -1 : 1));
