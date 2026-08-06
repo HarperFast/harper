@@ -138,6 +138,33 @@ describe('array put element failure', () => {
 		assert.deepStrictEqual(await idsOf('fail-async'), []);
 	});
 
+	// Deterministic selection: `Promise.all` rejected with whichever failure landed first in time, so
+	// the reported error moved with scheduling. The batch now reports the earliest-index failure.
+	it('reports the earliest-index failure when several elements fail', async function () {
+		class TwoFailures extends Docs {
+			put(record, target) {
+				if (record?.id === 'multi-b') return Promise.reject(new Error('second element failed'));
+				// Reject sooner in wall-clock time than the earlier-index element, to prove index wins.
+				if (record?.id === 'multi-c') return Promise.reject(new Error('third element failed'));
+				return super.put(record, target);
+			}
+		}
+		const { error, unhandled } = await withRejectionWatch(() =>
+			TwoFailures.put(
+				collectionTarget(),
+				[
+					{ id: 'multi-a', kind: 'fail-multi' },
+					{ id: 'multi-b', kind: 'fail-multi' },
+					{ id: 'multi-c', kind: 'fail-multi' },
+				],
+				{}
+			)
+		);
+		assert.strictEqual(error?.message, 'second element failed');
+		assert.deepStrictEqual(unhandled, []);
+		assert.deepStrictEqual(await idsOf('fail-multi'), []);
+	});
+
 	it('still writes a well-formed batch', async function () {
 		await Docs.put(
 			collectionTarget(),

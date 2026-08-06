@@ -116,6 +116,24 @@ describe('default-mode array put normalization', () => {
 		assert.deepStrictEqual(programmatic, viaTarget);
 	});
 
+	it("resolves to each element's own result, in request order", async function () {
+		class Widget extends Resource {
+			static primaryKey = 'id';
+			put(data) {
+				return data;
+			}
+		}
+		const first = { id: 'order-1' };
+		const second = { id: 'order-2' };
+		const third = { id: 'order-3' };
+		const resolved = await Widget.put([first, second, third], {});
+		// Order follows the request, and each entry is the element's own returned object, not a copy.
+		assert.strictEqual(resolved.length, 3);
+		assert.strictEqual(resolved[0], first);
+		assert.strictEqual(resolved[1], second);
+		assert.strictEqual(resolved[2], third);
+	});
+
 	it('writes each element when getResource resolves asynchronously', async function () {
 		class AsyncResolve extends Docs {
 			static getResource(target, context, options) {
