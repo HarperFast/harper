@@ -5,6 +5,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { Resource } = require('#src/resources/Resource');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -89,6 +90,30 @@ describe('default-mode array put normalization', () => {
 			{ isArray: false, id: 'override-b', targetIsCollection: true },
 		]);
 		assert.deepStrictEqual(await idsOf('override'), ['override-a', 'override-b']);
+	});
+
+	// A non-Table Resource never reaches storage, so it is the one shape whose whole-array `put()`
+	// worked programmatically before this change. It fans out now, which is what the same class
+	// already got from a collection target — the two call paths no longer disagree.
+	it('fans out for a plain non-Table Resource the same way a collection target does', async function () {
+		const programmatic = [];
+		const viaTarget = [];
+		function widgetClass(calls) {
+			return class Widget extends Resource {
+				static primaryKey = 'id';
+				put(data) {
+					calls.push(Array.isArray(data) ? data.map((element) => element.id) : data.id);
+					return data;
+				}
+			};
+		}
+		await widgetClass(programmatic).put([{ id: 'w1' }, { id: 'w2' }], {});
+		const target = new RequestTarget();
+		target.id = null;
+		target.isCollection = true;
+		await widgetClass(viaTarget).put(target, [{ id: 'w1' }, { id: 'w2' }], {});
+		assert.deepStrictEqual(programmatic, ['w1', 'w2']);
+		assert.deepStrictEqual(programmatic, viaTarget);
 	});
 
 	it('writes each element when getResource resolves asynchronously', async function () {
