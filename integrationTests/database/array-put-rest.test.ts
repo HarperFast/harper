@@ -90,6 +90,18 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 		deepStrictEqual(await idsOf('rest-ns'), []);
 	});
 
+	// Primitives take a different route than `null`: they survive the nullish guard, and the store's
+	// own primary-key validation rejects them. Both have to land as a 400, not a 500.
+	test('a primitive element is also a client error, not an internal one', async () => {
+		for (const bad of [42, 'nope', true]) {
+			const response = await putCollection([{ id: 'rest-prim-a', kind: 'rest-prim' }, bad]);
+			const problem = (await response.json()) as { code: string; title: string };
+			strictEqual(response.status, 400, `${JSON.stringify(bad)} gave ${response.status}: ${problem.title}`);
+			strictEqual(problem.code, 'ClientError');
+		}
+		deepStrictEqual(await idsOf('rest-prim'), []);
+	});
+
 	test('a malformed element fails the whole batch and persists nothing', async () => {
 		const response = await putCollection([{ id: 'rest-bad-a', kind: 'rest-bad', label: 'one' }, null]);
 		// 400, not 500, and the body names the offending position instead of relaying the raw
