@@ -82,9 +82,9 @@ export class IdZeroPayload extends Resource {
 	}
 }
 
-// GET /ZeroPayloadNoEvent/ — falsy `data` with no `event`/`id`/`retry` key at all. Exercises
-// the outer envelope-detection gate, distinct from the `hasData` matrix above which always sets
-// `event: 'payload'` and so never reaches this gate.
+// GET /ZeroPayloadNoEvent/ — falsy `data` with no `event` key at all. Exercises the outer
+// envelope-detection gate, distinct from the `hasData` matrix above which always sets
+// `event: 'payload'` and so never reaches this gate via `data` alone.
 export class ZeroPayloadNoEvent extends Resource {
 	static loadAsInstance = false;
 	static async *connect() {
@@ -92,12 +92,15 @@ export class ZeroPayloadNoEvent extends Resource {
 	}
 }
 
-// GET /StandaloneIdPayload/ — an `id` with no `data`/`event`/`retry` key at all: the envelope
-// gate's `id`-only path.
-export class StandaloneIdPayload extends Resource {
+// GET /IdKeyPlainObjectPayload/ — a plain data object that happens to have a top-level `id`
+// key (e.g. a real database record), with no `data`/`event` key. `id`/`retry` are deliberately
+// NOT envelope-detection signals (contentTypes.ts) -- `id` is too common a literal-payload field
+// name for that -- so this must be JSON-wrapped wholesale like any other plain object, not have
+// its `id` peeled off into an `id:` line while the rest of the object is silently dropped.
+export class IdKeyPlainObjectPayload extends Resource {
 	static loadAsInstance = false;
 	static async *connect() {
-		yield { id: 42 };
+		yield { id: 42, name: 'Alice' };
 	}
 }
 

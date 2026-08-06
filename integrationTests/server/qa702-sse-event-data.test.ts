@@ -384,18 +384,20 @@ suite(
 			);
 		});
 
-		// A standalone `id` (no data/event/retry) must also open the envelope gate, not fall to
-		// the else branch and get JSON-wrapped as a bogus data frame.
-		test('a: standalone id (no data/event) -- envelope gate must not treat this as absent', async () => {
-			const r = await consumeSse(`${restBase}/StandaloneIdPayload/`, authHeaders, 15_000);
+		// `id`/`retry` are deliberately NOT envelope-detection signals: widening the gate to them
+		// was tried in review and reverted, because a plain data object with a real `id` field
+		// (extremely common) would otherwise have that field peeled into an `id:` line while the
+		// rest of the object is silently dropped. A plain object containing an `id` key must still
+		// be JSON-wrapped wholesale, like any other plain object with no `data`/`event` key.
+		test('a: plain object with an "id" key (no data/event) -- must be JSON-wrapped, not misread as an SSE id', async () => {
+			const r = await consumeSse(`${restBase}/IdKeyPlainObjectPayload/`, authHeaders, 15_000);
 			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
 			const blocks = parseSseBlocks(r.raw);
 			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
-			strictEqual('data' in blocks[0], false, `expected no data: line; got: ${JSON.stringify(blocks[0])}`);
 			strictEqual(
-				blocks[0].id,
-				'42',
-				`expected a bare "id: 42" line, not the whole message JSON-wrapped; got: ${JSON.stringify(blocks[0])}`
+				blocks[0].data,
+				JSON.stringify({ id: 42, name: 'Alice' }),
+				`expected the whole object JSON-wrapped, not "name" dropped; got: ${JSON.stringify(blocks[0])}`
 			);
 		});
 

@@ -141,7 +141,13 @@ mediaTypes.set('text/event-stream', {
 				id: message.timestamp,
 			};
 		}
-		if (message.data != null || message.event || message.id != null || message.retry != null) {
+		// Only `data`/`event` open the envelope path -- NOT `id`/`retry`. `id` in particular is an
+		// extremely common literal-payload field name (e.g. a database record), so treating a bare
+		// `id`/`retry` key as an SSE-envelope signal would misclassify plain data objects that
+		// happen to carry one, silently dropping every other field. A standalone id-only/retry-only
+		// SSE message is consequently unsupported (falls to the JSON-wrap branch below); a clean
+		// fix would need an explicit envelope marker, out of scope here.
+		if (message.data != null || message.event) {
 			let serialized = '';
 			if (message.event) serialized += 'event: ' + message.event + '\n';
 			if (message.data != null) {
