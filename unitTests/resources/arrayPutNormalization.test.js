@@ -69,6 +69,28 @@ describe('default-mode array put normalization', () => {
 		assert.deepStrictEqual(await idsOf('instance-put'), ['instance-put-a', 'instance-put-b']);
 	});
 
+	it('dispatches a custom put() override once per element, not once with the batch', async function () {
+		const calls = [];
+		class OverridePut extends Docs {
+			put(data, target) {
+				calls.push({ isArray: Array.isArray(data), id: data?.id, targetIsCollection: target?.isCollection });
+				return super.put(data, target);
+			}
+		}
+		await OverridePut.put(
+			[
+				{ id: 'override-a', kind: 'override' },
+				{ id: 'override-b', kind: 'override' },
+			],
+			{ user: alice }
+		);
+		assert.deepStrictEqual(calls, [
+			{ isArray: false, id: 'override-a', targetIsCollection: true },
+			{ isArray: false, id: 'override-b', targetIsCollection: true },
+		]);
+		assert.deepStrictEqual(await idsOf('override'), ['override-a', 'override-b']);
+	});
+
 	it('writes each element when getResource resolves asynchronously', async function () {
 		class AsyncResolve extends Docs {
 			static getResource(target, context, options) {
@@ -82,9 +104,14 @@ describe('default-mode array put normalization', () => {
 			],
 			{ user: alice }
 		);
-		assert.deepStrictEqual((await recordsOf('async-element')).map(({ id, label }) => [id, label]).sort(), [
-			['async-element-a', 'one'],
-			['async-element-b', 'two'],
+		// Whole records, not a projection: the defect staged the request context as record data, so
+		// anything the dispatch leaks into the element shows up as an extra attribute here.
+		const stored = (await recordsOf('async-element'))
+			.map((record) => ({ ...record }))
+			.sort((a, b) => (a.id < b.id ? -1 : 1));
+		assert.deepStrictEqual(stored, [
+			{ id: 'async-element-a', kind: 'async-element', label: 'one' },
+			{ id: 'async-element-b', kind: 'async-element', label: 'two' },
 		]);
 	});
 });

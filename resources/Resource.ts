@@ -151,8 +151,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const elementResource = resourceClass.getResource(target, request, {
 						async: true,
 					});
-					// `query`, not `request`: the instance put() signature is (target, record), so a context
-					// in the second position gets staged as this element's record data.
+					// `query`, not `request`: put() is (target, record), so a context here becomes record data.
 					if (typeof elementResource.then === 'function')
 						results.push(elementResource.then((resource) => resource.put(element, query)));
 					else results.push(elementResource.put(element, query));
@@ -726,9 +725,9 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
-			// `Class.put(batch, context)` carries no target of its own, so the collection inferred from
-			// the null id has to survive into the synthesized one, or the batch is dispatched as a single
-			// record update against a null primary key instead of per-element writes.
+			// The collection inferred from the batch's null id has to survive onto the synthesized target,
+			// or the array is dispatched as one record update against a null primary key. Array-only:
+			// a null id on non-array data means auto-generate, not collection.
 			if (isCollection && options.method === 'put' && Array.isArray(data)) query.isCollection = true;
 		}
 		if (options.method === 'query' && data && typeof data === 'object') {
