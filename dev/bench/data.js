@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786003600750,
+  "lastUpdate": 1786019198209,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -10319,6 +10319,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 495760,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "01d8562225c88abe8d62ba37e520aa5b289f76c7",
+          "message": "Merge pull request #2075 from HarperFast/david/last-super-user-guard\n\nReject user and role changes that would remove the last active super_user",
+          "timestamp": "2026-08-05T21:25:48Z",
+          "url": "https://github.com/HarperFast/harper/commit/01d8562225c88abe8d62ba37e520aa5b289f76c7"
+        },
+        "date": 1786019196708,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 6089,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 5549,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 5709,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 10294016,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 3955,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1102,
             "unit": "ops"
           }
         ]
