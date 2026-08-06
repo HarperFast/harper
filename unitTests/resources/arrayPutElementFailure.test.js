@@ -70,11 +70,9 @@ describe('array put element failure', () => {
 		const { error, unhandled } = await withRejectionWatch(() =>
 			RejectingFirstElement.put(collectionTarget(), [{ id: 'fail-reject', kind: 'fail-mixed' }, null], {})
 		);
-		assert.ok(error, 'the batch must reject');
-		// Not the sibling's rejection: the malformed element is what the caller has to fix. Matched
-		// against the sibling's sentinel rather than the malformed element's own message, which for a
-		// null dereference is V8's wording and has changed between versions.
-		assert.notStrictEqual(error.message, 'element write failed');
+		// Not the sibling's rejection: the malformed element is what the caller has to fix.
+		assert.match(error?.message ?? '', /index 1 is null/);
+		assert.strictEqual(error.statusCode, 400);
 		assert.deepStrictEqual(unhandled, []);
 		assert.deepStrictEqual(await idsOf('fail-mixed'), []);
 	});
@@ -83,7 +81,10 @@ describe('array put element failure', () => {
 		const { error, unhandled } = await withRejectionWatch(() =>
 			Docs.put(collectionTarget(), [{ id: 'fail-null-a', kind: 'fail-null' }, null], {})
 		);
-		assert.ok(error, 'the batch must reject');
+		// A malformed body is the client's error, not an internal one: named position, 400, and no
+		// engine-generated TypeError text reaching the caller.
+		assert.match(error?.message ?? '', /Array element at index 1 is null/);
+		assert.strictEqual(error.statusCode, 400);
 		assert.deepStrictEqual(unhandled, []);
 		assert.deepStrictEqual(await idsOf('fail-null'), []);
 	});

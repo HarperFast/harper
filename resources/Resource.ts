@@ -144,33 +144,32 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
 				const results = [];
 				try {
-					for (const element of data) {
+					for (const [index, element] of data.entries()) {
 						const resourceClass = resource.constructor;
+						// A bare dereference would reach the client as a 500 carrying V8's wording.
+						if (element == null)
+							throw new ClientError(`Array element at index ${index} is ${element}, expected a record`);
 						const id = element[resourceClass.primaryKey];
 						let target = new RequestTarget();
 						target.id = id;
 						const elementResource = resourceClass.getResource(target, request, {
 							async: true,
 						});
-						// `query`, not `request`: the second argument is the target, and Table's back-compat
-						// argument shift only recognizes one that is a RequestTarget — a context becomes the record.
+						// `query`, not `request`: this is the target slot, and Table's back-compat shift only
+						// recognizes a RequestTarget there — a context is taken for the record.
 						if (typeof elementResource.then === 'function')
 							results.push(elementResource.then((resource) => resource.put(element, query)));
 						else results.push(elementResource.put(element, query));
 					}
 				} catch (error) {
-					// A malformed element throws here with earlier elements already dispatched. Settle them
-					// before failing, or a rejection among them reaches no handler and becomes an unhandled
-					// rejection that can take the process down. `error` wins over any sibling rejection:
-					// the malformed element is the one the caller has to fix.
+					// Settle the already-dispatched elements or a rejection among them goes unhandled. `error`
+					// wins over a sibling's: the malformed element is what the caller has to fix.
 					return Promise.allSettled(results).then(() => {
 						throw error;
 					});
 				}
-				// Not `Promise.all`: it rejects on the first element and lets `transactional` unwind the
-				// transaction while a slower element is still resolving its resource. That element then
-				// stages its write outside the failed batch and commits on its own — a partial array PUT.
-				// Every element has to reach a conclusion before the batch does.
+				// Not `Promise.all`: settling the batch while a slower element is still resolving lets that
+				// element commit outside the failed batch — a partially applied array PUT.
 				return settleElements(results);
 			}
 			return resource.put
@@ -582,16 +581,17 @@ export function snakeCase(camelCase: string) {
 }
 
 /**
- * Await every element of a fanned-out batch write, then report the batch's outcome. Unlike
- * `Promise.all` this never settles the batch while an element is still outstanding, which is what
- * keeps the enclosing transaction open until each element has staged or failed its write. The first
- * rejection is what the batch rejects with.
+ * Report a fanned-out batch write's outcome only once every element has staged or failed its own
+ * write, so the enclosing transaction cannot unwind under one. Rejects with the first failure.
  */
 function settleElements(results: any[]): Promise<any[]> {
 	return Promise.allSettled(results).then((settled) => {
-		const failed = settled.find((element) => element.status === 'rejected');
-		if (failed) throw (failed as PromiseRejectedResult).reason;
-		return settled.map((element) => (element as PromiseFulfilledResult<any>).value);
+		const values = [];
+		for (const element of settled) {
+			if (element.status === 'rejected') throw element.reason;
+			values.push(element.value);
+		}
+		return values;
 	});
 }
 

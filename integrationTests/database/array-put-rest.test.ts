@@ -101,7 +101,9 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 
 	test('a malformed element fails the whole batch and persists nothing', async () => {
 		const response = await putCollection([{ id: 'rest-bad-a', kind: 'rest-bad', label: 'one' }, null]);
-		ok(!response.ok, `expected a failure status, got ${response.status}`);
+		// 400, not 500: a malformed body is the client's to fix, and the null element used to reach
+		// here as a raw TypeError carrying V8's wording.
+		strictEqual(response.status, 400);
 		deepStrictEqual(await idsOf('rest-bad'), []);
 	});
 
