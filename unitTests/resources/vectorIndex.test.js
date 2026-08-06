@@ -491,6 +491,69 @@ describe('HNSW search result loading (searchByIndex)', () => {
 	});
 });
 
+describe('HNSW post-sort distance', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const distanceCalculator = new HierarchicalNavigableSmallWorld();
+	let T;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWPostSortDistanceTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean' }, type: 'Array' },
+			],
+		});
+		await T.put(1, { group: 'single', vector: [2, 0] });
+		await T.put(2, { group: 'metric', vector: [0.1, 0.1] });
+		await T.put(3, { group: 'metric', vector: [1.2, 0.8] });
+		await T.put(4, { group: 'metric', vector: [7, 8] });
+	});
+
+	after(() => T.dropTable());
+
+	it('returns $distance when a selective condition leaves one result', async () => {
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'single' }],
+				sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
+				select: ['id', '$distance'],
+			})
+		);
+
+		assert.equal(results.length, 1);
+		assert(Number.isFinite(results[0].$distance));
+		assert.equal(results[0].$distance, 2);
+	});
+
+	it('uses the requested metric when a selective condition triggers post-sorting', async () => {
+		const target = [1, 1];
+		const vectors = new Map([
+			[2, [0.1, 0.1]],
+			[3, [1.2, 0.8]],
+			[4, [7, 8]],
+		]);
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'metric' }],
+				sort: { attribute: 'vector', target, distance: 'cosine' },
+				select: ['id', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 2);
+		for (const result of results) {
+			const expected = distanceCalculator.distance(target, vectors.get(result.id));
+			assert(Number.isFinite(result.$distance));
+			assert(Math.abs(result.$distance - expected) < 1e-9);
+		}
+	});
+});
+
 describe('HNSW int8 quantization (quantization: "int8")', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const testInstance = new HierarchicalNavigableSmallWorld();

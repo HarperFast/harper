@@ -1242,11 +1242,11 @@ export class HierarchicalNavigableSmallWorld {
 			let vectorDistances = sortDefinition.vectorDistances;
 			if (vectorDistances) {
 				const difference = vectorDistances.get(entry);
-				if (difference) return difference;
+				if (difference !== undefined) return difference;
 			} else vectorDistances = context.vectorDistances = sortDefinition.vectorDistances = new Map();
 
 			let distanceFunction = this.distance;
-			if (sortDefinition.type)
+			if (sortDefinition.distance)
 				distanceFunction =
 					sortDefinition.distance === 'euclidean'
 						? euclideanDistance
