@@ -4,7 +4,7 @@ const path = require('node:path');
 const sinon = require('sinon');
 const { open } = require('lmdb');
 const env_mgr = require('#src/utility/environment/environmentManager');
-const { table } = require('#src/resources/databases');
+const { table, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const config_utils = require('#src/config/configUtils');
 const copyDB = require('#src/bin/copyDb');
@@ -210,6 +210,35 @@ describe('copy-db integrity (harper#2048)', () => {
 				`blob ${relative_path} should be byte-identical in the copy`
 			);
 		}
+	});
+
+	it('restores as a different database, blob attachment and all, from the copy plus its blob directory', async () => {
+		const restored_database = 'copy-integrity-restored';
+		const copy_path = path.join(storage_path, restored_database + '.mdb');
+		await copyDB.copyDb(DATABASE, copy_path, { blobs: 'copy' });
+
+		// The documented restore: the environment file under the new database's name, and each
+		// <rootIndex> tree in that database's matching blob root.
+		await fs.copy(path.join(copy_path + '-blobs', '0'), getBlobPathsForDatabaseName(restored_database)[0]);
+		resetDatabases();
+
+		const Restored = table({
+			table: 'WideAttributeNames',
+			database: restored_database,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'groupingAttributeName', indexed: true },
+				{ name: 'uniqueAttributeName', indexed: true },
+				{ name: 'attachment' },
+			],
+		});
+		const record = await Restored.get('withBlob');
+		assert.ok(record, 'the restored copy still has the blob-bearing record');
+		const attachment = await record.attachment.arrayBuffer();
+		assert.ok(
+			Buffer.from(attachment).equals(Buffer.alloc(20000, 'b')),
+			'the attachment reads back byte-exact from the restored blob root'
+		);
 	});
 
 	it('copies the audit log into the target rather than back into the source', async () => {

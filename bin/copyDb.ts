@@ -62,9 +62,9 @@ export async function compactOnStart() {
 				continue;
 			}
 			// Compaction replaces one environment file, and leaves the blob roots alone because the
-			// compacted copy goes back to this exact path under this database name. A database whose
-			// tables live in separate environments has no single file to replace, so compacting it would
-			// relocate tables and strand blobs — skip it rather than produce that (harper#2048).
+			// compacted copy goes back to this exact path under this database name. Tables in separate
+			// environments have no single file to replace, so compacting them would relocate tables and
+			// strand their blobs.
 			if (rootStores.size > 1) {
 				const message = `Skipping compaction of database ${databaseName}: its tables span ${rootStores.size} storage environments (table-specific paths), which compaction cannot replace as one file`;
 				hdbLogger.warn(message);
@@ -83,12 +83,14 @@ export async function compactOnStart() {
 				hdbLogger.error('Error getting record count for database', databaseName, error);
 				console.error('Error getting record count for database', databaseName, error);
 			}
-			compactedDb.set(databaseName, {
+			const compactionState = {
 				dbPath,
 				copyDest,
 				backupDest,
 				recordCount,
-			});
+				backedUp: false,
+			};
+			compactedDb.set(databaseName, compactionState);
 
 			// A copy target left behind by an interrupted run would be opened and merged into, mixing
 			// stale entries into this compaction's output.
@@ -101,6 +103,7 @@ export async function compactOnStart() {
 			// compaction (leaving the source in place) instead of overwriting the only copy.
 			console.log('Backing up', databaseName, 'to', backupDest);
 			await move(dbPath, backupDest, { overwrite: true });
+			compactionState.backedUp = true;
 			// Move compacted DB to back to original DB path
 			console.log('Moving copy compacted', databaseName, 'to', dbPath);
 			await move(copyDest, dbPath, { overwrite: true });
@@ -126,7 +129,12 @@ export async function compactOnStart() {
 
 		updateConfigValue(CONFIG_PARAMS.STORAGE_COMPACTONSTART, false);
 
-		for (const [_db, { dbPath, backupDest }] of compactedDb) {
+		for (const [_db, { dbPath, backupDest, backedUp }] of compactedDb) {
+			// Only a backup this run created is this run's source to restore. `backupDest` is a fixed
+			// path per database, so a retained backup from an earlier run can be sitting there — moving
+			// that over a database whose compaction failed before its own backup was taken would
+			// replace healthy data with a stale snapshot.
+			if (!backedUp) continue;
 			console.error('Moving backup database', backupDest, 'back to', dbPath);
 			try {
 				await move(backupDest, dbPath, { overwrite: true });
@@ -171,34 +179,29 @@ function noop() {
 	// if there are any attempts to write to the db, ignore them
 }
 
-/** The distinct storage environments a database's tables live in — normally exactly one. */
 function getRootStores(database): Set<any> {
 	const rootStores = new Set<any>();
 	for (const tableName in database) rootStores.add(database[tableName].primaryStore.rootStore);
 	return rootStores;
 }
 
-/** Companion directory holding a copy's blob files, beside the copied environment file. */
 const BLOB_COPY_SUFFIX = '-blobs';
 
 const STRUCTURES_KEY = Symbol.for('structures');
 
 const MAX_COPY_RETRIES = 1000;
 
-/** msgpack encoding of null — the entire body of a delete tombstone. */
 const MSGPACK_NIL = 0xc0;
 
-/** `path` is `directory` itself or nested inside it. */
 function isWithin(path: string, directory: string): boolean {
 	const relativePath = relative(directory, path);
 	return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
 }
 
 /**
- * Read raw stored bytes rather than decoded values through this handle. `openDB` builds a
- * RecordEncoder from the DBI options regardless of `encoding`, and the live audit store additionally
- * wraps `getRange` to yield decoded audit records, so a byte-for-byte copy needs its own handle with
- * the encoder detached.
+ * Read and write raw stored bytes through this handle: `openDB` builds a RecordEncoder from the DBI
+ * options whatever `encoding` says, and the live audit store also wraps `getRange` to yield decoded
+ * audit records, so a byte-for-byte copy needs the encoder detached.
  */
 function useRawBytes(store) {
 	store.encoder = null;
@@ -211,7 +214,7 @@ function useRawBytes(store) {
 /**
  * Copy a database's blob roots into `<targetDatabasePath>-blobs/<rootIndex>/…`. Blob files live
  * outside the environment file and are addressed by database *name* against the running instance's
- * configured roots, so a copy without them is unreadable anywhere but its own origin (harper#2048).
+ * configured roots, so a copy without them is unreadable anywhere but its own origin.
  */
 async function copyDatabaseBlobs(sourceDatabase: string, targetDatabasePath: string, blobRoots: string[]) {
 	const populatedRoots = blobRoots.filter((root) => existsSync(root));
@@ -234,7 +237,7 @@ async function copyDatabaseBlobs(sourceDatabase: string, targetDatabasePath: str
  * answers are silently destructive when wrong: `'copy'` writes them beside the target (what an
  * operator copying a database elsewhere needs), `'preserve-source-roots'` leaves them untouched and
  * is only sound when the copy replaces the source environment under the same database name, which is
- * what makes the existing roots keep resolving (harper#2048).
+ * what makes the existing roots keep resolving.
  */
 export async function copyDb(
 	sourceDatabase: string,
@@ -250,23 +253,6 @@ export async function copyDb(
 	console.log(`Copying database ${sourceDatabase} to ${targetDatabasePath}`);
 	const sourceDb = getDatabases()[sourceDatabase];
 	if (!sourceDb) throw new Error(`Source database not found: ${sourceDatabase}`);
-	const primaryStoresByDbi = new Map<string, any>();
-	for (const tableName in sourceDb) {
-		const table = sourceDb[tableName];
-		// ensure that writes aren't occurring
-		table.primaryStore.put = noop;
-		table.primaryStore.remove = noop;
-		for (const attributeName in table.indices) {
-			const index = table.indices[attributeName];
-			index.put = noop;
-			index.remove = noop;
-		}
-		if (table.auditStore) {
-			table.auditStore.put = noop;
-			table.auditStore.remove = noop;
-		}
-		primaryStoresByDbi.set(table.primaryStore.name, table.primaryStore);
-	}
 	const rootStores = getRootStores(sourceDb);
 	if (rootStores.size === 0) throw new Error(`Source database does not have any tables: ${sourceDatabase}`);
 	if (rootStores.size > 1)
@@ -283,22 +269,43 @@ export async function copyDb(
 		);
 	const blobRoots = blobDisposition === 'copy' ? getBlobPathsForDatabaseName(sourceDatabase) : [];
 	const blobDestination = targetDatabasePath + BLOB_COPY_SUFFIX;
-	for (const root of blobRoots) {
-		if (isWithin(blobDestination, root) || isWithin(root, blobDestination))
-			throw new Error(
-				`Copy target ${targetDatabasePath} overlaps the source blob root ${root}; choose a target outside it`
-			);
+	if (blobDisposition === 'copy') {
+		if (existsSync(blobDestination))
+			throw new Error(`Blob copy target ${blobDestination} already exists; remove it first`);
+		for (const root of blobRoots) {
+			if (isWithin(blobDestination, root) || isWithin(root, blobDestination))
+				throw new Error(
+					`Copy target ${targetDatabasePath} overlaps the source blob root ${root}; choose a target outside it`
+				);
+		}
+	}
+	// Suppress source writes only once the copy is going ahead: a caller that catches a rejection above
+	// keeps using these stores.
+	const primaryStoresByDbi = new Map<string, any>();
+	for (const tableName in sourceDb) {
+		const table = sourceDb[tableName];
+		table.primaryStore.put = noop;
+		table.primaryStore.remove = noop;
+		for (const attributeName in table.indices) {
+			const index = table.indices[attributeName];
+			index.put = noop;
+			index.remove = noop;
+		}
+		if (table.auditStore) {
+			table.auditStore.put = noop;
+			table.auditStore.remove = noop;
+		}
+		primaryStoresByDbi.set(table.primaryStore.name, table.primaryStore);
 	}
 	try {
 		await copyDbEnvironment(sourceDatabase, targetDatabasePath, rootStore, primaryStoresByDbi);
 		if (blobDisposition === 'copy') await copyDatabaseBlobs(sourceDatabase, targetDatabasePath, blobRoots);
 	} catch (error) {
-		// Nothing here existed before this call (a pre-existing target is rejected above), so a partial
-		// copy is ours to remove: leaving one behind invites a restore of a database that lost records,
-		// index entries or blobs.
+		// Every path removed here was created by this call — both targets are rejected above if they
+		// already exist — and a partial copy left behind is a copy someone can restore from.
 		await remove(targetDatabasePath).catch(() => {});
 		await remove(targetDatabasePath + '-lock').catch(() => {});
-		await remove(blobDestination).catch(() => {});
+		if (blobDisposition === 'copy') await remove(blobDestination).catch(() => {});
 		throw error;
 	}
 }
@@ -351,9 +358,8 @@ async function copyDbEnvironment(
 			if (isPrimary) await verifyStructuresCopied(sourceDbi, targetDbi, key);
 		}
 		if (sourceAuditStore) {
-			// Both handles must be opened here: `targetAuditStore` used to come from the source env, so
-			// the copy wrote source audit entries back into the source (through a fresh handle the
-			// write-guard above never covered) and the target got no audit log at all (harper#2048).
+			// Both handles belong to their own environment: a target handle opened on the source env
+			// writes the audit log back into the source and leaves the copy without one.
 			const sourceAuditDbi = rootStore.openDB(AUDIT_STORE_NAME, { create: false, ...AUDIT_STORE_OPTIONS });
 			if (!sourceAuditDbi) throw new Error(`Could not open the audit store of ${sourceDatabase} to copy it`);
 			const targetAuditStore = (targetEnv as any).openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
@@ -364,7 +370,7 @@ async function copyDbEnvironment(
 		/**
 		 * A primary DBI's shared-structures dictionary is the whole table's decodability: without it
 		 * every copied record decodes to null. It rides through the copy as a symbol-keyed entry, so
-		 * confirm it landed rather than trusting the walk (harper#2048).
+		 * confirm it landed rather than trusting the walk.
 		 */
 		async function verifyStructuresCopied(sourceDbi, targetDbi, dbiName) {
 			const sourceStructures = sourceDbi.getBinary?.(STRUCTURES_KEY);
@@ -380,11 +386,10 @@ async function copyDbEnvironment(
 
 		/**
 		 * Whether a stored value is a delete tombstone, decided by decoding it with the live table's
-		 * record decoder. Length cannot decide it: the 13-byte shape a tombstone usually has is also
-		 * reachable by the shared-structures dictionary and by small records, and the length test
-		 * dropped both. `decode` returning null is not sufficient either — it also returns null for a
-		 * record whose shared structure is missing — so require the metadata-bearing decode that only a
-		 * real prefixed tombstone produces, and keep anything unprovable.
+		 * record decoder. Length cannot decide it — a small shared-structures dictionary and a small
+		 * record both land in a tombstone's usual size range — and `decode` returning null is not
+		 * sufficient either, since it also returns null for a record whose shared structure is missing
+		 * on this node. Only a metadata-bearing decode proves a tombstone; anything unprovable is kept.
 		 */
 		function isDeletedRecord(value, primaryStore) {
 			if (!primaryStore?.decoder) return false;
@@ -405,19 +410,17 @@ async function copyDbEnvironment(
 			let completed = false;
 			while (!completed && retries-- > 0) {
 				try {
-					// getRange (not getKeys + getEntry) so a dupSort index yields every duplicate rather
-					// than one entry per unique key, which collapsed every secondary index (harper#2048)
+					// getRange, not getKeys + getEntry: on a dupSort index the latter yields one entry per
+					// unique key, dropping every duplicate
 					for (const { key, value, version } of sourceDbi.getRange(
 						isPrimary ? { start, transaction, versions: true } : { start, transaction }
 					)) {
 						try {
 							start = key;
-							// Tombstones are dropped only once they are past audit retention, the same point
-							// the runtime removes them: dropping a live one loses the delete, letting a peer
-							// that missed it resurrect the record. A tombstone's body is just msgpack nil,
-							// so its trailing byte is the cheap filter that keeps the decode below off
-							// every record — length cannot serve: a real delete carries node-id metadata
-							// and runs to 17 bytes, well past the 14 the old heuristic tested.
+							// Drop a tombstone only once it is past audit retention, the point the runtime
+							// removes it too: dropping a live one loses the delete, letting a peer that
+							// missed it resurrect the record. A tombstone's body is a lone msgpack nil, so
+							// the trailing byte keeps the decode off every other record.
 							if (
 								isPrimary &&
 								typeof key !== 'symbol' &&
@@ -456,6 +459,7 @@ async function copyDbEnvironment(
 								targetDatabasePath,
 								error
 							);
+							break;
 						}
 					}
 					completed = true;
@@ -469,28 +473,27 @@ async function copyDbEnvironment(
 						'bytes'
 					);
 				} catch (error) {
+					// Resume from the last key read, which re-copies it (a put of identical bytes, and a
+					// dupSort pair, is idempotent) and continues in order. Advancing the key instead — as
+					// this did, bumping a string to `<prefix>z` — jumps the copy over every key in
+					// between and then reports success, which is the corruption this function is being
+					// fixed for. A key that cannot be read at all exhausts the retries and fails.
 					console.error(
 						`Error iterating ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,
 						error
 					);
-					// try to resume with a bigger key
-					if (typeof start === 'string') {
-						if (start === 'z')
-							throw new Error(`Reached end of dbi resuming ${sourceDatabase} at key ${start}`, { cause: error });
-						start = start.slice(0, -2) + 'z';
-					} else if (typeof start === 'number') start++;
-					else
-						throw new Error(`Cannot resume copy of ${sourceDatabase} past key of type ${typeof start}`, {
-							cause: error,
-						});
 				}
 			}
-			// Every one of these used to log and carry on, so a copy that lost records, or stopped
-			// part-way through a DBI, still reported success and exited 0 (harper#2048).
-			if (!completed) throw new Error(`Copy of ${sourceDatabase} exceeded ${MAX_COPY_RETRIES} retries`);
+			// A copy that lost entries or stopped part-way through a DBI used to log and carry on,
+			// reporting success and exiting 0.
+			if (!completed)
+				throw new Error(
+					`Copy of ${sourceDatabase} to ${targetDatabasePath} could not get past key ` +
+						`${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)} in ${MAX_COPY_RETRIES} attempts`
+				);
 			if (failedRecords > 0)
 				throw new Error(
-					`Copy of ${sourceDatabase} to ${targetDatabasePath} failed on ${failedRecords} of ${failedRecords + recordsCopied} entries`
+					`Copy of ${sourceDatabase} to ${targetDatabasePath} failed on ${failedRecords} entry/entries after copying ${recordsCopied}`
 				);
 		}
 
