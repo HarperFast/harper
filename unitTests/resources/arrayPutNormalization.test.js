@@ -1,6 +1,6 @@
 // Default-mode (loadAsInstance !== false) array PUT: `Class.put(batch, context)` must keep the
 // collection target the argument normalization inferred, and every element must be dispatched the
-// same way whether `getResource()` resolves synchronously or asynchronously (harper#2000).
+// same way whether `getResource()` resolves synchronously or asynchronously.
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');

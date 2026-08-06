@@ -159,11 +159,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						else results.push(elementResource.put(element, query));
 					}
 				} catch (error) {
-					// A malformed element (null, or one whose id is unusable) throws here mid-loop, after
-					// earlier elements' writes are already in flight. Those have to be settled before the
-					// batch fails, or a later rejection reaches no handler and becomes an unhandled
-					// rejection that can take the process down. The batch still fails whole: the
-					// transaction rolls every element back.
+					// Settle the writes already in flight before failing: they are writing to the
+					// transaction the caller is about to unwind, and a rejection with no handler here
+					// becomes an unhandled rejection that can take the process down.
 					return Promise.allSettled(results).then(() => {
 						throw error;
 					});

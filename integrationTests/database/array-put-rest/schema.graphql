@@ -1,0 +1,6 @@
+# Array PUT over REST — the collection dispatch path harper#2000 fixed programmatically.
+type Batch @table @export {
+	id: ID @primaryKey
+	kind: String
+	label: String
+}
