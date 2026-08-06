@@ -10,9 +10,9 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // An unhandled rejection is reported a turn or two after the promise is abandoned, so give the
 // loop time to fire before asserting it did not.
-async function drainRejections() {
+async function drainRejections(settleMs = 50) {
 	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
-	await new Promise((resolve) => setTimeout(resolve, 50));
+	await new Promise((resolve) => setTimeout(resolve, settleMs));
 }
 
 describe('array put element failure', () => {
@@ -45,7 +45,7 @@ describe('array put element failure', () => {
 	}
 
 	// Runs `attempt` with a private unhandledRejection listener and returns what escaped.
-	async function withRejectionWatch(attempt) {
+	async function withRejectionWatch(attempt, settleMs) {
 		const unhandled = [];
 		const listener = (reason) => unhandled.push(reason?.message ?? String(reason));
 		process.on('unhandledRejection', listener);
@@ -55,7 +55,7 @@ describe('array put element failure', () => {
 		} catch (thrown) {
 			error = thrown;
 		}
-		await drainRejections();
+		await drainRejections(settleMs);
 		process.off('unhandledRejection', listener);
 		return { error, unhandled };
 	}
@@ -71,8 +71,9 @@ describe('array put element failure', () => {
 			RejectingFirstElement.put(collectionTarget(), [{ id: 'fail-reject', kind: 'fail-mixed' }, null], {})
 		);
 		assert.ok(error, 'the batch must reject');
-		// Not the sibling's rejection: the malformed element is what the caller has to fix. Asserted by
-		// identity rather than message text, which for a null dereference is V8's wording, not ours.
+		// Not the sibling's rejection: the malformed element is what the caller has to fix. Matched
+		// against the sibling's sentinel rather than the malformed element's own message, which for a
+		// null dereference is V8's wording and has changed between versions.
 		assert.notStrictEqual(error.message, 'element write failed');
 		assert.deepStrictEqual(unhandled, []);
 		assert.deepStrictEqual(await idsOf('fail-mixed'), []);
@@ -94,6 +95,46 @@ describe('array put element failure', () => {
 		assert.match(error?.message ?? '', /Invalid primary key/);
 		assert.deepStrictEqual(unhandled, []);
 		assert.deepStrictEqual(await idsOf('fail-pk'), []);
+	});
+
+	// The async-resolution counterpart, and the load-bearing one. With `Promise.all` the batch rejected
+	// on the first element while a slower element was still resolving its resource; that element then
+	// staged its write outside the failed batch and committed on its own, leaving a partially applied
+	// array PUT. The watch has to outlast the late element or this passes by not looking.
+	it('does not partially apply a batch when an element rejects while an async sibling resolves', async function () {
+		let latePuts = 0;
+		class AsyncMixed extends Docs {
+			static getResource(target, context, options) {
+				const resource = super.getResource(target, context, options);
+				if (target?.id === 'async-late') return new Promise((resolve) => setTimeout(() => resolve(resource), 100));
+				return Promise.resolve(resource);
+			}
+			put(record, target) {
+				if (record?.id === 'async-reject') return Promise.reject(new Error('async element write failed'));
+				if (record?.id === 'async-late') latePuts++;
+				return super.put(record, target);
+			}
+		}
+		const { error, unhandled } = await withRejectionWatch(
+			() =>
+				AsyncMixed.put(
+					collectionTarget(),
+					[
+						{ id: 'async-reject', kind: 'fail-async' },
+						{ id: 'async-late', kind: 'fail-async' },
+					],
+					{}
+				),
+			// Outlast the late element so its settlement happens while the watch is still installed;
+			// otherwise this test would pass by simply not looking.
+			400
+		);
+		assert.strictEqual(error?.message, 'async element write failed');
+		assert.strictEqual(latePuts, 1, 'the late element must have run inside the watch window');
+		assert.deepStrictEqual(unhandled, []);
+		// Read past the query layer too: the partial-apply bug committed this row to the store.
+		assert.strictEqual(Docs.primaryStore.getSync('async-late'), undefined);
+		assert.deepStrictEqual(await idsOf('fail-async'), []);
 	});
 
 	it('still writes a well-formed batch', async function () {

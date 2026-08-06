@@ -10,8 +10,10 @@
  * stops marking a parsed collection target as a collection fails here while the entire unit
  * suite, which supplies its own target, stays green.
  *
- * Also covers the malformed-element contract: a batch containing `null` fails whole, persists
- * nothing, and — the actual defect — does not abandon a sibling write.
+ * Also covers the malformed-element contract at this layer: a batch containing `null` fails whole
+ * and persists nothing. The sibling-abandonment assertion itself lives in the unit tests, which can
+ * watch for an unhandled rejection; here the equivalent signal is only that the worker is still
+ * serving afterwards.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/array-put-rest.test.ts"
@@ -104,9 +106,9 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 	});
 
 	test('the instance survived the malformed batch and still serves writes', async () => {
-		// The regression this guards: an abandoned sibling write surfacing as an unhandled
-		// rejection could take the worker down, so a healthy write after the failure is the
-		// end-to-end signal that nothing was left dangling.
+		// Liveness only. It does not prove a sibling write was settled — the sibling here resolves
+		// rather than rejecting, and the unit tests own that assertion. What it catches is the worker
+		// being gone after a failed batch, which is how the unhandled rejection would present.
 		const response = await putCollection([{ id: 'rest-after-a', kind: 'rest-after', label: 'still here' }]);
 		ok(response.ok, `post-failure array PUT failed with ${response.status}`);
 		deepStrictEqual(await idsOf('rest-after'), ['rest-after-a']);

@@ -159,14 +159,19 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						else results.push(elementResource.put(element, query));
 					}
 				} catch (error) {
-					// Settle the writes already in flight before failing: they are writing to the
-					// transaction the caller is about to unwind, and a rejection with no handler here
-					// becomes an unhandled rejection that can take the process down.
+					// A malformed element throws here with earlier elements already dispatched. Settle them
+					// before failing, or a rejection among them reaches no handler and becomes an unhandled
+					// rejection that can take the process down. `error` wins over any sibling rejection:
+					// the malformed element is the one the caller has to fix.
 					return Promise.allSettled(results).then(() => {
 						throw error;
 					});
 				}
-				return Promise.all(results);
+				// Not `Promise.all`: it rejects on the first element and lets `transactional` unwind the
+				// transaction while a slower element is still resolving its resource. That element then
+				// stages its write outside the failed batch and commits on its own — a partial array PUT.
+				// Every element has to reach a conclusion before the batch does.
+				return settleElements(results);
 			}
 			return resource.put
 				? resource.constructor.loadAsInstance === false
@@ -574,6 +579,20 @@ export function snakeCase(camelCase: string) {
 		camelCase[0].toLowerCase() +
 		camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g, (letters) => letters[0] + '_' + letters.slice(1))
 	);
+}
+
+/**
+ * Await every element of a fanned-out batch write, then report the batch's outcome. Unlike
+ * `Promise.all` this never settles the batch while an element is still outstanding, which is what
+ * keeps the enclosing transaction open until each element has staged or failed its write. The first
+ * rejection is what the batch rejects with.
+ */
+function settleElements(results: any[]): Promise<any[]> {
+	return Promise.allSettled(results).then((settled) => {
+		const failed = settled.find((element) => element.status === 'rejected');
+		if (failed) throw (failed as PromiseRejectedResult).reason;
+		return settled.map((element) => (element as PromiseFulfilledResult<any>).value);
+	});
 }
 
 /**
