@@ -53,6 +53,19 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		this.#enc.rootStore = rootStore;
 		this.#enc.isRocksDB = true;
 		this.decoder = this.#enc;
+		if (this.#cache) {
+			// Cache-enabled stores use the VerificationTable; its populateVersion/expectedVersion read
+			// invalidates rocksdb-js's shared read buffer out from under the decode that consumes it, so
+			// decode reads garbage ("Data read, but end of buffer not reached"). Force decode onto a
+			// stable (freshly-allocated) read buffer for THIS cached store only — non-cached and LMDB
+			// stores keep the reused-buffer optimization. We flip the store's `decoderCopies` directly
+			// rather than the documented `encoder.needsStableBuffer` contract because rocksdb-js discards
+			// the encoder spec's extra fields when it instantiates the Encoder class, and setting the
+			// flag on the encoder unconditionally would penalize every non-cached/LMDB read. `decoderCopies`
+			// is derived once at store-open and read live per get, so flipping it here (after open, before
+			// any read) takes effect. Follow-up: a public rocksdb-js per-store stable-read option.
+			(this.store as any).decoderCopies = false;
+		}
 	}
 
 	#withEntry(entry: Entry, id: any): Entry {

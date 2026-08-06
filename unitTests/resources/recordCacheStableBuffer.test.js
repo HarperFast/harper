@@ -1,7 +1,6 @@
 const { setupTestDBPath } = require('../testUtils');
 const assert = require('node:assert');
 const { table } = require('#src/resources/databases');
-const { RecordEncoder } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { createBlob } = require('#src/resources/blob');
 
@@ -9,9 +8,10 @@ const { createBlob } = require('#src/resources/blob');
 // reached"). The primary RocksDB store enables the record cache + VerificationTable; that
 // version-tracking read invalidates rocksdb-js's shared VALUE_BUFFER before decode consumes it. Both
 // storage engines only reuse that buffer when the decoder does NOT declare needsStableBuffer
-// (decoderCopies = !decoder.needsStableBuffer). RecordEncoder must declare it, or a read-after-write
-// on a table decodes garbage. It regressed in 5.2.0 (the record cache/VT read path was added then);
-// 5.1.x opened the primary store plainly and never hit it.
+// (decoderCopies = !decoder.needsStableBuffer). PrimaryRocksDatabase declares it on the encoder ONLY
+// for cache-enabled stores, or a read-after-write on such a table decodes garbage; non-cached and
+// LMDB stores keep the reused-buffer optimization. It regressed in 5.2.0 (the record cache/VT read
+// path was added then); 5.1.x opened the primary store plainly and never hit it.
 describe('record cache: stable read buffer (needsStableBuffer)', () => {
 	let T;
 	before(async function () {
@@ -29,19 +29,15 @@ describe('record cache: stable read buffer (needsStableBuffer)', () => {
 		});
 	});
 
-	it('RecordEncoder declares needsStableBuffer, and it reaches the primary store decoder', () => {
-		assert.strictEqual(new RecordEncoder({ structures: [] }).needsStableBuffer, true);
-		assert.strictEqual(T.primaryStore.encoder.needsStableBuffer, true);
-	});
-
-	it('the primary RocksDB store opts out of read-buffer reuse (decoderCopies === false)', function () {
-		// Only meaningful for the RocksDB store (the default); the LMDB fallback's read buffer is
-		// mmap-stable, so it never reuses in the unsafe way and has no decoderCopies to assert.
+	it('the cache-enabled primary RocksDB store opts out of read-buffer reuse (decoderCopies === false)', function () {
+		// The scoped fix: PrimaryRocksDatabase.initStore() flips decoderCopies=false for cache-enabled
+		// stores only. Only meaningful for the RocksDB store (the default); the LMDB fallback's read
+		// buffer is mmap-stable, so it never reuses in the unsafe way and has no decoderCopies to assert.
 		if (!T.primaryStore.encoder.isRocksDB) return this.skip();
 		assert.strictEqual(
 			T.primaryStore.store.decoderCopies,
 			false,
-			'primary RocksDB store must not reuse its read buffer while the record cache/VT is active'
+			'cache-enabled primary RocksDB store must not reuse its read buffer while the VT is active'
 		);
 	});
 
