@@ -9,6 +9,7 @@ const ACTIVE_BOOLEAN = 'active must be true or false';
 export {
 	addUser,
 	alterUser,
+	assertActiveSuperUserRemains,
 	dropUser,
 	getSuperUser,
 	userInfo,
@@ -105,6 +106,7 @@ import * as password from '../utility/password.ts';
 import { server } from '../server/Server.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
+import { activeSuperUserRemains } from './superUserGuard.ts';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -202,6 +204,7 @@ async function alterUser(jsonMessage) {
 		throw new Error(EMPTY_ROLE);
 	}
 	// Invalid roles will be found in the role search
+	let nextRole;
 	if (cleanUser.role) {
 		const roleData = await search.searchByValue({
 			schema: 'system',
@@ -217,7 +220,16 @@ async function alterUser(jsonMessage) {
 		if (roleData.length > 1)
 			throw new ClientError(HDB_ERROR_MSGS.DUP_ROLES_FOUND(cleanUser.role), HTTP_STATUS_CODES.CONFLICT);
 
-		cleanUser.role = roleData[0].id;
+		nextRole = roleData[0];
+		cleanUser.role = nextRole.id;
+	}
+
+	if (nextRole !== undefined || cleanUser.active !== undefined) {
+		await assertActiveSuperUserRemains((user) =>
+			user.username === cleanUser.username
+				? { ...user, role: nextRole ?? user.role, active: cleanUser.active ?? user.active }
+				: user
+		);
 	}
 
 	const updateResponse = await insert.update({
@@ -239,6 +251,8 @@ async function dropUser(user: User | any): Promise<string> {
 
 	if (usersWithRolesMap.get(user.username) === undefined)
 		throw new ClientError(HDB_ERROR_MSGS.USER_NOT_EXIST(user.username), HTTP_STATUS_CODES.NOT_FOUND);
+
+	await assertActiveSuperUserRemains((existing) => (existing.username === user.username ? undefined : existing));
 
 	const deleteResponse = await promiseDelete({
 		table: 'hdb_user',
@@ -379,6 +393,17 @@ async function setUsersWithRolesCache(cache = undefined) {
 async function getUsersWithRolesCache() {
 	if (!usersWithRolesMap) await setUsersWithRolesCache();
 	return usersWithRolesMap;
+}
+
+/**
+ * `simulate` maps each user to what the pending change would make it; undefined means removed.
+ * Local view only — `system` is replicated, so a lagging node can approve what another rejects.
+ */
+async function assertActiveSuperUserRemains(simulate: (user: User) => User | undefined): Promise<void> {
+	const users = await getUsersWithRolesCache();
+	if (!users) return;
+	if (activeSuperUserRemains(users.values(), simulate)) return;
+	throw new ClientError(HDB_ERROR_MSGS.LAST_SUPER_USER, HTTP_STATUS_CODES.CONFLICT);
 }
 
 /**
