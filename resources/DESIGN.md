@@ -102,6 +102,8 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 
 **False-mode collection write gates stay per dispatch.** Built-in array PUT, query DELETE, and publish perform one request-scoped `allowUpdate`, `allowDelete`, or `allowCreate` verdict respectively. After query DELETE authorizes, it scans with a private cloned target whose permission check is disabled; the caller target stays untouched, and concurrent reads using it still run `allowRead`. Static publish overload routing marks the fresh per-dispatch resource receiver in `staticResourceDispatch.ts`, so copied targets and delayed delegation retain the `(target, message)` signature without putting reusable state on caller objects.
 
+**Array PUT is a collection dispatch in both modes.** `Class.put(batch, context)` arrives with no target, so `transactional` synthesizes one — and the collection it inferred from the null id has to carry over onto it, or the resource resolves as a single record with a null primary key and the batch never fans out. Default (instance) mode then dispatches per element through `getResource`; that dispatch must pass the normalized target, not the context, because the instance signature is `put(target, record)` and a context in the second position is staged as record data (harper#2000).
+
 ---
 
 ## Path routing & parameterised routes

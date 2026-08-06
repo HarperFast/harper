@@ -151,8 +151,10 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const elementResource = resourceClass.getResource(target, request, {
 						async: true,
 					});
+					// `query`, not `request`: the instance put() signature is (target, record), so a context
+					// in the second position gets staged as this element's record data.
 					if (typeof elementResource.then === 'function')
-						results.push(elementResource.then((resource) => resource.put(element, request)));
+						results.push(elementResource.then((resource) => resource.put(element, query)));
 					else results.push(elementResource.put(element, query));
 				}
 				return Promise.all(results);
@@ -724,8 +726,10 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
-			if (isCollection && options.method === 'put' && Array.isArray(data) && this.loadAsInstance === false)
-				query.isCollection = true;
+			// `Class.put(batch, context)` carries no target of its own, so the collection inferred from
+			// the null id has to survive into the synthesized one, or the batch is dispatched as a single
+			// record update against a null primary key instead of per-element writes.
+			if (isCollection && options.method === 'put' && Array.isArray(data)) query.isCollection = true;
 		}
 		if (options.method === 'query' && data && typeof data === 'object') {
 			// QUERY executes the independently parsed body target. Make its requested projection part of
