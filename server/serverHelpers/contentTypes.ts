@@ -141,9 +141,9 @@ mediaTypes.set('text/event-stream', {
 				id: message.timestamp,
 			};
 		}
-		// Only `data`/`event` open the envelope path. `id`/`retry` alone do not: `id` is too
-		// common a literal-payload field name (e.g. a database record) to safely treat as an
-		// SSE-envelope signal without misclassifying plain data objects that happen to carry one.
+		// A non-null top-level `data` or truthy `event` is an SSE envelope, even with sibling fields.
+		// `id`/`retry` alone do not open it: `id` is too common a literal-payload field name (e.g. a
+		// database record) to safely treat as an SSE-envelope signal.
 		if (message.data != null || message.event) {
 			let serialized = '';
 			if (message.event) serialized += 'event: ' + message.event + '\n';

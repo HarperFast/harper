@@ -388,6 +388,15 @@ suite(
 			);
 		});
 
+		test('a: top-level data key with siblings -- data envelope takes precedence', async () => {
+			const r = await consumeSse(`${restBase}/DataKeyEnvelopePayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const blocks = parseSseBlocks(r.raw);
+			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
+			strictEqual(blocks[0].data, '0', `expected the top-level data value, got: ${JSON.stringify(blocks[0])}`);
+			strictEqual('name' in blocks[0], false, `expected no literal sibling fields, got: ${JSON.stringify(blocks[0])}`);
+		});
+
 		test('a: plain object with an "id" key (no data/event) -- must be JSON-wrapped, not misread as an SSE id', async () => {
 			const r = await consumeSse(`${restBase}/IdKeyPlainObjectPayload/`, authHeaders, 15_000);
 			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);

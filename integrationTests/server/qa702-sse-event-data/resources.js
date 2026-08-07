@@ -100,6 +100,15 @@ export class ZeroPayloadNoEvent extends Resource {
 	}
 }
 
+// GET /DataKeyEnvelopePayload/ — a top-level data key always selects the SSE-envelope contract,
+// so unrelated siblings are not serialized as literal payload fields.
+export class DataKeyEnvelopePayload extends Resource {
+	static loadAsInstance = false;
+	static async *connect() {
+		yield { data: 0, name: 'x' };
+	}
+}
+
 // GET /IdKeyPlainObjectPayload/ — a plain data object with a top-level `id` key (e.g. a real
 // database record) and no `data`/`event` key; must be JSON-wrapped wholesale, not misread as an
 // SSE id.
