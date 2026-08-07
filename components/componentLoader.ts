@@ -64,23 +64,30 @@ let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
 let componentLoadGeneration = 0;
-const readiedComponentModules = new WeakSet<object>();
+type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
-export async function readyComponentModules(serverModules: Iterable<any>): Promise<void> {
-	const modulesToReady: any[] = [];
+export async function readyComponentModules(
+	serverModules: Iterable<any>,
+	readyComponentPromises: ComponentReadyPromises = new WeakMap()
+): Promise<void> {
+	const readyPromises: Promise<void>[] = [];
 	for (const serverModule of serverModules) {
 		if (
 			(typeof serverModule !== 'object' && typeof serverModule !== 'function') ||
 			serverModule === null ||
-			typeof serverModule.ready !== 'function' ||
-			readiedComponentModules.has(serverModule)
+			typeof serverModule.ready !== 'function'
 		) {
 			continue;
 		}
-		readiedComponentModules.add(serverModule);
-		modulesToReady.push(serverModule);
+		let readyPromise = readyComponentPromises.get(serverModule);
+		if (!readyPromise) {
+			readyPromise = Promise.resolve().then(() => serverModule.ready());
+			readyComponentPromises.set(serverModule, readyPromise);
+			void readyPromise.catch(() => readyComponentPromises.delete(serverModule));
+		}
+		readyPromises.push(readyPromise);
 	}
-	await Promise.all(modulesToReady.map((serverModule) => serverModule.ready()));
+	await Promise.all(readyPromises);
 }
 
 /**
@@ -134,7 +141,11 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 	}
 }
 
-export async function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
+export async function loadComponentDirectories(
+	loadedPluginModules?: Map<any, any>,
+	loadedResources?: Resources,
+	readyComponentPromises: ComponentReadyPromises = new WeakMap()
+) {
 	const loadGeneration = ++componentLoadGeneration;
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
@@ -188,7 +199,8 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 				});
 				if (loadGeneration !== componentLoadGeneration) return;
 				await readyComponentModules(
-					[...cycleLoadedComponents.keys()].filter((serverModule) => !modulesBeforeLoad.has(serverModule))
+					[...cycleLoadedComponents.keys()].filter((serverModule) => !modulesBeforeLoad.has(serverModule)),
+					readyComponentPromises
 				);
 			})
 			.catch((error) => {

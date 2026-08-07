@@ -33,7 +33,10 @@ async function loadRootComponents(isWorkerThread = false) {
 	});
 	if (!process.env.HARPER_SAFE_MODE) {
 		// once the global plugins are loaded, we now load all the CF and run applications (and their components)
-		await loadComponentDirectories(loadedComponents, resources);
+		const readyComponentPromises = new WeakMap();
+		await loadComponentDirectories(loadedComponents, resources, readyComponentPromises);
+		await readyComponentModules(loadedComponents.keys(), readyComponentPromises);
+		return;
 	}
 	await readyComponentModules(loadedComponents.keys());
 }
