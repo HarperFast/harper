@@ -1,6 +1,6 @@
 const { isMainThread } = require('worker_threads');
 const { getTables } = require('../resources/databases.ts');
-const { loadComponentDirectories, loadComponent } = require('../components/componentLoader.ts');
+const { loadComponentDirectories, loadComponent, readyComponentModules } = require('../components/componentLoader.ts');
 const { resetResources } = require('../resources/Resources.ts');
 const configUtils = require('../config/configUtils.ts');
 const { dirname } = require('path');
@@ -35,11 +35,7 @@ async function loadRootComponents(isWorkerThread = false) {
 		// once the global plugins are loaded, we now load all the CF and run applications (and their components)
 		await loadComponentDirectories(loadedComponents, resources);
 	}
-	let allReady = [];
-	for (let [serverModule] of loadedComponents) {
-		if (serverModule.ready) allReady.push(serverModule.ready());
-	}
-	if (allReady.length > 0) await Promise.all(allReady);
+	await readyComponentModules(loadedComponents.keys());
 }
 
 module.exports.loadRootComponents = loadRootComponents;

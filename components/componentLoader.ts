@@ -64,6 +64,24 @@ let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
 let componentLoadGeneration = 0;
+const readiedComponentModules = new WeakSet<object>();
+
+export async function readyComponentModules(serverModules: Iterable<any>): Promise<void> {
+	const modulesToReady: any[] = [];
+	for (const serverModule of serverModules) {
+		if (
+			(typeof serverModule !== 'object' && typeof serverModule !== 'function') ||
+			serverModule === null ||
+			typeof serverModule.ready !== 'function' ||
+			readiedComponentModules.has(serverModule)
+		) {
+			continue;
+		}
+		readiedComponentModules.add(serverModule);
+		modulesToReady.push(serverModule);
+	}
+	await Promise.all(modulesToReady.map((serverModule) => serverModule.ready()));
+}
 
 /**
  * Load all the applications registered in Harper, those in the components directory as well as any directly
@@ -138,7 +156,6 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 	// secrets heal. Never throws.
 	await materializeGlobalSecrets();
 	const cfsLoaded: Promise<any>[] = [];
-	const deferredReadyModules = new Set<any>();
 	const deferredRecoveries = new Map(
 		[...failedRecoveries].filter(([, error]) => error instanceof ComponentPreparationLockTimeoutError)
 	);
@@ -170,14 +187,9 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 					mount: mountResult.mount,
 				});
 				if (loadGeneration !== componentLoadGeneration) return;
-				const modulesToReady = [...cycleLoadedComponents.keys()].filter(
-					(serverModule) =>
-						!modulesBeforeLoad.has(serverModule) &&
-						!deferredReadyModules.has(serverModule) &&
-						typeof serverModule.ready === 'function'
+				await readyComponentModules(
+					[...cycleLoadedComponents.keys()].filter((serverModule) => !modulesBeforeLoad.has(serverModule))
 				);
-				for (const serverModule of modulesToReady) deferredReadyModules.add(serverModule);
-				await Promise.all(modulesToReady.map((serverModule) => serverModule.ready()));
 			})
 			.catch((error) => {
 				const recoveryError = error instanceof Error ? error : new Error(String(error));
