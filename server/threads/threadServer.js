@@ -83,10 +83,7 @@ if (!isBun) {
 process.on('uncaughtException', (error) => {
 	if (error.isHandled) return;
 	if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') return; // that's what network connections do
-	if (harperLogger.isStdioBrokenError(error)) {
-		harperLogger.disableStdio();
-		return;
-	}
+	if (error.message === 'write EIO') return; // that means the terminal is closed
 	harperLogger.error('uncaughtException', error);
 });
 // In both Node.js 15+ and Bun, an unhandled promise rejection exits the worker unless a

@@ -1702,97 +1702,75 @@ describe('Test harper_logger module', () => {
 			assert.strictEqual(isStdioBrokenError(undefined), false);
 		});
 
-		describe('disableStdio() effect on the real stdio write path (harper#2106)', () => {
-			const disableStdioSandbox = sinon.createSandbox();
-			const TEST_LOG_DIR_2106 = path.join(__dirname, 'testLogger2106');
+		describe('the process.stdout/stderr.write() wrapper installed by stdioLogging() (harper#2106)', () => {
 			let harper_logger;
 			let originalStdoutWrite;
 			let originalStderrWrite;
 
+			// Drives stdioLogging()'s install directly with rewire, instead of going through
+			// initLogSettings()'s real-filesystem config resolution (PropertiesReader/YAML) - that
+			// path is a boot-file/env-dependent maze unrelated to what's under test here, and
+			// letting it decide log_to_file/logConsole made this suite's outcome depend on whatever
+			// boot properties happen to exist on the machine running it.
+			function setup(logToFile) {
+				harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+				harper_logger.__set__('log_to_file', logToFile);
+				harper_logger.__set__('logConsole', true);
+				harper_logger.__get__('stdioLogging')();
+			}
+
 			beforeEach(() => {
 				originalStdoutWrite = process.stdout.write;
 				originalStderrWrite = process.stderr.write;
-				disableStdioSandbox
-					.stub(YAML, 'parseDocument')
-					.returns(setTestLogConfig('error', TEST_LOG_DIR_2106, true, true));
-				disableStdioSandbox.stub(fs, 'readFileSync').returns('foo');
-				fs.mkdirpSync(TEST_LOG_DIR_2106);
-				harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			});
 
 			afterEach(() => {
 				// stdioLogging() rebinds the REAL process.stdout/stderr .write to a closure over this
-				// module instance's nativeStdWrite - restoring both keeps disableStdio() below from
-				// silencing stdout for the rest of this mocha run.
+				// module instance's nativeStdWrite - restoring both keeps a broken-pipe simulation
+				// from leaking into the rest of this mocha run.
 				process.stdout.write = originalStdoutWrite;
 				process.stderr.write = originalStderrWrite;
-				disableStdioSandbox.restore();
-				try {
-					fs.removeSync(TEST_LOG_DIR_2106);
-				} catch {}
 			});
 
-			it('stops a real process.stderr.write() from throwing once the underlying pipe breaks, instead of re-throwing forever', () => {
+			for (const logToFile of [true, false]) {
+				it(`catches a broken-pipe write inline instead of throwing, regardless of logging.file:${logToFile}`, () => {
+					setup(logToFile);
+					harper_logger.__set__('nativeStdWrite', function () {
+						throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+					});
+
+					assert.doesNotThrow(() => process.stderr.write('boom\n'));
+					// the write above disabled stdio itself - a second, independent write is silent too
+					assert.doesNotThrow(() => process.stdout.write('still fine\n'));
+
+					const callback = sinon.stub();
+					assert.strictEqual(process.stdout.write('chunk', callback), true);
+					assert.strictEqual(callback.calledOnce, true);
+				});
+			}
+
+			it('does not swallow a write error unrelated to a broken stdio stream', () => {
+				setup(true);
+				harper_logger.__set__('nativeStdWrite', function () {
+					throw Object.assign(new Error('boom'), { code: 'SOMETHING_ELSE' });
+				});
+
+				assert.throws(() => process.stderr.write('boom\n'), /boom/);
+			});
+
+			it('keeps teeing console output to the log file after a broken pipe disables the native writer', () => {
+				setup(true);
+				const writeToLogFileSpy = sinon.stub();
+				harper_logger.__set__('writeToLogFile', writeToLogFileSpy);
 				harper_logger.__set__('nativeStdWrite', function () {
 					throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
 				});
-				assert.throws(() => process.stderr.write('boom\n'), /EPIPE/);
 
-				harper_logger.disableStdio();
+				process.stderr.write('first write, breaks the pipe\n');
+				process.stderr.write('second write, should still reach the file\n');
 
-				assert.doesNotThrow(() => process.stderr.write('should be a no-op now\n'));
-				assert.doesNotThrow(() => process.stdout.write('should be a no-op now\n'));
-			});
-
-			it('leaves the stdioLogging() wrapper (which tees console output to the log file) in place - only the native writer it delegates to becomes a noop', () => {
-				const stderrWrapperBeforeDisable = process.stderr.write;
-				const stdoutWrapperBeforeDisable = process.stdout.write;
-				assert.notStrictEqual(stderrWrapperBeforeDisable, originalStderrWrite);
-				assert.notStrictEqual(stdoutWrapperBeforeDisable, originalStdoutWrite);
-
-				harper_logger.disableStdio();
-
-				assert.strictEqual(process.stderr.write, stderrWrapperBeforeDisable);
-				assert.strictEqual(process.stdout.write, stdoutWrapperBeforeDisable);
-			});
-		});
-
-		describe('disableStdio() with logging.file:false (harper#2106 review)', () => {
-			const disableStdioSandbox = sinon.createSandbox();
-			let harper_logger;
-			let originalStdoutWrite;
-			let originalStderrWrite;
-
-			beforeEach(() => {
-				originalStdoutWrite = process.stdout.write;
-				originalStderrWrite = process.stderr.write;
-				disableStdioSandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig('error', null, false, true));
-				disableStdioSandbox.stub(fs, 'readFileSync').returns('foo');
-				harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			});
-
-			afterEach(() => {
-				process.stdout.write = originalStdoutWrite;
-				process.stderr.write = originalStderrWrite;
-				disableStdioSandbox.restore();
-			});
-
-			it('still silences the raw, never-overridden process.stdout/stderr.write - stdioLogging() only wraps them when logging.file is true', () => {
-				assert.strictEqual(harper_logger.__get__('log_to_file'), false);
-				// log_to_file:false means stdioLogging() never installed its own override, so
-				// process.stderr.write is still the untouched writer captured before this test
-				assert.strictEqual(process.stderr.write, originalStderrWrite);
-
-				harper_logger.disableStdio();
-
-				assert.notStrictEqual(process.stderr.write, originalStderrWrite);
-				assert.doesNotThrow(() => process.stderr.write('should be a no-op now\n'));
-				assert.doesNotThrow(() => process.stdout.write('should be a no-op now\n'));
-				// a no-op that returns undefined reads as permanent backpressure to anything
-				// pipe()'d into this stream, and never resolves a callback-form caller
-				const callback = sinon.stub();
-				assert.strictEqual(process.stderr.write('chunk', callback), true);
-				assert.strictEqual(callback.calledOnce, true);
+				assert.strictEqual(writeToLogFileSpy.callCount, 2);
+				assert.strictEqual(writeToLogFileSpy.secondCall.args[0], 'second write, should still reach the file');
 			});
 		});
 	});
