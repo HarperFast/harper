@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786088625104,
+  "lastUpdate": 1786103462975,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -10505,6 +10505,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1102,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "f85e66b92abda03b6dd7cbcfde05e09a46215da7",
+          "message": "chore(deps): raise msgpackr floor to ^2.0.5\n\nThe published harper@5.2.0 shipped an npm-shrinkwrap.json pinning\nmsgpackr 2.0.4. main's package-lock.json already resolves 2.0.5\n(bumped after the v5.2.0 tag in a264242b4 as an npm-install side\neffect of ^2.0.4), so the next release cut from main already ships\n2.0.5. This raises the declared floor to ^2.0.5 to make that intent\nexplicit and guard against a future lock regeneration ever pinning\nbelow 2.0.5. No functional change; the resolved lock entry is\nunchanged.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-08-06T16:19:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/f85e66b92abda03b6dd7cbcfde05e09a46215da7"
+        },
+        "date": 1786103461385,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 32641,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 19343,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 17542,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 28797056,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 8485,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 918,
             "unit": "ops"
           }
         ]
