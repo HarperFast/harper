@@ -225,16 +225,33 @@ function startServers() {
 			const listening = listenOnPorts();
 
 			// notify that we are now ready to start receiving requests
-			Promise.resolve(listening).then(() => {
-				if (getWorkerIndex() === 0) {
-					try {
-						startupLog(portServer);
-					} catch (err) {
-						console.error('Error displaying start-up log', err);
+			Promise.resolve(listening)
+				.then(() => {
+					if (getWorkerIndex() === 0) {
+						try {
+							startupLog(portServer);
+						} catch (err) {
+							console.error('Error displaying start-up log', err);
+						}
 					}
-				}
-				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
-			});
+					parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+				})
+				.catch((err) => {
+					// A rejection here (e.g. a uWS app.listen()/listen_unix() callback that never
+					// resolved cleanly, or any other listener setup failure) must not be left to the
+					// process-wide 'unhandledRejection' handler above: that handler is tuned for
+					// steady-state runtime errors (log-and-continue), but this promise gates whether
+					// the worker EVER reports ready. Silently swallowing it left the worker parked
+					// forever with no further stdout/stderr — observed in CI as "Harper produced no
+					// startup output for 150000ms before reporting ready (likely hung)", a 150s idle
+					// timeout with zero diagnostic value instead of an immediate, clear cause.
+					console.error(
+						`Failed to start listening on ${threadId === 0 ? 'the main thread' : `worker ${threadId}`}`,
+						err
+					);
+					harperLogger.fatal('Failed to bind server listeners during startup', err);
+					realExit(1);
+				});
 		});
 	componentsLoadedResolve(loaded);
 	// Clean up UDS files and force-close Bun server connections on unexpected exit.

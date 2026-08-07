@@ -225,8 +225,26 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 	app.any('/*', withBody);
 
 	await new Promise<void>((resolve, reject) => {
-		const onListen = (listenSocket: unknown) =>
-			listenSocket ? resolve() : reject(new Error(`uWS failed to bind ${host ?? ''}:${port ?? socketPath}`));
+		let settled = false;
+		// A healthy bind's listen()/listen_unix() callback fires near-instantly; this is a backstop
+		// against the native callback never firing at all (seen in CI as the worker's startup promise
+		// hanging indefinitely with no further output). Without this, a stuck native bind is
+		// indistinguishable from a slow-but-healthy one, and the only symptom is the *caller's*
+		// generic startup-idle-timeout firing many seconds later with no indication uWS was the cause.
+		const bindTimeout = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			reject(
+				new Error(`uWS timed out waiting to bind ${host ?? ''}:${port ?? socketPath} (listen callback never fired)`)
+			);
+		}, 30_000);
+		const onListen = (listenSocket: unknown) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(bindTimeout);
+			if (listenSocket) resolve();
+			else reject(new Error(`uWS failed to bind ${host ?? ''}:${port ?? socketPath}`));
+		};
 		// uWS shares the port across workers (SO_REUSEPORT) by default, matching the Node reusePort path.
 		if (port != null) {
 			if (host) app.listen(host, port, onListen);
