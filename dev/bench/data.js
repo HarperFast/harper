@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786019202479,
+  "lastUpdate": 1786088621970,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -3701,6 +3701,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1228.22,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "f85e66b92abda03b6dd7cbcfde05e09a46215da7",
+          "message": "chore(deps): raise msgpackr floor to ^2.0.5\n\nThe published harper@5.2.0 shipped an npm-shrinkwrap.json pinning\nmsgpackr 2.0.4. main's package-lock.json already resolves 2.0.5\n(bumped after the v5.2.0 tag in a264242b4 as an npm-install side\neffect of ^2.0.4), so the next release cut from main already ships\n2.0.5. This raises the declared floor to ^2.0.5 to make that intent\nexplicit and guard against a future lock regeneration ever pinning\nbelow 2.0.5. No functional change; the resolved lock entry is\nunchanged.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-08-06T16:19:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/f85e66b92abda03b6dd7cbcfde05e09a46215da7"
+        },
+        "date": 1786088620656,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 7846.21,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 11051.16,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 11117.36,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 7662.05,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 5659.01,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 10465.57,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1220.25,
             "unit": "ops/sec"
           }
         ]
