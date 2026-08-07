@@ -81,6 +81,36 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	}
 }
 
+/**
+ * Resolves once `worker` posts `child_started`, or rejects on a worker `error` or an `exit`
+ * that arrives first (a pre-ready exit must reject this promise, not leave it pending forever).
+ * A plain function of `worker` so it's testable against a stub EventEmitter without spawning a
+ * real worker thread.
+ */
+export function createWorkerReadyPromise(worker, index) {
+	return new Promise((resolve, reject) => {
+		function cleanup() {
+			worker.removeListener('message', onMessage);
+			worker.removeListener('error', reject);
+			worker.removeListener('exit', onExit);
+		}
+		function onMessage(message) {
+			if (message.type === 'child_started') {
+				cleanup();
+				resolve(worker);
+			}
+		}
+		function onExit(code) {
+			cleanup();
+			reject(new Error(`Worker (index ${index}) exited with code ${code} before reporting ready`));
+		}
+
+		worker.on('message', onMessage);
+		worker.on('error', reject);
+		worker.on('exit', onExit);
+	});
+}
+
 function startHTTPWorker(index, threadCount = 1) {
 	startWorker(join(__dirname, './threadServer.js'), {
 		name: hdbTerms.THREAD_TYPES.HTTP,
@@ -88,35 +118,16 @@ function startHTTPWorker(index, threadCount = 1) {
 		threadCount,
 		async onStarted(worker) {
 			// note that this can be called multiple times, once when started, and again when threads are restarted
-			const ready = new Promise((resolve, reject) => {
-				function cleanup() {
-					worker.removeListener('message', onMessage);
-					worker.removeListener('error', reject);
-					worker.removeListener('exit', onExit);
-				}
-				function onMessage(message) {
-					if (message.type === 'child_started') {
-						cleanup();
-						resolve(worker);
-					}
-				}
-				// A worker that exits before ever posting child_started (e.g. threadServer.js's
-				// realExit(1) on a listener-startup failure) previously left this promise pending
-				// forever: manageThreads.js restarts the worker independently on 'exit', but that
-				// spawns a *new* ready promise for the new worker instance — this one, tied to the
-				// dead worker, would never resolve or reject, so Promise.all(workersReady) below
-				// would hang indefinitely even though the failure was already logged.
-				function onExit(code) {
-					cleanup();
-					reject(new Error(`Worker (index ${index}) exited with code ${code} before reporting ready`));
-				}
-
-				worker.on('message', onMessage);
-				worker.on('error', reject);
-				worker.on('exit', onExit);
-			});
+			const ready = createWorkerReadyPromise(worker, index);
 			workersReady.push(ready);
-			await ready;
+			try {
+				await ready;
+			} catch {
+				// Already surfaced via workersReady (awaited by startHTTPThreads' Promise.all); this
+				// call's own return value is fire-and-forget from manageThreads.js, so rethrowing here
+				// would just be a second, unhandled report of the same failure.
+				return;
+			}
 			workers.push(worker);
 			worker.on('exit', removeWorker);
 			worker.on('shutdown', removeWorker);

@@ -237,10 +237,8 @@ function startServers() {
 					parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 				})
 				.catch((err) => {
-					// This promise gates whether the worker ever reports ready, so a rejection here
-					// must not fall into the process-wide 'unhandledRejection' handler above — that
-					// one is for steady-state runtime errors and silently absorbs it, leaving the
-					// worker parked forever with no further output.
+					// Must not fall into the process-wide 'unhandledRejection' handler above, which
+					// would silently absorb it and leave the worker parked forever.
 					console.error(
 						`Failed to start listening on ${threadId === 0 ? 'the main thread' : `worker ${threadId}`}`,
 						err
