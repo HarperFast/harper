@@ -1733,18 +1733,27 @@ describe('Test harper_logger module', () => {
 			});
 
 			it('stops a real process.stderr.write() from throwing once the underlying pipe breaks, instead of re-throwing forever', () => {
-				// simulate the broken pipe: the native write throws, same as a real closed-pipe write would
 				harper_logger.__set__('nativeStdWrite', function () {
 					throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
 				});
-				// exercise the actual override installed by stdioLogging(), not the internal variable
-				// directly - this is the same call console.error() makes when logging the EPIPE itself
 				assert.throws(() => process.stderr.write('boom\n'), /EPIPE/);
 
 				harper_logger.disableStdio();
 
 				assert.doesNotThrow(() => process.stderr.write('should be a no-op now\n'));
 				assert.doesNotThrow(() => process.stdout.write('should be a no-op now\n'));
+			});
+
+			it('leaves the stdioLogging() wrapper (which tees console output to the log file) in place - only the native writer it delegates to becomes a noop', () => {
+				const stderrWrapperBeforeDisable = process.stderr.write;
+				const stdoutWrapperBeforeDisable = process.stdout.write;
+				assert.notStrictEqual(stderrWrapperBeforeDisable, originalStderrWrite);
+				assert.notStrictEqual(stdoutWrapperBeforeDisable, originalStdoutWrite);
+
+				harper_logger.disableStdio();
+
+				assert.strictEqual(process.stderr.write, stderrWrapperBeforeDisable);
+				assert.strictEqual(process.stdout.write, stdoutWrapperBeforeDisable);
 			});
 		});
 
@@ -1779,6 +1788,11 @@ describe('Test harper_logger module', () => {
 				assert.notStrictEqual(process.stderr.write, originalStderrWrite);
 				assert.doesNotThrow(() => process.stderr.write('should be a no-op now\n'));
 				assert.doesNotThrow(() => process.stdout.write('should be a no-op now\n'));
+				// a no-op that returns undefined reads as permanent backpressure to anything
+				// pipe()'d into this stream, and never resolves a callback-form caller
+				const callback = sinon.stub();
+				assert.strictEqual(process.stderr.write('chunk', callback), true);
+				assert.strictEqual(callback.calledOnce, true);
 			});
 		});
 	});
