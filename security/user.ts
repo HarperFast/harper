@@ -107,6 +107,7 @@ import { server } from '../server/Server.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { activeSuperUserRemains } from './superUserGuard.ts';
+import { databases } from '../resources/databases.ts';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -345,6 +346,61 @@ async function listUsers(): Promise<Map<string, User>> {
 	return userMap;
 }
 
+function systemTablePermissions(readPerm: boolean): UserRolePermissionTable {
+	return {
+		read: readPerm,
+		insert: false,
+		update: false,
+		delete: false,
+		attribute_permissions: [],
+	};
+}
+
+/**
+ * `systemSchema.json` is install-time only, so misses resolve against the live registry
+ * `describe_database` enumerates (harper#2120). Every trap consults it: a view where `[]` and
+ * `Object.keys` disagree reverts to the bug as soon as the permissions are cloned or serialized.
+ * Anything that is not a live table falls through to the target, so the map keeps ordinary object
+ * semantics — string coercion on an auth-path log line must not throw.
+ *
+ * `readPerm` is captured because impersonation shallow-clones `permission` and mutates `super_user`
+ * on the copy alone, leaving this map shared with the role it was built for.
+ */
+function systemTablesPermissionView(readPerm: boolean): Record<string, UserRolePermissionTable> {
+	const tables: Record<string, UserRolePermissionTable> = {};
+	for (const table of Object.keys(systemSchema)) {
+		tables[table] = systemTablePermissions(readPerm);
+	}
+	const resolved = new Map<string, UserRolePermissionTable>();
+	const liveSystemTables = () => databases[terms.SYSTEM_SCHEMA_NAME];
+	const isLiveSystemTable = (property: string | symbol): property is string =>
+		typeof property === 'string' &&
+		!Object.hasOwn(tables, property) &&
+		Object.hasOwn(liveSystemTables() ?? {}, property);
+	// Memoized so repeated reads of one table are reference-equal, as they are for the seeded ones.
+	const permissionsFor = (property: string) => {
+		let permissions = resolved.get(property);
+		if (!permissions) resolved.set(property, (permissions = systemTablePermissions(readPerm)));
+		return permissions;
+	};
+	return new Proxy(tables, {
+		get(target, property, receiver) {
+			return isLiveSystemTable(property) ? permissionsFor(property) : Reflect.get(target, property, receiver);
+		},
+		has(target, property) {
+			return isLiveSystemTable(property) || Reflect.has(target, property);
+		},
+		ownKeys(target) {
+			return [...new Set([...Reflect.ownKeys(target), ...Object.keys(liveSystemTables() ?? {})])];
+		},
+		getOwnPropertyDescriptor(target, property) {
+			if (!isLiveSystemTable(property)) return Reflect.getOwnPropertyDescriptor(target, property);
+			// configurable: a proxy may not report a non-configurable property absent from its target.
+			return { value: permissionsFor(property), writable: true, enumerable: true, configurable: true };
+		},
+	});
+}
+
 /**
  * adds system table permissions to a role.  This is used to protect system tables by leveraging operationAuthorization.
  * @param userRole - Role of the user found during auth.
@@ -359,20 +415,7 @@ function appendSystemTablesToRole(userRole: UserRole) {
 			tables: {},
 		};
 	}
-	if (!userRole.permission.system.tables) {
-		userRole.permission.system.tables = {};
-	}
-	for (let table of Object.keys(systemSchema)) {
-		let newProp = {
-			read: !!userRole.permission.super_user,
-			insert: false,
-			update: false,
-			delete: false,
-			attribute_permissions: [],
-		};
-
-		userRole.permission.system.tables[table] = newProp;
-	}
+	userRole.permission.system.tables = systemTablesPermissionView(!!userRole.permission.super_user);
 }
 
 /**
