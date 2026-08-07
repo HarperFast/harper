@@ -237,14 +237,10 @@ function startServers() {
 					parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 				})
 				.catch((err) => {
-					// A rejection here (e.g. a uWS app.listen()/listen_unix() callback that never
-					// resolved cleanly, or any other listener setup failure) must not be left to the
-					// process-wide 'unhandledRejection' handler above: that handler is tuned for
-					// steady-state runtime errors (log-and-continue), but this promise gates whether
-					// the worker EVER reports ready. Silently swallowing it left the worker parked
-					// forever with no further stdout/stderr — observed in CI as "Harper produced no
-					// startup output for 150000ms before reporting ready (likely hung)", a 150s idle
-					// timeout with zero diagnostic value instead of an immediate, clear cause.
+					// This promise gates whether the worker ever reports ready, so a rejection here
+					// must not fall into the process-wide 'unhandledRejection' handler above — that
+					// one is for steady-state runtime errors and silently absorbs it, leaving the
+					// worker parked forever with no further output.
 					console.error(
 						`Failed to start listening on ${threadId === 0 ? 'the main thread' : `worker ${threadId}`}`,
 						err

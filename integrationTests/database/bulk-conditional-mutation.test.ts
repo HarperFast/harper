@@ -196,10 +196,8 @@ suite(
 				await restartHttpWorkers(client, `/${TABLE}/`, 120_000);
 				log(`Harper started, seeding ${N} rows`);
 			} catch (error) {
-				// A `before` failure cascades node:test into reporting every sibling test as a
-				// generic, contentless "test did not finish before its parent and was cancelled" —
-				// indistinguishable from 8 independent assertion failures unless a triager already
-				// knows to scroll to the bottom for the real cause. Surface it loudly, right here.
+				// node:test cascades a `before` failure into a generic, contentless "cancelled" for
+				// every sibling test; surface the real cause loudly here instead.
 				console.error(
 					`\n🛑 SUITE SETUP FAILED — "bulk conditional mutation [engine=${ENGINE}]": ${(error as Error)?.message ?? error}\n` +
 						`   All subtests reported below as cancelled/failed did not run; this single failure is the root cause of all of them, not independent bugs.\n`

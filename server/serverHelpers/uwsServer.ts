@@ -226,11 +226,8 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 
 	await new Promise<void>((resolve, reject) => {
 		let settled = false;
-		// A healthy bind's listen()/listen_unix() callback fires near-instantly; this is a backstop
-		// against the native callback never firing at all (seen in CI as the worker's startup promise
-		// hanging indefinitely with no further output). Without this, a stuck native bind is
-		// indistinguishable from a slow-but-healthy one, and the only symptom is the *caller's*
-		// generic startup-idle-timeout firing many seconds later with no indication uWS was the cause.
+		// Backstop against the native listen callback never firing at all — without it, a stuck
+		// bind is indistinguishable from a slow one, and nothing here ever rejects.
 		const bindTimeout = setTimeout(() => {
 			if (settled) return;
 			settled = true;
