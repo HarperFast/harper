@@ -11,33 +11,25 @@ title: Transaction Logging
 
 # Transaction Logging
 
-Harper provides two complementary mechanisms for recording a history of data changes on a table: the **audit log** and the **transaction log**. Both record and expose history for individual tables, but their underlying storage differs: on RocksDB (the default storage engine) the transaction log is physically a single database-wide log shared by all tables — history is read per table, while deletion operates on the whole database's log.
+Harper maintains a **transaction log** for every database: a record of every data change, capturing the operation type, the user who made the change, the timestamp, and both the new and original record values. There is one transaction log per database, shared by all tables.
 
-| Feature                       | Audit Log                         | Transaction Log                                                         |
-| ----------------------------- | --------------------------------- | ----------------------------------------------------------------------- |
-| Storage                       | Standard Harper table (per-table) | Shared per-database log (RocksDB); clustering streams, per-table (LMDB) |
-| Requires clustering           | No                                | No (RocksDB, native WAL); Yes (LMDB, clustering streams)                |
-| Available since               | v4.1.0                            | v4.1.0                                                                  |
-| Stores original record values | Yes                               | No                                                                      |
-| Query by username             | Yes                               | No                                                                      |
-| Query by primary key          | Yes                               | No                                                                      |
-| Used for real-time messaging  | Yes (required)                    | No                                                                      |
-
-## Audit Log
+:::info Audit log and transaction log are the same thing
+Some operations and settings still carry the older "audit log" name — `read_audit_log`, `delete_audit_logs_before`, the [`logging.auditLog`](../logging/configuration.md) setting, and the `@table(audit:)` directive — but they all act on this single transaction log. The "audit log" is not a separate mechanism; the distinct-log terminology is a historical artifact.
+:::
 
 Available since: v4.1.0
 
-The audit log is a data store that tracks every transaction across all tables in a database. Harper automatically creates and maintains a single audit log per database. The audit log captures the operation type, the user who made the change, the timestamp, and both the new and original record values.
+On RocksDB (the default storage engine) the transaction log is physically a single database-wide log shared by all tables: history is read per table, while deletion operates on the whole database's log.
 
-The audit log is **enabled by default**. To disable it, set [`logging.auditLog`](../logging/configuration.md) to `false` in `harper-config.yaml` and restart Harper.
+The transaction log is **enabled by default**. To disable it, set [`logging.auditLog`](../logging/configuration.md) to `false` in `harper-config.yaml` and restart Harper.
 
-> The audit log is required for real-time messaging (WebSocket and MQTT subscriptions) and replication. Do not disable it if real-time features or replication are in use.
+> The transaction log is required for real-time messaging (WebSocket and MQTT subscriptions) and replication. Do not disable it if real-time features or replication are in use.
 
-### Audit Log Operations
+## Operations
 
-#### `read_audit_log`
+### `read_audit_log`
 
-Queries the audit log for a specific table. Supports filtering by timestamp, username, or primary key value.
+Queries the transaction log for a specific table. Supports filtering by timestamp, username, or primary key value.
 
 **By timestamp:**
 
@@ -114,9 +106,9 @@ Timestamp behavior:
 
 The `original_records` field contains the record state before the operation was applied.
 
-#### `delete_audit_logs_before`
+### `delete_audit_logs_before`
 
-Deletes audit log entries older than the specified timestamp. Deprecated in favor of [`delete_transaction_logs_before`](#delete_transaction_logs_before).
+Deletes transaction log entries older than the specified timestamp. Deprecated in favor of [`delete_transaction_logs_before`](#delete_transaction_logs_before).
 
 <VersionBadge type="changed" version="v4.3.0" /> — Audit log cleanup improved to reduce resource consumption during scheduled cleanups
 
@@ -133,9 +125,7 @@ Deletes audit log entries older than the specified timestamp. Deprecated in favo
 }
 ```
 
-### Transaction Log Operations
-
-#### `delete_transaction_logs_before`
+### `delete_transaction_logs_before`
 
 <EngineBadge engines="RocksDB, LMDB" />
 
@@ -156,7 +146,7 @@ Parameters:
 
 On LMDB, the table-scoped deletion scans the database's full audit history (and `cleanup_deleted_records: true` adds a second full scan of the table's records), so the cost grows with total history depth — schedule accordingly on databases with deep audit history.
 
-The operation runs as a background job: the request itself returns `200` with a job ID, and any rejection surfaces when the job runs. Poll [`get_job`](jobs.md#get-job) to observe the outcome — a rejected request ends with job status `ERROR` and a message describing the failure (for example, the RocksDB table-scope rejection).
+Request validation runs first and synchronously: a request that omits both `database` and `schema` is rejected immediately with an error and no job ID (there is nothing to poll). Once accepted, the operation runs as a background job that returns `200` with a job ID, and operation-time failures surface through [`get_job`](jobs.md#get-job) — the job ends with status `ERROR` and a message describing the failure (for example, the RocksDB table-scope rejection, or a `table`/`database` that does not exist).
 
 **RocksDB (database-wide — omit `table`):**
 
@@ -203,9 +193,9 @@ Response:
 
 ---
 
-## Enabling Audit Log Per Table
+## Enabling the Transaction Log Per Table
 
-You can enable or disable the audit log for individual tables using the `@table` directive's `audit` argument in your schema:
+You can enable or disable the transaction log for individual tables using the `@table` directive's `audit` argument in your schema:
 
 ```graphql
 type Dog @table(audit: true) {
@@ -218,7 +208,7 @@ This overrides the [`logging.auditLog`](../logging/configuration.md) global conf
 
 ## Related Documentation
 
-- [Logging](../logging/overview.md) — Application and system logging (separate from transaction/audit logging)
-- [Replication](../replication/overview.md) — Clustering setup required for transaction logs
-- [Logging Configuration](../logging/configuration.md) — Global audit log configuration (`logging.auditLog`)
+- [Logging](../logging/overview.md) — Application and system logging (separate from the transaction log)
+- [Replication](../replication/overview.md) — Replication and clustering, which consume the transaction log
+- [Logging Configuration](../logging/configuration.md) — Global transaction log configuration (`logging.auditLog`)
 - [Operations API](../operations-api/overview.md) — Sending operations to Harper
