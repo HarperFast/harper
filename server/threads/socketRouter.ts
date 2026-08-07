@@ -19,8 +19,9 @@ if (isMainThread) {
 	process.on('uncaughtException', (error) => {
 		// TODO: Maybe we should try to log the first of each type of error
 		if ((error as any).code === 'ECONNRESET') return; // that's what network connections do
-		if ((error as any).code === 'EIO') {
-			// that means the terminal is closed
+		if (harperLogger.isStdioBrokenError(error)) {
+			// stdio is gone (closed terminal, or the process piping our output died) - disable it so
+			// we don't throw again on the next write and re-enter this handler
 			harperLogger.disableStdio();
 			return;
 		}

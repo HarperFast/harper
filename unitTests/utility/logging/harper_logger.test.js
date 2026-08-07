@@ -1680,6 +1680,54 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test isStdioBrokenError + disableStdio (harper#2106)', () => {
+		const { isStdioBrokenError } = harperLoggerModule;
+
+		it('recognizes a closed pipe error (EPIPE)', () => {
+			assert.strictEqual(isStdioBrokenError({ code: 'EPIPE' }), true);
+		});
+
+		it('recognizes a closed terminal error (EIO)', () => {
+			assert.strictEqual(isStdioBrokenError({ code: 'EIO' }), true);
+		});
+
+		it('recognizes a destroyed stream error (ERR_STREAM_DESTROYED)', () => {
+			assert.strictEqual(isStdioBrokenError({ code: 'ERR_STREAM_DESTROYED' }), true);
+		});
+
+		it('does not misclassify unrelated errors', () => {
+			assert.strictEqual(isStdioBrokenError({ code: 'ECONNRESET' }), false);
+			assert.strictEqual(isStdioBrokenError(new Error('boom')), false);
+			assert.strictEqual(isStdioBrokenError(null), false);
+			assert.strictEqual(isStdioBrokenError(undefined), false);
+		});
+
+		it('disableStdio() makes the native stdio write a permanent no-op, so a write that previously threw EPIPE no longer throws', () => {
+			// requireUncached() re-runs stdioLogging(), which can rebind the REAL process.stdout/
+			// stderr .write to a closure over this throwaway module instance's nativeStdWrite. Save
+			// and restore both so disableStdio() below can't leak a silenced stdout into the rest of
+			// this mocha run (it did, the first time this test was written - the exact class of bug
+			// #2106 is about).
+			const originalStdoutWrite = process.stdout.write;
+			const originalStderrWrite = process.stderr.write;
+			try {
+				const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+				// simulate the broken pipe: the native write throws, same as a real closed-pipe write would
+				harper_logger.__set__('nativeStdWrite', function () {
+					throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+				});
+				assert.throws(() => harper_logger.__get__('nativeStdWrite')());
+
+				harper_logger.disableStdio();
+
+				assert.doesNotThrow(() => harper_logger.__get__('nativeStdWrite')());
+			} finally {
+				process.stdout.write = originalStdoutWrite;
+				process.stderr.write = originalStderrWrite;
+			}
+		});
+	});
+
 	describe('Test logger auto-wrap of Error args (#1734)', () => {
 		// The HarperLogger level methods route every Error argument through errorForLog before
 		// Console formatting, so raw `logger.error(error)` calls anywhere in the codebase (or in
