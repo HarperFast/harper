@@ -153,14 +153,15 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 							throw new ClientError(`Array element at index ${index} is ${element}, expected a record`);
 						const target = new RequestTarget();
 						target.id = element[primaryKey];
+						target.isCollection = false;
 						const elementResource = resourceClass.getResource(target, request, {
 							async: true,
 						});
-						// `query`, not `request`: this is the target slot, and Table's back-compat shift only
+						// `target`, not `request`: this is the target slot, and Table's back-compat shift only
 						// recognizes a RequestTarget there — a context is taken for the record.
 						if (typeof elementResource.then === 'function')
-							results.push(elementResource.then((resource) => resource.put(element, query)));
-						else results.push(elementResource.put(element, query));
+							results.push(elementResource.then((resource) => resource.put(element, target)));
+						else results.push(elementResource.put(element, target));
 					}
 				} catch (error) {
 					// Settle the already-dispatched elements or a rejection among them goes unhandled. `error`
