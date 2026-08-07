@@ -98,7 +98,7 @@ logging:
 
 Type: `boolean`
 
-Default: `false`
+Default: `true`
 
 Enables audit (table transaction) logging. When enabled, Harper records every insert, update, and delete to a corresponding audit table. Audit log data is accessed via the `read_audit_log` operation.
 

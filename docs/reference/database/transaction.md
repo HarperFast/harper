@@ -134,7 +134,7 @@ Deletes transaction log entries older than the specified timestamp. Deprecated i
 Deletes transaction log entries older than the specified timestamp.
 
 :::warning Database-wide and irreversible
-On RocksDB (the default storage engine), deletion is database-wide: all tables in a database share one transaction log, so omit `table` and pass only `database` (or `schema`) and `timestamp`. This deletes whole log files, permanently removing [`read_audit_log`](#read_audit_log) history below the timestamp for **every table in the database** — there is no per-table survivor and no undo. The only recovery route is a [backup](../backups/overview.md), which restores the transaction log alongside the data. Purging below a lagging replica's catch-up position does not lose data on that replica — the sender detects that the requested start predates its retained history and forces a full base copy instead of incremental catch-up — but that full resync is far more expensive than incremental replication, so avoid purging below your slowest replica's position.
+On RocksDB (the default storage engine), deletion is database-wide: all tables in a database share one transaction log, so omit `table` and pass only `database` (or `schema`) and `timestamp`. This purges whole log files whose entries predate the timestamp, removing [`read_audit_log`](#read_audit_log) history for **every table in the database** — there is no per-table survivor and no undo. The only recovery route is a [backup](../backups/overview.md), which restores the transaction log alongside the data. Purging below a lagging replica's catch-up position does not lose data on that replica — the sender detects that the requested start predates its retained history and forces a full base copy instead of incremental catch-up — but that full resync is far more expensive than incremental replication, so avoid purging below your slowest replica's position.
 :::
 
 Parameters:
@@ -178,7 +178,7 @@ Response:
 }
 ```
 
-`get_job` reports the outcome. A successful job's `result` carries `log_files_deleted` and `entries_deleted` (plus `start_timestamp`/`end_timestamp` on LMDB) — the record of how much was deleted. A rejected request looks like:
+`get_job` reports the outcome. A successful job's `result` carries `entries_deleted` and `log_files_deleted` (the count of purged log files on RocksDB; `0` on LMDB, which has no separate log files) — the record of how much was deleted. A failed job looks like:
 
 ```json
 [

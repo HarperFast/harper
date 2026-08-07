@@ -305,5 +305,5 @@ When a field is typed as `Blob` in the schema, any string or buffer assigned via
 
 - [Schema](./schema.md) — Defining tables and blob fields
 - [Resource API](../resources/resource-api.md) — Full table class method reference
-- [Transaction Logging](./transaction.md) — Audit log and transaction log for data change history
+- [Transaction Logging](./transaction.md) — The transaction log for data change history
 - [Configuration](../configuration/options.md) — Blob storage path configuration
