@@ -1707,11 +1707,9 @@ describe('Test harper_logger module', () => {
 			let originalStdoutWrite;
 			let originalStderrWrite;
 
-			// Drives stdioLogging()'s install directly with rewire, instead of going through
-			// initLogSettings()'s real-filesystem config resolution (PropertiesReader/YAML) - that
-			// path is a boot-file/env-dependent maze unrelated to what's under test here, and
-			// letting it decide log_to_file/logConsole made this suite's outcome depend on whatever
-			// boot properties happen to exist on the machine running it.
+			// Drives stdioLogging() directly via rewire rather than through initLogSettings()'s
+			// real-filesystem config resolution, which made log_to_file/logConsole depend on
+			// whatever boot properties happen to exist on the machine running this.
 			function setup(logToFile) {
 				harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 				harper_logger.__set__('log_to_file', logToFile);
@@ -1779,13 +1777,9 @@ describe('Test harper_logger module', () => {
 				assert.strictEqual(writeToLogFileSpy.secondCall.args[0], 'second write, should still reach the file');
 			});
 
-			// A real POSIX pipe reports a broken pipe asynchronously - write() returns normally
-			// and the EPIPE surfaces later as an 'error' event, past the synchronous try/catch
-			// above (empirically confirmed via a live spawned-child probe: harper#2106 review).
-			// installStdioGuard() stashes its 'error' listener on the stream itself, so grabbing it
-			// there and calling it directly tests the exact handler that would otherwise be invoked
-			// by a real closed pipe - without emitting on the shared process.stdout/stderr, which
-			// would leave Node's own internal stream state altered for the rest of this mocha run.
+			// installStdioGuard() stashes its 'error' listener on the stream itself; calling it
+			// directly (rather than process.stderr.emit('error', ...)) avoids altering Node's own
+			// internal stream state for the rest of this mocha run.
 			it('catches the ASYNC error event a real closed pipe emits - not just a synchronous write throw', () => {
 				setup(true);
 				const handler = process.stderr.harperStdioErrorHandler;

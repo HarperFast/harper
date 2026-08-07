@@ -385,8 +385,8 @@ module.exports = {
 	externalLogger,
 };
 
-// Honors Writable.write's contract (boolean return, callback invoked) rather than a bare
-// no-op, which would read as permanent backpressure to a pipe()'d source.
+// A bare no-op would read as permanent backpressure to a pipe()'d source; this drains and
+// discards instead.
 function noopWrite(_chunk?: any, encoding?: any, callback?: any) {
 	if (typeof encoding === 'function') callback = encoding;
 	if (typeof callback === 'function') callback();
@@ -530,11 +530,9 @@ export function initLogSettings(forceInit = false) {
 }
 let loggingEnabled = true;
 
-// process.stdout/stderr backed by a POSIX pipe report a broken pipe asynchronously - write()
-// returns normally and the EPIPE arrives later as an 'error' event, past any try/catch around the
-// write call. An unhandled 'error' event on any EventEmitter becomes an uncaughtException, so a
-// listener here is what actually intercepts that case, with attribution guaranteed by being
-// registered directly on our own stdio stream rather than guessed from a process-wide handler.
+// A POSIX pipe reports a broken pipe asynchronously - write() returns normally and the EPIPE
+// arrives later as an 'error' event, past the try/catch below. An unhandled 'error' event on any
+// EventEmitter becomes an uncaughtException, so the listener is what actually catches that case.
 function installStdioGuard(stream) {
 	if (stream.harperStdioErrorHandler) stream.removeListener('error', stream.harperStdioErrorHandler);
 	stream.harperStdioErrorHandler = (error) => {
