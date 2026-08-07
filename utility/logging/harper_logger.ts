@@ -398,15 +398,9 @@ function noopWrite(_chunk?: any, encoding?: any, callback?: any) {
  * We call this if stdio is not functional
  */
 export function disableStdio(_unused?: any) {
+	// stdioLogging() installs process.stdout/stderr.write unconditionally and always delegates to
+	// nativeStdWrite, so replacing just this is enough to silence both regardless of log_to_file.
 	nativeStdWrite = noopWrite;
-	if (!log_to_file) {
-		// stdioLogging() only wraps process.stdout/stderr.write (routing them through
-		// nativeStdWrite) when log_to_file is true; without that wrapper nativeStdWrite is never
-		// consulted, so disable the real writers directly. When log_to_file is true, leave the
-		// wrapper in place - it still tees to the log file, and now delegates to the noop above.
-		process.stdout.write = nativeStdWrite;
-		process.stderr.write = nativeStdWrite;
-	}
 }
 
 const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED']);
@@ -539,31 +533,46 @@ export function initLogSettings(forceInit = false) {
 }
 let loggingEnabled = true;
 function stdioLogging() {
-	if (log_to_file) {
-		process.stdout.write = function (data) {
-			if (
-				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				loggingEnabled &&
-				logConsole
-			) {
-				data = data.toString();
-				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				writeToLogFile(data);
-			}
+	process.stdout.write = function (data) {
+		if (
+			log_to_file &&
+			typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
+			loggingEnabled &&
+			logConsole
+		) {
+			data = data.toString();
+			if (data[data.length - 1] === '\n') data = data.slice(0, -1);
+			writeToLogFile(data);
+		}
+		try {
 			return nativeStdWrite.apply(process.stdout, arguments);
-		};
-		process.stderr.write = function (data) {
-			if (
-				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				loggingEnabled &&
-				logConsole
-			) {
-				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				writeToLogFile(data);
-			}
+		} catch (error) {
+			// the write we just attempted IS process.stdout's own, so this is never a guess about
+			// where a broken-pipe error came from - disable it here rather than let it propagate
+			// into an uncaughtException that would re-log through this same broken sink
+			if (!isStdioBrokenError(error)) throw error;
+			disableStdio();
+			return true;
+		}
+	};
+	process.stderr.write = function (data) {
+		if (
+			log_to_file &&
+			typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
+			loggingEnabled &&
+			logConsole
+		) {
+			if (data[data.length - 1] === '\n') data = data.slice(0, -1);
+			writeToLogFile(data);
+		}
+		try {
 			return nativeStdWrite.apply(process.stderr, arguments);
-		};
-	}
+		} catch (error) {
+			if (!isStdioBrokenError(error)) throw error;
+			disableStdio();
+			return true;
+		}
+	};
 }
 
 export function loggerWithTag(tag: string, conditional?: boolean, logger: any = mainLogger) {
