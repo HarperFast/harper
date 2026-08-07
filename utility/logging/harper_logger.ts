@@ -385,9 +385,8 @@ module.exports = {
 	externalLogger,
 };
 
-// Mimics Writable.write's contract (boolean return, optional trailing callback invoked) rather
-// than silently dropping both, which would read as permanent backpressure to any pipe()'d source
-// and leave a callback-form caller waiting forever.
+// Honors Writable.write's contract (boolean return, callback invoked) rather than a bare
+// no-op, which would read as permanent backpressure to a pipe()'d source.
 function noopWrite(_chunk?: any, encoding?: any, callback?: any) {
 	if (typeof encoding === 'function') callback = encoding;
 	if (typeof callback === 'function') callback();
@@ -398,8 +397,6 @@ function noopWrite(_chunk?: any, encoding?: any, callback?: any) {
  * We call this if stdio is not functional
  */
 export function disableStdio(_unused?: any) {
-	// stdioLogging() installs process.stdout/stderr.write unconditionally and always delegates to
-	// nativeStdWrite, so replacing just this is enough to silence both regardless of log_to_file.
 	nativeStdWrite = noopWrite;
 }
 
@@ -532,8 +529,21 @@ export function initLogSettings(forceInit = false) {
 	stdioLogging();
 }
 let loggingEnabled = true;
-function stdioLogging() {
-	process.stdout.write = function (data) {
+
+// process.stdout/stderr backed by a POSIX pipe report a broken pipe asynchronously - write()
+// returns normally and the EPIPE arrives later as an 'error' event, past any try/catch around the
+// write call. An unhandled 'error' event on any EventEmitter becomes an uncaughtException, so a
+// listener here is what actually intercepts that case, with attribution guaranteed by being
+// registered directly on our own stdio stream rather than guessed from a process-wide handler.
+function installStdioGuard(stream) {
+	if (stream.harperStdioErrorHandler) stream.removeListener('error', stream.harperStdioErrorHandler);
+	stream.harperStdioErrorHandler = (error) => {
+		if (!isStdioBrokenError(error)) throw error;
+		disableStdio();
+	};
+	stream.on('error', stream.harperStdioErrorHandler);
+
+	stream.write = function (data) {
 		if (
 			log_to_file &&
 			typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
@@ -545,34 +555,18 @@ function stdioLogging() {
 			writeToLogFile(data);
 		}
 		try {
-			return nativeStdWrite.apply(process.stdout, arguments);
-		} catch (error) {
-			// the write we just attempted IS process.stdout's own, so this is never a guess about
-			// where a broken-pipe error came from - disable it here rather than let it propagate
-			// into an uncaughtException that would re-log through this same broken sink
-			if (!isStdioBrokenError(error)) throw error;
-			disableStdio();
-			return true;
-		}
-	};
-	process.stderr.write = function (data) {
-		if (
-			log_to_file &&
-			typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-			loggingEnabled &&
-			logConsole
-		) {
-			if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-			writeToLogFile(data);
-		}
-		try {
-			return nativeStdWrite.apply(process.stderr, arguments);
+			return nativeStdWrite.apply(stream, arguments);
 		} catch (error) {
 			if (!isStdioBrokenError(error)) throw error;
 			disableStdio();
-			return true;
+			return noopWrite.apply(stream, arguments);
 		}
 	};
+}
+
+function stdioLogging() {
+	installStdioGuard(process.stdout);
+	installStdioGuard(process.stderr);
 }
 
 export function loggerWithTag(tag: string, conditional?: boolean, logger: any = mainLogger) {

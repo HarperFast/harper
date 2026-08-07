@@ -1725,11 +1725,17 @@ describe('Test harper_logger module', () => {
 			});
 
 			afterEach(() => {
-				// stdioLogging() rebinds the REAL process.stdout/stderr .write to a closure over this
-				// module instance's nativeStdWrite - restoring both keeps a broken-pipe simulation
+				// stdioLogging() rebinds the REAL process.stdout/stderr .write (and adds an 'error'
+				// listener) to this module instance - undoing both keeps a broken-pipe simulation
 				// from leaking into the rest of this mocha run.
 				process.stdout.write = originalStdoutWrite;
 				process.stderr.write = originalStderrWrite;
+				for (const stream of [process.stdout, process.stderr]) {
+					if (stream.harperStdioErrorHandler) {
+						stream.removeListener('error', stream.harperStdioErrorHandler);
+						delete stream.harperStdioErrorHandler;
+					}
+				}
 			});
 
 			for (const logToFile of [true, false]) {
@@ -1771,6 +1777,34 @@ describe('Test harper_logger module', () => {
 
 				assert.strictEqual(writeToLogFileSpy.callCount, 2);
 				assert.strictEqual(writeToLogFileSpy.secondCall.args[0], 'second write, should still reach the file');
+			});
+
+			// A real POSIX pipe reports a broken pipe asynchronously - write() returns normally
+			// and the EPIPE surfaces later as an 'error' event, past the synchronous try/catch
+			// above (empirically confirmed via a live spawned-child probe: harper#2106 review).
+			// installStdioGuard() stashes its 'error' listener on the stream itself, so grabbing it
+			// there and calling it directly tests the exact handler that would otherwise be invoked
+			// by a real closed pipe - without emitting on the shared process.stdout/stderr, which
+			// would leave Node's own internal stream state altered for the rest of this mocha run.
+			it('catches the ASYNC error event a real closed pipe emits - not just a synchronous write throw', () => {
+				setup(true);
+				const handler = process.stderr.harperStdioErrorHandler;
+				assert.strictEqual(typeof handler, 'function');
+
+				assert.doesNotThrow(() => handler(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })));
+
+				// disableStdio() ran as a side effect - the native writer is now the noop, so it no
+				// longer throws and still honors a trailing callback
+				const callback = sinon.stub();
+				assert.strictEqual(harper_logger.__get__('nativeStdWrite')('probe', callback), true);
+				assert.strictEqual(callback.calledOnce, true);
+			});
+
+			it('the async error handler rethrows an error unrelated to a broken stdio stream', () => {
+				setup(true);
+				const handler = process.stderr.harperStdioErrorHandler;
+
+				assert.throws(() => handler(Object.assign(new Error('boom'), { code: 'SOMETHING_ELSE' })), /boom/);
 			});
 		});
 	});
