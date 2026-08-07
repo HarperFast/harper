@@ -381,14 +381,34 @@ module.exports = {
 	inspectForLog,
 	isErrorLike,
 	disableStdio,
+	isStdioBrokenError,
 	externalLogger,
 };
+
+// A bare no-op would read as permanent backpressure to a pipe()'d source; this drains and
+// discards instead.
+function noopWrite(_chunk?: any, encoding?: any, callback?: any) {
+	if (typeof encoding === 'function') callback = encoding;
+	if (typeof callback === 'function') callback();
+	return true;
+}
 
 /**
  * We call this if stdio is not functional
  */
 export function disableStdio(_unused?: any) {
-	nativeStdWrite = function () {}; // make this a noop
+	nativeStdWrite = noopWrite;
+}
+
+const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED']);
+
+/**
+ * True when this error means a stdio stream (stdout/stderr) is permanently unwritable - the
+ * pipe's reader died (EPIPE), the terminal closed (EIO), or the stream was already destroyed.
+ * Callers should disableStdio() on this rather than logging through the same sink that threw it.
+ */
+export function isStdioBrokenError(error: any): boolean {
+	return STDIO_BROKEN_ERROR_CODES.has(error?.code);
 }
 
 /**
@@ -509,32 +529,42 @@ export function initLogSettings(forceInit = false) {
 	stdioLogging();
 }
 let loggingEnabled = true;
+
+// A POSIX pipe reports a broken pipe asynchronously - write() returns normally and the EPIPE
+// arrives later as an 'error' event, past the try/catch below. An unhandled 'error' event on any
+// EventEmitter becomes an uncaughtException, so the listener is what actually catches that case.
+function installStdioGuard(stream) {
+	if (stream.harperStdioErrorHandler) stream.removeListener('error', stream.harperStdioErrorHandler);
+	stream.harperStdioErrorHandler = (error) => {
+		if (!isStdioBrokenError(error)) throw error;
+		disableStdio();
+	};
+	stream.on('error', stream.harperStdioErrorHandler);
+
+	stream.write = function (data) {
+		if (
+			log_to_file &&
+			typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
+			loggingEnabled &&
+			logConsole
+		) {
+			data = data.toString();
+			if (data[data.length - 1] === '\n') data = data.slice(0, -1);
+			writeToLogFile(data);
+		}
+		try {
+			return nativeStdWrite.apply(stream, arguments);
+		} catch (error) {
+			if (!isStdioBrokenError(error)) throw error;
+			disableStdio();
+			return noopWrite.apply(stream, arguments);
+		}
+	};
+}
+
 function stdioLogging() {
-	if (log_to_file) {
-		process.stdout.write = function (data) {
-			if (
-				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				loggingEnabled &&
-				logConsole
-			) {
-				data = data.toString();
-				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				writeToLogFile(data);
-			}
-			return nativeStdWrite.apply(process.stdout, arguments);
-		};
-		process.stderr.write = function (data) {
-			if (
-				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				loggingEnabled &&
-				logConsole
-			) {
-				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				writeToLogFile(data);
-			}
-			return nativeStdWrite.apply(process.stderr, arguments);
-		};
-	}
+	installStdioGuard(process.stdout);
+	installStdioGuard(process.stderr);
 }
 
 export function loggerWithTag(tag: string, conditional?: boolean, logger: any = mainLogger) {
@@ -1809,6 +1839,7 @@ export default {
 	setLogLevel,
 	OUTPUTS,
 	disableStdio,
+	isStdioBrokenError,
 	externalLogger,
 	AuthAuditLog,
 	errorToString,

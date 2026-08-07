@@ -1680,6 +1680,129 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test isStdioBrokenError + disableStdio (harper#2106)', () => {
+		const { isStdioBrokenError } = harperLoggerModule;
+
+		it('recognizes a closed pipe error (EPIPE)', () => {
+			assert.strictEqual(isStdioBrokenError({ code: 'EPIPE' }), true);
+		});
+
+		it('recognizes a closed terminal error (EIO)', () => {
+			assert.strictEqual(isStdioBrokenError({ code: 'EIO' }), true);
+		});
+
+		it('recognizes a destroyed stream error (ERR_STREAM_DESTROYED)', () => {
+			assert.strictEqual(isStdioBrokenError({ code: 'ERR_STREAM_DESTROYED' }), true);
+		});
+
+		it('does not misclassify unrelated errors', () => {
+			assert.strictEqual(isStdioBrokenError({ code: 'ECONNRESET' }), false);
+			assert.strictEqual(isStdioBrokenError(new Error('boom')), false);
+			assert.strictEqual(isStdioBrokenError(null), false);
+			assert.strictEqual(isStdioBrokenError(undefined), false);
+		});
+
+		describe('the process.stdout/stderr.write() wrapper installed by stdioLogging() (harper#2106)', () => {
+			let harper_logger;
+			let originalStdoutWrite;
+			let originalStderrWrite;
+
+			// Drives stdioLogging() directly via rewire rather than through initLogSettings()'s
+			// real-filesystem config resolution, which made log_to_file/logConsole depend on
+			// whatever boot properties happen to exist on the machine running this.
+			function setup(logToFile) {
+				harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+				harper_logger.__set__('log_to_file', logToFile);
+				harper_logger.__set__('logConsole', true);
+				harper_logger.__get__('stdioLogging')();
+			}
+
+			beforeEach(() => {
+				originalStdoutWrite = process.stdout.write;
+				originalStderrWrite = process.stderr.write;
+			});
+
+			afterEach(() => {
+				// stdioLogging() rebinds the REAL process.stdout/stderr .write (and adds an 'error'
+				// listener) to this module instance - undoing both keeps a broken-pipe simulation
+				// from leaking into the rest of this mocha run.
+				process.stdout.write = originalStdoutWrite;
+				process.stderr.write = originalStderrWrite;
+				for (const stream of [process.stdout, process.stderr]) {
+					if (stream.harperStdioErrorHandler) {
+						stream.removeListener('error', stream.harperStdioErrorHandler);
+						delete stream.harperStdioErrorHandler;
+					}
+				}
+			});
+
+			for (const logToFile of [true, false]) {
+				it(`catches a broken-pipe write inline instead of throwing, regardless of logging.file:${logToFile}`, () => {
+					setup(logToFile);
+					harper_logger.__set__('nativeStdWrite', function () {
+						throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+					});
+
+					assert.doesNotThrow(() => process.stderr.write('boom\n'));
+					// the write above disabled stdio itself - a second, independent write is silent too
+					assert.doesNotThrow(() => process.stdout.write('still fine\n'));
+
+					const callback = sinon.stub();
+					assert.strictEqual(process.stdout.write('chunk', callback), true);
+					assert.strictEqual(callback.calledOnce, true);
+				});
+			}
+
+			it('does not swallow a write error unrelated to a broken stdio stream', () => {
+				setup(true);
+				harper_logger.__set__('nativeStdWrite', function () {
+					throw Object.assign(new Error('boom'), { code: 'SOMETHING_ELSE' });
+				});
+
+				assert.throws(() => process.stderr.write('boom\n'), /boom/);
+			});
+
+			it('keeps teeing console output to the log file after a broken pipe disables the native writer', () => {
+				setup(true);
+				const writeToLogFileSpy = sinon.stub();
+				harper_logger.__set__('writeToLogFile', writeToLogFileSpy);
+				harper_logger.__set__('nativeStdWrite', function () {
+					throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+				});
+
+				process.stderr.write('first write, breaks the pipe\n');
+				process.stderr.write('second write, should still reach the file\n');
+
+				assert.strictEqual(writeToLogFileSpy.callCount, 2);
+				assert.strictEqual(writeToLogFileSpy.secondCall.args[0], 'second write, should still reach the file');
+			});
+
+			// installStdioGuard() stashes its 'error' listener on the stream itself; calling it
+			// directly (rather than process.stderr.emit('error', ...)) avoids altering Node's own
+			// internal stream state for the rest of this mocha run.
+			it('catches the ASYNC error event a real closed pipe emits - not just a synchronous write throw', () => {
+				setup(true);
+				const handler = process.stderr.harperStdioErrorHandler;
+				assert.strictEqual(typeof handler, 'function');
+
+				assert.doesNotThrow(() => handler(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })));
+
+				// disableStdio() ran as a side effect - the native writer is now the noop, so it no
+				// longer throws and still honors a trailing callback
+				const callback = sinon.stub();
+				assert.strictEqual(harper_logger.__get__('nativeStdWrite')('probe', callback), true);
+				assert.strictEqual(callback.calledOnce, true);
+			});
+
+			it('the async error handler rethrows an error unrelated to a broken stdio stream', () => {
+				setup(true);
+				const handler = process.stderr.harperStdioErrorHandler;
+
+				assert.throws(() => handler(Object.assign(new Error('boom'), { code: 'SOMETHING_ELSE' })), /boom/);
+			});
+		});
+	});
+
 	describe('Test logger auto-wrap of Error args (#1734)', () => {
 		// The HarperLogger level methods route every Error argument through errorForLog before
 		// Console formatting, so raw `logger.error(error)` calls anywhere in the codebase (or in
