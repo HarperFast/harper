@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786088621970,
+  "lastUpdate": 1786088625104,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -8762,6 +8762,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 150.75,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "f85e66b92abda03b6dd7cbcfde05e09a46215da7",
+          "message": "chore(deps): raise msgpackr floor to ^2.0.5\n\nThe published harper@5.2.0 shipped an npm-shrinkwrap.json pinning\nmsgpackr 2.0.4. main's package-lock.json already resolves 2.0.5\n(bumped after the v5.2.0 tag in a264242b4 as an npm-install side\neffect of ^2.0.4), so the next release cut from main already ships\n2.0.5. This raises the declared floor to ^2.0.5 to make that intent\nexplicit and guard against a future lock regeneration ever pinning\nbelow 2.0.5. No functional change; the resolved lock entry is\nunchanged.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-08-06T16:19:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/f85e66b92abda03b6dd7cbcfde05e09a46215da7"
+        },
+        "date": 1786088624142,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 13.57,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 12.77,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 18.57,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 16.18,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 24.64,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 15.38,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 31.94,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 13.72,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 17.86,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 49.71,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 163.09,
             "unit": "ms"
           }
         ]
