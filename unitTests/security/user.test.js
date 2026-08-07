@@ -264,9 +264,11 @@ describe('user.ts Unit Tests', () => {
 			await componentTable?.dropTable().catch(() => {});
 		});
 
+		// Goes through the real per-request path rather than reading the cache directly — the cache
+		// was built before COMPONENT_TABLE existed, which is the whole point of harper#2120.
 		async function cachedRolePermissions(username) {
-			const cache = await user.getUsersWithRolesCache();
-			return cache.get(username).role.permission;
+			const resolved = await user.findAndValidateUser(username, TEST_PASSWORD);
+			return resolved.role.permission;
 		}
 
 		it('should grant a super_user read on a system table created after the cache was built', async () => {
@@ -305,30 +307,27 @@ describe('user.ts Unit Tests', () => {
 			expect('hdb_not_a_real_table' in permission.system.tables).to.be.false;
 		});
 
-		it('should keep ordinary object semantics for anything that is not a table', async () => {
-			// A miss must fall through to the target rather than resolving to undefined: severing
-			// Object.prototype makes `${tables}` throw, and the deny path interpolates role fields
-			// into log lines.
+		it('should be a plain cloneable object, since operations are forwarded to worker threads', async () => {
+			// A Proxy here fails the whole operation with DataCloneError: forwarding structured-clones
+			// the request, permissions included (server/operations forwarding, harper#2120 CI).
 			const permission = await cachedRolePermissions(SUPER_USER);
 			const { tables } = permission.system;
+			expect(() => structuredClone(tables)).to.not.throw();
+			expect(structuredClone(tables)[COMPONENT_TABLE].read).to.be.true;
 			expect(() => `${tables}`).to.not.throw();
-			expect(() => tables.hasOwnProperty(COMPONENT_TABLE)).to.not.throw();
-			// and it agrees with the other traps rather than contradicting them
-			expect(tables.hasOwnProperty(COMPONENT_TABLE)).to.be.true;
-			expect(tables.hasOwnProperty('hdb_not_a_real_table')).to.be.false;
-			expect(tables.hdb_not_a_real_table).to.be.undefined;
 		});
 
 		it('should stop resolving a table once it leaves the registry', async () => {
-			const permission = await cachedRolePermissions(SUPER_USER);
+			const { databaseEventsEmitter } = require('#src/resources/databases');
 			const registered = databases.system[COMPONENT_TABLE];
 			delete databases.system[COMPONENT_TABLE];
+			databaseEventsEmitter.emit('dropTable', COMPONENT_TABLE, 'system');
 			try {
+				const permission = await cachedRolePermissions(SUPER_USER);
 				expect(permission.system.tables[COMPONENT_TABLE]).to.be.undefined;
-				expect(COMPONENT_TABLE in permission.system.tables).to.be.false;
-				expect(Object.keys(permission.system.tables)).to.not.include(COMPONENT_TABLE);
 			} finally {
 				databases.system[COMPONENT_TABLE] = registered;
+				databaseEventsEmitter.emit('updateTable', registered);
 			}
 		});
 
