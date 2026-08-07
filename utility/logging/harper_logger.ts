@@ -385,16 +385,28 @@ module.exports = {
 	externalLogger,
 };
 
+// Mimics Writable.write's contract (boolean return, optional trailing callback invoked) rather
+// than silently dropping both, which would read as permanent backpressure to any pipe()'d source
+// and leave a callback-form caller waiting forever.
+function noopWrite(_chunk?: any, encoding?: any, callback?: any) {
+	if (typeof encoding === 'function') callback = encoding;
+	if (typeof callback === 'function') callback();
+	return true;
+}
+
 /**
  * We call this if stdio is not functional
  */
 export function disableStdio(_unused?: any) {
-	nativeStdWrite = function () {}; // make this a noop
-	// stdioLogging() only routes process.stdout/stderr.write through nativeStdWrite when
-	// log_to_file is true; with it false those are still the raw native writers, so silence them
-	// directly too - otherwise this is a no-op under that config and callers keep re-throwing.
-	process.stdout.write = nativeStdWrite as any;
-	process.stderr.write = nativeStdWrite as any;
+	nativeStdWrite = noopWrite;
+	if (!log_to_file) {
+		// stdioLogging() only wraps process.stdout/stderr.write (routing them through
+		// nativeStdWrite) when log_to_file is true; without that wrapper nativeStdWrite is never
+		// consulted, so disable the real writers directly. When log_to_file is true, leave the
+		// wrapper in place - it still tees to the log file, and now delegates to the noop above.
+		process.stdout.write = nativeStdWrite;
+		process.stderr.write = nativeStdWrite;
+	}
 }
 
 const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED']);
