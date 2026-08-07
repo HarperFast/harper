@@ -381,6 +381,7 @@ module.exports = {
 	inspectForLog,
 	isErrorLike,
 	disableStdio,
+	isStdioBrokenError,
 	externalLogger,
 };
 
@@ -389,6 +390,19 @@ module.exports = {
  */
 export function disableStdio(_unused?: any) {
 	nativeStdWrite = function () {}; // make this a noop
+}
+
+const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED']);
+
+/**
+ * True when this error means a stdio stream (stdout/stderr) is permanently unwritable - the
+ * pipe's reader died (EPIPE), the terminal closed (EIO), or the stream was already destroyed.
+ * uncaughtException handlers should disableStdio() and stop on this, rather than logging the
+ * error through the same sink that just threw it (which would throw again, re-entering the
+ * handler in an unbounded loop).
+ */
+export function isStdioBrokenError(error: any): boolean {
+	return STDIO_BROKEN_ERROR_CODES.has(error?.code);
 }
 
 /**
@@ -1809,6 +1823,7 @@ export default {
 	setLogLevel,
 	OUTPUTS,
 	disableStdio,
+	isStdioBrokenError,
 	externalLogger,
 	AuthAuditLog,
 	errorToString,
