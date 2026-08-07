@@ -357,10 +357,15 @@ function systemTablePermissions(readPerm: boolean): UserRolePermissionTable {
 }
 
 // The registry is the source of truth for which system tables exist, so the derived permission map
-// is rebuilt whenever it changes rather than sampled once.
+// is rebuilt whenever it changes rather than sampled once. Scoped to the system database: these
+// events also fire for user tables, and every bump costs a rebuild on the next authentication.
 let systemTablesRevision = 0;
-databaseEventsEmitter.on('updateTable', () => systemTablesRevision++);
-databaseEventsEmitter.on('dropTable', () => systemTablesRevision++);
+databaseEventsEmitter.on('updateTable', (table) => {
+	if (table?.databaseName === terms.SYSTEM_SCHEMA_NAME) systemTablesRevision++;
+});
+databaseEventsEmitter.on('dropTable', (_tableName, databaseName) => {
+	if (databaseName === terms.SYSTEM_SCHEMA_NAME) systemTablesRevision++;
+});
 
 const systemTablesByReadPerm = new Map<
 	boolean,
