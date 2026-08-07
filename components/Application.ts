@@ -1102,17 +1102,15 @@ async function rollbackExtractedDirectory(
 		let placeholderIdentity: { dev: bigint; ino: bigint } | undefined;
 		const failRestore = async (error: unknown): Promise<never> => {
 			try {
-				if (retainReplacement) {
-					if (fallbackDisplacedPath) {
-						await rm(application.dirPath, {
-							recursive: true,
-							force: true,
-							maxRetries: 3,
-							retryDelay: 100,
-						});
-						await rename(fallbackDisplacedPath, application.dirPath);
-						transactionPaths.delete(fallbackDisplacedPath);
-					}
+				if (retainReplacement && fallbackDisplacedPath) {
+					await rm(application.dirPath, {
+						recursive: true,
+						force: true,
+						maxRetries: 3,
+						retryDelay: 100,
+					});
+					await rename(fallbackDisplacedPath, application.dirPath);
+					transactionPaths.delete(fallbackDisplacedPath);
 					transactionPaths.add(await retireExtractionAside(asidePath));
 				}
 				if (placeholderIdentity) {
