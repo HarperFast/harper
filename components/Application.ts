@@ -787,6 +787,7 @@ export async function extractApplication(
 			throw error;
 		}
 	} finally {
+		if (!tarball.destroyed) tarball.destroy();
 		if (shouldDeleteTarball && tarballPath) {
 			await rm(tarballPath, { force: true }).catch((error) =>
 				application.logger.warn(`Failed to remove temporary package ${tarballPath}:`, error)
@@ -799,12 +800,7 @@ export async function extractApplication(
 		async commit() {
 			if (settled) return;
 			if (asidePath) {
-				const retiredMarkerPath = retiredMarkerForAside(asidePath);
-				try {
-					await writeFile(retiredMarkerPath, '', { flag: 'wx', mode: 0o600 });
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-				}
+				const retiredMarkerPath = await retireExtractionAside(asidePath);
 				transactionPaths.add(retiredMarkerPath);
 			}
 			settled = true;
@@ -829,6 +825,16 @@ function retiredMarkerForAside(asidePath: string): string {
 		dirname(asidePath),
 		`${RETIRED_ASIDE_PREFIX}${basename(asidePath).slice(IN_PROGRESS_ASIDE_PREFIX.length)}`
 	);
+}
+
+async function retireExtractionAside(asidePath: string): Promise<string> {
+	const retiredMarkerPath = retiredMarkerForAside(asidePath);
+	try {
+		await writeFile(retiredMarkerPath, '', { flag: 'wx', mode: 0o600 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+	}
+	return retiredMarkerPath;
 }
 
 function errorMessage(error: unknown): string {
@@ -1107,6 +1113,7 @@ async function rollbackExtractedDirectory(
 						await rename(fallbackDisplacedPath, application.dirPath);
 						transactionPaths.delete(fallbackDisplacedPath);
 					}
+					transactionPaths.add(await retireExtractionAside(asidePath));
 				}
 				if (placeholderIdentity) {
 					try {

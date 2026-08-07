@@ -180,6 +180,26 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
+	it('keeps a retained replacement live when its previous tree is retired', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-retained-replacement-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const stagingDir = path.join(componentsRoot, '.deploy-aside', 'web');
+		const retiredAside = path.join(stagingDir, '.in-progress-123-previous');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+		await fs.mkdir(retiredAside, { recursive: true });
+		await fs.writeFile(path.join(retiredAside, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.writeFile(path.join(stagingDir, '.retired-123-previous'), '');
+
+		try {
+			await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '2.0.0');
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	it('recovers an interrupted deploy before component loading', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-startup-recovery-'));
 		const dirPath = path.join(componentsRoot, 'web');
@@ -327,11 +347,13 @@ describe('extractApplication directory swap', () => {
 			}
 			throw error;
 		}
-		const app = new Application({ name: 'web', payload: Buffer.from('not an archive') });
+		const payload = new Readable({ read() {} });
+		const app = new Application({ name: 'web', payload });
 		app.dirPath = dirPath;
 
 		try {
 			await assert.rejects(() => extractApplication(app), /deploy staging path is not a directory/);
+			assert.strictEqual(payload.destroyed, true);
 			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
 			assert.deepStrictEqual(await fs.readdir(externalDir), []);
 		} finally {
