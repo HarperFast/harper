@@ -390,6 +390,11 @@ module.exports = {
  */
 export function disableStdio(_unused?: any) {
 	nativeStdWrite = function () {}; // make this a noop
+	// stdioLogging() only routes process.stdout/stderr.write through nativeStdWrite when
+	// log_to_file is true; with it false those are still the raw native writers, so silence them
+	// directly too - otherwise this is a no-op under that config and callers keep re-throwing.
+	process.stdout.write = nativeStdWrite as any;
+	process.stderr.write = nativeStdWrite as any;
 }
 
 const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED']);
@@ -397,9 +402,7 @@ const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED'
 /**
  * True when this error means a stdio stream (stdout/stderr) is permanently unwritable - the
  * pipe's reader died (EPIPE), the terminal closed (EIO), or the stream was already destroyed.
- * uncaughtException handlers should disableStdio() and stop on this, rather than logging the
- * error through the same sink that just threw it (which would throw again, re-entering the
- * handler in an unbounded loop).
+ * Callers should disableStdio() on this rather than logging through the same sink that threw it.
  */
 export function isStdioBrokenError(error: any): boolean {
 	return STDIO_BROKEN_ERROR_CODES.has(error?.code);

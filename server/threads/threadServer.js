@@ -84,8 +84,6 @@ process.on('uncaughtException', (error) => {
 	if (error.isHandled) return;
 	if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') return; // that's what network connections do
 	if (harperLogger.isStdioBrokenError(error)) {
-		// stdio is gone (closed terminal, or the process piping our output died) - disable it so
-		// we don't throw again on the next write and re-enter this handler
 		harperLogger.disableStdio();
 		return;
 	}
