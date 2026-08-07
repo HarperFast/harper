@@ -4,12 +4,6 @@ const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const { createWorkerReadyPromise } = require('#src/server/threads/socketRouter');
 
-/**
- * A uWS listener-startup failure exits the worker via realExit(1) before it ever posts
- * child_started (see threadServer.js). Without the 'exit' handling here, the parent's ready
- * promise for that worker would stay pending forever, and Promise.all(workersReady) in
- * startHTTPThreads() would hang even though the failure had already been logged.
- */
 describe('socketRouter createWorkerReadyPromise', () => {
 	it('resolves when the worker posts child_started', async () => {
 		const worker = new EventEmitter();

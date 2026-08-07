@@ -81,12 +81,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	}
 }
 
-/**
- * Resolves once `worker` posts `child_started`, or rejects on a worker `error` or an `exit`
- * that arrives first (a pre-ready exit must reject this promise, not leave it pending forever).
- * A plain function of `worker` so it's testable against a stub EventEmitter without spawning a
- * real worker thread.
- */
+/** Resolves on `worker`'s `child_started` message; rejects on a worker `error` or a pre-ready `exit`. */
 export function createWorkerReadyPromise(worker, index) {
 	return new Promise((resolve, reject) => {
 		function cleanup() {
@@ -123,9 +118,7 @@ function startHTTPWorker(index, threadCount = 1) {
 			try {
 				await ready;
 			} catch {
-				// Already surfaced via workersReady (awaited by startHTTPThreads' Promise.all); this
-				// call's own return value is fire-and-forget from manageThreads.js, so rethrowing here
-				// would just be a second, unhandled report of the same failure.
+				// Already surfaced via workersReady; this call's own promise is fire-and-forget.
 				return;
 			}
 			workers.push(worker);
