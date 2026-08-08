@@ -121,13 +121,18 @@ describe('PrimaryRocksDatabase', function () {
 		// An out-of-order write merges onto the newer record and is stored under its version, so two
 		// different stored values share that version.
 		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		assert(
+			!TestTable.primaryStore.verifyVersion(9, inOrder.version),
+			'the reused version must stop being vouched for at the write, before any read of it'
+		);
 		const resequenced = TestTable.primaryStore.getEntry(9);
 		assert.equal(resequenced.version, inOrder.version, 'resequenced write keeps the existing version');
 		assert.equal(resequenced.value.count, 2, 'both increments are applied');
 
-		// Reading the merged record must leave the slot unseeded: any other worker still holding the
-		// pre-merge value at this version would otherwise verify it as fresh and serve it, and an
-		// addTo folding onto that stale value silently drops the increment it merged over.
+		// The version must never be vouched for once two stored values share it: another worker still
+		// holding the pre-merge value would verify it as fresh and serve it, and an addTo folding onto
+		// that stale value silently drops the increment it merged over. The write parks the sentinel, so
+		// this holds from the moment the merged record is visible, not merely after someone reads it.
 		assert(
 			!TestTable.primaryStore.verifyVersion(9, resequenced.version),
 			'VT must not vouch for a version shared by two stored values'
