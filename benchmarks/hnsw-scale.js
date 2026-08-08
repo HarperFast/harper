@@ -21,7 +21,6 @@ const fs = require('node:fs');
 const DIST = path.resolve(__dirname, '../dist/resources/indexes');
 const { HierarchicalNavigableSmallWorld } = require(`${DIST}/HierarchicalNavigableSmallWorld.js`);
 
-// --- args -------------------------------------------------------------------
 const argv = Object.fromEntries(
 	process.argv.slice(2).map((a) => {
 		const [k, v] = a.replace(/^--/, '').split('=');
@@ -74,7 +73,6 @@ function mulberry32(a) {
 }
 Math.random = mulberry32(SEED);
 
-// --- minimal in-memory store ------------------------------------------------
 class MemoryStore {
 	constructor() {
 		this._map = new Map();
@@ -120,7 +118,6 @@ class MemoryStore {
 	}
 }
 
-// --- corpus: gaussian mixture, unit-normalized (embedding-like) -------------
 let _spare = null;
 function gauss() {
 	if (_spare !== null) {
@@ -227,7 +224,6 @@ function pct(sorted, p) {
 	return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
 }
 
-// --- per-layer instrumentation ---------------------------------------------
 let inSearch = false;
 let currentEf = 0;
 const layerStats = { visitsByLevel: new Map(), timeByLevel: new Map(), callsByLevel: new Map() };
@@ -254,7 +250,12 @@ function instrument(hnsw) {
 	};
 	proto.searchLayer = function (queryVector, entryPointId, entryPoint, ef, level, ...rest) {
 		// --upper-ef=match reproduces the pre-fix behaviour (full ef at every layer) for A/B.
-		if (inSearch && UPPER_EF !== undefined && level > 0) ef = UPPER_EF === 'match' ? currentEf : UPPER_EF;
+		// Layer 0 is searched last, so `currentEf` holds the ef the index resolved on the previous
+		// query — the same value, and read from the index rather than recomputed here, so this cannot
+		// drift when the auto-scale formula changes.
+		if (inSearch && level === 0) currentEf = ef;
+		if (inSearch && UPPER_EF !== undefined && level > 0 && currentEf) ef = UPPER_EF === 'match' ? currentEf : UPPER_EF;
+		else if (inSearch && UPPER_EF !== undefined && UPPER_EF !== 'match' && level > 0) ef = UPPER_EF;
 		else if (!inSearch && BUILD_UPPER_EF !== undefined && level > 0) ef = BUILD_UPPER_EF;
 		const before = this.nodesVisitedCount;
 		const t0 = performance.now();
@@ -268,7 +269,6 @@ function instrument(hnsw) {
 	};
 }
 
-// --- graph shape ------------------------------------------------------------
 function graphShape(store) {
 	const levels = new Map();
 	let deg0 = 0;
@@ -284,7 +284,6 @@ function graphShape(store) {
 	return { levels: [...levels.entries()].sort((a, b) => a[0] - b[0]), avgDegree0: deg0 / (deg0Nodes || 1) };
 }
 
-// --- run --------------------------------------------------------------------
 const rows = [];
 console.log(
 	`\nHNSW scaling sweep — dims=${DIMS}, queries=${N_QUERIES}, k=${TOP_K}, quantization=${QUANTIZATION}, ef=${EF_OPT}` +
@@ -363,20 +362,15 @@ for (const N of SIZES) {
 	const groundTruth = queries.map((q) => bruteForceTopK(pool, N, DIMS, q, TOP_K));
 	const gtMs = performance.now() - gtStart;
 
-	const autoEf = Math.min(
-		512,
-		Math.max(100, Math.round(100 * Math.sqrt(Math.max(1, store.getStats().entryCount / 1000))))
-	);
-
 	for (const efSpec of EF_SWEEP) {
 		const queryEf = efSpec === 'auto' ? undefined : Number(efSpec);
-		const effectiveEf = efSpec === 'auto' ? autoEf : Number(efSpec);
-		currentEf = effectiveEf;
+		currentEf = queryEf ?? 0; // resolved from the index itself on the warm-up queries below
 
 		// warm-up
 		for (let q = 0; q < Math.min(5, N_QUERIES); q++)
 			hnsw.search({ target: queries[q], comparator: 'sort', ef: queryEf }, { transaction: undefined });
 
+		const effectiveEf = currentEf; // what the index actually searched layer 0 at
 		resetLayerStats();
 		const latencies = [];
 		let totalVisited = 0;

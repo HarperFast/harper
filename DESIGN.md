@@ -772,9 +772,10 @@ Each layer above 0 exists to hand the next layer down an entry point: `search()`
 take `results[0]` and discard the rest. Searching them at the full `ef` therefore buys nothing and
 costs work proportional to the layer's population rather than to ef — layer 1 holds ~N/M nodes, and
 at ef 512 a query visited ~95% of it. That is a second linear-in-N term: upper-layer visits per query
-grew 342 → 2,458 across 5K → 41K vectors, reaching 75% of query time at 100K. Greedy descent
-(`ROUTING_EF`) is what standard HNSW does; measured across 20 configurations on real embeddings it
-changed recall by 0.000.
+grew 342 → 2,421 across 5K → 41K vectors on real embeddings, and reached 75% of query time at 100K. Greedy descent
+(`ROUTING_EF`) is what standard HNSW does. Measured against the same graphs searched at the full `ef`
+on every layer, across 16 (size, `ef`) points on a held-out real-embedding corpus, the worst
+recall@10 change was -0.002 — one displaced neighbour at a single point — and 0.000 everywhere else.
 
 The connection-building pass in `index()` is not routing — it selects the edges that get stored — so
 it keeps `efConstruction`.
@@ -782,10 +783,11 @@ it keeps `efConstruction`.
 The insert-side change is the one that alters stored graphs, recoverable only by a reindex, so it was
 measured separately (`benchmarks/hnsw-scale.js --build-upper-ef=100` restores the previous
 index-time descent). At 20,000 real 768-dim embeddings with identical corpus and level assignments,
-the greedy and full-`ef` builds produce the same graph — identical recall at every `ef`, identical
-visit counts, identical mean layer-0 degree — and the greedy build is 1.28x faster. That is the
-expected result: the upper layers are sparse enough that a greedy walk reaches the same entry point,
-which is why standard HNSW descends this way.
+the two builds were indistinguishable on every metric measured — same recall at each `ef`, same visit
+counts, same mean layer-0 degree — and the greedy build was 1.28x faster. That is consistent with the
+graphs being identical, though equal metrics do not prove it. It is the expected result either way:
+the upper layers are sparse enough that a greedy walk reaches the same entry point, which is why
+standard HNSW descends this way.
 
 ## An approximate index returns at most `ef` rows, so `limit` has to reach it
 
