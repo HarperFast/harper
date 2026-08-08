@@ -491,6 +491,54 @@ describe('HNSW search result loading (searchByIndex)', () => {
 	});
 });
 
+describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWNodeCountTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+	});
+
+	after(() => {
+		T.dropTable();
+	});
+
+	// The size that feeds autoScaleEf must reflect how many vectors are in the graph. Building the
+	// graph rewrites each node repeatedly as its neighbours change, so any source that counts stored
+	// entries without reconciling overwrites reads far high — RocksDB's estimate-num-keys measured
+	// 9x the true count on a 2,000-record index, which would silently push ef to its cap.
+	it('tracks the number of indexed vectors, not the number of writes made to the graph', async () => {
+		const N = 300;
+		for (let i = 0; i < N; i++) {
+			const a = (i / N) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const customIndex = T.indices.vector.customIndex;
+		const count = customIndex.approximateNodeCount(true);
+		assert(
+			count >= N && count <= N * 1.5,
+			`graph size ${count} should be close to the ${N} indexed vectors (each node is rewritten many times during construction)`
+		);
+	});
+
+	it('re-resolves rather than serving a stale size when a query asks for more rows than it knows about', async () => {
+		// the memo must not be able to truncate a limit — see the ceiling in search()
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 250 })
+		);
+		assert.strictEqual(results.length, 250, `expected 250 rows, got ${results.length}`);
+	});
+});
+
 describe('HNSW limit above the resolved search ef', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let T;

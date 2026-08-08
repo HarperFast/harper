@@ -49,7 +49,11 @@ function dequantizeInt8(q: Int8Array, scale: number): number[] {
 // cap deliberately favors latency — apps wanting higher recall set efConstructionSearch or a per-query
 // ef. Tune as graph build quality / larger-N data improves.
 const AUTO_EF_BASE = 100;
-const AUTO_EF_REF = 1000;
+// Graph nodes at which ef equals AUTO_EF_BASE. This was originally expressed per index-store KEY
+// against a reference of 1000; the store holds two keys per record (the node and its primary-key
+// mapping), so 1000 keys is 500 nodes. Halving the reference alongside the switch to a node count
+// keeps every resolved ef exactly what it was.
+const AUTO_EF_REF = 500;
 const AUTO_EF_MAX = 512;
 function autoScaleEf(nodeCount: number): number {
 	const scaled = Math.round(AUTO_EF_BASE * Math.sqrt(Math.max(1, nodeCount / AUTO_EF_REF)));
@@ -700,28 +704,41 @@ export class HierarchicalNavigableSmallWorld {
 	}
 
 	/**
-	 * Graph size, for the ef auto-scale and the limit ceiling.
+	 * Number of nodes in the graph, for the ef auto-scale and the limit ceiling. Memoized briefly so
+	 * a burst of queries resolves it once.
 	 *
-	 * `getKeysCount()` on a RocksDB store is an exact key scan — O(N), measured at 13 ms per call at
-	 * 10K keys, 128 ms at 100K, ~1 s at 500K. It was called on every search, which put a
-	 * linear-in-corpus-size term in front of every vector query before any graph traversal happened.
-	 * RocksDB's own `estimate-num-keys` property is O(1) and tracked the exact count through
-	 * memtable, flush and delete in testing, and ef only needs the magnitude (it scales with the
-	 * square root of this and is capped), so the estimate is used when the store exposes one.
-	 * The result is memoized briefly so a burst of queries resolves it once.
+	 * This used to call `getKeysCount()`, which on a RocksDB store is an exact key scan — O(N),
+	 * measured at 13 ms per call at 10K keys, 128 ms at 100K, ~1 s at 500K — on every search, which
+	 * put a linear-in-corpus-size term in front of every vector query before any traversal happened.
+	 *
+	 * RocksDB's O(1) `estimate-num-keys` property is NOT a usable substitute here: it counts entries
+	 * across memtable and SST files without reconciling overwrites, and building the graph rewrites
+	 * each node many times as its neighbours change. Measured on a real index it read 37,775 for a
+	 * 2,000-record table (exact key count 4,001) and got worse after deletes — 5.6x over at 5,000
+	 * records. Node ids are the reliable O(1) source instead: they are allocated monotonically, so
+	 * the id counter (or the largest stored id) gives the node count directly, unaffected by how
+	 * many times a node has been rewritten. Deletes leave it reading high until the index is
+	 * rebuilt, which only makes ef slightly generous.
 	 */
 	private approximateNodeCount(forceRefresh = false): number {
 		const now = Date.now();
 		if (!forceRefresh && this.nodeCountAt > 0 && now - this.nodeCountAt < NODE_COUNT_TTL) return this.nodeCount;
-		const stats = this.indexStore.getStats?.();
-		let count: number;
-		const estimate = stats?.['rocksdb.estimate-num-keys'];
-		if (typeof estimate === 'number' && estimate > 0) count = estimate;
-		else if (typeof stats?.entryCount === 'number') count = stats.entryCount;
-		else count = this.indexStore.getKeysCount ? this.indexStore.getKeysCount() : 0;
-		this.nodeCount = count;
+		this.nodeCount = this.resolveNodeCount();
 		this.nodeCountAt = now;
-		return count;
+		return this.nodeCount;
+	}
+
+	/** O(1) node count — the shared id counter, else a single reverse seek to the largest node id. */
+	private resolveNodeCount(): number {
+		if (this.idIncrementer) return Number(Atomics.load(this.idIncrementer, 0));
+		try {
+			for (const key of this.indexStore.getKeys({ reverse: true, limit: 1, start: Infinity, end: 0 })) {
+				if (typeof key === 'number') return key + 1;
+			}
+		} catch (error) {
+			logger.debug?.('could not resolve node count from the largest node id', error);
+		}
+		return 0; // empty (or unreadable) graph — autoScaleEf falls back to its floor
 	}
 
 	private safeGetSync(key: any, options?: any): any {
