@@ -57,21 +57,27 @@ function row(pool, i) {
 	return out;
 }
 
-// Reproduce the pre-fix descent for A/B: every layer searched at the full ef.
-function applyBaseline() {
+// Reproduce the pre-fix behaviour for A/B: an exact getKeysCount() per query to resolve the graph
+// size, and every layer searched at the full ef. `baselineOn` toggles it per query so the two
+// configurations can be interleaved — a shared machine drifts under other load, and comparing two
+// separate runs attributes that drift to the code under test.
+let baselineOn = false;
+function installBaselineToggle() {
 	const proto = HierarchicalNavigableSmallWorld.prototype;
 	const originalSearch = proto.search;
 	const originalSearchLayer = proto.searchLayer;
 	let efForQuery = 0;
 	proto.search = function (condition, context, filter, minResults) {
-		const count = this.indexStore.getKeysCount
-			? this.indexStore.getKeysCount()
-			: (this.indexStore.getStats?.()?.entryCount ?? 0);
-		efForQuery = Math.min(512, Math.max(100, Math.round(100 * Math.sqrt(Math.max(1, count / 1000)))));
+		if (baselineOn) {
+			const count = this.indexStore.getKeysCount
+				? this.indexStore.getKeysCount()
+				: (this.indexStore.getStats?.()?.entryCount ?? 0);
+			efForQuery = Math.min(512, Math.max(100, Math.round(100 * Math.sqrt(Math.max(1, count / 1000)))));
+		}
 		return originalSearch.call(this, condition, context, filter, minResults);
 	};
 	proto.searchLayer = function (v, epId, ep, ef, level, ...rest) {
-		return originalSearchLayer.call(this, v, epId, ep, level > 0 ? efForQuery : ef, level, ...rest);
+		return originalSearchLayer.call(this, v, epId, ep, baselineOn && level > 0 ? efForQuery : ef, level, ...rest);
 	};
 }
 
@@ -105,7 +111,7 @@ function instrumentNodeFetch(T) {
 }
 
 (async () => {
-	if (BASELINE) applyBaseline();
+	installBaselineToggle();
 
 	setupTestDBPath();
 	setMainIsWorker(true);
@@ -150,46 +156,68 @@ function instrumentNodeFetch(T) {
 		}));
 	}
 
+	// Interleaved A/B: each query runs under both configurations back to back, so any load spike
+	// hits both arms. Medians are taken per arm over the paired samples.
+	const arms = {
+		baseline: { lat: [], visited: 0, fetchMs: 0, fetchCalls: 0, countMs: 0 },
+		greedy: { lat: [], visited: 0, fetchMs: 0, fetchCalls: 0, countMs: 0 },
+	};
+	const runOne = async (target, arm) => {
+		baselineOn = arm === 'baseline';
+		const v0 = customIndex.nodesVisitedCount;
+		const f0 = nodeFetch.ms;
+		const fc0 = nodeFetch.calls;
+		const c0 = nodeCount.ms;
+		const t0 = performance.now();
+		let n = 0;
+		for await (const _ of T.search({
+			sort: { attribute: 'vector', target, distance: 'cosine' },
+			select: ['id'],
+			limit: LIMIT,
+		}))
+			n++;
+		const dt = performance.now() - t0;
+		const a = arms[arm];
+		a.lat.push(dt);
+		a.visited += customIndex.nodesVisitedCount - v0;
+		a.fetchMs += nodeFetch.ms - f0;
+		a.fetchCalls += nodeFetch.calls - fc0;
+		a.countMs += nodeCount.ms - c0;
+		return n;
+	};
+
 	customIndex.nodesVisitedCount = 0;
 	nodeFetch.calls = 0;
 	nodeFetch.ms = 0;
 	nodeCount.calls = 0;
 	nodeCount.ms = 0;
-	const latencies = [];
 	let rows = 0;
 	for (let q = 0; q < Q; q++) {
-		const t0 = performance.now();
-		let n = 0;
-		for await (const _ of T.search({
-			sort: { attribute: 'vector', target: queries[q], distance: 'cosine' },
-			select: ['id'],
-			limit: LIMIT,
-		}))
-			n++;
-		latencies.push(performance.now() - t0);
-		rows += n;
+		// alternate which arm goes first so ordering effects (cache warmth) cancel
+		const order = q % 2 === 0 ? ['baseline', 'greedy'] : ['greedy', 'baseline'];
+		for (const arm of order) rows += await runOne(queries[q], arm);
 	}
-	latencies.sort((a, b) => a - b);
+	baselineOn = false;
+
+	console.log(`  rows/query ${(rows / (2 * Q)).toFixed(1)}\n`);
+	for (const [name, a] of Object.entries(arms)) {
+		a.lat.sort((x, y) => x - y);
+		const total = a.lat.reduce((x, y) => x + y, 0);
+		console.log(
+			`  ${name.padEnd(9)} p50 ${pct(a.lat, 50).toFixed(2)}ms  p95 ${pct(a.lat, 95).toFixed(2)}ms  ` +
+				`visited ${(a.visited / Q).toFixed(0)}  nodeFetch ${(a.fetchMs / Q).toFixed(2)}ms (${((100 * a.fetchMs) / total).toFixed(0)}%)  ` +
+				`graphSizeProbe ${(a.countMs / Q).toFixed(2)}ms (${((100 * a.countMs) / total).toFixed(0)}%)`
+		);
+	}
+	const bp = pct(arms.baseline.lat, 50);
+	const gp = pct(arms.greedy.lat, 50);
 	console.log(
-		`  p50 ${pct(latencies, 50).toFixed(2)}ms  p95 ${pct(latencies, 95).toFixed(2)}ms  p99 ${pct(latencies, 99).toFixed(2)}ms  ` +
-			`nodes/query ${(customIndex.nodesVisitedCount / Q).toFixed(0)}  rows/query ${(rows / Q).toFixed(1)}  ` +
-			`µs/vector ${((pct(latencies, 50) * 1000) / N).toFixed(2)}`
+		`\n  p50 speedup: ${(bp / gp).toFixed(2)}x   (visits ${(arms.baseline.visited / arms.greedy.visited).toFixed(2)}x)`
 	);
-	if (argv.profile) {
-		const totalMs = latencies.reduce((a, b) => a + b, 0);
-		console.log(
-			`  node fetch: ${(nodeFetch.calls / Q).toFixed(0)} calls/query, ${(nodeFetch.ms / Q).toFixed(2)} ms/query ` +
-				`(${((100 * nodeFetch.ms) / totalMs).toFixed(1)}% of query time, ${((nodeFetch.ms * 1000) / nodeFetch.calls).toFixed(2)} µs/call)`
-		);
-		console.log(
-			`  graph-size probe (autoScaleEf): ${(nodeCount.calls / Q).toFixed(2)} calls/query, ${(nodeCount.ms / Q).toFixed(2)} ms/query ` +
-				`(${((100 * nodeCount.ms) / totalMs).toFixed(1)}% of query time)`
-		);
-	}
+	const latencies = arms.greedy.lat;
 	console.log(
-		`REAL_STORE_RESULT n=${N} descent=${BASELINE ? 'baseline' : 'greedy'} corpus=${CORPUS ? 'real' : 'random'} ` +
-			`build_s=${(buildMs / 1000).toFixed(1)} p50=${pct(latencies, 50).toFixed(2)} p95=${pct(latencies, 95).toFixed(2)} ` +
-			`visited=${(customIndex.nodesVisitedCount / Q).toFixed(0)}\n`
+		`REAL_STORE_AB n=${N} corpus=${CORPUS ? 'real' : 'random'} build_s=${(buildMs / 1000).toFixed(1)} ` +
+			`baseline_p50=${bp.toFixed(2)} greedy_p50=${gp.toFixed(2)} speedup=${(bp / gp).toFixed(2)}\n`
 	);
 	process.exit(0);
 })();

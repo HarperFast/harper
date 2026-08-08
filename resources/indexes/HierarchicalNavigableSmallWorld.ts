@@ -3,7 +3,6 @@ import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { SKIP } from '@harperfast/extended-iterable';
 
 const logger = loggerWithTag('HNSW');
@@ -1276,9 +1275,10 @@ export class HierarchicalNavigableSmallWorld {
 	 * @returns
 	 */
 	estimateCountAsSort() {
-		const count =
-			this.indexStore instanceof RocksDatabase ? this.indexStore.getKeysCount() : this.indexStore.getStats().entryCount;
-		return Math.sqrt(count * this.efConstructionSearch);
+		// Same O(1) estimate search() uses — this runs per query whenever a vector sort is planned
+		// alongside another condition (a companion filter, RBAC, allowRead), and an exact
+		// getKeysCount() here is a second full key scan on the query path. See approximateNodeCount.
+		return Math.sqrt(this.approximateNodeCount() * this.efConstructionSearch);
 	}
 
 	/**
