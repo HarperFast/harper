@@ -443,7 +443,11 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		// Unreachable via SQL today (AlaSQL only accepts a numeric literal here), so this
 		// exercises the invariant at the AST level: a LIMIT clause that is present but not a
 		// static number must fall back, never return all rows unbounded.
-		const ast = { from: [{ databaseid: 'dev', tableid: 'user' }], columns: [{ columnid: '*' }], limit: { value: null } };
+		const ast = {
+			from: [{ databaseid: 'dev', tableid: 'user' }],
+			columns: [{ columnid: '*' }],
+			limit: { value: null },
+		};
 		assert.throws(() => normalizeStatement(ast, 'select'), EngineUnsupportedError);
 	});
 
