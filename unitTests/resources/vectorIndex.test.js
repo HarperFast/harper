@@ -606,9 +606,13 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 			);
 		}
 
-		// full ef at every layer, as search() did before greedy descent
+		// Every layer at the ef layer 0 actually resolves to — what search() passed down before greedy
+		// descent. Read it from a real query rather than efConstructionSearch, which is only the
+		// pre-change value when a schema configures one; this index takes the auto-scaled path.
+		const resolvedLayer0Ef = await captureLayer0Ef(T, { limit: 10 });
+		assert(resolvedLayer0Ef > 1, `expected an auto-scaled layer-0 ef, got ${resolvedLayer0Ef}`);
 		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
-			return originalSearchLayer.call(this, v, epId, ep, level > 0 ? this.efConstructionSearch : ef, level, ...rest);
+			return originalSearchLayer.call(this, v, epId, ep, level > 0 ? resolvedLayer0Ef : ef, level, ...rest);
 		};
 		try {
 			for (let i = 0; i < targets.length; i++) {

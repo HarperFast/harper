@@ -54,7 +54,8 @@ const AUTO_EF_BASE = 100;
 // against keys.
 const INDEX_KEYS_PER_NODE = 2;
 // Graph nodes at which ef equals AUTO_EF_BASE. Originally expressed per index-store key against a
-// reference of 1000, so 500 nodes is the same point and every resolved ef is unchanged.
+// reference of 1000, so 500 nodes is the same point. The node count is a high-water mark rather than
+// a live count, so the resolved ef can differ from that formula by one at a rounding boundary.
 const AUTO_EF_REF = 500;
 const AUTO_EF_MAX = 512;
 function autoScaleEf(nodeCount: number): number {

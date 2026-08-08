@@ -779,6 +779,14 @@ changed recall by 0.000.
 The connection-building pass in `index()` is not routing — it selects the edges that get stored — so
 it keeps `efConstruction`.
 
+The insert-side change is the one that alters stored graphs, recoverable only by a reindex, so it was
+measured separately (`benchmarks/hnsw-scale.js --build-upper-ef=100` restores the previous
+index-time descent). At 20,000 real 768-dim embeddings with identical corpus and level assignments,
+the greedy and full-`ef` builds produce the same graph — identical recall at every `ef`, identical
+visit counts, identical mean layer-0 degree — and the greedy build is 1.28x faster. That is the
+expected result: the upper layers are sparse enough that a greedy walk reaches the same entry point,
+which is why standard HNSW descends this way.
+
 ## An approximate index returns at most `ef` rows, so `limit` has to reach it
 
 Layer 0 keeps at most `ef` candidates, and ef resolves from the auto-scale, not from the query. A
