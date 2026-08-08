@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786174407995,
+  "lastUpdate": 1786189438212,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -10691,6 +10691,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 918,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "eb702ee52ef8f97085dc9d20f81ba52234cf077b",
+          "message": "fix(blob): re-encode inline blobs from the copied buffer, not a read-buffer view\n\nA small blob decoded inline retained `storageBuffer` — the raw msgpack ext-body,\nwhich is a *view* into the store's read buffer — and `pack()` re-emitted it verbatim\non re-encode. The read buffer is recycled by later reads, so a read-modify-write\n(the shape of a REST PATCH: fetch record, carry the unchanged Blob, put it back)\nserialized whatever foreign bytes had since overwritten that buffer, corrupting the\nrecord. The next read then failed with \"Data read, but end of buffer not reached\".\n\nThe sibling `contentBuffer` is already a stable copy (copyingUnpacker uses\ncopyBuffers), so drop `storageBuffer` entirely and let `pack()` fall through to the\nexisting contentBuffer re-encode. No read-path allocation cost — this supersedes the\n`needsStableBuffer` approach in #2103, which masked the corruption by forcing every\nprimary-store read to allocate a fresh buffer. The clobber is on re-ENCODE, not\nmid-decode, which is why a decode-path canary never observed it.\n\nAlso fixes slice() on an inline blob (previously gated off by storageBuffer's\npresence and left to throw).\n\nRepro/regression guard: unitTests/resources/recordCacheStableBuffer.test.js — the\nRMW-with-interleaved-read case failed 25/25 before this change, passes after.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-08-07T19:16:01Z",
+          "url": "https://github.com/HarperFast/harper/commit/eb702ee52ef8f97085dc9d20f81ba52234cf077b"
+        },
+        "date": 1786189436586,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 20329,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 16284,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 12949,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 31904704,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9382,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1397,
             "unit": "ops"
           }
         ]
