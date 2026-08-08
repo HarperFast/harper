@@ -1037,11 +1037,9 @@ export class HierarchicalNavigableSmallWorld {
 		else if (!this.efSearchConfigured) effectiveEf = autoScaleEf(getNodeCount());
 		// A bounded query must be able to come back full. Layer 0 keeps at most `ef` candidates, so a
 		// limit above the resolved ef silently truncated the result set; widen the candidate list to
-		// cover it, bounded by the graph size (asking for more rows than exist can't need more).
-		// (The store holds a node plus a key mapping per record, so this ceiling is roughly twice the
-		// row count — it is a guard against an unbounded limit, not a precise bound.) A memoized size
-		// is re-resolved when it is below what the query asked for, so a stale count can never truncate
-		// the limit this is here to honour.
+		// cover it, bounded by the number of nodes in the graph — asking for more rows than there are
+		// vectors can't need a wider list. A memoized size is re-resolved when it is below what the
+		// query asked for, so a stale count can never truncate the limit this is here to honour.
 		if (minResults !== undefined && minResults > effectiveEf) {
 			let count = getNodeCount();
 			if (count < minResults) count = this.approximateNodeCount(true);
