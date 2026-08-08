@@ -382,6 +382,33 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		assert.strictEqual(mockTable._lastTarget.offset, 1);
 	});
 
+	it('TOP n behaves like LIMIT n and pushes to Table.search', async () => {
+		// `SELECT TOP n` is AlaSQL's SQL-Server spelling of LIMIT; previously it was
+		// silently dropped, returning every row instead of n (and never falling back).
+		const data = await runSql('SELECT TOP 2 name FROM dev.user WHERE age > 0 ORDER BY age');
+		assert.deepStrictEqual(
+			data.map((r) => r.name),
+			['bob', 'alice']
+		);
+		assert.strictEqual(mockTable._lastTarget.limit, 2);
+	});
+
+	it('rejects TOP combined with LIMIT as ambiguous (→ legacy fallback)', async () => {
+		await assert.rejects(
+			() => runSql('SELECT TOP 2 name FROM dev.user WHERE age > 0 ORDER BY age LIMIT 3'),
+			EngineUnsupportedError
+		);
+	});
+
+	it('floors a fractional LIMIT to match legacy truncation', async () => {
+		// AlaSQL parses `LIMIT 2.9` as 2.9; legacy truncates to 2 rows. PhysicalLimit's
+		// `yielded >= cap` check would instead over-yield (3 rows) on a fractional cap,
+		// so the normalizer floors it.
+		const data = await runSql('SELECT name FROM dev.user WHERE age > 0 ORDER BY age LIMIT 2.9');
+		assert.strictEqual(data.length, 2);
+		assert.strictEqual(mockTable._lastTarget.limit, 2);
+	});
+
 	it('does NOT push LIMIT into the scan when a residual filter remains', async () => {
 		// `id > 0` is index-served, but `UPPER(city) = 'AUSTIN'` is a residual applied
 		// after the scan. Pushing the limit into Table.search would cap rows *before*

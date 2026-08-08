@@ -156,8 +156,18 @@ function normalizeSelect(stmt: AlaSqlNode): SelectNode {
 
 	const where = stmt.where ? normalizeExpr(extractWhere(stmt.where as AlaSqlNode)) : undefined;
 	const orderBy = stmt.order ? (stmt.order as AlaSqlNode[]).map(normalizeSort) : undefined;
-	const limit = readNumValue(stmt.limit as AlaSqlNode | undefined);
-	const offset = readNumValue(stmt.offset as AlaSqlNode | undefined);
+	// `SELECT TOP n` is AlaSQL's SQL-Server spelling of `LIMIT n`. Without this the
+	// normalizer dropped `stmt.top` entirely, so `new`/`auto` mode returned *all*
+	// rows and — producing a valid plan — never fell back to legacy. The two clauses
+	// don't combine in standard SQL, so a query carrying both is ambiguous: defer it
+	// to legacy rather than silently pick one.
+	const rawLimit = readNumValue(stmt.limit as AlaSqlNode | undefined);
+	const top = readNumValue(stmt.top as AlaSqlNode | undefined);
+	if (rawLimit != null && top != null) {
+		throw new EngineUnsupportedError('TOP combined with LIMIT is not supported', stmt);
+	}
+	const limit = normalizeRowCount(rawLimit ?? top, 'LIMIT');
+	const offset = normalizeRowCount(readNumValue(stmt.offset as AlaSqlNode | undefined), 'OFFSET');
 	const distinct = !!stmt.distinct;
 
 	return {
@@ -270,6 +280,21 @@ function readNumValue(node: AlaSqlNode | undefined): number | undefined {
 	if (typeof v === 'number') return v;
 	if (typeof v === 'string') return Number(v);
 	return undefined;
+}
+
+/**
+ * Coerce a parsed LIMIT/OFFSET/TOP count to a non-negative integer. The legacy
+ * engine truncates a fractional count (`LIMIT 2.9` yields 2 rows), so we floor to
+ * match; anything non-finite or negative is deferred to the legacy engine rather
+ * than fed to PhysicalLimit, whose `>= cap` check would over-yield a fractional
+ * cap and never terminate on NaN.
+ */
+function normalizeRowCount(value: number | undefined, clause: string): number | undefined {
+	if (value == null) return undefined;
+	if (!Number.isFinite(value) || value < 0) {
+		throw new EngineUnsupportedError(`unsupported ${clause} value: ${value}`);
+	}
+	return Math.floor(value);
 }
 
 const ALASQL_BINARY_OPS: Record<string, BinaryOp> = {
