@@ -5,10 +5,14 @@ import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
 import { entryMap, METADATA, VERSION_REUSED, type Entry } from './RecordEncoder.ts';
 
-// Seeded into a VerificationTable slot to make it unvouchable: a timestamp ~285,000 years out, so no
-// record's version equals it and no cached entry verifies against it. The VT exposes no invalidate
-// call, so devaluing the slot is the only way to withdraw a vouch a read has already published.
+// Seeded into a VerificationTable slot to withdraw a vouch: the VT exposes no invalidate call, so
+// overwriting the slot is the only way to take one back. A timestamp ~285,000 years out, chosen for
+// improbability rather than impossibility — timestamps are caller-supplied on the write path, so a
+// record written with exactly this version would verify against the slot rather than be barred by it.
 const VERSION_UNVOUCHABLE = Number.MAX_SAFE_INTEGER;
+// Bound on the remembered version-reused keys below: forgetting one only costs a re-publication of
+// its version on the next read, so a full clear is a safe way to cap the set.
+const MAX_VERSION_REUSED_KEYS = 1024;
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -25,12 +29,17 @@ const VERSION_UNVOUCHABLE = Number.MAX_SAFE_INTEGER;
  * Cache freshness pattern (using the rocksdb-js VT API):
  *   1. verifyVersion(key, cached.version)  → true  → return cached entry (no disk I/O)
  *   2. verifyVersion(key, cached.version)  → false → read from DB, populateVersion, update cache
- * The oracle is version equality, so it holds only while a version identifies one stored value; see
- * getEntry for the record shape that breaks that and is therefore kept out of both.
  */
 export class PrimaryRocksDatabase extends RocksDatabase {
 	readonly isPrimaryRocksDatabase = true;
 	#cache?: WeakLRUCache;
+	// Keys last read carrying VERSION_REUSED. The native get seeds the VT slot with the version it
+	// read, so asking it to for one of these republishes the very version the read then has to
+	// withdraw — and on the async path a full task boundary separates the two. Such a record is never
+	// cached, so every read of it would otherwise be a cold read that re-opens that window; this makes
+	// only the first read after the flag appears pay it. Object keys (composite primary keys) are
+	// compared by identity and so are never remembered — correct, just not memoized.
+	#versionReusedKeys?: Set<any>;
 	readCount = 0;
 	cachePuts = false;
 	declare rootStore: any;
@@ -45,6 +54,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		super(pathOrStore, enableCache ? { ...options, verificationTable: true } : options);
 		if (enableCache) {
 			this.#cache = new WeakLRUCache();
+			this.#versionReusedKeys = new Set();
 		}
 	}
 
@@ -113,18 +123,22 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			cachedValue != null && typeof cachedValue === 'object'
 				? (entryMap.get(cachedValue) as Entry | undefined)
 				: undefined;
-		const expectedVersion = cached?.version;
+		const reusedVersionKeys = this.#versionReusedKeys;
+		const knownVersionReused =
+			reusedVersionKeys !== undefined && reusedVersionKeys.size > 0 && reusedVersionKeys.has(id);
+		const expectedVersion = knownVersionReused ? undefined : cached?.version;
 
 		// Build get options, always merging with caller options to preserve
 		// transaction snapshot. Pass expectedVersion when cached:
 		//   VT hit  → native returns FRESH_VERSION_FLAG, no DB read
 		//   VT miss → native reads DB and auto-populates VT slot
 		// For cold reads (no cached version), use populateVersion flag so the
-		// native layer seeds the VT slot in the same call.
+		// native layer seeds the VT slot in the same call. A record known to carry a reused version
+		// gets neither: its version must not be published (see #versionReusedKeys).
 		let getOptions: any;
 		if (expectedVersion != null) {
 			getOptions = options ? { ...options, expectedVersion } : { expectedVersion };
-		} else if (cache) {
+		} else if (cache && !knownVersionReused) {
 			getOptions = options ? { ...options, populateVersion: true } : { populateVersion: true };
 		} else {
 			getOptions = options;
@@ -136,23 +150,30 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			const entry = this.#processEntry(result, id);
 			if (entry == null) {
 				if (cache && cachedValue !== undefined) cache.delete(id);
+				reusedVersionKeys?.delete(id);
 				return undefined;
 			}
-			// Only object values can be weakly cached and mapped back to their Entry;
-			// primitive/empty values fall through uncached (no fast path, still correct).
-			if (entry.version != null && cache && entry.value != null && typeof entry.value === 'object') {
+			if (entry.version != null && cache) {
 				if (entry.metadataFlags & VERSION_REUSED) {
-					// This record's version is shared with the value it was merged onto (VERSION_REUSED),
-					// and version equality is the VT's entire premise. The read above has just seeded the
-					// slot with that version, which would let any worker still holding the pre-merge value
-					// verify it as fresh and serve it — and an addTo folding onto that stale value drops
-					// the increment it merged over. Withdraw the vouch and cache nothing, so reads go to
-					// the store until a later in-order write gives the record a version of its own.
-					this.populateVersion(id, VERSION_UNVOUCHABLE);
+					// This record's version is shared with the value it was merged onto, and version
+					// equality is the VT's entire premise. Withdraw any vouch and cache nothing, until a
+					// later in-order write gives the record a version of its own. Checked before the
+					// cacheability gate below on purpose: a null/primitive-valued record is just as
+					// unvouchable, and skipping it here would leave a published version standing.
+					if (!this.verifyVersion(id, VERSION_UNVOUCHABLE)) this.populateVersion(id, VERSION_UNVOUCHABLE);
 					if (cachedValue !== undefined) cache.delete(id);
+					if (reusedVersionKeys) {
+						if (reusedVersionKeys.size >= MAX_VERSION_REUSED_KEYS) reusedVersionKeys.clear();
+						reusedVersionKeys.add(id);
+					}
 				} else {
-					entryMap.set(entry.value, entry);
-					cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
+					if (knownVersionReused) reusedVersionKeys!.delete(id);
+					// Only object values can be weakly cached and mapped back to their Entry;
+					// primitive/empty values fall through uncached (no fast path, still correct).
+					if (entry.value != null && typeof entry.value === 'object') {
+						entryMap.set(entry.value, entry);
+						cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
+					}
 				}
 			}
 			return entry;

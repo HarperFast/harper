@@ -133,4 +133,25 @@ describe('PrimaryRocksDatabase', function () {
 			'VT must not vouch for a version shared by two stored values'
 		);
 	});
+
+	it('an in-order write after a resequenced one restores vouching', async function () {
+		const store = TestTable.primaryStore;
+		const now = Date.now();
+		await TestTable.put(11, { name: 'base', count: 0 });
+		await TestTable.patch(11, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		const reused = store.getEntry(11);
+		assert(!store.verifyVersion(11, reused.version), 'the reused version is not vouched for');
+
+		// The next in-order write advances the version, so the record identifies its own value again
+		// and both the cache and the VT are usable for it. The read that discovers the flag is gone
+		// still asks for no seeding (it was issued while the key was remembered as reused), so it is
+		// the read after it that re-seeds — the same one-read lag as any cold key.
+		await TestTable.patch(11, { name: 'later' }, { timestamp: now + 200 });
+		const advanced = store.getEntry(11);
+		assert(advanced.version > reused.version, 'the in-order write advances the version');
+		assert.equal(advanced.value.count, 2, 'the merged count survives the in-order write');
+		store.getEntry(11);
+		assert(store.verifyVersion(11, advanced.version), 'vouching resumes for a version of its own');
+	});
 });

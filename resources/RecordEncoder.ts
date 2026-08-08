@@ -95,10 +95,13 @@ export const HAS_NODE_ID = 64;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
-// Set on a record whose stored version was reused rather than advanced (Table.ts writeCommit), so
-// that version identifies two different stored values and read caching — which keys freshness on
-// version equality — must not vouch for it. Deliberately above every bit the audit extendedType
-// uses (auditStore.ts), which the record metadata word borrows from for HAS_BLOBS/LOCAL_ONLY.
+// Set on a record whose stored version was reused rather than advanced: a resequenced write keeps
+// the (newer) version it merged onto (Table.ts writeCommit), so one version identifies two different
+// stored values. Read caching's freshness oracle is version equality, so it must neither cache such a
+// record nor let the VerificationTable vouch for that version — otherwise a worker still holding the
+// pre-merge value serves it as fresh, and an addTo folding onto it drops the increment it merged
+// over. Deliberately above every bit the audit extendedType uses (auditStore.ts), which the record
+// metadata word borrows from for HAS_BLOBS/LOCAL_ONLY.
 export const VERSION_REUSED = 0x10000;
 
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
