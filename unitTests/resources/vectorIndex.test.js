@@ -491,6 +491,75 @@ describe('HNSW search result loading (searchByIndex)', () => {
 	});
 });
 
+describe('HNSW limit above the resolved search ef', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	const N = 700; // > AUTO_EF_BASE (100), so the auto-scaled ef is well below the limits tested here
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWLimitTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		// a spread-out ring in 3-space so every record is a distinct, reachable point
+		for (let i = 0; i < N; i++) {
+			const a = (i / N) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 7) / 7] });
+		}
+	});
+
+	after(() => {
+		T.dropTable();
+	});
+
+	// The layer-0 candidate list holds at most `ef` entries, and ef resolves from the auto-scale
+	// (100 at this table size) — not from the query. A limit above it used to come back silently
+	// short, which also made a limit larger than the table unusable for enumerating the graph.
+	it('returns the requested number of rows when limit exceeds the auto-scaled ef', async () => {
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 400 })
+		);
+		assert.strictEqual(results.length, 400, `expected 400 rows, got ${results.length}`);
+		assert.strictEqual(new Set(results.map((r) => r.id)).size, 400, 'rows must be distinct');
+	});
+
+	it('caps at the table size rather than the candidate list when limit exceeds both', async () => {
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 5000 })
+		);
+		assert.strictEqual(results.length, N, `expected the whole table (${N}), got ${results.length}`);
+	});
+
+	it('honors offset + limit together', async () => {
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
+				select: ['id'],
+				offset: 250,
+				limit: 200,
+			})
+		);
+		assert.strictEqual(results.length, 200, `expected 200 rows after an offset of 250, got ${results.length}`);
+	});
+
+	it('an explicit per-query ef still wins over the limit-derived floor', async () => {
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine', ef: 20 },
+				select: ['id'],
+				limit: 400,
+			})
+		);
+		assert.strictEqual(results.length, 400, `an explicit ef must not truncate the limit, got ${results.length}`);
+	});
+});
+
 describe('HNSW int8 quantization (quantization: "int8")', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const testInstance = new HierarchicalNavigableSmallWorld();
