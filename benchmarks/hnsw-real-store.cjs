@@ -214,7 +214,6 @@ function instrumentNodeFetch(T) {
 	console.log(
 		`\n  p50 speedup: ${(bp / gp).toFixed(2)}x   (visits ${(arms.baseline.visited / arms.greedy.visited).toFixed(2)}x)`
 	);
-	const latencies = arms.greedy.lat;
 	console.log(
 		`REAL_STORE_AB n=${N} corpus=${CORPUS ? 'real' : 'random'} build_s=${(buildMs / 1000).toFixed(1)} ` +
 			`baseline_p50=${bp.toFixed(2)} greedy_p50=${gp.toFixed(2)} speedup=${(bp / gp).toFixed(2)}\n`

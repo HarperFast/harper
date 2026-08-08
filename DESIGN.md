@@ -741,3 +741,49 @@ not restart a fully observed runtime, but a changed or missing imported helper, 
 input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
 remain consumer-directed: the static plugin applies asset changes incrementally, while executable
 consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
+
+## Graph size on the HNSW query path must come from node ids (`resources/indexes/HierarchicalNavigableSmallWorld.ts`)
+
+The ef auto-scale and the `limit` ceiling both need to know how big the graph is, on every query.
+Two sources that look right are not.
+
+`getKeysCount()` on a RocksDB store is an exact key scan, so it is O(N): measured at 13 ms per call
+at 10K keys, 128 ms at 100K, ~1 s at 500K. Calling it per query puts a linear-in-corpus-size term in
+front of every vector search — 34% of query latency at 20K vectors on the real table stack.
+
+RocksDB's `rocksdb.estimate-num-keys` property is O(1) and looks like the obvious replacement, but it
+counts entries across memtable and SST files without reconciling overwrites. Building an HNSW graph
+rewrites each node many times as its neighbours change, so on a real index it reads far high: 37,775
+for a 2,000-record table whose exact key count is 4,001, and worse after deletes. It reads exact on a
+fresh store with simple puts, so it validates clean in isolation and only misleads on a real index.
+
+Node ids are the sound source. They are allocated monotonically from a `getUserSharedBuffer` counter,
+so the counter (or one reverse seek to the largest id) gives the node count in O(1), unaffected by
+how many times a node has been rewritten. Deletes leave it reading high until a rebuild, which only
+makes ef slightly generous.
+
+Note the unit: the index store holds two keys per record — the graph node and the primary-key
+mapping — so a key count is twice the node count. `AUTO_EF_REF` is expressed in nodes for that
+reason, and any change between the two units has to move it to keep the resolved ef the same.
+
+## HNSW layers above 0 are for routing only, and must be searched greedily
+
+Each layer above 0 exists to hand the next layer down an entry point: `search()` and `index()` both
+take `results[0]` and discard the rest. Searching them at the full `ef` therefore buys nothing and
+costs work proportional to the layer's population rather than to ef — layer 1 holds ~N/M nodes, and
+at ef 512 a query visited ~95% of it. That is a second linear-in-N term: upper-layer visits per query
+grew 342 → 2,458 across 5K → 41K vectors, reaching 75% of query time at 100K. Greedy descent
+(`ROUTING_EF`) is what standard HNSW does; measured across 20 configurations on real embeddings it
+changed recall by 0.000.
+
+The connection-building pass in `index()` is not routing — it selects the edges that get stored — so
+it keeps `efConstruction`.
+
+## An approximate index returns at most `ef` rows, so `limit` has to reach it
+
+Layer 0 keeps at most `ef` candidates, and ef resolves from the auto-scale, not from the query. A
+`limit` above it came back short with no error: with the 512 cap no vector query could return more
+than 512 rows however large the limit, and `{offset: 250, limit: 200}` returned zero rows, so
+paginating a vector search past the first page returned nothing. `searchByIndex` threads the query's
+`offset + limit` to the custom index as `minResults`, which widens the candidate list to cover the
+request, bounded by the node count. Any future approximate index needs the same plumbing.
