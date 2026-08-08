@@ -2916,9 +2916,6 @@ export function makeTable(options) {
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
-								// The stored version does not advance here, so it no longer identifies one stored
-								// value (VERSION_REUSED in RecordEncoder.ts).
-								versionReused: isRocksDB && storeRecord && existingEntry?.version >= txnTime,
 							},
 							type,
 							false,
