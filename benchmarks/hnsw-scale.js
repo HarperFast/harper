@@ -165,20 +165,36 @@ function buildCorpus(n, dims, nClusters) {
 	return { pool, labels, centroids };
 }
 
-/** Load the first `n` rows of a real float32 embedding pool, unit-normalized. */
-function loadCorpus(file, n, dims) {
+/**
+ * Load `n` rows of a real float32 embedding pool, unit-normalized, holding out `nQueries` rows to
+ * use as queries. The held-out rows are spread evenly through the file rather than taken from the
+ * tail, because a corpus built by walking directories is ordered by file and the tail would be one
+ * unrepresentative neighbourhood. Held-out rows are genuine out-of-sample queries — jittering an
+ * indexed row instead makes rank 1 trivially recoverable and overstates recall.
+ */
+function loadCorpus(file, n, dims, nQueries) {
 	const buf = fs.readFileSync(file);
 	const raw = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 	const available = Math.floor(raw.length / dims);
-	if (available < n) throw new Error(`corpus ${file} has ${available} rows of ${dims} dims, need ${n}`);
-	const pool = new Float32Array(n * dims);
-	for (let i = 0; i < n; i++) {
+	const needed = n + nQueries;
+	if (available < needed) throw new Error(`corpus ${file} has ${available} rows of ${dims} dims, need ${needed}`);
+	const holdout = new Set();
+	for (let q = 0; q < nQueries; q++) holdout.add(Math.floor((q * needed) / nQueries));
+	const normalize = (src, dst, dstRow) => {
 		let mag = 0;
-		for (let d = 0; d < dims; d++) mag += raw[i * dims + d] * raw[i * dims + d];
+		for (let d = 0; d < dims; d++) mag += raw[src + d] * raw[src + d];
 		mag = Math.sqrt(mag) || 1;
-		for (let d = 0; d < dims; d++) pool[i * dims + d] = raw[i * dims + d] / mag;
+		for (let d = 0; d < dims; d++) dst[dstRow * dims + d] = raw[src + d] / mag;
+	};
+	const pool = new Float32Array(n * dims);
+	const queryPool = new Float32Array(nQueries * dims);
+	let indexed = 0;
+	let held = 0;
+	for (let i = 0; i < needed && indexed < n; i++) {
+		if (holdout.has(i) && held < nQueries) normalize(i * dims, queryPool, held++);
+		else normalize(i * dims, pool, indexed++);
 	}
-	return { pool, labels: null, centroids: null };
+	return { pool, queryPool, labels: null, centroids: null };
 }
 
 function rowToArray(pool, i, dims) {
@@ -276,7 +292,7 @@ for (const N of SIZES) {
 	global.gc?.();
 	Math.random = mulberry32(SEED); // identical corpus + level assignments for every configuration
 	_spare = null;
-	const { pool } = CORPUS ? loadCorpus(CORPUS, N, DIMS) : buildCorpus(N, DIMS, nClusters);
+	const { pool, queryPool } = CORPUS ? loadCorpus(CORPUS, N, DIMS, N_QUERIES) : buildCorpus(N, DIMS, nClusters);
 
 	const store = new MemoryStore();
 	const options = { distance: 'cosine', quantization: QUANTIZATION };
@@ -296,14 +312,17 @@ for (const N of SIZES) {
 	// queries drawn from the same distribution (perturbed corpus rows)
 	const queries = [];
 	for (let q = 0; q < N_QUERIES; q++) {
+		if (queryPool) {
+			// real corpus: a held-out embedding, never indexed
+			queries.push(rowToArray(queryPool, q, DIMS));
+			continue;
+		}
+		// synthetic: perturb an indexed row so rank 1 is not trivially the query itself
 		const src = (Math.random() * N) | 0;
 		const v = rowToArray(pool, src, DIMS);
-		// Perturb so the query is not an exact corpus member (which would make rank-1 trivial).
-		// Real corpora get a small isotropic jitter scaled to their own 10-NN radius.
-		const jitter = CORPUS ? 0.02 : NOISE * 0.5;
 		let mag = 0;
 		for (let d = 0; d < DIMS; d++) {
-			v[d] += gauss() * jitter;
+			v[d] += gauss() * NOISE * 0.5;
 			mag += v[d] * v[d];
 		}
 		mag = Math.sqrt(mag) || 1;
