@@ -3,7 +3,12 @@ import { RocksDatabase, type RocksDatabaseOptions, constants, type Store } from 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
-import { entryMap, METADATA, type Entry } from './RecordEncoder.ts';
+import { entryMap, METADATA, VERSION_REUSED, type Entry } from './RecordEncoder.ts';
+
+// Seeded into a VerificationTable slot to make it unvouchable: a timestamp ~285,000 years out, so no
+// record's version equals it and no cached entry verifies against it. The VT exposes no invalidate
+// call, so devaluing the slot is the only way to withdraw a vouch a read has already published.
+const VERSION_UNVOUCHABLE = Number.MAX_SAFE_INTEGER;
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -20,6 +25,8 @@ import { entryMap, METADATA, type Entry } from './RecordEncoder.ts';
  * Cache freshness pattern (using the rocksdb-js VT API):
  *   1. verifyVersion(key, cached.version)  → true  → return cached entry (no disk I/O)
  *   2. verifyVersion(key, cached.version)  → false → read from DB, populateVersion, update cache
+ * The oracle is version equality, so it holds only while a version identifies one stored value; see
+ * getEntry for the record shape that breaks that and is therefore kept out of both.
  */
 export class PrimaryRocksDatabase extends RocksDatabase {
 	readonly isPrimaryRocksDatabase = true;
@@ -134,8 +141,19 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			// Only object values can be weakly cached and mapped back to their Entry;
 			// primitive/empty values fall through uncached (no fast path, still correct).
 			if (entry.version != null && cache && entry.value != null && typeof entry.value === 'object') {
-				entryMap.set(entry.value, entry);
-				cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
+				if (entry.metadataFlags & VERSION_REUSED) {
+					// This record's version is shared with the value it was merged onto (VERSION_REUSED),
+					// and version equality is the VT's entire premise. The read above has just seeded the
+					// slot with that version, which would let any worker still holding the pre-merge value
+					// verify it as fresh and serve it — and an addTo folding onto that stale value drops
+					// the increment it merged over. Withdraw the vouch and cache nothing, so reads go to
+					// the store until a later in-order write gives the record a version of its own.
+					this.populateVersion(id, VERSION_UNVOUCHABLE);
+					if (cachedValue !== undefined) cache.delete(id);
+				} else {
+					entryMap.set(entry.value, entry);
+					cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
+				}
 			}
 			return entry;
 		});

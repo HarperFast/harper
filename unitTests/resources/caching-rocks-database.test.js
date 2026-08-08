@@ -18,7 +18,7 @@ describe('PrimaryRocksDatabase', function () {
 		TestTable = table({
 			table: 'PrimaryRocksTest',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
 		});
 	});
 
@@ -108,5 +108,29 @@ describe('PrimaryRocksDatabase', function () {
 		await TestTable.put(8, { name: 'eight updated' }); // clears cache entry
 		const result = await TestTable.get(8);
 		assert.equal(result.name, 'eight updated');
+	});
+
+	it('VT does not vouch for a version a resequenced write reused', async function () {
+		const now = Date.now();
+		await TestTable.put(9, { name: 'base', count: 0 });
+		await TestTable.patch(9, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		await TestTable.get(9); // cache the record and seed the VT slot with its version
+		const inOrder = TestTable.primaryStore.getEntry(9);
+		assert(TestTable.primaryStore.verifyVersion(9, inOrder.version), 'VT should vouch for an in-order version');
+
+		// An out-of-order write merges onto the newer record and is stored under its version, so two
+		// different stored values share that version.
+		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		const resequenced = TestTable.primaryStore.getEntry(9);
+		assert.equal(resequenced.version, inOrder.version, 'resequenced write keeps the existing version');
+		assert.equal(resequenced.value.count, 2, 'both increments are applied');
+
+		// Reading the merged record must leave the slot unseeded: any other worker still holding the
+		// pre-merge value at this version would otherwise verify it as fresh and serve it, and an
+		// addTo folding onto that stale value silently drops the increment it merged over.
+		assert(
+			!TestTable.primaryStore.verifyVersion(9, resequenced.version),
+			'VT must not vouch for a version shared by two stored values'
+		);
 	});
 });

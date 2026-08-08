@@ -2916,6 +2916,12 @@ export function makeTable(options) {
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
+								// A resequenced write keeps the (newer) version it merged onto rather than advancing
+								// it, so that version identifies two different stored values. Read caching treats
+								// version equality as value equality, so it has to be told (VERSION_REUSED): without
+								// the mark a worker holding the pre-merge value keeps serving it as fresh, and every
+								// addTo folding onto that stale value drops the increment it merged over.
+								versionReused: isRocksDB && storeRecord && existingEntry?.version >= txnTime,
 							},
 							type,
 							false,
