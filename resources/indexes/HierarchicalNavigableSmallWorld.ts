@@ -49,10 +49,12 @@ function dequantizeInt8(q: Int8Array, scale: number): number[] {
 // cap deliberately favors latency — apps wanting higher recall set efConstructionSearch or a per-query
 // ef. Tune as graph build quality / larger-N data improves.
 const AUTO_EF_BASE = 100;
-// Graph nodes at which ef equals AUTO_EF_BASE. This was originally expressed per index-store KEY
-// against a reference of 1000; the store holds two keys per record (the node and its primary-key
-// mapping), so 1000 keys is 500 nodes. Halving the reference alongside the switch to a node count
-// keeps every resolved ef exactly what it was.
+// The index store holds a graph node plus a primary-key mapping per record, so a key count is twice
+// the node count. Sizes here are in nodes; this converts back for the one consumer still calibrated
+// against keys.
+const INDEX_KEYS_PER_NODE = 2;
+// Graph nodes at which ef equals AUTO_EF_BASE. Originally expressed per index-store key against a
+// reference of 1000, so 500 nodes is the same point and every resolved ef is unchanged.
 const AUTO_EF_REF = 500;
 const AUTO_EF_MAX = 512;
 function autoScaleEf(nodeCount: number): number {
@@ -64,6 +66,10 @@ function autoScaleEf(nodeCount: number): number {
 // for the next layer down, so a greedy walk is enough; a larger value costs work proportional to the
 // layer's population without improving the entry point it hands off.
 const ROUTING_EF = 1;
+// Ceiling on the ef a query's own `offset + limit` can ask for. Layer 0 holds `ef` candidates in a
+// sorted array with an O(len) insert, synchronously, so an uncapped limit-derived ef would turn deep
+// pagination into a whole-graph traversal on the event loop.
+const LIMIT_EF_MAX = 10_000;
 // How long a resolved graph size is reused before it is looked up again (see approximateNodeCount).
 // ef moves with the square root of the count and is capped, so a slightly stale size is immaterial;
 // this only has to be short enough that a table growing from empty picks up a larger ef promptly.
@@ -193,7 +199,6 @@ export class HierarchicalNavigableSmallWorld {
 	// frozen node the object store hands back. WeakMap so entries are collected when the store evicts
 	// the frozen node — without it, every cache hit on a frozen node would re-slice and re-clone.
 	private convertedNodes = new WeakMap<object, any>();
-	// memoized graph size for the ef auto-scale — see approximateNodeCount()
 	private nodeCount = 0;
 	private nodeCountAt = 0;
 	constructor(indexStore: any, options: any) {
@@ -349,10 +354,9 @@ export class HierarchicalNavigableSmallWorld {
 				this.indexStore.put(ENTRY_POINT, nodeId, options);
 			}
 
-			// For each level from top to bottom. These are pure descent: only neighbors[0] is used, as
-			// the entry point for the next level down, so they run greedily (ROUTING_EF) for the same
-			// reason search() does. The connection-building pass below still uses efConstruction —
-			// that one selects the edges that get stored, so it needs the full candidate list.
+			// Pure descent — only neighbors[0] is used — so it runs greedily for the same reason
+			// search() does. The connection-building pass below keeps efConstruction: it selects the
+			// edges that get stored.
 			while (currentLevel > level) {
 				// Search for closest neighbors at current level
 				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, ROUTING_EF, currentLevel, options);
@@ -704,21 +708,10 @@ export class HierarchicalNavigableSmallWorld {
 	}
 
 	/**
-	 * Number of nodes in the graph, for the ef auto-scale and the limit ceiling. Memoized briefly so
-	 * a burst of queries resolves it once.
-	 *
-	 * This used to call `getKeysCount()`, which on a RocksDB store is an exact key scan — O(N),
-	 * measured at 13 ms per call at 10K keys, 128 ms at 100K, ~1 s at 500K — on every search, which
-	 * put a linear-in-corpus-size term in front of every vector query before any traversal happened.
-	 *
-	 * RocksDB's O(1) `estimate-num-keys` property is NOT a usable substitute here: it counts entries
-	 * across memtable and SST files without reconciling overwrites, and building the graph rewrites
-	 * each node many times as its neighbours change. Measured on a real index it read 37,775 for a
-	 * 2,000-record table (exact key count 4,001) and got worse after deletes — 5.6x over at 5,000
-	 * records. Node ids are the reliable O(1) source instead: they are allocated monotonically, so
-	 * the id counter (or the largest stored id) gives the node count directly, unaffected by how
-	 * many times a node has been rewritten. Deletes leave it reading high until the index is
-	 * rebuilt, which only makes ef slightly generous.
+	 * Number of nodes in the graph, for the ef auto-scale and the limit floor. Must stay O(1): it runs
+	 * per query, and an exact count is a full key scan. RocksDB's `estimate-num-keys` is not a usable
+	 * substitute — it counts unreconciled overwrites, which graph construction produces in bulk. See
+	 * DESIGN.md for the measurements behind both.
 	 */
 	private approximateNodeCount(forceRefresh = false): number {
 		const now = Date.now();
@@ -1032,18 +1025,25 @@ export class HierarchicalNavigableSmallWorld {
 		// Resolve search ef: per-query ef wins; else an explicitly-configured efConstructionSearch;
 		// else auto-scale with the graph size so recall holds as the table grows.
 		let effectiveEf = this.efConstructionSearch;
-		const getNodeCount = () => this.approximateNodeCount();
-		if (ef !== undefined && ef > 0) effectiveEf = ef;
-		else if (!this.efSearchConfigured) effectiveEf = autoScaleEf(getNodeCount());
-		// A bounded query must be able to come back full. Layer 0 keeps at most `ef` candidates, so a
-		// limit above the resolved ef silently truncated the result set; widen the candidate list to
-		// cover it, bounded by the number of nodes in the graph — asking for more rows than there are
-		// vectors can't need a wider list. A memoized size is re-resolved when it is below what the
-		// query asked for, so a stale count can never truncate the limit this is here to honour.
-		if (minResults !== undefined && minResults > effectiveEf) {
-			let count = getNodeCount();
+		const explicitEf = ef !== undefined && ef > 0;
+		if (explicitEf) effectiveEf = ef;
+		else if (!this.efSearchConfigured) effectiveEf = autoScaleEf(this.approximateNodeCount());
+		// A bounded query must be able to come back full: layer 0 keeps at most `ef` candidates, so a
+		// limit above the resolved ef truncated the result set with no error. Widen the candidate list
+		// to cover the request — but not without bound. `ef` drives a synchronous traversal that holds
+		// every admitted candidate, so deriving it from `offset + limit` alone would let ordinary deep
+		// pagination (offset 2000000 on a large table) walk the whole graph on the event loop.
+		// LIMIT_EF_MAX is the ceiling; past it the result set is still short, which is the pre-existing
+		// behaviour for a request no approximate index can serve cheaply anyway.
+		// A per-query `ef` is left authoritative: it is an explicit cost ceiling, and a caller who sets
+		// one has said what they are willing to spend.
+		if (minResults !== undefined && !explicitEf && minResults > effectiveEf) {
+			// A memoized size is re-resolved when it reads below the request, so a stale count cannot
+			// truncate the limit this is here to honour.
+			let count = this.approximateNodeCount();
 			if (count < minResults) count = this.approximateNodeCount(true);
-			effectiveEf = count > 0 ? Math.min(minResults, count) : minResults;
+			const wanted = count > 0 ? Math.min(minResults, count) : minResults;
+			effectiveEf = Math.max(effectiveEf, Math.min(wanted, LIMIT_EF_MAX));
 		}
 		// Predicate-aware traversal budget (#1241): matches accrue slower than visits under a selective
 		// filter, so bound layer-0 work at ef * filterExpansion nodes. Only built when a filter is active.
@@ -1061,12 +1061,9 @@ export class HierarchicalNavigableSmallWorld {
 		// For each level from top to bottom. The filter applies only at layer 0 (result admission);
 		// upper layers route unfiltered so non-matching hubs still guide the descent.
 		//
-		// Only layer 0 gets the full candidate list. Layers above it exist solely to hand the next
-		// layer down a good entry point — a single result is used and the rest are discarded — so
-		// they are searched greedily (ROUTING_EF). Searching them at the full ef made upper-layer
-		// work scale with the size of the layer rather than with ef: layer 1 holds ~N/M nodes, and
-		// at ef 512 a query visited ~95% of it, which is a linear-in-N term on every search
-		// (66% of query time at 50K nodes). Greedy descent is what standard HNSW does.
+		// Only layer 0 gets the full candidate list; the layers above it just hand down an entry point,
+		// so searching them at the full ef costs work proportional to the layer's population (~N/M
+		// nodes) rather than to ef. See DESIGN.md.
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
 			results = this.searchLayer(
@@ -1290,10 +1287,11 @@ export class HierarchicalNavigableSmallWorld {
 	 * @returns
 	 */
 	estimateCountAsSort() {
-		// Same O(1) estimate search() uses — this runs per query whenever a vector sort is planned
-		// alongside another condition (a companion filter, RBAC, allowRead), and an exact
-		// getKeysCount() here is a second full key scan on the query path. See approximateNodeCount.
-		return Math.sqrt(this.approximateNodeCount() * this.efConstructionSearch);
+		// Same O(1) source search() uses — this runs per query whenever a vector sort is planned
+		// alongside another condition, where an exact getKeysCount() is a second full key scan on the
+		// query path. Scaled back to the index-store key count it used to be given, so the planner's
+		// condition ordering is unchanged by the switch to a node count.
+		return Math.sqrt(this.approximateNodeCount() * INDEX_KEYS_PER_NODE * this.efConstructionSearch);
 	}
 
 	/**

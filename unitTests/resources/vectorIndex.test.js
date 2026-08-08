@@ -531,11 +531,103 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 	});
 
 	it('re-resolves rather than serving a stale size when a query asks for more rows than it knows about', async () => {
-		// the memo must not be able to truncate a limit — see the ceiling in search()
-		const results = await fromAsync(
+		const customIndex = T.indices.vector.customIndex;
+		// Prime the memo at the current size, then grow well past it inside the TTL. A query for more
+		// rows than the memo knows about has to re-resolve, or the limit it is meant to honour gets
+		// truncated by a stale count.
+		const primed = customIndex.approximateNodeCount(true);
+		const before = await fromAsync(
 			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 250 })
 		);
-		assert.strictEqual(results.length, 250, `expected 250 rows, got ${results.length}`);
+		assert.strictEqual(before.length, 250, `expected 250 rows at the primed size, got ${before.length}`);
+
+		for (let i = 300; i < 900; i++) {
+			const a = (i / 900) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const after = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 700 })
+		);
+		assert(primed < 700, `precondition: the memo (${primed}) must start below the limit under test`);
+		assert.strictEqual(after.length, 700, `stale memo truncated the limit: got ${after.length} of 700`);
+	});
+});
+
+describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	const N = 600;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWRoutingTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < N; i++) {
+			const a = (i / N) * Math.PI * 2;
+			const b = ((i * 7) % N) / N;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), b, (i % 11) / 11] });
+		}
+	});
+
+	after(() => {
+		T.dropTable();
+	});
+
+	// Layers above 0 only supply the next layer's entry point, so descending greedily must not cost
+	// accuracy. Compare against the same graph searched with the full ef at every layer — the
+	// pre-change behaviour — rather than against a fixed expectation.
+	it('returns the same neighbours as searching every layer at the full ef', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const originalSearchLayer = customIndex.searchLayer;
+		const targets = [
+			[1, 0, 0, 0],
+			[0, 1, 0.5, 0.2],
+			[-0.6, 0.3, 0.9, 0.4],
+			[0.2, -0.8, 0.1, 0.7],
+		];
+
+		const greedy = [];
+		for (const target of targets) {
+			greedy.push(
+				(
+					await fromAsync(
+						T.search({ sort: { attribute: 'vector', target, distance: 'cosine' }, select: ['id'], limit: 10 })
+					)
+				)
+					.map((r) => r.id)
+					.join(',')
+			);
+		}
+
+		// full ef at every layer, as search() did before greedy descent
+		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+			return originalSearchLayer.call(this, v, epId, ep, level > 0 ? this.efConstructionSearch : ef, level, ...rest);
+		};
+		try {
+			for (let i = 0; i < targets.length; i++) {
+				const full = (
+					await fromAsync(
+						T.search({
+							sort: { attribute: 'vector', target: targets[i], distance: 'cosine' },
+							select: ['id'],
+							limit: 10,
+						})
+					)
+				)
+					.map((r) => r.id)
+					.join(',');
+				assert.strictEqual(greedy[i], full, `greedy descent changed the result set for target ${i}`);
+			}
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
 	});
 });
 
@@ -596,7 +688,9 @@ describe('HNSW limit above the resolved search ef', () => {
 		assert.strictEqual(results.length, 200, `expected 200 rows after an offset of 250, got ${results.length}`);
 	});
 
-	it('an explicit per-query ef still wins over the limit-derived floor', async () => {
+	// A per-query ef is an explicit cost ceiling, so it stays authoritative and bounds the result set;
+	// the limit-derived floor only applies when the caller has not said what to spend.
+	it('leaves an explicit per-query ef authoritative over the limit-derived floor', async () => {
 		const results = await fromAsync(
 			T.search({
 				sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine', ef: 20 },
@@ -604,7 +698,32 @@ describe('HNSW limit above the resolved search ef', () => {
 				limit: 400,
 			})
 		);
-		assert.strictEqual(results.length, 400, `an explicit ef must not truncate the limit, got ${results.length}`);
+		assert.strictEqual(results.length, 20, `an explicit ef should bound the result set, got ${results.length}`);
+	});
+
+	// ef drives a synchronous traversal holding every admitted candidate, so deep pagination must not
+	// be able to derive an unbounded one — see LIMIT_EF_MAX.
+	it('bounds the limit-derived ef so deep pagination cannot request a whole-graph traversal', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const originalSearchLayer = customIndex.searchLayer;
+		let layer0Ef = 0;
+		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+			if (level === 0) layer0Ef = ef;
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+		};
+		try {
+			await fromAsync(
+				T.search({
+					sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
+					select: ['id'],
+					offset: 5_000_000,
+					limit: 10,
+				})
+			);
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
+		assert(layer0Ef <= 10_000, `layer-0 ef ${layer0Ef} should be bounded by LIMIT_EF_MAX`);
 	});
 });
 

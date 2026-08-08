@@ -786,4 +786,16 @@ Layer 0 keeps at most `ef` candidates, and ef resolves from the auto-scale, not 
 than 512 rows however large the limit, and `{offset: 250, limit: 200}` returned zero rows, so
 paginating a vector search past the first page returned nothing. `searchByIndex` threads the query's
 `offset + limit` to the custom index as `minResults`, which widens the candidate list to cover the
-request, bounded by the node count. Any future approximate index needs the same plumbing.
+request. Any future approximate index needs the same plumbing.
+
+Two bounds keep that from becoming a new problem. `ef` drives a synchronous traversal that holds
+every admitted candidate in a sorted array with an O(len) insert, so a limit-derived `ef` is capped
+at `LIMIT_EF_MAX`; without it, ordinary deep pagination (`offset` in the millions) would walk the
+whole graph on the event loop, which is worse than the truncation being fixed. And a per-query `ef`
+stays authoritative: it is an explicit cost ceiling, so it bounds the result set rather than being
+raised by the limit. A schema-level `efConstructionSearch` is a default rather than a per-request
+decision, so it does not block the floor.
+
+One consumer is still calibrated in index-store keys rather than nodes: `estimateCountAsSort`, the
+planner's cost estimate for a vector sort. It is scaled by `INDEX_KEYS_PER_NODE` so the unit switch
+does not silently shift which condition the planner chooses to lead with.
