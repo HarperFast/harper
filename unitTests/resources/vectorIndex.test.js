@@ -701,31 +701,82 @@ describe('HNSW limit above the resolved search ef', () => {
 		assert.strictEqual(results.length, 20, `an explicit ef should bound the result set, got ${results.length}`);
 	});
 
-	// ef drives a synchronous traversal holding every admitted candidate, so deep pagination must not
-	// be able to derive an unbounded one — see LIMIT_EF_MAX.
-	it('bounds the limit-derived ef so deep pagination cannot request a whole-graph traversal', async () => {
+	// ef sizes a synchronous traversal holding every admitted candidate, so a caller-supplied limit
+	// must not be able to derive an unbounded one — see LIMIT_EF_MAX.
+	it('never derives an ef beyond the graph size, however deep the pagination', async () => {
+		const layer0Ef = await captureLayer0Ef(T, { offset: 5_000_000, limit: 10 });
+		// This graph is far below LIMIT_EF_MAX, so the node-count clamp is what binds. The count is a
+		// node-id high-water mark, so it reads a little above the live count.
+		assert(layer0Ef >= N && layer0Ef <= N + 2, `expected the ef to clamp at the ${N}-node graph, got ${layer0Ef}`);
+	});
+
+	it('bounds the limit-derived ef at LIMIT_EF_MAX once the graph is larger than the ceiling', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const originalCount = customIndex.approximateNodeCount;
+		// stand in a large graph — the real one here is below the ceiling, so without this the
+		// node-count clamp binds first and the ceiling is never exercised
+		customIndex.approximateNodeCount = () => 5_000_000;
+		let layer0Ef;
+		try {
+			layer0Ef = await captureLayer0Ef(T, { limit: 1_000_000 });
+		} finally {
+			customIndex.approximateNodeCount = originalCount;
+		}
+		assert(layer0Ef <= 4 * 512, `layer-0 ef ${layer0Ef} should be bounded by LIMIT_EF_MAX (${4 * 512})`);
+		assert(layer0Ef > 512, `the limit should still widen ef past the auto-scaled ceiling, got ${layer0Ef}`);
+	});
+
+	// The predicate-aware visit budget (#1241) is what stops a selective filter crawling the graph,
+	// loading and freezing a record per visit. It is calibrated against the ef the index chooses for
+	// itself, so a caller's limit must not multiply into it — a limit-derived ef widens the candidate
+	// list (a bounded array), but must not buy a bigger record-loading budget.
+	it('keeps the filtered-traversal visit budget off the limit-derived ef', async () => {
 		const customIndex = T.indices.vector.customIndex;
 		const originalSearchLayer = customIndex.searchLayer;
-		let layer0Ef = 0;
-		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
-			if (level === 0) layer0Ef = ef;
-			return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+		const budgets = [];
+		customIndex.searchLayer = function (v, epId, ep, ef, level, options, distanceFn, filter, filterState) {
+			if (filterState) budgets.push(filterState.maxVisits);
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, options, distanceFn, filter, filterState);
 		};
 		try {
-			await fromAsync(
-				T.search({
-					sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
-					select: ['id'],
-					offset: 5_000_000,
-					limit: 10,
-				})
+			customIndex.search(
+				{ target: [1, 0, 0], comparator: 'sort' },
+				{ transaction: undefined },
+				() => true,
+				100_000 // a limit far above anything the index would choose for itself
 			);
 		} finally {
 			customIndex.searchLayer = originalSearchLayer;
 		}
-		assert(layer0Ef <= 10_000, `layer-0 ef ${layer0Ef} should be bounded by LIMIT_EF_MAX`);
+		const ceiling = 512 * customIndex.filterExpansion; // AUTO_EF_MAX * filterExpansion
+		assert(budgets.length > 0, 'expected the filtered path to build a visit budget');
+		for (const budget of budgets) {
+			assert(
+				budget <= ceiling,
+				`visit budget ${budget} exceeds the index's own ceiling (${ceiling}) — a caller's limit inflated it`
+			);
+		}
 	});
 });
+
+/** Run a query and report the ef layer 0 was actually searched at. */
+async function captureLayer0Ef(T, query) {
+	const customIndex = T.indices.vector.customIndex;
+	const originalSearchLayer = customIndex.searchLayer;
+	let layer0Ef = 0;
+	customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+		if (level === 0) layer0Ef = ef;
+		return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+	};
+	try {
+		await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], ...query })
+		);
+	} finally {
+		customIndex.searchLayer = originalSearchLayer;
+	}
+	return layer0Ef;
+}
 
 describe('HNSW int8 quantization (quantization: "int8")', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;

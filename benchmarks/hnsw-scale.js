@@ -40,6 +40,10 @@ const EF_SWEEP = String(argv['ef-sweep'] ?? 'auto').split(',');
 const OPTIMIZE_ROUTING = argv['optimize-routing'] === undefined ? undefined : Number(argv['optimize-routing']);
 const M_OPT = argv.M === undefined ? undefined : Number(argv.M);
 const EF_CONSTRUCTION = argv['ef-construction'] === undefined ? undefined : Number(argv['ef-construction']);
+// --build-upper-ef=<n> restores the pre-change INDEX-time descent (full efConstruction above the
+// target level) so a graph built the old way can be compared against a greedy-built one. That change
+// is baked into stored graphs and only recoverable by a reindex, so it needs its own A/B.
+const BUILD_UPPER_EF = argv['build-upper-ef'] === undefined ? undefined : Number(argv['build-upper-ef']);
 const UPPER_EF =
 	argv['upper-ef'] === undefined ? undefined : argv['upper-ef'] === 'match' ? 'match' : Number(argv['upper-ef']);
 // Intra-cluster cosine similarity target. Per-dim gaussian noise sigma is derived from it:
@@ -251,6 +255,7 @@ function instrument(hnsw) {
 	proto.searchLayer = function (queryVector, entryPointId, entryPoint, ef, level, ...rest) {
 		// --upper-ef=match reproduces the pre-fix behaviour (full ef at every layer) for A/B.
 		if (inSearch && UPPER_EF !== undefined && level > 0) ef = UPPER_EF === 'match' ? currentEf : UPPER_EF;
+		else if (!inSearch && BUILD_UPPER_EF !== undefined && level > 0) ef = BUILD_UPPER_EF;
 		const before = this.nodesVisitedCount;
 		const t0 = performance.now();
 		const results = original.call(this, queryVector, entryPointId, entryPoint, ef, level, ...rest);
@@ -284,6 +289,7 @@ const rows = [];
 console.log(
 	`\nHNSW scaling sweep — dims=${DIMS}, queries=${N_QUERIES}, k=${TOP_K}, quantization=${QUANTIZATION}, ef=${EF_OPT}` +
 		(UPPER_EF !== undefined ? `, upper-ef=${UPPER_EF}` : '') +
+		(BUILD_UPPER_EF !== undefined ? `, build-upper-ef=${BUILD_UPPER_EF}` : '') +
 		`, intraCos=${INTRA_COS}, sigma=${NOISE.toFixed(4)}\n`
 );
 

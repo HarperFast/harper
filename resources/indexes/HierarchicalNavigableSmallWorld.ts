@@ -66,10 +66,12 @@ function autoScaleEf(nodeCount: number): number {
 // for the next layer down, so a greedy walk is enough; a larger value costs work proportional to the
 // layer's population without improving the entry point it hands off.
 const ROUTING_EF = 1;
-// Ceiling on the ef a query's own `offset + limit` can ask for. Layer 0 holds `ef` candidates in a
-// sorted array with an O(len) insert, synchronously, so an uncapped limit-derived ef would turn deep
-// pagination into a whole-graph traversal on the event loop.
-const LIMIT_EF_MAX = 10_000;
+// Ceiling on the ef a query's own `offset + limit` can ask for. `limit` is unprivileged and set on
+// every request, so this bounds what a caller can make one thread do synchronously: layer 0 holds
+// `ef` candidates in a sorted array with an O(len) insert. Kept within a small multiple of
+// AUTO_EF_MAX so the worst case stays the same order as the index's own auto-scaled ceiling; a
+// caller who genuinely wants more sets an explicit `ef` and owns the cost.
+const LIMIT_EF_MAX = 4 * AUTO_EF_MAX;
 // How long a resolved graph size is reused before it is looked up again (see approximateNodeCount).
 // ef moves with the square root of the count and is capped, so a slightly stale size is immaterial;
 // this only has to be short enough that a table growing from empty picks up a larger ef promptly.
@@ -1028,13 +1030,14 @@ export class HierarchicalNavigableSmallWorld {
 		const explicitEf = ef !== undefined && ef > 0;
 		if (explicitEf) effectiveEf = ef;
 		else if (!this.efSearchConfigured) effectiveEf = autoScaleEf(this.approximateNodeCount());
+		// The ef the index chose for itself, before any limit-derived widening. The filter budget below
+		// stays calibrated against this rather than against what a caller's `limit` asked for.
+		const resolvedEf = effectiveEf;
 		// A bounded query must be able to come back full: layer 0 keeps at most `ef` candidates, so a
 		// limit above the resolved ef truncated the result set with no error. Widen the candidate list
-		// to cover the request — but not without bound. `ef` drives a synchronous traversal that holds
-		// every admitted candidate, so deriving it from `offset + limit` alone would let ordinary deep
-		// pagination (offset 2000000 on a large table) walk the whole graph on the event loop.
-		// LIMIT_EF_MAX is the ceiling; past it the result set is still short, which is the pre-existing
-		// behaviour for a request no approximate index can serve cheaply anyway.
+		// to cover the request, up to LIMIT_EF_MAX — `ef` sizes a synchronous traversal that holds every
+		// admitted candidate in a sorted array with an O(len) insert, so an unbounded one lets a plain
+		// `limit` stall the thread. Past the ceiling the result set is still short, as it was before.
 		// A per-query `ef` is left authoritative: it is an explicit cost ceiling, and a caller who sets
 		// one has said what they are willing to spend.
 		if (minResults !== undefined && !explicitEf && minResults > effectiveEf) {
@@ -1047,9 +1050,12 @@ export class HierarchicalNavigableSmallWorld {
 		}
 		// Predicate-aware traversal budget (#1241): matches accrue slower than visits under a selective
 		// filter, so bound layer-0 work at ef * filterExpansion nodes. Only built when a filter is active.
+		// Deliberately `resolvedEf`, not the limit-widened ef: this budget is what stops a selective
+		// filter crawling the whole graph, and multiplying it by a caller's limit would turn a filtered
+		// vector query into a record-loading scan.
 		const filterState: FilterState | undefined = filter
 			? {
-					maxVisits: effectiveEf * (filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion),
+					maxVisits: resolvedEf * (filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion),
 					nodesVisited: 0,
 					filterEvaluations: 0,
 				}

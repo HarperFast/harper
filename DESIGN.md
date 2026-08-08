@@ -796,6 +796,18 @@ stays authoritative: it is an explicit cost ceiling, so it bounds the result set
 raised by the limit. A schema-level `efConstructionSearch` is a default rather than a per-request
 decision, so it does not block the floor.
 
+The filter budget deliberately does not follow a limit-derived `ef`. `maxVisits = ef * filterExpansion`
+(#1241) is what stops a selective filter crawling the graph and loading a record per visit, so it is
+computed from the `ef` the index resolved for itself. Multiplying it by a caller's `limit` would turn
+a filtered vector query into a record-loading scan wearing an index's clothes.
+
+Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
+search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
+and an HNSW candidate set at a larger `ef` is not guaranteed to be an ordered superset of the smaller
+one, so a record can repeat across pages or be skipped. Honoring `limit` fixes the "second page is
+empty" defect; it does not make offsets a cursor. Callers who need stability should fetch one page
+large enough for the whole result set, or pin an explicit `ef`.
+
 One consumer is still calibrated in index-store keys rather than nodes: `estimateCountAsSort`, the
 planner's cost estimate for a vector sort. It is scaled by `INDEX_KEYS_PER_NODE` so the unit switch
 does not silently shift which condition the planner chooses to lead with.
