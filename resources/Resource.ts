@@ -611,9 +611,16 @@ export function snakeCase(camelCase: string) {
 function elementTargetFactory(query: any): (id: any) => RequestTarget {
 	const base = cloneRequestTarget(query);
 	const search = base.toString();
-	const carried = { ...base };
-	delete (carried as any).id;
-	delete (carried as any).isCollection;
+	// Only what the element target would not otherwise have. `RequestTarget` declares `pathname`,
+	// `search` and `sort` without `declare`, so they are own properties on every instance and would
+	// otherwise always be "carried" — overwriting what this element's own construction just derived,
+	// and making the skip below dead. A nullish own value carries no metadata either.
+	const carried: Record<string, any> = {};
+	for (const key of Object.keys(base)) {
+		if (key === 'id' || key === 'isCollection' || key === 'pathname' || key === 'search') continue;
+		const value = (base as any)[key];
+		if (value != null) carried[key] = value;
+	}
 	const hasCarried = Object.keys(carried).length > 0;
 	return (id) => {
 		const target = search ? new RequestTarget(search) : new RequestTarget();

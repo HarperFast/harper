@@ -135,6 +135,24 @@ describe('default-mode array put normalization', () => {
 		]);
 	});
 
+	// The carried-metadata filter must not drop a real value: `sort` is an own property on every
+	// RequestTarget (null by default), so it is excluded when nullish but has to survive when set.
+	it('carries a non-default sort onto each element target', async function () {
+		const seen = [];
+		class SortWatcher extends Docs {
+			put(record, target) {
+				seen.push(target?.sort);
+				return super.put(record, target);
+			}
+		}
+		const outer = new RequestTarget();
+		outer.id = null;
+		outer.isCollection = true;
+		outer.sort = { attribute: 'kind', descending: true };
+		await SortWatcher.put(outer, [{ id: 'sort-a', kind: 'sortmeta' }], { user: alice });
+		assert.deepStrictEqual(seen, [{ attribute: 'kind', descending: true }]);
+	});
+
 	it('fans out for a plain non-Table Resource the same way a collection target does', async function () {
 		const programmatic = [];
 		const viaTarget = [];
