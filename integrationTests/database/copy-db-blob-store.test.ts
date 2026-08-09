@@ -16,13 +16,23 @@
  * off the CI result, and surfaces the moment they start passing — at which point the marker comes
  * off and this becomes an ordinary regression anchor for the fix.
  *
+ * `{ todo }` alone isn't enough under THIS repo's runner, though: `harper-integration-test-run`
+ * (`@harperfast/integration-testing`, confirmed on published 0.7.0 and 0.7.1) sets
+ * `process.exitCode = 1` on node:test's raw `test:fail` event without checking `data.todo`, and
+ * node:test still emits that event for a failing todo test — only the summary counters and the
+ * stock CLI exit code special-case it. So a throwing `{ todo }` assertion fails this build exactly
+ * as hard as a real one. `assertContractOrDiagnose()` below is the workaround: it keeps `{ todo }`
+ * for readable output but catches the assertion itself so the test body never throws. Delete it
+ * once the runner checks `data.todo` (harper#2048 ch.3/4 fixes don't need it — only the runner bug
+ * does).
+ *
  * Scope note: #2048 also reaches `storage.compactOnStart`, but not with this consequence.
  * compactOnStart (bin/copyDb.ts:38) swaps the copy into the SAME rootPath and moves only
  * `database/{db}.mdb`, leaving `blobs/{db}/` adjacent and resolvable. Only an external target
  * loses the blobs. Asserted below so nobody "fixes" compactOnStart chasing this.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { ok, strictEqual, AssertionError } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readdirSync, statSync, existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -62,6 +72,26 @@ function filesUnder(dir: string): string[] {
 	};
 	walk(dir, '');
 	return out.sort();
+}
+
+/**
+ * `{ todo }` is the correct node:test option for "assert what should be true, don't fail CI
+ * yet" — but @harperfast/integration-testing's `harper-integration-test-run` listens to the
+ * node:test runner's raw `test:fail` event and sets `process.exitCode = 1` on it unconditionally,
+ * without checking `data.todo` (confirmed against the published 0.7.0 and 0.7.1 builds). node:test
+ * itself still emits `test:fail` for a failing todo test — only the summary counters and CLI exit
+ * code special-case it — so under that runner a `{ todo }` assertion that throws fails the build
+ * exactly as hard as a real assertion, defeating the whole point of marking it todo. Until that's
+ * fixed upstream, keep `{ todo }` for readable local/TAP output, but never let the assertion itself
+ * throw out of the test body — catch it and report it as a diagnostic instead.
+ */
+function assertContractOrDiagnose(t: { diagnostic: (message: string) => void }, assertFn: () => void) {
+	try {
+		assertFn();
+	} catch (err) {
+		if (!(err instanceof AssertionError)) throw err;
+		t.diagnostic(`[KNOWN BUG, non-blocking] ${err.message}`);
+	}
 }
 
 suite(
@@ -163,34 +193,38 @@ suite(
 		test(
 			'the copy contains the blob store',
 			{ todo: 'fails until harper#2048 channel 3 is fixed; remove this marker when it starts passing' },
-			() => {
-				const inCopy = filesUnder(copyRoot);
-				const blobFiles = inCopy.filter((f) => /blobs?\//i.test(f));
-				ok(inCopy.length > 0, 'the copy should contain the database files');
-				ok(
-					blobFiles.length >= BLOB_DOCS,
-					`copy-db produced a non-restorable copy: ${sourceBlobCount} blob file(s) in the source, ` +
-						`${blobFiles.length} in the copy. Records in the copy carry fileId references that resolve ` +
-						`to nothing, while inline attributes survive byte-exact — so the loss is partial and silent. ` +
-						`Copy tree: ${JSON.stringify(inCopy.slice(0, 20))}`
-				);
+			(t) => {
+				assertContractOrDiagnose(t, () => {
+					const inCopy = filesUnder(copyRoot);
+					const blobFiles = inCopy.filter((f) => /blobs?\//i.test(f));
+					ok(inCopy.length > 0, 'the copy should contain the database files');
+					ok(
+						blobFiles.length >= BLOB_DOCS,
+						`copy-db produced a non-restorable copy: ${sourceBlobCount} blob file(s) in the source, ` +
+							`${blobFiles.length} in the copy. Records in the copy carry fileId references that resolve ` +
+							`to nothing, while inline attributes survive byte-exact — so the loss is partial and silent. ` +
+							`Copy tree: ${JSON.stringify(inCopy.slice(0, 20))}`
+					);
+				});
 			}
 		);
 
 		test(
 			'copy-db does not report success when records fail to copy',
 			{ todo: 'fails until harper#2048 channel 4 is fixed; remove this marker when it starts passing' },
-			() => {
-				// The audit-store copy opens its target on the SOURCE rootStore (bin/copyDb.ts:223,
-				// where every other dbi uses targetEnv at :217) and is not awaited (:225 vs :220), so
-				// per-record failures are logged and the exit code stays 0.
-				const failures = (copyOut.match(/Error copying record/g) ?? []).length;
-				strictEqual(
-					failures > 0 && copyExit === 0,
-					false,
-					`copy-db logged ${failures} per-record copy failure(s) and still exited ${copyExit}. ` +
-						`A backup verb that reports success while dropping records is what turns this into data loss.`
-				);
+			(t) => {
+				assertContractOrDiagnose(t, () => {
+					// The audit-store copy opens its target on the SOURCE rootStore (bin/copyDb.ts:223,
+					// where every other dbi uses targetEnv at :217) and is not awaited (:225 vs :220), so
+					// per-record failures are logged and the exit code stays 0.
+					const failures = (copyOut.match(/Error copying record/g) ?? []).length;
+					strictEqual(
+						failures > 0 && copyExit === 0,
+						false,
+						`copy-db logged ${failures} per-record copy failure(s) and still exited ${copyExit}. ` +
+							`A backup verb that reports success while dropping records is what turns this into data loss.`
+					);
+				});
 			}
 		);
 
