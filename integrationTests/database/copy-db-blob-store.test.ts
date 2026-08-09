@@ -14,17 +14,8 @@
  * txnlog-purge-stale-read-blast arm 5 sat red on main for a day (159b4bbd9). So the contract
  * tests below assert what SHOULD be true and carry `todo`, which runs them, keeps their failure
  * off the CI result, and surfaces the moment they start passing — at which point the marker comes
- * off and this becomes an ordinary regression anchor for the fix.
- *
- * `{ todo }` alone isn't enough under THIS repo's runner, though: `harper-integration-test-run`
- * (`@harperfast/integration-testing`, confirmed on published 0.7.0 and 0.7.1) sets
- * `process.exitCode = 1` on node:test's raw `test:fail` event without checking `data.todo`, and
- * node:test still emits that event for a failing todo test — only the summary counters and the
- * stock CLI exit code special-case it. So a throwing `{ todo }` assertion fails this build exactly
- * as hard as a real one. `assertContractOrDiagnose()` below is the workaround: it keeps `{ todo }`
- * for readable output but catches the assertion itself so the test body never throws. Delete it
- * once the runner checks `data.todo` (harper#2048 ch.3/4 fixes don't need it — only the runner bug
- * does).
+ * off and this becomes an ordinary regression anchor for the fix. See `assertContractOrDiagnose()`
+ * below for why `{ todo }` alone doesn't actually achieve that in this repo.
  *
  * Scope note: #2048 also reaches `storage.compactOnStart`, but not with this consequence.
  * compactOnStart (bin/copyDb.ts:38) swaps the copy into the SAME rootPath and moves only
@@ -35,6 +26,7 @@ import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, AssertionError } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readdirSync, statSync, existsSync, mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -75,15 +67,10 @@ function filesUnder(dir: string): string[] {
 }
 
 /**
- * `{ todo }` is the correct node:test option for "assert what should be true, don't fail CI
- * yet" — but @harperfast/integration-testing's `harper-integration-test-run` listens to the
- * node:test runner's raw `test:fail` event and sets `process.exitCode = 1` on it unconditionally,
- * without checking `data.todo` (confirmed against the published 0.7.0 and 0.7.1 builds). node:test
- * itself still emits `test:fail` for a failing todo test — only the summary counters and CLI exit
- * code special-case it — so under that runner a `{ todo }` assertion that throws fails the build
- * exactly as hard as a real assertion, defeating the whole point of marking it todo. Until that's
- * fixed upstream, keep `{ todo }` for readable local/TAP output, but never let the assertion itself
- * throw out of the test body — catch it and report it as a diagnostic instead.
+ * `harper-integration-test-run` (`@harperfast/integration-testing` 0.7.0/0.7.1) sets
+ * `process.exitCode = 1` on node:test's raw `test:fail` event without checking `data.todo`, so a
+ * throwing `{ todo }` assertion still fails this build. Catch it here instead — fix upstream, then
+ * delete this.
  */
 function assertContractOrDiagnose(t: { diagnostic: (message: string) => void }, assertFn: () => void) {
 	try {
@@ -150,6 +137,7 @@ suite(
 
 		after(async () => {
 			await teardownHarper(ctx);
+			if (copyRoot) await rm(copyRoot, { recursive: true, force: true });
 		});
 
 		test('PRECONDITION: the seeded blobs are file-backed on disk', () => {
@@ -177,7 +165,9 @@ suite(
 				copyExit = 0;
 				copyOut = `${r.stdout}\n${r.stderr}`;
 			} catch (e: any) {
-				copyExit = e.code ?? 1;
+				// e.code is a signal name (string) when the child was killed (e.g. maxBuffer overrun) —
+				// normalize so downstream `copyExit === 0` comparisons don't silently pass a string.
+				copyExit = typeof e.code === 'number' ? e.code : 1;
 				copyOut = `${e.stdout ?? ''}\n${e.stderr ?? ''}`;
 			}
 
@@ -194,10 +184,12 @@ suite(
 			'the copy contains the blob store',
 			{ todo: 'fails until harper#2048 channel 3 is fixed; remove this marker when it starts passing' },
 			(t) => {
+				const inCopy = filesUnder(copyRoot);
+				// Not part of the ch.3 contract — a harness failure (e.g. copy-db never ran) must throw
+				// for real, not get swallowed as "known bug #2048" by the diagnose wrapper below.
+				ok(inCopy.length > 0, 'the copy should contain the database files');
 				assertContractOrDiagnose(t, () => {
-					const inCopy = filesUnder(copyRoot);
 					const blobFiles = inCopy.filter((f) => /blobs?\//i.test(f));
-					ok(inCopy.length > 0, 'the copy should contain the database files');
 					ok(
 						blobFiles.length >= BLOB_DOCS,
 						`copy-db produced a non-restorable copy: ${sourceBlobCount} blob file(s) in the source, ` +
