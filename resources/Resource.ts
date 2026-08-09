@@ -175,7 +175,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					// sibling that failed for an infrastructure reason is kept as its cause rather than lost.
 					return Promise.allSettled(results).then((settled) => {
 						const failed = settled.find((sibling) => sibling.status === 'rejected');
-						if (failed && (error as any).cause === undefined)
+						// Only onto an object: application code may `throw` a primitive, and assigning to one
+						// would replace its error with a TypeError.
+						if (failed && error && typeof error === 'object' && (error as any).cause === undefined)
 							(error as any).cause = (failed as PromiseRejectedResult).reason;
 						throw error;
 					});

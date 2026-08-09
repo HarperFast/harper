@@ -219,6 +219,31 @@ describe('array put element failure', () => {
 		assert.match(error.message, /does not have a put method/);
 	});
 
+	// Application code may `throw` a primitive. Attaching a sibling's failure as `cause` must not
+	// replace it with a TypeError, which is what assigning a property to a primitive does.
+	it('preserves a primitive thrown by an override instead of replacing it', async function () {
+		class PrimitiveThrower extends Docs {
+			put(record, target) {
+				if (record?.id === 'prim-reject') return Promise.reject(new Error('sibling failed'));
+				if (record?.id === 'prim-throw') throw 'a primitive string error';
+				return super.put(record, target);
+			}
+		}
+		const { error, unhandled } = await withRejectionWatch(() =>
+			PrimitiveThrower.put(
+				collectionTarget(),
+				[
+					{ id: 'prim-reject', kind: 'fail-prim' },
+					{ id: 'prim-throw', kind: 'fail-prim' },
+				],
+				{}
+			)
+		);
+		assert.strictEqual(error, 'a primitive string error');
+		assert.deepStrictEqual(unhandled, []);
+		assert.deepStrictEqual(await idsOf('fail-prim'), []);
+	});
+
 	it('still writes a well-formed batch', async function () {
 		await Docs.put(
 			collectionTarget(),
