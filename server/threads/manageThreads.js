@@ -319,6 +319,7 @@ if (!parentPort) {
 }
 // postMessage type listeners that are registered in other ways or can be registered later
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.SCHEMA, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.USER, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST, null);
@@ -458,7 +459,10 @@ function startWorker(path, options = {}) {
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
 				startWorker(path, options);
-			} else harperLogger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
+			} else {
+				harperLogger.error(`Thread has been restarted ${worker.unexpectedRestarts} times and will not be restarted`);
+				options.onRestartExhausted?.(worker);
+			}
 		}
 	});
 	workers.push(worker);
