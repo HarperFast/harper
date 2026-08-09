@@ -376,6 +376,71 @@ describe('Write txn timeout', () => {
 			setExpiration(30000);
 		}
 	});
+	// abort() releases the native handle through the read refcount loop, and only getReadTxn() ever
+	// sets readTxnsUsed. A write-first link — save() built the native transaction with no prior read,
+	// the blind-write-to-a-second-database shape above — leaves it undefined, so `undefined > 0` is
+	// false and the loop stranded the handle. rocksdb-js's descriptor registry holds a strong
+	// reference to it, so a stranded handle keeps its read snapshot and blocks reclamation of
+	// obsolete versions for that whole database until the process exits (#2107).
+	it('releases a write-first native handle on abort, with no read refcount to drive the loop', function () {
+		if (isLMDB) this.skip();
+		const txn = new DatabaseTransaction();
+		txn.open = TRANSACTION_STATE.OPEN;
+		let aborted = 0;
+		txn.transaction = {
+			abort() {
+				aborted++;
+			},
+		};
+		assert.equal(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
+
+		txn.abort();
+
+		assert.equal(aborted, 1, 'abort() must release the native handle');
+		assert.equal(txn.transaction, null, 'the released handle must not be reachable for reuse');
+	});
+
+	// Control for the above: the refcount loop still owns the release for a read-created handle, and
+	// the unconditional fallback must not abort it a second time (RocksTransaction.abort() throws on
+	// an already-aborted handle, which abort() must not propagate to abortDueToTimeout et al).
+	it('releases a read-created native handle exactly once on abort', function () {
+		if (isLMDB) this.skip();
+		const txn = new DatabaseTransaction();
+		txn.open = TRANSACTION_STATE.OPEN;
+		let aborted = 0;
+		txn.transaction = {
+			abort() {
+				aborted++;
+			},
+		};
+		txn.readTxnsUsed = 1; // as getReadTxn() would leave behind
+
+		txn.abort();
+
+		assert.equal(aborted, 1, 'the read refcount loop must release it, and the fallback must not re-abort');
+		assert.equal(txn.transaction, null);
+	});
+
+	// A failed commitSync leaves the native handle open, and directCommitSync has already removed the
+	// transaction from tracking, so nothing else can ever reach it — same permanent-leak shape.
+	it('releases the native handle when a direct commit throws', function () {
+		if (isLMDB) this.skip();
+		const txn = new DatabaseTransaction();
+		let aborted = 0;
+		txn.transaction = {
+			commitSync() {
+				throw new Error('commit failed');
+			},
+			abort() {
+				aborted++;
+			},
+		};
+
+		assert.throws(() => txn.directCommitSync(), /commit failed/);
+
+		assert.equal(aborted, 1, 'a failed direct commit must release the handle it orphaned');
+		assert.equal(txn.transaction, null);
+	});
 });
 
 describe('Read Txn Expiration', () => {

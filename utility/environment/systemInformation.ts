@@ -514,6 +514,7 @@ const rocksDBDatabaseLevelStats = new Set<string>([
 	'numberKeysWritten',
 	'numberReseeksIteration',
 	'numRunningFlushes',
+	'numSnapshots',
 	'oldestSnapshotTime',
 	'stallMicros',
 	'txnOverheadMutexOldCommitMap',
@@ -544,6 +545,11 @@ type RocksDBStats = {
 	numberKeysWritten: number;
 	numberReseeksIteration: number;
 	numRunningFlushes: number;
+	// Unreleased RocksDB snapshots for this database. Any nonzero value means RocksDB cannot
+	// discard obsolete row versions behind the oldest one, so a high-churn secondary index
+	// accumulates dead versions that range scans then reseek past (#2107). oldestSnapshotTime
+	// alone can't show this: it stops moving once the oldest snapshot is pinned.
+	numSnapshots: number;
 	oldestSnapshotTime: number;
 	stallMicros: number;
 	txnOverheadMutexOldCommitMap: number;
