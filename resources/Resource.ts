@@ -144,6 +144,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
 				const resourceClass = resource.constructor;
 				const primaryKey = resourceClass.primaryKey;
+				const elementTarget = elementTargetFactory(query);
 				const results = [];
 				try {
 					for (let index = 0; index < data.length; index++) {
@@ -151,13 +152,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						// A bare dereference would reach the client as a 500 carrying V8's wording.
 						if (element == null)
 							throw new ClientError(`Array element at index ${index} is ${element}, expected a record`);
-						// Cloned from the request's target, not built empty: an override needs this element's
-						// id and the request's query/route metadata. `cloneRequestTarget` omits
-						// `checkPermission`, so the per-element dispatch cannot re-arm a verdict the
-						// collection receiver already gave once.
-						const target = cloneRequestTarget(query);
-						target.id = element[primaryKey];
-						target.isCollection = false;
+						const target = elementTarget(element[primaryKey]);
 						const elementResource = resourceClass.getResource(target, request, {
 							async: true,
 						});
@@ -595,6 +590,30 @@ export function snakeCase(camelCase: string) {
 		camelCase[0].toLowerCase() +
 		camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g, (letters) => letters[0] + '_' + letters.slice(1))
 	);
+}
+
+/**
+ * Mint per-element targets for a fanned-out batch write. Each element needs its own object — its id
+ * must not be visible to a sibling whose dispatch resolves later — but it also needs the request's
+ * query and route metadata, which a `put()` override can read. The request's contribution is
+ * therefore resolved once here rather than deep-cloned per element, and nested metadata is shared
+ * rather than copied. `checkPermission` never carries: the collection receiver's single verdict is
+ * authoritative and per-element dispatch must not re-arm it.
+ */
+function elementTargetFactory(query: any): (id: any) => RequestTarget {
+	const base = cloneRequestTarget(query);
+	const search = base.toString();
+	const carried = { ...base };
+	delete (carried as any).id;
+	delete (carried as any).isCollection;
+	const hasCarried = Object.keys(carried).length > 0;
+	return (id) => {
+		const target = search ? new RequestTarget(search) : new RequestTarget();
+		if (hasCarried) Object.assign(target, carried);
+		target.id = id;
+		target.isCollection = false;
+		return target;
+	};
 }
 
 /**
