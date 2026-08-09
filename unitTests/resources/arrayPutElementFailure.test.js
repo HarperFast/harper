@@ -219,30 +219,36 @@ describe('array put element failure', () => {
 		assert.match(error.message, /does not have a put method/);
 	});
 
-	// Application code may `throw` a primitive. Attaching a sibling's failure as `cause` must not
-	// replace it with a TypeError, which is what assigning a property to a primitive does.
-	it('preserves a primitive thrown by an override instead of replacing it', async function () {
-		class PrimitiveThrower extends Docs {
-			put(record, target) {
-				if (record?.id === 'prim-reject') return Promise.reject(new Error('sibling failed'));
-				if (record?.id === 'prim-throw') throw 'a primitive string error';
-				return super.put(record, target);
+	// Attaching a sibling's failure as `cause` must not replace what the override actually threw:
+	// assigning a property to a primitive, or to a frozen object, throws in strict mode.
+	for (const [shape, thrown] of [
+		['a primitive', 'a primitive string error'],
+		['a frozen error', Object.freeze(new Error('frozen original'))],
+	]) {
+		it(`preserves ${shape} thrown by an override instead of replacing it`, async function () {
+			const kind = `fail-prim-${shape.replace(/\W+/g, '-')}`;
+			class PrimitiveThrower extends Docs {
+				put(record, target) {
+					if (record?.id === 'prim-reject') return Promise.reject(new Error('sibling failed'));
+					if (record?.id === 'prim-throw') throw thrown;
+					return super.put(record, target);
+				}
 			}
-		}
-		const { error, unhandled } = await withRejectionWatch(() =>
-			PrimitiveThrower.put(
-				collectionTarget(),
-				[
-					{ id: 'prim-reject', kind: 'fail-prim' },
-					{ id: 'prim-throw', kind: 'fail-prim' },
-				],
-				{}
-			)
-		);
-		assert.strictEqual(error, 'a primitive string error');
-		assert.deepStrictEqual(unhandled, []);
-		assert.deepStrictEqual(await idsOf('fail-prim'), []);
-	});
+			const { error, unhandled } = await withRejectionWatch(() =>
+				PrimitiveThrower.put(
+					collectionTarget(),
+					[
+						{ id: 'prim-reject', kind },
+						{ id: 'prim-throw', kind },
+					],
+					{}
+				)
+			);
+			assert.strictEqual(error, thrown);
+			assert.deepStrictEqual(unhandled, []);
+			assert.deepStrictEqual(await idsOf(kind), []);
+		});
+	}
 
 	it('still writes a well-formed batch', async function () {
 		await Docs.put(
