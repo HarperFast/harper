@@ -102,6 +102,26 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 		deepStrictEqual(await idsOf('rest-prim'), []);
 	});
 
+	// The metadata contract, end to end: an override on a collection PUT sees each element's own id
+	// plus the request's query string, and never `checkPermission`.
+	test("each element's target carries the request's query metadata over REST", async () => {
+		const response = await fetch(`${httpURL}/BatchEcho/?foo=bar`, {
+			method: 'PUT',
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+			body: JSON.stringify([
+				{ id: 'rest-meta-a', kind: 'rest-meta' },
+				{ id: 'rest-meta-b', kind: 'rest-meta' },
+			]),
+		});
+		ok(response.ok, `array PUT failed with ${response.status}: ${await response.text()}`);
+		const seen = await fetch(`${httpURL}/ElementTargets/x`, { headers: { Authorization: auth } });
+		const { calls } = (await seen.json()) as { calls: Record<string, unknown>[] };
+		deepStrictEqual(calls, [
+			{ recordId: 'rest-meta-a', targetId: 'rest-meta-a', isCollection: false, foo: 'bar', checkPermission: null },
+			{ recordId: 'rest-meta-b', targetId: 'rest-meta-b', isCollection: false, foo: 'bar', checkPermission: null },
+		]);
+	});
+
 	test('a malformed element fails the whole batch and persists nothing', async () => {
 		const response = await putCollection([{ id: 'rest-bad-a', kind: 'rest-bad', label: 'one' }, null]);
 		// 400, not 500, and the body names the offending position instead of relaying the raw
