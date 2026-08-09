@@ -447,6 +447,28 @@ describe('Write txn timeout', () => {
 		assert.equal(snapshots(), baselineSnapshots, 'the read snapshot must be released');
 	});
 
+	// RocksTransaction.abort() throws on an already committed/aborted handle. abort() must absorb
+	// that: its callers (abortDueToTimeout, abortChainAfterRetries, commit()'s rejection wrapper)
+	// have no handler, and a throw out of the first statement would skip every later cleanup step.
+	it('completes its cleanup when the native abort throws', function () {
+		if (isLMDB) this.skip();
+		const txn = new DatabaseTransaction();
+		txn.open = TRANSACTION_STATE.OPEN;
+		txn.transaction = {
+			abort() {
+				throw Object.assign(new Error('Transaction has already been committed'), {
+					code: 'ERR_ALREADY_COMMITTED',
+				});
+			},
+		};
+		txn.readTxnsUsed = 1; // release goes through the read-refcount loop, abort()'s first statement
+
+		assert.doesNotThrow(() => txn.abort());
+
+		assert.equal(txn.transaction, null, 'the handle must be detached even though its abort threw');
+		assert.equal(txn.open, TRANSACTION_STATE.CLOSED, 'the cleanup after the release must still run');
+	});
+
 	it('releases the native handle when a direct commit throws', function () {
 		if (isLMDB) this.skip();
 		const txn = new DatabaseTransaction();
