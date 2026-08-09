@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786189442103,
+  "lastUpdate": 1786260906051,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -3815,6 +3815,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1291.4,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "eb702ee52ef8f97085dc9d20f81ba52234cf077b",
+          "message": "fix(blob): re-encode inline blobs from the copied buffer, not a read-buffer view\n\nA small blob decoded inline retained `storageBuffer` — the raw msgpack ext-body,\nwhich is a *view* into the store's read buffer — and `pack()` re-emitted it verbatim\non re-encode. The read buffer is recycled by later reads, so a read-modify-write\n(the shape of a REST PATCH: fetch record, carry the unchanged Blob, put it back)\nserialized whatever foreign bytes had since overwritten that buffer, corrupting the\nrecord. The next read then failed with \"Data read, but end of buffer not reached\".\n\nThe sibling `contentBuffer` is already a stable copy (copyingUnpacker uses\ncopyBuffers), so drop `storageBuffer` entirely and let `pack()` fall through to the\nexisting contentBuffer re-encode. No read-path allocation cost — this supersedes the\n`needsStableBuffer` approach in #2103, which masked the corruption by forcing every\nprimary-store read to allocate a fresh buffer. The clobber is on re-ENCODE, not\nmid-decode, which is why a decode-path canary never observed it.\n\nAlso fixes slice() on an inline blob (previously gated off by storageBuffer's\npresence and left to throw).\n\nRepro/regression guard: unitTests/resources/recordCacheStableBuffer.test.js — the\nRMW-with-interleaved-read case failed 25/25 before this change, passes after.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-08-07T19:16:01Z",
+          "url": "https://github.com/HarperFast/harper/commit/eb702ee52ef8f97085dc9d20f81ba52234cf077b"
+        },
+        "date": 1786260905337,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6909.31,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 9552.51,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 9639.65,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 7069.12,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 5228.79,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 9790.95,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1280.31,
             "unit": "ops/sec"
           }
         ]
