@@ -8,7 +8,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, Transaction: RocksTransaction, registryStatus } = require('@harperfast/rocksdb-js');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 describe('Txn Expiration', () => {
 	let SlowResource,
@@ -376,12 +376,9 @@ describe('Write txn timeout', () => {
 			setExpiration(30000);
 		}
 	});
-	// abort() releases the native handle through the read refcount loop, and only getReadTxn() ever
-	// sets readTxnsUsed. A write-first link — save() built the native transaction with no prior read,
-	// the blind-write-to-a-second-database shape above — leaves it undefined, so `undefined > 0` is
-	// false and the loop stranded the handle. rocksdb-js's descriptor registry holds a strong
-	// reference to it, so a stranded handle keeps its read snapshot and blocks reclamation of
-	// obsolete versions for that whole database until the process exits (#2107).
+	// A write-first link (save() built the handle with no prior read) has no readTxnsUsed, so the
+	// refcount loop never runs and the handle was stranded — permanently, since rocksdb-js's
+	// registry keeps it alive and it holds a read snapshot (#2107).
 	it('releases a write-first native handle on abort, with no read refcount to drive the loop', function () {
 		if (isLMDB) this.skip();
 		const txn = new DatabaseTransaction();
@@ -400,9 +397,8 @@ describe('Write txn timeout', () => {
 		assert.equal(txn.transaction, null, 'the released handle must not be reachable for reuse');
 	});
 
-	// Control for the above: the refcount loop still owns the release for a read-created handle, and
-	// the unconditional fallback must not abort it a second time (RocksTransaction.abort() throws on
-	// an already-aborted handle, which abort() must not propagate to abortDueToTimeout et al).
+	// Control: the refcount loop still owns the read-created release, and the fallback must not
+	// abort the same handle a second time.
 	it('releases a read-created native handle exactly once on abort', function () {
 		if (isLMDB) this.skip();
 		const txn = new DatabaseTransaction();
@@ -421,8 +417,36 @@ describe('Write txn timeout', () => {
 		assert.equal(txn.transaction, null);
 	});
 
-	// A failed commitSync leaves the native handle open, and directCommitSync has already removed the
-	// transaction from tracking, so nothing else can ever reach it — same permanent-leak shape.
+	// A failed commitSync leaves the handle open, and directCommitSync has already untracked it, so
+	// nothing else can reach it.
+	// The object-double tests above prove the JS release logic; this one proves the thing #2107 is
+	// actually about — that the native handle and its RocksDB read snapshot are really gone. Built
+	// in the write-first shape save() produces: a transaction constructed directly, read through to
+	// establish the snapshot, and never given a read refcount.
+	it('returns the native snapshot to baseline when a write-first transaction aborts', function () {
+		if (isLMDB) this.skip();
+		const store = IndexedResource.primaryStore;
+		const rootStore = store.rootStore;
+		const liveTxns = () => registryStatus().reduce((total, db) => total + db.transactions, 0);
+		const snapshots = () => rootStore.getDBIntProperty('rocksdb.num-snapshots');
+
+		const baselineTxns = liveTxns();
+		const baselineSnapshots = snapshots();
+
+		const txn = new DatabaseTransaction();
+		txn.open = TRANSACTION_STATE.OPEN;
+		txn.transaction = new RocksTransaction(store.store);
+		store.getEntry(601, { transaction: txn.transaction }); // establishes the read snapshot
+		assert.equal(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
+		assert.equal(liveTxns(), baselineTxns + 1, 'test setup: the native handle must be registered');
+		assert.ok(snapshots() > baselineSnapshots, 'test setup: the read must have pinned a snapshot');
+
+		txn.abort();
+
+		assert.equal(liveTxns(), baselineTxns, 'the native handle must be deregistered');
+		assert.equal(snapshots(), baselineSnapshots, 'the read snapshot must be released');
+	});
+
 	it('releases the native handle when a direct commit throws', function () {
 		if (isLMDB) this.skip();
 		const txn = new DatabaseTransaction();
