@@ -143,6 +143,19 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 // about the caller's pattern, not the individual commit.
 let replayedWritesWarned = false;
 
+/**
+ * Abort a detached native handle. RocksTransaction.abort() throws on one that was already
+ * committed or aborted, and every caller is a cleanup path whose own callers have no handler — a
+ * throw there would abandon the rest of the cleanup.
+ */
+function abortNativeTransaction(transaction: RocksTransaction, context: string): void {
+	try {
+		transaction.abort();
+	} catch (error) {
+		harperLogger.debug?.(context, error);
+	}
+}
+
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
 // modules. Unset until analytics loads, and when analytics is disabled the recorder call is cheap.
