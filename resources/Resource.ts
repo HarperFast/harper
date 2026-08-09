@@ -159,9 +159,16 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						});
 						// `target`, not `request`: this is the target slot, and Table's back-compat shift only
 						// recognizes a RequestTarget there — a context is taken for the record.
+						// `missingMethod` rather than an unguarded call, so a resource without `put` answers 405
+						// here exactly as it does on the single-record path below.
 						if (typeof elementResource.then === 'function')
-							results.push(elementResource.then((resource) => resource.put(element, target)));
-						else results.push(elementResource.put(element, target));
+							results.push(
+								elementResource.then((resource) =>
+									resource.put ? resource.put(element, target) : missingMethod(resource, 'put')
+								)
+							);
+						else if (elementResource.put) results.push(elementResource.put(element, target));
+						else missingMethod(elementResource, 'put');
 					}
 				} catch (error) {
 					// Settle the already-dispatched elements or a rejection among them goes unhandled. `error`

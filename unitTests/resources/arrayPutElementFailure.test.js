@@ -4,6 +4,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { Resource } = require('#src/resources/Resource');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -166,6 +167,33 @@ describe('array put element failure', () => {
 		assert.strictEqual(error?.message, 'second element failed');
 		assert.deepStrictEqual(unhandled, []);
 		assert.deepStrictEqual(await idsOf('fail-multi'), []);
+	});
+
+	// The fan-out must answer 405 like the single-record path, not a bare TypeError, for a resource
+	// class that implements no `put`.
+	it('answers 405 for a resource with no put(), on both the array and single paths', async function () {
+		class ReadOnly extends Resource {
+			static primaryKey = 'id';
+			get() {
+				return {};
+			}
+		}
+		// The single-record path throws synchronously out of the action; the fan-out surfaces a rejected
+		// promise. Both shapes reach an HTTP caller as the same 405, so accept either here.
+		const attempt = async (call) => {
+			try {
+				await call();
+			} catch (error) {
+				return error;
+			}
+			return null;
+		};
+		const single = await attempt(() => ReadOnly.put({ id: 'ro-1' }, {}));
+		const batch = await attempt(() => ReadOnly.put(collectionTarget(), [{ id: 'ro-2' }, { id: 'ro-3' }], {}));
+		for (const error of [single, batch]) {
+			assert.strictEqual(error?.statusCode, 405, `expected 405, got ${error?.message}`);
+			assert.match(error.message, /does not have a put method/);
+		}
 	});
 
 	it('still writes a well-formed batch', async function () {
