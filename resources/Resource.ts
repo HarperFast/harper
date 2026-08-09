@@ -151,7 +151,11 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						// A bare dereference would reach the client as a 500 carrying V8's wording.
 						if (element == null)
 							throw new ClientError(`Array element at index ${index} is ${element}, expected a record`);
-						const target = new RequestTarget();
+						// Cloned from the request's target, not built empty: an override needs this element's
+						// id and the request's query/route metadata. `cloneRequestTarget` omits
+						// `checkPermission`, so the per-element dispatch cannot re-arm a verdict the
+						// collection receiver already gave once.
+						const target = cloneRequestTarget(query);
 						target.id = element[primaryKey];
 						target.isCollection = false;
 						const elementResource = resourceClass.getResource(target, request, {

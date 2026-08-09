@@ -99,6 +99,42 @@ describe('default-mode array put normalization', () => {
 
 	// The one shape whose whole-array `put()` worked programmatically before this change; it now
 	// matches what the same class already got from a collection target.
+	// Each element target is cloned from the request's, so an override gets this element's id AND the
+	// request's query/route metadata — but never `checkPermission`, which would re-arm a verdict the
+	// collection receiver already gave once.
+	it("carries the request's query and route metadata onto each element target, without checkPermission", async function () {
+		const seen = [];
+		class Inspecting extends Docs {
+			put(record, target) {
+				seen.push({
+					id: target?.id,
+					isCollection: target?.isCollection,
+					foo: target?.get('foo'),
+					route: target?.someRouteParam,
+					checkPermission: target?.checkPermission,
+				});
+				return super.put(record, target);
+			}
+		}
+		const outer = new RequestTarget('?foo=bar');
+		outer.id = null;
+		outer.isCollection = true;
+		outer.someRouteParam = 'route-value';
+		outer.checkPermission = true;
+		await Inspecting.put(
+			outer,
+			[
+				{ id: 'meta-a', kind: 'meta' },
+				{ id: 'meta-b', kind: 'meta' },
+			],
+			{ user: alice }
+		);
+		assert.deepStrictEqual(seen, [
+			{ id: 'meta-a', isCollection: false, foo: 'bar', route: 'route-value', checkPermission: undefined },
+			{ id: 'meta-b', isCollection: false, foo: 'bar', route: 'route-value', checkPermission: undefined },
+		]);
+	});
+
 	it('fans out for a plain non-Table Resource the same way a collection target does', async function () {
 		const programmatic = [];
 		const viaTarget = [];
