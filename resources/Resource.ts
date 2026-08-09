@@ -176,8 +176,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					}
 				} catch (error) {
 					// Settle the already-dispatched elements or a rejection among them goes unhandled. `error`
-					// wins over a sibling's: the malformed element is what the caller has to fix.
-					return Promise.allSettled(results).then(() => {
+					// wins over a sibling's, since the malformed element is what the caller has to fix, but a
+					// sibling that failed for an infrastructure reason is kept as its cause rather than lost.
+					return Promise.allSettled(results).then((settled) => {
+						const failed = settled.find((sibling) => sibling.status === 'rejected');
+						if (failed && (error as any).cause === undefined)
+							(error as any).cause = (failed as PromiseRejectedResult).reason;
 						throw error;
 					});
 				}

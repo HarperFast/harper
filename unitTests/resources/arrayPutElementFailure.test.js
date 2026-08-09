@@ -70,9 +70,11 @@ describe('array put element failure', () => {
 		const { error, unhandled } = await withRejectionWatch(() =>
 			RejectingFirstElement.put(collectionTarget(), [{ id: 'fail-reject', kind: 'fail-mixed' }, null], {})
 		);
-		// Not the sibling's rejection: the malformed element is what the caller has to fix.
+		// Not the sibling's rejection: the malformed element is what the caller has to fix. The sibling's
+		// failure is kept as the cause, so an infrastructure error is not lost behind a 400.
 		assert.match(error?.message ?? '', /index 1 is null/);
 		assert.strictEqual(error.statusCode, 400);
+		assert.strictEqual(error.cause?.message, 'element write failed');
 		assert.deepStrictEqual(unhandled, []);
 		assert.deepStrictEqual(await idsOf('fail-mixed'), []);
 	});
@@ -194,6 +196,27 @@ describe('array put element failure', () => {
 			assert.strictEqual(error?.statusCode, 405, `expected 405, got ${error?.message}`);
 			assert.match(error.message, /does not have a put method/);
 		}
+	});
+
+	// The async dispatch branch has its own `missingMethod` call; cover it separately from the sync one.
+	it('answers 405 when an async-resolved element resource has no put()', async function () {
+		class AsyncReadOnly extends Resource {
+			static primaryKey = 'id';
+			static getResource(target, context, options) {
+				return Promise.resolve(super.getResource(target, context, options));
+			}
+			get() {
+				return {};
+			}
+		}
+		let error;
+		try {
+			await AsyncReadOnly.put(collectionTarget(), [{ id: 'aro-1' }], {});
+		} catch (thrown) {
+			error = thrown;
+		}
+		assert.strictEqual(error?.statusCode, 405, `expected 405, got ${error?.message}`);
+		assert.match(error.message, /does not have a put method/);
 	});
 
 	it('still writes a well-formed batch', async function () {
