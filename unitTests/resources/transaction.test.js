@@ -5,6 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const harperLogger = require('#src/utility/logging/harper_logger');
@@ -111,7 +112,11 @@ describe('Transactions', () => {
 			}
 			assert.equal(entries[0].name, 'thirteen');
 			await TxnTest3.put(14, { name: 'fourteen' }, context);
-			await context.transaction.commit();
+			// context.transaction may already be released here: the preceding get()/search() calls each ran
+			// (and durably committed) their own short-lived transaction once the explicit commit above closed
+			// the original one, and DatabaseTransaction now releases the context's back-reference as soon as
+			// one of those completes — so there may be nothing left to explicitly commit.
+			await context.transaction?.commit();
 			assert.equal((await TxnTest.get(7, context)).name, 'SEVEN');
 			assert.equal((await TxnTest2.get(13, context)).name, 'thirteen');
 			assert.equal((await TxnTest3.get(14, context)).name, 'fourteen');
@@ -708,9 +713,117 @@ describe('Transactions', () => {
 				}
 				await context.transaction.commit();
 				await TxnTest.put({ id: 8, name: 'eight changed' }); // no context
-				await context.transaction.commit();
+				// context.transaction may already be released here — the ambient put above ran (and durably
+				// committed) its own short-lived transaction once the explicit commit above closed the
+				// original one; see the identical comment in 'Can run txn with commit in the middle'.
+				await context.transaction?.commit();
 				assert.equal((await TxnTest.get(8, context)).name, 'eight changed');
 			});
+		});
+	});
+	// Regression coverage for a context/transaction retention issue found via a production heap
+	// snapshot: a long-lived context (notably an MQTT subscription context, which stays reachable
+	// for the life of a suspended delivery loop long after its transaction() call has returned and
+	// committed) kept pointing at the completed DatabaseTransaction, pinning it in memory. These
+	// tests cover DatabaseTransaction's releaseContext() cleanup, called from both commit completion
+	// paths and abort().
+	describe('Releasing the context back-reference on transaction completion', () => {
+		it('releases the context’s back-reference once the transaction commits', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(90, { name: 'release-on-commit' }, context);
+			});
+			// releaseContext() nulls the slot rather than deleting it — Context.transaction is typed
+			// `DatabaseTransaction | null | undefined` to document a released-but-previously-attached
+			// state, so a long-lived, hot context isn't repeatedly forced into V8 dictionary mode.
+			assert.strictEqual(context.transaction, null);
+			assert.equal((await TxnTest.get(90)).name, 'release-on-commit');
+		});
+		it('releases the context’s back-reference once the transaction aborts', async function () {
+			const context = {};
+			await assert.rejects(
+				transaction(context, async () => {
+					await TxnTest.put(91, { name: 'release-on-abort' }, context);
+					throw new Error('forced abort for test');
+				}),
+				/forced abort for test/
+			);
+			assert.strictEqual(context.transaction, null);
+			assert.equal(await TxnTest.get(91), undefined);
+		});
+		it('does not clobber a context that has been re-pointed at a different transaction', async function () {
+			const context = {};
+			const original = new DatabaseTransaction();
+			original.setContext(context);
+			context.transaction = original;
+			// Simulate something re-pointing the context at a different DatabaseTransaction (as
+			// resources/Table.ts:5530 and resources/replayLogs.ts:200 can do) before the original
+			// transaction's own completion runs.
+			const replacement = new DatabaseTransaction();
+			context.transaction = replacement;
+			// doneWriting: true mirrors resources/transaction.ts's own final wrapper commit — the
+			// only case releaseContext() ever attempts a release (see DatabaseTransaction.ts).
+			await original.commit({ doneWriting: true });
+			assert.strictEqual(
+				context.transaction,
+				replacement,
+				'a context re-pointed at another transaction must not be clobbered by a stale transaction’s own cleanup'
+			);
+		});
+		it('lets a context be reused for a second transaction() call after the first commits', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(92, { name: 'first txn on shared context' }, context);
+			});
+			assert.strictEqual(context.transaction, null);
+			await transaction(context, async () => {
+				await TxnTest.put(93, { name: 'second txn on shared context' }, context);
+			});
+			assert.equal((await TxnTest.get(92)).name, 'first txn on shared context');
+			assert.equal((await TxnTest.get(93)).name, 'second txn on shared context');
+		});
+		// The release must not strand a later write on an uncommitted transaction. It doesn't, and the
+		// reason is worth pinning: resources/transaction.ts:35 only REUSES a context's transaction when
+		// it is still OPEN, so a retained CLOSED one was never reused for a subsequent write anyway —
+		// line 39 minted a fresh DatabaseTransaction either way. Nulling it therefore changes only what
+		// stays reachable, not how the next write is serviced: it still goes through the transaction()
+		// wrapper, which commits in onComplete (or aborts in onError) by construction.
+		it('keeps post-completion writes on a reused context durable, with nothing left staged', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(94, { name: 'inside txn' }, context);
+			});
+			assert.strictEqual(context.transaction, null);
+			// Writes made with the SAME context after its transaction completed must still commit.
+			await TxnTest.put(95, { name: 'after commit' }, context);
+			await TxnTest.get(95, context); // a read in between, which also re-enters the dispatcher
+			await TxnTest.put(96, { name: 'after commit again' }, context);
+			assert.equal((await TxnTest.get(94)).name, 'inside txn');
+			assert.equal((await TxnTest.get(95)).name, 'after commit');
+			assert.equal((await TxnTest.get(96)).name, 'after commit again');
+			assert.equal(
+				context.transaction?.writes?.length ?? 0,
+				0,
+				'no write may be left staged on an uncommitted transaction attached to the reused context'
+			);
+		});
+		// #1411: a timeout-poisoned abort must NOT release the context's back-reference. Resource.ts's
+		// dispatcher deliberately keeps joining a `timedOut` transaction (context?.transaction?.timedOut)
+		// so the rest of the logical operation fails atomically, instead of silently starting a fresh
+		// transaction for a write made after the timeout fired (see integrationTests/resources/
+		// txn-overtime-atomicity.test.ts for the end-to-end regression this guards).
+		it('keeps a timeout-poisoned transaction attached to its context so later writes still fail atomically', async function () {
+			const context = {};
+			const txn = new DatabaseTransaction();
+			txn.setContext(context);
+			context.transaction = txn;
+			txn.abortDueToTimeout();
+			assert.strictEqual(
+				context.transaction,
+				txn,
+				'a timed-out transaction must remain attached as a poison tombstone'
+			);
+			assert.strictEqual(context.transaction.timedOut, true);
 		});
 	});
 	describe('Testing updates with extended class with loadAsInstance=false', () => {

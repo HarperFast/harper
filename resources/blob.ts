@@ -55,7 +55,6 @@ type StorageInfo = {
 	recordId?: number;
 	contentBuffer?: any;
 	source?: Readable;
-	storageBuffer?: Buffer;
 	compress?: boolean;
 	flush?: boolean;
 	start?: number;
@@ -829,7 +828,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			storageInfoForBlob.set(slicedBlob, slicedStorageInfo);
 			if (this.size != undefined)
 				slicedBlob.size = (end == undefined ? this.size : Math.min(end, this.size)) - (start ?? 0);
-		} else if (sourceStorageInfo?.contentBuffer && !sourceStorageInfo.storageBuffer) {
+		} else if (sourceStorageInfo?.contentBuffer) {
 			const slicedStorageInfo = {
 				...sourceStorageInfo,
 				contentBuffer: sourceStorageInfo.contentBuffer.subarray(start, end),
@@ -1740,10 +1739,14 @@ addExtension({
 				throw new Error('No store specified, cannot load blob from storage');
 			}
 		} else {
+			// contentBuffer is a *copy* (copyingUnpacker uses copyBuffers), so it stays valid for the
+			// lifetime of the blob. Do not retain the raw ext-body `buffer` here: it is a view into the
+			// store's read buffer, which is recycled by later reads. Keeping it and re-emitting it on
+			// re-encode (e.g. a read-modify-write / REST PATCH) serialized whatever foreign bytes had
+			// since overwritten that buffer, corrupting the record (harper#2103).
 			storageInfoForBlob.set(blob, {
 				storageIndex: 0,
 				fileId: null,
-				storageBuffer: buffer as any,
 				contentBuffer: blobInfo[1] as any,
 			});
 			blob.size = blobInfo[1]?.length;
@@ -1764,9 +1767,6 @@ addExtension({
 		if (blob.type) options.type = blob.type;
 		if (blob.size !== undefined) options.size = blob.size;
 		if (storageInfo) {
-			if (storageInfo.storageBuffer) {
-				return storageInfo.storageBuffer;
-			}
 			if (
 				storageInfo.contentBuffer &&
 				(storageInfo.contentBuffer?.length < FILE_STORAGE_THRESHOLD || blob.saveInRecord)
