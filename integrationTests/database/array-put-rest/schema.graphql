@@ -1,6 +1,12 @@
 # Array PUT over REST — the collection dispatch path harper#2000 fixed programmatically.
+# The observed* attributes let a custom put() override record what the per-element dispatch handed
+# it, durably, so the assertion survives the request landing on a different worker than the read.
 type Batch @table @export {
 	id: ID @primaryKey
 	kind: String
 	label: String
+	observedTargetId: String
+	observedIsCollection: Boolean
+	observedFoo: String
+	observedCheckPermission: Boolean
 }

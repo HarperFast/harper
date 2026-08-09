@@ -103,7 +103,8 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 	});
 
 	// The metadata contract, end to end: an override on a collection PUT sees each element's own id
-	// plus the request's query string, and never `checkPermission`.
+	// plus the request's query string, and never `checkPermission`. Observations are written onto the
+	// records so the assertion does not depend on which worker served which request.
 	test("each element's target carries the request's query metadata over REST", async () => {
 		const response = await fetch(`${httpURL}/BatchEcho/?foo=bar`, {
 			method: 'PUT',
@@ -114,12 +115,35 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 			]),
 		});
 		ok(response.ok, `array PUT failed with ${response.status}: ${await response.text()}`);
-		const seen = await fetch(`${httpURL}/ElementTargets/x`, { headers: { Authorization: auth } });
-		const { calls } = (await seen.json()) as { calls: Record<string, unknown>[] };
-		deepStrictEqual(calls, [
-			{ recordId: 'rest-meta-a', targetId: 'rest-meta-a', isCollection: false, foo: 'bar', checkPermission: null },
-			{ recordId: 'rest-meta-b', targetId: 'rest-meta-b', isCollection: false, foo: 'bar', checkPermission: null },
-		]);
+		const stored = await fetch(`${httpURL}/Batch/?kind=rest-meta`, { headers: { Authorization: auth } });
+		const rows = (await stored.json()) as Record<string, unknown>[];
+		deepStrictEqual(
+			rows
+				.map((row) => ({
+					id: row.id,
+					observedTargetId: row.observedTargetId,
+					observedIsCollection: row.observedIsCollection,
+					observedFoo: row.observedFoo,
+					observedCheckPermission: row.observedCheckPermission,
+				}))
+				.sort((a, b) => (String(a.id) < String(b.id) ? -1 : 1)),
+			[
+				{
+					id: 'rest-meta-a',
+					observedTargetId: 'rest-meta-a',
+					observedIsCollection: false,
+					observedFoo: 'bar',
+					observedCheckPermission: false,
+				},
+				{
+					id: 'rest-meta-b',
+					observedTargetId: 'rest-meta-b',
+					observedIsCollection: false,
+					observedFoo: 'bar',
+					observedCheckPermission: false,
+				},
+			]
+		);
 	});
 
 	test('a malformed element fails the whole batch and persists nothing', async () => {
