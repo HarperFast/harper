@@ -30,13 +30,16 @@ export { BOOT_PROPS_FILE_PATH };
 // last-write-wins entry rather than several conflicting ones). This is how a worker thread
 // inherits its parent's in-process config overrides — see applyInheritedConfigOverrides()/
 // reapplyAllOverrides() and the workerDataProvider registration in server/threads/manageThreads.js.
+// `base` is the configured value the override displaced, remembered from the *first* override of
+// that param so reapplyAllOverrides() can tell a reload that left the param alone from one that
+// is itself the change.
 // setProperty() is for operator/harness *intent* — an override that should survive a config reload
 // and propagate to every worker. Code caching a value it derived from config it just read (e.g.
 // dataLayer/harperBridge/lmdbBridge's initializePaths.js, utility/lmdb/environmentUtility.ts) must
 // call configUtils.updateConfigObject() directly instead: going through setProperty() here would
 // make that derived value outlive a config reload and get shipped to every worker as if it were an
 // override, pinning it even after the on-disk config the derivation was based on changes.
-const appliedOverrides = new Map<string, any>();
+const appliedOverrides = new Map<string, { value: any; base: any }>();
 let inheritedOverridesApplied = false;
 
 /**
@@ -77,17 +80,41 @@ export function get(propName: string): any {
  * Note - this function will NOT update the config file. If you want to update the file
  * use the updateConfigValue method in configUtils.
  *
+ * The override is also recorded so it propagates to every worker thread spawned from here and
+ * survives a forced config reload — except a reload that changes this param on disk, which wins
+ * and retires the override (see reapplyAllOverrides()). `value` must be structured-cloneable.
+ *
  * This function should only be used by the installer and unit tests.
  * @param propName
  * @param value
  */
 export function setProperty(propName: string, value: any) {
+	// The recorded overrides are shipped to every worker by structuredClone (manageThreads.js's
+	// 'configOverrides' provider), where a clone failure is logged and the worker spawns anyway —
+	// on the on-disk config, which is exactly the divergence this mechanism exists to prevent, and
+	// the payload carries rootPath/storage.path. Reject a non-cloneable value here instead, at the
+	// caller that can actually fix it, so a spawn can never inherit a partial override set.
+	try {
+		structuredClone(value);
+	} catch (err) {
+		throw new Error(`Config property '${propName}' cannot be set to a value that is not structured-cloneable`, {
+			cause: err,
+		});
+	}
+
 	// Key by the canonical param name, not the raw alias passed in: CONFIG_PARAM_MAP is
 	// many-to-one (e.g. SERVER_PORT_KEY and OPERATIONSAPI_NETWORK_PORT both canonicalize to
 	// 'operationsApi_network_port'), so two callers overriding the "same" param through
 	// different aliases must land on one Map entry — otherwise replay can apply a stale alias
 	// after the canonical one, reintroducing the parent/worker skew this map exists to prevent.
-	appliedOverrides.set((hdbTerms.CONFIG_PARAM_MAP as any)[propName.toLowerCase()] ?? propName, value);
+	const canonicalName = (hdbTerms.CONFIG_PARAM_MAP as any)[propName.toLowerCase()] ?? propName;
+	const existing = appliedOverrides.get(canonicalName);
+	appliedOverrides.set(canonicalName, {
+		value,
+		// Keep the first override's base: everything after it displaced an override, not a
+		// configured value, so it says nothing about what the config file held.
+		base: existing ? existing.base : configUtils.getConfigValue(propName),
+	});
 
 	if (installPropsToSave[propName]) {
 		installProps[propName] = value;
@@ -103,7 +130,12 @@ export function setProperty(propName: string, value: any) {
  * production boot contributes no extra workerData.
  */
 export function getConfigOverrides(): Record<string, any> | undefined {
-	return appliedOverrides.size ? Object.fromEntries(appliedOverrides) : undefined;
+	if (!appliedOverrides.size) return undefined;
+	const overrides = {};
+	for (const [propName, { value }] of appliedOverrides) {
+		overrides[propName] = value;
+	}
+	return overrides;
 }
 
 /**
@@ -122,18 +154,45 @@ function applyInheritedConfigOverrides() {
 }
 
 /**
- * Replays every override ever applied on this thread (both inherited-from-parent and applied
- * locally via setProperty) on top of the current config. A forced initSync() re-reads the whole
- * config from disk, discarding anything setProperty had layered on top; without this, that reload
- * would silently revert the thread to the on-disk config regardless of any overrides — the same
- * defect applyInheritedConfigOverrides() closes for a worker's first boot, but for a reload on any
- * thread, main included.
+ * Config values come from YAML, so they are plain JSON — but a reload rebuilds them into fresh
+ * objects, which never compare identical even when the file is byte-for-byte unchanged.
+ */
+function sameConfigValue(a: any, b: any) {
+	if (Object.is(a, b)) return true;
+	if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+	return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Replays the overrides applied on this thread (both inherited-from-parent and applied locally via
+ * setProperty) on top of a config that was just re-read from disk. A forced initSync() rebuilds the
+ * whole config, discarding anything setProperty had layered on top; without this, that reload would
+ * silently revert the thread to the on-disk config regardless of any overrides — the same defect
+ * applyInheritedConfigOverrides() closes for a worker's first boot, but for a reload on any thread,
+ * main included.
+ *
+ * An override does NOT survive a reload that changed its own param on disk. A forced reload is how
+ * an operator's config edit takes effect (the RESTART handlers in security/keys.ts and
+ * processManagement.js), so replaying unconditionally would make editing an overridden param in
+ * harper-config.yaml a silent no-op for the life of the process. The edit is the newer intent: the
+ * override retires — and is dropped from the map, so it stops propagating to new workers too and
+ * can't reintroduce the parent/worker skew from the other direction.
+ *
+ * Call only after configUtils.initConfig(force) has repopulated the config from disk.
  */
 function reapplyAllOverrides() {
 	if (appliedOverrides.size === 0) return;
 	// Snapshot first: setProperty() re-inserts into appliedOverrides as we iterate, and mutating a
 	// Map while iterating it live is unnecessary risk here for no benefit.
-	for (const [propName, value] of [...appliedOverrides]) {
+	for (const [propName, { value, base }] of [...appliedOverrides]) {
+		const reloaded = configUtils.getConfigValue(propName);
+		if (!sameConfigValue(reloaded, base)) {
+			appliedOverrides.delete(propName);
+			log.notify(
+				`Config reload changed '${propName}'; dropping the in-process override of it (was ${JSON.stringify(value)})`
+			);
+			continue;
+		}
 		setProperty(propName, value);
 	}
 }
@@ -177,7 +236,8 @@ export function initSync(force: boolean = false) {
 				applyInheritedConfigOverrides();
 			}
 			// force implies the on-disk config was just re-read from scratch, which would otherwise
-			// silently drop every override applied on this thread so far (inherited or local).
+			// silently drop every override applied on this thread so far (inherited or local) —
+			// except the ones the re-read itself changed, which the config file wins.
 			if (force) reapplyAllOverrides();
 
 			// Sync installProps' HDB_ROOT from the config's rootPath *after* any override replay

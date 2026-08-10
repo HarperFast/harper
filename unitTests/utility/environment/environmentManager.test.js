@@ -191,6 +191,10 @@ describe('Test environmentManager module', () => {
 	});
 
 	describe('Test config-override tracking and replay (worker-thread inheritance)', () => {
+		// appliedOverrides entries carry the override plus the configured value it displaced, so a
+		// forced reload can tell a config file that still says what it said from one that changed.
+		const overrideMap = (...entries) => new Map(entries.map(([name, value, base]) => [name, { value, base }]));
+
 		afterEach(() => {
 			sandbox.restore();
 			env_rw.__set__('appliedOverrides', new Map());
@@ -228,21 +232,54 @@ describe('Test environmentManager module', () => {
 			expect(env_rw.getConfigOverrides()).to.eql({ operationsApi_network_port: 9926 });
 		});
 
-		it('reapplyAllOverrides replays every override applied on this thread through setProperty', () => {
+		it('reapplyAllOverrides replays every override the reload left alone through setProperty', () => {
 			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
-			env_rw.__set__(
-				'appliedOverrides',
-				new Map([
-					['foo', 'bar'],
-					['baz', 42],
-				])
-			);
+			sandbox.stub(config_utils, 'getConfigValue').returns(undefined);
+			env_rw.__set__('appliedOverrides', overrideMap(['foo', 'bar', undefined], ['baz', 42, undefined]));
 			const reapply_all_overrides = env_rw.__get__('reapplyAllOverrides');
 
 			reapply_all_overrides();
 
 			expect(update_config_object.calledWith('foo', 'bar')).to.be.true;
 			expect(update_config_object.calledWith('baz', 42)).to.be.true;
+		});
+
+		it('lets the config file win: a reload that changed the param retires the override', () => {
+			// A forced re-init is how an operator's harper-config.yaml edit takes effect (the RESTART
+			// handlers in security/keys.ts and processManagement.js). Replaying unconditionally would
+			// make editing an overridden param a silent no-op for the life of the process.
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
+			sandbox.stub(config_utils, 'getConfigValue').returns('edited-on-disk');
+			env_rw.__set__('appliedOverrides', overrideMap(['node_hostname', 'overridden', 'original-on-disk']));
+
+			env_rw.__get__('reapplyAllOverrides')();
+
+			expect(update_config_object.called).to.be.false;
+			// Dropped from the map too, so it stops propagating to newly spawned workers — otherwise
+			// the skew this mechanism prevents would reappear from the other direction.
+			expect(env_rw.getConfigOverrides()).to.be.undefined;
+		});
+
+		it('compares object-valued params by content, since a reload rebuilds them as fresh objects', () => {
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
+			sandbox.stub(config_utils, 'getConfigValue').returns({ data: { path: '/data' } });
+			env_rw.__set__(
+				'appliedOverrides',
+				overrideMap(['databases', { data: { path: '/iso' } }, { data: { path: '/data' } }])
+			);
+
+			env_rw.__get__('reapplyAllOverrides')();
+
+			expect(update_config_object.calledWith('databases', { data: { path: '/iso' } })).to.be.true;
+		});
+
+		it('rejects a value that could not be handed to a worker rather than letting the spawn degrade', () => {
+			// manageThreads.js's configOverrides provider structuredClones this map into every worker
+			// and only logs a clone failure, spawning the worker on the on-disk config instead — so
+			// the cloneability invariant is enforced here, where the caller can still fix it.
+			sandbox.stub(config_utils, 'updateConfigObject');
+			expect(() => env_rw.setProperty('rootPath', () => '/iso')).to.throw(/structured-cloneable/);
+			expect(env_rw.getConfigOverrides()).to.be.undefined;
 		});
 
 		it('a forced initSync() reapplies overrides instead of silently dropping them after the disk re-read', () => {
@@ -254,7 +291,7 @@ describe('Test environmentManager module', () => {
 			sandbox.stub(config_utils, 'getConfigValue');
 			env_rw.__set__('propFileExists', true);
 			env_rw.__set__('inheritedOverridesApplied', true);
-			env_rw.__set__('appliedOverrides', new Map([['locally_set_key', 'should-survive-reload']]));
+			env_rw.__set__('appliedOverrides', overrideMap(['locally_set_key', 'should-survive-reload', undefined]));
 
 			env_rw.initSync(true);
 
@@ -267,7 +304,7 @@ describe('Test environmentManager module', () => {
 			sandbox.stub(config_utils, 'getConfigValue');
 			env_rw.__set__('propFileExists', true);
 			env_rw.__set__('inheritedOverridesApplied', true);
-			env_rw.__set__('appliedOverrides', new Map([['locally_set_key', 'value']]));
+			env_rw.__set__('appliedOverrides', overrideMap(['locally_set_key', 'value', undefined]));
 
 			env_rw.initSync(false);
 
@@ -284,7 +321,7 @@ describe('Test environmentManager module', () => {
 			const get_config_value = sandbox.stub(config_utils, 'getConfigValue').returns('/isolated/root');
 			env_rw.__set__('propFileExists', true);
 			env_rw.__set__('inheritedOverridesApplied', true);
-			env_rw.__set__('appliedOverrides', new Map([['rootPath', '/isolated/root']]));
+			env_rw.__set__('appliedOverrides', overrideMap(['rootPath', '/isolated/root', '/isolated/root']));
 
 			env_rw.initSync(true);
 

@@ -237,6 +237,9 @@ function registerWorkerDataProvider(name, provider) {
 // effective config is never silently whatever happens to be installed on disk. Worker-side replay
 // is environmentManager.ts's applyInheritedConfigOverrides(), invoked from initSync(). Registered
 // on every thread (not just main) so a nested worker-of-a-worker also inherits the full chain.
+// A provider whose value fails to clone is only logged and skipped below — which for this one
+// means spawning the worker on the on-disk config, the very thing it exists to prevent — so
+// setProperty() rejects a non-cloneable value up front, at the caller that can still fix it.
 registerWorkerDataProvider('configOverrides', () => envMgr.getConfigOverrides());
 function collectProvidedWorkerData(options) {
 	if (workerDataProviders.size === 0) return undefined;
