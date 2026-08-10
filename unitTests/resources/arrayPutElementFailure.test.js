@@ -60,6 +60,8 @@ describe('array put element failure', () => {
 		return { error, unhandled };
 	}
 
+	// An element with no primary key throws inside its own dispatch, with element 0's write already in
+	// flight. Earliest index wins, and the loser is kept as the winner's cause rather than lost.
 	it('fails the batch and abandons nothing when an earlier write rejects and a later element throws', async function () {
 		class RejectingFirstElement extends Docs {
 			put(record, target) {
@@ -68,22 +70,60 @@ describe('array put element failure', () => {
 			}
 		}
 		const { error, unhandled } = await withRejectionWatch(() =>
-			RejectingFirstElement.put(collectionTarget(), [{ id: 'fail-reject', kind: 'fail-mixed' }, null], {})
+			RejectingFirstElement.put(
+				collectionTarget(),
+				[{ id: 'fail-reject', kind: 'fail-mixed' }, { kind: 'fail-mixed' }],
+				{}
+			)
 		);
-		// Not the sibling's rejection: the malformed element is what the caller has to fix. The sibling's
-		// failure is kept as the cause, so an infrastructure error is not lost behind a 400.
-		assert.match(error?.message ?? '', /index 1 is null/);
-		assert.strictEqual(error.statusCode, 400);
-		assert.strictEqual(error.cause?.message, 'element write failed');
+		assert.strictEqual(error?.message, 'element write failed');
+		assert.match(error.cause?.message ?? '', /Invalid primary key/);
 		assert.deepStrictEqual(unhandled, []);
 		assert.deepStrictEqual(await idsOf('fail-mixed'), []);
+	});
+
+	// The regression CI caught: which failure a mixed batch reports must not depend on whether an
+	// element's `getResource` resolved synchronously or asynchronously. It used to — the synchronous
+	// throw was reported directly while the asynchronous one became a rejection ordered by index.
+	it('reports the same failure whether the throwing element resolves sync or async', async function () {
+		const reported = [];
+		for (const asyncResolve of [false, true]) {
+			const kind = `fail-prec-${asyncResolve}`;
+			class Mixed extends Docs {
+				static getResource(target, context, options) {
+					const resolved = super.getResource(target, context, options);
+					return asyncResolve ? Promise.resolve(resolved) : resolved;
+				}
+				put(record, target) {
+					if (record?.id === 'prec-reject') return Promise.reject(new Error('sibling failed'));
+					if (record?.id === 'prec-throw') throw new Error('malformed element');
+					return super.put(record, target);
+				}
+			}
+			const { error, unhandled } = await withRejectionWatch(() =>
+				Mixed.put(
+					collectionTarget(),
+					[
+						{ id: 'prec-reject', kind },
+						{ id: 'prec-throw', kind },
+					],
+					{}
+				)
+			);
+			assert.deepStrictEqual(unhandled, []);
+			assert.deepStrictEqual(await idsOf(kind), []);
+			reported.push({ error: error?.message, cause: error?.cause?.message });
+		}
+		assert.deepStrictEqual(reported[0], reported[1]);
+		assert.deepStrictEqual(reported[0], { error: 'sibling failed', cause: 'malformed element' });
 	});
 
 	it('rejects the whole batch for a null element, persisting no earlier element', async function () {
 		const { error, unhandled } = await withRejectionWatch(() =>
 			Docs.put(collectionTarget(), [{ id: 'fail-null-a', kind: 'fail-null' }, null], {})
 		);
-		// A malformed body is the client's error: named position, 400, no engine wording.
+		// A malformed body is the client's error: named position, 400, no engine wording. Rejected before
+		// anything is dispatched, so it cannot race a sibling and nothing needs unwinding.
 		assert.match(error?.message ?? '', /Array element at index 1 is null/);
 		assert.strictEqual(error.statusCode, 400);
 		assert.deepStrictEqual(unhandled, []);
@@ -244,7 +284,10 @@ describe('array put element failure', () => {
 					{}
 				)
 			);
-			assert.strictEqual(error, thrown);
+			// Earliest index wins, so the sibling is reported and the thrown value rides along as its
+			// cause — intact, not converted into a TypeError by the attachment.
+			assert.strictEqual(error?.message, 'sibling failed');
+			assert.strictEqual(error.cause, thrown);
 			assert.deepStrictEqual(unhandled, []);
 			assert.deepStrictEqual(await idsOf(kind), []);
 		});

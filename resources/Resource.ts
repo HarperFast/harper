@@ -144,14 +144,16 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
 				const resourceClass = resource.constructor;
 				const primaryKey = resourceClass.primaryKey;
+				// Before dispatching anything: a malformed body must not race a sibling's write, and a bare
+				// dereference below would reach the client as a 500 carrying V8's wording.
+				for (let index = 0; index < data.length; index++)
+					if (data[index] == null)
+						throw new ClientError(`Array element at index ${index} is ${data[index]}, expected a record`);
 				const elementTarget = elementTargetFactory(query);
 				const results = [];
 				try {
 					for (let index = 0; index < data.length; index++) {
 						const element = data[index];
-						// A bare dereference would reach the client as a 500 carrying V8's wording.
-						if (element == null)
-							throw new ClientError(`Array element at index ${index} is ${element}, expected a record`);
 						const target = elementTarget(element[primaryKey]);
 						const elementResource = resourceClass.getResource(target, request, {
 							async: true,
@@ -170,22 +172,17 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						else missingMethod(elementResource, 'put');
 					}
 				} catch (error) {
-					// Settle the already-dispatched elements or a rejection among them goes unhandled. `error`
-					// wins over a sibling's, since the malformed element is what the caller has to fix, but a
-					// sibling that failed for an infrastructure reason is kept as its cause rather than lost.
+					// Settle the already-dispatched elements or a rejection among them goes unhandled. Then
+					// report the earliest-index failure, the same rule `settleElements` applies: every sibling
+					// already dispatched precedes the element that threw, so the batch reports the same failure
+					// whether that element's dispatch resolved synchronously or asynchronously. The other
+					// failure is kept as the winner's cause rather than lost.
 					return Promise.allSettled(results).then((settled) => {
 						const failed = settled.find((sibling) => sibling.status === 'rejected');
-						// Only where the assignment can actually succeed: application code may `throw` a
-						// primitive or a frozen error, and assigning to either replaces it with a TypeError.
-						if (
-							failed &&
-							error &&
-							typeof error === 'object' &&
-							Object.isExtensible(error) &&
-							(error as any).cause === undefined
-						)
-							(error as any).cause = (failed as PromiseRejectedResult).reason;
-						throw error;
+						if (!failed) throw error;
+						const winner = (failed as PromiseRejectedResult).reason;
+						attachCause(winner, error);
+						throw winner;
 					});
 				}
 				// Not `Promise.all`: settling the batch while a slower element is still resolving lets that
@@ -601,6 +598,16 @@ export function snakeCase(camelCase: string) {
 }
 
 /**
+ * Record `cause` on a thrown value that will be reported, so the losing failure of a batch is not
+ * lost. Application code may `throw` a primitive or a frozen error, and assigning a property to
+ * either replaces it with a TypeError — so only assign where it can actually succeed.
+ */
+function attachCause(reported: any, cause: any): void {
+	if (reported && typeof reported === 'object' && Object.isExtensible(reported) && reported.cause === undefined)
+		reported.cause = cause;
+}
+
+/**
  * Mint per-element targets for a fanned-out batch write. Each element needs its own object — its id
  * must not be visible to a sibling whose dispatch resolves later — but it also needs the request's
  * query and route metadata, which a `put()` override can read. The request's contribution is
@@ -638,11 +645,21 @@ function elementTargetFactory(query: any): (id: any) => RequestTarget {
 function settleElements(results: any[]): Promise<any[]> {
 	return Promise.allSettled(results).then((settled) => {
 		const values = new Array(settled.length);
+		let failed = false;
+		let reported;
 		for (let index = 0; index < settled.length; index++) {
 			const element = settled[index];
-			if (element.status === 'rejected') throw element.reason;
-			values[index] = element.value;
+			if (element.status !== 'rejected') {
+				values[index] = element.value;
+			} else if (!failed) {
+				failed = true;
+				reported = element.reason;
+			} else {
+				attachCause(reported, element.reason);
+				break;
+			}
 		}
+		if (failed) throw reported;
 		return values;
 	});
 }
