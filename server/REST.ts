@@ -117,6 +117,24 @@ async function findInactiveComponent(url: string): Promise<string | undefined> {
 	}
 }
 
+/**
+ * Emit RFC 7233-style pagination headers for a `Prefer: count=` request. Table.search returns the page
+ * with a `recordCount` (total matching records, or null when an exact scan hit its guardrail) and a
+ * `recordCountExact` flag. `Content-Range: items <start>-<end>/<total>` lets a client paginate;
+ * `Preference-Applied` echoes whether the total is exact, estimated, or unavailable. All three are added
+ * to `Access-Control-Expose-Headers` so a browser can read them cross-origin (they aren't safelisted).
+ */
+function setCountHeaders(headers: Headers, offset: number, page: any) {
+	const total = page.recordCount;
+	const len = Array.isArray(page) ? page.length : 0;
+	const range = len > 0 ? `${offset}-${offset + len - 1}` : '*';
+	const totalStr = typeof total === 'number' ? String(total) : '*';
+	headers.set('Range-Unit', 'items');
+	headers.set('Content-Range', `items ${range}/${totalStr}`);
+	headers.set('Preference-Applied', `count=${total == null ? 'none' : page.recordCountExact ? 'exact' : 'estimated'}`);
+	headers.set('Access-Control-Expose-Headers', 'Content-Range, Range-Unit, Preference-Applied');
+}
+
 async function http(request: Request, nextHandler, resources: Resources, httpOptions: any) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
@@ -165,6 +183,18 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 
 			(target as any).async = true;
 			resource = entry.Resource;
+			// Pagination total-count opt-in (no default): `Prefer: count=exact|estimated`. Table.search
+			// reads target.count to compute the total emitted as Content-Range below.
+			const prefer = headersObject['prefer'];
+			if (prefer) {
+				for (const pref of parseHeaderValue(prefer as any)) {
+					const mode = (pref?.value as string | undefined)?.toLowerCase();
+					if (pref?.name === 'count' && (mode === 'exact' || mode === 'estimated')) {
+						(target as any).count = mode;
+						break;
+					}
+				}
+			}
 		}
 		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
@@ -348,6 +378,13 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		// TODO: Handle 201 Created
 		if (responseData !== undefined) {
+			if (
+				(target as any)?.count &&
+				(method === 'GET' || method === 'HEAD') &&
+				responseData.recordCount !== undefined
+			) {
+				setCountHeaders(headers, (target as any).offset || 0, responseData);
+			}
 			responseObject.body = serialize(responseData, request, responseObject);
 			if (method === 'HEAD') responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
 		}

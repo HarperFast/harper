@@ -55,6 +55,7 @@ import {
 	searchByIndex,
 	findAttribute,
 	estimateCondition,
+	estimatedEntryCount,
 	flattenKey,
 	COERCIBLE_OPERATORS,
 	executeConditions,
@@ -128,6 +129,9 @@ const EVICTION_BATCH_SIZE = 100;
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
+// Guardrail for `Prefer: count=exact`: cap how many rows an exact count scan visits before giving up
+// (reporting an unknown total) so a paginated read can't turn into an unbounded full-table scan.
+const MAX_EXACT_COUNT_SCAN = 1_000_000;
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -3405,6 +3409,7 @@ export function makeTable(options) {
 				}
 			}
 			const select = target.select;
+			const hasUserConditions = conditions.length > 0;
 			if (conditions.length === 0) {
 				conditions = [{ attribute: primaryKey, comparator: 'greater_than', value: true }];
 			}
@@ -3487,12 +3492,51 @@ export function makeTable(options) {
 				readTxn,
 				transformToRecord
 			);
+			const offset = target.offset || 0;
+			const end = target.limit !== undefined ? offset + (target.limit as number) : undefined;
+			// `Prefer: count=` (REST pagination): materialize the requested page and attach a total record
+			// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
+			// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
+			// table estimate. Opt-in only — the default streaming path below is untouched.
+			if (target.count) {
+				const wantExact = target.count === 'exact';
+				return (async () => {
+					const page: any = [];
+					let scanned = 0;
+					let exact = true;
+					for await (const record of results) {
+						if (scanned >= offset && (end === undefined || scanned < end)) page.push(record);
+						scanned++;
+						// `estimated` only needs the page; `exact` keeps counting the whole match set, bounded
+						// so a pathological table can't turn a page fetch into an unbounded scan.
+						if (!wantExact && end !== undefined && scanned >= end) break;
+						if (wantExact && scanned > MAX_EXACT_COUNT_SCAN) {
+							exact = false;
+							break;
+						}
+					}
+					txn.doneReadTxn();
+					let total: number | null;
+					if (wantExact) {
+						total = exact ? scanned : null;
+					} else if (!hasUserConditions) {
+						total = estimatedEntryCount(primaryStore);
+					} else {
+						const est = estimateCondition(TableResource)({
+							conditions,
+							operator: operator ? String(operator).toLowerCase() : 'and',
+						});
+						total = isFinite(est) ? Math.round(est) : null;
+					}
+					page.recordCount = total;
+					page.recordCountExact = wantExact && exact;
+					page.selectApplied = true;
+					page.getColumns = getColumns;
+					return page;
+				})() as any;
+			}
 			// apply any offset/limit after all the sorting and filtering
-			if (target.offset || target.limit !== undefined)
-				results = results.slice(
-					target.offset,
-					target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
-				);
+			if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 			results.onDone = () => {
 				results.onDone = null; // ensure that it isn't called twice
 				txn.doneReadTxn();

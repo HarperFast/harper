@@ -244,4 +244,68 @@ suite('REST query syntax', { skip: skipSuite }, (ctx) => {
 			)
 			.expect(200);
 	});
+
+	// `Prefer: count=` (pagination total-count) — emits Content-Range/Range-Unit/Preference-Applied.
+	test('[rest] count=exact emits an exact Content-Range', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(2)')
+			.set('Prefer', 'count=exact')
+			.expect('Range-Unit', 'items')
+			.expect('Content-Range', 'items 0-1/5')
+			.expect('Preference-Applied', 'count=exact')
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect((r) =>
+				assert.ok(
+					(r.headers['access-control-expose-headers'] || '').includes('Content-Range'),
+					`expected Content-Range to be exposed for CORS, got: ${r.headers['access-control-expose-headers']}`
+				)
+			)
+			.expect(200);
+	});
+
+	test('[rest] count=exact reflects the offset window but a total independent of it', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(1,3)') // offset 1, 2 rows
+			.set('Prefer', 'count=exact')
+			.expect('Content-Range', 'items 1-2/5')
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect(200);
+	});
+
+	test('[rest] count=exact on a filtered query counts only matches', () => {
+		return client
+			.reqRest('/Related/?name==name-2&limit(10)')
+			.set('Prefer', 'count=exact')
+			.expect('Content-Range', 'items 0-0/1')
+			.expect('Preference-Applied', 'count=exact')
+			.expect(200);
+	});
+
+	test('[rest] count=estimated emits a numeric total flagged estimated', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(2)')
+			.set('Prefer', 'count=estimated')
+			.expect('Preference-Applied', 'count=estimated')
+			.expect((r) => assert.match(r.headers['content-range'], /^items 0-1\/\d+$/, r.text))
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect(200);
+	});
+
+	test('[rest] no Prefer header means no Content-Range (opt-in only)', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(2)')
+			.expect((r) => assert.equal(r.headers['content-range'], undefined, r.text))
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect(200);
+	});
+
+	test('[rest] HEAD with count=exact returns the count header and no body', () => {
+		return request(client.restURL)
+			.head('/Related/?sort(id)&limit(2)')
+			.set(client.headers)
+			.set('Prefer', 'count=exact')
+			.expect('Content-Range', 'items 0-1/5')
+			.expect((r) => assert.ok(!r.body || Object.keys(r.body).length === 0, r.text))
+			.expect(200);
+	});
 });
