@@ -740,9 +740,10 @@ describe('HNSW limit above the resolved search ef', () => {
 	// was actually resolved, so it reports whether the limit path went back to the store.
 	it('does not re-resolve the graph size for a limit past the end of the table', async () => {
 		const customIndex = T.indices.vector.customIndex;
-		customIndex.approximateNodeCount(); // populate the memo, well inside its TTL for the queries below
-		const memoAt = customIndex.nodeCountAt;
-		for (let i = 0; i < 5; i++) {
+		customIndex.approximateNodeCount(); // memoize the size, so only a re-resolution moves the timestamp
+		let memoAt = customIndex.nodeCountAt;
+		let reresolutions = 0;
+		for (let i = 0; i < 10; i++) {
 			await fromAsync(
 				T.search({
 					sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
@@ -750,8 +751,14 @@ describe('HNSW limit above the resolved search ef', () => {
 					limit: 5000,
 				})
 			);
+			if (customIndex.nodeCountAt !== memoAt) {
+				reresolutions++;
+				memoAt = customIndex.nodeCountAt;
+			}
 		}
-		assert.strictEqual(customIndex.nodeCountAt, memoAt, 'a limit past the graph size re-resolved the node count');
+		// Counting rather than asserting none: this loop runs well inside NODE_COUNT_TTL, but the memo
+		// may already have been near expiry, and one ordinary expiry is not the regression being caught.
+		assert(reresolutions <= 1, `a limit past the graph size re-resolved the node count ${reresolutions} times`);
 	});
 
 	// The predicate-aware visit budget (#1241) is what stops a selective filter crawling the graph,
