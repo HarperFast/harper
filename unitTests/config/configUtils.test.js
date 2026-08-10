@@ -1044,6 +1044,24 @@ describe('Test configUtils module', () => {
 			expect(nested_config).to.eql({ rootPath: '/hdb' });
 			config_obj_rw();
 		});
+
+		it('flattening a throwaway doc does not make it the live config the mirror writes into', () => {
+			// flattenConfig() also runs on docs that are discarded moments later — the defaults doc in
+			// getDefaultConfig()/createConfigFile(), and the user-supplied doc installer.ts reads for
+			// an HDB_CONFIG install. When it installed those as configObj, the mirror above wrote the
+			// override into a tree nobody would ever read, which is the exact flat/nested divergence
+			// it exists to close. Only setActiveConfig()'s callers own the live tree.
+			const live_config = { operationsApi: { network: { port: 9925 } } };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', live_config);
+
+			config_utils_rw.flattenConfig({ operationsApi: { network: { port: 1 } } });
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9999);
+
+			expect(config_utils_rw.__get__('configObj')).to.equal(live_config);
+			expect(live_config.operationsApi.network.port).to.equal(9999);
+			config_obj_rw();
+		});
 	});
 
 	describe('Test updateConfigValue function', () => {

@@ -201,8 +201,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc, skipFsValidation);
 
-	const configObj = configDoc.toJSON();
-	flatConfigObj = flattenConfig(configObj);
+	flatConfigObj = setActiveConfig(configDoc.toJSON());
 
 	// Create new config file and write config doc to it.
 	const hdbRoot = configDoc.getIn(['rootPath']) as string;
@@ -508,9 +507,9 @@ export function initConfig(force = false) {
 
 		// Validates config doc and if required sets default values for some parameters.
 		validateConfig(configDoc);
-		const configObj = configDoc.toJSON();
-		(server as any).config = configObj;
-		flatConfigObj = flattenConfig(configObj);
+		const parsedConfig = configDoc.toJSON();
+		(server as any).config = parsedConfig;
+		flatConfigObj = setActiveConfig(parsedConfig);
 
 		// If config has old version of logrotate enabled let user know it has been deprecated.
 		if (flatConfigObj['logging_rotation_rotate']) {
@@ -703,10 +702,11 @@ export function updateConfigObject(param: string, value: any) {
 	// nested-path readers derive behavior — e.g. a component's network port/protocol — from
 	// getConfigObj()'s tree, not the flattened map, so an override that only touched
 	// flatConfigObj was invisible to them (the on-disk shape kept winning regardless of
-	// setProperty()). Only mirror once a real config has been loaded — getConfigObj() treats
-	// configObj's falsiness as "not yet initialized" and lazily calls initConfig(), so creating
-	// an empty configObj here (before install writes the config file / initConfig ever runs)
-	// would permanently short-circuit that lazy init to an empty tree.
+	// setProperty()). configObj is null/undefined only before a live config has ever been
+	// installed (setActiveConfig) — during install, before the config file is written. Don't
+	// auto-vivify it here: getConfigObj() treats configObj's falsiness as "not yet initialized"
+	// and lazily calls initConfig(), so an empty object here would permanently short-circuit
+	// that lazy init to an empty tree.
 	if (configObj != null && !NON_NESTED_CONFIG_PARAMS.has(configObjKey)) {
 		const pathSegments = configObjKey.split('_');
 		let node = configObj;
@@ -898,7 +898,7 @@ export function updateConfigValue(
 	}
 	atomicWriteFile(configFileLocation, String(configDoc));
 	if (update_config_obj) {
-		flatConfigObj = flattenConfig(configDoc.toJSON());
+		flatConfigObj = setActiveConfig(configDoc.toJSON());
 	}
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
 }
@@ -917,9 +917,28 @@ function backupConfigFile(configPath, hdbRoot) {
 	}
 }
 
+/**
+ * Flattens `obj` and installs it as the live config: the nested tree getConfigObj() hands out and
+ * updateConfigObject() mirrors overrides into, alongside the flat map returned here.
+ *
+ * Only the three callers that own the live config may do this. flattenConfig() also runs on
+ * throwaway docs — the defaults doc in getDefaultConfig()/createConfigFile(), and the user-supplied
+ * doc installer.ts reads for HDB_CONFIG — so setting configObj as a side effect of flattening left
+ * it pointing at a tree that was discarded moments later, which is indistinguishable from the live
+ * tree to every reader of configObj.
+ * @param obj
+ * @returns the flattened config
+ */
+function setActiveConfig(obj) {
+	const flatObj = flattenConfig(obj);
+	configObj = obj;
+	return flatObj;
+}
+
 const PRESERVED_PROPERTIES = ['databases'];
 /**
  * Flattens the JSON version of Harper config with underscores separating each parent/child key.
+ * Does NOT install `obj` as the live config — see setActiveConfig() for that.
  * @param obj
  * @returns {null}
  */
@@ -928,10 +947,7 @@ export function flattenConfig(obj) {
 	if (obj?.operationsApi?.network) obj.operationsApi.network = { ...obj.http, ...obj.operationsApi.network };
 	if (obj?.operationsApi) obj.operationsApi.tls = { ...obj.tls, ...obj.operationsApi.tls };
 
-	configObj = obj;
-	const flatObj = squashObj(obj);
-
-	return flatObj;
+	return squashObj(obj);
 
 	function squashObj(obj) {
 		let result = {};
