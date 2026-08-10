@@ -44,21 +44,28 @@ suite('HTTP worker startup recovery (#1827)', { skip: skipSuite }, (ctx: Context
 		ok(ctx.harper.startupOutput.stdout.includes('successfully started'));
 		const deadline = Date.now() + 30_000;
 		let ticks: any[] = [];
+		let lastError: unknown;
 		while (Date.now() < deadline) {
-			const response = await fetch(new URL('/SchedulerTick/', ctx.harper.httpURL), {
-				headers: {
-					accept: 'application/json',
-					authorization: basicAuth(ctx.harper.admin.username, ctx.harper.admin.password),
-				},
-			});
-			strictEqual(response.status, 200);
-			ticks = (await response.json()) as any[];
-			if (ticks.some((tick) => tick.jobName === 'tick')) break;
+			try {
+				const response = await fetch(new URL('/SchedulerTick/', ctx.harper.httpURL), {
+					headers: {
+						accept: 'application/json',
+						authorization: basicAuth(ctx.harper.admin.username, ctx.harper.admin.password),
+					},
+				});
+				strictEqual(response.status, 200);
+				ticks = (await response.json()) as any[];
+				if (ticks.some((tick) => tick.jobName === 'tick')) break;
+			} catch (error) {
+				// A connection refused here means the replacement worker is not accepting yet, which is
+				// what the deadline is for. Keep the last one so a wholly unreachable server reports why.
+				lastError = error;
+			}
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
 		}
 		ok(
 			ticks.some((tick) => tick.jobName === 'tick'),
-			'expected the replacement primary worker to run scheduler jobs'
+			`expected the replacement primary worker to run scheduler jobs${lastError ? ` (last error: ${lastError})` : ''}`
 		);
 	});
 
