@@ -175,14 +175,11 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					// Settle the already-dispatched elements or a rejection among them goes unhandled. Then
 					// report the earliest-index failure, the same rule `settleElements` applies: every sibling
 					// already dispatched precedes the element that threw, so the batch reports the same failure
-					// whether that element's dispatch resolved synchronously or asynchronously. The other
-					// failure is kept as the winner's cause rather than lost.
+					// whether that element's dispatch resolved synchronously or asynchronously.
 					return Promise.allSettled(results).then((settled) => {
 						const failed = settled.find((sibling) => sibling.status === 'rejected');
 						if (!failed) throw error;
-						const winner = (failed as PromiseRejectedResult).reason;
-						attachCause(winner, error);
-						throw winner;
+						throw (failed as PromiseRejectedResult).reason;
 					});
 				}
 				// Not `Promise.all`: settling the batch while a slower element is still resolving lets that
@@ -598,16 +595,6 @@ export function snakeCase(camelCase: string) {
 }
 
 /**
- * Record `cause` on a thrown value that will be reported, so the losing failure of a batch is not
- * lost. Application code may `throw` a primitive or a frozen error, and assigning a property to
- * either replaces it with a TypeError — so only assign where it can actually succeed.
- */
-function attachCause(reported: any, cause: any): void {
-	if (reported && typeof reported === 'object' && Object.isExtensible(reported) && reported.cause === undefined)
-		reported.cause = cause;
-}
-
-/**
  * Mint per-element targets for a fanned-out batch write. Each element needs its own object — its id
  * must not be visible to a sibling whose dispatch resolves later — but it also needs the request's
  * query and route metadata, which a `put()` override can read. The request's contribution is
@@ -624,7 +611,10 @@ function elementTargetFactory(query: any): (id: any) => RequestTarget {
 	// and making the skip below dead. A nullish own value carries no metadata either.
 	const carried: Record<string, any> = {};
 	for (const key of Object.keys(base)) {
+		// `checkPermission` is already stripped by `cloneRequestTarget`; excluded again here so the
+		// invariant is local to the dispatch that depends on it rather than inherited from elsewhere.
 		if (key === 'id' || key === 'isCollection' || key === 'pathname' || key === 'search') continue;
+		if (key === 'checkPermission') continue;
 		const value = (base as any)[key];
 		if (value != null) carried[key] = value;
 	}
@@ -645,21 +635,11 @@ function elementTargetFactory(query: any): (id: any) => RequestTarget {
 function settleElements(results: any[]): Promise<any[]> {
 	return Promise.allSettled(results).then((settled) => {
 		const values = new Array(settled.length);
-		let failed = false;
-		let reported;
 		for (let index = 0; index < settled.length; index++) {
 			const element = settled[index];
-			if (element.status !== 'rejected') {
-				values[index] = element.value;
-			} else if (!failed) {
-				failed = true;
-				reported = element.reason;
-			} else {
-				attachCause(reported, element.reason);
-				break;
-			}
+			if (element.status === 'rejected') throw element.reason;
+			values[index] = element.value;
 		}
-		if (failed) throw reported;
 		return values;
 	});
 }

@@ -77,7 +77,6 @@ describe('array put element failure', () => {
 			)
 		);
 		assert.strictEqual(error?.message, 'element write failed');
-		assert.match(error.cause?.message ?? '', /Invalid primary key/);
 		assert.deepStrictEqual(unhandled, []);
 		assert.deepStrictEqual(await idsOf('fail-mixed'), []);
 	});
@@ -112,10 +111,10 @@ describe('array put element failure', () => {
 			);
 			assert.deepStrictEqual(unhandled, []);
 			assert.deepStrictEqual(await idsOf(kind), []);
-			reported.push({ error: error?.message, cause: error?.cause?.message });
+			reported.push(error?.message);
 		}
-		assert.deepStrictEqual(reported[0], reported[1]);
-		assert.deepStrictEqual(reported[0], { error: 'sibling failed', cause: 'malformed element' });
+		assert.strictEqual(reported[0], reported[1]);
+		assert.strictEqual(reported[0], 'sibling failed');
 	});
 
 	it('rejects the whole batch for a null element, persisting no earlier element', async function () {
@@ -259,11 +258,12 @@ describe('array put element failure', () => {
 		assert.match(error.message, /does not have a put method/);
 	});
 
-	// Attaching a sibling's failure as `cause` must not replace what the override actually threw:
-	// assigning a property to a primitive, or to a frozen object, throws in strict mode.
-	for (const [shape, thrown] of [
-		['a primitive', 'a primitive string error'],
-		['a frozen error', Object.freeze(new Error('frozen original'))],
+	// The value an override throws is never mutated on its way out — no `cause` is welded onto it. A
+	// primitive and a frozen error are the shapes that made the previous attempt throw, and a shared
+	// error object is the reason the attempt was abandoned rather than guarded further.
+	for (const [shape, thrown, expectedIntact] of [
+		['a primitive', 'a primitive string error', 'a primitive string error'],
+		['a frozen error', Object.freeze(new Error('frozen original')), 'frozen original'],
 	]) {
 		it(`preserves ${shape} thrown by an override instead of replacing it`, async function () {
 			const kind = `fail-prim-${shape.replace(/\W+/g, '-')}`;
@@ -284,10 +284,11 @@ describe('array put element failure', () => {
 					{}
 				)
 			);
-			// Earliest index wins, so the sibling is reported and the thrown value rides along as its
-			// cause — intact, not converted into a TypeError by the attachment.
+			// Earliest index wins, so the sibling is reported — and the value the override threw is left
+			// exactly as it was, never mutated on its way out.
 			assert.strictEqual(error?.message, 'sibling failed');
-			assert.strictEqual(error.cause, thrown);
+			assert.strictEqual(thrown instanceof Error ? thrown.message : thrown, expectedIntact);
+			assert.strictEqual(thrown.cause, undefined);
 			assert.deepStrictEqual(unhandled, []);
 			assert.deepStrictEqual(await idsOf(kind), []);
 		});
