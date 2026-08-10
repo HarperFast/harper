@@ -61,7 +61,7 @@ describe('array put element failure', () => {
 	}
 
 	// An element with no primary key throws inside its own dispatch, with element 0's write already in
-	// flight. Earliest index wins, and the loser is kept as the winner's cause rather than lost.
+	// flight. Earliest index wins, and only that failure is reported.
 	it('fails the batch and abandons nothing when an earlier write rejects and a later element throws', async function () {
 		class RejectingFirstElement extends Docs {
 			put(record, target) {
