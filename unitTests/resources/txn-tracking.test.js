@@ -389,12 +389,12 @@ describe('Write txn timeout', () => {
 				aborted++;
 			},
 		};
-		assert.equal(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
+		assert.strictEqual(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
 
 		txn.abort();
 
-		assert.equal(aborted, 1, 'abort() must release the native handle');
-		assert.equal(txn.transaction, null, 'the released handle must not be reachable for reuse');
+		assert.strictEqual(aborted, 1, 'abort() must release the native handle');
+		assert.strictEqual(txn.transaction, null, 'the released handle must not be reachable for reuse');
 	});
 
 	// Control: the refcount loop still owns the read-created release, and the fallback must not
@@ -413,8 +413,8 @@ describe('Write txn timeout', () => {
 
 		txn.abort();
 
-		assert.equal(aborted, 1, 'the read refcount loop must release it, and the fallback must not re-abort');
-		assert.equal(txn.transaction, null);
+		assert.strictEqual(aborted, 1, 'the read refcount loop must release it, and the fallback must not re-abort');
+		assert.strictEqual(txn.transaction, null);
 	});
 
 	// A failed commitSync leaves the handle open, and directCommitSync has already untracked it, so
@@ -437,14 +437,14 @@ describe('Write txn timeout', () => {
 		txn.open = TRANSACTION_STATE.OPEN;
 		txn.transaction = new RocksTransaction(store.store);
 		store.getEntry(601, { transaction: txn.transaction }); // establishes the read snapshot
-		assert.equal(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
-		assert.equal(liveTxns(), baselineTxns + 1, 'test setup: the native handle must be registered');
+		assert.strictEqual(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
+		assert.strictEqual(liveTxns(), baselineTxns + 1, 'test setup: the native handle must be registered');
 		assert.ok(snapshots() > baselineSnapshots, 'test setup: the read must have pinned a snapshot');
 
 		txn.abort();
 
-		assert.equal(liveTxns(), baselineTxns, 'the native handle must be deregistered');
-		assert.equal(snapshots(), baselineSnapshots, 'the read snapshot must be released');
+		assert.strictEqual(liveTxns(), baselineTxns, 'the native handle must be deregistered');
+		assert.strictEqual(snapshots(), baselineSnapshots, 'the read snapshot must be released');
 	});
 
 	// RocksTransaction.abort() throws on an already committed/aborted handle. abort() must absorb
@@ -465,8 +465,8 @@ describe('Write txn timeout', () => {
 
 		assert.doesNotThrow(() => txn.abort());
 
-		assert.equal(txn.transaction, null, 'the handle must be detached even though its abort threw');
-		assert.equal(txn.open, TRANSACTION_STATE.CLOSED, 'the cleanup after the release must still run');
+		assert.strictEqual(txn.transaction, null, 'the handle must be detached even though its abort threw');
+		assert.strictEqual(txn.open, TRANSACTION_STATE.CLOSED, 'the cleanup after the release must still run');
 	});
 
 	it('releases the native handle when a direct commit throws', function () {
@@ -484,8 +484,8 @@ describe('Write txn timeout', () => {
 
 		assert.throws(() => txn.directCommitSync(), /commit failed/);
 
-		assert.equal(aborted, 1, 'a failed direct commit must release the handle it orphaned');
-		assert.equal(txn.transaction, null);
+		assert.strictEqual(aborted, 1, 'a failed direct commit must release the handle it orphaned');
+		assert.strictEqual(txn.transaction, null);
 	});
 });
 

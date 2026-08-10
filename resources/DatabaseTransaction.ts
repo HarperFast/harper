@@ -148,7 +148,8 @@ let replayedWritesWarned = false;
  * committed or aborted, and every caller is a cleanup path whose own callers have no handler — a
  * throw there would abandon the rest of the cleanup.
  */
-function abortNativeTransaction(transaction: RocksTransaction, context: string): void {
+function abortNativeTransaction(transaction: RocksTransaction | null | undefined, context: string): void {
+	if (transaction == null) return;
 	try {
 		transaction.abort();
 	} catch (error) {
