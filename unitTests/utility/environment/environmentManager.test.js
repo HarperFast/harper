@@ -7,6 +7,8 @@ const config_utils = require('#src/config/configUtils');
 const common_utils = require('#src/utility/common_utils');
 const rewire = require('rewire');
 const fs = require('fs');
+const os = require('node:os');
+const path = require('node:path');
 const hdbTerms = require('#src/utility/hdbTerms');
 const env_rw = rewire('#src/utility/environment/environmentManager');
 const log = require('#src/utility/logging/harper_logger');
@@ -341,35 +343,68 @@ describe('Test environmentManager module', () => {
 			expect(get_config_value.calledAfter(update_config_object)).to.be.true;
 			expect(env_rw.getHdbBasePath()).to.equal('/isolated/root');
 		});
+	});
 
-		it('a real worker boots on the inherited overrides, not on the config installed on disk', async () => {
-			// The end-to-end claim the rest of this suite only covers in pieces: a worker whose
-			// workerData carries configOverrides must resolve those values after its own initSync()
-			// re-reads the on-disk config.
+	describe('Test worker-thread inheritance end to end', () => {
+		// A real worker against a config file written for this test, so the assertion depends only on
+		// the mechanism and not on whatever Harper happens to be installed on the machine.
+		const fixtureRoot = path.join(os.tmpdir(), `hdb-config-inheritance-${process.pid}`);
+		const FIXTURE_PORT = 29925;
+		const INHERITED_ROOT = '/inherited/root';
+		const INHERITED_PORT = 19925;
+
+		before(() => {
+			fs.mkdirSync(path.join(fixtureRoot, 'database'), { recursive: true });
+			fs.mkdirSync(path.join(fixtureRoot, 'log'), { recursive: true });
+			// rewire gives configUtils its own module state, so writing this config file doesn't
+			// repoint the live config the rest of the suite runs against.
+			rewire('#src/config/configUtils').createConfigFile(
+				{
+					ROOTPATH: fixtureRoot,
+					OPERATIONSAPI_NETWORK_PORT: FIXTURE_PORT,
+					NODE_HOSTNAME: 'config-inheritance-fixture',
+				},
+				true
+			);
+		});
+
+		after(() => {
+			fs.rmSync(fixtureRoot, { recursive: true, force: true });
+		});
+
+		// ROOTPATH points the worker at the fixture config (common_utils' noBootFile path), so it
+		// boots with no boot-props file of its own.
+		async function bootWorker(configOverrides) {
 			const worker = new Worker(
-				`const { parentPort, workerData } = require('node:worker_threads');
+				`const { parentPort } = require('node:worker_threads');
 				const env = require(${JSON.stringify(require.resolve('#src/utility/environment/environmentManager'))});
 				env.initSync();
 				parentPort.postMessage({
 					rootPath: env.get(${JSON.stringify(hdbTerms.CONFIG_PARAMS.ROOTPATH)}),
 					port: env.get(${JSON.stringify(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)}),
 				});`,
-				{
-					eval: true,
-					workerData: { configOverrides: { rootPath: '/inherited/root', operationsApi_network_port: 19925 } },
-				}
+				{ eval: true, env: { ...process.env, ROOTPATH: fixtureRoot }, workerData: { configOverrides } }
 			);
-
 			try {
-				const effective = await new Promise((resolve, reject) => {
+				return await new Promise((resolve, reject) => {
 					worker.once('message', resolve);
 					worker.once('error', reject);
 					worker.once('exit', (code) => reject(new Error(`worker exited (${code}) before reporting its config`)));
 				});
-				expect(effective).to.eql({ rootPath: '/inherited/root', port: 19925 });
 			} finally {
 				await worker.terminate();
 			}
+		}
+
+		it('a worker with nothing inherited reads the config on disk', async () => {
+			expect(await bootWorker(undefined)).to.eql({ rootPath: fixtureRoot, port: FIXTURE_PORT });
+		});
+
+		it('a worker booted with inherited overrides resolves those instead of the config on disk', async () => {
+			expect(await bootWorker({ rootPath: INHERITED_ROOT, operationsApi_network_port: INHERITED_PORT })).to.eql({
+				rootPath: INHERITED_ROOT,
+				port: INHERITED_PORT,
+			});
 		});
 	});
 });
