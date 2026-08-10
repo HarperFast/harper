@@ -523,7 +523,7 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
 		}
 		const customIndex = T.indices.vector.customIndex;
-		const count = freshNodeCount(customIndex);
+		const count = customIndex.resolveNodeCount();
 		assert(
 			count >= N && count <= N * 1.5,
 			`graph size ${count} should be close to the ${N} indexed vectors (each node is rewritten many times during construction)`
@@ -535,12 +535,12 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 	// in-process always initializes the counter first.
 	it('resolves the same size from a reverse seek when the shared id counter is absent', () => {
 		const customIndex = T.indices.vector.customIndex;
-		const fromCounter = freshNodeCount(customIndex);
+		const fromCounter = customIndex.resolveNodeCount();
 		const idIncrementer = customIndex.idIncrementer;
 		customIndex.idIncrementer = undefined;
 		let fromSeek;
 		try {
-			fromSeek = freshNodeCount(customIndex);
+			fromSeek = customIndex.resolveNodeCount();
 		} finally {
 			customIndex.idIncrementer = idIncrementer;
 		}
@@ -549,9 +549,9 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 
 	it('does not truncate a limit against a memoized size taken before the table grew', async () => {
 		const customIndex = T.indices.vector.customIndex;
-		// Prime the memo at the current size, then grow well past it inside the TTL. Widening ef for a
-		// limit must not be clamped by that stale size, or the limit comes back short.
-		const primed = freshNodeCount(customIndex);
+		// The first query memoizes the size below; the table then grows well past it inside the TTL.
+		// Widening ef for a limit must not be clamped by that stale size, or the limit comes back short.
+		const primed = customIndex.resolveNodeCount();
 		const before = await fromAsync(
 			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 250 })
 		);
@@ -564,16 +564,10 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 		const after = await fromAsync(
 			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 700 })
 		);
-		assert(primed < 700, `precondition: the memo (${primed}) must start below the limit under test`);
+		assert(primed < 700, `precondition: the memoized size (${primed}) must start below the limit under test`);
 		assert.strictEqual(after.length, 700, `stale memo truncated the limit: got ${after.length} of 700`);
 	});
 });
-
-/** Graph size with the TTL memo bypassed, so a count taken right after indexing is current. */
-function freshNodeCount(customIndex) {
-	customIndex.nodeCountAt = 0;
-	return customIndex.approximateNodeCount();
-}
 
 describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
@@ -742,32 +736,22 @@ describe('HNSW limit above the resolved search ef', () => {
 
 	// The ceiling is what bounds the work, not the graph size: resolving a size exact enough to clamp
 	// against would put a store lookup back on every query, and an ef above the node count is free —
-	// the traversal runs out of reachable nodes first.
-	it('does not consult the graph size to widen ef for a limit', async () => {
+	// the traversal runs out of reachable nodes first. The memo's timestamp only moves when the size
+	// was actually resolved, so it reports whether the limit path went back to the store.
+	it('does not re-resolve the graph size for a limit past the end of the table', async () => {
 		const customIndex = T.indices.vector.customIndex;
-		const originalResolve = customIndex.resolveNodeCount;
-		let resolves = 0;
-		customIndex.resolveNodeCount = function (...args) {
-			resolves++;
-			return originalResolve.apply(this, args);
-		};
-		try {
-			customIndex.approximateNodeCount(); // populate the memo, so the auto-scale's own lookup is not counted
-			resolves = 0;
-			for (let i = 0; i < 5; i++) {
-				customIndex.nodeCountAt = Date.now(); // hold it fresh, so any resolve below came from the limit path
-				await fromAsync(
-					T.search({
-						sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
-						select: ['id'],
-						limit: 5000,
-					})
-				);
-			}
-		} finally {
-			customIndex.resolveNodeCount = originalResolve;
+		customIndex.approximateNodeCount(); // populate the memo, well inside its TTL for the queries below
+		const memoAt = customIndex.nodeCountAt;
+		for (let i = 0; i < 5; i++) {
+			await fromAsync(
+				T.search({
+					sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
+					select: ['id'],
+					limit: 5000,
+				})
+			);
 		}
-		assert.strictEqual(resolves, 0, `a limit past the graph size re-resolved the node count ${resolves} times`);
+		assert.strictEqual(customIndex.nodeCountAt, memoAt, 'a limit past the graph size re-resolved the node count');
 	});
 
 	// The predicate-aware visit budget (#1241) is what stops a selective filter crawling the graph,
