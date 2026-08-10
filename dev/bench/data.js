@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786348091094,
+  "lastUpdate": 1786348094154,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -9164,6 +9164,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 53.37,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "eb702ee52ef8f97085dc9d20f81ba52234cf077b",
+          "message": "fix(blob): re-encode inline blobs from the copied buffer, not a read-buffer view\n\nA small blob decoded inline retained `storageBuffer` — the raw msgpack ext-body,\nwhich is a *view* into the store's read buffer — and `pack()` re-emitted it verbatim\non re-encode. The read buffer is recycled by later reads, so a read-modify-write\n(the shape of a REST PATCH: fetch record, carry the unchanged Blob, put it back)\nserialized whatever foreign bytes had since overwritten that buffer, corrupting the\nrecord. The next read then failed with \"Data read, but end of buffer not reached\".\n\nThe sibling `contentBuffer` is already a stable copy (copyingUnpacker uses\ncopyBuffers), so drop `storageBuffer` entirely and let `pack()` fall through to the\nexisting contentBuffer re-encode. No read-path allocation cost — this supersedes the\n`needsStableBuffer` approach in #2103, which masked the corruption by forcing every\nprimary-store read to allocate a fresh buffer. The clobber is on re-ENCODE, not\nmid-decode, which is why a decode-path canary never observed it.\n\nAlso fixes slice() on an inline blob (previously gated off by storageBuffer's\npresence and left to throw).\n\nRepro/regression guard: unitTests/resources/recordCacheStableBuffer.test.js — the\nRMW-with-interleaved-read case failed 25/25 before this change, passes after.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-08-07T19:16:01Z",
+          "url": "https://github.com/HarperFast/harper/commit/eb702ee52ef8f97085dc9d20f81ba52234cf077b"
+        },
+        "date": 1786348093616,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.09,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.89,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 18.35,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.98,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 23.72,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.98,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 35.4,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.55,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 20.19,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 43.59,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 180.35,
             "unit": "ms"
           }
         ]
