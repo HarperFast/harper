@@ -695,37 +695,36 @@ export function updateConfigObject(param: string, value: any) {
 
 	flatConfigObj[configObjKey.toLowerCase()] = value;
 
-	// Keep the nested config tree in sync too. componentLoader (root components) and other
+	// Keep the nested config tree in sync too: componentLoader (root components) and other
 	// nested-path readers derive behavior — e.g. a component's network port/protocol — from
-	// getConfigObj()'s tree, not the flattened map, so an override that only touched
-	// flatConfigObj was invisible to them (the on-disk shape kept winning regardless of
-	// setProperty()). configObj is null/undefined only before a live config has ever been
-	// installed (setActiveConfig) — during install, before the config file is written. Don't
-	// auto-vivify it here: getConfigObj() treats configObj's falsiness as "not yet initialized"
-	// and lazily calls initConfig(), so an empty object here would permanently short-circuit
-	// that lazy init to an empty tree.
+	// getConfigObj()'s tree, not the flattened map, so an override that only touched flatConfigObj
+	// was invisible to them. configObj is unset only before a live config has ever been installed
+	// (setActiveConfig), i.e. during install; don't auto-vivify it, since getConfigObj() reads its
+	// falsiness as "not yet initialized" and an empty object would short-circuit that lazy init
+	// permanently.
 	if (configObj != null && !NON_NESTED_CONFIG_PARAMS.has(configObjKey)) {
 		const pathSegments = configObjKey.split('_');
 		let node = configObj;
 		for (let i = 0; i < pathSegments.length - 1; i++) {
 			const segment = pathSegments[i];
 			if (node[segment] === undefined) {
-				// Nothing to delete on a path section that doesn't exist yet — and auto-vivifying it
-				// just to immediately delete the leaf would leave the (now-empty) intermediate
-				// objects behind, which is exactly the bogus-top-level-section risk above.
+				// Auto-vivifying ancestors only to delete the leaf would leave empty sections behind,
+				// which componentLoader.ts would treat as components to load.
 				if (value === undefined) return;
 				node[segment] = {};
 			} else if (typeof node[segment] !== 'object' || node[segment] === null) {
-				// An existing non-object value here is a legacy scalar shorthand for this key (e.g.
-				// `threads: 4`) — descending through it would silently replace that value with `{}`,
-				// discarding it out from under other readers.
+				// A legacy scalar shorthand for this key (e.g. `threads: 4`); descending would replace
+				// it with {} out from under other readers. Leaves the two views disagreeing on this
+				// param, so say so rather than diverging silently.
+				logger.trace(
+					`Config param '${configObjKey}' not mirrored into the nested config: '${segment}' holds a scalar value`
+				);
 				return;
 			}
 			node = node[segment];
 		}
-		// Match squashObj's own convention (below) of never writing an `undefined` value as an
-		// enumerable key: several root-config readers (e.g. bin/run.ts) iterate configObj's own
-		// keys and assume every one holds a real value.
+		// squashObj never writes an undefined value as an enumerable key either; root-config readers
+		// (e.g. bin/run.ts) iterate configObj's own keys and assume every one holds a real value.
 		const leaf = pathSegments[pathSegments.length - 1];
 		if (value === undefined) delete node[leaf];
 		else node[leaf] = value;
@@ -915,14 +914,11 @@ function backupConfigFile(configPath, hdbRoot) {
 }
 
 /**
- * Flattens `obj` and installs it as the live config: the nested tree getConfigObj() hands out and
- * updateConfigObject() mirrors overrides into, alongside the flat map returned here.
- *
- * Only the three callers that own the live config may do this. flattenConfig() also runs on
- * throwaway docs — the defaults doc in getDefaultConfig()/createConfigFile(), and the user-supplied
- * doc installer.ts reads for HDB_CONFIG — so setting configObj as a side effect of flattening left
- * it pointing at a tree that was discarded moments later, which is indistinguishable from the live
- * tree to every reader of configObj.
+ * Flattens `obj` and installs it as the live config — the nested tree getConfigObj() hands out and
+ * updateConfigObject() mirrors overrides into. Only callers that own the live config may do this:
+ * flattenConfig() also runs on docs that are discarded moments later (the defaults doc, the
+ * user-supplied doc installer.ts reads for HDB_CONFIG), and no reader of configObj can tell one of
+ * those from the real thing.
  * @param obj
  * @returns the flattened config
  */

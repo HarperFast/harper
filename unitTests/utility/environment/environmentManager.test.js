@@ -10,6 +10,7 @@ const fs = require('fs');
 const hdbTerms = require('#src/utility/hdbTerms');
 const env_rw = rewire('#src/utility/environment/environmentManager');
 const log = require('#src/utility/logging/harper_logger');
+const { Worker } = require('node:worker_threads');
 
 const TEST_PROP_1_NAME = 'root';
 const TEST_PROP_2_NAME = 'path';
@@ -282,6 +283,19 @@ describe('Test environmentManager module', () => {
 			expect(env_rw.getConfigOverrides()).to.be.undefined;
 		});
 
+		it('records a snapshot, so mutating the value afterwards cannot rewrite what workers inherit', () => {
+			// initializePaths.js and environmentUtility.ts cache derived per-database paths by mutating
+			// the live `databases` value in place, and that is the same object testUtils.js hands to
+			// setProperty — those derived paths must not reach a worker as if they were operator intent.
+			sandbox.stub(config_utils, 'updateConfigObject');
+			const databases = { data: { path: '/isolated/data' } };
+
+			env_rw.setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, databases);
+			databases.derived = { path: '/ambient/derived' };
+
+			expect(env_rw.getConfigOverrides().databases).to.eql({ data: { path: '/isolated/data' } });
+		});
+
 		it('a forced initSync() reapplies overrides instead of silently dropping them after the disk re-read', () => {
 			// Regression test: initConfig(force) rebuilds configObj/flatConfigObj from disk, which
 			// would otherwise discard anything setProperty() had layered on top of it (e.g. after a
@@ -312,10 +326,9 @@ describe('Test environmentManager module', () => {
 		});
 
 		it('syncs installProps HDB_ROOT from config AFTER replaying overrides, not from the pre-replay disk read', () => {
-			// Regression test for a bug the round-2 canonical-keying fix introduced: setProperty()
-			// records a rootPath override under its canonical name, not HDB_ROOT_KEY, so replaying it
-			// doesn't retrigger the installProps side effect in setProperty() itself — getHdbBasePath()
-			// only tracks an isolated rootPath override if this sync in initSync() runs after replay.
+			// setProperty() records a rootPath override under its canonical name, not HDB_ROOT_KEY, so
+			// replaying it doesn't retrigger the installProps side effect in setProperty() itself —
+			// getHdbBasePath() tracks an overridden rootPath only if this sync runs after replay.
 			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
 			sandbox.stub(config_utils, 'initConfig');
 			const get_config_value = sandbox.stub(config_utils, 'getConfigValue').returns('/isolated/root');
@@ -327,6 +340,36 @@ describe('Test environmentManager module', () => {
 
 			expect(get_config_value.calledAfter(update_config_object)).to.be.true;
 			expect(env_rw.getHdbBasePath()).to.equal('/isolated/root');
+		});
+
+		it('a real worker boots on the inherited overrides, not on the config installed on disk', async () => {
+			// The end-to-end claim the rest of this suite only covers in pieces: a worker whose
+			// workerData carries configOverrides must resolve those values after its own initSync()
+			// re-reads the on-disk config.
+			const worker = new Worker(
+				`const { parentPort, workerData } = require('node:worker_threads');
+				const env = require(${JSON.stringify(require.resolve('#src/utility/environment/environmentManager'))});
+				env.initSync();
+				parentPort.postMessage({
+					rootPath: env.get(${JSON.stringify(hdbTerms.CONFIG_PARAMS.ROOTPATH)}),
+					port: env.get(${JSON.stringify(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)}),
+				});`,
+				{
+					eval: true,
+					workerData: { configOverrides: { rootPath: '/inherited/root', operationsApi_network_port: 19925 } },
+				}
+			);
+
+			try {
+				const effective = await new Promise((resolve, reject) => {
+					worker.once('message', resolve);
+					worker.once('error', reject);
+					worker.once('exit', (code) => reject(new Error(`worker exited (${code}) before reporting its config`)));
+				});
+				expect(effective).to.eql({ rootPath: '/inherited/root', port: 19925 });
+			} finally {
+				await worker.terminate();
+			}
 		});
 	});
 });
