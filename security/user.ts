@@ -356,21 +356,7 @@ function systemTablePermissions(readPerm: boolean): UserRolePermissionTable {
 	};
 }
 
-// The registry is the source of truth for which system tables exist, so the derived permission map
-// is rebuilt whenever it changes rather than sampled once. Scoped to the system database: these
-// events also fire for user tables, and every bump costs a rebuild on the next authentication.
-let systemTablesRevision = 0;
-databaseEventsEmitter.on('updateTable', (table) => {
-	if (table?.databaseName === terms.SYSTEM_SCHEMA_NAME) systemTablesRevision++;
-});
-databaseEventsEmitter.on('dropTable', (_tableName, databaseName) => {
-	if (databaseName === terms.SYSTEM_SCHEMA_NAME) systemTablesRevision++;
-});
-
-const systemTablesByReadPerm = new Map<
-	boolean,
-	{ revision: number; tables: Record<string, UserRolePermissionTable> }
->();
+const systemTablesByReadPerm = new Map<boolean, Record<string, UserRolePermissionTable>>();
 
 /**
  * `systemSchema.json` is install-time only; components create `hdb_scheduler_state`, `hdb_session`,
@@ -378,26 +364,57 @@ const systemTablesByReadPerm = new Map<
  * to every caller, super_user included (harper#2120). The set comes from the live registry that
  * `describe_database` enumerates, so listed and addressable stay one set.
  *
- * This must stay a plain object. Operation forwarding structured-clones the request — permissions
- * included — to a worker thread, and a Proxy is not cloneable: it fails the whole operation with
- * `DataCloneError`. Freshness therefore comes from rebuilding on a revision change, not from a
- * live view.
+ * Two constraints shape this. It must be a plain object, because operation forwarding
+ * structured-clones the request — permissions included — to a worker thread, and a `Proxy` there
+ * fails the whole operation with `DataCloneError`. And it must be updated **in place** rather than
+ * replaced: `security/auth.ts` serves warmed authorization entries and `getSuperUser()` hands back
+ * cached roles, neither of which re-reads a map, so a fresh object would leave those identities on
+ * the stale one and reproduce the original 403.
  *
- * One instance is shared per `readPerm`; nothing mutates these entries.
+ * Entries are defined rather than assigned so a table named `__proto__` becomes an own property
+ * instead of hitting the inherited setter.
  */
+function syncSystemTables(tables: Record<string, UserRolePermissionTable>, readPerm: boolean) {
+	const live = databases[terms.SYSTEM_SCHEMA_NAME];
+	const names = new Set([...Object.keys(systemSchema), ...(live ? Object.keys(live) : [])]);
+	for (const name of names) {
+		if (!Object.hasOwn(tables, name)) {
+			Object.defineProperty(tables, name, {
+				value: systemTablePermissions(readPerm),
+				writable: true,
+				enumerable: true,
+				configurable: true,
+			});
+		}
+	}
+	for (const name of Object.keys(tables)) {
+		if (!names.has(name)) delete tables[name];
+	}
+}
+
 function systemTablesPermissions(readPerm: boolean): Record<string, UserRolePermissionTable> {
-	const cached = systemTablesByReadPerm.get(readPerm);
-	if (cached && cached.revision === systemTablesRevision) return cached.tables;
-	const tables: Record<string, UserRolePermissionTable> = {};
-	for (const table of Object.keys(systemSchema)) {
-		tables[table] = systemTablePermissions(readPerm);
+	let tables = systemTablesByReadPerm.get(readPerm);
+	if (!tables) {
+		tables = {};
+		systemTablesByReadPerm.set(readPerm, tables);
+		syncSystemTables(tables, readPerm);
 	}
-	for (const table of Object.keys(databases[terms.SYSTEM_SCHEMA_NAME] ?? {})) {
-		tables[table] = systemTablePermissions(readPerm);
-	}
-	systemTablesByReadPerm.set(readPerm, { revision: systemTablesRevision, tables });
 	return tables;
 }
+
+// Scoped to the system database: these events also fire for user tables, and resyncing on those
+// would be pure waste. `Table.dropTable()` deletes from the registry without emitting, so a table
+// dropped that way lingers here until the next system-table event — permissively, but only for a
+// table the data layer will then refuse as nonexistent anyway.
+function refreshSystemTables() {
+	for (const [readPerm, tables] of systemTablesByReadPerm) syncSystemTables(tables, readPerm);
+}
+databaseEventsEmitter.on('updateTable', (table) => {
+	if (table?.databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+});
+databaseEventsEmitter.on('dropTable', (_tableName, databaseName) => {
+	if (databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+});
 
 /**
  * adds system table permissions to a role.  This is used to protect system tables by leveraging operationAuthorization.
@@ -408,8 +425,6 @@ function appendSystemTablesToRole(userRole: UserRole) {
 		logger.error(`invalid user role found.`);
 		return;
 	}
-	// Fresh wrapper rather than mutating in place: the per-request role is a shallow clone, so
-	// assigning through it would reach back into the cached role.
 	userRole.permission.system = {
 		...userRole.permission.system,
 		tables: systemTablesPermissions(!!userRole.permission.super_user),
@@ -475,14 +490,7 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 	// Shallow-clone the role and its permission so that verifyPerms can replace
 	// requestJson.hdb_user.role.permission with translated perms without mutating the cache.
 	// The _expandedOperations Set and operations array are shared by reference (read-only).
-	if (userTmp.role) {
-		user.role = { ...userTmp.role, permission: { ...userTmp.role.permission } };
-		// Re-resolve here, not only at cache load: a component can create a system table long after
-		// the cache was built, and that ordering is harper#2120. O(1) unless the registry changed.
-		// Only for roles that already carry system permissions — a role without them is not
-		// authorized against the system database at all, and granting it a block here would be new.
-		if (user.role.permission.system) appendSystemTablesToRole(user.role);
-	}
+	if (userTmp.role) user.role = { ...userTmp.role, permission: { ...userTmp.role.permission } };
 
 	if (validatePassword === true) {
 		// if matches the cached hash immediately return (the fast path)

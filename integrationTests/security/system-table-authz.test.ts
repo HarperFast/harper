@@ -23,10 +23,9 @@ const INSTALL_TABLE = 'hdb_user';
 const ROLE = 'system_table_reader_role';
 const READER = { username: 'system_table_reader', password: 'Reader-pw-2120!' };
 
-/** Any of these mean the request was refused rather than served. */
-function isDenied(status: number): boolean {
-	return status === 401 || status === 403;
-}
+// 403 specifically, not "401 or 403": accepting 401 would let a broken credential or a regression
+// in user lookup satisfy every denial assertion here without authorization ever being consulted.
+const FORBIDDEN = 403;
 
 suite(
 	'harper#2120 — component-created system tables are addressable',
@@ -120,10 +119,9 @@ suite(
 				hash_values: ['no-such-status-id'],
 				get_attributes: ['*'],
 			});
-			ok(isDenied(response.status), `expected a refusal, got ${response.status}`);
+			strictEqual(response.status, FORBIDDEN, 'expected the reader to be authenticated and then forbidden');
 		});
 
-		// The read grant is what widened, so the writes are the half worth proving over the wire.
 		for (const write of [
 			{ operation: 'insert', records: [{ id: 'authz-2120-write-probe', status: 'injected' }] },
 			{ operation: 'update', records: [{ id: 'authz-2120-write-probe', status: 'injected' }] },
@@ -131,7 +129,7 @@ suite(
 		]) {
 			test(`a super_user is refused ${write.operation} on the component-created table`, async () => {
 				const response = await client.req().send({ ...write, database: 'system', table: COMPONENT_TABLE });
-				ok(isDenied(response.status), `expected ${write.operation} to be refused, got ${response.status}`);
+				strictEqual(response.status, FORBIDDEN, `expected ${write.operation} to be forbidden`);
 			});
 		}
 
@@ -158,7 +156,7 @@ suite(
 				search_value: '*',
 				get_attributes: ['*'],
 			});
-			ok(isDenied(response.status), `expected a refusal, got ${response.status}`);
+			strictEqual(response.status, FORBIDDEN, 'expected the reader to be authenticated and then forbidden');
 		});
 	}
 );

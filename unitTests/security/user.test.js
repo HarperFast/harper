@@ -244,7 +244,6 @@ describe('user.ts Unit Tests', () => {
 				password: TEST_PASSWORD,
 				active: true,
 			});
-			// The suite is only meaningful while COMPONENT_TABLE is absent from the install-time list.
 			expect(Object.keys(require('../../json/systemSchema.json'))).to.not.include(COMPONENT_TABLE);
 			// Build the cache BEFORE the table exists — a component creating a system table at
 			// runtime is exactly the case the old snapshot could not see (harper#2120).
@@ -264,8 +263,6 @@ describe('user.ts Unit Tests', () => {
 			await componentTable?.dropTable().catch(() => {});
 		});
 
-		// Goes through the real per-request path rather than reading the cache directly — the cache
-		// was built before COMPONENT_TABLE existed, which is the whole point of harper#2120.
 		async function cachedRolePermissions(username) {
 			const resolved = await user.findAndValidateUser(username, TEST_PASSWORD);
 			return resolved.role.permission;
@@ -315,6 +312,46 @@ describe('user.ts Unit Tests', () => {
 			expect(() => structuredClone(tables)).to.not.throw();
 			expect(structuredClone(tables)[COMPONENT_TABLE].read).to.be.true;
 			expect(() => `${tables}`).to.not.throw();
+		});
+
+		it('should reach identities holding an earlier reference to the map', async () => {
+			// auth.ts serves warmed authorization entries and getSuperUser() hands back cached roles;
+			// neither re-reads the map, so replacing it instead of updating in place would strand them
+			// on the stale copy and reproduce the original 403.
+			const { databaseEventsEmitter } = require('#src/resources/databases');
+			const held = (await cachedRolePermissions(SUPER_USER)).system.tables;
+			const LATE_TABLE = 'hdb_test_late_component';
+			const late = table({
+				database: 'system',
+				table: LATE_TABLE,
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			try {
+				expect(held[LATE_TABLE]).to.not.be.undefined;
+				expect(held[LATE_TABLE].read).to.be.true;
+			} finally {
+				await late?.dropTable().catch(() => {});
+				delete databases.system[LATE_TABLE];
+				databaseEventsEmitter.emit('dropTable', LATE_TABLE, 'system');
+			}
+		});
+
+		it('should hold a table named __proto__ as an own property', async () => {
+			// A plain assignment would hit the inherited setter, so the table would vanish from
+			// Object.keys and from a structured clone while still appearing to have been granted.
+			const { databaseEventsEmitter } = require('#src/resources/databases');
+			databases.system.__proto__ = { primaryKey: 'id' };
+			databaseEventsEmitter.emit('updateTable', { databaseName: 'system' });
+			try {
+				const { tables } = (await cachedRolePermissions(SUPER_USER)).system;
+				expect(Object.hasOwn(tables, '__proto__')).to.be.true;
+				expect(Object.keys(tables)).to.include('__proto__');
+				expect(tables['__proto__'].read).to.be.true;
+				expect(structuredClone(tables)['__proto__'].read).to.be.true;
+			} finally {
+				delete databases.system['__proto__'];
+				databaseEventsEmitter.emit('dropTable', '__proto__', 'system');
+			}
 		});
 
 		it('should stop resolving a table once it leaves the registry', async () => {
