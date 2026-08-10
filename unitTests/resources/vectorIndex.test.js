@@ -512,22 +512,56 @@ describe('HNSW post-sort distance', () => {
 		await T.put(2, { group: 'metric', vector: [0.1, 0.1] });
 		await T.put(3, { group: 'metric', vector: [1.2, 0.8] });
 		await T.put(4, { group: 'metric', vector: [7, 8] });
+		await T.put(5, { group: 'missing' });
 	});
 
 	after(() => T.dropTable());
 
 	it('returns $distance when a selective condition leaves one result', async () => {
+		const query = {
+			conditions: [{ attribute: 'group', value: 'single' }],
+			sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
+			select: ['id', '$distance'],
+		};
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+
+		for (let i = 0; i < 2; i++) {
+			const results = await fromAsync(T.search(query));
+			assert.equal(results.length, 1);
+			assert(Number.isFinite(results[0].$distance));
+			assert.equal(results[0].$distance, 2);
+		}
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('sorts a missing vector last without throwing for a singleton result', async () => {
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
 		const results = await fromAsync(
 			T.search({
-				conditions: [{ attribute: 'group', value: 'single' }],
+				conditions: [{ attribute: 'group', value: 'missing' }],
 				sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
 				select: ['id', '$distance'],
 			})
 		);
 
 		assert.equal(results.length, 1);
-		assert(Number.isFinite(results[0].$distance));
+		assert.equal(results[0].$distance, Infinity);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('resolves an object-form $distance select', async () => {
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'single' }],
+				sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
+				select: ['id', { name: '$distance' }],
+			})
+		);
+
+		assert.equal(results.length, 1);
 		assert.equal(results[0].$distance, 2);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
 	});
 
 	it('uses the requested metric when a selective condition triggers post-sorting', async () => {
@@ -537,6 +571,7 @@ describe('HNSW post-sort distance', () => {
 			[3, [1.2, 0.8]],
 			[4, [7, 8]],
 		]);
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
 		const results = await fromAsync(
 			T.search({
 				conditions: [{ attribute: 'group', value: 'metric' }],
@@ -545,12 +580,14 @@ describe('HNSW post-sort distance', () => {
 			})
 		);
 
+		assert.equal(results.length, 3);
 		assert.equal(results[0].id, 2);
 		for (const result of results) {
 			const expected = distanceCalculator.distance(target, vectors.get(result.id));
 			assert(Number.isFinite(result.$distance));
 			assert(Math.abs(result.$distance - expected) < 1e-9);
 		}
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
 	});
 });
 

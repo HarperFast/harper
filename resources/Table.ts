@@ -3600,8 +3600,6 @@ export function makeTable(options) {
 							if ((sort as any).isGrouped) {
 								// TODO: Return grouped results
 							}
-							if (ordered.length === 1 && select?.includes('$distance'))
-								getAttributeValue(ordered[0], sort.attribute, context);
 							ordered.sort(comparator);
 							sortedArrayIterator = ordered[Symbol.iterator]();
 							iteration = sortedArrayIterator.next();
@@ -4873,7 +4871,15 @@ export function makeTable(options) {
 				$updatedTime: (object, context, entry) => entry.version,
 				$expiresAt: (object, context, entry) => entry.expiresAt,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
-				$distance: (object, context, entry) => entry && (entry.distance ?? context?.vectorDistances?.get(entry)),
+				$distance: (object, context, entry) => {
+					if (!entry) return;
+					const cachedDistance = entry.distance ?? context?.vectorDistances?.get(entry);
+					if (cachedDistance !== undefined) return cachedDistance;
+					const sort = context?.sort;
+					if (typeof sort?.attribute !== 'string') return;
+					const customIndex = indices[sort.attribute]?.customIndex;
+					if (customIndex?.exactDistance) return customIndex.exactDistance(sort, object[sort.attribute]);
+				},
 			};
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
