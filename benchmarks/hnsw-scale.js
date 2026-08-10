@@ -98,8 +98,13 @@ class MemoryStore {
 		this._map.delete(k);
 	}
 	*getKeys({ reverse = false, limit = Infinity, start = -Infinity, end = Infinity } = {}) {
+		// A reverse scan passes the high bound as `start` and the low one as `end`, so normalize before
+		// filtering — otherwise resolveNodeCount's `{start: Infinity, end: 0}` seek matches nothing and
+		// the fallback node count silently reads 0.
+		const low = Math.min(start, end);
+		const high = Math.max(start, end);
 		const keys = [];
-		for (const k of this._map.keys()) if (typeof k === 'number' && k >= start && k <= end) keys.push(k);
+		for (const k of this._map.keys()) if (typeof k === 'number' && k >= low && k <= high) keys.push(k);
 		keys.sort((a, b) => (reverse ? b - a : a - b));
 		let n = 0;
 		for (const k of keys) {

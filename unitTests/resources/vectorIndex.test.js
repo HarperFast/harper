@@ -523,19 +523,35 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
 		}
 		const customIndex = T.indices.vector.customIndex;
-		const count = customIndex.approximateNodeCount(true);
+		const count = freshNodeCount(customIndex);
 		assert(
 			count >= N && count <= N * 1.5,
 			`graph size ${count} should be close to the ${N} indexed vectors (each node is rewritten many times during construction)`
 		);
 	});
 
-	it('re-resolves rather than serving a stale size when a query asks for more rows than it knows about', async () => {
+	// Query-only workers never allocate a node id, so they never build the shared id counter and every
+	// resolution takes the reverse-seek fallback. Nothing else in the suite reaches it — indexing
+	// in-process always initializes the counter first.
+	it('resolves the same size from a reverse seek when the shared id counter is absent', () => {
 		const customIndex = T.indices.vector.customIndex;
-		// Prime the memo at the current size, then grow well past it inside the TTL. A query for more
-		// rows than the memo knows about has to re-resolve, or the limit it is meant to honour gets
-		// truncated by a stale count.
-		const primed = customIndex.approximateNodeCount(true);
+		const fromCounter = freshNodeCount(customIndex);
+		const idIncrementer = customIndex.idIncrementer;
+		customIndex.idIncrementer = undefined;
+		let fromSeek;
+		try {
+			fromSeek = freshNodeCount(customIndex);
+		} finally {
+			customIndex.idIncrementer = idIncrementer;
+		}
+		assert.strictEqual(fromSeek, fromCounter, 'the reverse-seek fallback must agree with the id counter');
+	});
+
+	it('does not truncate a limit against a memoized size taken before the table grew', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		// Prime the memo at the current size, then grow well past it inside the TTL. Widening ef for a
+		// limit must not be clamped by that stale size, or the limit comes back short.
+		const primed = freshNodeCount(customIndex);
 		const before = await fromAsync(
 			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 250 })
 		);
@@ -552,6 +568,12 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 		assert.strictEqual(after.length, 700, `stale memo truncated the limit: got ${after.length} of 700`);
 	});
 });
+
+/** Graph size with the TTL memo bypassed, so a count taken right after indexing is current. */
+function freshNodeCount(customIndex) {
+	customIndex.nodeCountAt = 0;
+	return customIndex.approximateNodeCount();
+}
 
 describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
@@ -706,28 +728,46 @@ describe('HNSW limit above the resolved search ef', () => {
 	});
 
 	// ef sizes a synchronous traversal holding every admitted candidate, so a caller-supplied limit
-	// must not be able to derive an unbounded one — see LIMIT_EF_MAX.
-	it('never derives an ef beyond the graph size, however deep the pagination', async () => {
-		const layer0Ef = await captureLayer0Ef(T, { offset: 5_000_000, limit: 10 });
-		// This graph is far below LIMIT_EF_MAX, so the node-count clamp is what binds. The count is a
-		// node-id high-water mark, so it reads a little above the live count.
-		assert(layer0Ef >= N && layer0Ef <= N + 2, `expected the ef to clamp at the ${N}-node graph, got ${layer0Ef}`);
-	});
+	// must not be able to derive an unbounded one — LIMIT_EF_MAX is the only thing bounding it, since
+	// clamping to the graph size would need a count that is exact as of the query.
+	for (const [label, query] of [
+		['deep pagination', { offset: 5_000_000, limit: 10 }],
+		['a first-page limit', { limit: 1_000_000 }],
+	]) {
+		it(`bounds the limit-derived ef at LIMIT_EF_MAX under ${label}`, async () => {
+			const layer0Ef = await captureLayer0Ef(T, query);
+			assert.strictEqual(layer0Ef, 4 * 512, `layer-0 ef should be LIMIT_EF_MAX (${4 * 512}), got ${layer0Ef}`);
+		});
+	}
 
-	it('bounds the limit-derived ef at LIMIT_EF_MAX once the graph is larger than the ceiling', async () => {
+	// The ceiling is what bounds the work, not the graph size: resolving a size exact enough to clamp
+	// against would put a store lookup back on every query, and an ef above the node count is free —
+	// the traversal runs out of reachable nodes first.
+	it('does not consult the graph size to widen ef for a limit', async () => {
 		const customIndex = T.indices.vector.customIndex;
-		const originalCount = customIndex.approximateNodeCount;
-		// stand in a large graph — the real one here is below the ceiling, so without this the
-		// node-count clamp binds first and the ceiling is never exercised
-		customIndex.approximateNodeCount = () => 5_000_000;
-		let layer0Ef;
+		const originalResolve = customIndex.resolveNodeCount;
+		let resolves = 0;
+		customIndex.resolveNodeCount = function (...args) {
+			resolves++;
+			return originalResolve.apply(this, args);
+		};
 		try {
-			layer0Ef = await captureLayer0Ef(T, { limit: 1_000_000 });
+			customIndex.approximateNodeCount(); // populate the memo, so the auto-scale's own lookup is not counted
+			resolves = 0;
+			for (let i = 0; i < 5; i++) {
+				customIndex.nodeCountAt = Date.now(); // hold it fresh, so any resolve below came from the limit path
+				await fromAsync(
+					T.search({
+						sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
+						select: ['id'],
+						limit: 5000,
+					})
+				);
+			}
 		} finally {
-			customIndex.approximateNodeCount = originalCount;
+			customIndex.resolveNodeCount = originalResolve;
 		}
-		assert(layer0Ef <= 4 * 512, `layer-0 ef ${layer0Ef} should be bounded by LIMIT_EF_MAX (${4 * 512})`);
-		assert(layer0Ef > 512, `the limit should still widen ef past the auto-scaled ceiling, got ${layer0Ef}`);
+		assert.strictEqual(resolves, 0, `a limit past the graph size re-resolved the node count ${resolves} times`);
 	});
 
 	// The predicate-aware visit budget (#1241) is what stops a selective filter crawling the graph,

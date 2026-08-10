@@ -744,8 +744,8 @@ consumers such as `jsResource` request a restart on their logical `change` or `u
 
 ## Graph size on the HNSW query path must come from node ids (`resources/indexes/HierarchicalNavigableSmallWorld.ts`)
 
-The ef auto-scale and the `limit` ceiling both need to know how big the graph is, on every query.
-Two sources that look right are not.
+The ef auto-scale needs to know how big the graph is, on every query. Two sources that look right
+are not.
 
 `getKeysCount()` on a RocksDB store is an exact key scan, so it is O(N): measured at 13 ms per call
 at 10K keys, 128 ms at 100K, ~1 s at 500K. Calling it per query puts a linear-in-corpus-size term in
@@ -805,6 +805,13 @@ whole graph on the event loop, which is worse than the truncation being fixed. A
 stays authoritative: it is an explicit cost ceiling, so it bounds the result set rather than being
 raised by the limit. A schema-level `efConstructionSearch` is a default rather than a per-request
 decision, so it does not block the floor.
+
+`LIMIT_EF_MAX` is the _only_ bound on the widening — deliberately not also the graph size. Clamping
+there is tempting and costs more than it saves: the memoized size reads low while a table grows, so
+it truncates the limit it was supposed to honour, and resolving a size exact enough to clamp against
+puts a store lookup back on every query whose `limit` exceeds the table — the linear-in-N term this
+whole change removed, reintroduced in miniature. An `ef` above the node count is free anyway: the
+traversal is bounded by the nodes it can reach, so it ends at the graph, not at `ef`.
 
 The filter budget deliberately does not follow a limit-derived `ef`. `maxVisits = ef * filterExpansion`
 (#1241) is what stops a selective filter crawling the graph and loading a record per visit, so it is

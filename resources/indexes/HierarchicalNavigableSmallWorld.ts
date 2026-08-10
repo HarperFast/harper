@@ -711,14 +711,15 @@ export class HierarchicalNavigableSmallWorld {
 	}
 
 	/**
-	 * Number of nodes in the graph, for the ef auto-scale and the limit floor. Must stay O(1): it runs
-	 * per query, and an exact count is a full key scan. RocksDB's `estimate-num-keys` is not a usable
-	 * substitute — it counts unreconciled overwrites, which graph construction produces in bulk. See
-	 * DESIGN.md for the measurements behind both.
+	 * Number of nodes in the graph, for the ef auto-scale. Must stay O(1): it runs per query, and an
+	 * exact count is a full key scan. RocksDB's `estimate-num-keys` is not a usable substitute — it
+	 * counts unreconciled overwrites, which graph construction produces in bulk. See DESIGN.md for the
+	 * measurements behind both. The memo is the only gate on how often the size is resolved; nothing on
+	 * the query path may bypass it, or the O(1) lookup becomes per-query work again.
 	 */
-	private approximateNodeCount(forceRefresh = false): number {
+	private approximateNodeCount(): number {
 		const now = Date.now();
-		if (!forceRefresh && this.nodeCountAt > 0 && now - this.nodeCountAt < NODE_COUNT_TTL) return this.nodeCount;
+		if (this.nodeCountAt > 0 && now - this.nodeCountAt < NODE_COUNT_TTL) return this.nodeCount;
 		this.nodeCount = this.resolveNodeCount();
 		this.nodeCountAt = now;
 		return this.nodeCount;
@@ -1041,13 +1042,11 @@ export class HierarchicalNavigableSmallWorld {
 		// `limit` stall the thread. Past the ceiling the result set is still short, as it was before.
 		// A per-query `ef` is left authoritative: it is an explicit cost ceiling, and a caller who sets
 		// one has said what they are willing to spend.
+		// The ceiling is the only bound: clamping to the graph size as well would need a count exact as
+		// of this query — the memo reads low while a table grows, truncating the very limit this
+		// honours — and an ef above the node count is free, the traversal ending at the graph, not ef.
 		if (minResults !== undefined && !explicitEf && minResults > effectiveEf) {
-			// A memoized size is re-resolved when it reads below the request, so a stale count cannot
-			// truncate the limit this is here to honour.
-			let count = this.approximateNodeCount();
-			if (count < minResults) count = this.approximateNodeCount(true);
-			const wanted = count > 0 ? Math.min(minResults, count) : minResults;
-			effectiveEf = Math.max(effectiveEf, Math.min(wanted, LIMIT_EF_MAX));
+			effectiveEf = Math.max(effectiveEf, Math.min(minResults, LIMIT_EF_MAX));
 		}
 		// Predicate-aware traversal budget (#1241): matches accrue slower than visits under a selective
 		// filter, so bound layer-0 work at ef * filterExpansion nodes. Only built when a filter is active.
