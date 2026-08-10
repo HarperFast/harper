@@ -351,6 +351,18 @@ describe('user.ts Unit Tests', () => {
 			expect(permission.system.tables[COMPONENT_TABLE].insert).to.be.false;
 		});
 
+		it('should install one shared map rather than a copy per user', async () => {
+			// Users sharing a role also share its permission object, so the second user's
+			// appendSystemTablesToRole sees the map installed for the first. Anything that treats
+			// that as operator-supplied config misreads Harper's own map as a role declaration.
+			const cache = await user.getUsersWithRolesCache();
+			const first = cache.get(SUPER_USER).role.permission.system.tables;
+			const second = cache.get(READ_ONLY_USER).role.permission.system.tables;
+			expect(first).to.not.equal(second, 'different read permissions must not share a map');
+			const suAgain = (await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD)).role.permission.system.tables;
+			expect(suAgain).to.equal(first, 'the same read permission must reuse one map instance');
+		});
+
 		it('should hold a table named __proto__ as an own property', async () => {
 			// A plain assignment would hit the inherited setter, so the table would vanish from
 			// Object.keys and from a structured clone while still appearing to have been granted.

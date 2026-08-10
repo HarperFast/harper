@@ -438,7 +438,12 @@ function appendSystemTablesToRole(userRole: UserRole) {
 	// systemSchema.json survived — which let a role grant itself reads and writes on tables like
 	// hdb_session. Those are dropped now, so name them: an operator whose grant stops working
 	// otherwise sees only a 403 with nothing pointing at the cause.
-	const declared = Object.keys(userRole.permission.system?.tables ?? {});
+	//
+	// Identity check, not emptiness: several users share one role object, so by the second user the
+	// map we installed is already there and would otherwise be reported as the operator's own.
+	const existing = userRole.permission.system?.tables;
+	const alreadyManaged = !!existing && [...systemTablesByReadPerm.values()].some((managed) => managed === existing);
+	const declared = alreadyManaged ? [] : Object.keys(existing ?? {});
 	if (declared.length > 0) {
 		harperLogger.warn(
 			`Ignoring role-declared permissions on system tables for role '${userRole.id}': ${declared.join(', ')}. ` +
