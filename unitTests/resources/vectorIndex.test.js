@@ -564,6 +564,63 @@ describe('HNSW post-sort distance', () => {
 		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
 	});
 
+	it('does not reuse distances across targets in the same context', async () => {
+		const context = {};
+		const search = (target) =>
+			fromAsync(
+				T.search(
+					{
+						conditions: [{ attribute: 'group', value: 'metric' }],
+						sort: { attribute: 'vector', target, distance: 'euclidean' },
+						select: ['id', '$distance'],
+					},
+					context
+				)
+			);
+
+		const first = await search([0, 0]);
+		const second = await search([7, 8]);
+		assert.equal(first[0].id, 2);
+		assert.equal(second[0].id, 4);
+		assert.equal(second[0].$distance, 0);
+	});
+
+	it('does not resolve $distance from a targetless or stale sort', async () => {
+		const context = {};
+		const targetless = await fromAsync(
+			T.search(
+				{
+					conditions: [{ attribute: 'group', value: 'single' }],
+					sort: { attribute: 'vector' },
+					select: ['id', '$distance'],
+				},
+				context
+			)
+		);
+		assert.equal(targetless[0].$distance, undefined);
+
+		await fromAsync(
+			T.search(
+				{
+					conditions: [{ attribute: 'group', value: 'single' }],
+					sort: { attribute: 'vector', target: [1, 1] },
+					select: ['id', '$distance'],
+				},
+				context
+			)
+		);
+		const unsorted = await fromAsync(
+			T.search(
+				{
+					conditions: [{ attribute: 'group', value: 'single' }],
+					select: ['id', '$distance'],
+				},
+				context
+			)
+		);
+		assert.equal(unsorted[0].$distance, undefined);
+	});
+
 	it('uses the requested metric when a selective condition triggers post-sorting', async () => {
 		const target = [1, 1];
 		const vectors = new Map([

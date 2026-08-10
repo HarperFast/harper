@@ -1239,11 +1239,13 @@ export class HierarchicalNavigableSmallWorld {
 		const sortDefinition = context?.sort;
 		if (sortDefinition) {
 			// set up a cache for these so they can be accessed by $distance and not be recalculated during a sort
-			let vectorDistances = context.vectorDistances;
+			let vectorDistanceCaches = context.vectorDistanceCaches;
+			if (!vectorDistanceCaches) vectorDistanceCaches = context.vectorDistanceCaches = new WeakMap();
+			let vectorDistances = vectorDistanceCaches.get(sortDefinition);
 			if (vectorDistances) {
 				const difference = vectorDistances.get(entry);
 				if (difference !== undefined) return difference;
-			} else vectorDistances = context.vectorDistances = new Map();
+			} else vectorDistanceCaches.set(sortDefinition, (vectorDistances = new WeakMap()));
 
 			const distance = this.exactDistance(sortDefinition, vector);
 			vectorDistances.set(entry, distance);

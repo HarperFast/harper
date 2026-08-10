@@ -3551,6 +3551,7 @@ export function makeTable(options) {
 					}
 					const comparator = createComparator(sort);
 					return {
+						sort,
 						async next() {
 							let iteration: IteratorResult<any>;
 							if (sortedArrayIterator) {
@@ -3797,7 +3798,7 @@ export function makeTable(options) {
 									value = filterMap.fromRecord?.(record);
 								}
 							} else {
-								value = resolver(record, context, entry, true);
+								value = resolver(record, context, entry, true, (this as any)?.sort);
 							}
 							const handleResolvedValue = (value: any) => {
 								if (resolver.directReturn) return callback(value, attribute_name);
@@ -4871,12 +4872,11 @@ export function makeTable(options) {
 				$updatedTime: (object, context, entry) => entry.version,
 				$expiresAt: (object, context, entry) => entry.expiresAt,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
-				$distance: (object, context, entry) => {
+				$distance: (object, context, entry, returnEntry, sort) => {
 					if (!entry) return;
-					const cachedDistance = entry.distance ?? context?.vectorDistances?.get(entry);
+					const cachedDistance = entry.distance ?? context?.vectorDistanceCaches?.get(sort)?.get(entry);
 					if (cachedDistance !== undefined) return cachedDistance;
-					const sort = context?.sort;
-					if (typeof sort?.attribute !== 'string') return;
+					if (typeof sort?.attribute !== 'string' || !Array.isArray(sort.target)) return;
 					const customIndex = indices[sort.attribute]?.customIndex;
 					if (customIndex?.exactDistance) return customIndex.exactDistance(sort, object[sort.attribute]);
 				},
