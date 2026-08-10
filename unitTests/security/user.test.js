@@ -351,10 +351,10 @@ describe('user.ts Unit Tests', () => {
 			expect(permission.system.tables[COMPONENT_TABLE].insert).to.be.false;
 		});
 
-		it('should install one shared map rather than a copy per user', async () => {
-			// Users sharing a role also share its permission object, so the second user's
-			// appendSystemTablesToRole sees the map installed for the first. Anything that treats
-			// that as operator-supplied config misreads Harper's own map as a role declaration.
+		// Documents the sharing design; it does NOT cover the discarded-grant warning, which has no
+		// automated coverage — `__importStar` snapshots the logger's exports when user.ts loads, so
+		// the call cannot be stubbed without re-requiring the module under test.
+		it('should reuse one map per read permission and not share across them', async () => {
 			const cache = await user.getUsersWithRolesCache();
 			const first = cache.get(SUPER_USER).role.permission.system.tables;
 			const second = cache.get(READ_ONLY_USER).role.permission.system.tables;
