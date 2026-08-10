@@ -3768,7 +3768,7 @@ export function makeTable(options) {
 						swrResource.setRecord(record);
 						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
-							return loadingFromSource.then(transform);
+							return loadingFromSource.then(transform.bind(this));
 						}
 					}
 				}

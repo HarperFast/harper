@@ -1051,7 +1051,10 @@ export class HierarchicalNavigableSmallWorld {
 					? dotProductDistance
 					: searchCondition.distance === 'cosine'
 						? cosineDistance
-						: this.distance;
+						: searchCondition.distance
+							? null
+							: this.distance;
+		if (!fn) throw new ClientError('Unknown distance function');
 		return fn(searchCondition.target, vec);
 	}
 	/**

@@ -566,6 +566,7 @@ describe('HNSW post-sort distance', () => {
 
 	it('does not reuse distances across targets in the same context', async () => {
 		const context = {};
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
 		const search = (target) =>
 			fromAsync(
 				T.search(
@@ -583,10 +584,12 @@ describe('HNSW post-sort distance', () => {
 		assert.equal(first[0].id, 2);
 		assert.equal(second[0].id, 4);
 		assert.equal(second[0].$distance, 0);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
 	});
 
 	it('does not resolve $distance from a targetless or stale sort', async () => {
 		const context = {};
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
 		const targetless = await fromAsync(
 			T.search(
 				{
@@ -619,6 +622,23 @@ describe('HNSW post-sort distance', () => {
 			)
 		);
 		assert.equal(unsorted[0].$distance, undefined);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('rejects an unknown metric on the exact post-sort path', async () => {
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		await assert.rejects(
+			() =>
+				fromAsync(
+					T.search({
+						conditions: [{ attribute: 'group', value: 'metric' }],
+						sort: { attribute: 'vector', target: [1, 1], distance: 'manhattan' },
+						select: ['id', '$distance'],
+					})
+				),
+			{ message: 'Unknown distance function' }
+		);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
 	});
 
 	it('uses the requested metric when a selective condition triggers post-sorting', async () => {
