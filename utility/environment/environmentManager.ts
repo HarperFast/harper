@@ -26,16 +26,15 @@ let installProps: any = {};
 export { BOOT_PROPS_FILE_PATH };
 
 // Every param passed to setProperty() on this thread, keyed by its canonical config param so
-// aliases for the same param collapse to one last-write-wins entry. Workers inherit this map (see
-// getConfigOverrides() and the workerDataProvider registration in server/threads/manageThreads.js)
-// and it is replayed after a forced config reload (reapplyAllOverrides()); `base` is the configured
-// value the override displaced, so that replay can tell a reload that left the param alone from one
-// that is itself the change.
+// aliases collapse to one last-write-wins entry. Workers inherit this map (getConfigOverrides() and
+// the workerDataProvider registration in server/threads/manageThreads.js) and it is replayed after
+// a forced config reload; `base` is the configured value the override displaced, which is how
+// reapplyAllOverrides() tells a reload that left the param alone from one that is itself the change.
 //
-// setProperty() is therefore for operator/harness *intent* only. Code caching a value it derived
+// setProperty() therefore means operator/harness *intent* only. Code caching a value it derived
 // from config it just read (initializePaths.js, utility/lmdb/environmentUtility.ts) must call
-// configUtils.updateConfigObject() directly, or that derived value would outlive the config it was
-// derived from and ship to every worker as if it were an override.
+// configUtils.updateConfigObject() directly, or the derived value outlives what it was derived from
+// and ships to every worker as an override.
 const appliedOverrides = new Map<string, { value: any; base: any }>();
 let inheritedOverridesApplied = false;
 
@@ -87,12 +86,10 @@ export function get(propName: string): any {
  */
 export function setProperty(propName: string, value: any) {
 	// Snapshot rather than keep the caller's reference: initializePaths.js and environmentUtility.ts
-	// cache derived per-database paths by mutating the live `databases` value in place, and that is
-	// often the very object handed to setProperty (unitTests/testUtils.js). Sharing it would leak
-	// those derived paths into what workers inherit and make an untouched param look changed on
-	// reload. Cloning here also settles cloneability at the caller that can still fix it —
-	// manageThreads.js's provider only logs a clone failure and spawns the worker on the on-disk
-	// config anyway, the exact divergence this mechanism exists to prevent.
+	// cache derived per-database paths by mutating the live `databases` value in place, which is
+	// often the very object handed to setProperty. Cloning here also settles cloneability at the
+	// caller that can still fix it — manageThreads.js's provider only logs a clone failure and
+	// spawns the worker on the on-disk config anyway.
 	let snapshot;
 	try {
 		snapshot = structuredClone(value);
@@ -161,17 +158,27 @@ function snapshotConfigValue(value: any) {
 	}
 }
 
+/** Key-ordering is a YAML formatting choice, not a config change, so it must not affect equality. */
+function stableStringify(value: any) {
+	if (value === null || typeof value !== 'object') return JSON.stringify(value);
+	if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+	return `{${Object.keys(value)
+		.sort()
+		.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+		.join(',')}}`;
+}
+
 /**
  * A reload rebuilds config values into fresh objects, so identity says nothing about whether the
- * file changed. Values that structuredClone accepts but JSON.stringify does not (cyclic, BigInt)
- * count as changed rather than throwing out of the reload path — initSync()'s catch exits the
+ * file changed. Anything this cannot serialize (a cyclic value, which structuredClone accepts)
+ * counts as changed rather than throwing out of the reload path — initSync()'s catch exits the
  * process.
  */
 function sameConfigValue(a: any, b: any) {
 	if (Object.is(a, b)) return true;
 	if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
 	try {
-		return JSON.stringify(a) === JSON.stringify(b);
+		return stableStringify(a) === stableStringify(b);
 	} catch {
 		return false;
 	}
