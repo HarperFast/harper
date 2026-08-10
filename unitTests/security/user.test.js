@@ -336,6 +336,21 @@ describe('user.ts Unit Tests', () => {
 			}
 		});
 
+		it('should not let one role mutate the permissions every other role reads', async () => {
+			// The map is shared per read permission so warmed identities stay fresh; that sharing is
+			// only safe while the entries cannot be written through.
+			const permission = await cachedRolePermissions(SUPER_USER);
+			const entry = permission.system.tables[COMPONENT_TABLE];
+			expect(Object.isFrozen(entry)).to.be.true;
+			expect(() => {
+				'use strict';
+				entry.insert = true;
+			}).to.throw();
+			const other = await cachedRolePermissions(READ_ONLY_USER);
+			expect(other.system.tables[COMPONENT_TABLE].insert).to.be.false;
+			expect(permission.system.tables[COMPONENT_TABLE].insert).to.be.false;
+		});
+
 		it('should hold a table named __proto__ as an own property', async () => {
 			// A plain assignment would hit the inherited setter, so the table would vanish from
 			// Object.keys and from a structured clone while still appearing to have been granted.

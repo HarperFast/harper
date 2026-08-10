@@ -11,10 +11,11 @@ import { ok, strictEqual } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient, createHeaders } from '../apiTests/utils/client.mjs';
 
+const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/system-table-authz');
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 const COMPONENT_TABLE = 'hdb_status';
@@ -43,7 +44,7 @@ suite(
 			);
 			ok(!(COMPONENT_TABLE in systemSchema), `${COMPONENT_TABLE} must not be an install-time table`);
 
-			await startHarper(ctx);
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
 			client = createApiClient(ctx.harper);
 			readerHeaders = createHeaders(READER.username, READER.password);
 
@@ -145,6 +146,17 @@ suite(
 				})
 				.expect(200);
 			strictEqual(response.body.length, 0);
+		});
+
+		test('permissions survive forwarding to a worker thread', async () => {
+			// The regression this guards shipped green through every unit test: a Proxy here cloned
+			// fine in-process but failed DataCloneError on this path, breaking every forwarded
+			// component operation.
+			const response = await client.req().send({ operation: 'system_authz_probe' }).expect(200);
+			strictEqual(response.body.executedOnMainThread, false, 'the probe must run off the main thread');
+			ok(response.body.sawSystemTables > 0, 'the system permission map must survive the clone');
+			strictEqual(response.body.statusReadable, true);
+			strictEqual(response.body.statusInsertable, false);
 		});
 
 		test('a non-super_user is still refused an install-time system table', async () => {

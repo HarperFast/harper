@@ -346,14 +346,16 @@ async function listUsers(): Promise<Map<string, User>> {
 	return userMap;
 }
 
+// Frozen because one instance is shared by every role with the same read permission: an entry
+// mutated by any consumer would change what every other user is allowed to do.
 function systemTablePermissions(readPerm: boolean): UserRolePermissionTable {
-	return {
+	return Object.freeze({
 		read: readPerm,
 		insert: false,
 		update: false,
 		delete: false,
-		attribute_permissions: [],
-	};
+		attribute_permissions: Object.freeze([]) as UserRoleAttributePermissionTable[],
+	}) as UserRolePermissionTable;
 }
 
 const systemTablesByReadPerm = new Map<boolean, Record<string, UserRolePermissionTable>>();
@@ -406,8 +408,15 @@ function systemTablesPermissions(readPerm: boolean): Record<string, UserRolePerm
 // would be pure waste. `Table.dropTable()` deletes from the registry without emitting, so a table
 // dropped that way lingers here until the next system-table event — permissively, but only for a
 // table the data layer will then refuse as nonexistent anyway.
+//
+// Never allowed to throw: these listeners run inside `emit` during `getDatabases()` and `table()`,
+// so an exception here aborts schema loading and takes the node down. A stale map is a 403.
 function refreshSystemTables() {
-	for (const [readPerm, tables] of systemTablesByReadPerm) syncSystemTables(tables, readPerm);
+	try {
+		for (const [readPerm, tables] of systemTablesByReadPerm) syncSystemTables(tables, readPerm);
+	} catch (error) {
+		harperLogger.error('Failed to refresh system table permissions; they may be stale', error);
+	}
 }
 databaseEventsEmitter.on('updateTable', (table) => {
 	if (table?.databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
@@ -424,6 +433,17 @@ function appendSystemTablesToRole(userRole: UserRole) {
 	if (!userRole) {
 		logger.error(`invalid user role found.`);
 		return;
+	}
+	// A role may declare its own `system` block, and before harper#2120 any entry outside
+	// systemSchema.json survived — which let a role grant itself reads and writes on tables like
+	// hdb_session. Those are dropped now, so name them: an operator whose grant stops working
+	// otherwise sees only a 403 with nothing pointing at the cause.
+	const declared = Object.keys(userRole.permission.system?.tables ?? {});
+	if (declared.length > 0) {
+		harperLogger.warn(
+			`Ignoring role-declared permissions on system tables for role '${userRole.id}': ${declared.join(', ')}. ` +
+				`System table permissions are managed by Harper and cannot be granted through a role.`
+		);
 	}
 	userRole.permission.system = {
 		...userRole.permission.system,
