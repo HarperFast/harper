@@ -494,22 +494,31 @@ describe('HNSW search result loading (searchByIndex)', () => {
 describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let T;
+	// One table per primary-key type for the reverse-seek fallback below; both are built up front so
+	// the suite never creates or drops a table between other describes' queries.
+	const keyed = {};
 
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
-		T = table({
-			table: 'HNSWNodeCountTest',
-			database: 'test',
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
-			],
-		});
+		const define = (name) =>
+			table({
+				table: name,
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+				],
+			});
+		T = define('HNSWNodeCountTest');
+		keyed.numeric = define('HNSWSeekNumericKeyTest');
+		keyed.string = define('HNSWSeekStringKeyTest');
 	});
 
 	after(() => {
 		T.dropTable();
+		keyed.numeric.dropTable();
+		keyed.string.dropTable();
 	});
 
 	// The size that feeds autoScaleEf must reflect how many vectors are in the graph. Building the
@@ -532,20 +541,33 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 
 	// Query-only workers never allocate a node id, so they never build the shared id counter and every
 	// resolution takes the reverse-seek fallback. Nothing else in the suite reaches it — indexing
-	// in-process always initializes the counter first.
-	it('resolves the same size from a reverse seek when the shared id counter is absent', () => {
-		const customIndex = T.indices.vector.customIndex;
-		const fromCounter = customIndex.resolveNodeCount();
-		const idIncrementer = customIndex.idIncrementer;
-		customIndex.idIncrementer = undefined;
-		let fromSeek;
-		try {
-			fromSeek = customIndex.resolveNodeCount();
-		} finally {
-			customIndex.idIncrementer = idIncrementer;
-		}
-		assert.strictEqual(fromSeek, fromCounter, 'the reverse-seek fallback must agree with the id counter');
-	});
+	// in-process always initializes the counter first. The string-key table is the case review keeps
+	// raising: the index store holds a primary-key mapping beside each graph node, and a `limit: 1`
+	// reverse seek would read 0 if a mapping key could sort above the numeric node ids.
+	for (const [label, key] of [
+		['numeric', (i) => i],
+		['string', (i) => `user-${String(i).padStart(3, '0')}`],
+	]) {
+		it(`resolves the same size from a reverse seek when the shared id counter is absent (${label} primary keys)`, async () => {
+			const Keyed = keyed[label];
+			for (let i = 0; i < 50; i++) {
+				const a = (i / 50) * Math.PI * 2;
+				await Keyed.put(key(i), { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+			}
+			const customIndex = Keyed.indices.vector.customIndex;
+			const fromCounter = customIndex.resolveNodeCount();
+			const idIncrementer = customIndex.idIncrementer;
+			customIndex.idIncrementer = undefined;
+			let fromSeek;
+			try {
+				fromSeek = customIndex.resolveNodeCount();
+			} finally {
+				customIndex.idIncrementer = idIncrementer;
+			}
+			assert(fromCounter >= 50, `precondition: the id counter should see the 50 indexed vectors, got ${fromCounter}`);
+			assert.strictEqual(fromSeek, fromCounter, 'the reverse-seek fallback must agree with the id counter');
+		});
+	}
 
 	it('does not truncate a limit against a memoized size taken before the table grew', async () => {
 		const customIndex = T.indices.vector.customIndex;
