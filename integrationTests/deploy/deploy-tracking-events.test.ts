@@ -206,7 +206,7 @@ suite('Deployment tracking — events + SSE', (ctx: ContextWithHarper) => {
 
 			// Poll list_deployments until we see the in-flight row. The recorder row is created
 			// after the multipart body is fully received (which is fast for a tiny fixture).
-			const TERMINAL = new Set(['success', 'failed', 'rolled_back']);
+			const TERMINAL = new Set(['success', 'failed', 'rolled_back', 'staged']);
 			let inFlightId: string | null = null;
 			for (let i = 0; i < 15 && !inFlightId; i++) {
 				await sleep(300);

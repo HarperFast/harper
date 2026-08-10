@@ -1202,7 +1202,7 @@ export async function addConfig(topLevelElement, values) {
 	atomicWriteFile(getConfigFilePath(), String(configDoc));
 }
 
-export function deleteConfigFromFile(param: string) {
+export function deleteConfigFromFile(param: Array<string | number>) {
 	const configFilePath = getConfigFilePath(hdbUtils.getPropsFilePath());
 	const configDoc = parseYamlDoc(configFilePath);
 	configDoc.deleteIn(param);

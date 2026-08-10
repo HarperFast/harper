@@ -19,6 +19,10 @@ const {
 	awaitDeploymentRow,
 	readPayloadBlobWithRetry,
 	markDeploymentTerminal,
+	recordDeploymentPeers,
+	claimStagedDeployment,
+	expireOldStagedDeployments,
+	invalidateProjectStagedDeployments,
 	pruneProjectPayloads,
 	getDeploymentRow,
 } = require('#src/components/deploymentRecorder');
@@ -386,6 +390,12 @@ describe('awaitDeploymentRow', () => {
 		assert.ok(result.payload_blob);
 	});
 
+	it('can wait for package deployment metadata without requiring a payload blob', async () => {
+		const row = { deployment_id: 'package-row', package_identifier: 'npm:example', payload_blob: null };
+		installed.mock.rows.set(row.deployment_id, row);
+		assert.strictEqual(await awaitDeploymentRow(row.deployment_id, { timeoutMs: 0, requirePayload: false }), row);
+	});
+
 	it('rejects with a "did not replicate" timeout when the row never arrives within timeoutMs', async () => {
 		await assert.rejects(
 			() => awaitDeploymentRow('never-arrives', { timeoutMs: 100, pollIntervalMs: 25 }),
@@ -681,6 +691,21 @@ describe('markDeploymentTerminal', () => {
 		assert.strictEqual(typeof row.completed_at, 'number', 'completed_at was stamped');
 	});
 
+	it('preserves an uncertain partial activation as non-terminal with its error', async () => {
+		installed.mock.rows.set('dep-activating', {
+			deployment_id: 'dep-activating',
+			status: 'staged',
+			completed_at: 100,
+		});
+
+		await markDeploymentTerminal('dep-activating', 'activating', new Error('peer did not acknowledge'));
+
+		const row = installed.mock.rows.get('dep-activating');
+		assert.strictEqual(row.status, 'activating');
+		assert.strictEqual(row.completed_at, null);
+		assert.strictEqual(row.error.message, 'peer did not acknowledge');
+	});
+
 	it('is a no-op when the row is absent (best-effort, never throws)', async () => {
 		await markDeploymentTerminal('missing', 'success');
 		assert.strictEqual(installed.mock.rows.has('missing'), false, 'no row is fabricated for an unknown id');
@@ -736,6 +761,115 @@ describe('getDeploymentRow', () => {
 			if (databases.system && prior !== undefined) databases.system[DEPLOYMENT_TABLE] = prior;
 			installed = installMockDeploymentTable();
 		}
+	});
+});
+
+describe('staged deployment state', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable({ freezeGet: true });
+	});
+	afterEach(() => installed.restore());
+
+	it('claims only the matching staged row and durably marks it activating', async () => {
+		installed.mock.rows.set('staged-1', {
+			deployment_id: 'staged-1',
+			project: 'app',
+			status: 'staged',
+			completed_at: 100,
+		});
+
+		await assert.rejects(claimStagedDeployment('staged-1', 'other'), /belongs to component 'app'/);
+		await claimStagedDeployment('staged-1', 'app');
+
+		const row = installed.mock.rows.get('staged-1');
+		assert.strictEqual(row.status, 'activating');
+		assert.strictEqual(row.phase, 'activate');
+		assert.strictEqual(row.completed_at, null);
+	});
+
+	it('accepts an already-activating row only for replicated activation ordering', async () => {
+		installed.mock.rows.set('activating-1', {
+			deployment_id: 'activating-1',
+			project: 'app',
+			status: 'activating',
+		});
+
+		await assert.rejects(claimStagedDeployment('activating-1', 'app'), /not staged/);
+		const row = await claimStagedDeployment('activating-1', 'app', { allowActivating: true });
+
+		assert.strictEqual(row.status, 'activating');
+	});
+
+	it('waits for a replicated deployment row to reach staged before claiming it', async () => {
+		installed.mock.rows.set('lagging-1', {
+			deployment_id: 'lagging-1',
+			project: 'app',
+			status: 'staging',
+		});
+		setImmediate(() => {
+			installed.mock.rows.set('lagging-1', {
+				...installed.mock.rows.get('lagging-1'),
+				status: 'staged',
+			});
+		});
+
+		await claimStagedDeployment('lagging-1', 'app', { waitForStagedMs: 200 });
+
+		assert.strictEqual(installed.mock.rows.get('lagging-1').status, 'activating');
+	});
+
+	it('expires only staged rows beyond the per-project count', async () => {
+		for (const [id, startedAt, status = 'staged'] of [
+			['old', 100],
+			['middle', 200],
+			['new', 300],
+			['active', 50, 'activating'],
+		]) {
+			installed.mock.rows.set(id, {
+				deployment_id: id,
+				project: 'app',
+				status,
+				started_at: startedAt,
+			});
+		}
+
+		assert.deepStrictEqual(await expireOldStagedDeployments('app', 2), ['old']);
+		assert.strictEqual(installed.mock.rows.get('old').status, 'failed');
+		assert.strictEqual(installed.mock.rows.get('middle').status, 'staged');
+		assert.strictEqual(installed.mock.rows.get('new').status, 'staged');
+		assert.strictEqual(installed.mock.rows.get('active').status, 'activating');
+	});
+
+	it('invalidates staged and activating rows when their component is dropped', async () => {
+		for (const status of ['staged', 'activating', 'success']) {
+			installed.mock.rows.set(status, { deployment_id: status, project: 'app', status });
+		}
+
+		const invalidated = await invalidateProjectStagedDeployments('app');
+
+		assert.deepStrictEqual(invalidated.sort(), ['activating', 'staged']);
+		assert.strictEqual(installed.mock.rows.get('staged').status, 'failed');
+		assert.strictEqual(installed.mock.rows.get('activating').status, 'failed');
+		assert.strictEqual(installed.mock.rows.get('success').status, 'success');
+	});
+
+	it('persists normalized peer outcomes on an existing staged row', async () => {
+		installed.mock.rows.set('dep', {
+			deployment_id: 'dep',
+			status: 'activating',
+			peer_results: [{ node: 'peer-a', status: 'success' }],
+		});
+
+		await recordDeploymentPeers('dep', [
+			{ node: 'peer-a', status: 'failed', reason: 'offline' },
+			{ node: 'peer-b', status: 'success' },
+		]);
+
+		const peers = installed.mock.rows.get('dep').peer_results;
+		assert.strictEqual(peers.length, 2);
+		assert.strictEqual(peers.find((peer) => peer.node === 'peer-a').error.message, 'offline');
+		assert.strictEqual(peers.find((peer) => peer.node === 'peer-b').status, 'success');
 	});
 });
 
@@ -804,15 +938,17 @@ describe('pruneProjectPayloads (deployment_payloadRetention_maxCount)', () => {
 		);
 	});
 
-	it('never drops a non-terminal deployment (its blob may still be the replication channel)', async () => {
+	it('never drops staged or activating deployments whose blobs may still be the replication channel', async () => {
 		seed('newest', { startedAt: 300 });
 		seed('in-flight', { startedAt: 200, status: 'activating' });
+		seed('staged', { startedAt: 150, status: 'staged' });
 		seed('old', { startedAt: 100 });
 
 		await pruneProjectPayloads('app', 1);
 
 		assert.strictEqual(hasPayload('newest'), true, 'newest retained');
 		assert.strictEqual(hasPayload('in-flight'), true, 'the in-flight deployment keeps its payload');
+		assert.strictEqual(hasPayload('staged'), true, 'the staged deployment keeps its payload for later activation');
 		assert.strictEqual(hasPayload('old'), false, 'the settled older one is still dropped');
 	});
 

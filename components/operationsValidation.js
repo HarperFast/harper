@@ -13,6 +13,7 @@ const { ENV_ENCRYPTED_PREFIX } = require('../utility/envFile.ts');
 
 // File name can only be alphanumeric, dash and underscores
 const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
+const DEPLOYMENT_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // dotenv's accepted key character set. Restricting keys to this prevents a crafted key (e.g. one
 // containing `=` or a newline) from injecting extra assignments into a .env file.
@@ -25,7 +26,7 @@ module.exports = {
 	dropCustomFunctionProjectValidator,
 	packageComponentValidator,
 	deployComponentValidator,
-	revertComponentValidator,
+	componentDeployPhaseValidator,
 	setComponentFileValidator,
 	getComponentFileValidator,
 	dropComponentFileValidator,
@@ -456,10 +457,14 @@ const URL_PATH_SCHEMA = Joi.string()
 	.min(1)
 	.custom((value, helpers) => {
 		if (value.includes('..')) return helpers.error('any.invalid');
+		if (value.split('/').includes('.')) return helpers.error('string.dotSegment');
 		return value;
 	})
 	.optional()
-	.messages({ 'any.invalid': 'urlPath must not contain ".."' });
+	.messages({
+		'any.invalid': 'urlPath must not contain ".."',
+		'string.dotSegment': 'urlPath must not contain "." path segments',
+	});
 
 // `registryAuth` was the credentials field's name on the 5.2 dev line. Rejected rather than ignored:
 // validation allows unknown keys, so a caller still sending it would otherwise get a deploy that
@@ -494,16 +499,20 @@ function deployComponentValidator(req) {
 		// Activate a previously-staged deployment (from an `activate: false` stage) cluster-wide. Same safe
 		// charset as `project` because it becomes a staging-dir path segment (`.deploy-staging/<id>/<name>`)
 		// — a `../` value would otherwise resolve the staging source outside `.deploy-staging`.
-		deployment_id: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).optional().messages({
-			'string.pattern.base': `'deployment_id' must only contain letters, numbers, dashes, and underscores`,
+		deployment_id: Joi.string().pattern(DEPLOYMENT_ID_REGEX).optional().messages({
+			'string.pattern.base': `'deployment_id' must be a UUID`,
 		}),
 		// If the activate phase fails on some nodes (leaving the cluster split across versions), swap the
 		// nodes that did activate back to the retained previous version before reporting the failure. Off
 		// by default.
-		revert_on_failure: Joi.boolean().optional(),
+		revert_on_failure: Joi.any().forbidden().messages({
+			'any.unknown': `'revert_on_failure' is not supported; recover partial activation by rolling forward`,
+		}),
 		// Opt out of the two-phase (stage-then-activate) deploy and use the legacy one-shot path instead.
 		// Defaults to two-phase.
 		two_phase: Joi.boolean().optional(),
+		_deploymentId: Joi.any().forbidden(),
+		_phase: Joi.any().forbidden(),
 		urlPath: URL_PATH_SCHEMA,
 		// Deploy credentials. Each entry is npm registry auth (`registry`) or git host auth (`host`,
 		// #1792), and supplies its secret either as a literal `token` (used only for this node's
@@ -515,6 +524,24 @@ function deployComponentValidator(req) {
 	return validator.validateBySchema(req, deployProjSchema);
 }
 
+/** Validate the path- and state-selecting fields on the authenticated peer-only deploy operation. */
+function componentDeployPhaseValidator(req) {
+	const phaseSchema = Joi.object({
+		phase: Joi.string().valid('stage', 'activate', 'discard', 'restart').required(),
+		deployment_id: Joi.string().pattern(DEPLOYMENT_ID_REGEX).required().messages({
+			'string.pattern.base': `'deployment_id' must be a UUID`,
+		}),
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		activation_spec: Joi.object().required(),
+		deployment_timeout: Joi.number().min(0).optional(),
+	}).unknown(false);
+
+	return validator.validateBySchema(req, phaseSchema);
+}
+
 /**
  * Validate revert_component requests — swap a component's live version back to its retained previous
  * version. No build inputs (nothing is fetched or installed); just the project, an optional restart,
@@ -522,7 +549,7 @@ function deployComponentValidator(req) {
  * @param req
  * @returns {*}
  */
-function revertComponentValidator(req) {
+function _revertComponentValidator(req) {
 	const revertSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)

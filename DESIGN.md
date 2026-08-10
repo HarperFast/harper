@@ -133,6 +133,27 @@ A package-manager timeout must not release this lock while npm descendants are s
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
+## Two-phase component deploys roll forward from a durable activation claim
+
+With `system` database replication enabled, `deploy_component` first prepares the candidate under
+`.deploy-staging/<deployment UUID>/<project>` on every node. The deployment row carries the complete,
+immutable activation specification (package/install settings, routing, credential references, and
+`force`); activate-by-id never accepts replacements for those fields. After every stage response, the
+origin durably checkpoints the row as `staged`. Activation claims that row as `activating` while holding
+the same per-component filesystem lock, then swaps the candidate into the live path and commits root
+config plus `harper-application-lock.json` as one compensating transaction. Peers make the same local
+claim before their swap. This ordering is the recovery record: startup preserves `staged` candidates,
+deletes terminal/orphan candidates, and rolls an `activating` candidate forward before loading apps.
+
+Peer stage/activate/restart messages use the distinct authenticated `component_deploy_phase` operation.
+An older peer therefore rejects the unknown operation instead of ignoring a phase marker and deploying
+the staged build live. Public `_phase`/`_deploymentId` fields are rejected; the latter remains accepted
+only on the authenticated legacy one-shot replication path. Restart is gated until activation responses
+have settled. A partial activation is reported as split-node state and recovered by staging and activating
+a known-good build; there is deliberately no toggle-style automatic revert because retrying one after a
+lost response can reverse the recovery. `deployment_stagingRetention_maxCount` bounds resting staged
+trees per component and payload retention is pruned in the same row-aware lifecycle.
+
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
 `readPayloadBlobWithRetry` (`components/deploymentRecorder.ts`) wraps the peer's read of a replicated `hdb_deployment` row's `payload_blob` so a transient 503 `BlobReadError` (`BLOB_UNAVAILABLE_STATUS`, `resources/blob.ts`) — content bytes not arriving within `blobReadTimeout`, e.g. a parked blob send on the origin — retries instead of failing the whole deploy. Two non-obvious constraints shaped the design:

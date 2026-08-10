@@ -425,6 +425,9 @@
 				"attribute": "rollback_of"
 			},
 			{
+				"attribute": "activation_spec"
+			},
+			{
 				"attribute": "error"
 			},
 			{

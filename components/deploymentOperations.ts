@@ -101,8 +101,8 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 	// SSE content-negotiated branch — when serverHandlers.js detects
 	// `Accept: text/event-stream` it attaches a ProgressEmitter as req.progress and wraps
 	// our return as the operation's final SSE event. We replay event_log on connect, then
-	// tail the deployment's live emitter (if it's still running on this node) until it
-	// reaches a terminal status. The final return value becomes the SSE `done` event.
+	// tail the deployment's live emitter (if it's still running on this node) until its
+	// recorder finishes. The final return value becomes the SSE `done` event.
 	if (req.progress && typeof (req.progress as any).emit === 'function') {
 		const sse = req.progress;
 		const liveEmitter = getActiveEmitter(req.deployment_id);
@@ -150,7 +150,10 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 				if (typeof entry.t === 'number') lastReplayedTs = Math.max(lastReplayedTs, entry.t);
 			}
 
-			if (liveEmitter && !TERMINAL_STATUSES.has(row.status)) {
+			// A full two-phase deploy checkpoints `staged` before immediately entering activation.
+			// The live emitter, not that transient row status, is authoritative for whether this
+			// origin is still running the deployment.
+			if (liveEmitter) {
 				await new Promise<void>((resolve) => {
 					resolveLive = resolve;
 					// Flush anything that arrived during replay, filtering to events the replay missed.
@@ -170,7 +173,10 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 						if (!live || live !== liveEmitter) {
 							clearInterval(pollTimer);
 							const latest = await table.get(req.deployment_id);
-							if (latest && TERMINAL_STATUSES.has(latest.status) && !liveDone) {
+							// `staged` is a valid resting result and `activating` records
+							// uncertain cluster completion. If the original emitter is gone,
+							// there is no local work left to tail in either state.
+							if (latest && !liveDone) {
 								liveDone = true;
 								resolve();
 							}

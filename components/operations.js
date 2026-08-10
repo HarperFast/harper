@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { isDeepStrictEqual } = require('node:util');
 const { isMainThread } = require('node:worker_threads');
 const fs = require('fs-extra');
 const fg = require('fast-glob');
@@ -30,12 +31,20 @@ const {
 	stageApplication,
 	activateApplication,
 	revertApplication,
+	stagedApplicationPath,
+	hasCompleteStagedApplication,
+	activateStagedApplication,
 	discardStagedApplication,
+	discardProjectStagedApplications,
+	discardProjectActivationArtifacts,
+	updateApplicationLockEntry,
+	createApplicationActivationTransaction,
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
+	DEPLOY_ACTIVATION_DIR,
 	DEPLOY_PREVIOUS_DIR,
 } = require('./Application.ts');
-const { COMPONENT_PREPARATION_LOCK_DIR } = require('./componentPreparationLock.ts');
+const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
 const { server } = require('../server/Server.ts');
 const {
 	DeploymentRecorder,
@@ -43,12 +52,17 @@ const {
 	getDeploymentRow,
 	markDeploymentTerminal,
 	normalizePeerResult,
+	recordDeploymentPeers,
+	claimStagedDeployment,
+	expireOldStagedDeployments,
+	invalidateProjectStagedDeployments,
 	pruneProjectPayloads,
 	readPayloadBlobWithRetry,
 	coerceTimeoutMs,
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
 } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
+const { isOperationAuthorizationBypassed } = require('../server/serverHelpers/operationAuthorizationState.ts');
 
 /**
  * Read the settings.js file and return the
@@ -319,7 +333,11 @@ async function dropCustomFunctionProject(req) {
 
 	try {
 		const projectDir = path.join(cfDir, project);
+		await invalidateProjectStagedDeployments(project);
+		await discardProjectStagedApplications(projectDir);
+		await discardProjectActivationArtifacts(projectDir);
 		fs.rmSync(projectDir, { recursive: true });
+		await updateApplicationLockEntry(project, undefined);
 		let response = await server.replication.replicateOperation(req);
 		response.message = `Successfully deleted project: ${project}`;
 		return response;
@@ -398,18 +416,52 @@ async function deployComponent(req) {
 		req.project = getProjectNameFromPackage(req.package);
 	}
 
-	const validation = validator.deployComponentValidator(req);
+	const isReplicatedExecution = isTrustedReplicatedOperation(req);
+	let requestToValidate = req;
+	if (isReplicatedExecution) {
+		if (req._phase !== undefined) {
+			throw new ServerError(
+				`Unsupported legacy component deployment phase '${req._phase}'; upgrade the originating node before deploying`
+			);
+		}
+		const { _deploymentId, ...publicRequest } = req;
+		requestToValidate = publicRequest;
+	}
+	const validation = validator.deployComponentValidator(requestToValidate);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
-
-	const isReplicatedExecution = typeof req._deploymentId === 'string';
-
-	// Internal peer-phase execution. The two-phase cluster fan-out rides deploy_component itself, tagged
-	// with an internal `_phase` marker (`stage`/`activate`) rather than separate public operations — so
-	// the wire format is deploy_component + `_phase`, and only deploy_component is publicly exposed.
-	if (isReplicatedExecution && req._phase === 'stage') return deployPhaseStage(req);
-	if (isReplicatedExecution && req._phase === 'activate') return deployPhaseActivate(req);
+	const systemReplicated = isSystemDatabaseReplicated();
+	const requestedSeparatedPhase = req.activate === false || req.deployment_id !== undefined;
+	if (!isReplicatedExecution && req.two_phase === true && req.replicated === false) {
+		throw handleHDBError(
+			new Error(),
+			`two_phase:true requires operation replication to be enabled`,
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
+	}
+	if (!isReplicatedExecution && req.two_phase === true && !systemReplicated) {
+		throw handleHDBError(
+			new Error(),
+			`two_phase:true requires system database replication to be enabled`,
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
+	}
+	if (
+		!isReplicatedExecution &&
+		requestedSeparatedPhase &&
+		(req.two_phase === false || req.replicated === false || !systemReplicated)
+	) {
+		throw handleHDBError(
+			new Error(),
+			`activate:false and deployment_id require two-phase deploy with system database replication enabled`,
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
+	}
+	if (req.replicated !== false && !isReplicatedExecution && req.two_phase !== false && systemReplicated) {
+		if (req.deployment_id) return deployComponentActivateExisting(req);
+		return deployComponentTwoPhase(req);
+	}
 
 	// Ingest any provided credential token into the secrets store so the credential lives as
 	// replicated ciphertext (reference, not embed); already-reference entries pass through, and with
@@ -421,19 +473,7 @@ async function deployComponent(req) {
 	// token is not — it is used only for this node's install, then stripped before replication.
 	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
 
-	// Two-phase is the default, but it leans on the system table's replication channel to carry the
-	// payload and correlate the stage/activate steps across the cluster. Fall back to the legacy
-	// one-shot deploy when: the caller opted out (`two_phase: false`); this is a legacy peer replaying a
-	// one-shot deploy (replicated, no `_phase`); or `system` isn't replicated on this node.
-	if (req.two_phase === false || isReplicatedExecution || !isSystemDatabaseReplicated()) {
-		return deployComponentOneShot(req, credentialReferences, isReplicatedExecution);
-	}
-
-	// `deployment_id` with no fresh payload → activate a previously-staged deployment (the second half of
-	// a stage-then-activate-later flow). Otherwise run the full stage+activate (which itself honors
-	// `activate: false` to stop after the cluster-wide staged barrier).
-	if (req.deployment_id) return deployComponentActivateExisting(req, credentialReferences);
-	return deployComponentTwoPhase(req, credentialReferences);
+	return deployComponentOneShot(req, credentialReferences, isReplicatedExecution);
 }
 
 /**
@@ -618,7 +658,7 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
  * every node (phase 2, activate_component). The live component on every node is untouched until the
  * whole cluster has the bits in place, and the go-live window is just the swap + restart.
  */
-async function deployComponentTwoPhase(req, credentialReferences) {
+async function _legacyDeployComponentTwoPhase(req, credentialReferences) {
 	const { resolveCredentials } = require('./secretOperations.ts');
 	// Fail fast on a protected core name before we create any state or touch the cluster.
 	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
@@ -783,7 +823,7 @@ async function deployComponentTwoPhase(req, credentialReferences) {
  * path, writing config, or restarting. A failure here fails this peer's stage, which the origin's
  * barrier catches. No recorder (the origin owns the row) and no re-replication.
  */
-async function deployPhaseStage(req) {
+async function _legacyDeployPhaseStage(req) {
 	const { resolveCredentials } = require('./secretOperations.ts');
 	const emitter = null; // peers stream nothing back; the origin owns the emitter/recorder
 	const emit = () => {};
@@ -818,7 +858,7 @@ async function deployPhaseStage(req) {
  * id) into the live path, persist root config for a package deploy, and restart if the origin asked
  * for an immediate restart. No recorder, no re-replication.
  */
-async function deployPhaseActivate(req) {
+async function _legacyDeployPhaseActivate(req) {
 	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
 	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
 	const application = new Application({
@@ -845,7 +885,7 @@ async function deployPhaseActivate(req) {
  * into the live path on the origin, replicates the activate phase to peers (each activates its own
  * staged copy of the same deployment id), restarts, and marks the deployment row success.
  */
-async function deployComponentActivateExisting(req, credentialReferences) {
+async function _legacyDeployComponentActivateExisting(req, credentialReferences) {
 	const stagingId = req.deployment_id;
 	// An activate-by-id call carries no `package` — `harper activate` sends only project + deployment_id,
 	// and the docs describe this path as fetching/installing nothing — so recover the staged deployment's
@@ -972,7 +1012,505 @@ async function deployComponentActivateExisting(req, credentialReferences) {
  * Reached two ways: directly by an operator, and by a peer replaying a replicated revert
  * (`_deploymentId` set). deploy_component's `revert_on_failure` path drives it internally.
  */
-async function revertComponent(req) {
+function activationSpecFromRequest(req, credentialReferences) {
+	return {
+		project: req.project,
+		package: req.package ?? null,
+		install_command: req.install_command ?? null,
+		install_timeout: req.install_timeout ?? null,
+		install_allow_scripts: req.install_allow_scripts ?? null,
+		urlPath: req.urlPath ?? null,
+		host: req.host ?? null,
+		credentials: credentialReferences.length ? credentialReferences : null,
+		force: req.force === true,
+	};
+}
+
+function applicationFromSpec(spec, payload, resolvedCredentials, installCapture, emit) {
+	return new Application({
+		name: spec.project,
+		payload,
+		packageIdentifier: spec.package ?? undefined,
+		install: {
+			command: spec.install_command ?? undefined,
+			timeout: spec.install_timeout ?? undefined,
+			allowInstallScripts: spec.install_allow_scripts ?? undefined,
+		},
+		credentials: resolvedCredentials,
+		onInstallLine: (manager, stream, line) => {
+			installCapture?.push(manager, stream, line);
+			emit?.('install', { manager, stream, line });
+		},
+	});
+}
+
+function failedPeerResults(results) {
+	return (results ?? []).filter((result) => result?.status === 'failed' || result?.error || result?.reason);
+}
+
+function describePeerFailures(failed) {
+	return failed
+		.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? peer.reason ?? 'unknown error'})`)
+		.join(', ');
+}
+
+function buildPhaseOperation(phase, deploymentId, project, activationSpec, extra = {}) {
+	return {
+		operation: hdbTerms.OPERATIONS_ENUM.COMPONENT_DEPLOY_PHASE,
+		phase,
+		deployment_id: deploymentId,
+		project,
+		activation_spec: activationSpec,
+		...extra,
+	};
+}
+
+async function resolveSpecCredentials(spec, waitMs = 0) {
+	const { resolveCredentials } = require('./secretOperations.ts');
+	return resolveCredentials(spec.credentials ?? [], spec.project, { waitMs });
+}
+
+function assertStoredActivationSpec(row, deploymentId, project, spec, allowedStatuses) {
+	if (
+		!row ||
+		row.project !== project ||
+		!allowedStatuses.includes(row.status) ||
+		!isDeepStrictEqual(row.activation_spec, spec)
+	) {
+		throw new ServerError(
+			`Deployment '${deploymentId}' does not have the expected immutable activation specification for '${project}'`
+		);
+	}
+}
+
+async function sourceStagedPayload(deploymentId, spec, timeoutMs) {
+	const deadline = Date.now() + timeoutMs;
+	const row = await awaitDeploymentRow(deploymentId, { timeoutMs, requirePayload: !spec.package });
+	assertStoredActivationSpec(row, deploymentId, spec.project, spec, ['pending', 'staging', 'staged', 'activating']);
+	if (spec.package) return undefined;
+	return readPayloadBlobWithRetry(() => row.payload_blob.stream(), {
+		timeoutMs: Math.max(0, deadline - Date.now()),
+	});
+}
+
+async function discardDeploymentEverywhere(project, deploymentId, activationSpec) {
+	const componentPath = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), project);
+	await discardStagedApplication(componentPath, deploymentId).catch(() => {});
+	await server.replication
+		.replicateOperation(buildPhaseOperation('discard', deploymentId, project, activationSpec))
+		.catch(() => {});
+}
+
+function getStagingRetentionMaxCount() {
+	const value = Number(env.get(hdbTerms.CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT));
+	return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 5;
+}
+
+function getPayloadRetentionMaxCount() {
+	const value = Number(env.get(hdbTerms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXCOUNT));
+	return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 1;
+}
+
+async function pruneStagedDeploymentArtifacts(project, activationSpec) {
+	const expired = await expireOldStagedDeployments(project, getStagingRetentionMaxCount());
+	for (const deploymentId of expired) await discardDeploymentEverywhere(project, deploymentId, activationSpec);
+}
+
+async function restartActivatedComponent(req, deploymentId, project, activationSpec, emit) {
+	if (req.restart === true) {
+		emit('phase', { phase: 'restart', status: 'start' });
+		const restartResponse = await server.replication.replicateOperation(
+			buildPhaseOperation('restart', deploymentId, project, activationSpec)
+		);
+		const failed = failedPeerResults(restartResponse?.replicated);
+		manageThreads.restartWorkers('http');
+		emit('phase', { phase: 'restart', status: 'done' });
+		return { restartMessage: `, restarting Harper`, replicated: restartResponse?.replicated, failedPeers: failed };
+	}
+	if (req.restart === 'rolling') {
+		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+		emit('phase', { phase: 'restart', status: 'start' });
+		const jobResponse = await serverUtilities.executeJob({
+			operation: 'restart_service',
+			service: 'http',
+			replicated: true,
+		});
+		emit('phase', { phase: 'restart', status: 'done' });
+		return { restartMessage: `, restarting Harper`, restartJobId: jobResponse.job_id, failedPeers: [] };
+	}
+	return { restartMessage: '', failedPeers: [] };
+}
+
+async function deployComponentTwoPhase(req) {
+	assertNotProtectedCoreComponent(req.project, req.force);
+	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
+	req.credentials = await ingestCredentials(req, req.credentials, req.project);
+	const credentialReferences = (req.credentials ?? []).filter((entry) => entry?.secret !== undefined);
+	const activationSpec = activationSpecFromRequest(req, credentialReferences);
+	const emitter = req.progress ?? new ProgressEmitter();
+	const emit = (event, data) => emitter.emit(event, data);
+	const installCapture = createInstallCapture();
+	const recorder = await DeploymentRecorder.create({
+		project: req.project,
+		package_identifier: req.package ?? null,
+		user: req.hdb_user?.username,
+		restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
+		credentials: credentialReferences.length ? credentialReferences : null,
+		activation_spec: activationSpec,
+		emitter,
+	});
+	let application;
+	let activationCommitted = false;
+	let activationBarrierPassed = false;
+	try {
+		let payload = req.payload;
+		if (req.payload != null) {
+			await recorder.ingestPayload(req.payload);
+			payload = recorder.row.payload_blob.stream();
+		}
+		const resolvedCredentials = await resolveCredentials(req.credentials, req.project);
+		application = applicationFromSpec(activationSpec, payload, resolvedCredentials, installCapture, emit);
+		if (credentialReferences.length) req.credentials = credentialReferences;
+		else delete req.credentials;
+		delete req.progress;
+		delete req.payload;
+
+		emit('phase', { phase: 'stage', status: 'start' });
+		const stagedPath = await stageApplication(application, recorder.deploymentId);
+		await loadValidateComponent({ dirPath: stagedPath, emit });
+		recorder.seal();
+		const stageResponse = await server.replication.replicateOperation(
+			buildPhaseOperation('stage', recorder.deploymentId, req.project, activationSpec, {
+				deployment_timeout: req.deployment_timeout,
+			}),
+			{
+				onPeerResult: (result) => {
+					recorder.recordPeer(result);
+					emit('peer', result);
+				},
+			}
+		);
+		if (stageResponse?.replicated) recorder.recordPeers(stageResponse.replicated);
+		emit('phase', { phase: 'stage', status: 'done' });
+		const stageFailures = recorder.getFailedPeers();
+		if (stageFailures.length && !req.ignore_replication_errors) {
+			await discardDeploymentEverywhere(req.project, recorder.deploymentId, activationSpec);
+			throw new ServerError(
+				`Component '${req.project}' failed to stage on ${stageFailures.length} peer node(s): ` +
+					`${describePeerFailures(stageFailures)}. No node was activated and the live component is unchanged.`
+			);
+		}
+		await recorder.checkpoint('staged', 'staged');
+
+		if (req.activate === false) {
+			emit('phase', { phase: 'staged', status: 'done' });
+			await recorder.finish('staged');
+			await pruneStagedDeploymentArtifacts(req.project, activationSpec);
+			await pruneProjectPayloads(req.project, getPayloadRetentionMaxCount()).catch((error) =>
+				log.warn('Failed to prune staged deployment payloads', error)
+			);
+			return {
+				message: `Staged component: ${req.project}`,
+				project: req.project,
+				staged: true,
+				deployment_id: recorder.deploymentId,
+				replicated: stageResponse?.replicated,
+				...(stageFailures.length ? { failed_peers: stageFailures } : {}),
+			};
+		}
+
+		const configTransaction = await createApplicationActivationTransaction(req.project, activationSpec);
+		await activateStagedApplication(application, recorder.deploymentId, {
+			beforeSwap: async () => {
+				await claimStagedDeployment(recorder.deploymentId, req.project);
+				emit('phase', { phase: 'activate', status: 'start' });
+			},
+			beforeCommit: () => configTransaction.commit(),
+			onRollback: () => configTransaction.rollback(),
+		});
+		activationCommitted = true;
+		const activateResponse = await server.replication.replicateOperation(
+			buildPhaseOperation('activate', recorder.deploymentId, req.project, activationSpec),
+			{
+				onPeerResult: (result) => {
+					recorder.recordPeer(result);
+					emit('peer', result);
+				},
+			}
+		);
+		if (activateResponse?.replicated) recorder.recordPeers(activateResponse.replicated);
+		emit('phase', { phase: 'activate', status: 'done' });
+		const activateFailures = recorder.getFailedPeers();
+		if (activateFailures.length && !req.ignore_replication_errors) {
+			throw new ServerError(
+				`Component '${req.project}' activated on only part of the cluster. Split nodes: ` +
+					`${describePeerFailures(activateFailures)}. Roll forward by staging and activating a known-good deployment.`
+			);
+		}
+		activationBarrierPassed = activateFailures.length === 0;
+		if (!req.restart) markRestartRequiredForNewComponent(application);
+		const restart = await restartActivatedComponent(req, recorder.deploymentId, req.project, activationSpec, emit);
+		if (restart.failedPeers.length) recorder.recordPeers(restart.failedPeers);
+		if (restart.failedPeers.length && !req.ignore_replication_errors) {
+			throw new ServerError(
+				`Component '${req.project}' activated, but restart failed on: ${describePeerFailures(restart.failedPeers)}`
+			);
+		}
+		emit('phase', { phase: 'success', status: 'done' });
+		maybeReclaimPayload(recorder, emit);
+		await recorder.finish('success');
+		await pruneProjectPayloads(req.project, getPayloadRetentionMaxCount()).catch((error) =>
+			log.warn('Failed to prune deployment payloads', error)
+		);
+		return {
+			message: `Successfully deployed: ${req.project}${restart.restartMessage}`,
+			project: req.project,
+			deployment_id: recorder.deploymentId,
+			replicated: activateResponse?.replicated,
+			...(restart.restartJobId ? { restartJobId: restart.restartJobId } : {}),
+			...(recorder.getFailedPeers().length ? { failed_peers: recorder.getFailedPeers() } : {}),
+		};
+	} catch (error) {
+		if (application && !activationCommitted) {
+			await discardStagedApplication(application.dirPath, recorder.deploymentId).catch(() => {});
+		}
+		const capture = installCapture.snapshot();
+		const failedPeers = recorder.getFailedPeers();
+		const message = error?.message ?? String(error);
+		const structured = {
+			error: message,
+			phase: recorder.row.phase,
+			deployment_id: recorder.deploymentId,
+			...(capture.lines.length ? { install_output: capture } : {}),
+			...(failedPeers.length ? { failed_peers: failedPeers } : {}),
+		};
+		emit('error', {
+			message,
+			code: error?.statusCode ?? error?.code,
+			phase: recorder.row.phase,
+			deployment_id: recorder.deploymentId,
+			install_output: capture.lines.length ? capture : undefined,
+			failed_peers: failedPeers.length ? failedPeers : undefined,
+		});
+		await recorder
+			.finish(activationBarrierPassed ? 'success' : activationCommitted ? 'activating' : 'failed', error)
+			.catch((finishError) => log.warn('Failed to record two-phase deployment failure', finishError));
+		const outError = new ServerError(message, error?.statusCode);
+		outError.http_resp_msg = structured;
+		throw outError;
+	}
+}
+
+const ACTIVATION_FRESH_FIELDS = [
+	'payload',
+	'package',
+	'install_command',
+	'install_timeout',
+	'install_allow_scripts',
+	'urlPath',
+	'host',
+	'credentials',
+	'force',
+	'activate',
+	'two_phase',
+];
+
+function assertActivationRequestIsReferenceOnly(req) {
+	const supplied = ACTIVATION_FRESH_FIELDS.filter((field) => req[field] !== undefined);
+	if (supplied.length) {
+		throw handleHDBError(
+			new Error(),
+			`deployment_id activation uses the immutable staged configuration; remove: ${supplied.join(', ')}`,
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
+	}
+}
+
+async function deployComponentActivateExisting(req) {
+	assertActivationRequestIsReferenceOnly(req);
+	const row = await getDeploymentRow(req.deployment_id);
+	if (!row) throw handleHDBError(new Error(), `No deployment found with id '${req.deployment_id}'`, 404);
+	if (row.project !== req.project || row.status !== 'staged' || !row.activation_spec) {
+		throw handleHDBError(
+			new Error(),
+			`Deployment '${req.deployment_id}' is not a staged deployment for component '${req.project}'`,
+			HTTP_STATUS_CODES.CONFLICT
+		);
+	}
+	const spec = row.activation_spec;
+	assertNotProtectedCoreComponent(spec.project, spec.force);
+	const emitter = req.progress ?? new ProgressEmitter();
+	const emit = (event, data) => emitter.emit(event, data);
+	const componentPath = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), req.project);
+	let application;
+	const stagedPath = stagedApplicationPath(componentPath, req.deployment_id);
+	if (await hasCompleteStagedApplication(stagedPath)) {
+		application = applicationFromSpec(spec, undefined, undefined, null, emit);
+		await loadValidateComponent({ dirPath: stagedPath, emit });
+	} else {
+		const timeoutMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
+		const payload = await sourceStagedPayload(req.deployment_id, spec, timeoutMs);
+		const credentials = await resolveSpecCredentials(spec, timeoutMs);
+		application = applicationFromSpec(spec, payload, credentials, createInstallCapture(), emit);
+		const rebuiltPath = await stageApplication(application, req.deployment_id);
+		await loadValidateComponent({ dirPath: rebuiltPath, emit });
+	}
+	const configTransaction = await createApplicationActivationTransaction(req.project, spec);
+	emit('phase', { phase: 'activate', status: 'start' });
+	let claimed = false;
+	try {
+		await activateStagedApplication(application, req.deployment_id, {
+			beforeSwap: async () => {
+				await claimStagedDeployment(req.deployment_id, req.project);
+				claimed = true;
+			},
+			beforeCommit: () => configTransaction.commit(),
+			onRollback: () => configTransaction.rollback(),
+		});
+	} catch (error) {
+		if (claimed) await markDeploymentTerminal(req.deployment_id, 'staged').catch(() => {});
+		throw error;
+	}
+	let settledPeers = [];
+	let activationBarrierPassed = false;
+	try {
+		const peerResults = [];
+		const activateResponse = await server.replication.replicateOperation(
+			buildPhaseOperation('activate', req.deployment_id, req.project, spec),
+			{
+				onPeerResult: (result) => {
+					peerResults.push(result);
+					emit('peer', result);
+				},
+			}
+		);
+		settledPeers = Array.isArray(activateResponse?.replicated) ? activateResponse.replicated : peerResults;
+		await recordDeploymentPeers(req.deployment_id, settledPeers);
+		emit('phase', { phase: 'activate', status: 'done' });
+		const failed = failedPeerResults(settledPeers);
+		if (failed.length && !req.ignore_replication_errors) {
+			throw new ServerError(
+				`Component '${req.project}' activated on only part of the cluster. Split nodes: ` +
+					`${describePeerFailures(failed)}. Roll forward by staging and activating a known-good deployment.`
+			);
+		}
+		activationBarrierPassed = failed.length === 0;
+		if (!req.restart) markRestartRequiredForNewComponent(application);
+		const restart = await restartActivatedComponent(req, req.deployment_id, req.project, spec, emit);
+		if (restart.failedPeers.length) {
+			settledPeers = [...settledPeers, ...restart.failedPeers];
+			await recordDeploymentPeers(req.deployment_id, restart.failedPeers);
+		}
+		if (restart.failedPeers.length && !req.ignore_replication_errors) {
+			throw new ServerError(
+				`Component '${req.project}' activated, but restart failed on: ${describePeerFailures(restart.failedPeers)}`
+			);
+		}
+		await markDeploymentTerminal(req.deployment_id, 'success');
+		await maybeReclaimFinishedPayload(req.deployment_id, emit);
+		await pruneProjectPayloads(req.project, getPayloadRetentionMaxCount()).catch((error) =>
+			log.warn('Failed to prune activated deployment payloads', error)
+		);
+		return {
+			message: `Activated component: ${req.project}${restart.restartMessage}`,
+			project: req.project,
+			activated: true,
+			deployment_id: req.deployment_id,
+			replicated: activateResponse?.replicated,
+			...(restart.restartJobId ? { restartJobId: restart.restartJobId } : {}),
+			...(failedPeerResults(settledPeers).length ? { failed_peers: failedPeerResults(settledPeers) } : {}),
+		};
+	} catch (error) {
+		await markDeploymentTerminal(req.deployment_id, activationBarrierPassed ? 'success' : 'activating', error).catch(
+			() => {}
+		);
+		throw error;
+	}
+}
+
+async function componentDeployPhase(req) {
+	if (!isTrustedReplicatedOperation(req)) {
+		throw handleHDBError(new Error(), 'component_deploy_phase is restricted to authenticated cluster peers', 403);
+	}
+	const validation = validator.componentDeployPhaseValidator({
+		phase: req.phase,
+		deployment_id: req.deployment_id,
+		project: req.project,
+		activation_spec: req.activation_spec,
+		deployment_timeout: req.deployment_timeout,
+	});
+	if (validation) throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	const spec = req.activation_spec;
+	if (!spec || spec.project !== req.project) {
+		throw handleHDBError(new Error(), 'Invalid immutable activation specification', HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	const componentPath = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), req.project);
+	if (req.phase === 'discard') {
+		await discardStagedApplication(componentPath, req.deployment_id);
+		return { message: `Discarded staged component: ${req.project}` };
+	}
+	if (req.phase === 'restart') {
+		const row = await getDeploymentRow(req.deployment_id);
+		assertStoredActivationSpec(row, req.deployment_id, req.project, spec, [
+			'pending',
+			'staging',
+			'staged',
+			'activating',
+		]);
+		manageThreads.restartWorkers('http');
+		return { message: `Restarting component runtime for: ${req.project}` };
+	}
+	if (req.phase === 'stage') {
+		assertNotProtectedCoreComponent(req.project, spec.force);
+		const timeoutMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
+		const payload = await sourceStagedPayload(req.deployment_id, spec, timeoutMs);
+		const credentials = await resolveSpecCredentials(spec, timeoutMs);
+		const application = applicationFromSpec(spec, payload, credentials, createInstallCapture());
+		const stagedPath = await stageApplication(application, req.deployment_id);
+		await loadValidateComponent({ dirPath: stagedPath, emit: () => {} });
+		return { message: `Staged component: ${req.project}`, project: req.project, staged: true };
+	}
+	const row = await getDeploymentRow(req.deployment_id);
+	assertStoredActivationSpec(row, req.deployment_id, req.project, spec, ['pending', 'staging', 'staged', 'activating']);
+	let application;
+	const stagedPath = stagedApplicationPath(componentPath, req.deployment_id);
+	if (await hasCompleteStagedApplication(stagedPath)) {
+		application = applicationFromSpec(spec, undefined, undefined, null);
+		await loadValidateComponent({ dirPath: stagedPath, emit: () => {} });
+	} else {
+		const timeoutMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
+		const payload = await sourceStagedPayload(req.deployment_id, spec, timeoutMs);
+		const credentials = await resolveSpecCredentials(spec, timeoutMs);
+		application = applicationFromSpec(spec, payload, credentials, createInstallCapture());
+		const rebuiltPath = await stageApplication(application, req.deployment_id);
+		await loadValidateComponent({ dirPath: rebuiltPath, emit: () => {} });
+	}
+	const configTransaction = await createApplicationActivationTransaction(req.project, spec);
+	await activateStagedApplication(application, req.deployment_id, {
+		beforeSwap: async () => {
+			await claimStagedDeployment(req.deployment_id, req.project, {
+				allowActivating: true,
+				waitForStagedMs: coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS),
+			});
+		},
+		beforeCommit: () => configTransaction.commit(),
+		onRollback: () => configTransaction.rollback(),
+	});
+	markRestartRequiredForNewComponent(application);
+	return { message: `Activated component: ${req.project}`, project: req.project, activated: true };
+}
+
+function isTrustedReplicatedOperation(req) {
+	const user = req.hdb_user;
+	return (
+		isOperationAuthorizationBypassed() &&
+		req.replicated === false &&
+		!!user &&
+		!!(user.name || user.replicates || user.subscribers)
+	);
+}
+
+async function _revertComponent(req) {
 	if (req.project) req.project = path.parse(req.project).name;
 	const validation = validator.revertComponentValidator(req);
 	if (validation) throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -1357,6 +1895,29 @@ function maybeReclaimPayload(recorder, emit) {
 	}
 }
 
+async function maybeReclaimFinishedPayload(deploymentId, emit) {
+	try {
+		const row = await getDeploymentRow(deploymentId);
+		const payloadSize = row?.payload_size;
+		const retentionMaxSize = getPayloadRetentionMaxSize();
+		if (
+			typeof payloadSize !== 'number' ||
+			payloadSize <= retentionMaxSize ||
+			failedPeerResults(row.peer_results).length > 0 ||
+			row.payload_blob == null
+		) {
+			return;
+		}
+		const { handleDeleteDeploymentPayload } = require('./deploymentOperations.ts');
+		const result = await handleDeleteDeploymentPayload({ deployment_id: deploymentId });
+		if (result.freed_bytes > 0) {
+			emit('payload_dropped', { payload_size: result.freed_bytes, max_size: retentionMaxSize });
+		}
+	} catch (error) {
+		log.warn(`Failed to reclaim payload for activated deployment '${deploymentId}'`, error);
+	}
+}
+
 /**
  * Count-based payload retention (deployment_payloadRetention_maxCount): after a successful deploy, keep
  * only the newest N stored payloads for this project and drop the rest. Where the size-based reclaim
@@ -1513,6 +2074,7 @@ async function getComponents() {
 					itemName === 'node_modules' ||
 					itemName === ASIDE_STAGING_DIR ||
 					itemName === DEPLOY_STAGING_DIR ||
+					itemName === DEPLOY_ACTIVATION_DIR ||
 					itemName === DEPLOY_PREVIOUS_DIR ||
 					itemName === COMPONENT_PREPARATION_LOCK_DIR
 				)
@@ -1830,28 +2392,34 @@ async function dropComponent(req) {
 
 	const { project, file } = req;
 	const projectPath = req.file ? path.join(project, file) : project;
-	const pathToComponent = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), projectPath);
+	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const componentPath = path.join(componentsRoot, project);
+	const pathToComponent = path.join(componentsRoot, projectPath);
 
-	const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
-	if (await fs.pathExists(componentSymlink)) {
-		await fs.unlink(componentSymlink);
-	}
-
-	if (await fs.pathExists(pathToComponent)) {
-		await fs.remove(pathToComponent);
-	}
-
-	// Remove the component from the package.json file
-	const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
-	if (await fs.pathExists(packageJsonPath)) {
-		const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
-		if (packageJson?.dependencies?.[project]) {
-			delete packageJson.dependencies[project];
+	await withComponentPreparationLock(componentPath, async () => {
+		const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+		if (await fs.pathExists(componentSymlink)) {
+			await fs.unlink(componentSymlink);
 		}
-		await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
-	}
 
-	configUtils.deleteConfigFromFile([project]);
+		if (!file) {
+			await invalidateProjectStagedDeployments(project);
+			await discardProjectStagedApplications(componentPath);
+			await discardProjectActivationArtifacts(componentPath);
+		}
+		if (await fs.pathExists(pathToComponent)) await fs.remove(pathToComponent);
+		if (!file) await updateApplicationLockEntry(project, undefined);
+
+		const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
+		if (await fs.pathExists(packageJsonPath)) {
+			const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+			if (packageJson?.dependencies?.[project]) delete packageJson.dependencies[project];
+			await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
+		}
+
+		configUtils.deleteConfigFromFile([project]);
+	});
+
 	let response = await server.replication.replicateOperation(req);
 	if (req.restart === true) {
 		manageThreads.restartWorkers('http');
@@ -1869,8 +2437,7 @@ exports.addComponent = addComponent;
 exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
-exports.revertComponent = revertComponent;
-exports.selectRevertTargets = selectRevertTargets; // exported for unit testing the revert_on_failure node-targeting
+exports.componentDeployPhase = componentDeployPhase;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;

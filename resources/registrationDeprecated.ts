@@ -4,5 +4,6 @@ export function getRegistrationInfo() {
 	return {
 		version: packageJson.version,
 		deprecated: true,
+		capabilities: { componentDeployTwoPhase: 1 },
 	};
 }

@@ -13,6 +13,7 @@ const tokenAuthModule = require('#src/security/tokenAuthentication');
 const packageComponentModule = require('#src/components/packageComponent');
 const processManagementModule = require('#src/utility/processManagement/processManagement');
 const configUtilsModule = require('#src/config/configUtils');
+const { DeployRenderer } = require('#src/bin/deployRenderer');
 
 // Thrown by the mocked process.exit below so a call to it unwinds the async
 // cliOperations() call (rather than actually terminating the test runner) and
@@ -240,6 +241,141 @@ describe('cliOperations', () => {
 			const deploy = calls[1];
 			assert.strictEqual(deploy.options.headers.Accept, 'text/event-stream');
 			assert.strictEqual(result.success, true);
+		});
+
+		it('fails closed on every staged-deploy control against a target without two-phase capability', async () => {
+			const originalExit = process.exit;
+			const originalConsoleError = console.error;
+			const errors = [];
+			const calls = [];
+			process.exit = (code) => {
+				throw new ProcessExitSignal(code);
+			};
+			console.error = (...args) => errors.push(args.join(' '));
+			commonUtilsModule.httpRequest = async (options, req) => {
+				calls.push({ options, req });
+				return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
+			};
+			try {
+				for (const request of [
+					{ package: '@scope/widget', activate: false, _cliVerb: 'stage' },
+					{ package: '@scope/widget', activate: false },
+					{ deployment_id: '41faded8-6cf5-4a2a-95f8-863e7ea498fa' },
+					{ package: '@scope/widget', two_phase: true },
+				]) {
+					await assert.rejects(
+						cliOperationsModule.cliOperations(
+							{
+								operation: 'deploy_component',
+								project: 'widget',
+								target: 'example.com',
+								...request,
+							},
+							true
+						),
+						ProcessExitSignal
+					);
+				}
+			} finally {
+				process.exit = originalExit;
+				console.error = originalConsoleError;
+			}
+
+			assert.deepStrictEqual(
+				calls.map(({ req }) => req.operation),
+				Array(4).fill('registration_info'),
+				'only one capability probe per request reached the target'
+			);
+			assert.match(errors.join('\n'), /does not advertise staged-deploy support/);
+		});
+
+		it('renders stage phase events and strips its CLI-only verb marker', async () => {
+			const calls = [];
+			const rendered = [];
+			const originalRenderEvent = DeployRenderer.prototype.renderEvent;
+			DeployRenderer.prototype.renderEvent = function (message) {
+				rendered.push(message.event);
+			};
+			commonUtilsModule.httpRequest = async (options, req) => {
+				calls.push({ options, req });
+				if (req.operation === 'registration_info') {
+					return {
+						statusCode: 200,
+						body: JSON.stringify({
+							version: '5.2.0',
+							capabilities: { componentDeployTwoPhase: 1 },
+						}),
+					};
+				}
+				return Object.assign(
+					Readable.from([
+						'event: phase\ndata: {"phase":"stage","status":"start"}\n\n',
+						'event: done\ndata: {"result":{"staged":true}}\n\n',
+					]),
+					{ statusCode: 200, headers: { 'content-type': 'text/event-stream' } }
+				);
+			};
+			let result;
+			try {
+				result = await cliOperationsModule.cliOperations(
+					{
+						operation: 'deploy_component',
+						project: 'widget',
+						package: '@scope/widget',
+						activate: false,
+						_cliVerb: 'stage',
+						target: 'example.com',
+					},
+					true
+				);
+			} finally {
+				DeployRenderer.prototype.renderEvent = originalRenderEvent;
+			}
+
+			const deploy = calls.at(-1);
+			assert.strictEqual(deploy.req._cliVerb, undefined);
+			assert.strictEqual(deploy.req.activate, false);
+			assert.deepStrictEqual(rendered, ['phase', 'done']);
+			assert.strictEqual(result.staged, true);
+		});
+
+		it('defaults the activate project from the current directory', async () => {
+			const calls = [];
+			const projectDir = path.join(testDir, 'activate-project');
+			fs.ensureDirSync(projectDir);
+			const priorCwd = process.cwd();
+			commonUtilsModule.httpRequest = async (options, req) => {
+				calls.push({ options, req });
+				if (req.operation === 'registration_info') {
+					return {
+						statusCode: 200,
+						body: JSON.stringify({
+							version: '5.2.0',
+							capabilities: { componentDeployTwoPhase: 1 },
+						}),
+					};
+				}
+				return Object.assign(Readable.from(['event: done\ndata: {"result":{"activated":true}}\n\n']), {
+					statusCode: 200,
+					headers: { 'content-type': 'text/event-stream' },
+				});
+			};
+			try {
+				process.chdir(projectDir);
+				await cliOperationsModule.cliOperations(
+					{
+						operation: 'deploy_component',
+						deployment_id: '41faded8-6cf5-4a2a-95f8-863e7ea498fa',
+						_cliVerb: 'activate',
+						target: 'example.com',
+					},
+					true
+				);
+			} finally {
+				process.chdir(priorCwd);
+			}
+
+			assert.strictEqual(calls.at(-1).req.project, 'activate-project');
 		});
 	});
 
