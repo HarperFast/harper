@@ -110,7 +110,6 @@ function startHTTPWorker(index, threadCount = 1) {
 		workerIndex: index,
 		threadCount,
 		onStarted(worker) {
-			// onStarted runs for each managed restart; readiness belongs to this slot, not a Worker instance.
 			const attempt = ++startupAttempts;
 			const threadId = (lastThreadId = worker.threadId);
 			let startupPhase = 'starting';
@@ -144,10 +143,9 @@ function startHTTPWorker(index, threadCount = 1) {
 			const onExit = () => {
 				cleanupStartup();
 				if (workerReady) removeWorker();
-				else {
-					const message = describeStartup('exited');
-					harperLogger.error(message);
-				}
+				// A rolling restart marks both the outgoing worker and its still-booting replacement
+				// wasShutdown, so a shutdown landing mid-boot is routine, not a startup failure.
+				else if (!worker.wasShutdown) harperLogger.error(describeStartup('exited'));
 			};
 			worker.on('message', onMessage);
 			worker.on('exit', onExit);
