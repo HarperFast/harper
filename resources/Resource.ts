@@ -611,10 +611,7 @@ function elementTargetFactory(query: any): (id: any) => RequestTarget {
 	// and making the skip below dead. A nullish own value carries no metadata either.
 	const carried: Record<string, any> = {};
 	for (const key of Object.keys(base)) {
-		// `checkPermission` is already stripped by `cloneRequestTarget`; excluded again here so the
-		// invariant is local to the dispatch that depends on it rather than inherited from elsewhere.
 		if (key === 'id' || key === 'isCollection' || key === 'pathname' || key === 'search') continue;
-		if (key === 'checkPermission') continue;
 		const value = (base as any)[key];
 		if (value != null) carried[key] = value;
 	}
