@@ -276,6 +276,19 @@ describe('Test environmentManager module', () => {
 			expect(update_config_object.calledWith('databases', { data: { path: '/iso' } })).to.be.true;
 		});
 
+		it('treats a reordered mapping as unchanged — key order in the YAML is formatting, not config', () => {
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
+			sandbox.stub(config_utils, 'getConfigValue').returns({ securePort: 9925, port: null });
+			env_rw.__set__(
+				'appliedOverrides',
+				overrideMap(['operationsApi_network', { port: 9930 }, { port: null, securePort: 9925 }])
+			);
+
+			env_rw.__get__('reapplyAllOverrides')();
+
+			expect(update_config_object.calledWith('operationsApi_network', { port: 9930 })).to.be.true;
+		});
+
 		it('rejects a value that could not be handed to a worker rather than letting the spawn degrade', () => {
 			// manageThreads.js's configOverrides provider structuredClones this map into every worker
 			// and only logs a clone failure, spawning the worker on the on-disk config instead — so
