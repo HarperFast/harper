@@ -759,7 +759,7 @@ describe('HNSW limit above the resolved search ef', () => {
 		}
 		// Counting rather than asserting none: the memo expires on its own schedule, at most once per
 		// NODE_COUNT_TTL since it was last resolved. The regression re-resolves per query instead.
-		const explainable = Math.ceil((Date.now() - resolvedAt) / 10_000); // NODE_COUNT_TTL
+		const explainable = Math.floor((Date.now() - resolvedAt) / 10_000); // NODE_COUNT_TTL
 		assert(
 			reresolutions <= explainable,
 			`a limit past the graph size re-resolved the node count ${reresolutions} times; the TTL explains at most ${explainable}`
