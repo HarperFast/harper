@@ -88,6 +88,9 @@ function startHTTPWorker(index, threadCount = 1) {
 	let waitingForInitialReady = true;
 	let finishCurrentStartup = () => {};
 	let startupAttempts = 0;
+	// A Worker's threadId reads back as -1 once it has exited, which is exactly when the diagnostics
+	// below run, so each attempt records its id while the worker is still alive.
+	let lastThreadId = -1;
 	const ready = new Promise<void>((resolve, reject) => {
 		resolveReady = resolve;
 		rejectReady = reject;
@@ -109,6 +112,7 @@ function startHTTPWorker(index, threadCount = 1) {
 		onStarted(worker) {
 			// onStarted runs for each managed restart; readiness belongs to this slot, not a Worker instance.
 			const attempt = ++startupAttempts;
+			const threadId = (lastThreadId = worker.threadId);
 			let startupPhase = 'starting';
 			let workerReady = false;
 			let startupDiagnostic;
@@ -121,7 +125,7 @@ function startHTTPWorker(index, threadCount = 1) {
 				worker.off('message', onMessage);
 			};
 			const describeStartup = (event) =>
-				`HTTP worker slot ${index} ${event} before ready (thread ${worker.threadId}, attempt ${attempt}, phase ${startupPhase})`;
+				`HTTP worker slot ${index} ${event} before ready (thread ${threadId}, attempt ${attempt}, phase ${startupPhase})`;
 			const onMessage = (message) => {
 				if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE) {
 					startupPhase = message.phase;
@@ -156,8 +160,8 @@ function startHTTPWorker(index, threadCount = 1) {
 				finishCurrentStartup = cleanupStartup;
 			}
 		},
-		onRestartExhausted(worker) {
-			failStartup(new Error(`HTTP worker slot ${index} exhausted restarts before ready (thread ${worker.threadId})`));
+		onRestartExhausted() {
+			failStartup(new Error(`HTTP worker slot ${index} exhausted restarts before ready (thread ${lastThreadId})`));
 		},
 	};
 	startWorker(join(__dirname, './threadServer.js'), workerOptions);
