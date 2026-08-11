@@ -78,6 +78,10 @@ interface ConfigState {
 	version: string;
 	sources: Record<string, ConfigSource>; // Maps config path to the source that set it
 	originalValues: Record<string, any>; // Original values before env var override (for restoration)
+	// Paths the config file declared as empty objects before an env layer first populated
+	// them (#1618/#1726). Kept separate from originalValues so a marker can never mask, or
+	// be consumed as, a real leaf original at the same path.
+	emptyScopeOriginals: Record<string, true>;
 	snapshots: {
 		// Snapshots of what each env var currently specifies (for detecting changes)
 		HARPER_DEFAULT_CONFIG?: { hash: string; config: ConfigObject };
@@ -411,17 +415,14 @@ function setNestedValue(obj: ConfigObject, path: string, value: any): void {
 
 /**
  * Delete nested value by dot-notation path, pruning ancestor objects the deletion
- * emptied. Removal operates leaf-by-leaf on flattened paths, so without pruning,
- * deleting the last leaf under an entry leaves an `entry: {}` husk behind — invalid
- * wherever validation requires fields, and permanent once persisted to the config
- * file, since the file's empty objects are user content that composition preserves
- * (#2067). Only objects along the deleted path are pruned; a deliberate empty scope
- * (#1618/#1726) has no sourced leaves under it, so no deletion ever walks through
- * it. The one overlap — a scope the file declared `{}` that an env var populated and
- * later vacated — is handled by the recordEmptyAncestorOriginal /
- * restorePrunedEmptyAncestor pair at the call sites, not here.
+ * emptied. Removal operates leaf-by-leaf on flattened paths, so deleting the last
+ * leaf under an entry would otherwise leave an `entry: {}` husk in the config file —
+ * invalid wherever validation requires fields, and sticky once persisted (#2067).
+ * Prunes only what this deletion emptied: an absent leaf deletes nothing and prunes
+ * nothing, so a deliberate empty scope (#1618/#1726) is never eaten by a no-op
+ * removal. Returns the pruned ancestor paths, deepest first.
  */
-function deleteNestedValue(obj: ConfigObject, path: string): void {
+function deleteNestedValue(obj: ConfigObject, path: string): string[] {
 	const keys = path.split('.');
 	const ancestors: ConfigObject[] = [];
 	let current = obj;
@@ -429,26 +430,32 @@ function deleteNestedValue(obj: ConfigObject, path: string): void {
 	for (let i = 0; i < keys.length - 1; i++) {
 		const key = keys[i];
 		if (!isPlainObject(current[key])) {
-			return; // Path doesn't exist
+			return []; // Path doesn't exist
 		}
 		ancestors.push(current);
 		current = current[key];
 	}
 
-	delete current[keys[keys.length - 1]];
+	const leafKey = keys[keys.length - 1];
+	if (!(leafKey in current)) {
+		return []; // Absent leaf: nothing deleted, nothing to prune
+	}
+	delete current[leafKey];
 
+	const prunedPaths: string[] = [];
 	for (let i = ancestors.length - 1; i >= 0 && Object.keys(current).length === 0; i--) {
 		delete ancestors[i][keys[i]];
+		prunedPaths.push(keys.slice(0, i + 1).join('.'));
 		current = ancestors[i];
 	}
+	return prunedPaths;
 }
 
 /**
- * If the deepest existing ancestor of `path` is an empty plain object, record that
- * emptiness in originalValues before a layer populates it. A bare `name: {}` in the
- * config file is user content (#1618/#1726) even while an env var temporarily fills
- * it — the marker lets removal restore the `{}` after pruning instead of losing the
- * scope. At most one ancestor can be both existing and empty, so one marker suffices.
+ * If the deepest existing ancestor of `path` is an empty plain object, record it in
+ * emptyScopeOriginals before a layer populates it: a bare `name: {}` in the config
+ * file is user content (#1618/#1726) even while an env var temporarily fills it. At
+ * most one ancestor can be both existing and empty, so one marker suffices.
  */
 function recordEmptyAncestorOriginal(fileConfig: ConfigObject, state: ConfigState, path: string): void {
 	const keys = path.split('.');
@@ -457,31 +464,23 @@ function recordEmptyAncestorOriginal(fileConfig: ConfigObject, state: ConfigStat
 		current = current[keys[i]];
 		if (!isPlainObject(current)) return;
 		if (Object.keys(current).length === 0) {
-			const ancestorPath = keys.slice(0, i + 1).join('.');
-			if (!(ancestorPath in state.originalValues)) state.originalValues[ancestorPath] = {};
+			state.emptyScopeOriginals[keys.slice(0, i + 1).join('.')] = true;
 			return;
 		}
 	}
 }
 
 /**
- * Counterpart to recordEmptyAncestorOriginal: after deleteNestedValue pruned emptied
- * ancestors of `path`, put back the deepest ancestor the file originally declared as
- * `{}` — only if the prune actually removed it (a sibling leaf keeps the object
- * alive, and the marker stays for the deletion that finally vacates it).
+ * Counterpart to recordEmptyAncestorOriginal: when a prune removed an ancestor the
+ * file originally declared as `{}`, put the empty scope back. Only paths the deletion
+ * actually pruned are candidates, so a scalar overwrite or an absent-leaf no-op can
+ * never resurrect a scope over live env-layer content.
  */
-function restorePrunedEmptyAncestor(fileConfig: ConfigObject, state: ConfigState, path: string): void {
-	const keys = path.split('.');
-	for (let i = keys.length - 2; i >= 0; i--) {
-		const ancestorPath = keys.slice(0, i + 1).join('.');
-		const original = state.originalValues[ancestorPath];
-		if (
-			isPlainObject(original) &&
-			Object.keys(original).length === 0 &&
-			getNestedValue(fileConfig, ancestorPath) === undefined
-		) {
-			setNestedValue(fileConfig, ancestorPath, {});
-			delete state.originalValues[ancestorPath];
+function restorePrunedEmptyAncestor(fileConfig: ConfigObject, state: ConfigState, prunedPaths: string[]): void {
+	for (const prunedPath of prunedPaths) {
+		if (state.emptyScopeOriginals[prunedPath]) {
+			setNestedValue(fileConfig, prunedPath, {});
+			delete state.emptyScopeOriginals[prunedPath];
 			return;
 		}
 	}
@@ -534,15 +533,19 @@ function loadConfigState(rootPath: string): ConfigState {
 			version: '1.0',
 			sources: {},
 			originalValues: {},
+			emptyScopeOriginals: {},
 			snapshots: {},
 		};
 	}
 
 	try {
 		const state = fs.readJsonSync(statePath) as ConfigState;
-		// Ensure originalValues exists (for backwards compatibility with old state files)
+		// Ensure newer fields exist (for backwards compatibility with old state files)
 		if (!state.originalValues) {
 			state.originalValues = {};
+		}
+		if (!state.emptyScopeOriginals) {
+			state.emptyScopeOriginals = {};
 		}
 		return state;
 	} catch (error) {
@@ -553,6 +556,7 @@ function loadConfigState(rootPath: string): ConfigState {
 			version: '1.0',
 			sources: {},
 			originalValues: {},
+			emptyScopeOriginals: {},
 			snapshots: {},
 		};
 	}
@@ -628,8 +632,6 @@ function applyConfigLayer(
 					state.originalValues[path] = currentValue;
 				}
 			} else {
-				// New leaf: if it lands inside an object the file declares empty,
-				// remember the `{}` so removal can restore it after pruning
 				recordEmptyAncestorOriginal(fileConfig, state, path);
 			}
 		}
@@ -671,8 +673,7 @@ function handleDeletions(
 				delete state.originalValues[path];
 			} else {
 				// For other sources or if no original value, delete
-				deleteNestedValue(fileConfig, path);
-				restorePrunedEmptyAncestor(fileConfig, state, path);
+				restorePrunedEmptyAncestor(fileConfig, state, deleteNestedValue(fileConfig, path));
 			}
 			delete state.sources[path];
 		}
@@ -774,8 +775,6 @@ function processEnvVar(
 						}
 						continue;
 					}
-					// New leaf: if it lands inside an object the file declares empty,
-					// remember the `{}` so removal can restore it after pruning
 					recordEmptyAncestorOriginal(fileConfig, state, path);
 				}
 
@@ -825,8 +824,7 @@ function cleanupRemovedEnvVar(
 				delete state.originalValues[path];
 			} else {
 				// No original, just delete
-				deleteNestedValue(fileConfig, path);
-				restorePrunedEmptyAncestor(fileConfig, state, path);
+				restorePrunedEmptyAncestor(fileConfig, state, deleteNestedValue(fileConfig, path));
 			}
 			delete state.sources[path];
 		}

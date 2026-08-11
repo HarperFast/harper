@@ -341,6 +341,18 @@ describe('HARPER_SET_CONFIG', function () {
 			assert.deepStrictEqual(fileConfig.myComponent, {}, 'Declared-empty scope must survive populate-then-vacate');
 		});
 
+		it('should not resurrect a vacated scope over a value the env var just set', function () {
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ a: { b: { c: 1 } } });
+			const fileConfig = { a: { b: {} } };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.a.b.c, 1);
+
+			// SET flips a to a scalar; the vacated a.b.c must not restore {} over it
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ a: 5 });
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.a, 5, 'scalar set by the force layer must stand');
+		});
+
 		it('should keep an entry whose original values were restored while its added keys are pruned', function () {
 			const fileConfig = { models: { embedding: { qwen3: { backend: 'ollama' } } } };
 			process.env.HARPER_SET_CONFIG = JSON.stringify({

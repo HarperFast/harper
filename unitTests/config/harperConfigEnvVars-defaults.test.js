@@ -313,6 +313,17 @@ describe('HARPER_DEFAULT_CONFIG - true defaults behavior', function () {
 		assert.strictEqual(fileConfig.http.port, 9925, 'Should keep sibling value');
 	});
 
+	it('should restore a declared-empty scope after runtime DEFAULT populated and then dropped it', function () {
+		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ myComponent: { port: 123 } });
+		const fileConfig = { myComponent: {} };
+		applyRuntimeEnvConfig(fileConfig, testRoot);
+		assert.strictEqual(fileConfig.myComponent.port, 123);
+
+		delete process.env.HARPER_DEFAULT_CONFIG;
+		applyRuntimeEnvConfig(fileConfig, testRoot);
+		assert.deepStrictEqual(fileConfig.myComponent, {}, 'declared-empty scope restored');
+	});
+
 	it('should track originalValues correctly across multiple changes', function () {
 		// Install with original value
 		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({

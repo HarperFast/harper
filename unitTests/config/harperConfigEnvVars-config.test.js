@@ -199,6 +199,56 @@ describe('HARPER_CONFIG', function () {
 
 			assert.strictEqual(fileConfig.http.cors?.enabled, undefined, 'introduced key removed');
 		});
+
+		it('prunes an entry it introduced entirely when the entry is dropped (#2067)', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({
+				models: { embedding: { a: { backend: 'openai' }, b: { backend: 'openai' } } },
+			});
+			const fileConfig = {};
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.models.embedding.b.backend, 'openai');
+
+			process.env.HARPER_CONFIG = JSON.stringify({
+				models: { embedding: { a: { backend: 'openai' } } },
+			});
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.models.embedding.b, undefined, 'dropped entry pruned, not left as {}');
+			assert.strictEqual(fileConfig.models.embedding.a.backend, 'openai');
+		});
+
+		it('does not prune a deliberate empty object when removing an already-absent key', function () {
+			// a has other content at populate time, so no empty-scope marker exists
+			process.env.HARPER_CONFIG = JSON.stringify({ a: { b: 2 } });
+			const fileConfig = { a: { keep: 1 } };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.a.b, 2);
+
+			// user hand-edited the file down to a deliberate `a: {}` between boots
+			const editedConfig = { a: {} };
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.deepStrictEqual(editedConfig.a, {}, 'no-op removal must not eat the empty scope');
+		});
+
+		it('keeps a declared-empty scope restorable across stacked CONFIG and SET layers', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ myComponent: { port: 1 } });
+			const fileConfig = { myComponent: {} };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent.port, 1);
+
+			// SET overwrites the whole scope with a leaf, then releases it
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ myComponent: false });
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent, false);
+
+			delete process.env.HARPER_SET_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent.port, 1, 'CONFIG layer reasserts after SET releases');
+
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.deepStrictEqual(fileConfig.myComponent, {}, 'file-declared empty scope survives the stack');
+		});
 	});
 
 	describe('individual env var interaction', function () {
