@@ -679,6 +679,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_BLOBPATHS: 'storage_blobPaths',
 	STORAGE_BLOBCLEANUPSPEED: 'storage_blobCleanupSpeed',
 	STORAGE_BLOBREADTIMEOUT: 'storage_blobReadTimeout',
+	STORAGE_BLOBRETENTION: 'storage_blobRetention',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	STORAGE_MAXFREESPACETOLOAD: 'storage_maxFreeSpaceToLoad',
 	STORAGE_MAXFREESPACETORETAIN: 'storage_maxFreeSpaceToRetain',
