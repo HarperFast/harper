@@ -179,7 +179,7 @@ GET /Product/?sort(+rating,-price)
 
 Use `limit(start,end)` to page through a collection, and opt in to a total match count with the `Prefer: count=` request header so a client can render pagination (for example "1-25 of 1,234") without a second request.
 
-Counting is opt-in: without the header, no count is computed and no count headers are returned.
+Counting is opt-in: without the header, no count is computed and no count headers are returned. It also requires a `limit()` — a count request on an unbounded collection (no `limit()`) is served normally, with no count headers, since counting the whole collection would defeat the point of paging.
 
 ### Requesting a count
 
