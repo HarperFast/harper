@@ -119,19 +119,22 @@ async function findInactiveComponent(url: string): Promise<string | undefined> {
 
 /**
  * Emit RFC 7233-style pagination headers for a `Prefer: count=` request. Table.search returns the page
- * with a `recordCount` (total matching records, or null when an exact scan hit its guardrail) and a
- * `recordCountExact` flag. `Content-Range: items <start>-<end>/<total>` lets a client paginate;
- * `Preference-Applied` echoes whether the total is exact, estimated, or unavailable. All three are added
- * to `Access-Control-Expose-Headers` so a browser can read them cross-origin (they aren't safelisted).
+ * with a `recordCount` (total matching records, or null when an exact scan hit its guardrail or an
+ * estimate was suppressed by an opaque filter). `Content-Range: items <start>-<end>/<total>` lets a
+ * client paginate — `<total>` is `*` when unavailable. `Preference-Applied` echoes the count mode the
+ * server actually applied (`exact` or `estimated`, after any per-mount downgrade), so a `.../*` total
+ * reads as "that mode was applied but the total is unavailable" rather than "no count was requested".
+ * All three headers are added to `Access-Control-Expose-Headers` so a browser can read them cross-origin
+ * (they aren't safelisted).
  */
-function setCountHeaders(headers: Headers, offset: number, page: any) {
+function setCountHeaders(headers: Headers, offset: number, mode: string, page: any) {
 	const total = page.recordCount;
 	const len = Array.isArray(page) ? page.length : 0;
 	const range = len > 0 ? `${offset}-${offset + len - 1}` : '*';
 	const totalStr = typeof total === 'number' ? String(total) : '*';
 	headers.set('Range-Unit', 'items');
 	headers.set('Content-Range', `items ${range}/${totalStr}`);
-	headers.set('Preference-Applied', `count=${total == null ? 'none' : page.recordCountExact ? 'exact' : 'estimated'}`);
+	headers.set('Preference-Applied', `count=${mode}`);
 	// Append (don't overwrite) so a resource that already exposed its own headers keeps them.
 	const exposed = headers.get('Access-Control-Expose-Headers');
 	for (const name of ['Content-Range', 'Range-Unit', 'Preference-Applied']) {
@@ -193,14 +196,16 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			// reads target.count to compute the total emitted as Content-Range below.
 			const prefer = headersObject['prefer'];
 			if (prefer) {
+				// A mount can disable the expensive exact scan with `rest: { exactCount: false }` (default
+				// enabled); a count=exact request is then served as a cheap estimate. Accept a string
+				// `"false"` too, since not every config source coerces to a boolean.
+				const exactDisabled =
+					(httpOptions as any).exactCount === false || (httpOptions as any).exactCount === 'false';
 				for (const pref of parseHeaderValue(prefer as any)) {
 					const mode = (pref?.value as string | undefined)?.toLowerCase();
 					if (pref?.name === 'count' && (mode === 'exact' || mode === 'estimated')) {
-						// A mount can disable the expensive exact scan with `rest: { exactCount: false }`
-						// (default enabled); a count=exact request is then served as a cheap estimate,
-						// signaled back to the client via Preference-Applied.
-						(target as any).count =
-							mode === 'exact' && (httpOptions as any).exactCount === false ? 'estimated' : mode;
+						// Downgrade is signaled back to the client via Preference-Applied.
+						(target as any).count = mode === 'exact' && exactDisabled ? 'estimated' : mode;
 						break;
 					}
 				}
@@ -397,7 +402,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				// Array.isArray guards the single-record path: a record that happens to carry a
 				// `recordCount` attribute must not be mistaken for a count page (Table.search only ever
 				// returns the count as an array).
-				setCountHeaders(headers, (target as any).offset || 0, responseData);
+				setCountHeaders(headers, (target as any).offset || 0, (target as any).count, responseData);
 			}
 			responseObject.body = serialize(responseData, request, responseObject);
 			if (method === 'HEAD') responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body

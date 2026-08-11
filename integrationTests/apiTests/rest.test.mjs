@@ -312,6 +312,17 @@ suite('REST query syntax', { skip: skipSuite }, (ctx) => {
 			.expect(200);
 	});
 
+	test('[rest] an uncomputable total reports items .../* but still echoes the requested mode', () => {
+		// `name != x` estimates to Infinity, so the total is unavailable. The header must still say
+		// count=estimated (the mode applied), not count=none — the client asked, it just can't be given.
+		return client
+			.reqRest('/Related/?name!=name-2&limit(2)')
+			.set('Prefer', 'count=estimated')
+			.expect('Preference-Applied', 'count=estimated')
+			.expect((r) => assert.match(r.headers['content-range'], /^items 0-\d+\/\*$/, r.text))
+			.expect(200);
+	});
+
 	test('[rest] no Prefer header means no Content-Range (opt-in only)', () => {
 		return client
 			.reqRest('/Related/?sort(id)&limit(2)')
