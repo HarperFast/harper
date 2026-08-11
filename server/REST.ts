@@ -132,7 +132,13 @@ function setCountHeaders(headers: Headers, offset: number, page: any) {
 	headers.set('Range-Unit', 'items');
 	headers.set('Content-Range', `items ${range}/${totalStr}`);
 	headers.set('Preference-Applied', `count=${total == null ? 'none' : page.recordCountExact ? 'exact' : 'estimated'}`);
-	headers.set('Access-Control-Expose-Headers', 'Content-Range, Range-Unit, Preference-Applied');
+	// Append (don't overwrite) so a resource that already exposed its own headers keeps them.
+	const exposed = headers.get('Access-Control-Expose-Headers');
+	for (const name of ['Content-Range', 'Range-Unit', 'Preference-Applied']) {
+		if (!exposed || !String(exposed).toLowerCase().includes(name.toLowerCase())) {
+			headers.append('Access-Control-Expose-Headers', name, true);
+		}
+	}
 }
 
 async function http(request: Request, nextHandler, resources: Resources, httpOptions: any) {
@@ -381,8 +387,12 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			if (
 				(target as any)?.count &&
 				(method === 'GET' || method === 'HEAD') &&
-				responseData.recordCount !== undefined
+				Array.isArray(responseData) &&
+				(responseData as any).recordCount !== undefined
 			) {
+				// Array.isArray guards the single-record path: a record that happens to carry a
+				// `recordCount` attribute must not be mistaken for a count page (Table.search only ever
+				// returns the count as an array).
 				setCountHeaders(headers, (target as any).offset || 0, responseData);
 			}
 			responseObject.body = serialize(responseData, request, responseObject);

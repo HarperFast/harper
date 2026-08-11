@@ -129,9 +129,13 @@ const EVICTION_BATCH_SIZE = 100;
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
-// Guardrail for `Prefer: count=exact`: cap how many rows an exact count scan visits before giving up
-// (reporting an unknown total) so a paginated read can't turn into an unbounded full-table scan.
+// Guardrails for `Prefer: count=exact`: once the requested page has been collected, counting the rest
+// of the match set is bounded by BOTH a row cap and a wall-clock budget, so a paginated read can't turn
+// into an unbounded scan. Exceeding either reports an unknown total (Content-Range `.../*`) rather than
+// truncating the page. These bound the count tail, not the page itself; a genuinely expensive query
+// (large filtered full-scan, in-memory sort) should still be gated by config before broad exposure.
 const MAX_EXACT_COUNT_SCAN = 1_000_000;
+const MAX_EXACT_COUNT_MS = 1_000;
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -3409,7 +3413,10 @@ export function makeTable(options) {
 				}
 			}
 			const select = target.select;
-			const hasUserConditions = conditions.length > 0;
+			// Whether the caller supplied real filter conditions — read from the raw request, NOT the
+			// planner-augmented `conditions` (which by now may carry a synthetic `sort` pseudo-condition and
+			// injected full-scan condition). Used to pick the count-estimate source below.
+			const hasUserConditions = Array.isArray(target.conditions) && target.conditions.length > 0;
 			if (conditions.length === 0) {
 				conditions = [{ attribute: primaryKey, comparator: 'greater_than', value: true }];
 			}
@@ -3500,33 +3507,55 @@ export function makeTable(options) {
 			// table estimate. Opt-in only — the default streaming path below is untouched.
 			if (target.count) {
 				const wantExact = target.count === 'exact';
+				const countStart = performance.now();
 				return (async () => {
 					const page: any = [];
 					let scanned = 0;
 					let exact = true;
-					for await (const record of results) {
-						if (scanned >= offset && (end === undefined || scanned < end)) page.push(record);
-						scanned++;
-						// `estimated` only needs the page; `exact` keeps counting the whole match set, bounded
-						// so a pathological table can't turn a page fetch into an unbounded scan.
-						if (!wantExact && end !== undefined && scanned >= end) break;
-						if (wantExact && scanned > MAX_EXACT_COUNT_SCAN) {
-							exact = false;
-							break;
+					try {
+						for await (const record of results) {
+							if (scanned >= offset && (end === undefined || scanned < end)) page.push(record);
+							scanned++;
+							// The page window [offset, end) is always collected in full first — the guardrail
+							// only ever abandons the running TOTAL, never truncates the page body.
+							if (end !== undefined && scanned >= end) {
+								if (!wantExact) break; // `estimated` needs nothing past the page
+								// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
+								// large match set can't turn a bounded page fetch into an unbounded scan.
+								if (scanned > MAX_EXACT_COUNT_SCAN || performance.now() - countStart > MAX_EXACT_COUNT_MS) {
+									exact = false;
+									break;
+								}
+							}
 						}
+					} finally {
+						// We own the iteration here (no results.onDone consumer), so release the read
+						// transaction unconditionally — including when the drain throws — or the snapshot leaks.
+						txn.doneReadTxn();
 					}
-					txn.doneReadTxn();
 					let total: number | null;
 					if (wantExact) {
 						total = exact ? scanned : null;
+					} else if (boundRowFilter || typeof target.vectorFilter === 'function') {
+						// An opaque row/vector filter shapes the result but isn't reflected in the index/condition
+						// estimate; guessing would both mislead and disclose cardinality the filter hides.
+						total = null;
 					} else if (!hasUserConditions) {
 						total = estimatedEntryCount(primaryStore);
 					} else {
+						// Estimate from the real conditions only — drop the planner's synthetic `sort`
+						// pseudo-condition, which otherwise contributes a bogus (entryCount/2) cardinality.
 						const est = estimateCondition(TableResource)({
-							conditions,
+							conditions: conditions.filter((c: any) => c.comparator !== 'sort'),
 							operator: operator ? String(operator).toLowerCase() : 'and',
 						});
 						total = isFinite(est) ? Math.round(est) : null;
+					}
+					// For an estimate, never report a total below the last row actually returned — keeps the
+					// Content-Range valid (start-end/total) when an estimate undershoots a non-empty page.
+					// Exact totals are authoritative (and an empty page past the end must not be clamped up).
+					if (!wantExact && total != null && page.length > 0 && total < offset + page.length) {
+						total = offset + page.length;
 					}
 					page.recordCount = total;
 					page.recordCountExact = wantExact && exact;

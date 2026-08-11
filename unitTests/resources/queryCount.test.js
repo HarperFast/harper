@@ -88,4 +88,34 @@ describe('Table.search count (REST pagination total-count)', () => {
 		for await (const _ of results) n++;
 		assert.strictEqual(n, 5);
 	});
+
+	it('estimated: a sorted whole-collection estimate is not halved by the planner sort condition', async function () {
+		// Regression: the synthetic `sort` pseudo-condition used to flip hasUserConditions and feed
+		// estimateCondition, yielding ~entryCount/2 and impossible ranges (e.g. items 3-4/3).
+		const page = await CountTable.search({ sort: { attribute: 'id' }, offset: 3, limit: 3, count: 'estimated' });
+		assert.strictEqual(page.length, 3);
+		assert.ok(
+			page.recordCount >= 3 + page.length,
+			`range must be valid: total ${page.recordCount} vs page end ${3 + page.length}`
+		);
+		assert.ok(
+			page.recordCount >= TOTAL * 0.75,
+			`sorted estimate ${page.recordCount} should track table size ${TOTAL}, not half it`
+		);
+	});
+
+	it('estimated: an opaque rowFilter yields an unknown total (null), not a misleading estimate', async function () {
+		const page = await CountTable.search({ rowFilter: (r) => r.group === 'a', limit: 3, count: 'estimated' });
+		assert.ok(page.length <= 3);
+		assert.ok(page.every((r) => r.group === 'a'), 'page must honor the rowFilter');
+		assert.strictEqual(page.recordCount, null);
+		assert.strictEqual(page.recordCountExact, false);
+	});
+
+	it('exact: honors a rowFilter in both the page and the count', async function () {
+		const page = await CountTable.search({ rowFilter: (r) => r.group === 'b', count: 'exact' });
+		assert.strictEqual(page.length, GROUP_B);
+		assert.strictEqual(page.recordCount, GROUP_B);
+		assert.strictEqual(page.recordCountExact, true);
+	});
 });
