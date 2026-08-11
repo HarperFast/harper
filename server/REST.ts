@@ -196,7 +196,11 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				for (const pref of parseHeaderValue(prefer as any)) {
 					const mode = (pref?.value as string | undefined)?.toLowerCase();
 					if (pref?.name === 'count' && (mode === 'exact' || mode === 'estimated')) {
-						(target as any).count = mode;
+						// A mount can disable the expensive exact scan with `rest: { exactCount: false }`
+						// (default enabled); a count=exact request is then served as a cheap estimate,
+						// signaled back to the client via Preference-Applied.
+						(target as any).count =
+							mode === 'exact' && (httpOptions as any).exactCount === false ? 'estimated' : mode;
 						break;
 					}
 				}

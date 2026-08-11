@@ -68,6 +68,27 @@ const SUBOBJECT_ROWS = [
 	{ id: '5', relatedId: '5', any: 'any-5' },
 ];
 
+// Second component whose REST mount disables the expensive exact scan.
+const SCHEMA_GATE_GRAPHQL = `
+type GatedWidget @table @export(rest: true, mqtt: false) {
+	id: ID @primaryKey
+	name: String @indexed
+}
+`;
+
+const CONFIG_GATE_YAML = `rest:
+  exactCount: false
+graphqlSchema:
+  files: '*.graphql'
+graphql: true
+`;
+
+const GATE_ROWS = [
+	{ id: '1', name: 'w-1' },
+	{ id: '2', name: 'w-2' },
+	{ id: '3', name: 'w-3' },
+];
+
 const skipSuite = process.platform === 'win32';
 
 suite('REST query syntax', { skip: skipSuite }, (ctx) => {
@@ -306,6 +327,57 @@ suite('REST query syntax', { skip: skipSuite }, (ctx) => {
 			.set('Prefer', 'count=exact')
 			.expect('Content-Range', 'items 0-1/5')
 			.expect((r) => assert.ok(!r.body || Object.keys(r.body).length === 0, r.text))
+			.expect(200);
+	});
+
+});
+
+// exactCount is a per-REST-mount policy, so it needs its own instance: two components exporting at
+// the root path share one mount (the handler dedupes), and the gated config would otherwise bleed
+// onto the main suite's routes.
+suite('REST count exactCount gate', { skip: skipSuite }, (ctx) => {
+	let client;
+
+	before(async () => {
+		await startHarper(ctx, { config: {}, env: {} });
+		client = createApiClient(ctx.harper);
+
+		await installAppComponent(client, {
+			project: 'appCountGate',
+			files: { 'schema.graphql': SCHEMA_GATE_GRAPHQL, 'config.yaml': CONFIG_GATE_YAML },
+			probePath: '/GatedWidget/',
+			restartTimeoutMs: 120000,
+		});
+
+		await client
+			.req()
+			.send({ operation: 'insert', table: 'GatedWidget', records: GATE_ROWS })
+			.expect((r) => assert.ok(r.body.message.includes('inserted 3 of 3 records'), r.text))
+			.expect(200);
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	// `rest: { exactCount: false }` serves count=exact as a cheap estimate instead.
+	test('[rest] exactCount:false downgrades count=exact to estimated', () => {
+		return client
+			.reqRest('/GatedWidget/?sort(id)&limit(2)')
+			.set('Prefer', 'count=exact')
+			.expect('Preference-Applied', 'count=estimated')
+			.expect((r) => assert.match(r.headers['content-range'], /^items 0-1\/\d+$/, r.text))
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect(200);
+	});
+
+	// estimated still works normally on a gated mount.
+	test('[rest] exactCount:false leaves count=estimated unchanged', () => {
+		return client
+			.reqRest('/GatedWidget/?sort(id)&limit(2)')
+			.set('Prefer', 'count=estimated')
+			.expect('Preference-Applied', 'count=estimated')
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
 			.expect(200);
 	});
 });
