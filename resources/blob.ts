@@ -840,10 +840,13 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				if (firstChunk.done) controller.close();
 				else controller.enqueue(firstChunk.value);
 			},
-			async pull(controller) {
-				const { done, value } = await reader.read();
-				if (done) controller.close();
-				else controller.enqueue(value);
+			pull(controller) {
+				// .then() chain rather than async/await: this runs per chunk, so skip the async state
+				// machine and extra promise allocations on the hot path
+				return reader.read().then(({ done, value }) => {
+					if (done) controller.close();
+					else controller.enqueue(value);
+				});
 			},
 			cancel(reason) {
 				return reader.cancel(reason);

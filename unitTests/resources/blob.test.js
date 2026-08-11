@@ -1220,8 +1220,8 @@ describe('Blob test', () => {
 		const { blob, filePath } = await makeDiskBackedBlob();
 		unlinkSync(filePath);
 		await assert.rejects(blob.openStream(), (error) => {
-			assert.equal(error.statusCode, 404);
-			assert.equal(error.code, 'ENOENT');
+			assert.strictEqual(error.statusCode, 404);
+			assert.strictEqual(error.code, 'ENOENT');
 			return true;
 		});
 	});
@@ -1233,7 +1233,7 @@ describe('Blob test', () => {
 			unlinkSync(filePath); // file gone while a "writer" still holds the lock
 			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
 			await assert.rejects(blob.openStream(), (error) => {
-				assert.equal(error.statusCode, 503);
+				assert.strictEqual(error.statusCode, 503);
 				return true;
 			});
 		} finally {
@@ -1245,7 +1245,7 @@ describe('Blob test', () => {
 		const { blob, filePath } = await makeDiskBackedBlob();
 		truncateBlobConsistently(filePath, 256);
 		await assert.rejects(blob.openStream(), (error) => {
-			assert.equal(error.statusCode, 500);
+			assert.strictEqual(error.statusCode, 500);
 			assert.match(error.message, /size mismatch/);
 			return true;
 		});
