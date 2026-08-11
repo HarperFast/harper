@@ -308,9 +308,9 @@ describe('HARPER_DEFAULT_CONFIG - true defaults behavior', function () {
 		process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({});
 
 		applyRuntimeEnvConfig(fileConfig, testRoot);
-		// Deleting nested properties leaves empty parent object
-		assert.strictEqual(fileConfig.http.cors.enabled, undefined, 'Should delete nested enabled');
-		assert.strictEqual(fileConfig.http.cors.origins, undefined, 'Should delete nested origins');
+		// The vacated subtree is pruned entirely rather than left as `cors: {}` (#2067)
+		assert.strictEqual(fileConfig.http.cors, undefined, 'Should delete the vacated cors subtree');
+		assert.strictEqual(fileConfig.http.port, 9925, 'Should keep sibling value');
 	});
 
 	it('should track originalValues correctly across multiple changes', function () {
