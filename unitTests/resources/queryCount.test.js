@@ -57,10 +57,21 @@ describe('Table.search count (REST pagination total-count)', () => {
 		assert.strictEqual(paged.recordCount, GROUP_A);
 		assert.strictEqual(paged.recordCountExact, true);
 
-		// no limit: the page is the whole matched set and the count agrees with it
-		const all = await CountTable.search({ conditions: [{ attribute: 'group', value: 'b' }], count: 'exact' });
+		// a limit wide enough to cover the whole matched set gives page == matches, count == matches
+		const all = await CountTable.search({ conditions: [{ attribute: 'group', value: 'b' }], limit: 100, count: 'exact' });
 		assert.strictEqual(all.length, GROUP_B);
 		assert.strictEqual(all.recordCount, GROUP_B);
+	});
+
+	it('count without a limit falls through to streaming (no unbounded drain)', async function () {
+		// A count is a pagination feature; without a limit the page would be the entire matched set, so the
+		// request is served by the normal streaming path with no count instead of materializing everything.
+		const results = CountTable.search({ conditions: [{ attribute: 'group', value: 'b' }], count: 'exact' });
+		assert.ok(!Array.isArray(results), 'count without a limit must not materialize a page');
+		assert.strictEqual(results.recordCount, undefined);
+		let n = 0;
+		for await (const _ of results) n++;
+		assert.strictEqual(n, GROUP_B); // still returns every matching row, just no count
 	});
 
 	it('estimated: returns the page plus a positive estimate, flagged non-exact', async function () {
@@ -116,7 +127,7 @@ describe('Table.search count (REST pagination total-count)', () => {
 	});
 
 	it('exact: honors a rowFilter in both the page and the count', async function () {
-		const page = await CountTable.search({ rowFilter: (r) => r.group === 'b', count: 'exact' });
+		const page = await CountTable.search({ rowFilter: (r) => r.group === 'b', limit: 100, count: 'exact' });
 		assert.strictEqual(page.length, GROUP_B);
 		assert.strictEqual(page.recordCount, GROUP_B);
 		assert.strictEqual(page.recordCountExact, true);

@@ -3505,8 +3505,15 @@ export function makeTable(options) {
 			// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
 			// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
 			// table estimate. Opt-in only — the default streaming path below is untouched.
-			if (target.count) {
+			//
+			// Requires a limit. Counting is a pagination feature, and with no limit the "page" is the
+			// entire matched set — materializing/draining it would be an unbounded operation on the most
+			// likely-hit path (a bare collection GET). A count request without a limit therefore falls
+			// through to the normal streaming path (no count emitted), so the guardrail below always
+			// applies to a bounded page rather than being skipped when `end` is undefined.
+			if (target.count && target.limit !== undefined) {
 				const wantExact = target.count === 'exact';
+				const pageEnd = offset + (target.limit as number);
 				const countStart = performance.now();
 				return (async () => {
 					const page: any = [];
@@ -3514,11 +3521,11 @@ export function makeTable(options) {
 					let exact = true;
 					try {
 						for await (const record of results) {
-							if (scanned >= offset && (end === undefined || scanned < end)) page.push(record);
+							if (scanned >= offset && scanned < pageEnd) page.push(record);
 							scanned++;
-							// The page window [offset, end) is always collected in full first — the guardrail
+							// The page window [offset, pageEnd) is always collected in full first — the guardrail
 							// only ever abandons the running TOTAL, never truncates the page body.
-							if (end !== undefined && scanned >= end) {
+							if (scanned >= pageEnd) {
 								if (!wantExact) break; // `estimated` needs nothing past the page
 								// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
 								// large match set can't turn a bounded page fetch into an unbounded scan.
