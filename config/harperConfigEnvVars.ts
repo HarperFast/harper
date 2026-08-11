@@ -623,7 +623,7 @@ function applyConfigLayer(
 
 		// Store original value if requested and this is first time overriding
 		if (storeOriginals && !currentSource) {
-			if (currentValue !== undefined && currentValue !== null) {
+			if (currentValue != null) {
 				if (!(path in state.originalValues)) {
 					state.originalValues[path] = currentValue;
 				}
