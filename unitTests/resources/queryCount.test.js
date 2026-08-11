@@ -58,7 +58,11 @@ describe('Table.search count (REST pagination total-count)', () => {
 		assert.strictEqual(paged.recordCountExact, true);
 
 		// a limit wide enough to cover the whole matched set gives page == matches, count == matches
-		const all = await CountTable.search({ conditions: [{ attribute: 'group', value: 'b' }], limit: 100, count: 'exact' });
+		const all = await CountTable.search({
+			conditions: [{ attribute: 'group', value: 'b' }],
+			limit: 100,
+			count: 'exact',
+		});
 		assert.strictEqual(all.length, GROUP_B);
 		assert.strictEqual(all.recordCount, GROUP_B);
 	});
