@@ -19,11 +19,7 @@ describe('Table.search count (REST pagination total-count)', () => {
 		CountTable = table({
 			table: 'QueryCountTable',
 			database: 'test',
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'group', indexed: true },
-				{ name: 'name' },
-			],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'group', indexed: true }, { name: 'name' }],
 		});
 		let last;
 		for (let i = 0; i < TOTAL; i++) {
@@ -52,7 +48,11 @@ describe('Table.search count (REST pagination total-count)', () => {
 	});
 
 	it('exact: a filtered query counts only matching records', async function () {
-		const paged = await CountTable.search({ conditions: [{ attribute: 'group', value: 'a' }], limit: 5, count: 'exact' });
+		const paged = await CountTable.search({
+			conditions: [{ attribute: 'group', value: 'a' }],
+			limit: 5,
+			count: 'exact',
+		});
 		assert.strictEqual(paged.length, 5);
 		assert.strictEqual(paged.recordCount, GROUP_A);
 		assert.strictEqual(paged.recordCountExact, true);
@@ -107,7 +107,10 @@ describe('Table.search count (REST pagination total-count)', () => {
 	it('estimated: an opaque rowFilter yields an unknown total (null), not a misleading estimate', async function () {
 		const page = await CountTable.search({ rowFilter: (r) => r.group === 'a', limit: 3, count: 'estimated' });
 		assert.ok(page.length <= 3);
-		assert.ok(page.every((r) => r.group === 'a'), 'page must honor the rowFilter');
+		assert.ok(
+			page.every((r) => r.group === 'a'),
+			'page must honor the rowFilter'
+		);
 		assert.strictEqual(page.recordCount, null);
 		assert.strictEqual(page.recordCountExact, false);
 	});

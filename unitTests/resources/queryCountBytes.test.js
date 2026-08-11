@@ -19,7 +19,10 @@ describe('Table.search count with Bytes columns (read-buffer safety)', () => {
 		BytesTable = table({
 			table: 'BytesCountTable',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'data', type: 'Bytes' }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'data', type: 'Bytes' },
+			],
 		});
 		let last;
 		for (let i = 0; i < N; i++) {

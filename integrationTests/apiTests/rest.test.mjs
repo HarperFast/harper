@@ -340,7 +340,6 @@ suite('REST query syntax', { skip: skipSuite }, (ctx) => {
 			.expect((r) => assert.ok(!r.body || Object.keys(r.body).length === 0, r.text))
 			.expect(200);
 	});
-
 });
 
 // exactCount is a per-REST-mount policy, so it needs its own instance: two components exporting at

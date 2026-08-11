@@ -199,8 +199,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				// A mount can disable the expensive exact scan with `rest: { exactCount: false }` (default
 				// enabled); a count=exact request is then served as a cheap estimate. Accept a string
 				// `"false"` too, since not every config source coerces to a boolean.
-				const exactDisabled =
-					(httpOptions as any).exactCount === false || (httpOptions as any).exactCount === 'false';
+				const exactDisabled = (httpOptions as any).exactCount === false || (httpOptions as any).exactCount === 'false';
 				for (const pref of parseHeaderValue(prefer as any)) {
 					const mode = (pref?.value as string | undefined)?.toLowerCase();
 					if (pref?.name === 'count' && (mode === 'exact' || mode === 'estimated')) {
