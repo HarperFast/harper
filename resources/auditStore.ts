@@ -416,9 +416,19 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		originatingOperation,
 		previousAdditionalAuditRefs,
 	} = auditRecord;
-	const action = EVENT_TYPES[type];
+	let action = EVENT_TYPES[type];
 	if (!action) {
 		throw new Error(`Invalid audit entry type ${type}`);
+	}
+	if (action & (HAS_RECORD | HAS_PARTIAL_RECORD) && !encodedRecord?.length) {
+		// An audit-only commit (e.g. a fully-superseded out-of-order write) can reach here with no
+		// encoded record. The flags must not advertise a body the entry doesn't carry: readers decode
+		// the (empty) remainder whenever HAS_RECORD is set, which throws "Unexpected end of MessagePack
+		// data" and — replicated to a peer — permanently wedges that leg on this entry (#2153).
+		harperLogger.warn(
+			`Audit entry (${type}) for record ${recordId} in table ${tableId} has no record body; clearing its record flags`
+		);
+		action &= ~(HAS_RECORD | HAS_PARTIAL_RECORD);
 	}
 	let position = start + 1;
 	if (previousVersion) {
@@ -621,16 +631,25 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			},
 			getValue(store, fullRecord?, auditTime?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
-					if (!value) {
-						value = decodeFromDatabase(
-							// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
-							// its own time), so skip the prefix heuristic — otherwise a classic record whose
-							// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
-							() => store.decoder.decode(buffer.subarray(decoder.position, end), { noMetadata: true }),
-							store.rootStore
+					if (decoder.position >= (end ?? buffer.byteLength)) {
+						// Malformed entry minted before the record flags were reconciled with the (absent) body
+						// (#2153): the header accounts for the whole entry, so there is nothing to decode. Fall
+						// through — a partial entry may still be reconstructable below; otherwise no value.
+						harperLogger.warn(
+							`Audit entry (${EVENT_TYPES[action & 0xf]}) for table ${tableId} advertises a record but has no body; treating as having no record`
 						);
+					} else {
+						if (!value) {
+							value = decodeFromDatabase(
+								// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
+								// its own time), so skip the prefix heuristic — otherwise a classic record whose
+								// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
+								() => store.decoder.decode(buffer.subarray(decoder.position, end), { noMetadata: true }),
+								store.rootStore
+							);
+						}
+						return value;
 					}
-					return value;
 				}
 				if (action & HAS_PARTIAL_RECORD && auditTime) {
 					const recordId = this.recordId;
