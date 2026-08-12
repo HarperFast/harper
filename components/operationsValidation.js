@@ -371,6 +371,12 @@ function packageComponentValidator(req) {
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		skip_node_modules: Joi.boolean(),
 		skip_symlinks: Joi.boolean(),
+		// Response shape selectors — see packageComponent() in operations.js. Deliberately not
+		// declared as Joi exclusive peers: `oxor` conflicts on *presence*, so it would reject a
+		// caller that always sends both fields and sets one to false. `estimate` wins when both
+		// are true, which the handler enforces by checking it first.
+		stream: Joi.boolean(),
+		estimate: Joi.boolean(),
 	});
 
 	return validator.validateBySchema(req, packageProjSchema);

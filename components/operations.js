@@ -22,7 +22,11 @@ const {
 const { handleHDBError, ServerError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
-const { packageDirectory } = require('../components/packageComponent.ts');
+const {
+	packageDirectory,
+	scanPackageDirectory,
+	streamPackagedDirectory,
+} = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
 const { Application, prepareApplication, ASIDE_STAGING_DIR } = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR } = require('./componentPreparationLock.ts');
@@ -321,10 +325,31 @@ async function dropCustomFunctionProject(req) {
 }
 
 /**
- * Will package a component into a temp tar file then output that file as a base64 string.
- * Req can accept a skip_node_modules boolean which will skip the node mods when creating temp tar file.
+ * Package a component's directory into a tar+gzip archive.
+ *
+ * Three response shapes, selected by the request:
+ *
+ * - `stream: true` — the archive as raw bytes, with download headers attached. serverHandlers.js
+ *   pipes any returned Readable that carries a `headers` Map. **Prefer this for anything that
+ *   isn't known to be small**; see the note below.
+ * - `estimate: true` — no archive at all, just `{ total_size, dangling_symlinks }` from a single
+ *   directory walk, so a caller can decide whether packaging is worth it before paying for it.
+ * - neither (default) — the historical `{ project, payload }` shape, base64 inside JSON.
+ *
+ * The default is retained for compatibility but does not scale, and callers should migrate off
+ * it. Buffering the archive and base64-ing it costs ~4.7x the archive size resident in this
+ * (shared, multi-tenant) process — 2x to concat the gzip chunks, +1.33x for the base64 string,
+ * +1.33x again when Fastify serializes the envelope — and it hard-fails above ~384 MiB of
+ * compressed output, because base64 of that exceeds V8's 512 MiB string cap
+ * (`buffer.constants.MAX_STRING_LENGTH`) and `.toString('base64')` throws ERR_STRING_TOO_LONG.
+ * The streamed shape is constant-memory on both ends and has no size ceiling.
+ *
+ * `skip_node_modules` / `skip_symlinks` apply to all three shapes. `estimate` is checked before
+ * `stream`, so it wins if a caller sets both.
+ *
  * @param req
- * @returns {Promise<{payload: *, project}>}
+ * @returns {Promise<{payload: string, project: string}|{project: string, total_size: number,
+ *   dangling_symlinks: string[]}|Readable>}
  */
 async function packageComponent(req) {
 	if (req.project) {
@@ -350,6 +375,29 @@ async function packageComponent(req) {
 		} catch (err) {
 			if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) throw new Error(`Unable to locate project '${project}'`);
 		}
+	}
+	// The inner catch above swallows any non-ENOENT realpath failure, leaving pathToProject
+	// undefined. That has to be a thrown error rather than a walk of `undefined`: on the stream
+	// path the response headers are already committed by the time the packer runs, so the caller
+	// would receive a 200 with a truncated body instead of a failure it can act on.
+	if (!pathToProject) throw new Error(`Unable to locate project '${project}'`);
+
+	if (req.estimate) {
+		const { totalSize, danglingSymlinks } = await scanPackageDirectory(pathToProject, req);
+		return { project, total_size: totalSize, dangling_symlinks: danglingSymlinks };
+	}
+
+	if (req.stream) {
+		const stream = streamPackagedDirectory(pathToProject, req);
+		const headers = new Map();
+		headers.set('content-type', 'application/gzip');
+		// `project` is narrowed to a bare filename by path.parse().name above and validated
+		// against PROJECT_FILE_NAME_REGEX, so it cannot inject header content.
+		headers.set('content-disposition', `attachment; filename="${project}.tar.gz"`);
+		stream.headers = headers;
+		// tar-fs output is already gzipped; tell serverHandlers not to compress it a second time.
+		stream.preCompressed = true;
+		return stream;
 	}
 
 	const payload = (await packageDirectory(pathToProject, req)).toString('base64');
