@@ -36,7 +36,7 @@ rest:
   exactCount: false # serve Prefer: count=exact requests as estimates instead of scanning
 ```
 
-<VersionBadge version="v5.3.0" /> `exactCount` (default `false`) controls whether the [pagination total-count](./querying.md#pagination-and-total-count) feature honors `Prefer: count=exact`. Because an exact count scans the full matched set, it is off by default and such requests are served as cheaper estimates; set it to `true` for the REST interface to enable exact counts.
+<VersionBadge version="v5.3.0" /> `exactCount` (default `false`) controls whether the [pagination total-count](./querying.md#pagination-and-total-count) feature honors `Prefer: count=exact`. Because an exact count scans the full matched set, it is off by default and such requests are served as cheaper estimates; set it to `true` for this application's REST interface to enable exact counts.
 
 ## Tables and Their Automatic Endpoints
 

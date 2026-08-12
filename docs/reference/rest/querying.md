@@ -177,7 +177,7 @@ GET /Product/?sort(+rating,-price)
 
 <VersionBadge version="v5.3.0" />
 
-Use `limit(start,end)` to page through a collection, and opt in to a total match count with the `Prefer: count=` request header so a client can render pagination (for example "1-25 of 1,234") without a second request.
+Use `limit(start,end)` to page through a collection, and opt in to a total match count with the `Prefer` request header (`Prefer: count=exact`) so a client can render pagination (for example "1-25 of 1,234") without a second request.
 
 Counting is opt-in: without the header, no count is computed and no count headers are returned. It also requires a `limit()` — a count request on an unbounded collection (no `limit()`) is served normally, with no count headers, since counting the whole collection would defeat the point of paging.
 
@@ -216,11 +216,11 @@ The response status is always `200` — `Content-Range` is informational (Harper
 
 ### Unavailable totals
 
-The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that reaches its internal work limit, or a query with no cardinality estimate (for example a `!=` or `contains` condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
+The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that reaches its internal work limit, or a query with no cardinality estimate (for example a `!=` or `=ct=` (contains) condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
 
 ### Disabling exact counts
 
-Because an exact count scans the full matched set, a deployment can disable it per REST mount via the [`exactCount` option](./overview.md#configuration). With `exactCount: false`, a `count=exact` request is served as an estimate instead (the response reports `Preference-Applied: count=estimated`). Estimated counts are always available; the default is `true`.
+Because an exact count scans the full matched set, you can disable it in an application's REST configuration via the [`exactCount` option](./overview.md#configuration). With `exactCount: false`, a `count=exact` request is served as an estimate instead (the response reports `Preference-Applied: count=estimated`). Estimated counts are always available; the default is `true`.
 
 <VersionBadge version="v4.3.0" />
 
