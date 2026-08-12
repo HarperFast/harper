@@ -691,10 +691,7 @@ async function readRetainedPreviousManifest(liveDirPath: string): Promise<Retain
 	}
 }
 
-async function writeRetainedPreviousManifest(
-	liveDirPath: string,
-	manifest: RetainedPreviousManifest
-): Promise<void> {
+async function writeRetainedPreviousManifest(liveDirPath: string, manifest: RetainedPreviousManifest): Promise<void> {
 	const manifestPath = previousManifestPathFor(liveDirPath);
 	// Temp + rename so a crash mid-write can never leave a half-written manifest, which would make a
 	// retained tree unaddressable (and so unrevertable).
@@ -2195,7 +2192,11 @@ export async function stageApplication(application: Application, deploymentId: s
 					await application.cleanupGitCredentialSession();
 				}
 				await installApplication(application);
-				await writeFile(join(deploymentDirPath!, STAGED_COMPLETE_MARKER), '', { flag: 'wx', mode: 0o600 });
+				await writeFile(
+					join(deploymentDirPath!, STAGED_COMPLETE_MARKER),
+					JSON.stringify({ installationIsOpaque: application.installationIsOpaque }),
+					{ flag: 'wx', mode: 0o600 }
+				);
 			} catch (error) {
 				await rm(stagingDirPath, { recursive: true, force: true }).catch(() => {});
 				await rm(join(deploymentDirPath!, STAGED_COMPLETE_MARKER), { force: true }).catch(() => {});
@@ -2255,6 +2256,21 @@ export async function hasCompleteStagedApplication(stagingDirPath: string): Prom
 	);
 }
 
+/**
+ * What the stage recorded about its own install. Falls back to "opaque" when the marker carries no
+ * usable content: an unknown install has to be treated as one whose result can't be compared, so the
+ * restart gate errs toward requiring a restart rather than silently skipping one.
+ */
+async function readStagedCompletion(stagingDirPath: string): Promise<{ installationIsOpaque: boolean }> {
+	try {
+		const raw = await readFile(join(dirname(stagingDirPath), STAGED_COMPLETE_MARKER), 'utf8');
+		if (!raw.trim()) return { installationIsOpaque: true };
+		return { installationIsOpaque: JSON.parse(raw)?.installationIsOpaque !== false };
+	} catch {
+		return { installationIsOpaque: true };
+	}
+}
+
 /** Atomically replace the live component and compensate if persistent activation work fails. */
 export async function activateStagedApplication(
 	application: Application,
@@ -2288,9 +2304,8 @@ export async function activateStagedApplication(
 		await ensureSecureDirectory(activationDir, true, 'Component activation staging path');
 		// Who is live right now, so the tree this activation displaces stays addressable for revert. Read
 		// before the swap, since the swap is what makes it "previous".
-		const outgoing: RetainedVersion = (await readRetainedPreviousManifest(application.dirPath).catch(
-			() => undefined
-		))?.live ?? {
+		const outgoing: RetainedVersion = (await readRetainedPreviousManifest(application.dirPath).catch(() => undefined))
+			?.live ?? {
 			// No manifest yet: either a first-ever deploy, or a component last activated by a Harper that
 			// predates retention. Record the config it is running so a revert can still restore that, even
 			// though its deployment id is unknowable and so cannot be a revert target.
@@ -2310,6 +2325,16 @@ export async function activateStagedApplication(
 				try {
 					await lstat(application.dirPath);
 					application.isNewComponent = false;
+					// Installed package metadata sits outside most plugin watch globs, so no file watcher sees a
+					// dependency or module-entry change — but it does invalidate already-loaded code. The one-shot
+					// path compares it across its in-place install (prepareApplication); the two-phase path has to
+					// compare the outgoing live tree against the staged one, which is only possible here, while
+					// both still exist. Feeds markRestartRequiredForDeploy (harper#674, harper#1849 @heskew).
+					application.packageMetadataChanged = installedRuntimeChanged(
+						await readInstalledPackageMetadata(application.dirPath),
+						await readInstalledPackageMetadata(stagingDirPath),
+						(await readStagedCompletion(stagingDirPath)).installationIsOpaque
+					);
 					backupPath = join(
 						activationDir,
 						`${ACTIVATION_BACKUP_PREFIX}${deploymentId}-${Date.now()}-${process.pid}-${randomUUID()}`

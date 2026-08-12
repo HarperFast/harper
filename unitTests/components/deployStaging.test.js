@@ -536,7 +536,8 @@ describe('two-phase component directory transaction', function () {
 		const asideDir = path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR, name);
 		const parked = existsSync(asideDir) ? await fs.readdir(asideDir) : [];
 		const unretired = parked.filter(
-			(entry) => entry.startsWith('.in-progress-') && !parked.includes(`.retired-${entry.slice('.in-progress-'.length)}`)
+			(entry) =>
+				entry.startsWith('.in-progress-') && !parked.includes(`.retired-${entry.slice('.in-progress-'.length)}`)
 		);
 		assert.deepEqual(unretired, [], 'an evicted previous is never left looking like a rollback record');
 		await cleanup(name);
@@ -587,5 +588,4 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(application.dirPath), /candidate/);
 		await cleanup(name);
 	});
-
 });

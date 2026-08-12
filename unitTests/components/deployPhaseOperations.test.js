@@ -241,6 +241,73 @@ describe('deploy_component two-phase orchestration', function () {
 		assert.equal(restartNeeded(), true, 'a new component activated without restart requires one');
 	});
 
+	// ————————————————————————————————————————————————————————————————————————————
+	// Restart gate across the swap (harper#674 / harper#1849 @heskew finding 2)
+	// ————————————————————————————————————————————————————————————————————————————
+
+	it('redeploying an unchanged component with a comparable install does NOT require a restart', async () => {
+		// The harper#1806 guarantee: a redeploy of an already-loaded component stays quiet, because that
+		// component's own file watcher (Scope/EntryHandler) requests a restart if the changed files
+		// actually need one. It holds only when the install is COMPARABLE — no bundled node_modules, so
+		// the staged tree's metadata can be checked against the outgoing one.
+		const project = name();
+		await operations.deployComponent({ project, payload: await makePayload('gate-same', '1.0.0', false) });
+		resetRestartNeeded(); // clear the flag the first (new-component) deploy legitimately set
+
+		await operations.deployComponent({ project, payload: await makePayload('gate-same', '1.0.0', false) });
+
+		assert.equal(restartNeeded(), false, 'identical package metadata across the swap must stay quiet');
+	});
+
+	it('requires a restart when a redeploy bundles node_modules, whose install cannot be compared', async () => {
+		// A payload that ships its own node_modules skips the install entirely, so nothing about the
+		// resulting tree can be compared against a fresh install — the runtime is opaque and has to be
+		// assumed changed. Same conclusion the one-shot path reaches for the same payload shape.
+		const project = name();
+		await operations.deployComponent({ project, payload: await makePayload('gate-opaque-bundle', '1.0.0') });
+		resetRestartNeeded();
+
+		await operations.deployComponent({ project, payload: await makePayload('gate-opaque-bundle', '1.0.0') });
+
+		assert.equal(restartNeeded(), true, 'a bundled node_modules redeploy is opaque, so it requires a restart');
+	});
+
+	it('requires a restart when a redeploy changes package metadata the watchers cannot see', async () => {
+		// Installed package metadata is deliberately outside most plugin watch globs, so nothing else
+		// notices a dependency or module-entry change — but it invalidates already-loaded code. The
+		// one-shot path compares it across its in-place install; two-phase has to compare the outgoing
+		// live tree against the staged one at swap time, which is what this pins.
+		const project = name();
+		await operations.deployComponent({ project, payload: await makePayload('gate-change', '1.0.0') });
+		resetRestartNeeded();
+
+		await operations.deployComponent({ project, payload: await makePayload('gate-change', '2.0.0') });
+
+		assert.equal(restartNeeded(), true, 'a changed package.json version must still force a restart');
+	});
+
+	it('requires a restart when a redeploy ships no lockfile for its dependencies', async () => {
+		// An install whose result can't be reproduced or compared (installable dependencies, no lockfile)
+		// is treated as opaque, and an opaque install always requires a restart.
+		const project = name();
+		await operations.deployComponent({ project, payload: await makePayload('gate-opaque', '1.0.0') });
+		resetRestartNeeded();
+
+		const source = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-phase-op-opaque-'));
+		await fs.writeFile(
+			path.join(source, 'package.json'),
+			JSON.stringify({ name: 'phase-op', version: '1.0.0', dependencies: { 'some-dep': '1.0.0' } })
+		);
+		await fs.writeFile(path.join(source, 'index.js'), "module.exports = 'gate-opaque';\n");
+		await fs.mkdir(path.join(source, 'node_modules'), { recursive: true });
+		const payload = await packDirectory(source);
+		await fs.rm(source, { recursive: true, force: true });
+
+		await operations.deployComponent({ project, payload });
+
+		assert.equal(restartNeeded(), true, 'dependencies with no lockfile make the install opaque');
+	});
+
 	it('reclaims an oversized payload only after a full two-phase activation succeeds', async () => {
 		const project = name();
 		const priorMaxSize = environment.get(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE);
