@@ -604,4 +604,79 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(application.dirPath), /over-dead-link/);
 		await cleanup(name);
 	});
+	// ————————————————————————————————————————————————————————————————————————————
+	// Restart gate: package metadata compared across the swap
+	// (harper#674 / harper#1849 @heskew finding 2)
+	// ————————————————————————————————————————————————————————————————————————————
+	//
+	// main's in-place prepareApplication compares installed package metadata before extraction against
+	// after install; the two-phase path never touches the live directory until the swap, so the
+	// equivalent comparison is outgoing-live vs staged, taken inside activateStagedApplication. These
+	// assert the flag it sets, which operations.js feeds into markRestartRequiredForDeploy.
+
+	async function activateFrom(name, marker, version, { withNodeModules = true, dependencies } = {}) {
+		const source = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-gate-src-'));
+		const manifest = { name: 'stage-fixture', version };
+		if (dependencies) manifest.dependencies = dependencies;
+		await fs.writeFile(path.join(source, 'package.json'), JSON.stringify(manifest));
+		await fs.writeFile(path.join(source, 'index.js'), `module.exports = ${JSON.stringify(marker)};\n`);
+		if (withNodeModules) await fs.mkdir(path.join(source, 'node_modules'), { recursive: true });
+		const payload = await packDirectory(source);
+		await fs.rm(source, { recursive: true, force: true });
+
+		const application = new Application({ name, payload });
+		const deploymentId = randomUUID();
+		await stageApplication(application, deploymentId);
+		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
+		return application;
+	}
+
+	it('does not flag a metadata change when a redeploy is identical and comparable', async () => {
+		// The harper#1806 guarantee: a redeploy of an already-loaded component stays quiet, because that
+		// component's own file watcher requests a restart if the changed files actually need one. It holds
+		// only for a COMPARABLE install — no bundled node_modules to make the result opaque.
+		const name = fixtureName();
+		await activateFrom(name, 'quiet', '1.0.0', { withNodeModules: false });
+		const second = await activateFrom(name, 'quiet', '1.0.0', { withNodeModules: false });
+
+		assert.equal(second.isNewComponent, false, 'the second activation is a redeploy');
+		assert.equal(second.packageMetadataChanged, false, 'identical metadata across the swap must stay quiet');
+		await cleanup(name);
+	});
+
+	it('flags a metadata change the watchers cannot see', async () => {
+		const name = fixtureName();
+		await activateFrom(name, 'changed', '1.0.0', { withNodeModules: false });
+		const second = await activateFrom(name, 'changed', '2.0.0', { withNodeModules: false });
+
+		assert.equal(second.packageMetadataChanged, true, 'a changed package.json version invalidates loaded code');
+		await cleanup(name);
+	});
+
+	it('treats a bundled node_modules redeploy as opaque, since its install cannot be compared', async () => {
+		const name = fixtureName();
+		await activateFrom(name, 'opaque', '1.0.0');
+		const second = await activateFrom(name, 'opaque', '1.0.0');
+
+		assert.equal(second.packageMetadataChanged, true, 'a skipped install leaves nothing to compare');
+		await cleanup(name);
+	});
+
+	it('treats installable dependencies with no lockfile as opaque', async () => {
+		const name = fixtureName();
+		await activateFrom(name, 'nolock', '1.0.0');
+		const second = await activateFrom(name, 'nolock', '1.0.0', { dependencies: { 'some-dep': '1.0.0' } });
+
+		assert.equal(second.packageMetadataChanged, true, 'dependencies with no lockfile are not reproducible');
+		await cleanup(name);
+	});
+
+	it('does not flag a metadata change on a first-ever deploy', async () => {
+		const name = fixtureName();
+		const first = await activateFrom(name, 'brand-new', '1.0.0', { withNodeModules: false });
+
+		assert.equal(first.isNewComponent, true);
+		assert.equal(first.packageMetadataChanged, false, 'nothing to compare against; isNewComponent carries it');
+		await cleanup(name);
+	});
 });
