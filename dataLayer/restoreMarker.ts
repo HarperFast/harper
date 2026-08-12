@@ -51,6 +51,7 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
 export const RESTORE_META_DIR = '`restore`';
 export const RESTORE_LOCK_SUFFIX = '.lock';
 export const RESTORING_MARKER_SUFFIX = '.restoring';
+const DATABASE_OPEN_LOCK_SUFFIX = '.open';
 
 /**
  * Directory holding the restore metadata for a database — the reserved `` `restore` `` sibling of
@@ -79,6 +80,26 @@ export function restoreLockPath(dbPath: string): string {
 
 export function restoringMarkerPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORING_MARKER_SUFFIX);
+}
+
+function databaseOpenLockPath(dbPath: string): string {
+	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + DATABASE_OPEN_LOCK_SUFFIX);
+}
+
+/**
+ * Serialize native RocksDB opens for one database across worker threads. rocksdb-js normally
+ * shares opened handles process-wide, but two cold worker-thread opens can still race before
+ * that registry entry exists and contend for RocksDB's process-local LOCK file.
+ */
+export function acquireDatabaseOpenLock(dbPath: string): number {
+	mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+	let token = tryFileLock(databaseOpenLockPath(dbPath));
+	while (token === 0) token = tryFileLock(databaseOpenLockPath(dbPath));
+	return token;
+}
+
+export function releaseDatabaseOpenLock(token: number): void {
+	fileLockRelease(token);
 }
 
 export type RestoreState = 'in-progress' | 'incomplete' | 'clear';

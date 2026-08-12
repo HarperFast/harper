@@ -43,7 +43,9 @@ import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
 	acquireRestoreLock,
+	acquireDatabaseOpenLock,
 	checkRestoreState,
+	releaseDatabaseOpenLock,
 	releaseRestoreLock,
 	restoreMarkerPresent,
 	scanBlockedRestores,
@@ -325,19 +327,24 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 		}
 		mkdirSync(path, { recursive: true });
 	}
-	let db: RocksRootDatabase;
-	if (options.dupSort) {
-		db = new RocksIndexStore(path, options).open() as any;
-	} else {
-		db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksRootDatabase;
-		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
-		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
-		db.put = db.putSync as any;
-		db.remove = db.removeSync as any;
-		(db.encoder as any).name = options.name;
+	const openLock = acquireDatabaseOpenLock(path);
+	try {
+		let db: RocksRootDatabase;
+		if (options.dupSort) {
+			db = new RocksIndexStore(path, options).open() as any;
+		} else {
+			db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksRootDatabase;
+			// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
+			// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
+			db.put = db.putSync as any;
+			db.remove = db.removeSync as any;
+			(db.encoder as any).name = options.name;
+		}
+		db.env = {};
+		return db;
+	} finally {
+		releaseDatabaseOpenLock(openLock);
 	}
-	db.env = {};
-	return db;
 }
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
