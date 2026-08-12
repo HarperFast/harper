@@ -1,16 +1,11 @@
 'use strict';
 
-// Unit tests for the two-phase deploy primitives in components/Application.ts:
-// stageApplication (build the incoming version into a hidden staging dir, never touching the live
-// path), activateApplication (atomically swap the staged copy into the live path), and
-// discardStagedApplication (drop an aborted stage). These exercise the real filesystem — no
-// componentLoader, no network — so they run without the private agent dependency.
-
-const assert = require('node:assert');
+const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const { existsSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const zlib = require('node:zlib');
 const tarfs = require('tar-fs');
 
@@ -20,311 +15,375 @@ testUtils.preTestPrep();
 const {
 	Application,
 	stageApplication,
-	activateApplication,
-	revertApplication,
+	activateStagedApplication,
 	discardStagedApplication,
+	discardProjectActivationArtifacts,
+	reconcileStagedApplicationArtifacts,
+	createApplicationActivationTransaction,
+	stagedApplicationPath,
 	DEPLOY_STAGING_DIR,
-	DEPLOY_PREVIOUS_DIR,
+	DEPLOY_ACTIVATION_DIR,
 	ASIDE_STAGING_DIR,
 } = require('#src/components/Application');
-const { getConfigPath } = require('#src/config/configUtils');
+const { getConfigPath, readConfigFile } = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const environment = require('#src/utility/environment/environmentManager');
 
 const COMPONENTS_ROOT = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
-// Pack a directory's CONTENTS into a gzipped tar Buffer, the shape a deploy payload takes.
 function packDirectory(dir) {
 	return new Promise((resolve, reject) => {
 		const chunks = [];
 		tarfs
 			.pack(dir)
 			.pipe(zlib.createGzip())
-			.on('data', (c) => chunks.push(c))
+			.on('data', (chunk) => chunks.push(chunk))
 			.on('end', () => resolve(Buffer.concat(chunks)))
 			.on('error', reject);
 	});
 }
 
-// A minimal component source that already contains node_modules, so installApplication short-circuits
-// ("already has node_modules; skipping install") and the test needs no npm/network.
-async function makeComponentPayload(marker) {
-	const src = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-stage-src-'));
-	await fs.writeFile(path.join(src, 'package.json'), JSON.stringify({ name: 'stage-fixture', version: '1.0.0' }));
-	await fs.writeFile(path.join(src, 'index.js'), `module.exports = ${JSON.stringify(marker)};\n`);
-	await fs.mkdir(path.join(src, 'node_modules'), { recursive: true });
-	await fs.writeFile(path.join(src, 'node_modules', '.marker'), marker);
-	const payload = await packDirectory(src);
-	await fs.rm(src, { recursive: true, force: true });
+async function makeComponentPayload(marker, version = '1.0.0') {
+	const source = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-stage-src-'));
+	await fs.writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'stage-fixture', version }));
+	await fs.writeFile(path.join(source, 'index.js'), `module.exports = ${JSON.stringify(marker)};\n`);
+	await fs.mkdir(path.join(source, 'node_modules'), { recursive: true });
+	const payload = await packDirectory(source);
+	await fs.rm(source, { recursive: true, force: true });
 	return payload;
 }
 
-async function readMarker(dir) {
-	return fs.readFile(path.join(dir, 'index.js'), 'utf8');
+async function readMarker(directory) {
+	return fs.readFile(path.join(directory, 'index.js'), 'utf8');
 }
 
-describe('two-phase deploy primitives (stage / activate / discard)', function () {
+describe('two-phase component directory transaction', function () {
 	this.timeout(30_000);
+	let sequence = 0;
 
-	before(async () => {
-		await fs.mkdir(COMPONENTS_ROOT, { recursive: true });
-	});
+	before(async () => fs.mkdir(COMPONENTS_ROOT, { recursive: true }));
 
-	// Each case uses a unique component name so the tests are order-independent and don't collide.
-	let counter = 0;
-	function freshApp(payload) {
-		const name = `stage_test_${process.pid}_${counter++}`;
-		return new Application({ name, payload });
+	function fixtureName() {
+		return `stage_test_${process.pid}_${sequence++}`;
 	}
 
-	it('stageApplication builds into the hidden staging dir and does NOT touch the live path', async () => {
-		const app = freshApp(await makeComponentPayload('v1'));
-
-		assert.ok(app.stagingDirPath.includes(DEPLOY_STAGING_DIR), 'staging path is under the staging dir');
-		assert.strictEqual(app.buildDirPath, app.dirPath, 'build target defaults to the live dir before staging');
-
-		const stagedPath = await stageApplication(app);
-
-		assert.strictEqual(stagedPath, app.stagingDirPath);
-		assert.ok(existsSync(path.join(app.stagingDirPath, 'index.js')), 'component extracted into staging');
-		assert.ok(existsSync(path.join(app.stagingDirPath, 'node_modules')), 'node_modules present in staging');
-		assert.strictEqual(existsSync(app.dirPath), false, 'live component dir was NOT created by staging');
-
-		await fs.rm(path.dirname(app.stagingDirPath), { recursive: true, force: true });
-	});
-
-	it('activateApplication swaps the staged copy into the live path atomically', async () => {
-		const app = freshApp(await makeComponentPayload('v1'));
-		await stageApplication(app);
-		await activateApplication(app);
-
-		assert.ok(existsSync(app.dirPath), 'live component dir now exists');
-		assert.match(await readMarker(app.dirPath), /v1/, 'live dir holds the staged content');
-		assert.strictEqual(existsSync(app.stagingDirPath), false, 'the staged copy was consumed by the swap');
-		assert.strictEqual(app.buildDirPath, app.dirPath, 'build target reset to live after activation');
-		// No live version existed before the swap, so this is a first deploy. deploy_component reads this
-		// to mark restartRequired for a never-loaded component (harper#674); staging is always fresh, so
-		// activate — not extract — is what establishes it on the two-phase path.
-		assert.strictEqual(app.isNewComponent, true, 'a first-ever activate marks the component new');
-
-		await fs.rm(app.dirPath, { recursive: true, force: true });
-	});
-
-	it('stage → activate replaces an existing live version and moves the old one aside', async () => {
-		const name = `stage_test_${process.pid}_${counter++}`;
-		const dirPath = path.join(COMPONENTS_ROOT, name);
-		// Seed an existing live version.
-		await fs.mkdir(dirPath, { recursive: true });
-		await fs.writeFile(path.join(dirPath, 'index.js'), 'module.exports = "OLD";\n');
-		await fs.writeFile(path.join(dirPath, 'leftover.txt'), 'from the old version');
-
-		const app = new Application({ name, payload: await makeComponentPayload('v2') });
-		await stageApplication(app);
-		await activateApplication(app);
-
-		assert.match(await readMarker(dirPath), /v2/, 'live dir now holds the new version');
-		assert.strictEqual(existsSync(path.join(dirPath, 'leftover.txt')), false, 'old-version files are gone from live');
-		// A live version existed before the swap, so this is a redeploy, not a first deploy — deploy_component
-		// must NOT self-request a restart here (harper#1806); the existing component's own watcher does.
-		assert.strictEqual(app.isNewComponent, false, 'activating over an existing live version marks it not-new');
-
-		await fs.rm(dirPath, { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
-	});
-
-	it('discardStagedApplication removes the staging tree and leaves the live path untouched', async () => {
-		const name = `stage_test_${process.pid}_${counter++}`;
-		const dirPath = path.join(COMPONENTS_ROOT, name);
-		await fs.mkdir(dirPath, { recursive: true });
-		await fs.writeFile(path.join(dirPath, 'index.js'), 'module.exports = "LIVE";\n');
-
-		const app = new Application({ name, payload: await makeComponentPayload('v3') });
-		await stageApplication(app);
-		assert.ok(existsSync(app.stagingDirPath), 'staged before discard');
-
-		await discardStagedApplication(app);
-
-		assert.strictEqual(existsSync(app.stagingDirPath), false, 'staging tree removed');
-		assert.match(await readMarker(dirPath), /LIVE/, 'live version untouched by discard');
-
-		await fs.rm(dirPath, { recursive: true, force: true });
-	});
-
-	it('a failed stage leaves the live path untouched and cleans up its partial staging tree', async () => {
-		const name = `stage_test_${process.pid}_${counter++}`;
-		const dirPath = path.join(COMPONENTS_ROOT, name);
-		await fs.mkdir(dirPath, { recursive: true });
-		await fs.writeFile(path.join(dirPath, 'index.js'), 'module.exports = "LIVE";\n');
-
-		// No payload and no package identifier → extractApplication throws before anything is built.
-		const app = new Application({ name });
-		await assert.rejects(() => stageApplication(app), /payload or package/i);
-
-		assert.strictEqual(existsSync(app.stagingDirPath), false, 'partial staging tree removed on failure');
-		assert.match(await readMarker(dirPath), /LIVE/, 'live version untouched by a failed stage');
-		assert.strictEqual(app.buildDirPath, app.dirPath, 'build target reset to live after a failed stage');
-
-		await fs.rm(dirPath, { recursive: true, force: true });
-	});
-
-	it('two independent components stage into non-colliding staging dirs', async () => {
-		const a = freshApp(await makeComponentPayload('A'));
-		const b = freshApp(await makeComponentPayload('B'));
-		await Promise.all([stageApplication(a), stageApplication(b)]);
-
-		assert.notStrictEqual(a.stagingDirPath, b.stagingDirPath);
-		assert.match(await readMarker(a.stagingDirPath), /A/);
-		assert.match(await readMarker(b.stagingDirPath), /B/);
-
-		await Promise.all([discardStagedApplication(a), discardStagedApplication(b)]);
-	});
-
-	it('stages a `file:` tarball package identifier (the package path, no payload)', async () => {
-		// Regression for the staging parent dir: extractApplication's `file:`-tarball branch (and the
-		// npm-pack branch) resolve paths relative to dirname(stagingDirPath), which must exist before
-		// extraction. A payload-only test never exercises that branch.
-		const name = `stage_test_${process.pid}_${counter++}`;
-		const tgzDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-stage-tgz-'));
-		const tgzPath = path.join(tgzDir, 'component.tgz');
-		await fs.writeFile(tgzPath, await makeComponentPayload('from-tarball'));
-
-		const app = new Application({ name, packageIdentifier: `file:${tgzPath}` });
-		await stageApplication(app);
-		assert.match(await readMarker(app.stagingDirPath), /from-tarball/, 'tarball extracted into staging');
-		assert.strictEqual(existsSync(app.dirPath), false, 'live dir untouched by staging a tarball');
-
-		await discardStagedApplication(app);
-		await fs.rm(tgzDir, { recursive: true, force: true });
-	});
-
-	it('activate cleanup does NOT sweep a sibling staged build of the same component', async () => {
-		// Two deploys of the same component staged concurrently share the .deploy-staging/<name> parent.
-		// Activating one must not recursively delete that parent and destroy the other's staged build.
-		const name = `stage_test_${process.pid}_${counter++}`;
-		const first = new Application({ name, payload: await makeComponentPayload('first') });
-		const second = new Application({ name, payload: await makeComponentPayload('second') });
-		await stageApplication(first);
-		await stageApplication(second);
-		assert.notStrictEqual(first.stagingDirPath, second.stagingDirPath);
-
-		await activateApplication(first);
-
-		assert.match(await readMarker(first.dirPath), /first/, 'first went live');
-		assert.ok(existsSync(second.stagingDirPath), 'the sibling staged build survived the activate cleanup');
-
-		await fs.rm(first.dirPath, { recursive: true, force: true });
-		await discardStagedApplication(second);
-		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
-	});
-
-	it('activate moves a DANGLING symlink at the live path aside instead of failing EEXIST', async () => {
-		// A prior `file:`-directory deploy leaves the live path as a symlink; if its target is later
-		// removed the link dangles. moveDirAside must detect it via lstat (access(F_OK) follows the link
-		// and reports ENOENT) so the swap replaces it cleanly.
-		const name = `stage_test_${process.pid}_${counter++}`;
-		const dirPath = path.join(COMPONENTS_ROOT, name);
-		await fs.symlink(path.join(os.tmpdir(), `does-not-exist-${process.pid}-${counter}`), dirPath);
-		assert.strictEqual(existsSync(dirPath), false, 'precondition: the symlink is dangling');
-
-		const app = new Application({ name, payload: await makeComponentPayload('replaced') });
-		await stageApplication(app);
-		await activateApplication(app);
-
-		const stat = await fs.lstat(dirPath);
-		assert.strictEqual(stat.isSymbolicLink(), false, 'live path is now a real directory, not the dead link');
-		assert.match(await readMarker(dirPath), /replaced/);
-
-		await fs.rm(dirPath, { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
-	});
-
-	// Deploy a version (stage + activate) through the primitives, returning the app.
-	async function deployVersion(name, marker) {
-		const app = new Application({ name, payload: await makeComponentPayload(marker) });
-		await stageApplication(app);
-		await activateApplication(app);
-		return app;
-	}
-
-	it('activate retains the outgoing version as .deploy-previous/<name>', async () => {
-		const name = `stage_test_${process.pid}_${counter++}`;
-		await deployVersion(name, 'v1');
-		await deployVersion(name, 'v2');
-
-		const liveDir = path.join(COMPONENTS_ROOT, name);
-		const previousDir = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
-		assert.match(await readMarker(liveDir), /v2/, 'live is the newest version');
-		assert.match(await readMarker(previousDir), /v1/, 'the outgoing version is retained as previous');
-
-		await fs.rm(liveDir, { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR), { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
-	});
-
-	it('revertApplication swaps live <-> previous, and a second revert rolls forward again', async () => {
-		const name = `stage_test_${process.pid}_${counter++}`;
-		await deployVersion(name, 'v1');
-		const app = await deployVersion(name, 'v2');
-		const liveDir = path.join(COMPONENTS_ROOT, name);
-		const previousDir = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
-
-		await revertApplication(app);
-		assert.match(await readMarker(liveDir), /v1/, 'reverted live back to v1');
-		assert.match(await readMarker(previousDir), /v2/, 'the reverted-away v2 is now the previous');
-
-		await revertApplication(app);
-		assert.match(await readMarker(liveDir), /v2/, 'reverting the revert rolls forward to v2');
-		assert.match(await readMarker(previousDir), /v1/, 'v1 is the previous again');
-
-		await fs.rm(liveDir, { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR), { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
-	});
-
-	it('revertApplication throws when there is no retained previous (deployed only once)', async () => {
-		const name = `stage_test_${process.pid}_${counter++}`;
-		const app = await deployVersion(name, 'only'); // first-ever deploy: nothing retained as previous
-
-		await assert.rejects(() => revertApplication(app), /no previous version is retained/i);
-
+	async function cleanup(name) {
 		await fs.rm(path.join(COMPONENTS_ROOT, name), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+	}
+
+	it('builds a staged tree without touching the live component', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+
+		const stagedPath = await stageApplication(application, deploymentId);
+
+		assert.equal(stagedPath, stagedApplicationPath(application.dirPath, deploymentId));
+		assert.match(await readMarker(stagedPath), /candidate/);
+		assert.equal(existsSync(application.dirPath), false);
+		await cleanup(name);
 	});
 
-	it('evicts the oldest not-yet-activated staged builds beyond the retention count (default 5)', async () => {
-		// Simulate repeated `activate: false` stage-and-stops of the same component (distinct stagingIds,
-		// never activated). Each stage should prune older ones down to the retention count.
-		const name = `stage_test_${process.pid}_${counter++}`;
+	it('atomically activates a staged tree and consumes only that deployment', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const siblingId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+		await stageApplication(application, deploymentId);
+		application.payload = await makeComponentPayload('sibling');
+		await stageApplication(application, siblingId);
+
+		await activateStagedApplication(application, deploymentId);
+
+		assert.match(await readMarker(application.dirPath), /candidate/);
+		assert.equal(existsSync(stagedApplicationPath(application.dirPath, deploymentId)), false);
+		assert.equal(existsSync(stagedApplicationPath(application.dirPath, siblingId)), true);
+		await cleanup(name);
+	});
+
+	it('rejects a candidate whose staging build did not complete', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('incomplete') });
+		const stagedPath = await stageApplication(application, deploymentId);
+		await fs.rm(path.join(path.dirname(stagedPath), '.complete'));
+
+		await assert.rejects(activateStagedApplication(application, deploymentId), /staged build is incomplete/);
+
+		assert.equal(existsSync(application.dirPath), false);
+		assert.match(await readMarker(stagedPath), /incomplete/);
+		await cleanup(name);
+	});
+
+	it('resumes a new-component activation after its durable marker was already created', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('resumed') });
+		await stageApplication(application, deploymentId);
+		const activationPath = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationPath, { recursive: true });
+		await fs.writeFile(path.join(activationPath, `.new-${deploymentId}`), '', { mode: 0o600 });
+
+		await activateStagedApplication(application, deploymentId);
+
+		assert.match(await readMarker(application.dirPath), /resumed/);
+		assert.equal(existsSync(activationPath), false);
+		await cleanup(name);
+	});
+
+	it('does not report activation failure when only committed-stage cleanup is denied', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('cleanup-deferred') });
+		await stageApplication(application, deploymentId);
 		const stagingRoot = path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR);
-		const stagingIds = [];
-		for (let i = 0; i < 7; i++) {
-			const app = new Application({ name, payload: await makeComponentPayload(`v${i}`) });
-			stagingIds.push(app.stagingId);
-			await stageApplication(app);
+		await fs.chmod(stagingRoot, 0o500);
+		try {
+			await activateStagedApplication(application, deploymentId);
+		} finally {
+			await fs.chmod(stagingRoot, 0o700);
 		}
 
-		const remaining = stagingIds.filter((id) => existsSync(path.join(stagingRoot, id, name)));
-		// Contract: at most `maxCount` staged builds are retained per component, and the just-staged one is
-		// always kept. (Which older builds are evicted is ordered by mtime — reliable in real use where
-		// stages are time-separated, but this tight loop can create ties, so it isn't asserted here.)
-		assert.strictEqual(remaining.length, 5, `expected 5 staged builds retained, got ${remaining.length}`);
-		assert.ok(existsSync(path.join(stagingRoot, stagingIds[6], name)), 'the most recent stage is always retained');
-
-		await fs.rm(stagingRoot, { recursive: true, force: true });
+		assert.match(await readMarker(application.dirPath), /cleanup-deferred/);
+		assert.equal(existsSync(path.join(stagingRoot, deploymentId)), true, 'cleanup remains retryable garbage');
+		await cleanup(name);
 	});
 
-	it('only one previous is retained across three deploys (older previous evicted)', async () => {
-		const name = `stage_test_${process.pid}_${counter++}`;
-		await deployVersion(name, 'v1');
-		await deployVersion(name, 'v2');
-		await deployVersion(name, 'v3');
+	it('restores live and preserves the staged tree when persistent activation work fails', async () => {
+		const name = fixtureName();
+		const livePath = path.join(COMPONENTS_ROOT, name);
+		const deploymentId = randomUUID();
+		await fs.mkdir(livePath, { recursive: true });
+		await fs.writeFile(path.join(livePath, 'index.js'), 'module.exports = "live";\n');
+		const application = new Application({ name, payload: await makeComponentPayload('candidate', '2.0.0') });
+		await stageApplication(application, deploymentId);
 
-		const previousDir = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
-		assert.match(await readMarker(path.join(COMPONENTS_ROOT, name)), /v3/, 'live is v3');
-		assert.match(await readMarker(previousDir), /v2/, 'previous is v2; v1 was evicted');
+		await assert.rejects(
+			activateStagedApplication(application, deploymentId, {
+				beforeCommit: async () => {
+					throw new Error('config write failed');
+				},
+			}),
+			/config write failed/
+		);
 
-		await fs.rm(path.join(COMPONENTS_ROOT, name), { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR), { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+		assert.match(await readMarker(livePath), /live/);
+		assert.match(await readMarker(stagedApplicationPath(livePath, deploymentId)), /candidate/);
+		await cleanup(name);
+	});
+
+	it('serializes duplicate activation without ever losing the live directory', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+		await stageApplication(application, deploymentId);
+
+		const outcomes = await Promise.allSettled([
+			activateStagedApplication(application, deploymentId),
+			activateStagedApplication(application, deploymentId),
+		]);
+
+		assert.equal(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
+		assert.equal(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1);
+		assert.match(await readMarker(application.dirPath), /candidate/);
+		await cleanup(name);
+	});
+
+	it('snapshots config at commit time so a queued rollback preserves the preceding winner', async () => {
+		const name = fixtureName();
+		const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-activation-config-'));
+		const priorRootEnv = process.env.ROOTPATH;
+		const priorRootConfig = getConfigPath(CONFIG_PARAMS.ROOTPATH);
+		process.env.ROOTPATH = configRoot;
+		environment.setProperty(CONFIG_PARAMS.ROOTPATH, configRoot);
+		await fs.writeFile(path.join(configRoot, 'harper-config.yaml'), `rootPath: ${JSON.stringify(configRoot)}\n`);
+		const spec = (version, urlPath) => ({
+			project: name,
+			package: `example@${version}`,
+			install_command: null,
+			install_timeout: null,
+			install_allow_scripts: null,
+			urlPath,
+			host: null,
+			credentials: null,
+		});
+		const first = await createApplicationActivationTransaction(name, spec('1.0.0', '/first'));
+		const second = await createApplicationActivationTransaction(name, spec('2.0.0', '/second'));
+		try {
+			await first.commit();
+			await second.commit();
+			await second.rollback();
+
+			assert.deepEqual(readConfigFile()[name], { package: 'example@1.0.0', urlPath: '/first' });
+			const lock = JSON.parse(
+				await fs.readFile(path.join(configRoot, 'harper-application-lock.json'), { encoding: 'utf8' })
+			);
+			assert.deepEqual(lock.applications[name], { package: 'example@1.0.0', urlPath: '/first' });
+		} finally {
+			await second.rollback();
+			await first.rollback();
+			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
+			else process.env.ROOTPATH = priorRootEnv;
+			environment.setProperty(CONFIG_PARAMS.ROOTPATH, priorRootConfig);
+			await fs.rm(configRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('discard removes only the selected staged tree and leaves live unchanged', async () => {
+		const name = fixtureName();
+		const livePath = path.join(COMPONENTS_ROOT, name);
+		const deploymentId = randomUUID();
+		await fs.mkdir(livePath, { recursive: true });
+		await fs.writeFile(path.join(livePath, 'index.js'), 'module.exports = "live";\n');
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+		await stageApplication(application, deploymentId);
+
+		await discardStagedApplication(livePath, deploymentId);
+
+		assert.equal(existsSync(stagedApplicationPath(livePath, deploymentId)), false);
+		assert.match(await readMarker(livePath), /live/);
+		await cleanup(name);
+	});
+
+	it('drop cleanup removes only the selected component activation artifacts', async () => {
+		const name = fixtureName();
+		const sibling = fixtureName();
+		const activationRoot = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR);
+		await fs.mkdir(path.join(activationRoot, name, 'old'), { recursive: true });
+		await fs.mkdir(path.join(activationRoot, sibling, 'keep'), { recursive: true });
+
+		await discardProjectActivationArtifacts(path.join(COMPONENTS_ROOT, name));
+
+		assert.equal(existsSync(path.join(activationRoot, name)), false);
+		assert.equal(existsSync(path.join(activationRoot, sibling, 'keep')), true);
+		await cleanup(name);
+	});
+
+	it('startup reconciliation removes terminal stages and preserves valid staged rows', async () => {
+		const name = fixtureName();
+		const keptId = randomUUID();
+		const removedId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('kept') });
+		await stageApplication(application, keptId);
+		application.payload = await makeComponentPayload('removed');
+		await stageApplication(application, removedId);
+		const rows = new Map([
+			[keptId, { deployment_id: keptId, project: name, status: 'staged' }],
+			[removedId, { deployment_id: removedId, project: name, status: 'failed' }],
+		]);
+
+		const result = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => rows.get(id),
+			async () => {}
+		);
+
+		assert.equal(existsSync(stagedApplicationPath(application.dirPath, keptId)), true);
+		assert.equal(existsSync(stagedApplicationPath(application.dirPath, removedId)), false);
+		assert.deepEqual(result.removed, [removedId]);
+		await cleanup(name);
+	});
+
+	it('startup reconciliation rolls an activating staged tree forward', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const livePath = path.join(COMPONENTS_ROOT, name);
+		await fs.mkdir(livePath, { recursive: true });
+		await fs.writeFile(path.join(livePath, 'index.js'), 'module.exports = "old";\n');
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+		await stageApplication(application, deploymentId);
+		const activationPath = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationPath, { recursive: true });
+		await fs.rename(livePath, path.join(activationPath, `.previous-${deploymentId}-crash`));
+		const row = {
+			deployment_id: deploymentId,
+			project: name,
+			status: 'activating',
+			activation_spec: { project: name },
+		};
+		const persisted = [];
+
+		const result = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => (id === deploymentId ? row : undefined),
+			async (value) => persisted.push(value.deployment_id)
+		);
+
+		assert.match(await readMarker(livePath), /candidate/);
+		assert.deepEqual(persisted, [deploymentId]);
+		assert.deepEqual(result.recovered, [deploymentId]);
+		assert.equal(existsSync(activationPath), false);
+		await cleanup(name);
+	});
+
+	it('startup reconciliation finishes an activation whose candidate is already live', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const livePath = path.join(COMPONENTS_ROOT, name);
+		const activationPath = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(livePath, { recursive: true });
+		await fs.writeFile(path.join(livePath, 'index.js'), 'module.exports = "candidate";\n');
+		await fs.mkdir(path.join(activationPath, `.previous-${deploymentId}-crash`), { recursive: true });
+		const row = {
+			deployment_id: deploymentId,
+			project: name,
+			status: 'activating',
+			activation_spec: { project: name },
+		};
+		let persisted = 0;
+
+		const result = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => (id === deploymentId ? row : undefined),
+			async () => persisted++
+		);
+
+		assert.equal(persisted, 1);
+		assert.deepEqual(result.recovered, [deploymentId]);
+		assert.match(await readMarker(livePath), /candidate/);
+		assert.equal(existsSync(activationPath), false);
+		await cleanup(name);
+	});
+
+	it('rejects a non-UUID before it can become a filesystem path segment', () => {
+		assert.throws(() => stagedApplicationPath(path.join(COMPONENTS_ROOT, fixtureName()), '../../escape'), /Invalid/);
+	});
+
+	it('rejects a symlinked staging root without touching its target', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-stage-outside-'));
+		await fs.writeFile(path.join(outside, 'sentinel'), 'keep');
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
+		await fs.symlink(outside, path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), 'dir');
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+
+		await assert.rejects(stageApplication(application, deploymentId), /staging path is not a directory/);
+		assert.equal(await fs.readFile(path.join(outside, 'sentinel'), 'utf8'), 'keep');
+
+		await cleanup(name);
+		await fs.rm(outside, { recursive: true, force: true });
+	});
+
+	it('activates a completed local-directory package symlink with secure staging containers', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const packageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-stage-package-'));
+		await fs.writeFile(path.join(packageDirectory, 'marker.txt'), 'directory-package');
+		const application = new Application({ name, packageIdentifier: packageDirectory });
+
+		const stagedPath = await stageApplication(application, deploymentId);
+		assert.equal((await fs.lstat(stagedPath)).isSymbolicLink(), true);
+		await activateStagedApplication(application, deploymentId);
+
+		assert.equal((await fs.lstat(application.dirPath)).isSymbolicLink(), true);
+		assert.equal(await fs.readFile(path.join(application.dirPath, 'marker.txt'), 'utf8'), 'directory-package');
+
+		await cleanup(name);
+		await fs.rm(packageDirectory, { recursive: true, force: true });
 	});
 });

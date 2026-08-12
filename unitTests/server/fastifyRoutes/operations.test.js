@@ -150,6 +150,7 @@ describe('Test custom functions operations', () => {
 			await fs.ensureFile(path.join(CF_DIR_ROOT, 'my-cool-component', '.hidden'));
 			await fs.ensureFile(path.join(CF_DIR_ROOT, 'my-cool-component', 'utils', 'utils.js'));
 			await fs.outputFile(path.join(CF_DIR_ROOT, 'my-other-component', 'config.yaml'), test_yaml_string);
+			await fs.ensureFile(path.join(CF_DIR_ROOT, '.deploy-activating', 'my-cool-component', '.new-deployment'));
 			sandbox.stub(configUtils, 'getConfiguration').returns({
 				'my-other-component': {
 					package: '@my-org/my-other-component',
@@ -181,6 +182,7 @@ describe('Test custom functions operations', () => {
 			expect(otherComponent.urlPath).to.equal('/other');
 			expect(otherComponent.host).to.equal('other.example.com');
 			expect(otherComponent.loadComponent).to.equal('if-installed');
+			expect(result.entries.find((e) => e.name === '.deploy-activating')).to.be.undefined;
 		});
 
 		it('Test getComponents includes status information when component status exists', async () => {
@@ -522,9 +524,11 @@ describe('Test custom functions operations', () => {
 
 			// Mock the two-phase build/swap primitives to prevent actual install + filesystem work.
 			const stageApplicationStub = sandbox.stub().resolves('/tmp/staging');
-			const activateApplicationStub = sandbox.stub().resolves();
+			const activateApplicationStub = sandbox
+				.stub()
+				.callsFake(async (_application, _deploymentId, hooks) => hooks?.beforeCommit?.());
 			operations.__set__('stageApplication', stageApplicationStub);
-			operations.__set__('activateApplication', activateApplicationStub);
+			operations.__set__('activateStagedApplication', activateApplicationStub);
 
 			// This should work - user components can be overwritten without force
 			await operations.deployComponent({
@@ -551,9 +555,11 @@ describe('Test custom functions operations', () => {
 
 			// Mock the two-phase build/swap primitives to prevent actual install + filesystem work.
 			const stageApplicationStub = sandbox.stub().resolves('/tmp/staging');
-			const activateApplicationStub = sandbox.stub().resolves();
+			const activateApplicationStub = sandbox
+				.stub()
+				.callsFake(async (_application, _deploymentId, hooks) => hooks?.beforeCommit?.());
 			operations.__set__('stageApplication', stageApplicationStub);
-			operations.__set__('activateApplication', activateApplicationStub);
+			operations.__set__('activateStagedApplication', activateApplicationStub);
 
 			// This should work fine - no component exists yet
 			await operations.deployComponent({
@@ -600,9 +606,11 @@ describe('Test custom functions operations', () => {
 
 			// Mock the two-phase build/swap primitives to prevent actual install + filesystem work.
 			const stageApplicationStub = sandbox.stub().resolves('/tmp/staging');
-			const activateApplicationStub = sandbox.stub().resolves();
+			const activateApplicationStub = sandbox
+				.stub()
+				.callsFake(async (_application, _deploymentId, hooks) => hooks?.beforeCommit?.());
 			operations.__set__('stageApplication', stageApplicationStub);
-			operations.__set__('activateApplication', activateApplicationStub);
+			operations.__set__('activateStagedApplication', activateApplicationStub);
 
 			// This should NOT throw an error because force is true
 			await operations.deployComponent({

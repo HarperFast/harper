@@ -49,13 +49,19 @@ import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
-import { getEnvBuiltInComponents } from './Application.ts';
+import {
+	getEnvBuiltInComponents,
+	createApplicationActivationTransaction,
+	reconcileStagedApplicationArtifacts,
+} from './Application.ts';
+import { getDeploymentRow } from './deploymentRecorder.ts';
 import { pathToFileURL } from 'node:url';
 
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
+let stagedArtifactsReconciled = false;
 
 /**
  * Load all the applications registered in Harper, those in the components directory as well as any directly
@@ -66,6 +72,38 @@ let resources;
 export async function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
+	if (isMainThread && !stagedArtifactsReconciled) {
+		stagedArtifactsReconciled = true;
+		try {
+			const reconciliation = await reconcileStagedApplicationArtifacts(CF_ROUTES_DIR, getDeploymentRow, async (row) => {
+				const transaction = await createApplicationActivationTransaction(row.project, row.activation_spec);
+				try {
+					await transaction.commit();
+				} catch (error) {
+					try {
+						await transaction.rollback();
+					} catch (rollbackError) {
+						throw new AggregateError(
+							[error, rollbackError],
+							`Could not persist or roll back the recovered component activation for '${row.project}'`
+						);
+					}
+					throw error;
+				}
+			});
+			for (const deploymentId of reconciliation.recovered) {
+				harperLogger.warn(
+					`Rolled forward interrupted component activation '${deploymentId}' on this node; ` +
+						`the deployment remains activating until cluster state is reconciled`
+				);
+			}
+			for (const [deploymentId, error] of reconciliation.errors) {
+				harperLogger.error(`Could not reconcile staged component deployment '${deploymentId}':`, errorForLog(error));
+			}
+		} catch (error) {
+			harperLogger.error('Could not inspect staged component deployments during startup:', errorForLog(error as Error));
+		}
+	}
 	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
 	// any application loads (root components — including the Pro custody registration — have
 	// already loaded by this point). Re-runs on each reload cycle, which is how changed/late-custody

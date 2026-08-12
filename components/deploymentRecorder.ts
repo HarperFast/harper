@@ -6,8 +6,8 @@
 // payload_blob (with sha256 + size), and writes the terminal status at the end.
 // Subscribes to a ProgressEmitter so phase transitions and install lines land in
 // event_log as they happen — making the deploy observable by Studio polling
-// get_deployment without an attached CLI. The persisted payload_blob will also serve
-// as the rollback source when that operation lands.
+// get_deployment without an attached CLI. The persisted payload_blob also serves as
+// the replication source for peer staging.
 
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
@@ -50,14 +50,14 @@ type DeploymentStatus =
 	| 'extracting'
 	| 'installing'
 	// Two-phase deploy: building the incoming version into staging cluster-wide (stage phase), and the
-	// terminal resting state of a stage_component that has not yet been activated.
+	// terminal resting state of a deploy_component stage that has not yet been activated.
 	| 'staging'
 	| 'staged'
 	| 'loading'
 	| 'replicating'
 	// Two-phase deploy: swapping the staged build into the live path cluster-wide (activate phase).
 	| 'activating'
-	// revert_component: swapping the live version back to its retained previous version.
+	// Retained for compatibility with deployment rows written by earlier preview builds.
 	| 'reverting'
 	| 'restarting'
 	| 'success'
@@ -71,10 +71,10 @@ interface CreateOptions {
 	restart_mode?: 'immediate' | 'rolling' | null;
 	rollback_of?: string | null;
 	// Deploy credentials in reference form (`{ registry, secret, scope? }` / `{ host, secret,
-	// username? }`) — never a literal token. Kept so a rollback can re-resolve the credential from
-	// hdb_secret without the operator re-supplying it. Null when the deploy used no credentials or a
-	// no-custody transient token.
+	// username? }`) — never a literal token. Peers and later activation resolve the reference from
+	// hdb_secret. Null when the deploy used no credentials or a no-custody transient token.
 	credentials?: CredentialReference[] | null;
+	activation_spec?: Record<string, unknown> | null;
 	emitter?: ProgressEmitter;
 }
 
@@ -113,6 +113,7 @@ export class DeploymentRecorder {
 			user: options.user ?? null,
 			rollback_of: options.rollback_of ?? null,
 			credentials: options.credentials ?? null,
+			activation_spec: options.activation_spec ?? null,
 			error: null,
 		};
 		const recorder = new DeploymentRecorder(deploymentId, record);
@@ -403,17 +404,24 @@ export class DeploymentRecorder {
 		this.sealed = true;
 	}
 
-	async finish(status: 'success' | 'failed' | 'rolled_back' | 'staged', error?: unknown): Promise<void> {
+	async checkpoint(status: DeploymentStatus, phase: string): Promise<void> {
 		if (this.finished) return;
-		// Send a terminal sentinel through the emitter (if any) BEFORE we unsubscribe and
-		// remove it from the registry, so any SSE tail subscribers can resolve their wait
-		// even on a code path that doesn't emit an explicit `error` event.
+		while (this.pendingPut) await this.pendingPut;
+		this.record.status = status;
+		this.record.phase = phase;
+		this.record.completed_at = null;
+		await this.put();
+	}
+
+	async finish(status: 'success' | 'failed' | 'rolled_back' | 'staged' | 'activating', error?: unknown): Promise<void> {
+		if (this.finished) return;
+		// Keep the emitter registered until the terminal row write lands. An SSE tailer may
+		// otherwise observe the sentinel, re-read the preceding staged checkpoint, and
+		// incorrectly finish with a stale result.
 		const emitter = activeEmitters.get(this.deploymentId);
-		emitter?.emit('_recorder_finished', { status });
 		this.finished = true;
 		this.unsubscribe?.();
 		this.unsubscribe = null;
-		activeEmitters.delete(this.deploymentId);
 		// Drain the ENTIRE coalesced-flush chain before mutating + persisting the terminal
 		// state. Just awaiting `this.pendingPut` once isn't enough: its `.finally` may
 		// re-schedule another put (when `dirty` was set during the in-flight put), and
@@ -428,7 +436,7 @@ export class DeploymentRecorder {
 			}
 		}
 		this.record.status = status;
-		this.record.completed_at = Date.now();
+		this.record.completed_at = status === 'activating' ? null : Date.now();
 		if (error) {
 			const e = error as { message?: string; code?: string | number; stack?: string };
 			this.record.error = {
@@ -437,7 +445,15 @@ export class DeploymentRecorder {
 				phase: this.record.phase,
 			};
 		}
-		await this.put();
+		try {
+			await this.put();
+		} finally {
+			// Emit after persistence but before removing the registry entry so subscribers
+			// always have a durable terminal row to re-read. The sentinel also releases
+			// tailers on failure paths that did not emit an explicit error event.
+			emitter?.emit('_recorder_finished', { status });
+			activeEmitters.delete(this.deploymentId);
+		}
 	}
 
 	get row(): Record<string, any> {
@@ -472,7 +488,7 @@ export async function getDeploymentRow(deploymentId: string): Promise<Record<str
 }
 
 /**
- * Best-effort terminal-status update for an existing deployment row by id, used when a later operation
+ * Best-effort status update for an existing deployment row by id, used when a later operation
  * finishes a deployment the current process didn't record with a live DeploymentRecorder — e.g.
  * `deploy_component({ deployment_id })` activating a build that an earlier stage-and-stop left in the
  * `staged` state. No-op when the row (or the table) is absent; observability only, so callers treat a
@@ -480,7 +496,8 @@ export async function getDeploymentRow(deploymentId: string): Promise<Record<str
  */
 export async function markDeploymentTerminal(
 	deploymentId: string,
-	status: 'success' | 'failed' | 'rolled_back' | 'staged'
+	status: 'success' | 'failed' | 'rolled_back' | 'staged' | 'activating',
+	error?: unknown
 ): Promise<void> {
 	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
 	if (!table) return;
@@ -489,13 +506,112 @@ export async function markDeploymentTerminal(
 	// Patch (partial update) rather than mutating the row: table.get() returns a read-only record, so
 	// `row.status = …` throws "Cannot assign to read only property". A patch also touches only these two
 	// fields, so it can't truncate the rest of the row the way a spread-and-put might.
-	await table.patch(deploymentId, { status, completed_at: Date.now() });
+	const update: Record<string, unknown> = {
+		status,
+		completed_at: status === 'activating' ? null : Date.now(),
+	};
+	if (error !== undefined) {
+		update.error = {
+			message: error instanceof Error ? error.message : String(error),
+		};
+	}
+	await table.patch(deploymentId, update);
+}
+
+export async function recordDeploymentPeers(deploymentId: string, results: unknown): Promise<void> {
+	if (!Array.isArray(results) || results.length === 0) return;
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	if (!table) return;
+	const row = await table.get(deploymentId);
+	if (!row) return;
+	const peers = Array.isArray(row.peer_results)
+		? row.peer_results.map((entry: unknown) => ({ ...(entry as object) }))
+		: [];
+	for (const result of results) {
+		const normalized = normalizePeerResult(result);
+		const index = normalized.node ? peers.findIndex((entry: any) => entry.node === normalized.node) : -1;
+		if (index >= 0) peers[index] = normalized;
+		else peers.push(normalized);
+	}
+	await table.patch(deploymentId, { peer_results: peers });
+}
+
+/** Claim a staged deployment for activation while the component preparation lock is held. */
+export async function claimStagedDeployment(
+	deploymentId: string,
+	project: string,
+	options: { allowActivating?: boolean; waitForStagedMs?: number } = {}
+): Promise<Record<string, any>> {
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	if (!table) throw new ClientError('Deployment tracking is unavailable; cannot activate a staged deployment');
+	const deadline = Date.now() + coerceTimeoutMs(options.waitForStagedMs, 0);
+	let row = await table.get(deploymentId);
+	if (!row) throw new ClientError(`No deployment found with id '${deploymentId}'`);
+	if (row.project !== project) {
+		throw new ClientError(`Deployment '${deploymentId}' belongs to component '${row.project}', not '${project}'`);
+	}
+	while (['pending', 'staging'].includes(row.status) && Date.now() < deadline) {
+		await new Promise<void>((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+		row = await table.get(deploymentId);
+		if (!row) throw new ClientError(`No deployment found with id '${deploymentId}'`);
+		if (row.project !== project) {
+			throw new ClientError(`Deployment '${deploymentId}' belongs to component '${row.project}', not '${project}'`);
+		}
+	}
+	if (row.status === 'activating' && options.allowActivating) return row;
+	if (row.status !== 'staged') {
+		throw new ClientError(`Deployment '${deploymentId}' is '${row.status}', not staged and available for activation`);
+	}
+	await table.patch(deploymentId, { status: 'activating', phase: 'activate', completed_at: null, error: null });
+	return row;
 }
 
 // Deployment statuses that are settled — a non-terminal deployment's payload_blob may still be the
 // replication channel peers are installing from, so retention must never yank it mid-flight. Mirrors
 // deploymentOperations.ts's guard for the explicit delete_deployment_payload operation.
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back']);
+
+async function settleStagedRows(project: string, keepCount: number): Promise<string[]> {
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	if (!table) return [];
+	const staged: Array<Record<string, any>> = [];
+	for await (const row of table.search([{ attribute: 'project', value: project }])) {
+		if (row?.status === 'staged') staged.push(row);
+	}
+	staged.sort(
+		(a, b) => (b.started_at ?? 0) - (a.started_at ?? 0) || String(a.deployment_id).localeCompare(b.deployment_id)
+	);
+	const expired = staged.slice(Math.max(0, keepCount));
+	for (const row of expired) {
+		await table.patch(row.deployment_id, {
+			status: 'failed',
+			completed_at: Date.now(),
+			error: { message: 'Staged build expired by deployment_stagingRetention_maxCount', phase: 'staged' },
+		});
+	}
+	return expired.map((row) => row.deployment_id);
+}
+
+export async function expireOldStagedDeployments(project: string, maxCount: number): Promise<string[]> {
+	const count = Number.isFinite(maxCount) ? Math.max(1, Math.floor(maxCount)) : 1;
+	return settleStagedRows(project, count);
+}
+
+export async function invalidateProjectStagedDeployments(project: string): Promise<string[]> {
+	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+	if (!table) return [];
+	const invalidated: string[] = [];
+	for await (const row of table.search([{ attribute: 'project', value: project }])) {
+		if (!['staged', 'activating'].includes(row?.status)) continue;
+		await table.patch(row.deployment_id, {
+			status: 'failed',
+			completed_at: Date.now(),
+			error: { message: 'Staged build invalidated because the component was dropped', phase: row.phase },
+		});
+		invalidated.push(row.deployment_id);
+	}
+	return invalidated;
+}
 
 /**
  * Count-based payload retention: keep at most `maxCount` stored payload tarballs for a project,
@@ -579,7 +695,12 @@ export function coerceTimeoutMs(value: unknown, fallback: number): number {
  */
 export async function awaitDeploymentRow(
 	deploymentId: string,
-	options: { timeoutMs?: number; pollIntervalMs?: number; initialPollIntervalMs?: number } = {}
+	options: {
+		timeoutMs?: number;
+		pollIntervalMs?: number;
+		initialPollIntervalMs?: number;
+		requirePayload?: boolean;
+	} = {}
 ): Promise<Record<string, any>> {
 	// Coerce defensively: the deploy operation's `deployment_timeout` reaches us via the
 	// operation body, and the Joi validator's coerced number is discarded by validateBySchema
@@ -594,6 +715,7 @@ export async function awaitDeploymentRow(
 	// human-noticeable latency, then back off exponentially up to maxIntervalMs for the
 	// rare case where the row is genuinely still replicating.
 	let intervalMs = options.initialPollIntervalMs ?? 5;
+	const requirePayload = options.requirePayload !== false;
 	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
 	if (!table) {
 		throw new Error(
@@ -610,7 +732,7 @@ export async function awaitDeploymentRow(
 		try {
 			const row = await table.get(deploymentId);
 			if (row) {
-				if (row.payload_blob != null) return row;
+				if (!requirePayload || row.payload_blob != null) return row;
 				// Row replicated but its payload_blob write hasn't landed yet — replication is
 				// alive, just mid-flight. Remember this so the timeout message points at the
 				// payload write rather than a dead channel.

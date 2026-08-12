@@ -47,6 +47,7 @@ import {
 	getRemoteOperationFunction,
 	setLocalOperationDispatch,
 } from './registeredOperations.ts';
+import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -309,9 +310,12 @@ _assignPackageExport('operation', operation);
  */
 export function operation(operation: OperationRequestBody, context: Context, authorize: boolean) {
 	operation.hdb_user = context?.user;
-	operation.bypass_auth = !authorize;
-	const operation_function = chooseOperation(operation);
-	return processLocalTransaction({ body: operation }, operation_function);
+	const bypassAuth = !authorize;
+	operation.bypass_auth = bypassAuth;
+	return runWithOperationAuthorizationBypass(bypassAuth, () => {
+		const operation_function = chooseOperation(operation);
+		return processLocalTransaction({ body: operation }, operation_function);
+	});
 }
 
 interface Transaction {
@@ -547,8 +551,8 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(customFunctionOperations.deployComponent)
 	);
 	opFuncMap.set(
-		terms.OPERATIONS_ENUM.REVERT_COMPONENT,
-		new OperationFunctionObject(customFunctionOperations.revertComponent)
+		terms.OPERATIONS_ENUM.COMPONENT_DEPLOY_PHASE,
+		new OperationFunctionObject(customFunctionOperations.componentDeployPhase)
 	);
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS,

@@ -1,21 +1,18 @@
 /**
- * Deployment tracking — peer-side branch.
+ * Deployment tracking — peer-operation authorization boundary.
  *
- * In a real multi-node deploy, the origin strips `req.payload` before `replicateOperation`
- * and the peer reads the tarball from the replicated `hdb_deployment.payload_blob` row
- * attribute instead. This test exercises that **peer-side branch** in isolation on a
- * single node by:
+ * In a real multi-node deploy, the origin sends a private `component_deploy_phase`
+ * operation and the peer reads the tarball from the replicated
+ * `hdb_deployment.payload_blob` row. The authorization-bypass context that admits that
+ * operation exists only around trusted replication dispatch, so an HTTP caller must not
+ * be able to impersonate a peer with the legacy `_deploymentId` marker. This test:
  *
  *   1. Doing a normal deploy to populate an `hdb_deployment` row with a `payload_blob`.
- *   2. Submitting a second `deploy_component` operation with `_deploymentId` set to that
- *      row's id and **no** `payload` field — the same shape origin produces for peers.
- *   3. Asserting the deploy completes successfully — meaning the peer-side branch in
- *      `deployComponent` found the row, streamed `payload_blob`, and ran prepare/install/load
- *      from the blob bytes.
+ *   2. Submitting a second public `deploy_component` operation with `_deploymentId` set.
+ *   3. Asserting validation rejects the caller-controlled internal marker.
  *
- * The true 3-node test (verifies BLOB_CHUNK replication actually delivers the row to
- * peers, and that `peer_results` is populated) lives in harper-pro, where the actual
- * `replicateOperation` is implemented. This OSS test only verifies the handler wiring.
+ * The true 3-node test (including the trusted peer operation, BLOB_CHUNK delivery, and
+ * `peer_results`) lives in harper-pro, where `replicateOperation` is implemented.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -86,7 +83,7 @@ async function callOperation(
 	return { status: res.status, body: parsed, rawText: text };
 }
 
-suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
+suite('Deployment tracking — peer-operation authorization boundary', (ctx: ContextWithHarper) => {
 	let fixtureDir: string;
 	let seedDeploymentId: string;
 
@@ -134,46 +131,14 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 		ok(got.body.payload_hash, 'seed row should have a sha256 payload_hash');
 	});
 
-	// On Bun the deploy hangs after extraction when reading a Web ReadableStream from a
-	// file-backed blob inside the same Harper process — same code passes on Node v22/v24
-	// across Linux and Windows. Skipping for now; the harper-pro 3-node cluster test
-	// (HarperFast/harper-pro#221) covers the same code path end-to-end with real replication.
-	const skipOnBun = process.env.HARPER_RUNTIME === 'bun';
-	test(
-		'peer-side branch: deploy_component with _deploymentId + no payload uses the row blob',
-		{ skip: skipOnBun },
-		async () => {
-			// Simulate the operation shape origin produces for peers via `replicateOperation`:
-			// `_deploymentId` set, no `payload`, no multipart. The handler should detect this is a
-			// replicated execution and source the tarball from the row's payload_blob.
-			const peerProject = 'peer-branch-replay-application';
-			const response = await callOperation(ctx, {
-				operation: 'deploy_component',
-				project: peerProject,
-				restart: false,
-				_deploymentId: seedDeploymentId,
-			});
-			strictEqual(response.status, 200, `peer-side deploy should succeed; got ${response.status}: ${response.rawText}`);
-
-			// Confirm the component was actually written on disk (peer code path ran extraction
-			// from the row's payload_blob and not from a missing req.payload).
-			const fetched = await fetch(`${ctx.harper.operationsAPIURL}/${peerProject}/`, {
-				headers: {
-					Authorization:
-						'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64'),
-				},
-			});
-			// The component exposes nothing routable, but a 404 from the component (vs. a 503/connection
-			// failure) confirms it loaded — Harper only routes to deployed component names.
-			ok(
-				fetched.status === 404 || fetched.status === 200,
-				`expected component to be reachable (any 200/404 from the loaded component), got ${fetched.status}`
-			);
-		}
-	);
-
-	// Note: the bogus-_deploymentId-id timeout case isn't covered here because the
-	// awaitDeploymentRow 120s default would balloon test time. The timeout path (and the
-	// per-deploy deployment_timeout override) is exercised by the unit tests for
-	// awaitDeploymentRow directly.
+	test('public deploy_component rejects the legacy _deploymentId peer marker', async () => {
+		const response = await callOperation(ctx, {
+			operation: 'deploy_component',
+			project: 'peer-branch-replay-application',
+			restart: false,
+			_deploymentId: seedDeploymentId,
+		});
+		strictEqual(response.status, 400, `internal marker should be rejected; got: ${response.rawText}`);
+		strictEqual(response.body.error, "'_deploymentId' is not allowed");
+	});
 });

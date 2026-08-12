@@ -153,6 +153,22 @@ async function targetSupportsStreamingDeploy(options: any): Promise<boolean> {
 	}
 }
 
+async function targetSupportsStagedDeploy(options: any): Promise<boolean> {
+	try {
+		const probeOptions = {
+			...options,
+			headers: { ...options.headers, Accept: 'application/json' },
+			timeout: CLI_OPERATION_TIMEOUT_MS,
+		};
+		delete probeOptions.streamResponse;
+		const response = await httpRequest(probeOptions, { operation: 'registration_info' });
+		if (response.statusCode !== 200 || !response.body) return false;
+		return JSON.parse(response.body)?.capabilities?.componentDeployTwoPhase === 1;
+	} catch {
+		return false;
+	}
+}
+
 // Wraps the local packaging stream so an fs error while tar'ing up the payload (e.g. a file
 // vanishing after the pre-deploy scan, or a permissions failure reading the project tree)
 // surfaces as a descriptive packaging error instead of a raw fs error code. Without this, an
@@ -283,7 +299,11 @@ export { cliOperations, buildRequest, redactCredentials, refreshExpiredOperation
 // version. Nothing to package when a `package` identifier is given (the server fetches it) or when
 // activating a previously-staged deployment (`deployment_id`, i.e. `harper activate`).
 const packageCwdForUpload = async (req) => {
-	if (req.package || req.deployment_id) {
+	if (req.deployment_id) {
+		req.project ||= path.basename(process.cwd());
+		return;
+	}
+	if (req.package) {
 		return;
 	}
 
@@ -467,8 +487,6 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		console.error(verbError);
 		process.exit(1);
 	}
-	delete req._verb; // CLI-internal marker; never send it in the request body
-	await PREPARE_OPERATION[req.operation]?.(req);
 	try {
 		let options = target ?? {
 			protocol: 'http:',
@@ -506,6 +524,20 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		if (target && !options.headers.Authorization && req.username && req.password) {
 			options.headers.Authorization = basicAuthHeader(req.username, req.password);
 		}
+		const requestsStagedDeploy =
+			req._verb !== undefined ||
+			req._cliVerb !== undefined ||
+			req.activate === false ||
+			req.deployment_id !== undefined ||
+			req.two_phase === true;
+		if (target && requestsStagedDeploy && !(await targetSupportsStagedDeploy(options))) {
+			throw new Error(
+				`Target Harper does not advertise staged-deploy support; refusing the request because an older server could deploy it live`
+			);
+		}
+		delete req._verb;
+		delete req._cliVerb;
+		await PREPARE_OPERATION[req.operation]?.(req);
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the
 		// legacy JSON deploy if it predates 5.1. Local (domain-socket) deploys always
@@ -540,7 +572,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		// One renderer owns the (future) upload bar and the SSE event rendering for a
 		// multipart deploy. Created here so the upload-stream tap and the SSE consumer
 		// below share the same instance.
-		const renderer = req._multipart ? new DeployRenderer({ uploadTotal: req._uploadSizeEstimate ?? 0 }) : null;
+		const renderer = useSse ? new DeployRenderer({ uploadTotal: req._uploadSizeEstimate ?? 0 }) : null;
 		let body;
 		if (req._multipart) {
 			// Create the package stream here — after the renderer exists — so we can pass

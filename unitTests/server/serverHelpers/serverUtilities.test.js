@@ -570,9 +570,11 @@ describe('Test serverUtilities.js module ', () => {
 	describe('registerOperation permission seam', function () {
 		const { server } = require('#src/server/Server');
 		const op_auth = require('#src/utility/operation_authorization');
+		const { isOperationAuthorizationBypassed } = require('#src/server/serverHelpers/operationAuthorizationState');
 		const { validateOperations } = require('#src/utility/operationPermissions');
 		const SU_OP = 'test_registered_su_op';
 		const OPEN_OP = 'test_registered_open_op';
+		const AUTH_STATE_OP = 'test_internal_authorization_state';
 
 		// A non-super_user request JSON for a given op, optionally carrying an `operations` grant.
 		const nonSuRequest = (op, operations) => ({
@@ -596,7 +598,15 @@ describe('Test serverUtilities.js module ', () => {
 			// Keep the process-global registries clean — these test-only ops shouldn't leak into other
 			// suites. registerOperation touches three globals (the op-function map plus verifyPerms'
 			// requiredPermissions and the grantable-ops set), so undo all three, not just the map.
-			for (const op of [SU_OP, OPEN_OP, 'test_name_pinning_op', 'shared_op_a', 'shared_op_b', 'dyn_grantable_op']) {
+			for (const op of [
+				SU_OP,
+				OPEN_OP,
+				AUTH_STATE_OP,
+				'test_name_pinning_op',
+				'shared_op_a',
+				'shared_op_b',
+				'dyn_grantable_op',
+			]) {
 				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
 				op_auth.unregisterOperationPermission(op);
 			}
@@ -659,6 +669,19 @@ describe('Test serverUtilities.js module ', () => {
 
 		it('allows a non-super_user whose role grants the op via the operations allowlist (SU-bypass)', function () {
 			assert.equal(op_auth.verifyPerms(nonSuRequest(SU_OP, [SU_OP]), SU_OP), null);
+		});
+
+		it('exposes trusted authorization bypass through server.operation without leaking it afterward', async function () {
+			server.registerOperation({
+				name: AUTH_STATE_OP,
+				execute: async () => ({ bypassed: isOperationAuthorizationBypassed() }),
+				requiresSuperUser: true,
+			});
+
+			const result = await server.operation({ operation: AUTH_STATE_OP }, { user: { name: 'cluster-peer' } }, false);
+
+			assert.deepEqual(result, { bypassed: true });
+			assert.equal(isOperationAuthorizationBypassed(), false);
 		});
 	});
 

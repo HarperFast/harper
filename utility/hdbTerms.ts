@@ -318,17 +318,10 @@ export const OPERATIONS_ENUM = {
 	PACKAGE_CUSTOM_FUNCTION_PROJECT: 'package_custom_function_project',
 	DEPLOY_CUSTOM_FUNCTION_PROJECT: 'deploy_custom_function_project',
 	PACKAGE_COMPONENT: 'package_component',
-	// deploy_component runs a two-phase deploy internally (stage the incoming version into a hidden
-	// dir cluster-wide, gate on every node, then atomically swap it live). The two phases are fanned
-	// out to peers as deploy_component tagged with an internal `_phase` marker rather than separate
-	// public operations. Public knobs: `activate: false` (stage-and-stop, returns a staged
-	// deployment_id) and `deployment_id` (activate a previously-staged deployment). See
-	// components/Application.ts (stageApplication/activateApplication).
+	// deploy_component runs a two-phase deploy internally. Peer phases use a distinct operation so
+	// older nodes fail closed instead of interpreting an unknown phase field as a one-shot deploy.
 	DEPLOY_COMPONENT: 'deploy_component',
-	// Swap a component's live version back to its retained previous version, cluster-wide. Backs
-	// customer-driven rollback (deploy → test → revert) and swap-back on a partially-failed activate.
-	// See components/Application.ts (revertApplication).
-	REVERT_COMPONENT: 'revert_component',
+	COMPONENT_DEPLOY_PHASE: 'component_deploy_phase',
 	READ_TRANSACTION_LOG: 'read_transaction_log',
 	DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
 	INSTALL_NODE_MODULES: 'install_node_modules',

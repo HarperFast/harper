@@ -1,5 +1,12 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
+import {
+	addConfig,
+	deleteConfigFromFile,
+	getConfigObj,
+	getConfigValue,
+	getConfigPath,
+	readConfigFile,
+} from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
@@ -501,6 +508,11 @@ const MAX_INSTALL_COMMANDS = 2;
 //     (those are rooted at each live component dir), so building here triggers no
 //     restart-on-change storm and needs no deploy:start watcher suppression.
 export const DEPLOY_STAGING_DIR = '.deploy-staging';
+export const DEPLOY_ACTIVATION_DIR = '.deploy-activating';
+const STAGED_COMPLETE_MARKER = '.complete';
+const ACTIVATION_BACKUP_PREFIX = '.previous-';
+const ACTIVATION_NEW_PREFIX = '.new-';
+const DEPLOYMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // Hidden directory under the components root that RETAINS the immediately-previous live version of a
 // component (`.deploy-previous/<name>`) after an activate swap, so it can be swapped back by
@@ -1353,7 +1365,7 @@ export async function prepareApplication(application: Application) {
  * @param application The application to stage.
  * @returns The absolute path of the staging directory the incoming version was built into.
  */
-export async function stageApplication(application: Application): Promise<string> {
+async function _legacyStageApplication(application: Application): Promise<string> {
 	application.useStagingBuildDir();
 	// Start from a clean slate so a retried stage (same deployment id) can't inherit a half-built
 	// tree from a previous attempt.
@@ -1521,7 +1533,7 @@ export async function revertApplication(application: Application): Promise<void>
  * staging tree and tears down any transient credential state. The live component directory is never
  * touched. Safe to call whether or not staging ever ran.
  */
-export async function discardStagedApplication(application: Application): Promise<void> {
+async function _legacyDiscardStagedApplication(application: Application): Promise<void> {
 	try {
 		await application.cleanupGitCredentialSession();
 	} catch {
@@ -1536,6 +1548,387 @@ export async function discardStagedApplication(application: Application): Promis
 	await rm(application.stagingDirPath, { recursive: true, force: true }).catch((err) =>
 		logger.trace?.(`Failed to discard ${application.name} staging directory: ${err.message}`)
 	);
+}
+
+export function stagedApplicationPath(componentDirPath: string, deploymentId: string): string {
+	if (!DEPLOYMENT_ID_PATTERN.test(deploymentId)) throw new Error(`Invalid deployment id '${deploymentId}'`);
+	return join(dirname(componentDirPath), DEPLOY_STAGING_DIR, deploymentId, basename(componentDirPath));
+}
+
+async function ensureSecureDirectory(directory: string, create: boolean, description: string): Promise<boolean> {
+	let directoryStat;
+	try {
+		directoryStat = await lstat(directory);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		if (!create) return false;
+		await mkdir(directory, { recursive: true, mode: 0o700 });
+		directoryStat = await lstat(directory);
+	}
+	if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+		throw new Error(`${description} is not a directory: ${directory}`);
+	}
+	return true;
+}
+
+async function secureStagingDeploymentDirectory(
+	componentDirPath: string,
+	deploymentId: string,
+	create: boolean
+): Promise<string | undefined> {
+	const stagingDirPath = stagedApplicationPath(componentDirPath, deploymentId);
+	const deploymentDirPath = dirname(stagingDirPath);
+	const stagingRoot = dirname(deploymentDirPath);
+	if (!(await ensureSecureDirectory(stagingRoot, create, 'Component deploy staging path'))) return undefined;
+	if (!(await ensureSecureDirectory(deploymentDirPath, create, 'Component deploy staging path'))) return undefined;
+	return deploymentDirPath;
+}
+
+/** Build and install a candidate under .deploy-staging without mutating the live component tree. */
+export async function stageApplication(application: Application, deploymentId: string): Promise<string> {
+	const liveDirPath = application.dirPath;
+	const stagingDirPath = stagedApplicationPath(liveDirPath, deploymentId);
+	application.stagingId = deploymentId;
+	application.useStagingBuildDir();
+	try {
+		await withComponentPreparationLock(liveDirPath, async () => {
+			const deploymentDirPath = await secureStagingDeploymentDirectory(liveDirPath, deploymentId, true);
+			await rm(stagingDirPath, { recursive: true, force: true });
+			await rm(join(deploymentDirPath!, STAGED_COMPLETE_MARKER), { force: true });
+			try {
+				await application.writeTransientNpmrc();
+				try {
+					await application.startGitCredentialSession();
+					await extractApplication(application);
+				} finally {
+					await application.cleanupGitCredentialSession();
+				}
+				await installApplication(application);
+				await writeFile(join(deploymentDirPath!, STAGED_COMPLETE_MARKER), '', { flag: 'wx', mode: 0o600 });
+			} catch (error) {
+				await rm(stagingDirPath, { recursive: true, force: true }).catch(() => {});
+				await rm(join(deploymentDirPath!, STAGED_COMPLETE_MARKER), { force: true }).catch(() => {});
+				throw error;
+			} finally {
+				await application.cleanupTransientNpmrc();
+			}
+		});
+	} finally {
+		application.useLiveBuildDir();
+	}
+	await pruneStagedBuilds(application.name, deploymentId, getStagingRetentionMaxCount());
+	return stagingDirPath;
+}
+
+function activationStagingDirectory(componentDirPath: string): string {
+	return join(dirname(componentDirPath), DEPLOY_ACTIVATION_DIR, basename(componentDirPath));
+}
+
+async function activationArtifacts(componentDirPath: string, deploymentId: string): Promise<string[]> {
+	const directory = activationStagingDirectory(componentDirPath);
+	let entries;
+	try {
+		entries = await readdir(directory, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+		throw error;
+	}
+	return entries
+		.filter(
+			(entry) =>
+				entry.name.startsWith(`${ACTIVATION_BACKUP_PREFIX}${deploymentId}`) ||
+				entry.name === `${ACTIVATION_NEW_PREFIX}${deploymentId}`
+		)
+		.map((entry) => join(directory, entry.name));
+}
+
+export async function hasCompleteStagedApplication(stagingDirPath: string): Promise<boolean> {
+	const deploymentDirPath = dirname(stagingDirPath);
+	const [stagingRootStat, deploymentStat, stagedStat, stagedTargetStat, markerStat] = await Promise.all([
+		lstat(dirname(deploymentDirPath)).catch(() => undefined),
+		lstat(deploymentDirPath).catch(() => undefined),
+		lstat(stagingDirPath).catch(() => undefined),
+		stat(stagingDirPath).catch(() => undefined),
+		lstat(join(deploymentDirPath, STAGED_COMPLETE_MARKER)).catch(() => undefined),
+	]);
+	return (
+		!!stagingRootStat?.isDirectory() &&
+		!stagingRootStat.isSymbolicLink() &&
+		!!deploymentStat?.isDirectory() &&
+		!deploymentStat.isSymbolicLink() &&
+		!!stagedStat &&
+		(stagedStat.isDirectory() || stagedStat.isSymbolicLink()) &&
+		!!stagedTargetStat?.isDirectory() &&
+		!!markerStat?.isFile() &&
+		!markerStat.isSymbolicLink()
+	);
+}
+
+/** Atomically replace the live component and compensate if persistent activation work fails. */
+export async function activateStagedApplication(
+	application: Application,
+	deploymentId: string,
+	hooks: {
+		beforeSwap?: () => Promise<void>;
+		beforeCommit?: () => Promise<void>;
+		onRollback?: () => Promise<void>;
+	} = {}
+): Promise<void> {
+	const stagingDirPath = stagedApplicationPath(application.dirPath, deploymentId);
+	await withComponentPreparationLock(application.dirPath, async () => {
+		await secureStagingDeploymentDirectory(application.dirPath, deploymentId, false);
+		if (!(await hasCompleteStagedApplication(stagingDirPath))) {
+			const stagedStat = await lstat(stagingDirPath).catch(() => undefined);
+			if (!stagedStat) {
+				throw new Error(`Cannot activate ${application.name}: deployment '${deploymentId}' has no staged build`);
+			}
+			throw new Error(`Cannot activate ${application.name}: staged build is incomplete`);
+		}
+
+		const activationDir = activationStagingDirectory(application.dirPath);
+		await ensureSecureDirectory(dirname(activationDir), true, 'Component activation staging path');
+		await ensureSecureDirectory(activationDir, true, 'Component activation staging path');
+		await broadcastDeployStart(application.name);
+		let backupPath: string | undefined;
+		let newMarkerPath: string | undefined;
+		let swapped = false;
+		try {
+			await hooks.beforeSwap?.();
+			const existingArtifacts = await activationArtifacts(application.dirPath, deploymentId);
+			backupPath = existingArtifacts.find((candidate) => basename(candidate).startsWith(ACTIVATION_BACKUP_PREFIX));
+			newMarkerPath = existingArtifacts.find((candidate) => basename(candidate).startsWith(ACTIVATION_NEW_PREFIX));
+			if (!backupPath && !newMarkerPath) {
+				try {
+					await lstat(application.dirPath);
+					application.isNewComponent = false;
+					backupPath = join(
+						activationDir,
+						`${ACTIVATION_BACKUP_PREFIX}${deploymentId}-${Date.now()}-${process.pid}-${randomUUID()}`
+					);
+					await rename(application.dirPath, backupPath);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+					application.isNewComponent = true;
+					newMarkerPath = join(activationDir, `${ACTIVATION_NEW_PREFIX}${deploymentId}`);
+					try {
+						await writeFile(newMarkerPath, '', { flag: 'wx', mode: 0o600 });
+					} catch (markerError) {
+						if ((markerError as NodeJS.ErrnoException).code !== 'EEXIST') throw markerError;
+						const markerStat = await lstat(newMarkerPath);
+						if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
+							throw new Error(`Component activation marker is not a regular file: ${newMarkerPath}`);
+						}
+					}
+				}
+			}
+			await rename(stagingDirPath, application.dirPath);
+			swapped = true;
+			await hooks.beforeCommit?.();
+		} catch (error) {
+			const rollbackErrors: unknown[] = [];
+			if (swapped) {
+				try {
+					await rename(application.dirPath, stagingDirPath);
+				} catch (rollbackError) {
+					rollbackErrors.push(rollbackError);
+				}
+			}
+			if (backupPath) {
+				try {
+					await rename(backupPath, application.dirPath);
+				} catch (rollbackError) {
+					rollbackErrors.push(rollbackError);
+				}
+			}
+			if (newMarkerPath)
+				await rm(newMarkerPath, { force: true }).catch((rollbackError) => rollbackErrors.push(rollbackError));
+			try {
+				await hooks.onRollback?.();
+			} catch (rollbackError) {
+				rollbackErrors.push(rollbackError);
+			}
+			if (rollbackErrors.length) {
+				throw new AggregateError(
+					[error, ...rollbackErrors],
+					`Failed to activate and fully restore ${application.name}`
+				);
+			}
+			throw error;
+		} finally {
+			broadcastDeployEnd(application.name);
+		}
+		if (backupPath) await rm(backupPath, { recursive: true, force: true });
+		if (newMarkerPath) await rm(newMarkerPath, { force: true });
+		await rmdir(activationDir).catch((error) => {
+			if (!['ENOENT', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+		});
+	});
+	await rm(dirname(stagingDirPath), { recursive: true, force: true }).catch((error) =>
+		logger.warn(`Failed to remove committed deploy staging for ${application.name}:`, errorForLog(error))
+	);
+}
+
+export async function discardStagedApplication(componentDirPath: string, deploymentId: string): Promise<void> {
+	const stagingDirPath = stagedApplicationPath(componentDirPath, deploymentId);
+	await withComponentPreparationLock(componentDirPath, async () => {
+		if (!(await secureStagingDeploymentDirectory(componentDirPath, deploymentId, false))) return;
+		await rm(dirname(stagingDirPath), { recursive: true, force: true });
+	});
+}
+
+export async function discardProjectStagedApplications(componentDirPath: string): Promise<void> {
+	const stagingRoot = join(dirname(componentDirPath), DEPLOY_STAGING_DIR);
+	if (!(await ensureSecureDirectory(stagingRoot, false, 'Component deploy staging path'))) return;
+	for (const entry of await readdir(stagingRoot, { withFileTypes: true })) {
+		if (!entry.isDirectory() || !DEPLOYMENT_ID_PATTERN.test(entry.name)) continue;
+		const deploymentDirPath = join(stagingRoot, entry.name);
+		if (existsSync(join(deploymentDirPath, basename(componentDirPath)))) {
+			await rm(deploymentDirPath, { recursive: true, force: true });
+		}
+	}
+}
+
+export async function discardProjectActivationArtifacts(componentDirPath: string): Promise<void> {
+	const activationRoot = join(dirname(componentDirPath), DEPLOY_ACTIVATION_DIR);
+	if (!(await ensureSecureDirectory(activationRoot, false, 'Component activation staging path'))) return;
+	await rm(activationStagingDirectory(componentDirPath), { recursive: true, force: true });
+	await rmdir(activationRoot).catch((error) => {
+		if (!['ENOENT', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+	});
+}
+
+type DeploymentLookup = (deploymentId: string) => Promise<Record<string, any> | undefined>;
+
+function safeComponentName(name: unknown): name is string {
+	return typeof name === 'string' && /^[a-zA-Z0-9_-]+$/.test(name);
+}
+
+function activationArtifactDeploymentId(name: string): string | undefined {
+	const prefix = name.startsWith(ACTIVATION_BACKUP_PREFIX)
+		? ACTIVATION_BACKUP_PREFIX
+		: name.startsWith(ACTIVATION_NEW_PREFIX)
+			? ACTIVATION_NEW_PREFIX
+			: undefined;
+	if (!prefix) return undefined;
+	const deploymentId = name.slice(prefix.length, prefix.length + 36);
+	return DEPLOYMENT_ID_PATTERN.test(deploymentId) ? deploymentId : undefined;
+}
+
+async function removeActivationArtifacts(componentDirPath: string, deploymentId: string): Promise<void> {
+	for (const artifact of await activationArtifacts(componentDirPath, deploymentId)) {
+		await rm(artifact, { recursive: true, force: true });
+	}
+	await rmdir(activationStagingDirectory(componentDirPath)).catch(() => {});
+}
+
+export async function reconcileStagedApplicationArtifacts(
+	componentsRootDirPath: string,
+	getDeployment: DeploymentLookup,
+	persistActivation: (row: Record<string, any>) => Promise<void>
+): Promise<{ recovered: string[]; removed: string[]; errors: Map<string, Error> }> {
+	const recovered = new Set<string>();
+	const removed: string[] = [];
+	const errors = new Map<string, Error>();
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	let deploymentEntries = [];
+	try {
+		if (await ensureSecureDirectory(stagingRoot, false, 'Component deploy staging path')) {
+			deploymentEntries = await readdir(stagingRoot, { withFileTypes: true });
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+	}
+
+	for (const entry of deploymentEntries) {
+		const deploymentPath = join(stagingRoot, entry.name);
+		if (!entry.isDirectory() || !DEPLOYMENT_ID_PATTERN.test(entry.name)) {
+			await rm(deploymentPath, { recursive: true, force: true });
+			removed.push(entry.name);
+			continue;
+		}
+		try {
+			let row = await getDeployment(entry.name);
+			if (!row || !safeComponentName(row.project)) {
+				await rm(deploymentPath, { recursive: true, force: true });
+				removed.push(entry.name);
+				continue;
+			}
+			const componentDirPath = join(componentsRootDirPath, row.project);
+			if (!['staged', 'activating'].includes(row.status)) {
+				let shouldRemove = false;
+				await withComponentPreparationLock(componentDirPath, async () => {
+					row = await getDeployment(entry.name);
+					shouldRemove = !row || !safeComponentName(row.project) || !['staged', 'activating'].includes(row.status);
+					if (shouldRemove) await rm(deploymentPath, { recursive: true, force: true });
+				});
+				if (shouldRemove) {
+					removed.push(entry.name);
+					continue;
+				}
+			}
+			const stagedPath = stagedApplicationPath(componentDirPath, entry.name);
+			if (row.status === 'staged') {
+				if (!(await hasCompleteStagedApplication(stagedPath))) {
+					throw new Error(`Staged deployment '${entry.name}' has no valid component tree for '${row.project}'`);
+				}
+				continue;
+			}
+			if (await hasCompleteStagedApplication(stagedPath)) {
+				await activateStagedApplication(new Application({ name: row.project }), entry.name, {
+					beforeCommit: () => persistActivation(row),
+				});
+			} else {
+				const liveStat = await lstat(componentDirPath).catch(() => undefined);
+				if (!liveStat?.isDirectory() || liveStat.isSymbolicLink()) {
+					throw new Error(`Interrupted activation '${entry.name}' has neither a staged nor live component tree`);
+				}
+				await persistActivation(row);
+			}
+			await removeActivationArtifacts(componentDirPath, entry.name);
+			recovered.add(entry.name);
+		} catch (error) {
+			errors.set(entry.name, error instanceof Error ? error : new Error(String(error)));
+		}
+	}
+
+	const activationRoot = join(componentsRootDirPath, DEPLOY_ACTIVATION_DIR);
+	if (await ensureSecureDirectory(activationRoot, false, 'Component activation staging path')) {
+		for (const projectEntry of await readdir(activationRoot, { withFileTypes: true })) {
+			const projectPath = join(activationRoot, projectEntry.name);
+			if (!projectEntry.isDirectory() || !safeComponentName(projectEntry.name)) {
+				await rm(projectPath, { recursive: true, force: true });
+				continue;
+			}
+			for (const artifact of await readdir(projectPath, { withFileTypes: true })) {
+				const deploymentId = activationArtifactDeploymentId(artifact.name);
+				const artifactPath = join(projectPath, artifact.name);
+				if (!deploymentId) {
+					await rm(artifactPath, { recursive: true, force: true });
+					continue;
+				}
+				const row = await getDeployment(deploymentId).catch(() => undefined);
+				const livePath = join(componentsRootDirPath, projectEntry.name);
+				const liveStat = await lstat(livePath).catch(() => undefined);
+				if (row?.status === 'activating' && row.project === projectEntry.name && liveStat?.isDirectory()) {
+					try {
+						await persistActivation(row);
+						await rm(artifactPath, { recursive: true, force: true });
+						recovered.add(deploymentId);
+					} catch (error) {
+						errors.set(deploymentId, error instanceof Error ? error : new Error(String(error)));
+					}
+				} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveStat) {
+					await rename(artifactPath, livePath);
+				} else {
+					await rm(artifactPath, { recursive: true, force: true });
+				}
+			}
+			await rmdir(projectPath).catch(() => {});
+		}
+		await rmdir(activationRoot).catch(() => {});
+	}
+	await rmdir(stagingRoot).catch(() => {});
+	return { recovered: [...recovered], removed, errors };
 }
 
 /**
@@ -1672,6 +2065,95 @@ async function persistApplicationLock(
 		});
 	applicationLockWriteQueues.set(harperApplicationLockPath, next);
 	await next;
+}
+
+function applicationConfigFromActivationSpec(spec: Record<string, any>): ApplicationConfig | undefined {
+	if (!spec.package) return undefined;
+	const applicationConfig: ApplicationConfig = { package: spec.package };
+	if (spec.install_command !== null || spec.install_timeout !== null || spec.install_allow_scripts !== null) {
+		applicationConfig.install = {};
+		if (spec.install_command !== null) applicationConfig.install.command = spec.install_command;
+		if (spec.install_timeout !== null) applicationConfig.install.timeout = spec.install_timeout;
+		if (spec.install_allow_scripts !== null) applicationConfig.install.allowInstallScripts = spec.install_allow_scripts;
+	}
+	if (spec.urlPath !== null) applicationConfig.urlPath = spec.urlPath;
+	if (spec.host !== null) applicationConfig.host = spec.host;
+	if (spec.credentials?.length) applicationConfig.credentials = spec.credentials;
+	return applicationConfig;
+}
+
+async function readApplicationLock(lockPath: string): Promise<{ applications: Record<string, ApplicationConfig> }> {
+	try {
+		const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+		if (!lock.applications || typeof lock.applications !== 'object') lock.applications = {};
+		return lock;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { applications: {} };
+		throw error;
+	}
+}
+
+/** Persist a runtime activation into the boot-time application lock, or remove it during compensation. */
+export async function updateApplicationLockEntry(
+	name: string,
+	applicationConfig: ApplicationConfig | undefined
+): Promise<void> {
+	const lockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
+	const previous = applicationLockWriteQueues.get(lockPath) ?? Promise.resolve();
+	const next = previous
+		.catch(() => {})
+		.then(async () => {
+			const lock = await readApplicationLock(lockPath);
+			if (applicationConfig === undefined) delete lock.applications[name];
+			else lock.applications[name] = applicationConfig;
+			const tempPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+			await writeFile(tempPath, JSON.stringify(lock, null, 2), 'utf8');
+			await rename(tempPath, lockPath);
+		});
+	applicationLockWriteQueues.set(lockPath, next);
+	await next;
+}
+
+async function getApplicationLockEntry(name: string): Promise<ApplicationConfig | undefined> {
+	const lockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
+	const previous = applicationLockWriteQueues.get(lockPath) ?? Promise.resolve();
+	let entry: ApplicationConfig | undefined;
+	const read = previous
+		.catch(() => {})
+		.then(async () => {
+			entry = (await readApplicationLock(lockPath)).applications[name];
+		});
+	applicationLockWriteQueues.set(lockPath, read);
+	await read;
+	return entry;
+}
+
+export async function createApplicationActivationTransaction(
+	project: string,
+	spec: Record<string, any>
+): Promise<{ commit(): Promise<void>; rollback(): Promise<void> }> {
+	const nextConfig = applicationConfigFromActivationSpec(spec);
+	if (!nextConfig) return { commit: async () => {}, rollback: async () => {} };
+	let previousConfig: ApplicationConfig | undefined;
+	let previousLockConfig: ApplicationConfig | undefined;
+	let commitStarted = false;
+	return {
+		async commit() {
+			if (commitStarted) return;
+			previousConfig = readConfigFile()?.[project];
+			previousLockConfig = await getApplicationLockEntry(project);
+			commitStarted = true;
+			await addConfig(project, nextConfig);
+			await updateApplicationLockEntry(project, nextConfig);
+		},
+		async rollback() {
+			if (!commitStarted) return;
+			if (previousConfig === undefined) deleteConfigFromFile([project]);
+			else await addConfig(project, previousConfig);
+			await updateApplicationLockEntry(project, previousLockConfig);
+			commitStarted = false;
+		},
+	};
 }
 
 /**

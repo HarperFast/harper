@@ -1,13 +1,6 @@
 'use strict';
 
-// Operation-level tests for the two-phase deploy handlers: stage_component, activate_component, and
-// deploy_component (both the two-phase default and the two_phase:false one-shot fallback). These run
-// the real handlers against a real temp filesystem with a real tarball payload — no stubbing — in the
-// deployStaging.test.js style (AGENTS.md: new tests use plain `assert` against real modules, no
-// sinon/rewire). Payload deploys are used throughout so nothing reaches the component loader (a
-// `package` deploy's protected-name guard would), and no test requests a restart.
-
-const assert = require('node:assert');
+const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const { existsSync } = require('node:fs');
 const os = require('node:os');
@@ -19,398 +12,686 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const operations = require('#src/components/operations');
-const { DEPLOY_STAGING_DIR, Application, stageApplication } = require('#src/components/Application');
+const { DEPLOY_STAGING_DIR, DEPLOY_ACTIVATION_DIR, discardStagedApplication } = require('#src/components/Application');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { server } = require('#src/server/Server');
 const { databases } = require('#src/resources/databases');
-const { SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
-const { getConfigPath, getConfiguration, getConfigFilePath } = require('#src/config/configUtils');
-const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { SYSTEM_TABLE_NAMES, CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { getConfigPath, readConfigFile } = require('#src/config/configUtils');
+const environment = require('#src/utility/environment/environmentManager');
+const { runWithOperationAuthorizationBypass } = require('#src/server/serverHelpers/operationAuthorizationState');
+const manageThreads = require('#src/server/threads/manageThreads');
 
-const DEPLOYMENT_TABLE = SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 const COMPONENTS_ROOT = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+const DEPLOYMENT_TABLE = SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 
-// Pack a directory's CONTENTS into a gzipped tar Buffer, the shape a deploy payload takes.
-function packDirectory(dir) {
+function packDirectory(directory) {
 	return new Promise((resolve, reject) => {
 		const chunks = [];
 		tarfs
-			.pack(dir)
+			.pack(directory)
 			.pipe(zlib.createGzip())
-			.on('data', (c) => chunks.push(c))
+			.on('data', (chunk) => chunks.push(chunk))
 			.on('end', () => resolve(Buffer.concat(chunks)))
 			.on('error', reject);
 	});
 }
 
-// A component source that already contains node_modules, so installApplication short-circuits and no
-// npm/network is needed.
-async function makeComponentPayload(marker) {
-	const src = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-op-src-'));
-	await fs.writeFile(path.join(src, 'package.json'), JSON.stringify({ name: 'op-fixture', version: '1.0.0' }));
-	await fs.writeFile(path.join(src, 'index.js'), `module.exports = ${JSON.stringify(marker)};\n`);
-	await fs.mkdir(path.join(src, 'node_modules'), { recursive: true });
-	await fs.writeFile(path.join(src, 'node_modules', '.marker'), marker);
-	const payload = await packDirectory(src);
-	await fs.rm(src, { recursive: true, force: true });
+async function makePayload(marker, version = marker, withNodeModules = true) {
+	const source = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-phase-op-'));
+	await fs.writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'phase-op', version }));
+	await fs.writeFile(path.join(source, 'index.js'), `module.exports = ${JSON.stringify(marker)};\n`);
+	if (withNodeModules) await fs.mkdir(path.join(source, 'node_modules'), { recursive: true });
+	const payload = await packDirectory(source);
+	await fs.rm(source, { recursive: true, force: true });
 	return payload;
 }
 
-const readIndex = (dir) => fs.readFile(path.join(dir, 'index.js'), 'utf8');
-
-// componentLoader reaches the private `@harperfast/skills` dependency, which is absent from some local
-// checkouts. Only the `package`-deploy path touches it (via the protected-core-name guard), so probe
-// once and let that one test skip rather than fail on a missing dependency.
-function componentLoaderAvailable() {
-	try {
-		require('#src/components/componentLoader');
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-describe('deploy operations: stage_component / activate_component / deploy_component', function () {
+describe('deploy_component two-phase orchestration', function () {
 	this.timeout(30_000);
+	const rows = new Map();
+	let priorTable;
+	let priorReplicate;
+	let priorSafeMode;
+	let sequence = 0;
+	const names = [];
 
 	before(async () => {
-		await fs.mkdir(COMPONENTS_ROOT, { recursive: true });
+		priorSafeMode = process.env.HARPER_SAFE_MODE;
+		process.env.HARPER_SAFE_MODE = 'true';
+		// The first component operation completes lazy server initialization, which replaces
+		// databases.system. Run it before installing the table seam used by these tests.
+		const warmupProject = name();
+		const warmup = await operations.deployComponent({
+			project: warmupProject,
+			payload: await makePayload('warmup'),
+			activate: false,
+		});
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, warmup.deployment_id), {
+			recursive: true,
+			force: true,
+		});
+		if (!databases.system) databases.system = {};
+		priorTable = databases.system[DEPLOYMENT_TABLE];
 	});
 
-	let counter = 0;
-	const names = [];
-	function freshName() {
-		const name = `op_test_${process.pid}_${counter++}`;
-		names.push(name);
-		return name;
-	}
+	beforeEach(() => {
+		resetRestartNeeded();
+		rows.clear();
+		databases.system[DEPLOYMENT_TABLE] = {
+			async get(id) {
+				return rows.get(id);
+			},
+			async put(row) {
+				rows.set(row.deployment_id, { ...row });
+			},
+			async patch(id, partial) {
+				const row = rows.get(id);
+				if (row) rows.set(id, { ...row, ...partial });
+			},
+			async *search(conditions = []) {
+				for (const row of rows.values()) {
+					if (conditions.every((condition) => row[condition.attribute] === condition.value)) yield row;
+				}
+			},
+		};
+		priorReplicate = server.replication.replicateOperation;
+		server.replication.replicateOperation = async () => ({ replicated: [] });
+	});
 
-	// Sweep any live dirs, staging, previous, and aside created by the suite.
-	after(async () => {
-		for (const name of names) await fs.rm(path.join(COMPONENTS_ROOT, name), { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-previous'), { recursive: true, force: true });
-		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-aside'), { recursive: true, force: true });
-		// Deploying a genuinely-new component flips the process-wide restart-needed buffer on
-		// (harper#674, via deployComponent's requestRestart() scoping). That buffer is shared across
-		// the whole mocha process, so restore it or a later test asserting a pristine buffer
-		// (e.g. requestRestart.test.js) fails on ordering alone.
+	afterEach(() => {
+		server.replication.replicateOperation = priorReplicate;
 		resetRestartNeeded();
 	});
 
-	// Each test below deploys fresh components, and deploying a never-live component flips the
-	// process-wide restart-needed buffer (harper#674). Start every test from a known-clean buffer so the
-	// restartNeeded() assertions below reflect only that test's own deploy, not a prior test's leak.
-	beforeEach(() => resetRestartNeeded());
+	after(async () => {
+		if (priorSafeMode === undefined) delete process.env.HARPER_SAFE_MODE;
+		else process.env.HARPER_SAFE_MODE = priorSafeMode;
+		if (priorTable === undefined) delete databases.system[DEPLOYMENT_TABLE];
+		else databases.system[DEPLOYMENT_TABLE] = priorTable;
+		for (const name of names) await fs.rm(path.join(COMPONENTS_ROOT, name), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-aside'), { recursive: true, force: true });
+	});
 
-	it('deploy_component({activate:false}) stages into the hidden dir without going live, and returns a deployment_id', async () => {
-		const name = freshName();
-		const res = await operations.deployComponent({
-			project: name,
-			payload: await makeComponentPayload('op-staged'),
+	function name() {
+		const value = `phase_op_${process.pid}_${sequence++}`;
+		names.push(value);
+		return value;
+	}
+
+	it('stages without touching live and records an immutable activation specification', async () => {
+		const project = name();
+		const result = await operations.deployComponent({
+			project,
+			payload: await makePayload('1.0.0'),
 			activate: false,
 		});
 
-		assert.strictEqual(res.staged, true);
-		assert.strictEqual(res.project, name);
-		assert.strictEqual(typeof res.deployment_id, 'string');
-
-		const stagedDir = path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, res.deployment_id, name);
-		assert.ok(existsSync(path.join(stagedDir, 'index.js')), 'component was built into the staging dir');
-		assert.strictEqual(existsSync(path.join(COMPONENTS_ROOT, name)), false, 'staging did not touch the live path');
+		assert.equal(result.staged, true);
+		assert.match(result.deployment_id, /^[0-9a-f-]{36}$/i);
+		assert.equal(existsSync(path.join(COMPONENTS_ROOT, project)), false);
+		assert.equal(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, result.deployment_id, project)), true);
+		const row = rows.get(result.deployment_id);
+		assert.ok(row, `deployment row missing; present ids: ${Array.from(rows.keys()).join(', ')}`);
+		assert.equal(row.status, 'staged');
+		assert.deepEqual(row.activation_spec, {
+			project,
+			package: null,
+			install_command: null,
+			install_timeout: null,
+			install_allow_scripts: null,
+			urlPath: null,
+			host: null,
+			credentials: null,
+			force: false,
+		});
 	});
 
-	it('deploy_component({deployment_id}) takes a prior stage live', async () => {
-		const name = freshName();
+	it('uses a no-custody literal registry token for the origin install without recording it', async () => {
+		const project = name();
+		const token = 'transient-origin-token';
+		const installCommand =
+			`node -e "const fs=require('fs');` +
+			`const value=fs.readFileSync(process.env.npm_config_userconfig||process.env.NPM_CONFIG_USERCONFIG,'utf8');` +
+			`if(!value.includes('//registry.example.com/:_authToken='))process.exit(7);` +
+			`fs.writeFileSync('credential-seen','yes')"`;
+		const result = await operations.deployComponent({
+			project,
+			payload: await makePayload('credential-origin', '6.0.0', false),
+			install_command: installCommand,
+			credentials: [{ registry: 'https://registry.example.com', token }],
+			activate: false,
+		});
+
+		const stagedPath = path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, result.deployment_id, project);
+		assert.equal(await fs.readFile(path.join(stagedPath, 'credential-seen'), 'utf8'), 'yes');
+		assert.equal(rows.get(result.deployment_id).activation_spec.credentials, null);
+		assert.doesNotMatch(JSON.stringify(rows.get(result.deployment_id)), new RegExp(token));
+	});
+
+	it('activates only a staged row owned by the requested project', async () => {
+		const project = name();
 		const staged = await operations.deployComponent({
-			project: name,
-			payload: await makeComponentPayload('op-activated'),
+			project,
+			payload: await makePayload('2.0.0'),
 			activate: false,
 		});
-		const res = await operations.deployComponent({ project: name, deployment_id: staged.deployment_id });
 
-		assert.strictEqual(res.activated, true);
-		assert.strictEqual(res.project, name);
-		assert.strictEqual(res.deployment_id, staged.deployment_id);
-		const liveDir = path.join(COMPONENTS_ROOT, name);
-		assert.ok(existsSync(liveDir), 'live component dir now exists');
-		assert.match(await readIndex(liveDir), /op-activated/);
-		// A restart was not requested, so the message must not claim one.
-		assert.doesNotMatch(res.message, /restart/i);
-		// ...but this component was never live before, so activating it without a restart must mark one
-		// as required (harper#674) — the activate-existing leg of the two-phase restart-required fix. The
-		// message assertion above can't see this: the string never mentions "restart" on the no-restart
-		// path whether or not the marking runs, so assert the flag directly.
-		assert.strictEqual(
-			restartNeeded(),
-			true,
-			'activating a never-live component without restart marks a restart required'
+		await assert.rejects(
+			operations.deployComponent({ project: `${project}_other`, deployment_id: staged.deployment_id }),
+			/not a staged deployment/
+		);
+		const activated = await operations.deployComponent({ project, deployment_id: staged.deployment_id });
+
+		assert.equal(activated.activated, true);
+		assert.equal(rows.get(staged.deployment_id).status, 'success');
+		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /2.0.0/);
+	});
+
+	it('does not let a duplicate activation undo the winning activation state', async () => {
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('duplicate-winner', '6.0.0'),
+			activate: false,
+		});
+
+		const outcomes = await Promise.allSettled([
+			operations.deployComponent({ project, deployment_id: staged.deployment_id }),
+			operations.deployComponent({ project, deployment_id: staged.deployment_id }),
+		]);
+
+		assert.equal(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
+		assert.equal(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1);
+		assert.equal(rows.get(staged.deployment_id).status, 'success');
+		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /duplicate-winner/);
+	});
+
+	it('rejects fresh build or routing input on activate-by-id', async () => {
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('3.0.0'),
+			activate: false,
+		});
+
+		await assert.rejects(
+			operations.deployComponent({
+				project,
+				deployment_id: staged.deployment_id,
+				install_command: 'npm install --evil',
+			}),
+			/immutable staged configuration.*install_command/
 		);
 	});
 
-	// The activate-existing path fans the activate out to peers just like the two-phase activate phase,
-	// and replicateOperation never rejects on a per-peer failure — failures surface only as 'failed'
-	// entries. Without the shared activate gate this path returned 2xx {activated:true} while part of the
-	// cluster stayed on the old version, making revert_on_failure/ignore_replication_errors no-ops here.
-	describe('deploy_component({deployment_id}) peer-failure gate', () => {
-		let priorReplicate;
-		// Swap in a replicator that reports one failed peer (the repo's property-swap pattern; no
-		// sinon/rewire per AGENTS.md). Restored after each test.
-		function stubFailedPeer() {
-			priorReplicate = server.replication.replicateOperation;
-			server.replication.replicateOperation = async () => ({
-				replicated: [{ node: 'peer-a', status: 'failed', reason: 'no staged build found' }],
+	it('stages and activates a full deploy before reporting success', async () => {
+		const project = name();
+		const result = await operations.deployComponent({
+			project,
+			payload: await makePayload('full-deploy', '6.0.0'),
+		});
+
+		assert.match(result.message, /Successfully deployed/);
+		assert.equal(rows.get(result.deployment_id).status, 'success');
+		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /full-deploy/);
+		assert.equal(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, result.deployment_id)), false);
+		assert.equal(restartNeeded(), true, 'a new component activated without restart requires one');
+	});
+
+	it('reclaims an oversized payload only after a full two-phase activation succeeds', async () => {
+		const project = name();
+		const priorMaxSize = environment.get(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE);
+		environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE, 1);
+		try {
+			const result = await operations.deployComponent({
+				project,
+				payload: await makePayload('reclaimed-full-deploy', '6.0.0'),
 			});
+
+			const row = rows.get(result.deployment_id);
+			assert.equal(row.status, 'success');
+			assert.equal(row.payload_blob, null);
+			assert.ok(row.event_log.some((event) => event.event === 'payload_dropped'));
+		} finally {
+			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE, priorMaxSize);
 		}
-		afterEach(() => {
-			if (priorReplicate) server.replication.replicateOperation = priorReplicate;
-			priorReplicate = undefined;
-		});
+	});
 
-		async function stageOnly(name, marker) {
-			const staged = await operations.deployComponent({
-				project: name,
-				payload: await makeComponentPayload(marker),
-				activate: false,
-			});
-			return staged.deployment_id;
+	it('reclaims an oversized retained payload after activate-by-id succeeds', async () => {
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('reclaimed-staged-deploy', '6.0.0'),
+			activate: false,
+		});
+		assert.ok(rows.get(staged.deployment_id).payload_blob, 'staged deployment keeps its recovery payload');
+
+		const priorMaxSize = environment.get(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE);
+		environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE, 1);
+		try {
+			await operations.deployComponent({ project, deployment_id: staged.deployment_id });
+
+			const row = rows.get(staged.deployment_id);
+			assert.equal(row.status, 'success');
+			assert.equal(row.payload_blob, null);
+			assert.ok(row.event_log.some((event) => event.event === 'payload_dropped'));
+		} finally {
+			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE, priorMaxSize);
 		}
-
-		// End-to-end cover for the package-identifier recovery: stage a `package` deploy with
-		// `activate: false`, then activate it by id with no `package` on the request (what `harper activate`
-		// sends) and assert root config is persisted AND the recovered identifier reaches peers. A `file:`
-		// tarball package needs no network and no payload blob — extraction reads the tarball directly — so
-		// a mock deployment table is enough to drive the whole path.
-		it('recovers a staged package deploy: persists root config and fans the package out to peers', async function () {
-			// Unlike the payload deploys used elsewhere in this file, a `package` deploy runs the
-			// protected-core-name guard, which requires componentLoader and so pulls in the private
-			// `@harperfast/skills` dependency. That isn't installed in every local checkout, so skip there
-			// instead of failing on the environment; CI installs it and runs this for real.
-			if (!componentLoaderAvailable()) return this.skip();
-			const name = freshName();
-			const tgzDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-op-pkg-'));
-			const tgzPath = path.join(tgzDir, 'component.tgz');
-			await fs.writeFile(tgzPath, await makeComponentPayload('pkg-staged'));
-			const packageId = `file:${tgzPath}`;
-
-			const rows = new Map();
-			const priorTable = databases.system?.[DEPLOYMENT_TABLE];
-			if (!databases.system) databases.system = {};
-			databases.system[DEPLOYMENT_TABLE] = {
-				async get(id) {
-					return rows.get(id);
-				},
-				async put(row) {
-					rows.set(row.deployment_id, { ...row });
-				},
-				async patch(id, partial) {
-					const existing = rows.get(id);
-					if (existing) rows.set(id, { ...existing, ...partial });
-				},
-				async *search(conditions = []) {
-					for (const row of rows.values()) if (conditions.every((c) => row[c.attribute] === c.value)) yield row;
-				},
-			};
-			const configBackup = await fs.readFile(getConfigFilePath(), 'utf8');
-
-			try {
-				const staged = await operations.deployComponent({ project: name, package: packageId, activate: false });
-				assert.strictEqual(staged.staged, true, 'the package deploy staged without going live');
-				assert.strictEqual(
-					rows.get(staged.deployment_id)?.package_identifier,
-					packageId,
-					'the stage recorded the package identifier on the row — the source the activate recovers from'
-				);
-
-				let fannedOut;
-				priorReplicate = server.replication.replicateOperation;
-				server.replication.replicateOperation = async (op) => {
-					fannedOut = op;
-					return {};
-				};
-
-				// No `package` here — exactly what `harper activate project=… deployment_id=…` sends.
-				await operations.deployComponent({ project: name, deployment_id: staged.deployment_id });
-
-				assert.strictEqual(
-					fannedOut?.package,
-					packageId,
-					'the recovered identifier rides the activate sub-op, so peers persist root config too'
-				);
-				assert.strictEqual(
-					getConfiguration()[name]?.package,
-					packageId,
-					'the origin persisted the package reference to root config'
-				);
-			} finally {
-				await fs.writeFile(getConfigFilePath(), configBackup);
-				if (priorTable === undefined) delete databases.system[DEPLOYMENT_TABLE];
-				else databases.system[DEPLOYMENT_TABLE] = priorTable;
-				await fs.rm(tgzDir, { recursive: true, force: true });
-			}
-		});
-
-		it('rejects (does not report success) when a peer fails to activate', async () => {
-			const name = freshName();
-			const deploymentId = await stageOnly(name, 'gate-fail');
-			stubFailedPeer();
-			await assert.rejects(
-				() => operations.deployComponent({ project: name, deployment_id: deploymentId }),
-				/failed to activate on 1 .*peer node\(s\).*peer-a/s,
-				'a partially-failed activate must surface as an error, not a 2xx success'
-			);
-		});
-
-		it('honors ignore_replication_errors on this path, resolving despite the failed peer', async () => {
-			const name = freshName();
-			const deploymentId = await stageOnly(name, 'gate-ignore');
-			stubFailedPeer();
-			const res = await operations.deployComponent({
-				project: name,
-				deployment_id: deploymentId,
-				ignore_replication_errors: true,
-			});
-			assert.strictEqual(res.activated, true, 'the opt-out still returns success');
-			assert.match(await readIndex(path.join(COMPONENTS_ROOT, name)), /gate-ignore/, 'the origin still went live');
-		});
 	});
 
-	it('deploy_component (two-phase default) stages then activates end-to-end', async () => {
-		const name = freshName();
-		const res = await operations.deployComponent({ project: name, payload: await makeComponentPayload('op-deployed') });
-
-		assert.match(res.message, /Successfully deployed/);
-		assert.strictEqual(typeof res.deployment_id, 'string');
-		const liveDir = path.join(COMPONENTS_ROOT, name);
-		assert.match(await readIndex(liveDir), /op-deployed/, 'component is live after a two-phase deploy');
-		// New component deployed without a restart → restart required (harper#674), the origin two-phase leg.
-		assert.strictEqual(restartNeeded(), true, 'a fresh two-phase deploy without restart marks a restart required');
-		// The staged copy was consumed by the swap; its per-deploy staging parent is cleaned up.
-		assert.strictEqual(
-			existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, res.deployment_id)),
-			false,
-			'per-deploy staging parent removed after activation'
-		);
-	});
-
-	it('redeploying an already-live component without restart does NOT mark a restart required', async () => {
-		// The negative direction of harper#674/#1806: an existing, already-active component's own watcher
-		// requests any restart a redeploy needs, so deploy_component must stay quiet. Two-phase can't lean
-		// on extractApplication's in-place check (it builds into a fresh staging dir), so this guards that
-		// activateApplication correctly reports isNewComponent:false when a live version already exists.
-		const name = freshName();
-		await operations.deployComponent({ project: name, payload: await makeComponentPayload('redeploy-v1') });
-		resetRestartNeeded(); // clear the flag the first (new-component) deploy legitimately set
-		await operations.deployComponent({ project: name, payload: await makeComponentPayload('redeploy-v2') });
-		assert.strictEqual(
-			restartNeeded(),
-			false,
-			'a redeploy of an already-live component must not self-request a restart'
-		);
-	});
-
-	it('peer _phase:activate takes a locally-staged build live and marks a restart for a new component', async () => {
-		// The peer leg of the fix: a peer applies the fanned-out deploy_component tagged _phase:'activate'
-		// (deployPhaseActivate), swapping its OWN locally-staged build live. It must mark restart-required
-		// per node for a genuinely-new component (harper#674) — otherwise a cluster-wide restart:false
-		// deploy reports restartRequired on the origin only. Stage the build directly (standing in for the
-		// peer's earlier stage phase), then drive the activate phase through the public op with the
-		// internal markers, exactly as the replicated fan-out does.
-		const name = freshName();
-		const deploymentId = `peer-activate-${name}`;
-		const staged = new Application({
-			name,
-			payload: await makeComponentPayload('peer-activated'),
-			stagingId: deploymentId,
-		});
-		await stageApplication(staged);
-
-		const res = await operations.deployComponent({
-			project: name,
-			_phase: 'activate',
-			_deploymentId: deploymentId,
-			restart: false,
-		});
-
-		assert.strictEqual(res.activated, true, 'peer activate reports the component activated');
-		const liveDir = path.join(COMPONENTS_ROOT, name);
-		assert.match(await readIndex(liveDir), /peer-activated/, 'the locally-staged build is now live');
-		assert.strictEqual(
-			restartNeeded(),
-			true,
-			'peer activate of a never-live component without restart marks a restart required'
-		);
-	});
-
-	it('deploy_component with two_phase:false runs the legacy one-shot path', async () => {
-		const name = freshName();
-		const res = await operations.deployComponent({
-			project: name,
-			payload: await makeComponentPayload('op-oneshot'),
+	it('preserves the legacy one-shot path when explicitly requested', async () => {
+		const project = name();
+		const result = await operations.deployComponent({
+			project,
+			payload: await makePayload('one-shot', '6.0.0'),
 			two_phase: false,
 		});
 
-		assert.match(res.message, /Successfully deployed/);
-		const liveDir = path.join(COMPONENTS_ROOT, name);
-		assert.match(await readIndex(liveDir), /op-oneshot/, 'component is live after a one-shot deploy');
+		assert.match(result.message, /Successfully deployed/);
+		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /one-shot/);
 	});
 
-	it('revert_component swaps the live version back to the previous deployment', async () => {
-		const name = freshName();
-		const liveDir = path.join(COMPONENTS_ROOT, name);
-		await operations.deployComponent({ project: name, payload: await makeComponentPayload('rev-v1') });
-		await operations.deployComponent({ project: name, payload: await makeComponentPayload('rev-v2') });
-		assert.match(await readIndex(liveDir), /rev-v2/, 'v2 is live before revert');
+	it('accepts the legacy deployment row marker only from a trusted replicated operation', async () => {
+		const project = name();
+		const payload = await makePayload('trusted-one-shot', '6.0.0');
+		const result = await runWithOperationAuthorizationBypass(true, () =>
+			operations.deployComponent({
+				project,
+				payload,
+				two_phase: false,
+				_deploymentId: '41faded8-6cf5-4a2a-95f8-863e7ea498fa',
+				replicated: false,
+				hdb_user: { name: 'cluster-peer' },
+			})
+		);
 
-		const res = await operations.revertComponent({ project: name });
-
-		assert.strictEqual(res.reverted, true);
-		assert.strictEqual(res.project, name);
-		assert.match(await readIndex(liveDir), /rev-v1/, 'revert restored v1 to live');
+		assert.match(result.message, /Successfully deployed/);
+		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /trusted-one-shot/);
 	});
 
-	it('revert_component rejects a component with no retained previous version', async () => {
-		const name = freshName();
-		await operations.deployComponent({ project: name, payload: await makeComponentPayload('rev-once') });
-		await assert.rejects(() => operations.revertComponent({ project: name }), /no previous version is retained/i);
+	it('fails closed on the preview phase marker even from a trusted peer', async () => {
+		await assert.rejects(
+			runWithOperationAuthorizationBypass(true, () =>
+				operations.deployComponent({
+					project: name(),
+					_phase: 'stage',
+					replicated: false,
+					hdb_user: { name: 'cluster-peer' },
+				})
+			),
+			/Unsupported legacy component deployment phase/
+		);
 	});
 
-	it('revert_component requires a project', async () => {
-		await assert.rejects(() => operations.revertComponent({}), /project/i);
+	it('fails closed on an activate peer failure before scheduling a restart', async () => {
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('4.0.0'),
+			activate: false,
+		});
+		const phases = [];
+		server.replication.replicateOperation = async (operation) => {
+			phases.push(operation.phase);
+			if (operation.phase === 'activate') {
+				return { replicated: [{ node: 'peer-a', status: 'failed', reason: 'config write failed' }] };
+			}
+			return { replicated: [] };
+		};
+
+		await assert.rejects(
+			operations.deployComponent({ project, deployment_id: staged.deployment_id, restart: true }),
+			/Split nodes: peer-a.*[Rr]oll forward/s
+		);
+		assert.deepEqual(phases, ['activate'], 'restart phase was never sent after the activation gate failed');
+		assert.equal(rows.get(staged.deployment_id).status, 'activating');
+		assert.equal(rows.get(staged.deployment_id).completed_at, null);
+		assert.ok(rows.get(staged.deployment_id).payload_blob, 'payload remains available to repair a split cluster');
+		assert.equal(rows.get(staged.deployment_id).peer_results[0].node, 'peer-a');
 	});
 
-	// The revert_on_failure fan-out itself needs a live multi-node cluster (harper-pro's replicator) to
-	// run end-to-end, but its node-targeting is a pure function — and the exact spot that had two
-	// review-caught bugs (skip failed peers, skip self). Exercise it directly.
-	describe('selectRevertTargets (revert_on_failure node targeting)', () => {
-		const nodes = [{ name: 'origin' }, { name: 'peerA' }, { name: 'peerB' }, { name: 'peerC' }];
+	it('records success when restart fails after the activation barrier', async () => {
+		const project = name();
+		const phases = [];
+		server.replication.replicateOperation = async (operation) => {
+			phases.push(operation.phase);
+			return operation.phase === 'restart'
+				? { replicated: [{ node: 'peer-a', status: 'failed', reason: 'restart unavailable' }] }
+				: { replicated: [] };
+		};
+		const priorRestartWorkers = manageThreads.restartWorkers;
+		manageThreads.restartWorkers = () => {};
+		let deploymentId;
+		try {
+			await assert.rejects(
+				operations
+					.deployComponent({
+						project,
+						payload: await makePayload('activated-before-restart-failure', '6.0.0'),
+						restart: true,
+					})
+					.catch((error) => {
+						deploymentId = error.http_resp_msg?.deployment_id;
+						throw error;
+					}),
+				/restart failed/
+			);
+		} finally {
+			manageThreads.restartWorkers = priorRestartWorkers;
+		}
 
-		it('returns activated peers, excluding this node and failed peers', () => {
-			const failed = [{ node: 'peerB', status: 'failed' }];
-			const targets = operations.selectRevertTargets(nodes, failed, 'origin').map((n) => n.name);
-			assert.deepStrictEqual(targets.sort(), ['peerA', 'peerC'], 'peerB (failed) and origin (self) excluded');
+		assert.deepEqual(phases, ['stage', 'activate', 'restart']);
+		assert.equal(rows.get(deploymentId).status, 'success');
+		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /activated-before/);
+	});
+
+	it('records peer failures but honors ignore_replication_errors', async () => {
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('ignored-peer', '6.0.0'),
+			activate: false,
+		});
+		server.replication.replicateOperation = async () => ({
+			replicated: [{ node: 'peer-a', status: 'failed', reason: 'offline' }],
 		});
 
-		it('excludes THIS node even when it is present in server.nodes (bidirectional double-revert guard)', () => {
-			const targets = operations.selectRevertTargets(nodes, [], 'origin').map((n) => n.name);
-			assert.ok(!targets.includes('origin'), 'self must never receive a self-directed revert');
-			assert.deepStrictEqual(targets.sort(), ['peerA', 'peerB', 'peerC']);
+		const result = await operations.deployComponent({
+			project,
+			deployment_id: staged.deployment_id,
+			ignore_replication_errors: true,
 		});
 
-		it('excludes every failed peer (they never activated and are on the correct version)', () => {
-			const failed = [
-				{ node: 'peerA', status: 'failed' },
-				{ node: 'peerC', status: 'failed' },
-			];
-			const targets = operations.selectRevertTargets(nodes, failed, 'origin').map((n) => n.name);
-			assert.deepStrictEqual(targets, ['peerB'], 'only the one activated peer is a revert target');
-		});
+		assert.equal(result.activated, true);
+		assert.equal(rows.get(staged.deployment_id).status, 'success');
+		assert.equal(rows.get(staged.deployment_id).peer_results[0].status, 'failed');
+	});
 
-		it('is safe with empty/undefined nodes and failed lists, and ignores failed entries with no node name', () => {
-			assert.deepStrictEqual(operations.selectRevertTargets(undefined, undefined, 'origin'), []);
-			assert.deepStrictEqual(operations.selectRevertTargets([], [{ node: null }], 'origin'), []);
-			const targets = operations.selectRevertTargets(nodes, [{ node: null }], 'origin').map((n) => n.name);
-			assert.deepStrictEqual(targets.sort(), ['peerA', 'peerB', 'peerC'], 'a null-node failed entry drops nobody');
+	it('records and surfaces ignored restart failures after the activation gate', async () => {
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('restart-failure', '6.0.0'),
+			activate: false,
 		});
+		const phases = [];
+		server.replication.replicateOperation = async (operation) => {
+			phases.push(operation.phase);
+			return operation.phase === 'restart'
+				? { replicated: [{ node: 'peer-a', status: 'failed', reason: 'restart unavailable' }] }
+				: { replicated: [] };
+		};
+		const priorRestartWorkers = manageThreads.restartWorkers;
+		let localRestarts = 0;
+		manageThreads.restartWorkers = () => localRestarts++;
+		let result;
+		try {
+			result = await operations.deployComponent({
+				project,
+				deployment_id: staged.deployment_id,
+				restart: true,
+				ignore_replication_errors: true,
+			});
+		} finally {
+			manageThreads.restartWorkers = priorRestartWorkers;
+		}
+
+		assert.deepEqual(phases, ['activate', 'restart']);
+		assert.equal(localRestarts, 1);
+		assert.equal(result.activated, true);
+		assert.equal(result.failed_peers[0].node, 'peer-a');
+		assert.equal(rows.get(staged.deployment_id).peer_results[0].status, 'failed');
+	});
+
+	it('uses the row-backed immutable specification for trusted peer phases', async () => {
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('peer-phase', '6.0.0'),
+			activate: false,
+		});
+		const row = rows.get(staged.deployment_id);
+		const componentPath = path.join(COMPONENTS_ROOT, project);
+		await discardStagedApplication(componentPath, staged.deployment_id);
+		const executePeerPhase = (phase, activationSpec) =>
+			runWithOperationAuthorizationBypass(true, () =>
+				operations.componentDeployPhase({
+					operation: 'component_deploy_phase',
+					phase,
+					project,
+					deployment_id: staged.deployment_id,
+					activation_spec: activationSpec,
+					replicated: false,
+					hdb_user: { name: 'cluster-peer' },
+				})
+			);
+
+		await assert.rejects(
+			executePeerPhase('stage', { ...row.activation_spec, host: 'tampered.example' }),
+			/immutable activation specification/
+		);
+		await executePeerPhase('stage', row.activation_spec);
+		assert.equal(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, staged.deployment_id, project)), true);
+		await executePeerPhase('activate', row.activation_spec);
+		assert.match(await fs.readFile(path.join(componentPath, 'index.js'), 'utf8'), /peer-phase/);
+		assert.equal(rows.get(staged.deployment_id).status, 'activating');
+		assert.equal(restartNeeded(), true);
+	});
+
+	it('rebuilds a missing peer stage from the durable deployment payload before activation', async () => {
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('rebuilt-peer', '6.0.0'),
+			activate: false,
+		});
+		const row = rows.get(staged.deployment_id);
+		const componentPath = path.join(COMPONENTS_ROOT, project);
+		await discardStagedApplication(componentPath, staged.deployment_id);
+
+		await runWithOperationAuthorizationBypass(true, () =>
+			operations.componentDeployPhase({
+				operation: 'component_deploy_phase',
+				phase: 'activate',
+				project,
+				deployment_id: staged.deployment_id,
+				activation_spec: row.activation_spec,
+				replicated: false,
+				hdb_user: { name: 'cluster-peer' },
+			})
+		);
+
+		assert.match(await fs.readFile(path.join(componentPath, 'index.js'), 'utf8'), /rebuilt-peer/);
+		assert.equal(rows.get(staged.deployment_id).status, 'activating');
+	});
+
+	it('waits for the staged row checkpoint when peer activation arrives first', async () => {
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('lagged-row', '6.0.0'),
+			activate: false,
+		});
+		const row = rows.get(staged.deployment_id);
+		rows.set(staged.deployment_id, { ...row, status: 'staging' });
+		setImmediate(() => rows.set(staged.deployment_id, { ...rows.get(staged.deployment_id), status: 'staged' }));
+
+		await runWithOperationAuthorizationBypass(true, () =>
+			operations.componentDeployPhase({
+				operation: 'component_deploy_phase',
+				phase: 'activate',
+				project,
+				deployment_id: staged.deployment_id,
+				activation_spec: row.activation_spec,
+				deployment_timeout: 200,
+				replicated: false,
+				hdb_user: { name: 'cluster-peer' },
+			})
+		);
+
+		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /lagged-row/);
+		assert.equal(rows.get(staged.deployment_id).status, 'activating');
+	});
+
+	it('recovers a staged package specification for config and peer activation', async () => {
+		const project = name();
+		const tarDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-phase-package-'));
+		const tarPath = path.join(tarDirectory, 'component.tgz');
+		await fs.writeFile(tarPath, await makePayload('package-stage', '6.0.0'));
+		const packageIdentifier = `file:${tarPath}`;
+		const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-phase-config-'));
+		const configPath = path.join(configRoot, 'harper-config.yaml');
+		await fs.writeFile(configPath, `rootPath: ${JSON.stringify(configRoot)}\n`);
+		const priorRootEnv = process.env.ROOTPATH;
+		const priorRootConfig = getConfigPath(CONFIG_PARAMS.ROOTPATH);
+		process.env.ROOTPATH = configRoot;
+		environment.setProperty(CONFIG_PARAMS.ROOTPATH, configRoot);
+		try {
+			const staged = await operations.deployComponent({
+				project,
+				package: packageIdentifier,
+				activate: false,
+			});
+			let activationOperation;
+			server.replication.replicateOperation = async (operation) => {
+				activationOperation = operation;
+				return { replicated: [] };
+			};
+
+			await operations.deployComponent({ project, deployment_id: staged.deployment_id });
+
+			assert.equal(readConfigFile()[project].package, packageIdentifier);
+			assert.equal(activationOperation.operation, 'component_deploy_phase');
+			assert.equal(activationOperation.activation_spec.package, packageIdentifier);
+		} finally {
+			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
+			else process.env.ROOTPATH = priorRootEnv;
+			environment.setProperty(CONFIG_PARAMS.ROOTPATH, priorRootConfig);
+			await fs.rm(configRoot, { recursive: true, force: true });
+			await fs.rm(tarDirectory, { recursive: true, force: true });
+		}
+	});
+
+	it('drop_component invalidates staged rows and removes recovery artifacts', async () => {
+		const project = name();
+		const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-phase-drop-'));
+		const componentsRoot = path.join(configRoot, 'components');
+		const configPath = path.join(configRoot, 'harper-config.yaml');
+		const priorRootEnv = process.env.ROOTPATH;
+		const priorRootConfig = getConfigPath(CONFIG_PARAMS.ROOTPATH);
+		const priorComponentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+		process.env.ROOTPATH = configRoot;
+		environment.setProperty(CONFIG_PARAMS.ROOTPATH, configRoot);
+		environment.setProperty(CONFIG_PARAMS.COMPONENTSROOT, componentsRoot);
+		await fs.writeFile(configPath, `rootPath: ${JSON.stringify(configRoot)}\n`);
+		try {
+			const staged = await operations.deployComponent({
+				project,
+				payload: await makePayload('drop-stage', '6.0.0'),
+				activate: false,
+			});
+			const activationPath = path.join(componentsRoot, DEPLOY_ACTIVATION_DIR, project, 'interrupted');
+			await fs.mkdir(activationPath, { recursive: true });
+			await fs.writeFile(
+				path.join(configRoot, 'harper-application-lock.json'),
+				JSON.stringify({ applications: { [project]: { package: 'stale-package' } } })
+			);
+
+			await operations.dropComponent({ project });
+
+			assert.equal(rows.get(staged.deployment_id).status, 'failed');
+			const deploymentStagePath = path.join(componentsRoot, DEPLOY_STAGING_DIR, staged.deployment_id);
+			assert.equal(
+				existsSync(deploymentStagePath),
+				false,
+				`staged deployment directory still contains: ${await fs.readdir(deploymentStagePath).catch(() => [])}`
+			);
+			assert.equal(existsSync(path.join(componentsRoot, DEPLOY_ACTIVATION_DIR, project)), false);
+			const applicationLock = JSON.parse(await fs.readFile(path.join(configRoot, 'harper-application-lock.json')));
+			assert.equal(applicationLock.applications[project], undefined);
+		} finally {
+			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
+			else process.env.ROOTPATH = priorRootEnv;
+			environment.setProperty(CONFIG_PARAMS.ROOTPATH, priorRootConfig);
+			environment.setProperty(CONFIG_PARAMS.COMPONENTSROOT, priorComponentsRoot);
+			await fs.rm(configRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects separated-phase controls on the one-shot fallback', async () => {
+		await assert.rejects(
+			operations.deployComponent({
+				project: name(),
+				payload: await makePayload('5.0.0'),
+				activate: false,
+				two_phase: false,
+			}),
+			/require two-phase deploy/
+		);
+	});
+
+	it('rejects an explicit two-phase request when the system database is not replicated', async () => {
+		const priorReplications = environment.get(CONFIG_PARAMS.REPLICATION_DATABASES);
+		environment.setProperty(CONFIG_PARAMS.REPLICATION_DATABASES, ['data']);
+		try {
+			await assert.rejects(
+				operations.deployComponent({
+					project: name(),
+					payload: await makePayload('requires-system-replication'),
+					two_phase: true,
+				}),
+				/requires system database replication/
+			);
+		} finally {
+			environment.setProperty(CONFIG_PARAMS.REPLICATION_DATABASES, priorReplications);
+		}
+	});
+
+	it('does not trust caller-supplied internal phase markers', async () => {
+		await assert.rejects(
+			operations.deployComponent({
+				project: name(),
+				payload: await makePayload('untrusted-replication'),
+				replicated: false,
+				two_phase: true,
+			}),
+			/requires operation replication/
+		);
+		await assert.rejects(
+			operations.deployComponent({
+				project: name(),
+				_deploymentId: '../../escape',
+				_phase: 'stage',
+			}),
+			/is not allowed/
+		);
+		await assert.rejects(
+			operations.componentDeployPhase({
+				operation: 'component_deploy_phase',
+				phase: 'discard',
+				project: name(),
+				deployment_id: '41faded8-6cf5-4a2a-95f8-863e7ea498fa',
+				activation_spec: { project: 'anything' },
+			}),
+			/restricted to authenticated cluster peers/
+		);
+		await assert.rejects(
+			runWithOperationAuthorizationBypass(true, () =>
+				operations.componentDeployPhase({
+					operation: 'component_deploy_phase',
+					phase: 'discard',
+					project: '../escape',
+					deployment_id: '41faded8-6cf5-4a2a-95f8-863e7ea498fa',
+					activation_spec: { project: '../escape' },
+					replicated: false,
+					hdb_user: { name: 'cluster-peer' },
+				})
+			),
+			/project name/i
+		);
 	});
 });

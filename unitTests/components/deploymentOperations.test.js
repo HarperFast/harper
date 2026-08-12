@@ -14,7 +14,13 @@ const { Readable } = require('node:stream');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { handleGetDeploymentPayload, handleDeleteDeploymentPayload } = require('#src/components/deploymentOperations');
+const {
+	handleGetDeployment,
+	handleGetDeploymentPayload,
+	handleDeleteDeploymentPayload,
+} = require('#src/components/deploymentOperations');
+const { DeploymentRecorder } = require('#src/components/deploymentRecorder');
+const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 
@@ -63,6 +69,33 @@ async function collect(stream) {
 	for await (const chunk of stream) chunks.push(chunk);
 	return Buffer.concat(chunks);
 }
+
+describe('handleGetDeployment SSE tail', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed.restore());
+
+	it('keeps tailing a transient staged checkpoint while the origin recorder is active', async () => {
+		const lifecycle = new ProgressEmitter();
+		const recorder = await DeploymentRecorder.create({ project: 'app', emitter: lifecycle });
+		await recorder.checkpoint('staged', 'staged');
+		let settled = false;
+		const resultPromise = handleGetDeployment({
+			deployment_id: recorder.deploymentId,
+			progress: new ProgressEmitter(),
+		}).then((result) => {
+			settled = true;
+			return result;
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(settled, false, 'staged is only terminal after its live recorder is gone');
+
+		await recorder.finish('success');
+		assert.strictEqual((await resultPromise).status, 'success');
+	});
+});
 
 describe('handleGetDeploymentPayload', () => {
 	let installed;
@@ -138,13 +171,15 @@ describe('handleDeleteDeploymentPayload', () => {
 		});
 	});
 
-	it('409s on a non-terminal deployment (blob may still be replicating to peers)', async () => {
-		installed.mock.rows.set('d1', { deployment_id: 'd1', status: 'pending', payload_blob: mockBlob(Buffer.from('x')) });
-		await assert.rejects(handleDeleteDeploymentPayload({ deployment_id: 'd1' }), (err) => {
-			assert.match(err.message, /not in a terminal state/);
-			assert.strictEqual(err.statusCode, 409);
-			return true;
-		});
+	it('409s on pending and staged deployments whose blobs may still be needed by peers', async () => {
+		for (const status of ['pending', 'staged']) {
+			installed.mock.rows.set('d1', { deployment_id: 'd1', status, payload_blob: mockBlob(Buffer.from('x')) });
+			await assert.rejects(handleDeleteDeploymentPayload({ deployment_id: 'd1' }), (err) => {
+				assert.match(err.message, /not in a terminal state/);
+				assert.strictEqual(err.statusCode, 409);
+				return true;
+			});
+		}
 		assert.strictEqual(installed.mock.puts.length, 0, 'must not write the row');
 	});
 
