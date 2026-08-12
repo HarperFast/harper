@@ -186,8 +186,12 @@ An older peer therefore rejects the unknown operation instead of ignoring a phas
 the staged build live. Public `_phase`/`_deploymentId` fields are rejected; the latter remains accepted
 only on the authenticated legacy one-shot replication path. Restart is gated until activation responses
 have settled. A partial activation is reported as split-node state and recovered by staging and activating
-a known-good build; there is deliberately no toggle-style automatic revert because retrying one after a
-lost response can reverse the recovery. `deployment_stagingRetention_maxCount` bounds resting staged
+a known-good build, or rolled back explicitly with `revert_component`, which is addressed rather than a
+toggle (see "Reversibility" below) so a retry after a lost response cannot reverse the recovery. There is
+deliberately no AUTOMATIC rollback (`revert_on_failure` is rejected): once any node is past the barrier,
+"this peer reported failed" does not mean "this peer did not activate" — a peer can complete its swap and
+then fail the persistent work that follows — so auto-reverting the failed peers would roll an untouched
+node an extra version back and split the cluster three ways. `deployment_stagingRetention_maxCount` bounds resting staged
 trees per component and payload retention is pruned in the same row-aware lifecycle.
 
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
@@ -413,7 +417,7 @@ legacy one-shot path.
 operations; the peer fan-out is `deploy_component` itself tagged with an internal `_phase: 'stage' |
 'activate'` marker (the same `_`-prefixed internal-field convention peers already branch on, alongside
 `_deploymentId`). `deployComponent` dispatches: a replicated execution with `_phase` runs the peer
-stage/activate work (`deployPhaseStage` / `deployPhaseActivate`) and never re-fans; a public call runs
+stage/activate work (the `component_deploy_phase` operation) and never re-fans; a public call runs
 the origin orchestrator. Two public properties expose the phases when an operator wants them separated
 (e.g. pre-stage the cluster now, flip later — or a CI-stages / approver-activates split): `activate:
 false` stages cluster-wide and stops, returning the `deployment_id` in a `staged` state; passing that
@@ -444,7 +448,7 @@ exists to remove. The leading dot keeps `loadComponentDirectories` from loading 
 component, and it is **not** the watched base of any component's file watcher (those are rooted at
 each live component dir, `EntryHandler`/`deriveCommonPatternBase`) — so building here fires no
 restart-on-change events and needs no `deploy:start` watcher suppression. That suppression is now
-scoped to `activateApplication`, the only phase that writes the live path. Staging is deterministic
+scoped to `activateStagedApplication`, the only phase that writes the live path. Staging is deterministic
 from the deployment id precisely so the activate phase (a separate replicated `deploy_component`
 invocation on peers, tagged `_phase: 'activate'`) can reconstruct the same path the stage built —
 peers build a fresh `Application` per phase invocation, so there is no shared in-memory handle to rely
@@ -482,17 +486,42 @@ authenticate node-to-node by TLS certificate, and the receive side runs the op v
 dispatched by `operation` name) replicate without an `hdb_user`, identically to the long-proven
 one-shot `deploy_component` fan-out.
 
-**Reversibility: retained previous + `revert_component`.** `activateApplication` no longer discards the
-outgoing live version — it retains it as `.deploy-previous/<name>` (`retainAsPrevious`, evicting the
-older one so exactly one previous is kept per component). `revert_component` swaps the live directory
-with that retained previous via three same-filesystem renames through a hidden holding path, cluster-
-wide and replicated like activate. The swap is bidirectional, so reverting a revert rolls forward
-again. This backs two things: a customer can deploy, run their own health checks against the live
-version, and `revert` if unhappy even when the cluster looks healthy; and `deploy_component`'s opt-in
-`revert_on_failure` rolls the whole cluster back to the previous version when the activate phase leaves
-some nodes live and some not, so the cluster reconverges on one version. The previous copy is retained
-per-node (each node retains its own outgoing version during its own activate), so a replicated revert
-has a local rollback source on every node.
+**Reversibility: retained previous + `revert_component`.** `activateStagedApplication` does not discard
+the tree its swap displaced — it retains it as `.deploy-previous/<name>`, evicting the older one so
+exactly one previous is kept per component (a bounded one extra copy). `revert_component` swaps the live
+directory with that retained previous via three same-filesystem renames through a hidden holding path,
+cluster-wide, and fetches nothing: no package resolution, no secret decryption, no artifact download, no
+install. That is the point — the rollback operators actually need is the bad rollout that just happened,
+and every node already has those bytes.
+
+**It is addressed, not toggled.** `to_deployment_id` is required and names the version the caller expects
+live afterwards. If that version is already live the call is a no-op success; if it matches the retained
+previous, the swap happens and the displaced tree becomes the new retained previous. Anything else is
+refused, naming what the component can actually revert to. A bare "swap to the other one" toggle is
+unsafe under ordinary request retries — a caller that loses the response and retries would flip the
+rejected release back in — which is why the target is mandatory. Reaching an older version is a redeploy,
+not a revert.
+
+**The swap carries persistent state with it.** Each retained tree has a sidecar manifest recording the
+deployment that produced it and the root-config entry it was activated with, and revert applies that
+entry to both the root config and `harper-application-lock.json`
+(`createApplicationConfigTransaction`, shared with activation). A null entry means REMOVE it: reverting
+away from a `package` deploy has to drop the package reference, or `installApplications()` would
+reinstall the reverted-away version over the restored directory on the next cold start and silently undo
+the rollback. A config-write failure compensates by swapping the directory back. The previous copy and
+its manifest are per-node (each node retains its own outgoing tree during its own activate), so a
+replicated revert has a local rollback source on every node.
+
+**One contract on `.deploy-aside`.** The directory has a single protocol, shared with the in-place
+extraction transaction: an `.in-progress-<ts>-<pid>-<uuid>` directory with no matching
+`.retired-<...>` marker is a ROLLBACK RECORD, and `recoverInterruptedComponentExtractions` restores the
+newest such directory OVER the live component path at startup. Anything else there is residue and is
+swept. A tree that is already known to be garbage when it is parked — the evicted two-deploys-ago
+retained-previous — therefore carries a distinct `.discarded-` prefix, because a crash between parking
+and sweeping would otherwise make startup recovery resurrect an ancient version over the current one.
+The two startup passes read disjoint directories (`.deploy-aside` for interrupted in-place preparation,
+`.deploy-staging`/`.deploy-activating` for an interrupted two-phase activation), and extraction recovery
+runs first so the staged reconciliation decides roll-forward against a settled live directory.
 
 **Staged-build retention.** A full deploy consumes its staged build immediately (activate renames it
 live), so the only builds that accumulate are `activate: false` stage-and-stops that are never

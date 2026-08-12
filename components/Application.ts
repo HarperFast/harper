@@ -484,7 +484,7 @@ async function runNpmPack(
 }
 
 // Hidden directory under the components root holding component versions renamed aside
-// during a deploy swap (see activateApplication). The leading dot keeps
+// during a deploy swap (see activateStagedApplication). The leading dot keeps
 // loadComponentDirectories from loading its contents as components.
 export const ASIDE_STAGING_DIR = '.deploy-aside';
 const IN_PROGRESS_ASIDE_PREFIX = '.in-progress-';
@@ -503,8 +503,8 @@ const MAX_INSTALL_COMMANDS = 2;
 // Hidden directory under the components root where the INCOMING version of a component is
 // fully built (extracted + `npm install`) before it goes live — the counterpart to
 // ASIDE_STAGING_DIR, which holds the OUTGOING version. Two-phase deploy stages here first
-// (stage_component), then activateApplication renames the staged copy into the live
-// component path in one atomic step (activate_component).
+// (the stage phase), then activateStagedApplication renames the staged copy into the live
+// component path in one atomic step (the activate phase).
 //
 // It lives UNDER the components root on purpose, even though the bytes are "temporary":
 //   - Same filesystem as the live path, so the go-live rename() is atomic. An os.tmpdir()
@@ -956,7 +956,7 @@ function canonicalizeJSON(value: any): any {
  * Writes the application into `application.buildDirPath`, overwriting any existing directory there.
  * By default that is the live component directory (`application.dirPath`); during a two-phase deploy
  * `stageApplication` points it at the hidden staging directory instead, so the live path is never
- * touched until `activateApplication` swaps the staged copy into place.
+ * touched until `activateStagedApplication` swaps the staged copy into place.
  *
  * This method may be called from any Harper thread. Same-component calls are serialized across
  * threads by the preparation lock below.
@@ -1828,8 +1828,8 @@ interface ApplicationOptions {
 	// constructor into the npm and git halves, which are injected by entirely different mechanisms.
 	credentials?: ResolvedCredential[];
 	// Stable identifier for the hidden staging directory this deploy builds into, so a two-phase
-	// deploy's `activate_component` step can reconstruct the same staging path a prior
-	// `stage_component` built (both derive it from the deployment id). Defaults to a random UUID for
+	// deploy's activate phase can reconstruct the same staging path the prior stage phase
+	// built (both derive it from the deployment id). Defaults to a random UUID for
 	// callers that stage and activate against one in-memory Application instance.
 	stagingId?: string;
 }
@@ -1856,7 +1856,7 @@ export class Application {
 	// Stable id for this deploy's staging directory (see ApplicationOptions.stagingId).
 	stagingId: string;
 	// When set, extract/install build here instead of the live `dirPath`. stageApplication() points
-	// it at `stagingDirPath`; activateApplication() clears it after swapping the staged copy live.
+	// it at `stagingDirPath`; activateStagedApplication() clears it after swapping the staged copy live.
 	#buildDirPath?: string;
 	#npmrcTempDir?: string;
 	#gitCredentialSession?: GitCredentialSession;
@@ -1910,7 +1910,7 @@ export class Application {
 
 	// Hidden, per-deploy staging directory the incoming version is built into before it goes live:
 	// `<componentsRoot>/.deploy-staging/<stagingId>/<name>`. Deterministic from (stagingId, component
-	// name) so `activate_component` can find what `stage_component` built. Sits under the components
+	// name) so the activate phase can find what the stage phase built. Sits under the components
 	// root (dirname(dirPath)) so the go-live rename() into `dirPath` stays on one filesystem and is
 	// therefore atomic. Two properties fall out of putting the deployment id ABOVE the component name:
 	//   - the leaf directory's basename IS the component name, so the pre-go-live validation load
@@ -1924,7 +1924,7 @@ export class Application {
 	}
 
 	// The retained-previous copy this component would revert to (`.deploy-previous/<name>`). See
-	// DEPLOY_PREVIOUS_DIR / activateApplication / revertApplication.
+	// DEPLOY_PREVIOUS_DIR / activateStagedApplication / revertApplication.
 	get previousDirPath(): string {
 		return previousDirPathFor(this.dirPath);
 	}
@@ -1934,7 +1934,7 @@ export class Application {
 		this.#buildDirPath = this.stagingDirPath;
 	}
 
-	// Restore the live component directory as the build target. Called by activateApplication()
+	// Restore the live component directory as the build target. Called by activateStagedApplication()
 	// once the staged copy has been swapped into place.
 	useLiveBuildDir(): void {
 		this.#buildDirPath = undefined;

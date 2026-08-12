@@ -429,7 +429,7 @@ async function packageComponent(req) {
  * node first, verifies it landed everywhere, and only then swaps it live cluster-wide — so a node
  * that can't fetch the package or fails `npm install` fails the deploy while the live component is
  * still untouched on every node, and the go-live window shrinks to a fast atomic directory swap.
- * See stageApplication/activateApplication in components/Application.ts.
+ * See stageApplication/activateStagedApplication in components/Application.ts.
  *
  * The request/response contract is unchanged: same inputs (`package`/payload, `restart`,
  * `install_*`, `credentials`, `ignore_replication_errors`, `deployment_timeout`, …), same
@@ -1345,7 +1345,8 @@ async function restartRevertedComponent(req, emit) {
 }
 
 // ————————————————————————————————————————————————————————————————————————————
-// Shared deploy-family helpers (used by deploy_component, stage_component, activate_component).
+// Shared deploy-family helpers (used by deploy_component, its component_deploy_phase fan-out, and
+// revert_component).
 // ————————————————————————————————————————————————————————————————————————————
 
 // Reject deploying over a protected core component name unless force is set. Lazy-loads

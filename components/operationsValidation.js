@@ -443,7 +443,7 @@ const GIT_CREDENTIAL_ENTRY = Joi.object({
 	.unknown(false);
 
 // The kind-heterogeneous deploy credentials array, shared by deploy_component and its two-phase
-// sub-operations (stage_component / activate_component) so the three stay in lockstep. An entry's
+// peer fan-out (component_deploy_phase) so both stay in lockstep. An entry's
 // kind is implied by its identifying key (`registry` → npm registry auth, otherwise git host auth),
 // dispatched here so a malformed entry reports what is actually wrong with it rather than a generic
 // "no alternative matched".
