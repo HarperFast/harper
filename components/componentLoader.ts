@@ -57,6 +57,7 @@ import {
 	reconcileStagedApplicationArtifacts,
 	recoverInterruptedComponentExtraction,
 	recoverInterruptedComponentExtractions,
+	recoverInterruptedReverts,
 } from './Application.ts';
 import { getDeploymentRow } from './deploymentRecorder.ts';
 import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
@@ -155,18 +156,20 @@ export async function loadComponentDirectories(
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
 	const cycleResources = resources;
 	const cycleLoadedComponents = loadedComponents;
-	// Two independent crash-recovery passes, in this order:
+	// Three independent crash-recovery passes, in this order:
 	//
 	//   1. recoverInterruptedComponentExtractions — an IN-PLACE preparation (the one-shot deploy path)
 	//      that died mid-swap left the prior tree parked in `.deploy-aside` with no retired marker;
 	//      restore it so the live directory is a known-good tree again.
-	//   2. reconcileStagedApplicationArtifacts — a TWO-PHASE activation that died in its swap window
+	//   2. recoverInterruptedReverts — a revert that died between renames left the outgoing tree parked
+	//      under `.deploy-previous/.reverting-*`, possibly with no live directory at all.
+	//   3. reconcileStagedApplicationArtifacts — a TWO-PHASE activation that died in its swap window
 	//      is rolled forward from its durable deployment row + activation marker.
 	//
-	// Extraction recovery runs first so the staged reconciliation makes its roll-forward decision
-	// against a settled live directory rather than a half-swapped one. The two passes read disjoint
-	// directories (`.deploy-aside` vs `.deploy-staging`/`.deploy-activating`), so neither can claim the
-	// other's artifacts — see DESIGN.md, "One contract on .deploy-aside".
+	// The two directory repairs run before the staged reconciliation so its roll-forward decision sees a
+	// settled live directory rather than a half-swapped one. The passes read disjoint directories
+	// (`.deploy-aside`, `.deploy-previous`, `.deploy-staging`/`.deploy-activating`), so none can claim
+	// another's artifacts — see DESIGN.md, "One contract on .deploy-aside".
 	let failedRecoveries = new Map<string, Error>();
 	try {
 		failedRecoveries = await recoverInterruptedComponentExtractions(CF_ROUTES_DIR);
@@ -176,6 +179,22 @@ export async function loadComponentDirectories(
 			'Loading existing filesystem components without deploy recovery because staging could not be inspected:',
 			errorForLog(recoveryError)
 		);
+	}
+	if (isMainThread) {
+		// A revert that died between its renames can leave a component with no live directory at all, with
+		// the bytes parked under `.deploy-previous/.reverting-*`. Repaired before anything loads, and
+		// before the staged reconciliation below, for the same reason extraction recovery runs first: the
+		// roll-forward decision should see a settled live directory.
+		try {
+			for (const [component, error] of await recoverInterruptedReverts(CF_ROUTES_DIR)) {
+				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+			}
+		} catch (error) {
+			harperLogger.error(
+				'Could not inspect retained component versions for interrupted reverts:',
+				errorForLog(error as Error)
+			);
+		}
 	}
 	if (isMainThread && !stagedArtifactsReconciled) {
 		stagedArtifactsReconciled = true;

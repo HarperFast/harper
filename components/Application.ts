@@ -491,6 +491,12 @@ const IN_PROGRESS_ASIDE_PREFIX = '.in-progress-';
 // Parked and known-disposable at park time (an evicted two-deploys-ago retained-previous). NEVER a
 // recovery candidate — see discardDirAside for why the distinction has to be in the name.
 const DISCARDED_ASIDE_PREFIX = '.discarded-';
+// The holding path a revert's three-way swap parks the outgoing live tree in. Recoverable: if the
+// process dies mid-swap, recoverInterruptedReverts puts it back. See revertApplication.
+const REVERTING_PREFIX = '.reverting-';
+// Splits `<componentName>-<uuid>` off a revert holding directory name, anchored on the UUID so a
+// component name containing dashes is preserved intact.
+const REVERTING_NAME_PATTERN = /^(.+)-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RETIRED_ASIDE_PREFIX = '.retired-';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
@@ -746,6 +752,87 @@ async function retainActivatedPrevious(
 	}
 }
 
+/**
+ * Repair a revert that died between renames. The holding directory (`.reverting-<name>-<uuid>`, a
+ * sibling of the retained previous) only exists while a swap is in flight, so finding one at startup
+ * means the process was killed mid-swap and the component may have no live directory at all.
+ *
+ * Recovery restores the holding tree to whichever slot is empty: the live path when the swap had not
+ * yet placed the reverted-to version (so the component comes back on the version it was serving), or
+ * the retained-previous path when the swap DID complete and only the retain step was lost. If both
+ * slots are occupied the swap finished and the holding tree is residue, so it is discarded.
+ *
+ * Best-effort per component: one component's unrecoverable state must not stop the rest from loading.
+ */
+export async function recoverInterruptedReverts(componentsRootDirPath: string): Promise<Map<string, Error>> {
+	const previousRoot = join(componentsRootDirPath, DEPLOY_PREVIOUS_DIR);
+	const failures = new Map<string, Error>();
+	let entries;
+	try {
+		entries = await readdir(previousRoot, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return failures;
+		throw error;
+	}
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !entry.name.startsWith(REVERTING_PREFIX)) continue;
+		const holding = join(previousRoot, entry.name);
+		// `.reverting-<componentName>-<uuid>`. The component name may itself contain dashes, so match the
+		// trailing UUID explicitly rather than cutting at the last dash — which would leave most of the
+		// UUID glued to the name and recover into the wrong (or a nonexistent) component directory.
+		const componentName = REVERTING_NAME_PATTERN.exec(entry.name.slice(REVERTING_PREFIX.length))?.[1];
+		if (!componentName || !safeComponentName(componentName)) {
+			await rm(holding, { recursive: true, force: true }).catch(() => {});
+			continue;
+		}
+		const liveDirPath = join(componentsRootDirPath, componentName);
+		try {
+			await withComponentPreparationLock(liveDirPath, async () => {
+				const liveExists = await lstat(liveDirPath).then(
+					() => true,
+					(err) => {
+						if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+						throw err;
+					}
+				);
+				if (!liveExists) {
+					await mkdir(dirname(liveDirPath), { recursive: true });
+					await rename(holding, liveDirPath);
+					logger.warn(
+						`Restored the live ${componentName} component directory after an interrupted revert; ` +
+							`the revert did not take effect and can be retried`
+					);
+					return;
+				}
+				const previousPath = previousDirPathFor(liveDirPath);
+				const previousExists = await lstat(previousPath).then(
+					() => true,
+					(err) => {
+						if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+						throw err;
+					}
+				);
+				if (!previousExists) {
+					await mkdir(dirname(previousPath), { recursive: true });
+					await rename(holding, previousPath);
+					logger.warn(
+						`Completed an interrupted ${componentName} revert: the reverted-to version is live and the ` +
+							`version it displaced is retained again`
+					);
+					return;
+				}
+				// Both slots occupied: the swap completed, so this is residue.
+				await rm(holding, { recursive: true, force: true });
+			});
+		} catch (error) {
+			const recoveryError = error instanceof Error ? error : new Error(String(error));
+			failures.set(componentName, recoveryError);
+			logger.error(`Could not recover the interrupted ${componentName} revert:`, errorForLog(recoveryError));
+		}
+	}
+	return failures;
+}
+
 /** What a component can currently be reverted to, for reporting and for revert targeting. */
 export async function getRevertTarget(
 	componentDirPath: string
@@ -819,12 +906,48 @@ export async function revertApplication(
 			await mkdir(dirname(previousPath), { recursive: true });
 			if (liveExists) {
 				// Three-way atomic swap through a hidden holding path: live → holding, previous → live,
-				// holding(old live) → previous. The only window where `dirPath` is absent is between two
-				// atomic renames, and deploy:start suppresses watchers across it (same as activation).
-				const holding = join(dirname(previousPath), `.reverting-${basename(liveDirPath)}-${randomUUID()}`);
+				// holding(old live) → previous. The only window where `dirPath` is absent is between the
+				// first two renames, and deploy:start suppresses watchers across it (same as activation).
+				//
+				// Each step is compensated, because a failure here is the one that hurts most: after the
+				// first rename the component has NO live directory, so an uncompensated I/O error (disk
+				// full, a permission change, an unexpected fault on previousPath) would leave the component
+				// unservable with its bytes stranded under the holding path. The holding name is also
+				// recoverable by name at startup (recoverInterruptedReverts), which covers the case
+				// compensation cannot: the process dying between renames.
+				const holding = join(dirname(previousPath), `${REVERTING_PREFIX}${basename(liveDirPath)}-${randomUUID()}`);
 				await rename(liveDirPath, holding);
-				await rename(previousPath, liveDirPath);
-				await rename(holding, previousPath);
+				try {
+					await rename(previousPath, liveDirPath);
+				} catch (swapError) {
+					// Nothing is live: put the outgoing tree straight back and fail with the component intact.
+					await rename(holding, liveDirPath).catch((restoreError) => {
+						throw new AggregateError(
+							[swapError, restoreError],
+							`Failed to revert ${application.name} and could not restore its live directory from ` +
+								`${holding}; the component has no live version until that directory is restored`
+						);
+					});
+					throw swapError;
+				}
+				try {
+					await rename(holding, previousPath);
+				} catch (retainError) {
+					// The revert itself succeeded (the requested version IS live); only retaining the tree it
+					// displaced failed. Undo the whole swap rather than leave the manifest describing a
+					// retained previous that is not where it says it is.
+					try {
+						await rename(liveDirPath, previousPath);
+						await rename(holding, liveDirPath);
+					} catch (restoreError) {
+						throw new AggregateError(
+							[retainError, restoreError],
+							`Reverted ${application.name} but could not retain the displaced version, and could not ` +
+								`undo the swap; ${holding} still holds the previously-live tree`
+						);
+					}
+					throw retainError;
+				}
 			} else {
 				// No live version to preserve; restore the previous into place. Nothing becomes the new
 				// retained previous, so the component can't be reverted again until its next deploy.

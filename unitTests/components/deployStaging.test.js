@@ -22,6 +22,7 @@ const {
 	createApplicationActivationTransaction,
 	revertApplication,
 	getRevertTarget,
+	recoverInterruptedReverts,
 	extractApplication,
 	stagedApplicationPath,
 	DEPLOY_STAGING_DIR,
@@ -677,6 +678,79 @@ describe('two-phase component directory transaction', function () {
 
 		assert.equal(first.isNewComponent, true);
 		assert.equal(first.packageMetadataChanged, false, 'nothing to compare against; isNewComponent carries it');
+		await cleanup(name);
+	});
+	// ————————————————————————————————————————————————————————————————————————————
+	// Interrupted revert: compensation and startup recovery
+	// ————————————————————————————————————————————————————————————————————————————
+
+	async function twoActivations(name) {
+		const first = randomUUID();
+		const second = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('v1') });
+		await stageApplication(application, first);
+		await activateStagedApplication(application, first, { activationSpec: { package: null } });
+		application.payload = await makeComponentPayload('v2');
+		await stageApplication(application, second);
+		await activateStagedApplication(application, second, { activationSpec: { package: null } });
+		return { application, first, second };
+	}
+
+	// NOT covered here: an in-process failure of the middle rename. Once `rename(live, holding)` has run,
+	// the live path is gone, so `rename(previous, live)` has no existing target to conflict with and
+	// succeeds for every filesystem state reachable from a test (a file, a dangling symlink, a directory
+	// all rename cleanly onto a free path). Inducing it would need a fault-injection seam in production
+	// code. The compensation is still there — it is what turns an exceptional I/O error into "the
+	// component keeps serving what it was serving" — but the durable half below is what actually covers
+	// the reviewer's scenario: a process that dies mid-swap, which compensation inherently cannot handle.
+
+	it('startup recovery restores the live tree from a revert that died before the swap', async () => {
+		const name = fixtureName();
+		const { application } = await twoActivations(name);
+		// Simulate a crash right after `rename(live, holding)`: live is gone, holding holds its tree.
+		const holding = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, `.reverting-${name}-${randomUUID()}`);
+		await fs.rename(application.dirPath, holding);
+
+		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
+
+		assert.equal(failures.size, 0);
+		assert.match(await readMarker(application.dirPath), /v2/, 'the interrupted revert is undone');
+		assert.equal(existsSync(holding), false);
+		await cleanup(name);
+	});
+
+	it('startup recovery re-retains the displaced tree when only the retain step was lost', async () => {
+		const name = fixtureName();
+		const { application } = await twoActivations(name);
+		// Simulate a crash after `rename(previous, live)` but before `rename(holding, previous)`: the
+		// reverted-to version is live, and the displaced tree is still parked.
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		const holding = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, `.reverting-${name}-${randomUUID()}`);
+		await fs.rm(application.dirPath, { recursive: true, force: true });
+		await fs.rename(previousPath, application.dirPath);
+		await fs.mkdir(holding, { recursive: true });
+		await fs.writeFile(path.join(holding, 'index.js'), "module.exports = 'displaced';\n");
+
+		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
+
+		assert.equal(failures.size, 0);
+		assert.match(await readMarker(application.dirPath), /v1/, 'the reverted-to version stays live');
+		assert.match(await readMarker(previousPath), /displaced/, 'the displaced tree is retained again');
+		assert.equal(existsSync(holding), false);
+		await cleanup(name);
+	});
+
+	it('startup recovery discards a holding tree left by a revert that had already completed', async () => {
+		const name = fixtureName();
+		const { application } = await twoActivations(name);
+		const holding = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, `.reverting-${name}-${randomUUID()}`);
+		await fs.mkdir(holding, { recursive: true });
+		await fs.writeFile(path.join(holding, 'index.js'), "module.exports = 'residue';\n");
+
+		await recoverInterruptedReverts(COMPONENTS_ROOT);
+
+		assert.equal(existsSync(holding), false, 'both slots were occupied, so the holding tree is residue');
+		assert.match(await readMarker(application.dirPath), /v2/, 'live is untouched');
 		await cleanup(name);
 	});
 });

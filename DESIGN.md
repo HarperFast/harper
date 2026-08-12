@@ -519,9 +519,19 @@ newest such directory OVER the live component path at startup. Anything else the
 swept. A tree that is already known to be garbage when it is parked — the evicted two-deploys-ago
 retained-previous — therefore carries a distinct `.discarded-` prefix, because a crash between parking
 and sweeping would otherwise make startup recovery resurrect an ancient version over the current one.
-The two startup passes read disjoint directories (`.deploy-aside` for interrupted in-place preparation,
-`.deploy-staging`/`.deploy-activating` for an interrupted two-phase activation), and extraction recovery
-runs first so the staged reconciliation decides roll-forward against a settled live directory.
+The three startup passes read disjoint directories — `.deploy-aside` for an interrupted in-place
+preparation, `.deploy-previous` for an interrupted revert, and `.deploy-staging`/`.deploy-activating`
+for an interrupted two-phase activation — and the two directory repairs run before the staged
+reconciliation so it decides roll-forward against a settled live directory.
+
+**An interrupted revert self-heals.** The three-way swap compensates in process (each rename is undone
+if a later one fails, so an exceptional I/O error leaves the component serving what it was serving),
+but compensation cannot cover the process dying between renames — and after the first rename the
+component has NO live directory. So the holding path is named `.reverting-<component>-<uuid>`, and
+`recoverInterruptedReverts` restores it at startup into whichever slot is empty: the live path when the
+swap had not yet placed the reverted-to version (the revert is undone and can be retried), or the
+retained-previous path when the swap completed and only the retain step was lost. With both slots
+occupied the swap finished and the holding tree is residue, so it is discarded.
 
 **Staged-build retention.** A full deploy consumes its staged build immediately (activate renames it
 live), so the only builds that accumulate are `activate: false` stage-and-stops that are never
