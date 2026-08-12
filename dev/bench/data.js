@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786535520155,
+  "lastUpdate": 1786535524267,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -13228,6 +13228,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1080.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0a727e8bd5931e9266344b757a8680f50f5980ff",
+          "message": "fix(deps): update dependency argon2 to v0.45.1 (#2132)\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-08-12T01:50:06Z",
+          "url": "https://github.com/HarperFast/harper/commit/0a727e8bd5931e9266344b757a8680f50f5980ff"
+        },
+        "date": 1786535523152,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 5528.86,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 5528.86,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 346,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1313.9,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 2134.7,
             "unit": "ms"
           }
         ]
