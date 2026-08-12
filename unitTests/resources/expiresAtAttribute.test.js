@@ -119,6 +119,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 	it('enumerates exact Rocks index values for the expiration sweep', async function () {
 		const Table = makeTable('ExpiresAtIndexValues');
 		const expiresAt = Date.now() + 60_000;
+		await Table.put(0, { id: 0, expiresAt: expiresAt - 1 });
 		await Table.put(1, { id: 1, expiresAt });
 		await Table.put(2, { id: 2, expiresAt });
 		await Table.put(3, { id: 3, expiresAt: expiresAt + 1 });
