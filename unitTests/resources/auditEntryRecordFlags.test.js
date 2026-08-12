@@ -26,13 +26,22 @@ describe('Audit entry record flags match the body (#2153)', () => {
 		expiresAt: 1817915930237,
 	};
 
-	it('clears the record flags on a put minted with no encoded record', () => {
+	it('clears HAS_RECORD on a put minted with no encoded record', () => {
 		const entry = createAuditEntry({ ...baseRecord, encodedRecord: undefined });
 		const read = readAuditEntry(Buffer.from(entry));
 		assert.equal(read.type, 'put');
 		assert.equal(read.extendedType & (HAS_RECORD | HAS_PARTIAL_RECORD), 0);
 		assert.equal(read.getBinaryValue().length, 0);
 		// no body advertised, so getValue must not attempt a decode (store is never touched)
+		assert.equal(read.getValue({}), undefined);
+	});
+
+	it('keeps HAS_PARTIAL_RECORD on a bodyless partial so history reconstruction stays possible', () => {
+		const entry = createAuditEntry({ ...baseRecord, type: 'patch', encodedRecord: undefined });
+		const read = readAuditEntry(Buffer.from(entry));
+		assert.equal(read.type, 'patch');
+		assert.equal(read.extendedType & HAS_PARTIAL_RECORD, HAS_PARTIAL_RECORD);
+		// the empty body is guarded on read: no decode attempt, no throw
 		assert.equal(read.getValue({}), undefined);
 	});
 
@@ -101,6 +110,35 @@ describe('Audit entry record flags match the body (#2153)', () => {
 			const record = await T.get(id);
 			assert.equal(record.a, 'n2');
 			assert.equal(record.b, 'keep');
+		});
+
+		it('a superseded source apply of an undefined value mints a flag-consistent, decodable entry', async function () {
+			if (isLMDB) return this.skip();
+			const id = 'r2';
+			const context = {};
+			await transaction(context, () => {
+				T.put(id, { id, a: 'v0' }, context);
+			});
+			const now = Date.now();
+			await T.patch(id, { a: 'n1' }, { timestamp: now + 100 });
+			await T.patch(id, { a: 'n2' }, { timestamp: now + 200 });
+			// source/replication applies skip record validation, so an undefined value reaches the
+			// write path; fully superseded, it takes the audit-only escape with nothing to encode —
+			// the #2153 producer shape (pre-fix this minted HAS_RECORD with no body)
+			const loserVersion = now + 50;
+			await T.put(id, undefined, { timestamp: loserVersion, source: {}, nodeId: 7 });
+
+			let loser;
+			for (const entry of T.auditStore.getRange({ start: 1 })) {
+				if (entry.version === loserVersion) loser = entry;
+			}
+			assert(loser, 'audit-only entry for the superseded apply should exist');
+			assert.equal(loser.type, 'put');
+			assert.equal(loser.extendedType & (HAS_RECORD | HAS_PARTIAL_RECORD), 0);
+			assert.equal(loser.getBinaryValue().length, 0);
+			assert.equal(loser.getValue(T.primaryStore), undefined);
+			const record = await T.get(id);
+			assert.equal(record.a, 'n2');
 		});
 	});
 });
