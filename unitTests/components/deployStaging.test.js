@@ -22,6 +22,7 @@ const {
 	createApplicationActivationTransaction,
 	revertApplication,
 	getRevertTarget,
+	extractApplication,
 	stagedApplicationPath,
 	DEPLOY_STAGING_DIR,
 	DEPLOY_ACTIVATION_DIR,
@@ -588,4 +589,20 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(application.dirPath), /candidate/);
 		await cleanup(name);
 	});
+	it('extracts in place over a DANGLING symlink at the component path instead of failing EEXIST', async () => {
+		// access(F_OK) follows symlinks, so a dead link at the target reports ENOENT and would be treated
+		// as "nothing here" — then mkdir fails EEXIST because the link still occupies the path. lstat sees
+		// the link itself. Left by a prior `file:`-directory deploy whose target was removed.
+		const name = fixtureName();
+		const application = new Application({ name, payload: await makeComponentPayload('over-dead-link') });
+		await fs.mkdir(COMPONENTS_ROOT, { recursive: true });
+		await fs.symlink(path.join(os.tmpdir(), `harper-missing-${randomUUID()}`), application.dirPath, 'dir');
+
+		await extractApplication(application);
+
+		assert.equal((await fs.lstat(application.dirPath)).isSymbolicLink(), false);
+		assert.match(await readMarker(application.dirPath), /over-dead-link/);
+		await cleanup(name);
+	});
+
 });

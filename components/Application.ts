@@ -1124,7 +1124,11 @@ export async function extractApplication(
 		await recoverOrCleanupStaleExtractionPaths(extractionContext, asideStagingDir);
 		let componentExists = true;
 		try {
-			await access(buildDirPath, constants.F_OK);
+			// lstat, not access(F_OK): access FOLLOWS symlinks, so a DANGLING symlink at the target (left by
+			// a prior `file:`-directory deploy whose target was removed) reports ENOENT and would be treated
+			// as "nothing here" — then the mkdir below fails EEXIST because the dead link still occupies the
+			// path. lstat sees the link itself, so it gets moved aside like any other occupant.
+			await lstat(buildDirPath);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
 			componentExists = false;
