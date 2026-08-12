@@ -604,5 +604,4 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(application.dirPath), /over-dead-link/);
 		await cleanup(name);
 	});
-
 });
