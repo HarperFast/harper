@@ -1208,6 +1208,40 @@ describe('deploy by reference (by_ref)', () => {
 		assert.strictEqual(req.credentials, undefined); // no credential requested
 	});
 
+	// Every other CLI value is JSON-parsed, which rewrites a ref that happens to look numeric: `1.0`
+	// parses to the number 1, and no amount of coercion downstream can turn that back into the tag
+	// the user typed. Refs are opaque strings, so they skip the parse entirely.
+	describe('ref parsing', () => {
+		const { buildRequest } = cliOperationsModule;
+		let savedArgv;
+
+		beforeEach(() => {
+			savedArgv = process.argv;
+		});
+
+		afterEach(() => {
+			process.argv = savedArgv;
+		});
+
+		function refFromArgv(arg) {
+			process.argv = ['node', 'harper', 'deploy', arg];
+			return buildRequest().ref;
+		}
+
+		it('keeps a ref that looks numeric exactly as typed', () => {
+			assert.strictEqual(refFromArgv('ref=1.0'), '1.0'); // not the number 1
+			assert.strictEqual(refFromArgv('ref=1.10'), '1.10'); // not 1.1
+			assert.strictEqual(refFromArgv('ref=1e3'), '1e3'); // not 1000
+			assert.strictEqual(refFromArgv('ref=1234567'), '1234567');
+		});
+
+		it('leaves ordinary refs and other fields alone', () => {
+			assert.strictEqual(refFromArgv('ref=v1.2.3'), 'v1.2.3');
+			process.argv = ['node', 'harper', 'deploy', 'by_ref=true'];
+			assert.strictEqual(buildRequest().by_ref, true); // still JSON-parsed
+		});
+	});
+
 	// A real repo with known refs — plus a local bare repo standing in for `origin` — so ref
 	// resolution is asserted against actual git behavior rather than whatever happens to exist in the
 	// checkout running the tests, and without reaching the network.
@@ -1269,7 +1303,9 @@ describe('deploy by reference (by_ref)', () => {
 			assert.strictEqual(resolveGitTarget('HEAD').committish, headSha);
 		});
 
-		it('coerces a numeric ref to a string (buildRequest JSON-parses `ref=1234567` to a number)', () => {
+		// prepareDeployByRef is exported and callable with a hand-built req, so a number still resolves
+		// rather than being ignored — buildRequest itself no longer produces one (see below).
+		it('coerces a numeric ref to a string', () => {
 			assert.strictEqual(resolveGitTarget(1234567).committish, headSha);
 		});
 

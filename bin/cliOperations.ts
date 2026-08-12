@@ -55,6 +55,11 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 	'credential',
 ]);
 
+// Values that are opaque strings, never JSON. buildRequest otherwise JSON-parses every value, which
+// silently rewrites a git ref that happens to look numeric: `ref=1.0` becomes the number 1 (and then
+// the string "1"), so a tag named "1.0" would be resolved as "1". Refs can't be anything but strings.
+const RAW_STRING_FIELDS = new Set(['ref']);
+
 // Streaming (multipart upload + SSE progress) deploy was introduced in 5.1.0. A CLI at >=
 // 5.1 talking to a server < 5.1 must not use it: the older server has no multipart body
 // parser (the upload is rejected) and its generic text/event-stream serializer emits a bare
@@ -415,8 +420,8 @@ function resolveActionsPullRequestHead(): { repo: string; committish: string } |
 // come from the PR head, and pairing a head SHA with the base repo would name a commit that repo
 // doesn't have.
 function resolveGitTarget(ref: unknown): { repo: string; committish: string } {
-	// buildRequest JSON-parses CLI args, so a numeric ref (e.g. `ref=1234567`) arrives as a number —
-	// coerce it back to a string rather than silently ignoring it and falling back to HEAD.
+	// `ref` reaches here as a raw string from buildRequest (see RAW_STRING_FIELDS), but a number is
+	// still coerced rather than ignored — prepareDeployByRef is callable with a hand-built req.
 	const refStr = typeof ref === 'string' || typeof ref === 'number' ? String(ref).trim() : '';
 	if (refStr.length > 0) {
 		const repo = resolveGitRepo();
@@ -582,10 +587,12 @@ function buildRequest(): any {
 			let [first, ...rest] = arg.split('=');
 			let restStr: any = rest.join('=');
 
-			try {
-				restStr = JSON.parse(restStr);
-			} catch {
-				/* noop */
+			if (!RAW_STRING_FIELDS.has(first)) {
+				try {
+					restStr = JSON.parse(restStr);
+				} catch {
+					/* noop */
+				}
 			}
 
 			req[first] = restStr;
