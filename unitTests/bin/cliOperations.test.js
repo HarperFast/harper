@@ -1546,4 +1546,23 @@ describe('deploy CLI verbs (stage / activate fold into deploy_component)', () =>
 		assert.strictEqual(verbRequirementError({ operation: 'deploy_component' }), null);
 		assert.strictEqual(verbRequirementError({ operation: 'deploy_component', activate: false }), null);
 	});
+
+	it('`revert` maps to revert_component and carries the verb marker', () => {
+		// The marker has to survive buildRequest for the guard below to fire at all. `revert` deliberately
+		// lives in OP_VERB_PROPS rather than OP_ALIASES: buildRequest checks the alias table FIRST, so an
+		// alias entry would set the operation and never attach `_cliVerb`.
+		process.argv = ['node', 'harper', 'revert', 'project=my_app', 'to_deployment_id=abc-123'];
+		const req = buildRequest();
+		assert.strictEqual(req.operation, 'revert_component');
+		assert.strictEqual(req.to_deployment_id, 'abc-123');
+		assert.strictEqual(verbRequirementError(req), null);
+	});
+
+	it('`revert` WITHOUT a to_deployment_id is rejected before anything is sent', () => {
+		// A revert with no target would be a blind toggle, which is unsafe to retry.
+		process.argv = ['node', 'harper', 'revert', 'project=my_app'];
+		const req = buildRequest();
+		assert.strictEqual(req.operation, 'revert_component');
+		assert.match(verbRequirementError(req), /to_deployment_id/);
+	});
 });
