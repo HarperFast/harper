@@ -4,13 +4,10 @@ import { table, getDatabases, database, dropDatabase, type Table } from '../../r
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
 import SearchObject from '../SearchObject.ts';
 import {
-	OPERATIONS_ENUM,
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
 } from '../../utility/hdbTerms.ts';
-import * as signalling from '../../utility/signalling.ts';
-import { SchemaEventMsg } from '../../server/threads/itc.js';
 import { asyncSetTimeout } from '../../utility/common_utils.ts';
 import { transaction } from '../../resources/transaction.ts';
 import type {
@@ -179,14 +176,10 @@ export class ResourceBridge extends BridgeMethods {
 			database: createSchemaObj.schema,
 			table: null,
 		});
-		return signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_SCHEMA, createSchemaObj.schema)
-		);
 	}
 
 	async dropSchema(dropSchemaObj) {
 		await dropDatabase(dropSchemaObj.schema);
-		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema));
 	}
 
 	async updateRecords(updateObj) {
