@@ -1,0 +1,5 @@
+# QA-577 — trivial table used only as a boot-readiness probe (/Marker/) for the
+# upgrade-config built-in backfill test suite. No relation to the fix under test.
+type Marker @table @export {
+	id: ID @primaryKey
+}

@@ -16,7 +16,7 @@ import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
+const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
@@ -31,7 +31,109 @@ const MAX_RETRIES = 40;
 // Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
-let outstandingCommit, outstandingCommitStart;
+// Every native write commit currently outstanding on this worker thread, oldest first.
+// checkOverloaded() sheds new application writes once the OLDEST of these has been outstanding
+// past MAX_OUTSTANDING_TXN_DURATION, so a commit whose promise never settles (harper#2001) is
+// detected whichever transaction submitted it. A linked list rather than a Set because the write
+// path reads the oldest on every write and must not allocate an iterator to do it, and because
+// commits settle out of order and so have to unlink in constant time.
+interface OutstandingCommit {
+	start: number;
+	prev: OutstandingCommit | undefined;
+	next: OutstandingCommit | undefined;
+	// Identity for the one-time checkOverloaded() log below (harper#2001) — otherwise a stuck commit
+	// gives no indication of which database/table/resource to investigate. Snapshotted at arm time
+	// (not read from `this.writes`/`this.startedFrom` lazily off the DatabaseTransaction object)
+	// because that object can be reused for a later immediate commit while this native commit is
+	// still wedged — its resolve handler runs clearWrites() on the SAME object, which would blank or
+	// replace the identity out from under a deferred read. Per-node (not a single module-level slot)
+	// so that every outstanding commit carries its own identity and its own `logged` flag: a second
+	// commit that is still stuck once the first settles becomes the new oldest and logs on its own.
+	store: any;
+	startedFrom: { resourceName: string; method: string } | undefined;
+	nativeTransaction: any;
+	logged: boolean;
+}
+let oldestOutstandingCommit: OutstandingCommit | undefined;
+let newestOutstandingCommit: OutstandingCommit | undefined;
+let outstandingCommitCount = 0;
+// Caps the stuck-commit log (checkOverloaded() below) to at most one line per this interval across
+// the whole thread, regardless of how many distinct commits individually cross the threshold — see
+// the comment at the log site for why a per-commit-only dedup isn't enough under sustained overload.
+const OVERLOAD_LOG_MIN_INTERVAL_MS = 1000;
+let lastOverloadLogAt = -Infinity;
+
+// Track a submitted commit until it settles. Every attempt is tracked unconditionally: a
+// coordinated retry round and a chained second-store commit are both issued from inside the
+// preceding commit's own resolve handler, which runs before any reaction that could release a
+// single shared slot — so anything conditional on "is something already outstanding" skips them
+// and leaves a wedged retry or chain invisible to checkOverloaded() forever. Each attempt is timed
+// from its own submission, keeping the overload window per-attempt rather than cumulative over a
+// retry ladder. `.then(untrack, untrack)` also marks an ERR_BUSY rejection handled, so this
+// tracking never surfaces as an unhandled rejection alongside the caller's own handler.
+// Exported only so unit tests can drive the list with controllable promises: the unlink order that
+// matters (a middle or tail node settling first) cannot be forced through real writes, and a node
+// left linked would 503 every write on this thread forever. commit() below is the sole caller.
+// Also the single source for write-queue-depth accounting (getTransactionQueueDepths below): every
+// native commit this function tracks is, by definition, exactly the write-queue backlog — see the
+// comment there for why that used to be a second, separately-maintained counter.
+// `store`/`startedFrom`/`nativeTransaction` are the identity snapshot for checkOverloaded()'s stuck-
+// commit log (harper#2001); omit them (as the test seam below does) when a caller has none to give.
+export function trackOutstandingCommit(
+	commitResolution: Promise<number | void>,
+	store?: any,
+	startedFrom?: { resourceName: string; method: string },
+	nativeTransaction?: any
+): void {
+	// Guards against a future caller passing a non-Promise: today commit() always hands this a real
+	// Promise, but an unguarded link here would leave a node permanently wedged in the list (503ing
+	// every write on this thread) with no settlement to ever unlink it.
+	if (typeof commitResolution?.then !== 'function') return;
+	const outstanding: OutstandingCommit = {
+		start: performance.now(),
+		prev: newestOutstandingCommit,
+		next: undefined,
+		store,
+		startedFrom,
+		nativeTransaction,
+		logged: false,
+	};
+	if (newestOutstandingCommit != null) newestOutstandingCommit.next = outstanding;
+	else oldestOutstandingCommit = outstanding;
+	newestOutstandingCommit = outstanding;
+	outstandingCommitCount++;
+	// Doubles as the write-queue-depth high-water mark (see getTransactionQueueDepths): every
+	// outstanding commit is a write-queue entry, so the peak of one is the peak of the other.
+	if (outstandingCommitCount > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = outstandingCommitCount;
+	// Guards against double-untracking the same node: `.then(untrack, untrack)` below means a promise
+	// that both resolves and later has its rejection handler independently triggered (or is tracked via
+	// a shared/misused resolution) could otherwise run the unlink twice, corrupting the list or driving
+	// outstandingCommitCount negative.
+	let untracked = false;
+	const untrack = () => {
+		if (untracked) return;
+		untracked = true;
+		if (outstanding.prev != null) outstanding.prev.next = outstanding.next;
+		else oldestOutstandingCommit = outstanding.next;
+		if (outstanding.next != null) outstanding.next.prev = outstanding.prev;
+		else newestOutstandingCommit = outstanding.prev;
+		outstandingCommitCount--;
+	};
+	commitResolution.then(untrack, untrack);
+}
+
+/**
+ * How many write commits are outstanding on this thread and how long the oldest has been waiting
+ * (`oldestAgeMs` is undefined when none is). `oldestAgeMs` is exactly the value checkOverloaded()
+ * rejects on, exposed so a commit that never settles (harper#2001) can be observed directly rather
+ * than inferred from the 503s it eventually produces.
+ */
+export function getOutstandingCommits(): { count: number; oldestAgeMs: number | undefined } {
+	return {
+		count: outstandingCommitCount,
+		oldestAgeMs: oldestOutstandingCommit ? performance.now() - oldestOutstandingCommit.start : undefined,
+	};
+}
 
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
@@ -65,28 +167,19 @@ function recordCommitLatency(commitResolution: Promise<number | void>, submitted
 
 // Queue-depth gauges surfaced through the analytics pipeline (write-transaction-queue-depth /
 // read-transaction-queue-depth). Per-thread state; the analytics aggregator sums across threads.
-// `writeTxnQueueDepth` counts write commits handed to the storage engine but not yet resolved —
-// this is the backlog that, when it drains too slowly, produces the "Outstanding write transactions
-// have too long of queue" overload error. Read depth is derived from the live `trackedTxns` set
-// (every tracked transaction holds an open read snapshot). We also retain a high-water mark per
-// sampling window because the queue can fill and drain within a single (~1s) analytics period, so an
+// The write depth is `outstandingCommitCount` itself (maintained above by trackOutstandingCommit) —
+// write commits handed to the storage engine but not yet resolved are exactly the same set of native
+// commits the overload check tracks, and keeping one counter instead of two removes the duplicate
+// per-commit bookkeeping (and the drift risk: a code path that updates one but not the other, as the
+// replay path did before this fix). Read depth is derived from the live `trackedTxns` set (every
+// tracked transaction holds an open read snapshot). We also retain a high-water mark per sampling
+// window because the queue can fill and drain within a single (~1s) analytics period, so an
 // instantaneous sample taken at emit time would routinely miss the spike operators need to see.
 // RocksDB-write-path only: LMDB routes through the separate LMDBTransaction.commit()/getReadTxn()
 // overrides (resources/LMDBTransaction.ts), which maintain their own unrelated `trackedTxns` set and
 // do not call into this accounting.
-let writeTxnQueueDepth = 0;
 let writeTxnQueueDepthHighWater = 0;
 let readTxnQueueDepthHighWater = 0;
-
-function enterWriteQueue() {
-	if (++writeTxnQueueDepth > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = writeTxnQueueDepth;
-}
-function leaveWriteQueue() {
-	// Floor at zero: accounting is balanced by construction (every enterWriteQueue has exactly one
-	// matching settlement), but the guard is cheap insurance against a future call-site imbalance
-	// producing a negative depth that would corrupt every subsequent sample.
-	if (writeTxnQueueDepth > 0) writeTxnQueueDepth--;
-}
 
 /**
  * Returns the current write/read transaction queue depths for this thread along with the high-water
@@ -98,12 +191,12 @@ export function getTransactionQueueDepths() {
 	// dominates the current size here — no need to reconcile against `readDepth` before reporting.
 	const readDepth = trackedTxns.size;
 	const depths = {
-		writeDepth: writeTxnQueueDepth,
+		writeDepth: outstandingCommitCount,
 		writeMaxDepth: writeTxnQueueDepthHighWater,
 		readDepth,
 		readMaxDepth: readTxnQueueDepthHighWater,
 	};
-	writeTxnQueueDepthHighWater = writeTxnQueueDepth;
+	writeTxnQueueDepthHighWater = outstandingCommitCount;
 	readTxnQueueDepthHighWater = readDepth;
 	return depths;
 }
@@ -365,10 +458,42 @@ export class DatabaseTransaction implements Transaction {
 
 	checkOverloaded() {
 		if (
-			outstandingCommit &&
+			oldestOutstandingCommit &&
 			!this.overloadChecked &&
-			performance.now() - outstandingCommitStart > MAX_OUTSTANDING_TXN_DURATION
+			performance.now() - oldestOutstandingCommit.start > MAX_OUTSTANDING_TXN_DURATION
 		) {
+			const now = performance.now();
+			// Also rate-limited across the whole overload episode (not just deduped per commit): under
+			// sustained heavy load, many distinct commits can each individually age past the limit in
+			// quick succession as earlier ones finally settle, which without this cap would turn one
+			// overload episode into a growing stream of ERROR lines — the same "flood" harper#2001's
+			// original per-request log was fixed to avoid, just shifted from per-request to per-commit.
+			// A commit skipped by the cooldown is NOT marked `logged`, so it still gets a log later if
+			// it's still the oldest once the cooldown clears, rather than going silent forever.
+			if (!oldestOutstandingCommit.logged && now - lastOverloadLogAt > OVERLOAD_LOG_MIN_INTERVAL_MS) {
+				// Log once per stuck commit (not once per rejected request, harper#2001): a wedged
+				// thread otherwise logs nothing at all server-side while rejecting every write with a
+				// 503, which was the single biggest obstacle to root-causing a recurrence. The flag lives
+				// on the node itself, so if THIS commit settles while still over the limit and a
+				// different one is now oldest, that one logs too instead of staying silent forever.
+				oldestOutstandingCommit.logged = true;
+				lastOverloadLogAt = now;
+				const nativeTransactionId = oldestOutstandingCommit.nativeTransaction?.id;
+				const store = oldestOutstandingCommit.store;
+				const startedFrom = oldestOutstandingCommit.startedFrom;
+				harperLogger.error(
+					`Rejecting writes on this thread: a commit has been outstanding for ` +
+						`${Math.round(now - oldestOutstandingCommit.start)}ms (exceeds the ` +
+						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${store?.rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
+						(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
+						(startedFrom?.resourceName
+							? `, started from ${startedFrom.resourceName}${startedFrom.method ? '.' + startedFrom.method : ''}`
+							: '') +
+						`. Further record updates and publishes from new application requests on this thread ` +
+						`will be rejected with 503 until the commit settles or the process is restarted (deletes, ` +
+						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
+				);
+			}
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
@@ -523,6 +648,11 @@ export class DatabaseTransaction implements Transaction {
 						// re-staged the writes into it
 						commitResolution = transaction.commit() as Promise<void>;
 						recordCommitLatency(commitResolution, performance.now());
+						// Write-queue-depth accounting for this replay commit happens uniformly below, via
+						// trackOutstandingCommit(commitResolution) — see that function's comment. Omitting
+						// dedicated accounting here (as a prior version of this replay path did) used to leave
+						// write-transaction-queue-depth, the one metric that can observe a commit that never
+						// settles (harper#2001), reading zero for exactly this path.
 					}
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
@@ -537,28 +667,19 @@ export class DatabaseTransaction implements Transaction {
 							// Promise<number | void>; it is handled in the resolve callback below.
 							commitResolution = transaction.commit();
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
-							// metric. This is the same clock the overload check uses (outstandingCommitStart is
-							// stamped at submit), so a rising p99/p999 is the leading indicator for the
+							// metric. This is the same clock the overload check uses (trackOutstandingCommit
+							// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
 							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
-							// conflict retry rejects this promise and issues a fresh commit(), and outstandingCommit
-							// re-arms per attempt, so recording per attempt matches the overload semantics.
+							// conflict retry rejects this promise and issues a fresh commit(), which is tracked as
+							// its own attempt, so recording per attempt matches the overload semantics.
 							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
 							// Promise<void> here because the widening union defeats flow analysis on the prior
 							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
 							recordCommitLatency(commitResolution as Promise<void>, performance.now());
-							// Count this commit against the write queue depth until the storage engine
-							// resolves it. A transient-conflict retry rejects this promise and issues a
-							// fresh commit() (re-entering here), so the enter/leave stays balanced. leaveWriteQueue
-							// never throws, so the settled promise resolves and needs no rejection handling of its own.
-							// The thenable guard protects against a future caller passing a non-Promise
-							// `commitResolution` (today it is always rocksdb-js's async Transaction.commit()
-							// result, guaranteed to be a Promise).
-							enterWriteQueue();
-							if (commitResolution && typeof (commitResolution as any).then === 'function') {
-								commitResolution.then(leaveWriteQueue, leaveWriteQueue);
-							} else {
-								leaveWriteQueue();
-							}
+							// Write-queue-depth accounting for this commit happens uniformly below, via
+							// trackOutstandingCommit(commitResolution) — see that function's comment. A
+							// transient-conflict retry rejects this promise and issues a fresh commit()
+							// (re-entering here), which trackOutstandingCommit tracks as its own attempt.
 						} else {
 							try {
 								commitResolution = transaction.abort();
@@ -573,18 +694,10 @@ export class DatabaseTransaction implements Transaction {
 				}
 
 				if (commitResolution) {
-					if (!outstandingCommit) {
-						outstandingCommit = commitResolution;
-						outstandingCommitStart = performance.now();
-						outstandingCommit
-							// if `commitResolution` rejects with and `ERR_BUSY` error, the retry logic
-							// will correct course, but the reject will still be propagated on the
-							// `outstandingCommit` promise and needs to be caught and silenced
-							.catch(() => {})
-							.finally(() => {
-								outstandingCommit = null;
-							});
-					}
+					// Read the table off the write itself, not this.db, which is whichever table first
+					// claimed this per-database transaction in txnForContext and so can name the wrong
+					// table when a transaction spans more than one table in the same database.
+					trackOutstandingCommit(commitResolution, this.writes[0]?.store, this.startedFrom, transaction);
 					const completions = [];
 					return commitResolution.then(
 						(commitResult) => {
@@ -660,7 +773,6 @@ export class DatabaseTransaction implements Transaction {
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.clearWrites();
-							if (this.#context?.resourceCache) this.#context.resourceCache = null;
 							this.next = null;
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
@@ -752,7 +864,6 @@ export class DatabaseTransaction implements Transaction {
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.clearWrites();
-				if (this.#context?.resourceCache) this.#context.resourceCache = null;
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
@@ -787,7 +898,6 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// reset the transaction
 		this.clearWrites();
-		if (this.#context?.resourceCache) this.#context.resourceCache = null;
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link

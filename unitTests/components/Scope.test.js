@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
 const assert = require('node:assert');
 const { join, basename } = require('node:path');
 const { tmpdir } = require('node:os');
+const { pathToFileURL } = require('node:url');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { stringify } = require('yaml');
 const { spy } = require('sinon');
@@ -220,6 +221,63 @@ describe('Scope', () => {
 		await scope.close();
 	});
 
+	it('should call requestRestart when the plugin config block is deleted', async () => {
+		// Deleting a component's block emits `remove`, not `change`. Absence is the
+		// canonical disabled state for opt-in built-ins (e.g. the /v1 models gateway),
+		// so removal must restart just like a change would — otherwise the component
+		// keeps serving until some unrelated restart.
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { enabled: true } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+
+		await scope.ready;
+
+		assert.equal(restartNeeded(), false, 'requestRestart should not be called yet');
+
+		// Rewrite the config with the plugin's block deleted entirely
+		await writeFile(this.configFilePath, stringify({ otherPlugin: { enabled: true } }));
+
+		await waitFor(() => restartNeeded());
+
+		assert.equal(restartNeeded(), true, 'requestRestart should be called on block removal');
+
+		await scope.close();
+	});
+
+	it('should NOT call requestRestart on block removal when the plugin handles remove itself', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { enabled: true } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+
+		await scope.ready;
+
+		const removeSpy = spy();
+		scope.options.on('remove', removeSpy);
+
+		await writeFile(this.configFilePath, stringify({ otherPlugin: { enabled: true } }));
+
+		await waitFor(() => removeSpy.callCount > 0);
+
+		assert.equal(removeSpy.callCount, 1, 'plugin remove handler should be invoked');
+		assert.equal(restartNeeded(), false, 'plugin owns removal handling; no restart requested');
+
+		await scope.close();
+	});
+
 	it('should emit error for missing default entry handler', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { foo: 'bar' } }));
 
@@ -259,6 +317,35 @@ describe('Scope', () => {
 		assert.equal(restartNeeded(), false, 'requestRestart should not be called');
 
 		await scope.close();
+	});
+
+	it('logs a forwarded child error when no scope error listener remains', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { foo: 'bar' } }));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+		await scope.ready;
+
+		assert.doesNotThrow(() => scope.options.emit('error', new Error('child listener failed')));
+		await scope.close();
+	});
+
+	it('invalidates a runtime first loaded by a scope created during deploy', async () => {
+		deployLifecycle._handle({ name: this.appName, phase: 'start' });
+		try {
+			const applicationScope = new ApplicationScope(this.appName, this.resources, this.server);
+			applicationScope.runtimeRoot = this.directory;
+			applicationScope.recordLoadedModule(pathToFileURL(this.testFilePath).href, Buffer.from('"foo";'));
+
+			assert.equal(await applicationScope.finishDeploy(), true);
+		} finally {
+			deployLifecycle._handle({ name: this.appName, phase: 'end' });
+		}
 	});
 
 	it('should support custom entry handlers', async () => {
@@ -425,10 +512,9 @@ describe('Scope', () => {
 			scope.requestRestart();
 			assert.equal(restartNeeded(), false, 'requestRestart was suppressed during deploy');
 
-			// Exit the deploy — restarts should be enabled again
+			// Exit the deploy — the suppressed request is replayed once, after the gate is lowered.
 			deployLifecycle._handle({ name: this.appName, phase: 'end' });
-			scope.requestRestart();
-			assert.equal(restartNeeded(), true, 'requestRestart works again after deploy:end');
+			assert.equal(restartNeeded(), true, 'a lasting restart request is replayed after deploy:end');
 
 			await scope.close();
 		});
@@ -457,7 +543,71 @@ describe('Scope', () => {
 			await scope.close();
 		});
 
-		it('pauses entry handlers on deploy:start and resumes them on deploy:end without losing plugin listeners', async () => {
+		it('keeps entry handlers created during deploy paused until deploy:end', async () => {
+			deployLifecycle._handle({ name: this.appName, phase: 'start' });
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				let deployWaitResolved = false;
+				const deployWait = scope.waitForDeployCompletion().then(() => {
+					deployWaitResolved = true;
+				});
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+				assert.equal(entries.length, 0, 'a handler created mid-deploy must not scan the intermediate tree');
+				assert.equal(deployWaitResolved, false, 'component loading remains gated by the active deploy');
+
+				deployLifecycle._handle({ name: this.appName, phase: 'end' });
+				await deployWait;
+				await entryHandler.ready;
+				assert.ok(entries.length > 0, 'the handler scans after deploy:end resumes it');
+			} finally {
+				if (deployLifecycle.isDeployInFlight(this.appName)) {
+					deployLifecycle._handle({ name: this.appName, phase: 'end' });
+				}
+				await scope.close();
+			}
+		});
+
+		it('resumes a mid-deploy scope when the deploy owner exits', async () => {
+			const ownerThreadId = 41;
+			deployLifecycle._handle({
+				name: this.appName,
+				phase: 'start',
+				deploymentId: 'orphaned-deploy',
+				ownerThreadId,
+			});
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				const deployWait = scope.waitForDeployCompletion();
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+
+				deployLifecycle._reclaimOwner(ownerThreadId);
+				await deployWait;
+				await entryHandler.ready;
+
+				assert.equal(deployLifecycle.isDeployInFlight(this.appName), false);
+				assert.ok(entries.length > 0, 'reclaiming the dead owner resumes the paused handler');
+			} finally {
+				await scope.close();
+			}
+		});
+
+		it('pauses entry handlers and emits the changed-file diff on deploy:end without losing plugin listeners', async () => {
 			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
 
 			const scope = new Scope(
@@ -472,21 +622,23 @@ describe('Scope', () => {
 			// Register a plugin-style entry handler with a callback. Codex caught
 			// the original close+recreate design dropping these callbacks; this
 			// case guards against that regression.
-			const handlerSpy = spy();
-			const entryHandler = scope.handleEntry(handlerSpy);
+			const entries = [];
+			const entryHandler = scope.handleEntry((entry) => entries.push(entry));
 			await entryHandler.ready;
-			const callsBeforeDeploy = handlerSpy.callCount;
+			const callsBeforeDeploy = entries.length;
 			assert.ok(callsBeforeDeploy > 0, 'plugin handler fires for initial files');
 
 			// Enter and exit a deploy without touching the EntryHandler instance.
 			deployLifecycle._handle({ name: this.appName, phase: 'start' });
 			// Settle the pause's pending watcher.close() promise before resuming.
 			await new Promise((r) => setTimeout(r, 50));
+			await writeFile(this.testFilePath, '"deployed";');
 			deployLifecycle._handle({ name: this.appName, phase: 'end' });
 
-			// The same EntryHandler instance keeps the plugin's callback; the
-			// post-deploy re-scan should fire it again for the same file(s).
-			await waitFor(() => handlerSpy.callCount > callsBeforeDeploy, 3000);
+			// The same EntryHandler instance keeps the plugin's callback and translates the resumed
+			// watcher's fresh add into the logical change relative to the pre-deploy generation.
+			await waitFor(() => entries.length > callsBeforeDeploy, 3000);
+			assert.equal(entries.at(-1).eventType, 'change');
 
 			// And the EntryHandler instance is unchanged — listener attachment is
 			// preserved, not re-issued through a fresh wrapper.
@@ -494,10 +646,10 @@ describe('Scope', () => {
 
 			// Subsequent post-deploy file changes still fire the plugin handler
 			// (the wired listener is still attached).
-			const callsAfterResume = handlerSpy.callCount;
+			const callsAfterResume = entries.length;
 			await writeFile(this.testFilePath, '"after-deploy";');
-			await waitFor(() => handlerSpy.callCount > callsAfterResume);
-			assert.ok(handlerSpy.callCount > callsAfterResume, 'post-deploy change fires the plugin handler');
+			await waitFor(() => entries.length > callsAfterResume);
+			assert.ok(entries.length > callsAfterResume, 'post-deploy change fires the plugin handler');
 
 			await scope.close();
 		});
@@ -551,6 +703,196 @@ describe('Scope', () => {
 				beforeClose - 1,
 				'scope.close() should remove its deploy:start listener from the module emitter'
 			);
+		});
+	});
+
+	// The `server` proxy is what turns config into routing: it names every middleware entry after
+	// the plugin and resolves the plugin's `urlPath`/`host` into the route the dispatcher matches.
+	describe('server proxy routing injection', () => {
+		const registerAndCapture = async (config, options, mount) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: config }));
+			const http = spy();
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			scope.server.http(() => {}, options);
+			await scope.close();
+			return http.getCall(0).args[1];
+		};
+
+		it('names the entry after the plugin and resolves the configured urlPath', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' });
+			assert.equal(injected.name, this.pluginName);
+			assert.equal(injected.urlPath, '/assets/');
+		});
+
+		it('resolves a plugin-name-relative urlPath rather than passing it through raw', async () => {
+			// A plugin that spreads its whole config section into these options (REST does) used to
+			// hand the router the literal './', which normalized to the unmatchable route '/.'
+			const injected = await registerAndCapture({ urlPath: './' }, { urlPath: './' });
+			assert.equal(injected.urlPath, `/${this.pluginName}/`);
+		});
+
+		it('lets an explicit call option override the configured urlPath, still resolved', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' }, { urlPath: 'other' });
+			assert.equal(injected.urlPath, '/other/');
+		});
+
+		it('carries the configured host', async () => {
+			const injected = await registerAndCapture({ host: 'api.example.com' });
+			assert.equal(injected.host, 'api.example.com');
+		});
+
+		it('leaves routing undefined when nothing configures it', async () => {
+			const injected = await registerAndCapture({ files: 'test.js' });
+			assert.equal(injected.urlPath, undefined);
+			assert.equal(injected.host, undefined);
+		});
+
+		it('routes by the application mount declared in the root config', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' }, undefined, {
+				host: 'api.example.com',
+				urlPath: '/v1',
+			});
+			assert.equal(injected.host, 'api.example.com');
+			assert.equal(injected.urlPath, '/v1/assets/');
+		});
+
+		it('mount host wins over a host the application shipped', async () => {
+			const injected = await registerAndCapture({ host: 'www.shipped.example' }, undefined, {
+				host: 'api.example.com',
+			});
+			assert.equal(injected.host, 'api.example.com');
+		});
+
+		// The mount is applied ONLY at the routing boundary. The router strips it before a handler
+		// runs, so entry URL paths — and the resource paths graphqlSchema/jsResource derive from
+		// them — must stay mount-relative or REST would look up a path nothing registered.
+		it('does not leak the mount into the config the entry pipeline reads', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js', urlPath: 'assets' } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				{ urlPath: '/v1' }
+			);
+			await scope.ready;
+			assert.equal(scope.options.getAll().urlPath, 'assets', 'plugin config stays as authored');
+			await scope.close();
+		});
+	});
+
+	// REST deduplicates its registration per route, so the route identity must be injective: two
+	// configurations that resolve to different routes must not produce the same one. Composing the
+	// mount with the plugin's *raw* urlPath collided (mount '/a' + 'bc' and mount '/ab' + 'c' both
+	// gave '/abc'), which would silently skip the second application's REST registration.
+	describe('routeFor', () => {
+		const routeFor = async (config, mount, options) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: config }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			const route = scope.routeFor(options);
+			await scope.close();
+			return route;
+		};
+
+		it('distinguishes routes that a raw concatenation would collide', async () => {
+			const a = await routeFor({ urlPath: 'bc' }, { urlPath: '/a' });
+			const b = await routeFor({ urlPath: 'c' }, { urlPath: '/ab' });
+			assert.equal(a.urlPath, '/a/bc/');
+			assert.equal(b.urlPath, '/ab/c/');
+			assert.notEqual(a.urlPath, b.urlPath);
+		});
+
+		it('resolves the same route for configurations that are genuinely the same mount', async () => {
+			// A mount of '/api' with no plugin path and a plugin path of '/api' with no mount both
+			// answer on '/api' — the same chain, so REST should register once.
+			const mounted = await routeFor({}, { urlPath: '/api' });
+			const pluginOnly = await routeFor({ urlPath: '/api' }, undefined);
+			assert.equal(mounted.urlPath, pluginOnly.urlPath);
+		});
+
+		it('keeps host and path separable', async () => {
+			const route = await routeFor({}, { host: 'api.example.com', urlPath: '/v1' });
+			assert.deepEqual(route, { host: 'api.example.com', urlPath: '/v1/' });
+		});
+
+		it('matches what the server proxy injects', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { urlPath: 'assets' } }));
+			const http = spy();
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http }),
+				undefined,
+				undefined,
+				{ host: 'api.example.com', urlPath: '/v1' }
+			);
+			await scope.ready;
+			const expected = scope.routeFor(undefined);
+			scope.server.http(() => {});
+			const injected = http.getCall(0).args[1];
+			assert.equal(injected.urlPath, expected.urlPath);
+			assert.equal(injected.host, expected.host);
+			await scope.close();
+		});
+	});
+
+	describe('externalBasePath', () => {
+		const scopeWithMount = async (mount) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			return scope;
+		};
+
+		it('prefixes the mount so a client-facing path points inside the mount', async () => {
+			const scope = await scopeWithMount({ urlPath: '/v1' });
+			assert.equal(scope.externalBasePath('/assets/'), '/v1/assets/');
+			assert.equal(scope.externalBasePath('/'), '/v1/');
+			await scope.close();
+		});
+
+		it('is identity when the application has no path mount', async () => {
+			const scope = await scopeWithMount(undefined);
+			assert.equal(scope.externalBasePath('/assets/'), '/assets/');
+			await scope.close();
+
+			const hostOnly = await scopeWithMount({ host: 'api.example.com' });
+			assert.equal(hostOnly.externalBasePath('/assets/'), '/assets/');
+			await hostOnly.close();
 		});
 	});
 });

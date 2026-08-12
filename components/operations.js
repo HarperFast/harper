@@ -39,6 +39,7 @@ const {
 	discardProjectActivationArtifacts,
 	updateApplicationLockEntry,
 	createApplicationActivationTransaction,
+	dropComponentDirectory,
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
 	DEPLOY_ACTIVATION_DIR,
@@ -63,6 +64,21 @@ const {
 } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
 const { isOperationAuthorizationBypassed } = require('../server/serverHelpers/operationAuthorizationState.ts');
+
+const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+
+function componentDropLockOptions(project) {
+	return {
+		timeoutMs: DROP_COMPONENT_LOCK_TIMEOUT_MS,
+		onWait: (owner) =>
+			log.info(
+				`Waiting to drop ${project} while component preparation is in progress` +
+					(owner ? ` in process ${owner.pid}, thread ${owner.threadId}` : '')
+			),
+		onReleaseError: (error) => log.error(`Failed to release the component preparation lock for ${project}:`, error),
+		isOwnerAlive: (owner) => owner.pid !== process.pid || manageThreads.isThreadRunning(owner.threadId),
+	};
+}
 
 /**
  * Read the settings.js file and return the
@@ -261,14 +277,12 @@ async function addComponent(req) {
 	}
 
 	log.trace(`adding component`);
-	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, install_command, install_timeout, install_allow_scripts } = req;
 
 	const template = req.template || 'https://github.com/harperdb/application-template';
 
 	try {
-		const projectDir = path.join(cfDir, project);
-		fs.mkdirSync(projectDir, { recursive: true });
+		await fs.mkdir(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), { recursive: true });
 		const application = new Application({
 			name: project,
 			packageIdentifier: template,
@@ -333,12 +347,27 @@ async function dropCustomFunctionProject(req) {
 
 	try {
 		const projectDir = path.join(cfDir, project);
+		const stagingDir = path.join(cfDir, ASIDE_STAGING_DIR, project);
+		// Nothing live AND nothing parked aside means there is genuinely no such component: let stat throw
+		// the ENOENT so the caller gets "no such project" rather than a silent success.
+		if (!(await fs.pathExists(projectDir)) && !(await fs.pathExists(stagingDir))) await fs.stat(projectDir);
+		// Invalidate staged deployments BEFORE the directory goes away, so an activate racing this drop
+		// cannot swap a staged build back into a project that is being deleted.
 		await invalidateProjectStagedDeployments(project);
 		await discardProjectStagedApplications(projectDir);
 		await discardProjectActivationArtifacts(projectDir);
-		fs.rmSync(projectDir, { recursive: true });
+		await withComponentPreparationLock(
+			projectDir,
+			async () => {
+				// Retires any interrupted-extraction aside for this component and renames the live directory
+				// aside before removing it, so a concurrent startup recovery can never restore a tree over a
+				// component that was just dropped.
+				await dropComponentDirectory(projectDir, project, log);
+			},
+			componentDropLockOptions(project)
+		);
 		await updateApplicationLockEntry(project, undefined);
-		let response = await server.replication.replicateOperation(req);
+		const response = await server.replication.replicateOperation(req);
 		response.message = `Successfully deleted project: ${project}`;
 		return response;
 	} catch (err) {
@@ -477,18 +506,26 @@ async function deployComponent(req) {
 }
 
 /**
- * A genuinely-new (never-loaded) component deployed without an immediate restart can't serve its
- * routes until Harper restarts, so mark a restart as needed (harper#674). This is the setter only; it
- * does not itself restart — it makes get_status report restartRequired:true and lets the REST
- * route-miss path surface the actionable "needs a restart" 404. Scoped to new components (harper#1806):
- * an existing, already-loaded component's own file watcher independently requests a restart if a
- * redeploy actually needs one, so a redeploy stays quiet. Runs per node — each node checks its own
- * isNewComponent, since directory state (new vs. redeploy) can differ across the cluster. The one-shot
- * path has extractApplication set isNewComponent in place; the two-phase path has activateApplication
- * set it at swap time (staging is always fresh, so extract never sees the live dir).
+ * Mark a restart as needed when this deploy changed code the running process can't pick up on its own.
+ * Setter only — it does not restart; it makes get_status report restartRequired:true and lets the REST
+ * route-miss path surface the actionable "needs a restart" 404 (harper#674).
+ *
+ * Two triggers:
+ *   - `isNewComponent`: a genuinely-new, never-loaded component can't serve its routes until Harper
+ *     restarts. Scoped to new components (harper#1806) because an existing component's own file watcher
+ *     independently requests a restart when a redeploy actually needs one, so a redeploy stays quiet.
+ *   - `packageMetadataChanged`: installed package metadata sits outside most plugin watch globs, so no
+ *     watcher sees a dependency or module-entry change — but it does invalidate already-loaded code.
+ *     Compared across the swap by the deploy path that performed it.
+ *
+ * Runs per node: each node checks its own directory state, which can differ across the cluster (a
+ * component can be new on a peer that never had it and a redeploy on the origin). The one-shot path has
+ * extractApplication/prepareApplication set both flags in place; the two-phase path has
+ * activateStagedApplication set them at swap time, comparing the pre-swap live tree against the staged
+ * one (staging is always fresh, so extraction never sees the live dir).
  */
-function markRestartRequiredForNewComponent(application) {
-	if (application.isNewComponent) {
+function markRestartRequiredForDeploy(application) {
+	if (application.isNewComponent || application.packageMetadataChanged) {
 		const { requestRestart } = require('./requestRestart.ts');
 		requestRestart();
 	}
@@ -614,12 +651,13 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 			// deploy checks its own local isNewComponent, since directory state (and therefore
 			// whether the component was already active) can differ per node.
 			//
-			// An existing, already-active component being redeployed does NOT force a restart
-			// here: some updates (e.g. static files only) may not need one at all, and when one
-			// genuinely is needed, that component's already-running file watcher (Scope/
-			// EntryHandler, see deployLifecycle.ts) independently detects the post-deploy file
-			// changes and requests the restart itself.
-			markRestartRequiredForNewComponent(application);
+			// An existing, already-active component being redeployed does NOT force a restart here: some
+			// updates (e.g. static files only) may not need one at all, and when one genuinely is needed,
+			// that component's already-running file watcher (Scope/EntryHandler, see deployLifecycle.ts)
+			// independently detects the post-deploy file changes and requests the restart itself. Package
+			// metadata is the exception the helper handles — it sits outside most plugin globs, so no
+			// watcher sees a dependency or module-entry change.
+			markRestartRequiredForDeploy(application);
 			response.message = `Successfully deployed: ${application.name}`;
 		}
 
@@ -788,7 +826,7 @@ async function _legacyDeployComponentTwoPhase(req, credentialReferences) {
 		} else {
 			// No restart requested: a genuinely-new component still needs one to serve its routes
 			// (harper#674). activateApplication set isNewComponent from the pre-swap live dir above.
-			markRestartRequiredForNewComponent(application);
+			markRestartRequiredForDeploy(application);
 			response.message = `Successfully deployed: ${application.name}`;
 		}
 
@@ -875,7 +913,7 @@ async function _legacyDeployPhaseActivate(req) {
 	// same marking the one-shot peer path does — so a new component deployed cluster-wide with
 	// restart:false reports restartRequired on every node, not just the origin. A rolling restart, which
 	// also arrives here with restart:false, clears the flag when it reaches this node.
-	else markRestartRequiredForNewComponent(application);
+	else markRestartRequiredForDeploy(application);
 	return { message: `Activated component: ${req.project}`, project: req.project, activated: true };
 }
 
@@ -970,7 +1008,7 @@ async function _legacyDeployComponentActivateExisting(req, credentialReferences)
 	} else {
 		// No restart requested: activating a genuinely-new component still needs one to serve its routes
 		// (harper#674). activateApplication set isNewComponent from the pre-swap live dir above.
-		markRestartRequiredForNewComponent(application);
+		markRestartRequiredForDeploy(application);
 	}
 
 	// ---- Activate gate: a peer can hold a good staged build and still fail the swap. Same gate the
@@ -1248,7 +1286,7 @@ async function deployComponentTwoPhase(req) {
 			);
 		}
 		activationBarrierPassed = activateFailures.length === 0;
-		if (!req.restart) markRestartRequiredForNewComponent(application);
+		if (!req.restart) markRestartRequiredForDeploy(application);
 		const restart = await restartActivatedComponent(req, recorder.deploymentId, req.project, activationSpec, emit);
 		if (restart.failedPeers.length) recorder.recordPeers(restart.failedPeers);
 		if (restart.failedPeers.length && !req.ignore_replication_errors) {
@@ -1395,7 +1433,7 @@ async function deployComponentActivateExisting(req) {
 			);
 		}
 		activationBarrierPassed = failed.length === 0;
-		if (!req.restart) markRestartRequiredForNewComponent(application);
+		if (!req.restart) markRestartRequiredForDeploy(application);
 		const restart = await restartActivatedComponent(req, req.deployment_id, req.project, spec, emit);
 		if (restart.failedPeers.length) {
 			settledPeers = [...settledPeers, ...restart.failedPeers];
@@ -1496,7 +1534,7 @@ async function componentDeployPhase(req) {
 		beforeCommit: () => configTransaction.commit(),
 		onRollback: () => configTransaction.rollback(),
 	});
-	markRestartRequiredForNewComponent(application);
+	markRestartRequiredForDeploy(application);
 	return { message: `Activated component: ${req.project}`, project: req.project, activated: true };
 }
 
@@ -1635,7 +1673,9 @@ async function writeComponentRootConfig(req, credentialReferences) {
 		};
 	}
 	if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
-	// Persist credential references (never tokens) so every cold install re-resolves from the store.
+	if (req.host !== undefined) applicationConfig.host = req.host;
+	// Persist credential references (never tokens) so every cold install of this component — reboot, new
+	// peer, revert — re-resolves the credential from the store.
 	if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
 	await configUtils.addConfig(req.project, applicationConfig);
 }
@@ -2396,31 +2436,42 @@ async function dropComponent(req) {
 	const componentPath = path.join(componentsRoot, project);
 	const pathToComponent = path.join(componentsRoot, projectPath);
 
-	await withComponentPreparationLock(componentPath, async () => {
-		const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
-		if (await fs.pathExists(componentSymlink)) {
-			await fs.unlink(componentSymlink);
-		}
+	await withComponentPreparationLock(
+		componentPath,
+		async () => {
+			const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+			if (await fs.pathExists(componentSymlink)) {
+				await fs.unlink(componentSymlink);
+			}
 
-		if (!file) {
-			await invalidateProjectStagedDeployments(project);
-			await discardProjectStagedApplications(componentPath);
-			await discardProjectActivationArtifacts(componentPath);
-		}
-		if (await fs.pathExists(pathToComponent)) await fs.remove(pathToComponent);
-		if (!file) await updateApplicationLockEntry(project, undefined);
+			if (!file) {
+				// Invalidate staged deployments before the directory goes away, so an activate racing this
+				// drop cannot swap a staged build back into a component that is being dropped.
+				await invalidateProjectStagedDeployments(project);
+				await discardProjectStagedApplications(componentPath);
+				await discardProjectActivationArtifacts(componentPath);
+				// Retires any interrupted-extraction aside and renames the live tree aside before removing
+				// it, so startup recovery can never restore a tree over a dropped component.
+				await dropComponentDirectory(componentPath, project, log);
+				await updateApplicationLockEntry(project, undefined);
+			} else if (await fs.pathExists(pathToComponent)) {
+				await fs.remove(pathToComponent);
+			}
 
-		const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
-		if (await fs.pathExists(packageJsonPath)) {
-			const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
-			if (packageJson?.dependencies?.[project]) delete packageJson.dependencies[project];
-			await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
-		}
+			const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
+			if (await fs.pathExists(packageJsonPath)) {
+				const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+				if (packageJson?.dependencies?.[project]) {
+					delete packageJson.dependencies[project];
+				}
+				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
+			}
 
-		configUtils.deleteConfigFromFile([project]);
-	});
-
-	let response = await server.replication.replicateOperation(req);
+			configUtils.deleteConfigFromFile([project]);
+		},
+		componentDropLockOptions(project)
+	);
+	const response = await server.replication.replicateOperation(req);
 	if (req.restart === true) {
 		manageThreads.restartWorkers('http');
 		response.message = `Successfully dropped: ${projectPath}, restarting Harper`;

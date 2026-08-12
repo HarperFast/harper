@@ -77,7 +77,24 @@ const JOB_ID = JOB_NAME.substring(4);
 		jobObj.message = err.message ? err.message : err;
 		jobObj.end_datetime = moment().valueOf();
 	} finally {
-		await jobs.updateJob(jobObj);
+		// A rejected updateJob must not skip handle cleanup and exit scheduling below (that would
+		// leak this worker's process-global RocksDB handles and leave the worker hanging).
+		try {
+			await jobs.updateJob(jobObj);
+		} catch (updateErr) {
+			harperLogger.error('Error updating job record on job worker exit:', updateErr);
+		}
+		// Release this worker's RocksDB handles before it exits. A job worker opens the whole
+		// database graph via getDatabases(); rocksdb-js's registry is process-global and a thread
+		// that exits without closing leaks its handles process-wide, which (among other costs)
+		// blocks an online restore_backup from confirming the target database is closed. Best
+		// effort — never let cleanup mask the job result.
+		try {
+			const { closeLoadedDatabases } = await import('../../resources/databases.ts');
+			closeLoadedDatabases();
+		} catch (closeErr) {
+			harperLogger.warn('Error releasing database handles on job worker exit:', closeErr);
+		}
 		// On Bun 1.3.13, calling process.exit() in a worker thread with lmdb-js loaded
 		// while sibling workers are running causes a NAPI fatal error crash. Unref
 		// parentPort (which broadcastWithAcknowledgement may have ref'd during schema

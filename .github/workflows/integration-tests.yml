@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set Node versions
         id: set-node-versions
@@ -38,8 +38,19 @@ jobs:
             # the full 22/24/26 matrix runs on push to main/release and on the nightly schedule.
             echo "node-versions=[24]" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
-            echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
+            # TEMPORARY: pinned to 26.5.0 instead of floating "26" — 26.5.1's llhttp/undici bump
+            # (deps: llhttp 9.4.2->9.4.3, undici 8.7.0->8.9.0) exposed a genuine Harper-side defect
+            # (TTL-reset-on-write silently loses to the eviction sweep on the operations-API/SQL/
+            # custom-resource write surfaces; confirmed NOT an undici-client artifact via a curl-based
+            # discriminator, and NOT a request-latency race via direct commit timing) plus a
+            # pre-existing per-thread config-reload race (#1747) made more visible by the same bump.
+            # Remove this pin once the underlying race is fixed — see harper#2025, which stays open
+            # until then. Do not extend this pin to unit-test.yml or other workflows without new evidence.
+            echo "node-versions=[22, 24, \"26.5.0\"]" >> $GITHUB_OUTPUT
           else
+            # Manual dispatch intentionally does NOT apply the 26.5.0 pin above: selecting "26"
+            # here floats to the latest 26.x release, so it doubles as the live reproducer for
+            # checking whether harper#2025 is still reproducing on the newest Node 26 patch.
             echo "node-versions=[${{ github.event.inputs.node-version }}]" >> $GITHUB_OUTPUT
           fi
 
@@ -55,13 +66,19 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
+          # A manual workflow_dispatch with node-version: '26' is meant to float to the latest
+          # 26.x release (see the comment on the manual-dispatch branch above); without this,
+          # setup-node would silently prefer whatever 26.x is already in the runner's tool cache.
+          # Scoped to that one floating case so the normal pinned-version jobs (22, 24, "26.5.0")
+          # don't pay an extra manifest lookup on every run.
+          check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Install dependencies
         run: npm install --ignore-scripts
@@ -92,13 +109,19 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
+          # A manual workflow_dispatch with node-version: '26' is meant to float to the latest
+          # 26.x release (see the comment on the manual-dispatch branch above); without this,
+          # setup-node would silently prefer whatever 26.x is already in the runner's tool cache.
+          # Scoped to that one floating case so the normal pinned-version jobs (22, 24, "26.5.0")
+          # don't pay an extra manifest lookup on every run.
+          check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -142,7 +165,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup Node.js 24
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -179,7 +202,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup Node.js 24
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -225,7 +248,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -274,7 +297,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0

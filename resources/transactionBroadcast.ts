@@ -108,22 +108,24 @@ class Subscription extends IterableEventQueue {
 	}
 	end() {
 		// cleanup
-		if (!this.subscriptions) return;
-		const tableSubscriptions = this.subscriptions.tables;
-		const envSubscriptions = tableSubscriptions?.envs;
-		this.subscriptions.splice(this.subscriptions.indexOf(this), 1);
-		if (this.subscriptions.length === 0) {
-			if (tableSubscriptions) {
-				// TODO: Handle cleanup of wildcard
-				const key = this.subscriptions.key;
-				tableSubscriptions.delete(key);
-				if (tableSubscriptions.size === 0) {
-					delete envSubscriptions[tableSubscriptions.tableId];
+		if (this.subscriptions) {
+			const tableSubscriptions = this.subscriptions.tables;
+			const envSubscriptions = tableSubscriptions?.envs;
+			this.subscriptions.splice(this.subscriptions.indexOf(this), 1);
+			if (this.subscriptions.length === 0) {
+				if (tableSubscriptions) {
+					// TODO: Handle cleanup of wildcard
+					const key = this.subscriptions.key;
+					tableSubscriptions.delete(key);
+					if (tableSubscriptions.size === 0) {
+						delete envSubscriptions[tableSubscriptions.tableId];
+					}
 				}
 			}
+			if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
+			this.subscriptions = null;
 		}
-		if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
-		this.subscriptions = null;
+		this.close();
 	}
 	toJSON() {
 		return { name: 'subscription' };

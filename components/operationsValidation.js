@@ -19,6 +19,11 @@ const DEPLOYMENT_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-
 // containing `=` or a newline) from injecting extra assignments into a .env file.
 const ENV_KEY_REGEX = /^[\w.-]+$/;
 
+// Compiled once and reused: a routing `host` is either a DNS hostname or a bare IPv6 literal, and
+// re-compiling these per validation call would allocate on every deploy_component.
+const HOSTNAME_SCHEMA = Joi.string().hostname();
+const IPV6_SCHEMA = Joi.string().ip({ version: 'ipv6' });
+
 module.exports = {
 	getDropCustomFunctionValidator,
 	setCustomFunctionValidator,
@@ -457,14 +462,34 @@ const URL_PATH_SCHEMA = Joi.string()
 	.min(1)
 	.custom((value, helpers) => {
 		if (value.includes('..')) return helpers.error('any.invalid');
+		// A component mount has no relative base and WHATWG clients strip '.' segments before
+		// sending the request, so a dot-segment mount would simply be unreachable.
 		if (value.split('/').includes('.')) return helpers.error('string.dotSegment');
 		return value;
 	})
 	.optional()
 	.messages({
-		'any.invalid': 'urlPath must not contain ".."',
-		'string.dotSegment': 'urlPath must not contain "." path segments',
+		'any.invalid': '{#label} must not contain ".."',
+		'string.dotSegment': '{#label} must not contain "." path segments',
 	});
+
+// Virtual hostname the component is served on. Like `urlPath`, this is deployment routing and belongs
+// on the root-config entry, not in the component's own config.yaml. `hostname()` rejects a value
+// carrying a port or path, which would never match the router's host compare. IPv6 literals are
+// accepted in their bare form only — the router unwraps the brackets it finds in a Host header, so a
+// bracketed value here would never match. Shared for the same reason as URL_PATH_SCHEMA.
+const HOST_SCHEMA = Joi.string()
+	.custom((value, helpers) => {
+		if (value.startsWith('[') || value.endsWith(']')) return helpers.error('string.bracketedHost');
+		return value;
+	})
+	.custom((value, helpers) => {
+		if (!HOSTNAME_SCHEMA.validate(value).error) return value;
+		// Accept a bare IPv6 literal, which `hostname()` rejects but the router can match.
+		return IPV6_SCHEMA.validate(value).error ? helpers.error('string.hostname') : value;
+	})
+	.optional()
+	.messages({ 'string.bracketedHost': '{#label} must not be bracketed; use the bare IPv6 literal' });
 
 // `registryAuth` was the credentials field's name on the 5.2 dev line. Rejected rather than ignored:
 // validation allows unknown keys, so a caller still sending it would otherwise get a deploy that
@@ -502,11 +527,15 @@ function deployComponentValidator(req) {
 		deployment_id: Joi.string().pattern(DEPLOYMENT_ID_REGEX).optional().messages({
 			'string.pattern.base': `'deployment_id' must be a UUID`,
 		}),
-		// If the activate phase fails on some nodes (leaving the cluster split across versions), swap the
-		// nodes that did activate back to the retained previous version before reporting the failure. Off
-		// by default.
+		// Automatic rollback of a partially-activated cluster is deliberately NOT offered. Once any node
+		// has crossed the activation barrier there is no sound way to know which peers actually swapped:
+		// a peer can complete its swap and then fail the persistent work that follows, so it reports
+		// `failed` while running the new version. Auto-reverting "the peers that failed" would then roll
+		// an untouched node an extra version back and leave the cluster split three ways. A partial
+		// activation therefore stays visibly `activating` and is rolled forward (or reverted explicitly,
+		// by target, with revert_component). See DESIGN.md, "Partial activation".
 		revert_on_failure: Joi.any().forbidden().messages({
-			'any.unknown': `'revert_on_failure' is not supported; recover partial activation by rolling forward`,
+			'any.unknown': `'revert_on_failure' is not supported; recover a partial activation by rolling forward, or roll back explicitly with revert_component`,
 		}),
 		// Opt out of the two-phase (stage-then-activate) deploy and use the legacy one-shot path instead.
 		// Defaults to two-phase.
@@ -514,12 +543,15 @@ function deployComponentValidator(req) {
 		_deploymentId: Joi.any().forbidden(),
 		_phase: Joi.any().forbidden(),
 		urlPath: URL_PATH_SCHEMA,
+		host: HOST_SCHEMA,
 		// Deploy credentials. Each entry is npm registry auth (`registry`) or git host auth (`host`,
 		// #1792), and supplies its secret either as a literal `token` (used only for this node's
 		// install, never persisted/replicated) or a `secret` reference to an hdb_secret row (#1550).
 		credentials: CREDENTIALS_ARRAY_SCHEMA,
 		registryAuth: FORBIDDEN_REGISTRY_AUTH,
-	}).with('urlPath', 'package');
+	})
+		.with('urlPath', 'package')
+		.with('host', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);
 }

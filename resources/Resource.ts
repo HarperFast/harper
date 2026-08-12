@@ -18,11 +18,13 @@ import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
-import { logger } from '../utility/logging/logger.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import { makeSchemaClass, type Contract, type SchemaClass } from './defineResource.ts';
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
+
+const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -295,36 +297,53 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static search = transactional(
 		function (resource: any, query: Query, request: Context) {
 			const result = resource.search ? resource.search(query) : missingMethod(resource, 'search');
-			const select = (request as any).select;
-			if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
-				const transform = transformForSelect(select, resource.constructor);
-				return result.map(transform);
-			}
-			return result;
+			return when(result, (result: any) =>
+				when(authorizeSearchResult(result, request?.user), (result: any) => {
+					const select = (request as any).select;
+					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
+						const transform = transformForSelect(select, resource.constructor);
+						return result.map(transform);
+					}
+					return result;
+				})
+			);
 		},
 		{ type: 'read', method: 'search', hasContent: false, syncAllowed: true }
 	);
 
 	static query = transactional(
-		function (resource: any, query: RequestTarget, _request: Context, data: any) {
-			// On the table path, search(target) uses `data` (the request body carrying the conditions) as
-			// its sole target, while checkPermission was set on the URL `query`. Thread it across so
-			// Table.search sees the flag and enforces row-level allowRead — otherwise a QUERY on a table
-			// with an overridden allowRead returns the full unfiltered set (the deferral skips the entry
-			// check on the promise that search consumes checkPermission, which it never sees).
-			// checkPermission is framework-owned: `data` is the client-controlled QUERY body, so it must
-			// always be overwritten here (not just filled when nullish) — otherwise a client could send
-			// `checkPermission: false` in the body to disable Table.search's row-level allowRead guard.
-			if (resource.constructor.loadAsInstance !== false && data && typeof data === 'object') {
-				const checkPermission = (query as any)?.checkPermission;
-				if (checkPermission == null) delete (data as any).checkPermission;
-				else (data as any).checkPermission = checkPermission;
+		function (resource: any, query: RequestTarget, request: Context, data: any) {
+			// Table.allowRead applies attribute permissions to the URL target. QUERY executes the
+			// separately parsed body target, so carry the framework-narrowed projection across after
+			// authorization. Never copy permission-control fields from the client body.
+			if (
+				resource.constructor.loadAsInstance !== false &&
+				data &&
+				typeof data === 'object' &&
+				(query as any)[AUTHORIZATION_SELECT]
+			) {
+				const allowed = Array.isArray(query.select) ? query.select : [query.select];
+				if (Object.prototype.hasOwnProperty.call(data, 'select') && data.select != null) {
+					const requested = Array.isArray(data.select) ? data.select : [data.select];
+					const requestedNames = new Set(requested.map((property: any) => property?.name ?? property));
+					const narrowed: any = requestedNames.has('*')
+						? allowed.slice()
+						: allowed.filter((property: any) => requestedNames.has(property?.name ?? property));
+					if (Array.isArray(data.select)) {
+						if (data.select.asArray) narrowed.asArray = true;
+						if (data.select.forceNulls) narrowed.forceNulls = true;
+					}
+					data.select = narrowed;
+				} else {
+					data.select = query.select;
+				}
 			}
-			return resource.search
+			const result = resource.search
 				? resource.constructor.loadAsInstance === false
 					? resource.search(query, data)
 					: resource.search(data, query)
 				: missingMethod(resource, 'search');
+			return when(result, (result: any) => authorizeSearchResult(result, request?.user));
 		},
 		{ hasContent: true, type: 'read', method: 'query' }
 	);
@@ -463,18 +482,22 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	}
 
 	// Default permissions (super user only accesss):
+	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
 	allowRead(user: User, target: RequestTarget, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
 	}
+	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
 	allowUpdate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
 	}
+	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
 	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
 	}
+	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
 	allowDelete(user: User, target: RequestTarget, context: Context): boolean | Promise<boolean> {
 		return user?.role.permission.super_user;
@@ -534,26 +557,6 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 }
 
 _assignPackageExport('Resource', Resource);
-
-// Warn once per table when an ASYNC allowRead override is used on a row-level-capable table: it is
-// evaluated only at the collection-scope entry check and gets NO per-record/per-event filtering, so
-// the collection-permissive "open, filter per record" pattern would fail open. Row-level filtering
-// requires a synchronous override.
-const asyncAllowReadWarned = new Set<string>();
-function warnAsyncAllowReadOnce(tableName: string | undefined): void {
-	const key = tableName ?? '<anonymous>';
-	if (asyncAllowReadWarned.has(key)) return;
-	asyncAllowReadWarned.add(key);
-	logger.warn?.(
-		`allowRead override on table "${key}" is async: it is evaluated only at request entry (collection scope) with NO per-record or per-event filtering. Row-level (record-scoped) authorization requires a synchronous allowRead — an async collection-permissive override would return unfiltered results.`
-	);
-}
-
-// Mark the built-in allowRead so the authorization flow can tell a framework default from an
-// application override. An overridden allowRead on a table is evaluated per RECORD during query
-// execution (#1422 gap 2 / #1241) — with `this` being each record — instead of once at collection
-// entry where `this` has no record to inspect. Table.ts marks its table-level default the same way.
-(Resource.prototype.allowRead as any).isDefaultAllowRead = true;
 
 export function snakeCase(camelCase: string) {
 	return (
@@ -646,6 +649,16 @@ function transactional(
 				data = dataOrContext;
 			}
 		}
+		if (options.method === 'query' && typeof (data as any)?.then === 'function') {
+			// HTTP request bodies are resolved asynchronously. QUERY projection and permission-control
+			// sanitization must happen before resource resolution and allowRead, not later in runAction.
+			const dataWasFirstArgument = data === idOrQuery;
+			return (data as Promise<any>).then((resolvedData) =>
+				dataWasFirstArgument
+					? applyContext.call(this, resolvedData, context)
+					: applyContext.call(this, idOrQuery, resolvedData, context)
+			);
+		}
 		if (id === undefined) {
 			if (typeof idOrQuery === 'object' && idOrQuery) {
 				// it is a query
@@ -713,6 +726,13 @@ function transactional(
 			query.id = id;
 			if (isCollection && options.method === 'put' && Array.isArray(data) && this.loadAsInstance === false)
 				query.isCollection = true;
+		}
+		if (options.method === 'query' && data && typeof data === 'object') {
+			// QUERY executes the independently parsed body target. Make its requested projection part of
+			// the operation admission target, but remove framework-owned permission controls before either
+			// target reaches application or table code.
+			if (hasPermissionControl(data)) data = cloneRequestTarget(data);
+			if (Object.prototype.hasOwnProperty.call(data, 'select')) query.select = data.select;
 		}
 		isCollection = query.isCollection;
 		if (options.method === 'post' && query.id === null && !isCollection) {
@@ -795,6 +815,9 @@ function transactional(
 			// both resolve to the same subscription iterable.
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
 			const runAction = (data: any) => {
+				// Capture the complete target after the initial allowRead has narrowed it, but before
+				// subscribe/connect implementations can mutate it. Every later recheck gets a fresh clone.
+				const admittedTarget = isSubscribeAction ? cloneRequestTarget(query) : undefined;
 				// getResource creates a fresh receiver for this dispatch. Marking that receiver, rather
 				// than caller-owned target identity, preserves the static (target, message) signature when
 				// an override copies the target or delegates asynchronously after its own return settles.
@@ -802,7 +825,7 @@ function transactional(
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) => {
-					registerLiveSubscriptionForContext(subscription, resource, query, context);
+					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, context);
 					return subscription;
 				});
 			};
@@ -819,43 +842,6 @@ function transactional(
 			}
 			if (checkPermission) {
 				if (loadAsInstance !== false) {
-					// Does this table carry an APPLICATION-overridden allowRead (record-scoped, #1422 gap 2)?
-					// The framework defaults are marked isDefaultAllowRead; anything else is an app override.
-					// Row-level authorization (per-record query traversal, per-event delivery) is SYNC-only.
-					// A SYNC application override participates in it; an ASYNC override cannot (traversal
-					// and delivery can't await), so it is evaluated ONLY at the collection-scope entry
-					// check — a table/connection-level decision, the same as before this feature. It must
-					// therefore make a complete decision at collection scope; the collection-permissive
-					// "open, filter per record" pattern requires a synchronous override (warned below).
-					const overridden =
-						options.type === 'read' &&
-						(resource.constructor as any)?.supportsRowLevelAllowRead &&
-						!(resource.allowRead as any)?.isDefaultAllowRead;
-					const rowLevelOverride = overridden && (resource.allowRead as any)?.constructor?.name !== 'AsyncFunction';
-					if (rowLevelOverride) {
-						// Durable signal that this read was authorization-checked, for the subscription
-						// delivery filter (the entry check below clears query.checkPermission before
-						// Table.subscribe runs, and an anonymous-but-checked subscription has no user to key on).
-						(query as any).rowLevelAuthChecked = true;
-					} else if (overridden) {
-						warnAsyncAllowReadOnce((resource.constructor as any)?.name);
-					}
-					// Deferral (per-record enforcement instead of a meaningless collection-scope entry
-					// verdict): `get` with a non-null id is a true single-record read (entry check runs with
-					// the record loaded) and only defers when isCollection — mirroring the isSearchTarget
-					// routing. ALL search/query calls defer: a present id there is a starts_with/prefix SEED
-					// (multi-record scan), so an entry verdict would gate — or grant — the whole scan; both
-					// invoke instance search() directly, which consumes checkPermission and arms the guard.
-					// subscribe/connect are NOT deferred: the entry check is the connection grant, and an
-					// override there may be connection-level (e.g. an MQTT topic ACL that decides on
-					// context.topic, not record fields, and must run at subscribe time); a record-level
-					// override returns permissive at collection scope to open, and Table.subscribe then
-					// filters each delivered event per record (#1419).
-					if (rowLevelOverride && !isSubscribeAction && (options.method !== 'get' || query.isCollection)) {
-						return when(data, (data) => {
-							return runAction(data);
-						});
-					}
 					// do permission checks, with allow methods
 					let allowed;
 					try {
@@ -902,14 +888,65 @@ function transactional(
 		}
 	}
 }
-function registerLiveSubscriptionForContext(subscription: any, resource: any, query: any, context: Context) {
+
+function authorizeSearchResult(result: any, user: any) {
+	const authorization = result?.[SEARCH_AUTHORIZATION];
+	return authorization
+		? when(authorization, (state: any) => {
+				if (state && typeof state === 'object') {
+					if (state.error) throw state.error;
+					if (!state.allowed) throw new AccessViolation(user);
+				} else if (!state) throw new AccessViolation(user);
+				return result;
+			})
+		: result;
+}
+
+function cloneRequestTarget(source: any): RequestTarget {
+	const clone = new RequestTarget(source instanceof URLSearchParams ? source.toString() : undefined);
+	const seen = new WeakMap<object, any>();
+	const cloneValue = (value: any): any => {
+		if (value == null || typeof value !== 'object') return value;
+		if (seen.has(value)) return seen.get(value);
+		if (Array.isArray(value)) {
+			const copy: any[] = [];
+			seen.set(value, copy);
+			for (const key of Object.keys(value)) {
+				if (key !== 'checkPermission') copy[key] = cloneValue(value[key]);
+			}
+			return copy;
+		}
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) return value;
+		const copy = Object.create(prototype);
+		seen.set(value, copy);
+		for (const key of Object.keys(value)) {
+			if (key !== 'checkPermission') copy[key] = cloneValue(value[key]);
+		}
+		return copy;
+	};
+	seen.set(source, clone);
+	for (const key of Object.keys(source ?? {})) {
+		if (key !== 'checkPermission') (clone as any)[key] = cloneValue(source[key]);
+	}
+	return clone;
+}
+
+function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean {
+	if (value == null || typeof value !== 'object' || seen.has(value)) return false;
+	seen.add(value);
+	if (Object.prototype.hasOwnProperty.call(value, 'checkPermission')) return true;
+	for (const key of Object.keys(value)) {
+		if (hasPermissionControl(value[key], seen)) return true;
+	}
+	return false;
+}
+
+function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {
 	const user: any = context?.user;
 	const username = user?.username;
 	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
 	if (!username) return;
-	const capturedId = query?.id;
-	const capturedIsCollection = query?.isCollection;
-	const capturedSelect = query?.select;
 	registerLiveSubscription({
 		subscription,
 		username,
@@ -925,17 +962,8 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, qu
 			// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 			// not the stale user captured at subscribe time.
 			if (context) (context as any).user = fresh;
-			// Re-run the SAME allowRead the subscribe entry check ran, against the fresh user — this
-			// mirrors the connection grant exactly. For a record-scoped override (#1419), that override
-			// gated the connection at collection scope (typically composing the table/RBAC grant via
-			// `super.allowRead`), and its per-record decisions are enforced separately during delivery;
-			// re-running it here re-verifies whatever it gated the connection on — a connection-level
-			// override (e.g. an MQTT topic ACL) re-checks its topic grant, and a record-scoped override
-			// that composes `super` re-checks the RBAC baseline. No per-record evaluation here.
-			const reTarget: any = new RequestTarget();
-			reTarget.id = capturedId;
-			reTarget.isCollection = capturedIsCollection;
-			reTarget.select = capturedSelect;
+			// Re-run the same operation-level allowRead that granted the subscription.
+			const reTarget: any = cloneRequestTarget(admittedTarget);
 			reTarget.checkPermission = fresh.role?.permission;
 			return !!(await resource.allowRead(fresh, reTarget, context));
 		},

@@ -95,7 +95,6 @@ export interface Context {
 	originatingOperation?: OperationFunctionName;
 	previousResidency?: string[];
 	nodeName?: string;
-	resourceCache?: Map<Id, any>;
 	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
 	timestamp?: number;
 	includeExpensiveRecordCountEstimates?: boolean;
@@ -127,8 +126,6 @@ export interface SourceContext<TRequestContext = Context, Record extends object 
 	noCacheStore?: boolean;
 	/** Reference to the source Resource instance */
 	source?: ResourceInterface<Record>;
-	/** Shared resource cache from parent context for visibility of modifications */
-	resourceCache?: Map<Id, any>;
 	/** Database transaction for the context */
 	transaction?: DatabaseTransaction;
 	/** The time at which the cached entry should expire (ms since epoch) */
@@ -177,7 +174,7 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	negated?: boolean;
 	/**
 	 * Internal (#1241): a `(primaryKey) => boolean` predicate composed by the query executor from
-	 * companion conditions, a caller `vectorFilter`, and record-level RBAC, pushed into a filterable
+	 * companion conditions and caller `vectorFilter`/`rowFilter` predicates, pushed into a filterable
 	 * custom index (HNSW) so filtering happens during traversal. Not part of the public query surface.
 	 */
 	recordFilter?: (primaryKey: Id) => boolean;
@@ -213,6 +210,11 @@ export interface SubscriptionRequest extends RequestTarget {
 	supportsTransactions?: boolean;
 	rawEvents?: boolean;
 	listener?: Listener;
+	/**
+	 * Application-supplied predicate for subscription events, including tombstones and messages that
+	 * do not contain an authoritative row. JavaScript API only and synchronous.
+	 */
+	eventFilter?: (event: ListenerPayload, context: Context) => boolean;
 }
 
 export type Query = RequestTarget; // for back-compat
@@ -241,7 +243,7 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 
 type Listener<Payload extends object = any> = (payload: ListenerPayload<Payload>) => void;
 
-interface ListenerPayload<Payload extends object = any> {
+export interface ListenerPayload<Payload extends object = any> {
 	id: Id;
 	localTime: number;
 	value: Payload;

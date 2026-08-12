@@ -184,16 +184,50 @@ async function updateLogSettings() {
 }
 
 /**
- * True when the argument is an Error (same-realm or native cross-realm). The try/catch guards
- * exotic objects whose prototype is unreachable (e.g. a revoked Proxy, where `instanceof`
- * throws) — the logger must never throw on any input, and util.format renders those fine raw.
+ * True when the argument is an Error (same-realm or native cross-realm — component code runs
+ * through node:vm, so a VM-created Error fails `instanceof Error` but passes `isNativeError`).
+ * Classified via `util.types.isNativeError` alone, never `instanceof Error`: `instanceof` walks
+ * the prototype chain via `[[GetPrototypeOf]]`, which for a value like
+ * `Object.create(Object.create(proxyAncestor))` eventually reaches `proxyAncestor` and invokes
+ * ITS `getPrototypeOf` trap, even though `arg` itself is an ordinary object and not a Proxy - a
+ * trap that hangs (an infinite loop) or has side effects would run to completion on whatever path
+ * called isErrorLike (e.g. logging a DIFFERENT operation's failure). `isNativeError` checks an
+ * internal slot directly, the same realm-independent, prototype-chain-independent mechanism
+ * `types.isMap`/`types.isDate`/etc. use elsewhere in this file, so it recognizes same-realm,
+ * cross-realm (VM), and Error-subclass instances without ever walking a prototype chain. The
+ * try/catch below still guards other exotic objects for other reasons — the logger must never
+ * throw on any input, and util.format renders those fine raw. Exported so call sites outside this
+ * module (e.g. OperationFunctionCaller, deciding how to log an error-shaped value it didn't itself
+ * catch as an Error) can reuse the same classification instead of a weaker local `instanceof`
+ * check.
  */
-function isErrorLike(arg: any): boolean {
+export function isErrorLike(arg: any): boolean {
 	try {
-		return arg instanceof Error || isNativeError(arg);
+		return isNativeError(arg);
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * True when `arg` needs sanitizeErrorArg's replacement before reaching Console's raw formatting:
+ * either it's error-like, or it's a live Proxy that isErrorLike deliberately reports as false (see
+ * isErrorLike above) but that Console's default inspect would still reflect on directly - which,
+ * if the Proxy happens to wrap an Error, dumps its own-enumerable properties unsanitized (#1734).
+ */
+function needsSanitizing(arg: any): boolean {
+	return types.isProxy(arg) || isErrorLike(arg);
+}
+
+/**
+ * Replaces an Error (or a Proxy - live-or-revoked, whatever it wraps) with a safe placeholder
+ * before it reaches Console's util.inspect formatting; same Proxy-first ordering and rationale as
+ * deepSanitizeErrors' `types.isProxy` check (see there) - reflecting on a Proxy at all, even just
+ * to classify it, risks running a hostile trap on the shallow logging path too.
+ */
+function sanitizeErrorArg(arg: any) {
+	if (types.isProxy(arg)) return labelPlaceholder('[Proxy]');
+	return isErrorLike(arg) ? errorForLog(arg) : arg;
 }
 
 /**
@@ -202,17 +236,17 @@ function isErrorLike(arg: any): boolean {
  * properties — where libraries and app code stash credentials (axios config headers, an
  * hdb_secret for an outbound Authorization header) — into hdb.log (see #1734 and errorForLog).
  * Called inside each level gate so filtered-out log calls pay nothing beyond the arg scan,
- * and only allocates when an Error is actually present. Deliberately shallow: an Error nested
- * inside a logged object/array is not rewritten (deep-walking every logged structure is not
- * worth the per-call cost, and the #1734 threat is raw thrown errors).
+ * and only allocates when an Error (or Proxy needing the same treatment) is actually present.
+ * Deliberately shallow: an Error nested inside a logged object/array is not rewritten (deep-
+ * walking every logged structure is not worth the per-call cost, and the #1734 threat is raw
+ * thrown errors).
  */
 function sanitizeErrorArgs(args: any[]) {
 	for (let i = 0; i < args.length; i++) {
-		if (isErrorLike(args[i])) {
+		if (needsSanitizing(args[i])) {
 			const sanitized = args.slice(0, i);
 			for (let j = i; j < args.length; j++) {
-				const arg = args[j];
-				sanitized[j] = isErrorLike(arg) ? errorForLog(arg) : arg;
+				sanitized[j] = sanitizeErrorArg(args[j]);
 			}
 			return sanitized;
 		}
@@ -296,10 +330,10 @@ class HarperLogger extends Console {
 		super.log(...sanitizeErrorArgs(args));
 	}
 	dir(item, options?) {
-		super.dir(isErrorLike(item) ? errorForLog(item) : item, options);
+		super.dir(sanitizeErrorArg(item), options);
 	}
 	table(data, columns?) {
-		super.table(Array.isArray(data) ? sanitizeErrorArgs(data) : isErrorLike(data) ? errorForLog(data) : data, columns);
+		super.table(Array.isArray(data) ? sanitizeErrorArgs(data) : sanitizeErrorArg(data), columns);
 	}
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);
@@ -344,6 +378,8 @@ module.exports = {
 	startOnMainThread: updateLogSettings,
 	errorToString,
 	errorForLog,
+	inspectForLog,
+	isErrorLike,
 	disableStdio,
 	externalLogger,
 };
@@ -985,8 +1021,12 @@ function renderErrorLine(error: any): string {
 		const base = typeof error?.stack === 'string' ? error.stack : errorToString(error);
 		return base + loggablePropsSuffix(error);
 	} catch (err) {
-		// error?.stack itself can throw on a hostile object even though errorToString cannot.
-		return `[Unrenderable Error: ${err instanceof Error ? err.message : String(err)}]`;
+		// error?.stack itself can throw on a hostile object (e.g. a getter on a `cause` chain member
+		// that throws a revoked Proxy) - `err` is then whatever was thrown, so it must be rendered via
+		// errorToString, the only renderer in this file explicitly guaranteed never to throw regardless
+		// of input. `err instanceof Error`/`String(err)` are NOT safe here: both throw on a revoked
+		// Proxy, which would defeat this catch's whole purpose.
+		return `[Unrenderable Error: ${errorToString(err)}]`;
 	}
 }
 
@@ -1039,6 +1079,678 @@ function errorToLogString(error: any) {
  */
 export function errorForLog(error: any) {
 	const render = () => errorToLogString(error);
+	return { [inspect.custom]: render, toString: render };
+}
+
+// Bounds deepSanitizeErrors' walk: deep enough to reach any realistic diagnostic payload shape,
+// capped so a pathological/adversarial structure can't blow the stack.
+const MAX_SANITIZE_DEPTH = 20;
+
+// Default per-container breadth cap (used when inspectForLog's caller didn't request a specific
+// maxArrayLength) and an absolute ceiling on total nodes visited across the WHOLE walk. Per-
+// container breadth alone isn't enough: a structure that is merely wide at every one of
+// MAX_SANITIZE_DEPTH levels multiplies out to an astronomical node count, so a global counter is
+// the actual backstop. Both exist because sanitizing happens BEFORE util.inspect's own
+// maxArrayLength truncation runs - a huge/sparse array or a huge Map/Set in a structured error
+// (`new Array(0xffffffff)`, or a hostile component's crafted payload) would otherwise force this
+// walk to visit billions of entries and wedge the event loop while just trying to log the
+// *original* error, before inspect ever gets a chance to truncate the output.
+const DEFAULT_MAX_SANITIZE_ENTRIES = 1000;
+const MAX_SANITIZE_NODES = 50_000;
+// Hard ceiling on the per-container breadth budget, regardless of what a caller requests via
+// inspectForLog's `maxArrayLength` option. Without this, a caller passing an unbounded value
+// (`Infinity`, or just a very large finite one) sets a container's own loop limit that high too -
+// so even though deepSanitizeErrors itself starts returning cheap placeholders once
+// MAX_SANITIZE_NODES is exhausted, the PARENT loop (the one iterating a huge array/Map/Set's
+// entries) still runs for its full stated limit before that ever kicks in, defeating the budget as
+// a real ceiling on total work. The one caller in this codebase passes 250; this only bites a
+// caller that deliberately (or by bug) requests something far larger.
+const HARD_MAX_SANITIZE_ENTRIES = 10_000;
+
+interface SanitizeBudget {
+	nodes: number;
+	maxEntries: number;
+}
+
+/** A util.inspect-style placeholder rendered without invoking anything, used both for an unread
+ *  accessor property and for a budget-truncated container tail. */
+function labelPlaceholder(label: string) {
+	return { [inspect.custom]: () => label, toString: () => label };
+}
+
+/** A util.inspect-style placeholder for an accessor property, describing it without invoking the
+ *  getter — see the getter-invocation note on deepSanitizeErrors below. */
+function accessorPlaceholder(descriptor: PropertyDescriptor) {
+	return labelPlaceholder(
+		descriptor.get && descriptor.set ? '[Getter/Setter]' : descriptor.get ? '[Getter]' : '[Setter]'
+	);
+}
+
+/**
+ * Placeholder substituted when a recursive sanitize step on a child throws, instead of falling
+ * back to that child's raw (unsanitized) value. A throw here is not a reason to skip sanitizing -
+ * it is exactly the case a hostile value produces (e.g. a Proxy whose `ownKeys` trap throws once
+ * reached one level down), and the child that triggered it may itself contain an unsanitized
+ * Error. Falling back to raw would silently hand that Error to inspect() at the raised depth,
+ * recreating the #1734 leak this whole walk exists to prevent.
+ */
+function sanitizeFailurePlaceholder() {
+	return labelPlaceholder('[Unrenderable value: sanitize failed]');
+}
+
+// Unique symbol keys for the plain-object breadth-cap markers below, rather than a string key
+// like the array/Map/Set truncation markers use - a hostile or just plain unlucky object could
+// have an own string property literally named the same as a string marker, silently colliding
+// with (and hiding) real data. A locally-scoped Symbol can never collide with an enumerable
+// string OR pre-existing symbol key on the original value.
+const KEYS_TRUNCATED_MARKER = Symbol('sanitize: string-keyed properties truncated');
+const SYMBOLS_TRUNCATED_MARKER = Symbol('sanitize: symbol-keyed properties truncated');
+
+/**
+ * True for the specific built-ins whose actual data is NOT reachable through their own-enumerable
+ * string/symbol keys, so rebuilding them via a property walk would silently corrupt their
+ * rendering (Object.keys(new Date()) is `[]`; a Buffer's bytes live in a typed-array internal
+ * slot, not enumerable own properties). Everything else - an object literal, a class instance, a
+ * VM cross-realm object of either - IS walked and rebuilt: a class or custom-prototype instance is
+ * just as capable of holding a nested Error as a plain object (`http_resp_msg` is a generic field,
+ * not limited to the known deploy payload), and leaving instances raw would hand the raised inspect
+ * depth below a real, generic secret-leak path. `types.is*` checks an internal slot, not the
+ * prototype chain, so - like isNativeError / types.isMap / types.isSet elsewhere in this file -
+ * this is realm-independent: a VM-created Date is still recognized as opaque.
+ *
+ * Promise is deliberately NOT included here (handled separately in deepSanitizeErrors, see below):
+ * unlike the others, a Promise's resolved/rejected value is not merely internal-slot data with a
+ * fixed rendering, it's arbitrary caller data - and util.inspect renders it directly, own-enumerable
+ * properties and all (`util.inspect(Promise.resolve(errorWithSecretHeader), { depth: 8 })` prints
+ * the header). There is no supported synchronous way to read that value in order to sanitize it, so
+ * the only safe option is to never hand a Promise to inspect() raw.
+ *
+ * An *expando* own-enumerable property stashed directly on one of these (e.g. `const d = new
+ * Date(); d.cause = secretError`) would otherwise leak the same way the Promise case above does -
+ * inspect() renders own-enumerable properties on ANY object, opaque built-ins included. Handled by
+ * hasEnumerableOwnProps/safeOpaqueBuiltinSummary below: the fast, zero-cost, common path (no
+ * expando) returns the value raw and untouched; only a value actually carrying one pays for a safe
+ * replacement.
+ */
+function isOpaqueBuiltin(value: object): boolean {
+	return (
+		types.isDate(value) ||
+		types.isRegExp(value) ||
+		types.isArrayBufferView(value) || // covers Buffer and every TypedArray/DataView
+		types.isAnyArrayBuffer(value) ||
+		types.isWeakMap(value) ||
+		types.isWeakSet(value) ||
+		types.isBoxedPrimitive(value) // a boxed Boolean/Number/String/Symbol/BigInt wrapper
+	);
+}
+
+// %TypedArray%.prototype - the shared abstract superclass prototype every concrete TypedArray
+// (Uint8Array, Buffer, etc.) inherits `length` from. Read once so hasEnumerableOwnProps can bind
+// to it explicitly via Reflect.get, the same hijack-avoidance pattern as the Map/Set branches'
+// `Reflect.get(Map.prototype, 'size', value)` - the intrinsic `length` getter is spec-configurable,
+// so a hostile value can shadow it with an own `length` property reporting whatever it likes.
+const TYPED_ARRAY_PROTO = Object.getPrototypeOf(Uint8Array.prototype);
+
+// Above this many elements, hasEnumerableOwnProps skips its indexed-type check and fails closed
+// (assumes an expando IS present, safe direction) rather than paying for it - see the comment at
+// that check for why.
+const MAX_INDEXED_EXPANDO_CHECK_LENGTH = 10_000;
+
+/**
+ * True if `value` has any own-enumerable string or symbol property beyond its own intrinsic data -
+ * i.e. an expando - since none of isOpaqueBuiltin's types (nor a bare function) normally carry any.
+ * Checked before deciding whether an opaque built-in/function is safe to hand to inspect() raw.
+ * Errs conservative: if the check itself cannot be completed safely (a hostile `ownKeys`/descriptor
+ * trap), treat that as "has an expando" rather than risk a false "clean" on something we couldn't
+ * actually verify.
+ *
+ * A TypedArray/Buffer's own numeric indices ARE its intrinsic byte/element data, own-enumerable
+ * exactly like any other array - `Object.keys(Buffer.from('hi'))` is `['0', '1']` - so those don't
+ * count as expandos here; only a key beyond `[0, length)` does. A boxed String has the same shape
+ * (`Object.keys(new String('hi'))` is the same `['0', '1']`) and gets the same carve-out; detected
+ * via `types.isStringObject` (an internal-slot check, like `isOpaqueBuiltin`'s `types.is*` checks
+ * above) rather than `Object.prototype.toString.call`, which reads the value's own
+ * `Symbol.toStringTag` property - a hostile value defining that as a getter would have it run
+ * during this supposedly passive classification. DataView has no such index
+ * properties (its data is accessed only via get/set methods), so it's excluded from the carve-out
+ * and goes through the plain `Object.keys(value).length > 0` check like any ordinary object.
+ *
+ * For either indexed shape, checking for an expando against `Object.keys` costs one array
+ * allocation sized to the FULL length just to answer "clean or not" - fine for a small buffer, but
+ * a multi-hundred-MB Buffer or huge boxed string would materialize a matching number of key strings
+ * merely to decide this supposedly-cheap fast path applies, turning it into an attacker-sized scan
+ * on the error-logging path itself. Above MAX_INDEXED_EXPANDO_CHECK_LENGTH elements, skip the check
+ * and FAIL CLOSED (assume it HAS an expando) rather than skip it and assume clean: the safe
+ * direction when we can't verify is always "has an expando" (same as the hostile-trap catch above),
+ * never "verified clean" - failing open here would return e.g. a `Buffer.alloc(10_001)` carrying a
+ * real, ordinary-sized expando raw, unsanitized. Failing closed still avoids the expensive scan
+ * (that's the whole point of the size cap) - it just means a huge but genuinely expando-free
+ * Buffer/string also renders as safeOpaqueBuiltinSummary's generic placeholder above this size,
+ * rather than its full native format. Losing pretty-printing for a buffer/string that large is a
+ * reasonable trade for never guessing "clean" on data we didn't actually check.
+ */
+function hasEnumerableOwnProps(value: object): boolean {
+	try {
+		const isTypedArray = ArrayBuffer.isView(value) && !types.isDataView(value);
+		const isBoxedString = types.isStringObject(value);
+		if (isTypedArray || isBoxedString) {
+			// The typed-array getter is bound explicitly (see TYPED_ARRAY_PROTO above) to survive a
+			// shadowed own `length`; a boxed String's `length` is a non-configurable, non-writable own
+			// property per spec and can't be shadowed, so a direct read is already safe.
+			const length = isTypedArray ? Reflect.get(TYPED_ARRAY_PROTO, 'length', value) : (value as any).length;
+			if (typeof length !== 'number') return true; // couldn't verify the intrinsic size - conservative
+			if (length > MAX_INDEXED_EXPANDO_CHECK_LENGTH) return true; // too large to check - fail closed, not clean
+			const keys = Object.keys(value);
+			for (const key of keys) {
+				const index = key === '' ? NaN : Number(key);
+				if (!(Number.isInteger(index) && index >= 0 && index < length && String(index) === key)) return true;
+			}
+		} else if (Object.keys(value).length > 0) {
+			return true;
+		}
+		for (const sym of Object.getOwnPropertySymbols(value)) {
+			if (Object.getOwnPropertyDescriptor(value, sym)?.enumerable) return true;
+		}
+		return false;
+	} catch {
+		return true;
+	}
+}
+
+/**
+ * Returns a value safe to hand to inspect() in place of an opaque built-in that (unusually) carries
+ * an expando property - reached only via hasEnumerableOwnProps returning true, never on the common
+ * expando-free path. Date/RegExp/WeakMap/WeakSet are cheap to reconstruct byte/value-for-value from
+ * their intrinsic prototype (bound explicitly via .call/Reflect.get, not `value.getTime()` etc,
+ * exactly so an own property shadowing that method - the same class of hijack the Map/Set branches
+ * below guard against - can't run instead of the real accessor); WeakMap/WeakSet never expose their
+ * entries via inspect regardless, so a fresh empty instance loses nothing. Buffer/TypedArray/
+ * DataView/ArrayBuffer/boxed-primitives are left as a bounded type-tag summary instead: safely
+ * reconstructing an exact byte-for-byte or value-for-value copy needs per-subtype branching that
+ * isn't worth it for how rarely one of these ever carries an expando in the first place.
+ */
+function safeOpaqueBuiltinSummary(value: object): any {
+	try {
+		if (types.isDate(value)) return new Date(Date.prototype.getTime.call(value));
+		if (types.isRegExp(value)) {
+			const source = Reflect.get(RegExp.prototype, 'source', value);
+			// Built manually from each individual flag getter (bound via Reflect.get, same
+			// hijack-avoidance pattern as source/Map/Set elsewhere in this file) rather than reading
+			// the combined `RegExp.prototype.flags` getter: per spec, `flags` synthesizes its result by
+			// reading `this.global`, `this.ignoreCase`, etc. as ordinary property gets on `value` -
+			// each individual flag getter (`global`, `ignoreCase`, ...) instead reads the internal
+			// [[OriginalFlags]] slot directly, the same as `source`. An expando shadowing e.g. `global`
+			// with a hostile getter would otherwise have `flags` invoke it while merely trying to
+			// reconstruct a safe copy of the RegExp.
+			let flags = '';
+			if (Reflect.get(RegExp.prototype, 'hasIndices', value)) flags += 'd';
+			if (Reflect.get(RegExp.prototype, 'global', value)) flags += 'g';
+			if (Reflect.get(RegExp.prototype, 'ignoreCase', value)) flags += 'i';
+			if (Reflect.get(RegExp.prototype, 'multiline', value)) flags += 'm';
+			if (Reflect.get(RegExp.prototype, 'dotAll', value)) flags += 's';
+			if (Reflect.get(RegExp.prototype, 'unicode', value)) flags += 'u';
+			if (Reflect.get(RegExp.prototype, 'unicodeSets', value)) flags += 'v';
+			if (Reflect.get(RegExp.prototype, 'sticky', value)) flags += 'y';
+			return new RegExp(source, flags);
+		}
+		if (types.isWeakMap(value)) return new WeakMap();
+		if (types.isWeakSet(value)) return new WeakSet();
+	} catch {
+		// fall through to the generic tag-only summary below
+	}
+	// A fixed, types.is*-derived tag - never Object.prototype.toString.call(value), which reads the
+	// value's own Symbol.toStringTag and would invoke a hostile getter defined there while merely
+	// picking a label (the same class of bug fixed in isErrorLike's classification - see there). Every
+	// branch here is an internal-slot check, so none of them can run caller-controlled code.
+	let tag = 'value';
+	if (types.isStringObject(value)) tag = 'String';
+	else if (types.isNumberObject(value)) tag = 'Number';
+	else if (types.isBooleanObject(value)) tag = 'Boolean';
+	else if (types.isSymbolObject(value)) tag = 'Symbol';
+	else if (types.isArrayBufferView(value)) tag = 'ArrayBufferView';
+	else if (types.isAnyArrayBuffer(value)) tag = 'ArrayBuffer';
+	return labelPlaceholder(`[${tag} with own properties omitted for safety]`);
+}
+
+/** Defines `key` as an own DATA property via defineProperty rather than `target[key] = value`.
+ *  Once a sanitized clone's prototype is restored to the original's (see deepSanitizeErrors), a
+ *  plain assignment for a key that has an inherited accessor further up that prototype chain would
+ *  invoke the INHERITED SETTER instead of creating an own property - running arbitrary code during
+ *  what should be a passive render - and a key literally named `__proto__` would hit the legacy
+ *  Object.prototype.__proto__ setter and reparent the clone instead of storing a property named
+ *  "__proto__". defineProperty always creates/replaces an own property directly, regardless of key
+ *  name or what the prototype chain declares. */
+function defineOwnProperty(target: any, key: string | symbol, value: any) {
+	Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
+/**
+ * True if `proto` (and every prototype above it, up to but excluding Object.prototype/null) is
+ * safe for a stateless sanitized clone to wear - i.e. util.inspect can later render a value with
+ * this prototype without running any caller-controlled code.
+ *
+ * This used to be answered by actually calling `inspect()` on the empty clone as a probe - but
+ * that IS running caller-controlled code, just earlier and silently: `inspect()` walks the full
+ * prototype chain (not just the immediate level) doing its own class-name/tag detection, which
+ * invokes a Proxy ANCESTOR's traps (`types.isProxy(proto)` alone only catches the immediate
+ * level), reads an inherited `Symbol.toStringTag` getter, and - even with `customInspect: false`
+ * suppressing the clone's OWN custom inspector - still leaves that same inspector to be invoked a
+ * second time by the real render later. A hostile trap/getter that never returns wedges the
+ * logging worker regardless of which of those two invocations reaches it.
+ *
+ * So this never invokes anything: `types.isProxy` and `Object.getOwnPropertyNames`/
+ * `getOwnPropertyDescriptor`/`getPrototypeOf` are internal-slot/structural reads on each
+ * non-Proxy level, same as the rest of this file's reflection. A level is rejected if it's a
+ * Proxy (any trap, including on revocation) or defines any OWN accessor (getter/setter) property
+ * - the exact shape of a branded built-in's internal-slot getter (e.g. URL.prototype's
+ * `href`/`protocol`/...), and there is no way to tell "safe getter" from "hostile getter" without
+ * invoking it, so any accessor anywhere in the chain fails closed. An ordinary class's prototype
+ * (only a data `constructor` property, plus perhaps plain methods) passes, so a plain
+ * custom-class instance still renders with its real class name (see the 'Diagnostic' test).
+ */
+function isSafeToWearPrototype(proto: object): boolean {
+	let level: any = proto;
+	while (level !== null && level !== Object.prototype) {
+		if (types.isProxy(level)) return false;
+		let keys: (string | symbol)[];
+		try {
+			keys = [...Object.getOwnPropertyNames(level), ...Object.getOwnPropertySymbols(level)];
+		} catch {
+			return false;
+		}
+		for (const key of keys) {
+			if (key === 'constructor') continue; // an ordinary data property on every class prototype
+			let descriptor;
+			try {
+				descriptor = Object.getOwnPropertyDescriptor(level, key);
+			} catch {
+				return false;
+			}
+			if (descriptor && (descriptor.get || descriptor.set)) return false;
+		}
+		try {
+			level = Object.getPrototypeOf(level);
+		} catch {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * Recursively walks a plain object/array, replacing every Error-like value found at any depth
+ * with its errorForLog wrapper (see isErrorLike/errorForLog and #1734). sanitizeErrorArgs is
+ * deliberately shallow because it guards the hot, frequent top-level log-call path — this walk is
+ * for inspectForLog's callers instead, which are low-frequency (a caught error's diagnostic
+ * detail), so the extra traversal cost doesn't matter and full coverage does: an Error nested
+ * anywhere inside a value later rendered with a raised inspect depth (see inspectForLog) would
+ * otherwise surface its own-enumerable properties raw.
+ *
+ * Arrays, Map, Set, and every other object EXCEPT the isOpaqueBuiltin exclusions above are rebuilt
+ * so an Error nested inside them at any depth is still reached and sanitized - a raw Error left
+ * unsanitized anywhere in the tree would surface its own-enumerable properties (e.g. an axios
+ * `config.headers.Authorization`) raw once the raised inspect depth below reaches it. A rebuilt
+ * object/class-instance clone has the original's prototype restored (Object.setPrototypeOf) so
+ * inspect() still shows its real class name and picks up any inspect.custom hook defined on the
+ * class's prototype (not an own property, so the symbol walk below wouldn't otherwise see it) -
+ * the clone differs from the original only in which of its OWN enumerable properties got swapped
+ * for a sanitized/placeholder value, same as it would for a plain object.
+ *
+ * Cycle-safe via a WeakMap from original to its (in-progress) clone, registered before recursing
+ * into children, so a cycle resolves to the clone in progress rather than falling back to the raw
+ * original (which would bypass sanitization on the repeated branch) - and depth-capped so a
+ * pathologically deep structure can't blow the stack. Every property read and recursive step is
+ * individually guarded so one hostile getter or exotic nested value can only cost that one
+ * field, not the whole render (inspectForLog's own try/catch around inspect() is still the final
+ * backstop regardless).
+ *
+ * Never invokes an accessor (getter) property, and never resolves an overridable Symbol.iterator:
+ * unlike util.inspect's default (which shows a getter as `[Getter]` without calling it), reading
+ * `value[key]`/`value[sym]` for every own-enumerable key - or iterating an array/Map/Set with
+ * `for...of`, which resolves the value's own-or-inherited `Symbol.iterator` - would run arbitrary
+ * synchronous code, including a subclass instance's overridden iterator, while the logger is just
+ * trying to report the *original* error (a hostile accessor/iterator that loops, blocks, or
+ * mutates state runs regardless). Arrays are walked by own property descriptor per index instead
+ * of `for...of`; Map/Set are walked via their intrinsic prototype methods bound with `.call`,
+ * which reads the internal slot data directly rather than going through the instance's own (or an
+ * overriding subclass's) iterator method. Objects read property descriptors and recurse only into
+ * a data descriptor's value; an accessor gets accessorPlaceholder's label instead. Every own
+ * property is written via defineOwnProperty rather than assignment, so a clone whose prototype was
+ * restored to a class's prototype can't trigger an inherited setter (or the legacy `__proto__`
+ * setter) partway through the walk.
+ *
+ * Breadth-bounded via `budget`, shared across the whole walk (not reset per container): each
+ * container is capped at `budget.maxEntries` entries (with a placeholder noting what was
+ * skipped), and the walk stops sanitizing entirely past `MAX_SANITIZE_NODES` total nodes visited,
+ * regardless of per-container caps - see the constants' comment for why both are needed.
+ */
+function deepSanitizeErrors(
+	value: any,
+	seen: WeakMap<object, any> = new WeakMap(),
+	depth = 0,
+	budget: SanitizeBudget = { nodes: 0, maxEntries: DEFAULT_MAX_SANITIZE_ENTRIES }
+): any {
+	// Functions are `typeof 'function'`, not 'object' - included here (rather than falling through
+	// as if they were a harmless primitive) because a function is just as capable of carrying an
+	// expando own-enumerable property (`fn.cause = secretError`, an ordinary and not-even-unusual
+	// JS pattern) as a plain object is, and inspect() renders those own properties the same way.
+	// Counted first, before even the primitive-leaf check below, so a primitive leaf (string/number/
+	// etc in an array/object, the overwhelmingly common case) consumes exactly as much of the shared
+	// budget as a container does. Without this, only container nodes counted towards
+	// MAX_SANITIZE_NODES while each one's up-to-budget.maxEntries primitive children were free, so
+	// e.g. 50,000 containers of 250 primitive fields each could still walk ~12.5 million values
+	// before this cap ever engaged.
+	if (++budget.nodes > MAX_SANITIZE_NODES) return labelPlaceholder('[Unrenderable value: sanitize budget exceeded]');
+	if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return value;
+	// Checked before isErrorLike/anything else that reflects on `value`: types.isProxy queries the
+	// exotic object's internal slots directly (safe even on a revoked Proxy - it never throws), but
+	// EVERY reflective operation past this point - `instanceof` inside isErrorLike, Array.isArray,
+	// Object.getPrototypeOf, Object.keys - invokes whatever trap the Proxy's handler defines for it.
+	// A throwing trap was already caught by the try/catch below, but a trap that hangs (an infinite
+	// loop) or has side effects runs to completion regardless of any catch - on the very path meant
+	// to log a DIFFERENT failure. There is no privileged way in userland to read a Proxy's target
+	// without going through its traps (the exact reason native util.inspect's default rendering,
+	// which does have that privileged access, isn't reusable here - see the Promise note above for
+	// the same class of "can't safely introspect this" tradeoff), so a Proxy is never reflected on
+	// at all: always a safe, static placeholder, trap or no trap.
+	if (types.isProxy(value)) return labelPlaceholder('[Proxy]');
+	if (isErrorLike(value)) return errorForLog(value);
+	if (seen.has(value)) return seen.get(value);
+	// Depth-capped values are never handed back raw: an Error directly AT this depth is already
+	// caught by isErrorLike above, but a plain container here could still hold an Error somewhere
+	// inside it that we're choosing not to recurse into - handing it back unsanitized would let a
+	// caller-requested depth greater than MAX_SANITIZE_DEPTH (the one caller in this codebase uses
+	// 8, well under it) reach and print that Error's own-enumerable properties raw (#1734).
+	if (depth >= MAX_SANITIZE_DEPTH) return labelPlaceholder('[Unrenderable value: sanitize depth exceeded]');
+
+	let isArray: boolean, isMap: boolean, isSet: boolean, isFunction: boolean;
+	try {
+		isArray = Array.isArray(value);
+		// types.isMap/isSet check an internal slot, not the prototype chain, so (like isNativeError)
+		// they still recognize a Map/Set created in a different realm (component code runs through
+		// node:vm) - `instanceof Map`/`Set` would not, silently leaving that container's contents
+		// (and any Error nested inside) unsanitized at the raised inspect depth below.
+		isMap = !isArray && types.isMap(value);
+		isSet = !isArray && !isMap && types.isSet(value);
+		isFunction = !isArray && !isMap && !isSet && typeof value === 'function';
+		// See the Promise note on isOpaqueBuiltin above: its resolved/rejected value is arbitrary
+		// caller data that inspect() renders directly (own-enumerable properties included), and there
+		// is no supported synchronous way to read it in order to sanitize it - so unlike every other
+		// opaque built-in, a Promise is never handed to inspect() raw, sanitized or not.
+		if (!isArray && !isMap && !isSet && types.isPromise(value)) return labelPlaceholder('[Promise]');
+		if (!isArray && !isMap && !isSet && !isFunction && isOpaqueBuiltin(value)) {
+			// Fast, faithful, zero-cost path for the overwhelming common case: no expando, so the
+			// value is returned exactly as-is and inspect() renders its normal native format. Only a
+			// value that actually carries an expando pays for safeOpaqueBuiltinSummary below.
+			if (!hasEnumerableOwnProps(value)) return value;
+			return safeOpaqueBuiltinSummary(value);
+		}
+		if (isFunction && !hasEnumerableOwnProps(value)) return value; // same fast path, for functions
+	} catch {
+		// The types.isProxy check above already routes every Proxy (revoked or not) to a placeholder
+		// before this block ever runs, so nothing YET IDENTIFIED reaches this catch on real input -
+		// but on the same "never fall back to raw" principle as every other catch in this walk, a
+		// safe placeholder costs nothing here and closes the door on whatever unforeseen way a
+		// future value might still throw here.
+		return sanitizeFailurePlaceholder();
+	}
+	// A function reaching here carries an expando: fall through into the generic object walk below
+	// (Object.keys/getOwnPropertyDescriptor/getOwnPropertySymbols all work the same on a function as
+	// on a plain object) so that expando gets sanitized like any other object's - the clone won't be
+	// callable and inspect() renders it as a plain `Function { ... }` rather than `[Function: name]`,
+	// but that's a safe, honest trade for a case inspect() would otherwise render with a raw,
+	// unsanitized secret alongside it.
+
+	if (isArray) {
+		const clone: any[] = [];
+		seen.set(value, clone);
+		const length = value.length;
+		// Reserve one slot for the truncation marker when overflowing, so the clone's final size is
+		// exactly budget.maxEntries - matching whatever maxArrayLength the caller will inspect() with
+		// - rather than maxEntries + 1, which util.inspect's OWN truncation would then clip anyway,
+		// silently hiding the marker (and the fact that anything was dropped at all) behind its
+		// generic "... N more items" ellipsis.
+		const overflow = length > budget.maxEntries;
+		const limit = overflow ? budget.maxEntries - 1 : length;
+		for (let i = 0; i < limit; i++) {
+			let descriptor;
+			try {
+				descriptor = Object.getOwnPropertyDescriptor(value, i);
+			} catch {
+				continue; // leave index i a hole rather than risk a second throw
+			}
+			if (!descriptor) continue; // a genuine sparse-array hole - leave it, not `undefined`
+			if (descriptor.get || descriptor.set) {
+				clone[i] = accessorPlaceholder(descriptor);
+				continue;
+			}
+			try {
+				clone[i] = deepSanitizeErrors(descriptor.value, seen, depth + 1, budget);
+			} catch {
+				clone[i] = sanitizeFailurePlaceholder();
+			}
+		}
+		if (overflow) clone[limit] = labelPlaceholder(`[${length - limit} more array entries omitted (sanitize budget)]`);
+		return clone;
+	}
+
+	if (isMap) {
+		const clone = new Map();
+		seen.set(value, clone);
+		// Reflect.get with an explicit receiver reads Map.prototype's intrinsic `size` getter bound
+		// to value's internal slot, bypassing an overriding subclass's own `size` the same way the
+		// .call-bound entries() below bypasses an overriding subclass's Symbol.iterator.
+		const size = Reflect.get(Map.prototype, 'size', value);
+		const overflow = size > budget.maxEntries;
+		const limit = overflow ? budget.maxEntries - 1 : size;
+		let count = 0;
+		// Map.prototype.entries bound via .call reads the internal [[MapData]] slot directly,
+		// rather than resolving value's own (or an overriding subclass's) Symbol.iterator.
+		for (const [k, v] of Map.prototype.entries.call(value)) {
+			if (count++ >= limit) break;
+			// Sanitized independently (rather than in one combined try) so a throw sanitizing the key
+			// doesn't also discard an already-sanitized value, or vice versa - each side falls back to
+			// its own placeholder, never to the other's raw counterpart.
+			let sanitizedKey, sanitizedValue;
+			try {
+				sanitizedKey = deepSanitizeErrors(k, seen, depth + 1, budget);
+			} catch {
+				sanitizedKey = sanitizeFailurePlaceholder();
+			}
+			try {
+				sanitizedValue = deepSanitizeErrors(v, seen, depth + 1, budget);
+			} catch {
+				sanitizedValue = sanitizeFailurePlaceholder();
+			}
+			clone.set(sanitizedKey, sanitizedValue);
+		}
+		if (overflow)
+			clone.set(
+				labelPlaceholder('[truncated]'),
+				labelPlaceholder(`[${size - limit} more Map entries omitted (sanitize budget)]`)
+			);
+		return clone;
+	}
+
+	if (isSet) {
+		const clone = new Set();
+		seen.set(value, clone);
+		const size = Reflect.get(Set.prototype, 'size', value);
+		const overflow = size > budget.maxEntries;
+		const limit = overflow ? budget.maxEntries - 1 : size;
+		let count = 0;
+		// Same rationale as the Map branch above: Set.prototype.values via .call, not for...of.
+		for (const item of Set.prototype.values.call(value)) {
+			if (count++ >= limit) break;
+			try {
+				clone.add(deepSanitizeErrors(item, seen, depth + 1, budget));
+			} catch {
+				clone.add(sanitizeFailurePlaceholder());
+			}
+		}
+		if (overflow) clone.add(labelPlaceholder(`[${size - limit} more Set entries omitted (sanitize budget)]`));
+		return clone;
+	}
+
+	const result: Record<string | symbol, any> = {};
+	seen.set(value, result);
+	try {
+		const proto = Object.getPrototypeOf(value);
+		// A branded built-in with private internal slots (URL, Headers, Request/Response, or any
+		// custom class whose own accessors read `#private` state) throws when util.inspect later
+		// renders a value wearing its prototype but lacking its real internal state - and losing it
+		// unguarded would surface all the way up to inspectForLog's outer catch and replace the
+		// ENTIRE structured payload - not just this one nested field - with a single "[Unrenderable
+		// value]", losing phase/install_output/deployment_id and everything else alongside it, for
+		// one URL-shaped field anywhere in the tree.
+		//
+		// This USED to be answered by actually calling `inspect()` on the empty clone as a probe, but
+		// that runs the same caller-controlled code it's trying to guard against, just earlier and
+		// silently: a Proxy ANYWHERE in the ancestor chain (not just the immediate `proto`) still gets
+		// its traps invoked by inspect's own class-name/tag walk, an inherited `Symbol.toStringTag`
+		// getter still gets read, and even `customInspect: false` only stops the PROBE's own call from
+		// invoking a custom inspector - the real render right after still invokes it a second time,
+		// corrupting a stateful/one-shot inspector's actual output. `isSafeToWearPrototype` answers the
+		// same question without invoking anything (see its doc comment); `proto` is restored only when
+		// it says so. Skipped for `null`/`Object.prototype`, the overwhelmingly common case for a
+		// JSON-like diagnostic payload, where no exotic prototype is ever attached and this check would
+		// be pure overhead for a class that could never fail it.
+		if (proto !== null && proto !== Object.prototype && isSafeToWearPrototype(proto)) {
+			Object.setPrototypeOf(result, proto);
+		}
+	} catch {
+		// Fall through with the clone's default Object.prototype - inspect() renders it without the
+		// class name, but every actual property attached below is still safe to render (see above for
+		// why the prototype itself, not the data, is what's unsafe here).
+	}
+	// Object.keys/getOwnPropertySymbols themselves are one unavoidable O(n) pass (a plain object,
+	// unlike Array/Map/Set, has no O(1) size to check before enumerating) - but everything AFTER
+	// that (getOwnPropertyDescriptor + recurse + defineProperty per key) is the expensive part, and
+	// that part IS capped at budget.maxEntries, same as every other container branch, so a
+	// million-key object can't turn a single log call into a million-entry clone.
+	const keys = Object.keys(value);
+	const keysOverflow = keys.length > budget.maxEntries;
+	const keysLimit = keysOverflow ? budget.maxEntries - 1 : keys.length;
+	for (let i = 0; i < keysLimit; i++) {
+		const key = keys[i];
+		let descriptor;
+		try {
+			descriptor = Object.getOwnPropertyDescriptor(value, key);
+		} catch {
+			continue; // a hostile descriptor trap - omit rather than risk a second throw
+		}
+		if (!descriptor) continue; // removed mid-walk by another property's getter side effect
+		if (descriptor.get || descriptor.set) {
+			defineOwnProperty(result, key, accessorPlaceholder(descriptor));
+			continue;
+		}
+		try {
+			defineOwnProperty(result, key, deepSanitizeErrors(descriptor.value, seen, depth + 1, budget));
+		} catch {
+			defineOwnProperty(result, key, sanitizeFailurePlaceholder());
+		}
+	}
+	if (keysOverflow)
+		defineOwnProperty(
+			result,
+			KEYS_TRUNCATED_MARKER,
+			labelPlaceholder(`[${keys.length - keysLimit} more properties omitted (sanitize budget)]`)
+		);
+	const symbols = Object.getOwnPropertySymbols(value);
+	const symbolsOverflow = symbols.length > budget.maxEntries;
+	const symbolsLimit = symbolsOverflow ? budget.maxEntries - 1 : symbols.length;
+	for (let i = 0; i < symbolsLimit; i++) {
+		const sym = symbols[i];
+		let descriptor;
+		try {
+			descriptor = Object.getOwnPropertyDescriptor(value, sym);
+		} catch {
+			continue;
+		}
+		if (!descriptor?.enumerable) continue;
+		if (sym === inspect.custom) {
+			// The custom renderer itself, not data - preserve unchanged (even if defined via an
+			// accessor) rather than replace it with an accessor placeholder. util.inspect's own
+			// top-level render finds this hook via the exact same `value[sym]` property access, so
+			// reading it here isn't new arbitrary-code exposure the way an ordinary data getter
+			// would be - it's the documented render-hook contract, just resolved one level earlier.
+			let original;
+			try {
+				original = value[sym];
+			} catch {
+				continue; // leave unset - inspect() will render the rest of the object without a custom hook
+			}
+			if (typeof original !== 'function') continue; // not a valid hook - nothing to wrap or invoke
+			// The hook itself runs at REAL render time, entirely outside this walk - so whatever it
+			// RETURNS has never been through deepSanitizeErrors. Left as-is, a hook that returns a
+			// closure-captured secret-bearing Error (or any value with one nested inside) would have
+			// that Error rendered raw by the outer util.inspect call, bypassing this sanitizer entirely
+			// (#1994 review). This wraps the hook so the CALL is unchanged (still invoked with `this`
+			// bound to the original untrusted `value`, same as inspect would do directly) but its return
+			// value is sanitized with a fresh depth/budget - independent of this walk's own counters,
+			// which by render time are long since exhausted or out of scope.
+			defineOwnProperty(result, sym, (...args: any[]) => {
+				let rendered;
+				try {
+					rendered = original.apply(value, args);
+				} catch (err) {
+					return `[Unrenderable value: ${errorToString(err)}]`;
+				}
+				return deepSanitizeErrors(rendered, new WeakMap(), 0, { nodes: 0, maxEntries: DEFAULT_MAX_SANITIZE_ENTRIES });
+			});
+			continue;
+		}
+		if (descriptor.get || descriptor.set) {
+			defineOwnProperty(result, sym, accessorPlaceholder(descriptor));
+			continue;
+		}
+		try {
+			defineOwnProperty(result, sym, deepSanitizeErrors(descriptor.value, seen, depth + 1, budget));
+		} catch {
+			defineOwnProperty(result, sym, sanitizeFailurePlaceholder());
+		}
+	}
+	if (symbolsOverflow)
+		defineOwnProperty(
+			result,
+			SYMBOLS_TRUNCATED_MARKER,
+			labelPlaceholder(`[${symbols.length - symbolsLimit} more symbol properties omitted (sanitize budget)]`)
+		);
+	return result;
+}
+
+/**
+ * Returns a log-safe lazy wrapper around `util.inspect(value, options)`, for call sites that need
+ * to log a structured, non-Error value with non-default inspect options (e.g. a deeper depth or
+ * higher array/string limits than Console's defaults, to avoid flattening nested diagnostic data —
+ * see harper#1982). Same rationale as errorForLog: the wrapper defers the (potentially expensive,
+ * e.g. large-array) render until the logger's level gate actually writes the entry, and the render
+ * itself can never throw regardless of what `value` is — including a hostile nested
+ * `[util.inspect.custom]` hook — so a formatting failure can never mask the real thing being
+ * logged (e.g. replace the caught operation error with an inspect error). Any Error nested inside
+ * `value` is sanitized via deepSanitizeErrors before rendering, so a raised inspect depth here
+ * can't surface a nested Error's own-enumerable properties (#1734) the way the raw value would.
+ * `options.maxArrayLength`, if given, also bounds sanitization's own per-container breadth (see
+ * deepSanitizeErrors' budget) - a caller raising the render limit is raising how much genuinely
+ * needs to be walked, not just how much of an already-cheap walk gets displayed.
+ */
+export function inspectForLog(value: any, options?: any) {
+	const render = () => {
+		try {
+			const maxEntries = Number(options?.maxArrayLength);
+			const budget: SanitizeBudget = {
+				nodes: 0,
+				maxEntries: maxEntries > 0 ? Math.min(maxEntries, HARD_MAX_SANITIZE_ENTRIES) : DEFAULT_MAX_SANITIZE_ENTRIES,
+			};
+			return inspect(deepSanitizeErrors(value, new WeakMap(), 0, budget), options);
+		} catch (err) {
+			// errorToString is the guaranteed-never-throw stringifier (unlike `err instanceof Error` or
+			// `String(err)` here, both of which can themselves throw on a hostile value - e.g. a revoked
+			// Proxy thrown by a nested custom-inspect hook - which would otherwise escape this catch and
+			// mask the real operation error being logged).
+			return `[Unrenderable value: ${errorToString(err)}]`;
+		}
+	};
 	return { [inspect.custom]: render, toString: render };
 }
 
@@ -1101,4 +1813,6 @@ export default {
 	AuthAuditLog,
 	errorToString,
 	errorForLog,
+	inspectForLog,
+	isErrorLike,
 };

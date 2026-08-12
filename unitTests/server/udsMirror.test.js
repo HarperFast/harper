@@ -14,12 +14,26 @@ const EventEmitter = require('events');
 const {
 	writeUdsMetadata,
 	registerUdsCleanupPaths,
+	recordUdsBindSuccess,
 	cleanupUdsFiles,
 	cleanupSocketsDirectory,
 	enableProxyProtocol,
+	markUdsBindFailed,
 } = require('#src/server/http');
 
 const TEST_SOCKETS_DIR = path.join(testUtils.ENV_DIR_PATH, 'sockets');
+
+// Replace the file at `filePath` with one guaranteed to have a different inode, simulating a
+// replacement worker rebinding the same path (threadServer.js's unlink-before-listen). Writing the
+// replacement to a decoy path first (so both files briefly coexist) rather than unlinking `filePath`
+// and recreating it in place matters: some filesystems immediately reuse a just-freed inode number
+// for the very next file created at the same path, which would make the "different inode" premise
+// this test suite depends on flaky. Two simultaneously-live files can never share an inode.
+function replaceWithNewInode(filePath, contents) {
+	const decoyPath = filePath + '.decoy';
+	fs.writeFileSync(decoyPath, contents);
+	fs.renameSync(decoyPath, filePath);
+}
 
 // Build a mock secure server whose secureContexts mirrors the Map returned by createTLSSelector
 function makeSecureServer(certs = []) {
@@ -304,61 +318,373 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			socket.emit('timeout'); // an unrelated later timeout must be a no-op post-handoff
 			assert.strictEqual(socket.destroy.called, false);
 		});
+
+		it('uninstalls its wrapper and restores the original listeners once the header resolves', async () => {
+			// The wrapper must not outlive the header decision: Node's HTTP upgrade path
+			// removes the parser's 'data' listener by reference before ws takes over, so a
+			// lingering wrapper would keep feeding the freed (re-poolable) parser.
+			const socket = createSocket();
+			const server = new EventEmitter();
+			enableProxyProtocol(server);
+			const parserListener = () => {};
+			socket.on('data', parserListener);
+			server.emit('connection', socket);
+			await new Promise((resolve) => process.nextTick(resolve));
+			socket.emit('data', Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\nHELLO'));
+			assert.deepStrictEqual(socket.listeners('data'), [parserListener]);
+		});
 	});
 
-	// ─── registerUdsCleanupPaths + cleanupUdsFiles ────────────────────────────
+	// ─── WS upgrade through the UDS mirror path (real sockets) ────────────────
 
-	describe('registerUdsCleanupPaths + cleanupUdsFiles', () => {
-		it('cleanupUdsFiles removes registered socket and yaml files', () => {
+	describe('WebSocket upgrade over a proxy-protocol UDS server', () => {
+		// End-to-end regression for the two defects that silently killed WS on the UDS
+		// mirrors: a mirror with no 'upgrade' listener destroys the socket with a
+		// zero-byte close, and the old enableProxyProtocol wrapper kept forwarding
+		// post-upgrade frames into the freed HTTP parser (which the pool can re-issue
+		// to another connection, corrupting it).
+		const http = require('node:http');
+		const net = require('node:net');
+		const crypto = require('node:crypto');
+		const os = require('node:os');
+		const { WebSocketServer } = require('ws');
+
+		// Short path: sun_path is limited to ~104 bytes on macOS
+		const sockPath = path.join(os.tmpdir(), `hdb-ws-uds-${process.pid}.sock`);
+		let server, wss;
+
+		before(async () => {
+			try {
+				fs.unlinkSync(sockPath);
+			} catch {}
+			server = http.createServer((request, response) => response.end('ok'));
+			wss = new WebSocketServer({ noServer: true });
+			wss.on('connection', (ws) => ws.on('message', (msg) => ws.send(`echo:${msg}`)));
+			server.on('upgrade', (request, socket, head) => {
+				wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
+			});
+			enableProxyProtocol(server);
+			await new Promise((resolve) => server.listen(sockPath, resolve));
+		});
+
+		after(async () => {
+			wss?.close();
+			server.closeAllConnections?.();
+			await new Promise((resolve) => server.close(resolve));
+			try {
+				fs.unlinkSync(sockPath);
+			} catch {}
+		});
+
+		function maskedTextFrame(text) {
+			const payload = Buffer.from(text);
+			const mask = crypto.randomBytes(4);
+			const masked = Buffer.from(payload.map((byte, i) => byte ^ mask[i % 4]));
+			return Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]);
+		}
+
+		function httpRequest() {
+			return new Promise((resolve, reject) => {
+				const client = net.connect(sockPath);
+				let data = '';
+				client.on('connect', () => {
+					client.write('PROXY TCP4 9.9.9.9 5.6.7.8 3333 2222\r\n');
+					client.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
+				});
+				client.on('data', (chunk) => (data += chunk));
+				client.on('close', () => resolve(data.split('\r\n')[0]));
+				client.on('error', reject);
+			});
+		}
+
+		it('completes the handshake, echoes frames, and leaves pooled parsers intact', async () => {
+			const client = net.connect(sockPath);
+			const key = crypto.randomBytes(16).toString('base64');
+			let clientError = null;
+			server.once('clientError', (error) => (clientError = error));
+
+			try {
+				const status = await new Promise((resolve, reject) => {
+					let data = Buffer.alloc(0);
+					client.on('connect', () => {
+						client.write('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\n');
+						client.write(
+							`GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
+								`Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n\r\n`
+						);
+					});
+					client.on('data', function onHandshake(chunk) {
+						data = Buffer.concat([data, chunk]);
+						if (data.includes('\r\n\r\n')) {
+							client.removeListener('data', onHandshake);
+							resolve(data.toString().split('\r\n')[0]);
+						}
+					});
+					client.on('error', reject);
+					client.on('close', () => reject(new Error('connection closed before handshake response')));
+				});
+				assert.strictEqual(status, 'HTTP/1.1 101 Switching Protocols');
+
+				// Run another HTTP request first so the freed parser is re-issued from the
+				// pool; frames on the upgraded socket must not reach it.
+				assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
+
+				const echoed = new Promise((resolve, reject) => {
+					let frame = Buffer.alloc(0);
+					client.on('data', (chunk) => {
+						frame = Buffer.concat([frame, chunk]);
+						const length = frame[1] & 0x7f;
+						if (frame.length >= 2 + length) resolve(frame.subarray(2, 2 + length).toString());
+					});
+					setTimeout(() => reject(new Error('no echo received')), 3000).unref();
+				});
+				client.write(maskedTextFrame('hi'));
+				assert.strictEqual(await echoed, 'echo:hi');
+				assert.strictEqual(clientError, null, 'frames must not leak into pooled HTTP parsers');
+
+				// The server must serve plain HTTP cleanly after the upgraded connection exchanged frames
+				assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
+			} finally {
+				client.destroy();
+			}
+		});
+	});
+
+	// ─── registerUdsCleanupPaths + recordUdsBindSuccess + cleanupUdsFiles ─────
+	//
+	// cleanupUdsFiles() is ownership-aware: it only unlinks a mirror's socket (and its yaml) when
+	// the inode currently on disk still matches the one recorded when THIS worker bound it. On an
+	// overlapping restart, the replacement worker rebinds the same path before the outgoing worker
+	// exits and cleans up, so an unqualified unlink-by-path would delete the replacement's live
+	// files (the production bug this test suite guards against).
+
+	describe('registerUdsCleanupPaths + recordUdsBindSuccess + cleanupUdsFiles', () => {
+		it('normal shutdown: removes the socket and yaml this worker bound and recorded', () => {
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'test.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'test.yaml');
 			fs.writeFileSync(sockPath, '');
 			fs.writeFileSync(yamlPath, '');
 
 			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
 			cleanupUdsFiles();
 
 			assert.ok(!fs.existsSync(sockPath), 'socket file should be removed');
 			assert.ok(!fs.existsSync(yamlPath), 'yaml file should be removed');
 		});
 
-		it('cleanupUdsFiles does not throw when files are already gone', () => {
-			registerUdsCleanupPaths(path.join(TEST_SOCKETS_DIR, 'ghost.sock'), path.join(TEST_SOCKETS_DIR, 'ghost.yaml'));
+		it('THE REGRESSION: leaves both files in place when a replacement rebound the path with a different inode', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'replaced.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'replaced.yaml');
+			fs.writeFileSync(sockPath, 'outgoing worker');
+			fs.writeFileSync(yamlPath, 'outgoing worker metadata\n');
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+
+			// Simulate the replacement worker's listenOnDomainSocket(): unlink the old file and bind
+			// a brand-new inode at the same path (see threadServer.js's unlink-before-listen).
+			replaceWithNewInode(sockPath, 'replacement worker');
+
+			cleanupUdsFiles();
+
+			assert.ok(fs.existsSync(sockPath), "the replacement's live socket must survive the outgoing worker's cleanup");
+			assert.ok(fs.existsSync(yamlPath), "the replacement's yaml must survive too — it owns the pair");
+		});
+
+		it('is idempotent across the two real-world calls per worker, even if a later generation reuses the exact recorded inode number', () => {
+			// cleanupUdsFiles() runs twice per worker (threadServer.js's SHUTDOWN handler, then
+			// again from process.on('exit') once closeServers() has released this worker's own
+			// socket). Inode numbers get reused once freed, so by the time the second call runs, an
+			// unrelated later generation can coincidentally occupy this path with the SAME inode
+			// number this worker originally recorded — the exact production race, replayed within
+			// one process. A hard link pins the original inode alive across the first cleanup call
+			// (standing in for the outgoing worker's own still-open fd in production) so the
+			// "later generation" file below is deterministically given that identical inode back,
+			// rather than depending on the OS's actual allocator timing.
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'reused-inode.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'reused-inode.yaml');
+			const pinPath = path.join(TEST_SOCKETS_DIR, 'reused-inode.sock.pin');
+			fs.writeFileSync(sockPath, 'generation 1');
+			fs.writeFileSync(yamlPath, 'generation 1 metadata\n');
+			fs.linkSync(sockPath, pinPath);
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+
+			cleanupUdsFiles(); // first pass (SHUTDOWN): owned, deletes both
+			assert.ok(!fs.existsSync(sockPath), 'first pass should remove the socket it owns');
+			assert.ok(!fs.existsSync(yamlPath), 'first pass should remove the yaml it owns');
+
+			// A later generation binds the same path and — per the scenario above — is handed the
+			// identical inode number this worker originally recorded (simulated deterministically
+			// via the pinned hard link rather than left to chance).
+			fs.renameSync(pinPath, sockPath);
+			fs.writeFileSync(yamlPath, 'later generation metadata\n');
+
+			cleanupUdsFiles(); // second pass (process.on('exit')): must be a no-op
+
+			assert.ok(fs.existsSync(sockPath), "a later generation's socket must survive the second cleanup pass");
+			assert.ok(fs.existsSync(yamlPath), "a later generation's yaml must survive the second cleanup pass");
+		});
+
+		it('an unconfirmed bind does not unlink a live file left by someone else at that path', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'never-bound.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'never-bound.yaml');
+			// Some other, unrelated process/state left files at this path; this worker registered
+			// cleanup for it but its own listen() never confirmed (no recordUdsBindSuccess call).
+			fs.writeFileSync(sockPath, '');
+			fs.writeFileSync(yamlPath, '');
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			cleanupUdsFiles();
+
+			assert.ok(fs.existsSync(sockPath), 'an unconfirmed bind must not be treated as owned');
+			assert.ok(fs.existsSync(yamlPath), 'an unconfirmed bind must not be treated as owned');
+		});
+
+		it('leaves a yaml in place when no socket is at that path either, unlike markUdsBindFailed', () => {
+			// Deliberately asymmetric with markUdsBindFailed's "absent is safe to retract": that
+			// function's only caller runs synchronously before any bind attempt, with no window for
+			// anyone else to be mid-flight. This function's second call (process.on('exit')) can land
+			// seconds after the first, while a concurrently-booting replacement (on non-overlapping
+			// restart platforms, started right after this worker's SHUTDOWN) may have already written
+			// its own fresh yaml without having bound its socket yet — 'absent' here doesn't reliably
+			// mean "no live owner." A stale yaml with no bind failure to explain it is left for
+			// markUdsBindFailed or the next full process start's cleanupSocketsDirectory() sweep.
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.yaml');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			cleanupUdsFiles();
+
+			assert.ok(fs.existsSync(yamlPath), 'an absent socket must not be treated as safe to retract here');
+		});
+
+		it('cleanupUdsFiles does not throw when files are already gone (ENOENT)', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'ghost.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'ghost.yaml');
+			fs.writeFileSync(sockPath, '');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+			fs.unlinkSync(sockPath); // gone before cleanup runs
+
 			assert.doesNotThrow(() => cleanupUdsFiles());
+		});
+
+		it('cleanupUdsFiles does not throw when nothing was ever registered for that path', () => {
+			registerUdsCleanupPaths(path.join(TEST_SOCKETS_DIR, 'ghost2.sock'), path.join(TEST_SOCKETS_DIR, 'ghost2.yaml'));
+			assert.doesNotThrow(() => cleanupUdsFiles());
+		});
+	});
+
+	// ─── markUdsBindFailed ─────────────────────────────────────────────────────
+
+	describe('markUdsBindFailed', () => {
+		it('removes a YAML metadata file for a socket this worker confirmed binding', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'failed.yaml');
+			fs.writeFileSync(sockPath, '');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(!fs.existsSync(yamlPath), 'yaml for a bind this worker owns should be removed');
+		});
+
+		it('removes a stale yaml when this worker never confirmed a bind and nothing is on disk', () => {
+			// Mirrors the real caller (threadServer.js's isDomainSocketPathTooLong check): listen()
+			// is skipped entirely, so this worker's own ino is never recorded. But since no socket
+			// exists at this path either, nothing else can be relying on this yaml — it's ours to
+			// retract (e.g. leftover from an earlier writeUdsMetadata() race against the bind check).
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'never-bound-failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'never-bound-failed.yaml');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(!fs.existsSync(yamlPath), 'an unclaimed path has no live owner, so its stale yaml should be removed');
+		});
+
+		it('leaves the yaml in place when a live socket at that path belongs to someone else', () => {
+			// A socket already exists at this path (e.g. a replacement worker's live mirror), but
+			// this worker never recorded a matching bind of its own — its failed-bind cleanup must
+			// not delete metadata that live socket depends on.
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'foreign-failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'foreign-failed.yaml');
+			fs.writeFileSync(sockPath, "someone else's socket");
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(fs.existsSync(yamlPath), "a live socket this worker never bound means its yaml isn't ours to delete");
+		});
+
+		it('leaves the yaml in place when stat fails for a reason other than ENOENT', () => {
+			// A stat failure that isn't "the file doesn't exist" (permissions, I/O, etc.) means we
+			// can't confirm the path is genuinely empty — treat it like 'foreign', not 'absent', so a
+			// transient stat error can't be misread as license to delete a live owner's yaml. Forced
+			// deterministically via ENOTDIR (treating a plain file as a path segment) rather than
+			// EACCES, which isn't reliably enforced when tests run as root (common in CI containers).
+			const blockingFile = path.join(TEST_SOCKETS_DIR, 'not-a-directory');
+			const sockPath = path.join(blockingFile, 'nested.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'enotdir-failed.yaml');
+			fs.writeFileSync(blockingFile, '');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(fs.existsSync(yamlPath), 'an inconclusive stat error must not be treated as a safe-to-retract absence');
+		});
+
+		it('leaves the yaml in place when a replacement worker now owns the socket at the same path', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'replaced-failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'replaced-failed.yaml');
+			fs.writeFileSync(sockPath, 'outgoing worker');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+
+			replaceWithNewInode(sockPath, 'replacement worker');
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(fs.existsSync(yamlPath), "a replacement's yaml must survive the outgoing worker's cleanup");
+		});
+
+		it('does not throw when the socket was never registered or has no metadata file on disk', () => {
+			assert.doesNotThrow(() => markUdsBindFailed(path.join(TEST_SOCKETS_DIR, 'never-registered.sock')));
 		});
 	});
 
 	// ─── cleanupSocketsDirectory ──────────────────────────────────────────────
 
 	describe('cleanupSocketsDirectory', () => {
-		it('removes all files in the sockets directory when enabled', () => {
+		it('removes all files in the sockets directory, unconditionally (no TLS_UNIXDOMAINSOCKETS gate)', () => {
+			// The sockets directory is Harper-owned and only ever holds mirror files, so a crash that
+			// left files behind while UDS was enabled must still be cleared even if the operator has
+			// since turned the feature off (including disabling it *because of* a mirror problem) —
+			// the sweep must not inherit the current config's gate. No env stubbing needed to prove
+			// this: the function no longer reads that config at all.
 			const socketsDir = path.join(env.getHdbBasePath(), 'sockets');
 			fs.mkdirSync(socketsDir, { recursive: true });
 			fs.writeFileSync(path.join(socketsDir, '0-9926.sock'), '');
 			fs.writeFileSync(path.join(socketsDir, '0-9926.yaml'), '');
 			fs.writeFileSync(path.join(socketsDir, '1-9926.sock'), '');
 
-			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(true);
 			cleanupSocketsDirectory();
 
 			assert.strictEqual(fs.readdirSync(socketsDir).length, 0, 'sockets dir should be empty');
 			fs.rmdirSync(socketsDir);
 		});
 
-		it('does nothing when tls.unixDomainSockets is not enabled', () => {
-			const socketsDir = path.join(env.getHdbBasePath(), 'sockets');
-			fs.mkdirSync(socketsDir, { recursive: true });
-			fs.writeFileSync(path.join(socketsDir, '0-9926.sock'), '');
-
-			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(undefined);
-			cleanupSocketsDirectory();
-
-			assert.strictEqual(fs.readdirSync(socketsDir).length, 1, 'file should remain when feature is disabled');
-			fs.rmSync(socketsDir, { recursive: true });
-		});
-
 		it('does not throw when the sockets directory does not exist', () => {
-			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(true);
 			assert.doesNotThrow(() => cleanupSocketsDirectory());
 		});
 	});

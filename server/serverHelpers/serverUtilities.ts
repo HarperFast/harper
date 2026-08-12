@@ -12,6 +12,7 @@ import { isDeployValidating } from './deployValidationState.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
+import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
 import * as opAuth from '../../utility/operation_authorization.ts';
 import * as jobs from '../jobs/jobs.ts';
 import * as terms from '../../utility/hdbTerms.ts';
@@ -203,7 +204,7 @@ server.setMcpQuotaHandler = (handler) => {
 	setMcpQuotaHandler(handler);
 };
 
-export function chooseOperation(json: OperationRequestBody) {
+export function chooseOperation(json: OperationRequestBody, bypassAuth = false) {
 	let getOpResult: OperationFunctionObject;
 	try {
 		getOpResult = getOperationFunction(json);
@@ -214,7 +215,7 @@ export function chooseOperation(json: OperationRequestBody) {
 		// and its metadata actually exist, so no perm check is skipped by returning early
 		// here (#1736). Workers never re-forward, so an unknown op can't loop.
 		if (isMainThread) {
-			const remoteOperationFunction = getRemoteOperationFunction(json.operation);
+			const remoteOperationFunction = getRemoteOperationFunction(json.operation, bypassAuth);
 			if (remoteOperationFunction) return remoteOperationFunction;
 		}
 		operationLog.error(`Error when selecting operation function - ${err}`);
@@ -231,7 +232,7 @@ export function chooseOperation(json: OperationRequestBody) {
 			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
 			json.parsed_sql_object = parsedSqlObject;
-			if (!json.bypass_auth) {
+			if (!bypassAuth) {
 				const astPermCheck = sql.checkASTPermissions(json, parsedSqlObject);
 				if (astPermCheck) {
 					operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
@@ -248,7 +249,7 @@ export function chooseOperation(json: OperationRequestBody) {
 			}
 			//we need to bypass permission checks to allow the createAuthorizationTokens
 		} else if (
-			!json.bypass_auth &&
+			!bypassAuth &&
 			json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
 			json.operation !== terms.OPERATIONS_ENUM.LOGIN &&
 			json.operation !== terms.OPERATIONS_ENUM.LOGOUT
@@ -311,9 +312,11 @@ _assignPackageExport('operation', operation);
 export function operation(operation: OperationRequestBody, context: Context, authorize: boolean) {
 	operation.hdb_user = context?.user;
 	const bypassAuth = !authorize;
-	operation.bypass_auth = bypassAuth;
+	// Deliberately NOT stamped onto `operation` as `bypass_auth`: that name is client-supplied input
+	// which serverHandlers strips before dispatch, and nothing reads it. The bypass travels in
+	// operationAuthorizationState's async context, which is what isTrustedReplicatedOperation checks.
 	return runWithOperationAuthorizationBypass(bypassAuth, () => {
-		const operation_function = chooseOperation(operation);
+		const operation_function = chooseOperation(operation, bypassAuth);
 		return processLocalTransaction({ body: operation }, operation_function);
 	});
 }
@@ -392,6 +395,9 @@ export async function executeJob(json: OperationRequestBody): Promise<JobResult>
 			};
 		}
 	} catch (err) {
+		// errors that already carry a statusCode (e.g. ClientError from job validation) are
+		// client-facing as-is; wrapping them here would turn a 400/404/409 into a 500
+		if (err instanceof Error && typeof (err as any).statusCode === 'number') throw err;
 		const error = err instanceof Error ? err : null;
 		const message = `There was an error executing job: ${error && 'http_resp_msg' in error ? error.http_resp_msg : err}`;
 		operationLog.error(message);
@@ -589,6 +595,21 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES, new OperationFunctionObject(npmUtilities.installModules));
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_BACKUP, new OperationFunctionObject(schema.getBackup));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.CREATE_BACKUP,
+		new OperationFunctionObject(executeJob, rocksdbBackup.createBackup)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_BACKUPS, new OperationFunctionObject(rocksdbBackup.listBackups));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.VERIFY_BACKUP,
+		new OperationFunctionObject(executeJob, rocksdbBackup.verifyBackup)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.DELETE_BACKUP, new OperationFunctionObject(rocksdbBackup.deleteBackup));
+	opFuncMap.set(terms.OPERATIONS_ENUM.PURGE_BACKUPS, new OperationFunctionObject(rocksdbBackup.purgeBackups));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.RESTORE_BACKUP,
+		new OperationFunctionObject(executeJob, rocksdbBackup.restoreBackup)
+	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS, new OperationFunctionObject(schema.cleanupOrphanBlobs));
 
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.getOp));

@@ -1,0 +1,27 @@
+# Single table used for every compression variant. The record shape is
+# deliberately document-like — low-cardinality enum-ish strings, timestamps,
+# numbers, a nested object and a prose field — because compression ratio is a
+# property of the data, not of the engine. The generator (run.mts) fills the
+# same shape with either realistic or random content so the two can be compared
+# under identical schema and index conditions.
+#
+# `category` is the only secondary index, so the run also exercises an index
+# column family rather than the primary alone.
+type records @table @export {
+	id: ID @primaryKey
+	sku: String
+	category: String @indexed
+	brand: String
+	region: String
+	status: String
+	currency: String
+	title: String
+	description: String
+	price: Float
+	quantity: Int
+	rating: Float
+	createdAt: String
+	updatedAt: String
+	tags: [String]
+	attributes: Any
+}

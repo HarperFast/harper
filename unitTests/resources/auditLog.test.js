@@ -10,6 +10,7 @@ const {
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
+const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
 	let AuditedTable;
@@ -42,35 +43,82 @@ describe('Audit log', () => {
 	});
 	it('check log after writes and prune', async () => {
 		events = [];
+		// transactionBroadcast.ts coalesces 'committed' bursts landing in the same turn into a
+		// single notify pass, and the subscribe() listener (Table.ts) only delivers the LATEST
+		// value per id from that pass (by design, not a bug). Four same-turn writes to two ids
+		// can therefore collapse to as few as 2 delivered events no matter how long we later
+		// poll for them — waiting for the notify drain to catch up after EACH write (rather than
+		// after the whole burst) is what actually makes delivery deterministic.
+		// >= rather than === in the condition: an overshoot (however it arose) should fall through
+		// to the assertions below with a clear message, not hang the waiter into its timeout.
+		async function waitForEventCount(count) {
+			await waitFor(() => events.length >= count, {
+				timeout: 5000,
+				message: `expected at least ${count} subscription events`,
+			});
+		}
 		await AuditedTable.put(1, { name: 'one' });
+		await waitForEventCount(1);
 		await AuditedTable.put(2, { name: 'two' });
+		await waitForEventCount(2);
 		await AuditedTable.put(2, { name: 'two-changed' });
+		await waitForEventCount(3);
 		await AuditedTable.delete(1);
+		await waitForEventCount(4);
 		assert.equal(AuditedTable.primaryStore.getEntry(1).value, null); // verify that there is a delete entry
 		let results = [];
 		for await (let entry of AuditedTable.getHistory()) {
 			results.push(entry);
 		}
 		assert.equal(results.length, 4);
-		// Poll for the subscription events instead of a fixed 20ms delay, which is too short
-		// on a loaded CI runner and made this assertion flaky.
-		for (let i = 0; i < 20 && events.length <= 2; i++) {
-			await delay(10);
-		}
-		assert(events.length > 2, 'Should have at least a couple of update events');
+		// The per-write waitForEventCount calls above already drained delivery after each write, so
+		// the full count is deterministic here — assert the tight bound rather than "a couple".
+		assert(events.length >= 4, 'Should have one live-subscription event per write');
+		// Verify the actual invariant, not just the count: the LAST delivered event per id must
+		// reflect that id's final state (an earlier, superseded event for the same id may or may
+		// not also have been delivered, so this only checks the latest, not the total count). Wait
+		// for that final-state condition directly rather than trusting the count above, since a
+		// count can in principle be satisfied by intermediate events that aren't the final state yet.
+		const lastEventById = () => {
+			const map = new Map();
+			for (const event of events) map.set(event.id, event);
+			return map;
+		};
+		await waitFor(
+			() => lastEventById().get(1)?.type === 'delete' && lastEventById().get(2)?.value?.name === 'two-changed',
+			{ timeout: 2000, message: "Should have received id 1's delete and id 2's latest put" }
+		);
+		// Compute the map once here rather than calling lastEventById() again in each assertion below
+		// (still a recomputation over `events`, just a single one instead of two).
+		const finalEventById = lastEventById();
+		assert.equal(finalEventById.get(1)?.type, 'delete', "id 1's final delivered event should be its delete");
+		assert.equal(
+			finalEventById.get(2)?.value?.name,
+			'two-changed',
+			"id 2's final delivered event should be its latest put"
+		);
 		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
 		setAuditRetention(0.001, 1);
-		AuditedTable.auditStore.scheduleAuditCleanup(1);
+		// scheduleAuditCleanup() resolves once the pass serving the call has committed its deletions.
+		// This first one races the put below, so it may or may not see record 3's audit entry.
+		const firstPass = AuditedTable.auditStore.scheduleAuditCleanup(1);
 		await AuditedTable.put(3, { name: 'three' });
-		// Poll until cleanup completes (was a fixed 20ms which is too short on a loaded CI runner)
-		for (let i = 0; i < 20; i++) {
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			results = [];
-			for await (let entry of AuditedTable.getHistory()) {
-				results.push(entry);
-			}
-			if (results.length === 0) break;
-		}
+		await firstPass;
+		// Drive passes until the log is drained. Every iteration awaits a whole pass, so it makes real
+		// progress rather than hoping a background timer landed inside a fixed wall-clock budget — which
+		// is what the previous 20 x 10ms poll did. More than one iteration is only needed if the store
+		// holds more than MAX_DELETES_PER_CLEANUP stale entries, since a pass stops at that cap.
+		results = await waitFor(
+			async () => {
+				await AuditedTable.auditStore.scheduleAuditCleanup(1);
+				const remaining = [];
+				for await (let entry of AuditedTable.getHistory()) {
+					remaining.push(entry);
+				}
+				return remaining.length === 0 ? remaining : false;
+			},
+			{ timeout: 10000, interval: 0, message: 'audit log was not pruned' }
+		);
 
 		assert.equal(results.length, 0);
 		assert.equal(AuditedTable.primaryStore.getEntry(1), undefined); // verify that the delete entry was removed

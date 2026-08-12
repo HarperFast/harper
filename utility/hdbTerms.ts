@@ -157,11 +157,14 @@ export const HDB_FILE_PERMISSIONS = 0o700;
 
 /** Database directory */
 export const DATABASES_DIR_NAME = 'database';
+/** Suffix for in-progress LMDB→RocksDB migration staging directories: excluded from database
+ * discovery, atomically renamed into place only after the migration fully verifies (harper#2012) */
+export const MIGRATING_DIR_SUFFIX = '.migrating';
 /** Legacy Database directory */
 export const LEGACY_DATABASES_DIR_NAME = 'schema';
 /** Transaction directory */
 export const TRANSACTIONS_DIR_NAME = 'transactions';
-/** Backup directory */
+/** Backup directory (config-file backups and managed RocksDB database backups) */
 export const BACKUP_DIR_NAME = 'backup';
 
 /** Key for specifying process specific environment variables */
@@ -328,6 +331,12 @@ export const OPERATIONS_ENUM = {
 	AUDIT_NODE_MODULES: 'audit_node_modules',
 	PURGE_STREAM: 'purge_stream',
 	GET_BACKUP: 'get_backup',
+	CREATE_BACKUP: 'create_backup',
+	LIST_BACKUPS: 'list_backups',
+	VERIFY_BACKUP: 'verify_backup',
+	DELETE_BACKUP: 'delete_backup',
+	PURGE_BACKUPS: 'purge_backups',
+	RESTORE_BACKUP: 'restore_backup',
 	CLEANUP_ORPHAN_BLOBS: 'cleanup_orphan_blobs',
 	GET_ANALYTICS: 'get_analytics',
 	LIST_METRICS: 'list_metrics',
@@ -547,6 +556,7 @@ export const CONFIG_PARAMS = {
 	LICENSE_MODE: 'license_mode',
 	LICENSE_REGION: 'license_region',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
+	MODELSGATEWAY_ENABLED: 'modelsGateway_enabled',
 	LOGGING_COLORS: 'logging_colors',
 	LOGGING_CONSOLE: 'logging_console',
 	LOGGING_FILE: 'logging_file',
@@ -677,6 +687,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_MAX_READ_TRANSACTION_OPEN_TIME: 'storage_maxReadTransactionOpenTime',
 	STORAGE_DEBUGLONGTRANSACTIONS: 'storage_debugLongTransactions',
 	STORAGE_PATH: 'storage_path',
+	STORAGE_BACKUPPATH: 'storage_backupPath',
 	STORAGE_BLOBPATHS: 'storage_blobPaths',
 	STORAGE_BLOBCLEANUPSPEED: 'storage_blobCleanupSpeed',
 	STORAGE_BLOBREADTIMEOUT: 'storage_blobReadTimeout',
@@ -695,6 +706,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_TRANSACTIONLOG_COOLINGINTERVAL: 'storage_transactionLog_coolingInterval',
 	STORAGE_ENGINE: 'storage_engine',
 	STORAGE_READONLY: 'storage_readOnly',
+	STORAGE_ROCKS_COMPRESSION: 'storage_rocks_compression',
 	STORAGE_ROCKS_BLOCKCACHESIZE: 'storage_rocks_blockCacheSize',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE: 'storage_rocks_writeBufferManagerSize',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE: 'storage_rocks_writeBufferManagerCostToCache',
@@ -821,6 +833,9 @@ export const JOB_TYPE_ENUM = {
 	export_to_s3: 'export_to_s3',
 	import_from_s3: 'import_from_s3',
 	restart_service: 'restart_service',
+	create_backup: OPERATIONS_ENUM.CREATE_BACKUP,
+	verify_backup: OPERATIONS_ENUM.VERIFY_BACKUP,
+	restore_backup: OPERATIONS_ENUM.RESTORE_BACKUP,
 } as const;
 
 /** Specifies values for licenses */

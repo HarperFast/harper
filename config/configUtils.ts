@@ -1,13 +1,12 @@
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import { configValidator } from '../validation/configValidator.ts';
+import { configValidator, getDomainSocketPathLengthWarning } from '../validation/configValidator.ts';
 import fs from 'fs-extra';
 import YAML from 'yaml';
 import path from 'path';
 import { threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
-import { performance } from 'node:perf_hooks';
 import isNumber from 'is-number';
 import propertiesReaderModule from 'properties-reader';
 import _ from 'lodash';
@@ -87,10 +86,15 @@ export function getConfigPath(param: string) {
 // Every worker thread runs its own RootConfigWatcher (chokidar), so a write on one thread
 // routinely races a hot-reload read on another; Windows Defender / AV real-time scanning can
 // hold a similar transient handle. Retry with exponential backoff to ride out the race -
-// callers are synchronous, so the wait is a synchronous busy-loop rather than a real sleep.
-const RENAME_RETRY_MAX_ATTEMPTS = 8;
+// callers are synchronous, so the wait is a synchronous sleep rather than an async one.
+// The budget must outlast a single AV real-time scan pass (seconds, not hundreds of ms):
+// the previous ~910ms budget was exhausted twice in a row by the same test on a CI runner
+// (harper#2036), so the worst case is now ~3.6s.
+const RENAME_RETRY_MAX_ATTEMPTS = 12;
 const RENAME_RETRY_INITIAL_DELAY_MS = 10;
-const RENAME_RETRY_MAX_DELAY_MS = 200;
+const RENAME_RETRY_MAX_DELAY_MS = 500;
+// Never notified; exists only so Atomics.wait can time out (a synchronous, CPU-idle sleep).
+const renameRetrySleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 function atomicWriteFile(
 	filePath,
@@ -112,11 +116,10 @@ function atomicWriteFile(
 		} catch (err) {
 			if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
 				retries--;
-				// Sleep synchronously (all call sites are sync) to allow the reader to close the
-				// file. Uses performance.now() rather than Date.now(): the latter tracks wall-clock
-				// time and can jump backward (NTP sync), which would turn this into an unbounded spin.
-				const start = performance.now();
-				while (performance.now() - start < delayMs) {}
+				// Sleep synchronously (all call sites are sync) to allow the holder to close the
+				// file. Atomics.wait yields the thread to the OS instead of spinning the CPU,
+				// which is what makes a multi-second worst-case budget affordable.
+				if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
 				delayMs = Math.min(delayMs * 2, maxDelayMs);
 				continue;
 			}
@@ -662,7 +665,10 @@ function validateConfig(configDoc, skipFsValidation = false) {
 	configDoc.setIn(['logging', 'root'], validation.value.logging.root);
 	configDoc.setIn(['storage', 'path'], validation.value.storage.path);
 	configDoc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
-	configDoc.setIn(['operationsApi', 'network', 'domainSocket'], validation.value?.operationsApi?.network?.domainSocket);
+	const domainSocket = validation.value?.operationsApi?.network?.domainSocket;
+	configDoc.setIn(['operationsApi', 'network', 'domainSocket'], domainSocket);
+	const domainSocketWarning = getDomainSocketPathLengthWarning(validation.value.rootPath, domainSocket);
+	if (domainSocketWarning) logger.warn(domainSocketWarning);
 }
 
 /**

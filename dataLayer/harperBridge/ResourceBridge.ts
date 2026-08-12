@@ -27,6 +27,7 @@ import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { BridgeMethods } from './BridgeMethods.ts';
 import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
+import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
 import { DeleteTransactionLogsBeforeResults } from './DeleteTransactionLogsBeforeResults.ts';
 import type { Readable } from 'node:stream';
 
@@ -491,12 +492,25 @@ export class ResourceBridge extends BridgeMethods {
 				: typeof deleteObj.timestamp === 'string'
 					? Number.parseInt(deleteObj.timestamp)
 					: deleteObj.timestamp;
+		const databaseName = deleteObj.database || deleteObj.schema || DEFAULT_DATABASE;
 		const table = getTable(deleteObj);
+		// A nonexistent table must not fall through to the no-table branch below — on RocksDB that
+		// widens a table-scoped request (e.g. a typo) into a whole-database log purge (#2049).
+		// Presence check, not truthiness: a table named "0" addressed numerically is still table-scoped.
+		if (deleteObj.table != null && !table)
+			throw handleHDBError(
+				new Error(),
+				HDB_ERROR_MSGS.TABLE_NOT_FOUND(databaseName, deleteObj.table),
+				404,
+				undefined,
+				undefined,
+				true
+			);
 		if (!table) {
 			// no table, check if any of the tables are RocksDB
 			// since all tables share the same transaction log store, we break after the first
 			// RocksDB table is found
-			const tables = getDatabases()[deleteObj.database];
+			const tables = getDatabases()[databaseName];
 			if (tables) {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
@@ -508,9 +522,16 @@ export class ResourceBridge extends BridgeMethods {
 				}
 			}
 		} else if (table.primaryStore instanceof RocksDatabase) {
-			const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
-			totalResults.log_files_deleted += deleted.length;
-			totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
+			// All tables in a RocksDB database share one transaction log with no per-table purge
+			// granularity; honoring `table` here would silently purge every sibling table's log (#2049).
+			throw handleHDBError(
+				new Error(),
+				`Table-level transaction log deletion is not supported for RocksDB tables because all tables in a database share one transaction log; to delete the transaction logs for the entire '${databaseName}' database, use delete_transaction_logs_before with only 'database' and 'timestamp'`,
+				400,
+				undefined,
+				undefined,
+				true
+			);
 		} else {
 			totalResults.entries_deleted += await table.deleteHistory(before, deleteObj.cleanup_deleted_records);
 		}
@@ -563,7 +584,49 @@ export class ResourceBridge extends BridgeMethods {
 		schema?: string;
 		table?: string;
 		tables?: string[];
+		include_audit?: boolean;
+		gzip?: boolean;
+		exclude_blobs?: boolean;
 	}): Promise<Readable> {
+		const databaseName = getBackupObj.database || getBackupObj.schema || 'data';
+		const database = getDatabases()[databaseName];
+		if (!database) {
+			throw new ClientError(`Database '${databaseName}' does not exist`, 404);
+		}
+		const firstTable = database[Object.keys(database)[0]];
+		if (!firstTable) {
+			throw new ClientError(`Database '${databaseName}' has no tables to back up`);
+		}
+		if (firstTable.primaryStore.rootStore instanceof RocksDatabase) {
+			// RocksDB: stream a fresh full-snapshot tar of the database's current state — no
+			// scratch disk, nothing to clean up. Per-engine params are validated descriptively.
+			if (getBackupObj.tables || getBackupObj.table) {
+				throw new ClientError(`'tables'/'table' are LMDB-only options; RocksDB backups are always whole-database`);
+			}
+			if (getBackupObj.include_audit !== undefined) {
+				throw new ClientError(
+					`'include_audit' is an LMDB-only option; RocksDB backups always include the transaction log`
+				);
+			}
+			if (getBackupObj.gzip !== undefined && typeof getBackupObj.gzip !== 'boolean') {
+				throw new ClientError(`'gzip' must be a boolean`);
+			}
+			if (getBackupObj.exclude_blobs !== undefined && typeof getBackupObj.exclude_blobs !== 'boolean') {
+				throw new ClientError(`'exclude_blobs' must be a boolean`);
+			}
+			const rootStore = resolveSingleRootStore(databaseName);
+			// gzip defaults on (it compresses the snapshot substantially); gzip=false opts out.
+			// blobs are included by default; exclude_blobs=true streams an engine-only tar.
+			return createBackupStream(
+				rootStore,
+				databaseName,
+				getBackupObj.gzip !== false,
+				getBackupObj.exclude_blobs === true
+			);
+		}
+		if (getBackupObj.gzip !== undefined) {
+			throw new ClientError(`'gzip' is a RocksDB-only option; LMDB backups are gzipped per the accept-encoding header`);
+		}
 		return lmdbGetBackup(getBackupObj);
 	}
 }
@@ -655,7 +718,8 @@ function getTable(operationObject: { database?: string; schema?: string; table?:
 	const databaseName = operationObject.database || operationObject.schema || DEFAULT_DATABASE;
 	const tables = getDatabases()[databaseName];
 	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(databaseName), 404);
-	return operationObject.table ? tables[operationObject.table] : undefined;
+	// Presence check, not truthiness, so a table named "0" resolves when addressed numerically.
+	return operationObject.table != null ? tables[operationObject.table] : undefined;
 }
 
 /**

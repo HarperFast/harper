@@ -3,6 +3,7 @@
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
+const assert = require('node:assert');
 const fs = require('fs-extra');
 const rewire = require('rewire');
 const path = require('path');
@@ -13,6 +14,7 @@ const config_utils = require('#src/config/configUtils');
 const mkcert = require('mkcert');
 const forge = require('node-forge');
 const pki = forge.pki;
+const { waitFor } = require('../waitFor.js');
 
 describe('Test keys module', () => {
 	const sandbox = sinon.createSandbox();
@@ -335,6 +337,258 @@ describe('Test keys module', () => {
 		expect(thrownError, 'createTLSSelector must not throw for cert with non-array uses').to.be.undefined;
 	});
 
+	it('skips an unparseable certificate record instead of aborting the whole pass', async () => {
+		// Regression: the CA-collection loop parsed every row's `certificate` with no per-row guard,
+		// so one bad record threw before any secure context was built — the second loop's per-cert
+		// try/catch doesn't cover this loop. One bad row shouldn't empty the listener's context map.
+		const { databases } = require('#src/resources/databases');
+
+		const badCertName = 'test-unparseable-cert-' + Date.now();
+		await databases.system.hdb_certificate.put({
+			name: badCertName,
+			certificate: 'not a real certificate',
+			uses: [],
+			is_authority: false,
+			private_key_name: actual_cert.private_key_name,
+			is_self_signed: true,
+		});
+
+		let thrownError;
+		let selector;
+		try {
+			selector = keys.createTLSSelector('https');
+			await selector.initialize(null);
+		} catch (err) {
+			thrownError = err;
+		} finally {
+			await databases.system.hdb_certificate.delete(badCertName);
+		}
+
+		expect(thrownError, 'createTLSSelector must not reject for an unparseable certificate record').to.be.undefined;
+		expect(selector.defaultContext, 'the valid certificate must still be applied').to.exist;
+	});
+
+	describe('createTLSSelector certificate-selection priority for usageType (regression for #2003 review)', () => {
+		// The resolveEffectiveTlsCiphers allowlist test above only proves cipher/@SECLEVEL
+		// relevance — it would still pass if MQTT stopped forwarding usageType, or if
+		// createTLSSelector stopped giving uses:['mqtt'] exact-match priority / uses:['server']
+		// fallback credit. These exercise the actual certificate-selection path (SNICallback)
+		// with overlapping certificates for one hostname, so that regression fails here instead.
+		const { databases } = require('#src/resources/databases');
+		// A hostname outside test_cert's real SANs, given explicitly via `hostnames` below (the
+		// code honors `cert.hostnames ?? hostnamesFromCert(certParsed)`) — this keeps every
+		// candidate's quality a clean, hostname-bonus-free number, AND lets the decoy below (which
+		// keeps test_cert's real SANs, so it never registers under this key) prove the per-hostname
+		// SNI map is what's actually being exercised, not just the global `defaultContext` fallback.
+		const hostname = 'mqtt-2003-review.invalid';
+
+		async function withCerts(certs, fn) {
+			try {
+				for (const cert of certs) {
+					await databases.system.hdb_certificate.put({
+						certificate: test_cert,
+						is_authority: false,
+						private_key_name: actual_cert.private_key_name,
+						// is_self_signed: true (base quality 1) for the `hostname`-scoped candidates below,
+						// vs. `decoy()`'s false (base quality 3) — deliberately different tiers so the
+						// decoy's superiority over the intended winner doesn't depend on the +0.1
+						// hostname-match bonus (getHost() case-sensitivity makes that bonus environment-
+						// dependent; verified during review that it can silently vanish on another host).
+						is_self_signed: true,
+						...cert,
+					});
+				}
+				return await fn();
+			} finally {
+				for (const cert of certs) {
+					await databases.system.hdb_certificate.delete(cert.name).catch(() => {});
+				}
+			}
+		}
+
+		// Resolves { name, quality } rather than just the winning name — quality > existingQuality
+		// (strict) means a tie is broken by hdb_certificate scan order, not by intent, so asserting
+		// the margin (not only who happened to win) keeps a future tie from reading as a pass here.
+		function chosenCert(selector, host) {
+			return new Promise((resolve, reject) => {
+				selector(host, (err, context) =>
+					err ? reject(err) : resolve(context && { name: context.name, quality: context.quality })
+				);
+			});
+		}
+
+		// Globally the best-quality certificate in the whole table — is_self_signed: false (base 3,
+		// vs. the hostname-scoped candidates' 1) plus the exact-match bonus (+3) gives it quality 6,
+		// unambiguously ahead of the highest possible `hostname`-scoped quality (4) regardless of
+		// whether the +0.1 getHost() bonus also applies. Real test_cert SANs, so it never registers
+		// under the synthetic `hostname` — it must never win a lookup for `hostname`. If it does, the
+		// SNICallback fell through to `defaultContext` instead of using the per-hostname SNI map,
+		// which is exactly the failure mode a broken `hostnames` assignment would produce.
+		function decoy(name) {
+			return { name, uses: ['mqtt'], is_self_signed: false };
+		}
+
+		it('an MQTT selector chooses the mqtt-tagged certificate over a legacy server-tagged or generic certificate for the same hostname', async () => {
+			await withCerts(
+				[
+					{ name: 'sel-mqtt-tagged-' + Date.now(), uses: ['mqtt'], hostnames: [hostname] },
+					{ name: 'sel-server-tagged-' + Date.now(), uses: ['server'], hostnames: [hostname] },
+					{ name: 'sel-generic-' + Date.now(), uses: [], hostnames: [hostname] },
+					decoy('sel-decoy-' + Date.now()),
+				],
+				async () => {
+					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
+					// rebuild registration per test); the hdb_certificate subscription itself is retained
+					// regardless — that's a pre-existing createTLSSelector characteristic, not something
+					// this arg controls.
+					const selector = keys.createTLSSelector('mqtt', undefined, false);
+					await selector.initialize(null);
+					const chosen = await chosenCert(selector, hostname);
+					expect(chosen.name).to.include('sel-mqtt-tagged-');
+					// base quality 1 (is_self_signed: true) + 3 for the uses:['mqtt'] exact match, no
+					// hostname bonus (this candidate's `hostnames` is the synthetic one, not test_cert's
+					// real SANs) — asserting the value, not just the winning name, means a future tie
+					// reads as a failure here too.
+					expect(chosen.quality).to.equal(4);
+					// Confirm the decoy (quality 6, deterministically > 4 regardless of environment — see
+					// withCerts) is genuinely the whole table's defaultContext. This is what makes the
+					// assertion above meaningful: if the per-hostname map fell through to defaultContext,
+					// `chosen` would be the decoy, not the mqtt-tagged winner.
+					expect(selector.defaultContext?.name).to.include('sel-decoy-');
+				}
+			);
+		});
+
+		it('the legacy server-tagged fallback remains eligible for MQTT when no mqtt-tagged certificate exists', async () => {
+			await withCerts(
+				[
+					{ name: 'sel-server-fallback-' + Date.now(), uses: ['server'], hostnames: [hostname] },
+					{ name: 'sel-generic-2-' + Date.now(), uses: [], hostnames: [hostname] },
+					decoy('sel-decoy-2-' + Date.now()),
+				],
+				async () => {
+					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
+					// rebuild registration per test); the hdb_certificate subscription itself is retained
+					// regardless — that's a pre-existing createTLSSelector characteristic, not something
+					// this arg controls.
+					const selector = keys.createTLSSelector('mqtt', undefined, false);
+					await selector.initialize(null);
+					const chosen = await chosenCert(selector, hostname);
+					expect(chosen.name).to.include('sel-server-fallback-');
+					// base quality 1 + 0.5 legacy-fallback credit, strictly ahead of the generic
+					// candidate's 1.
+					expect(chosen.quality).to.equal(1.5);
+					// See the test above: the decoy (quality 6, deterministically > 1.5) is asserted as
+					// defaultContext directly, so a per-hostname-map fall-through is distinguishable from
+					// a real SNI-map hit.
+					expect(selector.defaultContext?.name).to.include('sel-decoy-2-');
+				}
+			);
+		});
+	});
+
+	describe('threadServer onSocket — usageType handoff (regression for #2003 review)', () => {
+		// The two describe blocks above cover each END of the usageType contract: mqtt.ts emits
+		// `usageType: 'mqtt'` (unitTests/server/mqtt.test.js), and createTLSSelector('mqtt', ...)
+		// honors it (above, via the `keys` module this file `rewire()`s). The SEAM —
+		// threadServer.js's `const usageType = options.usageType ?? 'server'`, which feeds BOTH
+		// createTLSSelector and getEffectiveTlsCiphers — had no coverage; a revert to a hardcoded
+		// 'server' there left every other test green (confirmed by mutation during review).
+		//
+		// `server/threads/threadServer.js` imports security/keys.ts via a plain `require`, NOT
+		// this file's `rewire()`'d instance — those are two separate module instances with their
+		// own `privateKeys` maps. Calling the plain-required instance's own `loadCertificates()`
+		// (below) populates *its* map from the same on-disk test key file the rewired instance
+		// already uses (same `config_utils.getConfigFromFile` stub, shared across both instances),
+		// so `onSocket`'s real `createTLSSelector` call can actually build secure contexts instead
+		// of every candidate throwing "Missing private key" and being silently swallowed.
+		//
+		// The requires themselves are deferred into `before()` rather than sitting in the describe
+		// body: describe bodies run at mocha's *load* phase, before this file's own top-level
+		// `before()` (env_mgr.setHdbBasePath, testUtils.preTestPrep, etc.) has run — and
+		// threadServer.js calls env.initSync() at module load, which would otherwise read whatever
+		// real Harper config happens to exist on the machine running the suite.
+		let server, databases, SERVERS, portServer, realKeys;
+		// tls.createServer validates `ciphers` against OpenSSL's real cipher list at construction
+		// time, so these must be distinct, valid suite names, not arbitrary strings.
+		const rootCiphers = 'AES128-SHA';
+		const opsCiphers = 'AES256-SHA';
+		const seamHost = 'mqtt-2003-seam.invalid';
+		let nextPort = 40000 + (process.pid % 1000);
+		const createdServers = [];
+		let previousTls;
+		let previousOpsTls;
+		let previousUds;
+
+		before(async () => {
+			({ server } = require('#src/server/Server'));
+			require('#src/server/threads/threadServer'); // side effect: registers server.socket = onSocket
+			({ databases } = require('#src/resources/databases'));
+			({ SERVERS, portServer } = require('#src/server/serverRegistry'));
+			realKeys = require('#src/security/keys');
+			await realKeys.loadCertificates();
+			previousTls = env_mgr.get('tls');
+			previousOpsTls = env_mgr.get('operationsApi_tls');
+			previousUds = env_mgr.get('tls_unixDomainSockets');
+			env_mgr.setProperty('tls', { ...previousTls, ciphers: rootCiphers });
+			env_mgr.setProperty('operationsApi_tls', { ...previousOpsTls, ciphers: opsCiphers });
+			// onSocket takes a second, UDS-mirror code path when this is enabled (creates and
+			// registers a second live server per call, with its own cleanup this block doesn't do).
+			// Forcing it off keeps this describe's cleanup exhaustive regardless of the host's config.
+			env_mgr.setProperty('tls_unixDomainSockets', false);
+		});
+
+		after(() => {
+			env_mgr.setProperty('tls', previousTls);
+			env_mgr.setProperty('operationsApi_tls', previousOpsTls);
+			env_mgr.setProperty('tls_unixDomainSockets', previousUds);
+			for (const created of createdServers) {
+				created.close();
+				delete SERVERS[created.securePort];
+				portServer.delete(created.securePort);
+			}
+		});
+
+		function socket(options) {
+			const securePort = nextPort++;
+			const socketServer = server.socket(() => {}, { securePort, ...options });
+			createdServers.push({ close: () => socketServer.close?.(), securePort });
+			return socketServer;
+		}
+
+		it("applies the operationsApi.tls layer only when usageType is 'operations-api'", () => {
+			expect(socket({ usageType: 'operations-api' }).appliedCiphers).to.equal(opsCiphers);
+		});
+
+		it("falls back to the root tls layer for a non-operations-api usageType (e.g. 'mqtt')", () => {
+			expect(socket({ usageType: 'mqtt' }).appliedCiphers).to.equal(rootCiphers);
+		});
+
+		it('threads usageType into createTLSSelector too — an mqtt-tagged cert outranks a server-tagged one on the real listener', async () => {
+			const certs = [
+				{ name: 'seam-mqtt-' + Date.now(), uses: ['mqtt'], hostnames: [seamHost] },
+				{ name: 'seam-server-' + Date.now(), uses: ['server'], hostnames: [seamHost] },
+			];
+			try {
+				for (const cert of certs) {
+					await databases.system.hdb_certificate.put({
+						certificate: test_cert,
+						is_authority: false,
+						private_key_name: actual_cert.private_key_name,
+						is_self_signed: false,
+						...cert,
+					});
+				}
+				const socketServer = socket({ usageType: 'mqtt' });
+				const winner = socketServer.secureContexts.get(seamHost);
+				expect(winner?.name).to.include('seam-mqtt-');
+				expect(winner?.quality).to.equal(6);
+			} finally {
+				for (const cert of certs) await databases.system.hdb_certificate.delete(cert.name).catch(() => {});
+			}
+		});
+	});
+
 	describe('private-key hot-reload triggers a TLS context rebuild', () => {
 		// handlePrivateKeyReload is the single chokepoint for both the chokidar watcher and the
 		// periodic poll. On a worker, the new cert arrives via the hdb_certificate subscription, but
@@ -405,6 +659,321 @@ describe('Test keys module', () => {
 				liveTLSRebuilders.clear();
 				snapshot.forEach((r) => liveTLSRebuilders.add(r));
 			}
+		});
+	});
+
+	describe('createTLSSelector when the system database is not yet loaded on this thread', () => {
+		// A raw-socket listener (e.g. MQTT's securePort) can initialize its own TLS selector before
+		// this thread has loaded the system database — selector creation doesn't control
+		// component/database load order. Before this fix, that raced the (unguarded)
+		// `databases.system.hdb_certificate.subscribe(...)` call inside the selector's init promise,
+		// throwing synchronously and rejecting `.ready` before the rebuilder was ever registered —
+		// stranding the selector on an empty cert list with no path to recover except an unrelated
+		// private-key hot-reload elsewhere in the process. `databases.system` is defined via a
+		// `configurable: true` property (see resources/databases.ts), so it can be deleted/restored
+		// here to model that race against the real, shared module (a rewired local doesn't work: the
+		// compiled import isn't a reboundable local binding).
+		let databases;
+		let systemDescriptor;
+
+		beforeEach(() => {
+			databases = require('#src/resources/databases').databases;
+			systemDescriptor = Object.getOwnPropertyDescriptor(databases, 'system');
+		});
+
+		afterEach(() => {
+			delete databases.system;
+			Object.defineProperty(databases, 'system', systemDescriptor);
+		});
+
+		it('keeps `.ready` pending while the system database has not loaded, then resolves with real certs once it does', async function () {
+			// `.ready` is a one-shot gate: server/threads/threadServer.js's Bun listener path awaits it
+			// exactly once and treats a resolved promise as "TLS decided" — if it resolved here with no
+			// certs available, a listener configured as secure would start in plaintext for the rest of
+			// the process. So the fix must not just avoid throwing; it must also leave `.ready` PENDING
+			// while the race is unresolved, only settling once a real pass (with the table loaded)
+			// completes. This uses the real (debounced, ~1.5s) retry and real timers — no Sinon fake
+			// timers, no rewire access to internal state — condition-waiting on the actual observable
+			// transition instead. liveReload=false so this test's selector never registers with the
+			// module-level liveTLSRebuilders registry — a real selector (e.g. MQTT's) always defaults
+			// to true, but that registration isn't part of what this race is about, and leaving it true
+			// here would leak scheduleRebuild (and this test's pseudoServer/caCerts interaction) into
+			// every later test's private-key-reload rebuilds for the rest of the suite.
+			this.timeout(5000);
+			delete databases.system; // as on a worker thread before the system db has loaded
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+
+			const selector = keys.createTLSSelector('mqtt', undefined, false);
+			const readyPromise = selector.initialize(pseudoServer);
+
+			let settled = false;
+			readyPromise.then(
+				() => (settled = true),
+				() => (settled = true)
+			);
+			await new Promise((resolve) => setImmediate(resolve)); // flush pending microtasks/macrotasks once
+			assert.strictEqual(pseudoServer.secureContexts.size, 0, 'no certs are available yet');
+			assert.strictEqual(
+				settled,
+				false,
+				'.ready must stay pending while the system database has not loaded — resolving it with no ' +
+					'certs would let a caller (e.g. the Bun listener path) start a secure listener as plaintext'
+			);
+
+			// the table becomes available; let the real debounced retry fire and observe a real resolution
+			Object.defineProperty(databases, 'system', systemDescriptor);
+			await waitFor(() => settled, {
+				timeout: 4000,
+				message: '.ready never resolved after the system database became available',
+			});
+			// A recovery that resolved with the table still empty (e.g. a race in restoring the
+			// property) would satisfy "settled" without actually fixing the incident being tested.
+			assert.ok(
+				pseudoServer.secureContexts.size > 0,
+				"the real cert table (loaded in this suite's before()) must populate secureContexts once recovered"
+			);
+		});
+
+		it('also retries (without throwing or resolving early) when `databases.system` exists but `hdb_certificate` is not yet attached to it', async function () {
+			// The production guard checks `databases.system?.hdb_certificate === undefined`, not just
+			// `databases.system === undefined` — the system database object and its hdb_certificate
+			// table can become available at different times. A regression that only handled the
+			// whole-`system`-missing case would still throw/strand here.
+			this.timeout(5000);
+			const realHdbCertificate = databases.system.hdb_certificate;
+			delete databases.system.hdb_certificate;
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			try {
+				const selector = keys.createTLSSelector('mqtt', undefined, false);
+				const readyPromise = selector.initialize(pseudoServer);
+
+				let settled = false;
+				readyPromise.then(
+					() => (settled = true),
+					() => (settled = true)
+				);
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(
+					settled,
+					false,
+					'.ready must stay pending while hdb_certificate is not yet attached to databases.system'
+				);
+
+				databases.system.hdb_certificate = realHdbCertificate;
+				await waitFor(() => settled, {
+					timeout: 4000,
+					message: '.ready never resolved after hdb_certificate became available',
+				});
+				assert.ok(
+					pseudoServer.secureContexts.size > 0,
+					'the real cert table must populate secureContexts once recovered'
+				);
+			} finally {
+				databases.system.hdb_certificate = realHdbCertificate;
+			}
+		});
+	});
+
+	describe('createTLSSelector when a completed pass resolves zero certificates', () => {
+		// The not-yet-loaded guard above only covers the table object being absent, not the table
+		// being present but every row failing to apply (e.g. a private key not synced to this thread
+		// yet). Before this fix, that resolved `.ready` with an empty cert list — the exact
+		// customer-visible symptom this PR exists to fix.
+		let databases;
+		let liveTLSRebuilders;
+		let rebuildersSnapshot;
+		let searchStub;
+
+		beforeEach(() => {
+			databases = require('#src/resources/databases').databases;
+			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			rebuildersSnapshot = [...liveTLSRebuilders];
+			searchStub = sandbox.stub(databases.system.hdb_certificate, 'search').returns([]);
+		});
+
+		afterEach(() => {
+			searchStub.restore();
+			liveTLSRebuilders.clear();
+			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
+		});
+
+		it('retries (does not resolve) for a live selector, then resolves with real certs once a rebuild sees them', async function () {
+			this.timeout(5000);
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			const readyPromise = selector.initialize(pseudoServer);
+
+			let settled = false;
+			readyPromise.then(
+				() => (settled = true),
+				() => (settled = true)
+			);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(pseudoServer.secureContexts.size, 0, 'no certs resolved from the stubbed empty search');
+			assert.strictEqual(
+				settled,
+				false,
+				'.ready must stay pending when a completed pass resolves zero certificates — resolving here would ' +
+					'publish an empty certificates list, the exact symptom this PR fixes'
+			);
+
+			searchStub.restore(); // the next rebuild sees the real (non-empty) cert table
+			await waitFor(() => settled, {
+				timeout: 4000,
+				message: '.ready never resolved after a rebuild saw real certificates',
+			});
+			assert.ok(
+				pseudoServer.secureContexts.size > 0,
+				'the real cert table must populate secureContexts once recovered'
+			);
+		});
+
+		it('does not retry for a transient (liveReload=false) selector — e.g. getReplicationCert must not hang waiting for a cert it is about to create', async () => {
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+
+			const selector = keys.createTLSSelector('replication', undefined, false);
+			await selector.initialize(pseudoServer);
+
+			assert.strictEqual(
+				pseudoServer.secureContexts.size,
+				0,
+				'transient selectors must resolve immediately with an empty result, not retry forever — the ' +
+					'bootstrap flow that creates the first replication cert depends on this resolving falsy'
+			);
+		});
+
+		it('retries on a LATER rebuild that transiently resolves zero certificates — a prior success must not disarm the guard', async function () {
+			// The guard must key off "did THIS pass produce anything", not the persistent
+			// `defaultContext` closure variable: that is never reset (a transient zero-cert pass keeps
+			// serving the prior default while retrying), so it is truthy forever after the first
+			// successful pass. Keyed off it, a post-boot rebuild that transiently sees zero certs (key
+			// not yet synced, row missing mid-copy) would skip the retry and publish an empty
+			// certificates list — the #1998 symptom, reintroduced on the live-rebuild path that a
+			// long-running node is far more likely to hit than the boot race.
+			this.timeout(15000);
+			searchStub.restore(); // healthy baseline first — this describe stubs search empty by default
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'baseline must be healthy before the transient outage');
+			const publishedSizes = [];
+			pseudoServer.secureContextsListeners.push(() => publishedSizes.push(pseudoServer.secureContexts.size));
+
+			// Make the next pass transiently see zero certs, and trigger that pass through a real
+			// cert-table write (the selector's live subscription).
+			searchStub = sandbox.stub(databases.system.hdb_certificate, 'search').returns([]);
+			const triggerCertName = 'transient-zero-trigger-' + Date.now();
+			await databases.system.hdb_certificate.put({
+				name: triggerCertName,
+				certificate: test_cert,
+				uses: [],
+				is_authority: false,
+				private_key_name: actual_cert.private_key_name,
+				is_self_signed: true,
+			});
+			try {
+				// The transient pass is observable via the warn latch it sets on the server object.
+				await waitFor(() => pseudoServer.tlsSelectorWarnedZeroCerts === true, {
+					timeout: 6000,
+					message: 'the transient zero-cert rebuild never ran (or never took the retry path)',
+				});
+
+				searchStub.restore(); // certs are "back"; the pending retry must republish
+				await waitFor(() => publishedSizes.length > 0, {
+					timeout: 6000,
+					message: 'the selector never republished after certificates became visible again',
+				});
+				assert.ok(
+					publishedSizes.every((size) => size > 0),
+					'a transient zero-cert rebuild must never publish an empty certificates list; published sizes: ' +
+						publishedSizes.join(',')
+				);
+			} finally {
+				await databases.system.hdb_certificate.delete(triggerCertName).catch(() => {});
+			}
+		});
+	});
+
+	describe('createTLSSelector when the hdb_certificate table object is swapped out', () => {
+		// The mechanism behind the reported incident (#1998): the LMDB→RocksDB engine migration —
+		// like resetDatabases() (copy_db, ITC restart) — REPLACES the databases.system.hdb_certificate
+		// object rather than mutating it (the schemaMigrationFragility "F4" hazard), orphaning any
+		// subscription bound to the old instance. The fix tracks the subscribed table instance inside
+		// updateTLS and re-subscribes when it changes. This test drives that path end-to-end through
+		// real module surfaces: the swap-detection can only run when something re-enters updateTLS,
+		// and here that trigger is the selector's still-live subscription on the OLD table firing on
+		// a write — the same trigger class (any scheduled rebuild) that a private-key reload or the
+		// zero-certs retry supplies in production.
+		let databases;
+		let liveTLSRebuilders;
+		let rebuildersSnapshot;
+		let realTable;
+		const swapTestCertName = 'swap-test-cert-' + Date.now();
+
+		beforeEach(() => {
+			databases = require('#src/resources/databases').databases;
+			realTable = databases.system.hdb_certificate;
+			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			rebuildersSnapshot = [...liveTLSRebuilders];
+		});
+
+		afterEach(async () => {
+			databases.system.hdb_certificate = realTable;
+			await realTable.delete(swapTestCertName).catch(() => {});
+			liveTLSRebuilders.clear();
+			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
+		});
+
+		it('re-subscribes to the new table instance and rebuilds contexts on the next rebuild after a swap', async function () {
+			this.timeout(10000);
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await selector.initialize(pseudoServer);
+			assert.ok(pseudoServer.secureContexts.size > 0, 'baseline must be healthy before the swap');
+			const swapHostname = 'swap-test-unique.example.com';
+			assert.strictEqual(pseudoServer.secureContexts.has(swapHostname), false, 'sentinel hostname must not pre-exist');
+
+			// Model the engine-migration swap: a NEW table object (delegating to the real data so the
+			// rebuild pass has certs to apply), while the selector's subscription still points at the
+			// old instance. Live selectors left over from earlier tests in this file also detect the
+			// swap and re-subscribe, so the counters below are cross-selector totals — the assertion
+			// that THIS selector recovered is the sentinel hostname landing in its own contexts map.
+			let subscribeCalls = 0;
+			let searchCallsOnNewTable = 0;
+			databases.system.hdb_certificate = {
+				subscribe(options) {
+					subscribeCalls++;
+					return realTable.subscribe(options);
+				},
+				search(query) {
+					searchCallsOnNewTable++;
+					return realTable.search(query);
+				},
+			};
+
+			// Trigger a rebuild through the old subscription (still attached to the real table): a
+			// cert-table write, adding a record with a sentinel hostname that only a post-swap
+			// rebuild (reading through the NEW table object) can surface into this selector's map.
+			await realTable.put({
+				name: swapTestCertName,
+				certificate: test_cert,
+				hostnames: [swapHostname],
+				uses: [],
+				is_authority: false,
+				private_key_name: actual_cert.private_key_name,
+				is_self_signed: true,
+			});
+			await waitFor(() => pseudoServer.secureContexts.has(swapHostname), {
+				timeout: 6000,
+				message:
+					'this selector never rebuilt from the swapped-in table — the swap-detection/resubscribe path did not run',
+			});
+			// The rebuild that surfaced the sentinel runs the swap block first (liveReload=true and the
+			// table object changed), so by now the selector must have re-subscribed through the new
+			// instance and re-read through it.
+			assert.ok(subscribeCalls >= 1, 'the rebuild must re-subscribe via the new table instance');
+			assert.ok(searchCallsOnNewTable > 0, 'the rebuild must re-read certificates through the new table instance');
 		});
 	});
 
@@ -698,6 +1267,20 @@ describe('Test keys module', () => {
 			expect(resolve(layers({}), [{ name: 'legacy', uses: ['https'], ciphers: RELAXED }], 'server', false)).to.equal(
 				RELAXED
 			);
+		});
+
+		it("applies a 'server'-tagged legacy record only for the explicit LEGACY_SERVER_FALLBACK_TYPES allowlist (mqtt), not for any other listener type", () => {
+			// 'server' was onSocket()'s raw-socket callers' usage type (and the plain-http default)
+			// before per-caller usageType existed — a cert tagged uses: ['server'] must keep applying
+			// to mqtt now that it passes its own specific type. This is an ALLOWLIST, not a denylist:
+			// every other existing type (operations-api, replication, ...) has always had its own
+			// dedicated identity and never defaulted to 'server', so none of them should newly start
+			// accepting a ['server']-tagged record's ciphers/@SECLEVEL just because 'server' gained
+			// legacy-generic status for mqtt's migration.
+			const records = [{ name: 'legacy-server', uses: ['server'], ciphers: RELAXED }];
+			expect(resolve(layers({}), records, 'mqtt', false)).to.equal(RELAXED);
+			expect(resolve(layers({}), records, 'operations-api', false)).to.be.undefined;
+			expect(resolve(layers({}), records, 'replication', false)).to.be.undefined;
 		});
 
 		it('normalizes a legacy scalar uses value', () => {

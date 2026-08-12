@@ -27,6 +27,7 @@ import harperLogger from '../../../utility/logging/harper_logger.ts';
 import {
 	addTool,
 	clearProfileTools,
+	isAuthenticated,
 	snapshotProfileTools,
 	type AuthedUser,
 	type ToolCallContext,
@@ -708,11 +709,17 @@ function makeVisibleTo(
 	return function visibleTo(user: AuthedUser): boolean {
 		// Super-user sees everything.
 		if (user?.role?.permission?.super_user === true) return true;
-		// Non-table Resources have no static permission gate — runtime allow*
-		// predicates enforce. Conservative default: don't list them for
-		// non-super users; they can still call via tools/call if they know
-		// the tool name (pass-through is documented behavior).
-		if (!databaseName || !tableName) return false;
+		// A Resource with no backing table has no static permission gate to consult, so listing is
+		// open to any authenticated caller and the Resource's own `allow*` predicates enforce at call
+		// time — hiding these while still accepting `tools/call` on them bought no security, only
+		// undiscoverable tools (#1940).
+		//
+		// Anonymous sessions stay excluded. They are a supported deployment (#1609) and reach here as
+		// `{ username: '' }`, so this must be tested explicitly. Custom `mcpTools` DO list to them, but
+		// that is an author opt-in — declaring `static mcpTools` is a deliberate act of publishing.
+		// Verb tools are generated for every exported Resource with no author action, so publishing an
+		// app's field names and docstrings to unauthenticated callers by default is not equivalent.
+		if (!databaseName || !tableName) return isAuthenticated(user);
 		const perm = getUserTablePermissions(user, databaseName, tableName);
 		if (!perm) return false;
 		if (mode === 'read') return perm.read === true || perm.describe === true;
@@ -794,7 +801,7 @@ function verbDescription(verb: Verb, ctx: VerbDescriptionContext): string {
 	const prefix = ctx.tableDoc ? `${ctx.tableDoc}\n\n` : '';
 	const sentence = VERB_SENTENCES[verb](ctx);
 	const allowMethod = VERB_TO_RBAC_METHOD[verb];
-	return `${prefix}${sentence} Runtime RBAC (${allowMethod}) enforces per-record access at call time.`;
+	return `${prefix}${sentence} Runtime RBAC (${allowMethod}) enforces operation access at call time.`;
 }
 
 /**

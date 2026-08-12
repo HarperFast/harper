@@ -8,6 +8,12 @@ import { join } from 'path';
 
 const workers = [];
 const workersReady = [];
+// startHTTPThreads() can be called more than once in-process (e.g. a test harness adding more
+// worker threads to an already-running server via addThreads()). The crash-path sweep below must
+// run only on the very first call — a later call happens after real mirrors are already bound, and
+// sweeping the sockets directory then would delete their live files, reintroducing the exact outage
+// this guards against.
+let sweptSocketsDirectory = false;
 
 if (isMainThread) {
 	process.on('uncaughtException', (error) => {
@@ -23,6 +29,20 @@ if (isMainThread) {
 }
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
+	// Crash-path defense: a hard crash can skip a worker's exit-time UDS cleanup and leave stale
+	// mirror files behind. This runs before any worker below can start (and thus before any mirror
+	// can bind), so it can only ever clear files nothing is using yet — never a live mirror. The
+	// inode ownership guard in cleanupUdsFiles()/markUdsBindFailed() (see http.ts) is the matching
+	// defense for the in-process rolling-restart case, which this sweep does not cover.
+	// Lazy dynamic import (not a top-level one), matching server/status/index.ts's own lazy import of
+	// http.ts: http.ts's module graph reaches security/auth.ts, whose module-scope table() call needs
+	// config already initialized — pulling that graph in at this file's own top level (which
+	// bin/run.ts imports before parsing argv / initializing config) breaks startup with "Unable to
+	// determine database storage path" before main() ever runs.
+	if (isMainThread && !sweptSocketsDirectory) {
+		sweptSocketsDirectory = true;
+		(await import('../http.ts')).cleanupSocketsDirectory();
+	}
 	recordHostname().catch((err) => harperLogger.error?.('Error recording hostname for analytics:', err));
 	// Drive transaction-log cooling from the main thread (the registry is a
 	// process-global singleton; see startTransactionLogCooling). Runs for all
@@ -39,7 +59,11 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			const { loadRootComponents } = require('../loadRootComponents.js');
 			if (threadCount === 0) {
 				setMainIsWorker(true);
-				await require('./threadServer.js').startServers();
+				const threadServer = require('./threadServer.js');
+				await threadServer.startServers();
+				// startServers() schedules listener startup after loading components; await its cached
+				// batch so a bind failure reaches bin/run.ts and exits non-zero in single-thread mode too.
+				await threadServer.listenOnPorts();
 				return Promise.resolve([]);
 			}
 			await loadRootComponents();

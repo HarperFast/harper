@@ -143,8 +143,15 @@ export class Resources extends Map<string, ResourceEntry> {
 		const existingEntry = super.get(path);
 		if (
 			existingEntry &&
+			existingEntry.Resource !== resource &&
 			(existingEntry.Resource.databaseName !== resource.databaseName ||
-				existingEntry.Resource.tableName !== resource.tableName) &&
+				existingEntry.Resource.tableName !== resource.tableName ||
+				// Reserved paths (e.g. the /v1 gateway's fixed routes): two non-table Resources
+				// both have undefined databaseName/tableName, so without this a later app
+				// registration would silently replace the reserved entry — and its auth gate —
+				// with no startup error. The identity check above keeps same-class
+				// re-registration idempotent.
+				existingEntry.Resource.reservedPath === true) &&
 			!force
 		) {
 			// there was a conflict in endpoint paths. We don't want this to be ignored, so we log it
@@ -311,9 +318,16 @@ export class Resources extends Map<string, ResourceEntry> {
 		if (!foundEntry && path.indexOf('.') > -1) {
 			foundEntry = this.get(path.split('.')[0]);
 		}
-		if (foundEntry && (!exportType || foundEntry.exportTypes?.[exportType] !== false)) {
+		// An entry whose exportTypes disables this protocol is invisible to it — treat as
+		// not-found and keep searching. Previously the check only gated relativeURL and the
+		// blocked entry was still returned (the MCP layer re-checks exportTypes.mcp itself
+		// to work around exactly this).
+		if (foundEntry && exportType && foundEntry.exportTypes?.[exportType] === false) {
+			foundEntry = undefined;
+		}
+		if (foundEntry) {
 			foundEntry.relativeURL = searchIndex > -1 ? url.slice(searchIndex) : '';
-		} else if (!foundEntry) {
+		} else {
 			// no static resource matched; try parameterised routes before falling back to an explicit root resource
 			if (this.paramRoutes.length) {
 				const paramMatch = this.matchParamRoute(url, exportType);
@@ -321,7 +335,11 @@ export class Resources extends Map<string, ResourceEntry> {
 			}
 			// still not found, see if there is an explicit root path
 			foundEntry = this.get('');
-			if (foundEntry && (!exportType || foundEntry.exportTypes?.[exportType] !== false)) {
+			if (foundEntry && exportType && foundEntry.exportTypes?.[exportType] === false) {
+				// root resource not exported for this protocol either
+				foundEntry = undefined;
+			}
+			if (foundEntry) {
 				if (url.charAt(0) !== '/') url = '/' + url;
 				foundEntry.relativeURL = url;
 			}

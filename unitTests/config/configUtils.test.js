@@ -246,12 +246,12 @@ describe('Test configUtils module', () => {
 			try {
 				// Use the default retry count (unspecified maxRetries) so this exercises the real
 				// production budget, but override the delay to ~0 so the backoff doesn't burn real
-				// wall-clock time (default backoff would take ~900ms for a persistent failure).
+				// wall-clock time (default backoff would take ~3.6s for a persistent failure).
 				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content', { initialDelayMs: 0, maxDelayMs: 0 })).to.throw(
 					epermError
 				);
-				// 1 initial attempt + 8 retries (the production default maxRetries)
-				expect(renameStub.callCount).to.equal(9);
+				// 1 initial attempt + 12 retries (the production default maxRetries)
+				expect(renameStub.callCount).to.equal(13);
 				const stragglers = fs
 					.readdirSync(ATOMIC_TEST_DIR)
 					.filter((e) => e.startsWith('atomic-write-test.yaml.') && e.endsWith('.tmp'));
@@ -748,6 +748,35 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.args[2][1]).to.equal(LOG_ROOT);
 			expect(set_in_stub.args[3][1]).to.equal('path/to/storage');
 			expect(set_in_stub.args[4][1]).to.equal('path/for/rotated/logs');
+		});
+
+		it('Test a domainSocket exceeding the Unix socket path limit logs a warning but does not throw', () => {
+			const fake_validation = {
+				value: {
+					rootPath: '/' + 'a'.repeat(120),
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: 'operations-server' } },
+				},
+			};
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
+			const logger_warn_stub = sandbox.stub(logger, 'warn');
+
+			const fake_config_doc = { toJSON: () => ({}), setIn: () => {} };
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+			expect(logger_warn_stub.calledOnce).to.be.true;
+			expect(logger_warn_stub.firstCall.args[0]).to.include('Unix domain socket path limit');
+			logger_warn_stub.restore();
 		});
 
 		it('Test error is thrown if operationsApi securePort collides with http securePort', () => {

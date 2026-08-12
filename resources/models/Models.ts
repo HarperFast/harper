@@ -91,6 +91,19 @@ export class Models implements ModelsContract {
 	}
 
 	async embed(input: string | string[], opts: EmbedOpts = {}): Promise<Float32Array[]> {
+		return (await this.embedWithUsage(input, opts)).vectors;
+	}
+
+	/**
+	 * `embed()` plus the result-level `usage` the winning backend reported (all
+	 * built-in embedding backends provide it). Internal path for callers that must
+	 * surface usage on the wire — the `/v1/embeddings` gateway — without changing
+	 * the public `embed()` contract. Not part of the stable models API.
+	 */
+	async embedWithUsage(
+		input: string | string[],
+		opts: EmbedOpts = {}
+	): Promise<{ vectors: Float32Array[]; usage?: TokenUsage }> {
 		const { accounting, signal } = resolveCallContext(opts.signal);
 		const startedAt = performance.now();
 		const resolved = resolveCandidates('embedding', opts.model, buildRequires('embed', opts.requires, false));
@@ -118,7 +131,7 @@ export class Models implements ModelsContract {
 				// success row followed by a failure row from the catch (duplicate).
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 				this.#record(backend, 'embed', opts.model, accounting, undefined, result, attemptStart);
-				return result.output;
+				return { vectors: result.output, usage: result.usage };
 			} catch (err) {
 				this.#recordFailure(backend, 'embed', opts.model, accounting, undefined, attemptStart, err);
 				if (!hasError) {

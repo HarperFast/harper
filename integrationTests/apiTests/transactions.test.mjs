@@ -89,7 +89,12 @@ suite('Transactions / audit log', (ctx) => {
 			.expect(200);
 	});
 
-	test('delete_audit_logs_before returns deprecation hint', async () => {
+	test('delete_audit_logs_before is rejected on RocksDB', async () => {
+		// The deprecated op requires `table`, and on RocksDB table-scoped
+		// transaction log deletion is rejected because all tables in a database
+		// share one log (harper#2049) — so on RocksDB this op always fails with a
+		// message steering callers to delete_transaction_logs_before without a
+		// table. The success path (and its `deprecated` hint) is LMDB-only.
 		const response = await client
 			.req()
 			.send({
@@ -102,12 +107,8 @@ suite('Transactions / audit log', (ctx) => {
 
 		const jobId = getJobId(response.body);
 		const jobResponse = await awaitJob(client, jobId, 15);
-		assert.ok(jobResponse.body[0].message.includes('Successfully completed'), jobResponse.text);
-		assert.equal(
-			jobResponse.body[0].result?.deprecated,
-			'Please use delete_transaction_logs_before instead',
-			jobResponse.text
-		);
+		assert.equal(jobResponse.body[0].status, 'ERROR', jobResponse.text);
+		assert.ok(JSON.stringify(jobResponse.body[0].message).includes('not supported for RocksDB'), jobResponse.text);
 	});
 
 	test('create test_read table', async () => {

@@ -77,7 +77,21 @@ When `migrateOnStart` opens a source LMDB primary store to read records out for 
 
 Harper's normal `databases.ts` path already does this (search for `dbiInit.compression = primaryKeyAttribute.compression`); the migration path in `bin/copyDb.ts` has to match.
 
-The same source-dbi open has a second non-obvious requirement: assign `sourceDbi.encoder.rootStore = sourceRootStore` for the primary store. The primary dbi decodes through a `RecordEncoder`, and decoding a record that holds a file-backed blob reference resolves that reference against `rootStore` (it locates the blob file). With `rootStore` unset, the `Blob` msgpackr extension throws `No store specified, cannot load blob from storage`; `RecordEncoder.decode` swallows the error and yields `null`, and `copyDbToRocks` then skips the `null` value — so every record with a file-backed blob is silently dropped from the migration. The runtime path gets `rootStore` from `handleLocalTimeForGets`; the migration path opens the source dbi raw and must set it explicitly (issue #857).
+The persisted `compression` value itself is LMDB-era and loosely shaped: `getDefaultCompression()` historically stored whatever falsy value the config resolved to (`''`, `false`, `null`) when `storage.compression` was disabled, and `{ startingOffset, threshold, dictionary? }` when enabled. lmdb-js interprets falsy as "no compression", but rocksdb-js >= 2.6 validates the option strictly (`''`/booleans throw `Unsupported compression algorithm`) and treats UNSET as "use the build default (lz4)" — the inverse default of lmdb. Every RocksDB open must therefore route through `toRocksCompression()` in `resources/databases.ts` (applied inside `openRocksDatabase`, the single chokepoint), which maps defined-falsy → `'none'` and enabled-without-an-algorithm → an explicit lz4 request when available. Don't pass persisted attribute compression to a RocksDB open directly.
+
+`bin/copyDb.ts`'s `openRocksDb` is part of that chokepoint, not an exception to it. This is about the bytes migration writes, not about a later failure: `copyDbToRocks()` closes every target handle before the staging directory is renamed, and rocksdb-js permits an explicit codec change across a close/reopen, so the runtime would open the migrated database fine either way. But a migration that ignores the configured codec writes the entire dataset uncompressed, and those SST/blob files then keep their original codec until write traffic rewrites them — a full LMDB→RocksDB migration is the one moment the whole dataset is written at once, so it is exactly when the deployment's codec should apply.
+
+## The RocksDB codec is a deployment setting, resolved once per process
+
+`getRocksCompression()` in `resources/databases.ts` resolves one codec for everything this process opens: `storage.rocks.compression` if it names one, otherwise `storage.compression` (default `true`) decides enabled-or-not and the build default supplies the algorithm. It is resolved on first use and frozen.
+
+It has to be one codec, decided before the first open, because RocksDB opens **every** column family of a database in a single `DB::Open` and a family's compression cannot change while it is open. Harper cannot consult per-table metadata first: that catalog (`__dbis__`) is itself one of the families that call opens. So per-table `compression` metadata still records the LMDB-era boolean but no longer selects — a table persisted as disabled inside a deployment that enables compression would need its own codec, and there is nowhere to apply it.
+
+Opens pass `compressionForAllColumnFamilies` (rocksdb-js) alongside the codec. Without it the binding gives every family the caller did not name its _persisted_ algorithm and applies the request only to the target, so families this process never names individually would keep their original codec forever — which is why a database created before the prebuild carried any codecs (every 5.1 instance) stayed uncompressed no matter how new the binary was, and why reconciling a table afterwards failed with `already open with compression ...; cannot reopen it with ...`.
+
+The ordering that still has to hold is a fresh install: `install()` calls `mountHdb()` — which creates the system families — several steps before `createConfigFile()` writes the config file, so `installer.ts` stages the value into the in-memory config (`stageRocksCompression()`, mirroring the `STORAGE_ENGINE` line beside it) before `mountHdb()` runs. Measured without it, same pid: `thread=0 resolved=undefined`, `thread=1/2 resolved=zstd`, and the boot dies with "The system database failed to load".
+
+Changing the codec governs newly written files. Existing SST/blob files keep theirs until rewritten; ordinary compaction will not do it (RocksDB skips the bottommost level without a compaction filter), so converting an existing database in place needs `compact({ bottommost: true })`.
 
 ## Schema migration and `runIndexing` internals (`databases.ts`)
 
@@ -128,6 +142,28 @@ Future agents touching `components/deploymentRecorder.ts` for Slice B's streamin
 `prepareApplication()` performs one destructive transaction against a component directory: extract the incoming payload, then run its dependency installer. Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A lock is never stolen from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The bounded wait remains a backstop when owner liveness cannot be established.
+
+A plugin load that begins while its component is being deployed waits for that lifecycle to end before
+starting `handleApplication`; if a deploy begins during the load, the plugin timeout counts only active,
+unpaused load time. This prevents a long install from looking like a hung plugin while its entry handlers
+are deliberately paused against the intermediate tree.
+
+Extraction renames an existing component aside before writing the replacement and keeps it until
+dependency installation and metadata verification complete. Any preparation failure atomically
+renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
+wedge rollback with `ENOTEMPTY`; cleanup completes while the same-component lock is still held.
+The aside name is itself the recovery record: `.in-progress-*` is recoverable after an interrupted
+deploy unless a sibling `.retired-*` marker records that the replacement committed. Cleanup removes
+the aside before its marker, so an interrupted cleanup cannot make an obsolete tree recoverable.
+Component loading recovers unretired interrupted deploys before scanning the component root, and
+preparation repeats recovery under the same-component lock before reading runtime metadata. A full
+`drop_component` writes retirement markers before deleting the live tree and keeps its filesystem,
+and configuration mutations under that lock, so cleanup residue cannot resurrect a dropped
+component and a concurrent deploy cannot interleave with the drop. Peer replication begins after
+the local lock is released, and each peer serializes its own drop independently. Full-component drops
+rename the live tree into staging before best-effort cleanup, avoiding an in-place recursive-delete
+race with the running worker. Recovery is durable across a process crash. It relies on rename/create
+ordering rather than `fsync`, so a host power loss can lose the marker.
 
 A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and force-terminates it if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
 
@@ -496,6 +532,159 @@ with the customer's own data. Operators who want a wider redeploy-by-reference w
 explicitly; 0 retains none. Note that an explicit `delete_deployment_payload` (harper#1893) forfeits
 redeployability for that deployment the same way an automatic prune does.
 
+## RocksDB backup/restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`)
+
+The `restore_backup` operation restores a user database on a live server by closing it across all
+worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), and reloading it.
+Three non-obvious mechanics keep that safe:
+
+- **Two files in an isolated `` `restore` `` directory beside (never inside) the database directory**,
+  each keyed by `sha256(basename(dbPath)).slice(0,32)`: `<key>.lock`, an OS-level exclusive flock
+  (rocksdb-js `tryFileLock`, auto-released on process death), serializes restores; `<key>.restoring`,
+  a marker written+fsynced (file _and_ the metadata directory) after the lock and before any
+  destructive step, means "a restore started and has not finished" (its first line records the
+  database directory name so the scan can map a marker back without decoding the key). The metadata
+  is hashed into a sibling directory rather than suffixed onto the database name (`<db>.restoring`)
+  for two reasons: a legal database literally named `orders.restoring` would otherwise be mistaken
+  for the restore marker of `orders`, and a 250-character name (the legal max) plus a `.restore.lock`
+  suffix exceeds `NAME_MAX` (255) on most filesystems. The directory name deliberately contains a
+  backtick — `schemaRegex` (the database-name validator) forbids only `/` and a backtick among
+  filesystem-legal characters — so it can never collide with a legal database name, including a
+  database literally named `.restore` (which _is_ a legal name; a plain `.restore/` directory would
+  be exactly that database's directory). Because the startup scan opens any `CURRENT`+`MANIFEST-`
+  directory without re-applying `schemaRegex`, it also explicitly skips the reserved `` `restore` ``
+  entry so an out-of-band directory at that name is never loaded as a database. Startup/rescan
+  detection (`databasesBlockedByRestore` → `scanBlockedRestores` in `dataLayer/restoreMarker.ts`)
+  reads the metadata directory and checks the **marker first**, only probing the lock when the marker exists —
+  probes take the flock and are mutually exclusive across threads, so probing the (persistent) lock
+  file of every long-ago-restored database on every rescan would make concurrent rescans misclassify
+  healthy databases as in-progress. Marker-present + lock-held = restore in progress (don't load);
+  marker-present + lock-free = crashed mid-restore (don't load; rerun the restore to recover).
+- **A recovery restore must not clear a pre-existing marker on a pre-destruction failure.**
+  `beginRestore` returns `preexisting: true` when a `.restoring` marker was already present (this run
+  is a recovery over a possibly half-purged directory). If such a run fails _before_ any destruction
+  (e.g. `verifyDatabaseClosed` finds a leaked handle), it must leave the marker in place — clearing
+  it and broadcasting a reload would surface the earlier attempt's partial/corrupt directory as
+  healthy. Only a _fresh_ marker on a _previously healthy_ database that failed before destruction is
+  safe to clear.
+- **The ITC close broadcast is best-effort, so closure is verified before the purge.** The SCHEMA
+  broadcast (`signalSchemaChange`) resolves after remote handlers complete but times out at 30s
+  "best-effort", swallows errors, and never reaches job-worker threads at all (their ports are
+  excluded from broadcasts to avoid re-entrant deadlocks). A destructive purge cannot trust it:
+  `restoreBackup` polls rocksdb-js `registryStatus()` (process-global across worker threads) until
+  the database path has no open instance, and aborts with a 409 — _cleaning up the marker, since
+  nothing was destroyed_ — if handles remain.
+- **Online restore is impossible for a database a component holds open — and that failure is
+  correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
+  attribution to a thread or component; Harper keeps no component→database ownership map. So when a
+  loaded component (or the `system` database, which Harper itself never stops while running) holds
+  its own handle on the target database, `registryStatus()` stays non-zero, Harper can neither
+  identify nor force-close that handle, and an in-place purge would corrupt a live instance.
+  `verifyDatabaseClosed` therefore waits only a short grace period (`DATABASE_CLOSE_WAIT_MS`, for a
+  just-finished job worker's own close to drain) and then fails fast with a 409 that points at
+  running the operation offline (`harper restore_backup` with the server stopped, where no
+  components are loaded and nothing holds the database open). Offline restore is the supported path
+  for component-held and `system` databases; online restore serves databases not actively held by a
+  component. The CLI exposes each backup operation under its operation name only (`create_backup`,
+  `restore_backup`, …) — no hyphenated alias — and `bin/backup.ts` routes it to a reachable server
+  or, when the local server is stopped, to the equivalent offline function.
+- **Job workers must release their RocksDB handles on exit, or the closure check can never pass.**
+  rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
+  closing leaks its handles (the refCount never drops); the only alternative, `shutdown()`, tears
+  down rocksdb for the _entire_ process. A job worker (`server/jobs/jobProcess.ts`) opens the whole
+  database graph via `getDatabases()` and exits when the job finishes — and `create_backup` is
+  itself a job, so before any `restore_backup` there is always at least one exited job worker that
+  touched the database. Without cleanup those leaked handles keep `registryStatus()` non-zero and
+  would fail the closure check even when no component holds the database. `jobProcess` therefore
+  calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
+  user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
+  exited job worker leaves no residual handle to be mistaken for a live holder.
+- **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
+  A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
+  a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
+  (`acquireRestoreLock`, marker-less) for each RocksDB root store and holds it across the whole drop,
+  releasing in a `finally`; a restore in progress makes the acquire fail with 409, and a leftover
+  incomplete-restore marker (lock free, detected via `restoreMarkerPresent`, which — unlike
+  `checkRestoreState` — is safe while this thread holds the lock) is refused rather than dropped over.
+  `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
+  `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
+  the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.
+- **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
+  only when the CLI sees no server (a PID heuristic; the PID file is briefly absent mid-`harper
+restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so before purging,
+  `restoreBackupOffline` opens the database to probe. It now takes the restore lock+marker _before_
+  probing (so a server that starts afterward sees the marker and refuses to load), and recognizes the
+  pinned rocksdb-js 2.5.0 lock error — a plain `Error` with no `code` and message
+  `IO error: While lock file: <db>/LOCK: Resource temporarily unavailable` (`isRocksDbLockError`) —
+  aborting with a 409 rather than purging a database another process holds open. Any _other_ open
+  failure (corrupt/half-restored) is exactly what restore recovers, so only a lock conflict aborts.
+
+Known limitation: the flock is process-owned; if the restore job's worker _thread_ dies without
+the process exiting, the lock stays held (restores 409) until Harper restarts. There is no typed
+native lock signal in rocksdb-js 2.5.0, so the offline probe relies on message matching; a native
+lock primitive is a rocksdb-js follow-on.
+
+## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
+
+A database's file-backed blobs live in one or more roots _outside_ the RocksDB directory
+(`getBlobPathsForDatabaseName` in `resources/blob.ts` — one per configured `storage.blobPaths`, else
+`<hdb_root>/blobs/<database>`), so the engine's backup does not capture them. `create_backup`,
+`restore_backup`, `delete_backup`, `purge_backups`, and the streaming `get_backup` therefore handle
+blobs alongside the engine data (the `exclude_blobs` request option — default false — opts out for an
+engine-only backup):
+
+- **Managed backups** snapshot the blob roots to `<backupDir>/blobs/<backupId>/<rootIndex>/<relpath>`
+  — a full, non-incremental copy per backup, mirroring the binding's `transaction_logs/<id>/` layout.
+  Files are hard-linked when possible (cheap, no extra space on the same filesystem) and copied when
+  the backup root is on a different filesystem; never symlinked. Hard-linking is safe against later
+  mutation because Harper blobs are content-addressed and write-once (each write allocates a new
+  monotonic file id → a new path; updates/deletes unlink the old path), so a snapshot's hard link
+  keeps the exact bytes even after the live blob is deleted, and no in-place overwrite can alter it.
+  The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create leaves no
+  partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot (so a
+  blob added after the backup is dropped and one deleted after it returns); `delete_backup` /
+  `purge_backups` remove the corresponding snapshot directories.
+- **`get_backup`** appends the blob files to the same tar under `blobs/<rootIndex>/<relpath>`. The
+  binding's streaming backup finalizes its tar with exactly a 1024-byte (two-block) end-of-archive
+  marker; `createBackupStream` streams the native _plain_ tar while withholding that trailer
+  (verifying it is all-zero), appends the blob entries via `tar-stream` (whose `finalize` writes the
+  one real trailer), and gzips the combined stream itself when requested — so the binding is always
+  asked for a plain tar and compression happens after the append. No scratch disk. Blob capture is
+  best-effort point-in-time (whatever files exist while it streams; a blob deleted mid-stream is
+  skipped) — Harper does not freeze blob writes for a backup, the same tradeoff the engine makes for
+  the transaction log.
+
+**Completion manifest (`dataLayer/backupManifest.ts`).** `create_backup` is two-phase: the engine
+backup (`rootStore.backup()`) resolves — and is immediately visible to `list_backups`/`verify_backup`/
+`restore_backup` — before the blob snapshot is copied. Without a completion record, a blob-snapshot
+failure (or a crash between the phases) would leave an engine backup that lists and verifies as
+healthy while silently missing its blobs, and a concurrent restore could pick a backup id whose
+snapshot is still being written and treat it as intentionally engine-only. So a manifest at
+`<backupDir>/manifests/<backupId>.json` — recording the blob-inclusion policy — is written
+(atomically, temp + rename) only after _both_ phases are durable, and a graceful blob-snapshot
+failure rolls back the just-created engine backup + partial snapshot. Consumers treat a backup id
+with no manifest as incomplete: `list_backups` hides it, `verify_backup`/`restore_backup` reject it
+(409 for a specific id, "no complete backups" for `latest`), and restore uses the manifest's `blobs`
+flag — not the mere presence of a snapshot dir — to decide whether to restore blobs (so an engine-only
+backup leaves live blobs untouched, and a manifest that claims blobs but has no snapshot is flagged
+corrupt by verify). This closes the "healthy-looking but incomplete" and concurrent-restore races;
+the remaining engine/blob point-in-time skew (a blob unlinked between the engine cut and the blob
+walk) is the documented best-effort limitation above.
+
+## RocksDB transaction log purges are database-wide only (`ResourceBridge.deleteTransactionLogsBefore`)
+
+On RocksDB, every table in a database writes to one shared set of transaction logs (partitioned per
+origin node, not per table), and `purgeLogs()` deletes whole log files — rocksdb-js has no table
+filter, and adding one would mean rewriting files instead of deleting them. So a table-scoped
+`delete_transaction_logs_before` is unimplementable at the storage layer; the bridge rejects
+`table` on RocksDB with a 400 rather than silently purging every sibling table's history
+(harper#2049 — the original code did exactly that, and a _typo'd_ table name did too, because a
+missing table fell through to the no-table branch; that now 404s). Two consequences to preserve:
+the deprecated `delete_audit_logs_before` op _requires_ `table`, so it always errors on RocksDB
+(the message steers callers to the new op without `table`); and the table/no-table checks in the
+bridge use `!= null` presence, not truthiness, so a table named `"0"` addressed numerically stays
+table-scoped instead of widening to a database purge.
+
 ## Scheduler: cluster-once execution without a consensus primitive (`resources/scheduler/`)
 
 The built-in `scheduler` plugin (#951) runs config-declared jobs "exactly once per cluster." The
@@ -598,3 +787,98 @@ Three consequences worth knowing before touching packaging:
 - The Dockerfile installs the local tarball, so it gets **none** of this: its dependency tree is
   resolved fresh at image-build time against whatever is newest within our semver ranges, meaning the
   image is not reproducible and does not match what npm consumers receive (#1960).
+
+## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
+
+With `tls.unixDomainSockets: true`, every secure port gets a per-worker cleartext mirror
+(`<worker>-<port>.sock`) so a fronting proxy (symphony) can terminate TLS and route to a specific
+worker. The mirror is a **separate** `http.Server` instance registered in `SERVERS[udsPath]` — it is
+_not_ `httpServers[port]` — so anything wired by port key (upgrade listeners, uWS `wsHandler`,
+mTLS flags, socket options) must be explicitly propagated to it. `getHTTPServer()` exposes the
+mirror as `server.udsMirror` (Node) / `server.udsMirrorUwsConfig` (HARPER_UWS_UDS) for exactly this;
+`onWebSocket()` uses those to attach the `'upgrade'` dispatch and uWS `wsHandler`. Two lessons paid
+for in production (WS handshakes died with a zero-byte close on the mirrors while SSE worked):
+
+- A Node HTTP server with **no** `'upgrade'` listener destroys upgrade sockets with no response and
+  no log — a silent per-server default that makes a missing listener look like a network problem.
+- `enableProxyProtocol()`'s data interception must hand the socket **back to the original
+  listeners** once the PROXY header decision is made (it re-attaches them and removes its wrapper).
+  A permanent wrapper breaks protocol handoffs: Node's upgrade path removes its parser's `'data'`
+  listener _by reference_ before ws takes over, so a lingering wrapper keeps feeding the freed HTTP
+  parser — which the parser pool can re-issue to another connection, injecting one connection's
+  WS frames into another's request stream (`Parse Error: Data after 'Connection: close'`).
+
+The h2c mirror (`HARPER_H2C_UDS`) is exempt: HTTP/1.1 `Upgrade` doesn't exist in h2, and the
+fronting proxy routes WS to the h1 mirror by ALPN.
+
+Known limitation on uWS-served transports (`HARPER_UWS_HTTP` ports, `HARPER_UWS_UDS` mirrors):
+uWS accepts WebSocket handshakes natively in `app.ws()`, so `server.upgrade()` middleware never
+runs pre-handshake there (auth is unaffected — it runs in the WS connection chain on both paths,
+matching Node's upgrade-then-authorize order). No core component registers custom upgrade
+middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
+port so the gap is visible instead of silent.
+
+## Deploy watcher generations preserve logical entry events
+
+Component deploys pause each scope's `EntryHandler` while the component directory is replaced. A
+new chokidar instance then performs a cold-style initial scan, which reports every surviving path
+as `add`/`addDir` and cannot report paths that disappeared. Exposing those raw scan events changed
+the public `scope.handleEntry()` contract in #1806: consumers could no longer distinguish an
+unchanged file from a changed one, and deletions vanished entirely.
+
+`EntryHandler` therefore owns the deploy boundary. It retains a compact snapshot of matching paths
+(entry kind, URL path, and a SHA-256 content digest for files), assigns each watcher a monotonically
+increasing generation, and compares the resumed generation's scan with the pre-pause snapshot. The
+comparison emits only logical `add`, `change`, `unlink`, `addDir`, and `unlinkDir` events; unchanged
+entries remain silent. File contents are still read once for the event payload and are not retained
+in the snapshot. Reads and readiness are generation-scoped, and a per-path sequence prevents a slow
+read from an obsolete event from overwriting a newer state. Missing paths are synthesized as unlink
+events only after the resumed scan and all of its reads complete.
+
+Every watcher recreation uses the same comparison. The first generation compares against an empty
+snapshot and therefore retains its cold-load `add` behavior; deploy resume, configuration updates,
+and polling recovery compare against the last completed generation. This keeps file identity intact
+when watcher recovery could otherwise replay stale modules as new and ensures an update racing a
+deploy scan cannot discard its removals. New component deploys still use `Application#isNewComponent`
+to mark a restart as required for #674; other existing-component redeploys request a restart only when
+their logical entry, loaded runtime, or configuration changes require one.
+
+## Restart-free deploys require proof of runtime equivalence
+
+`EntryHandler` intentionally observes only the files a component declares in its `files` option. It
+cannot prove that the JavaScript runtime is unchanged: a watched `resources.js` can import an
+unwatched `lib/db.js`, and installed dependencies live under the watcher's ignored `node_modules`
+tree. Conversely, hashing the entire extracted tree treats unused source and generated caches as
+runtime changes and collapses restart-free deploys back into unconditional restarts.
+
+Runtime equivalence is therefore layered. A deploy can remain restart-free only when all three
+layers it uses are proven equivalent:
+
+- `EntryHandler` compares consumer-visible watched entries.
+- `ApplicationScope` records the file URL and load-time digest of every application-local module
+  that Harper's VM or compartment loader reads, including application-local package imports and
+  package self-references, together with every application-local resolution edge. After a deploy,
+  those exact logical paths are re-read and each edge is resolved again against the replacement tree
+  after evicting Node's matching resolution-cache entry. Adding a higher-priority `foo.js` ahead of a
+  previously resolved `foo.json` is therefore a runtime change even when `foo.json` itself is
+  byte-identical. For import-only package exports that Node's CommonJS resolver cannot resolve, the
+  package manifest itself is recorded as a runtime input so an exports-map retarget is also observable.
+- The deploy pipeline compares dependency metadata at the same preparation stage: the previous
+  installed tree before extraction versus the replacement tree after installation.
+
+Loader or installer paths that Harper cannot observe are conservative. Full native module loading,
+custom install commands, enabled install scripts, payloads that already contain `node_modules`, and
+installs without deterministic lock evidence mark the runtime opaque; an existing component using an
+opaque path requires a restart on redeploy. `harper deploy` omits `node_modules` by default; callers of
+`package_component` that want restart-free comparison must likewise set `skip_node_modules: true`.
+Npm dependencies delegated from the default VM loader to Node's native loader are instead covered
+by the installed package/lock comparison—otherwise the default `dependencyLoader: auto` mode would
+make nearly every application opaque. Explicit `dependencyLoader: native` remains authoritative;
+an application-local import delegated by that setting marks the runtime opaque. `package.json` is compared as parsed JSON so formatting and
+key order are irrelevant, while lockfiles remain exact installed-tree evidence. A module first
+loaded while a deploy is in flight also invalidates the old runtime rather than letting a mixed
+generation appear equivalent. This is deliberately proof-oriented: an unused new local file need
+not restart a fully observed runtime, but a changed or missing imported helper, changed resolution
+input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
+remain consumer-directed: the static plugin applies asset changes incrementally, while executable
+consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.

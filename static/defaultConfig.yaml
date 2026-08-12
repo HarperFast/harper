@@ -72,8 +72,11 @@ storage:
   writeAsync: false
   caching: true
   compression: true
+  rocks:
+    compression: null
   noReadAhead: false
   path: null
+  backupPath: null
   prefetchWrites: true
 tls:
   privateKey: null

@@ -1,5 +1,7 @@
 'use strict';
 
+const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scopedImport } = require('#src/security/jsLoader');
@@ -100,6 +102,78 @@ describe('scopedImport', () => {
 		const lib = await result.load();
 		expect(lib.baz).to.equal('pow');
 	});
+
+	it('records transitive local modules and their resolution edges', async () => {
+		const loadedModules = [];
+		const resolutions = [];
+		const scope = {
+			mode: 'vm-current-context',
+			recordLoadedModule: (url) => loadedModules.push(url),
+			recordModuleResolution: (specifier, referrer, resolvedUrl) =>
+				resolutions.push({ specifier, referrer, resolvedUrl }),
+		};
+
+		const result = await scopedImport(join(__dirname, 'fixtures', 'uses-dynamic-import.cjs'), scope);
+		await result.load();
+
+		expect(loadedModules.some((url) => url.endsWith('/uses-dynamic-import.cjs'))).to.equal(true);
+		expect(loadedModules.some((url) => url.endsWith('/libgood.cjs'))).to.equal(true);
+		expect(resolutions.some(({ specifier }) => specifier === './libgood.cjs')).to.equal(true);
+	});
+
+	it('keeps app-local package imports observable unless native loading is explicit', async () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-js-loader-imports-'));
+		try {
+			writeFileSync(
+				join(directory, 'package.json'),
+				JSON.stringify({
+					name: 'app-local-imports',
+					type: 'module',
+					imports: { '#helper': './helper.js' },
+					exports: { './self': './self.js' },
+				})
+			);
+			writeFileSync(
+				join(directory, 'entry.js'),
+				"export { value } from '#helper';\nexport { selfValue } from 'app-local-imports/self';\n"
+			);
+			writeFileSync(join(directory, 'helper.js'), 'export const value = 42;\n');
+			writeFileSync(join(directory, 'self.js'), 'export const selfValue = 84;\n');
+
+			const loadedModules = [];
+			const resolutions = [];
+			let nativeRuntime = false;
+			const result = await scopedImport(join(directory, 'entry.js'), {
+				mode: 'vm-current-context',
+				runtimeRoot: directory,
+				recordLoadedModule: (url) => loadedModules.push(url),
+				recordModuleResolution: (specifier, referrer, resolvedUrl) =>
+					resolutions.push({ specifier, referrer, resolvedUrl }),
+				markNativeRuntime: () => (nativeRuntime = true),
+			});
+
+			expect(result.value).to.equal(42);
+			expect(result.selfValue).to.equal(84);
+			expect(loadedModules.some((url) => url.endsWith('/helper.js'))).to.equal(true);
+			expect(loadedModules.some((url) => url.endsWith('/self.js'))).to.equal(true);
+			expect(resolutions.some(({ specifier }) => specifier === '#helper')).to.equal(true);
+			expect(resolutions.some(({ specifier }) => specifier === 'app-local-imports/self')).to.equal(true);
+			expect(nativeRuntime).to.equal(false);
+
+			let explicitNativeRuntime = false;
+			const nativeResult = await scopedImport(join(directory, 'entry.js'), {
+				mode: 'vm-current-context',
+				runtimeRoot: directory,
+				dependencyLoader: 'native',
+				markNativeRuntime: () => (explicitNativeRuntime = true),
+			});
+			expect(nativeResult.value).to.equal(42);
+			expect(nativeResult.selfValue).to.equal(84);
+			expect(explicitNativeRuntime).to.equal(true);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
 });
 
 describe('import.meta compatibility', () => {
@@ -135,7 +209,129 @@ describe('pure-ESM package resolution', () => {
 	// createRequire().resolve() (CJS resolver) throws ERR_PACKAGE_PATH_NOT_EXPORTED for these;
 	// the fix returns the raw specifier so createModule() falls through to dynamic import().
 	it('should import a pure-ESM package (exports map with only "import" conditions, no "require")', async () => {
-		const result = await scopedImport(join(__dirname, 'fixtures', 'esm-only-test', 'uses-pure-esm-pkg.mjs'), vmScope());
+		const runtimeRoot = join(__dirname, 'fixtures', 'esm-only-test');
+		const resolutions = [];
+		const loadedModules = [];
+		const result = await scopedImport(join(runtimeRoot, 'uses-pure-esm-pkg.mjs'), {
+			...vmScope(),
+			runtimeRoot,
+			recordModuleResolution: (specifier) => resolutions.push(specifier),
+			recordLoadedModule: (url) => loadedModules.push(url),
+		});
 		expect(result.value).to.equal('esm-only');
+		expect(resolutions).not.to.include('pure-esm-pkg');
+		expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/package.json'))).to.equal(true);
+	});
+});
+
+describe('native addon delegation', () => {
+	let runtimeRoot;
+	let addonPath;
+	let originalLoader;
+
+	beforeEach(() => {
+		runtimeRoot = mkdtempSync(join(tmpdir(), 'js-loader-native-addon-'));
+		addonPath = join(runtimeRoot, 'addon.node');
+		writeFileSync(addonPath, Buffer.from([0xff, 0x00, 0xfe]));
+		originalLoader = require.extensions['.node'];
+	});
+
+	afterEach(() => {
+		require.extensions['.node'] = originalLoader;
+		rmSync(runtimeRoot, { recursive: true, force: true });
+	});
+
+	it('delegates transitive CJS .node requires and marks the runtime opaque', async () => {
+		const wrapperPath = join(runtimeRoot, 'wrapper.cjs');
+		writeFileSync(wrapperPath, "module.exports = require('./addon.node');\n");
+		let nativeRuntimeMarked = false;
+		require.extensions['.node'] = (module) => {
+			module.exports = { delegated: true };
+		};
+		const result = await scopedImport(wrapperPath, {
+			...vmScope(),
+			runtimeRoot,
+			markNativeRuntime: () => {
+				nativeRuntimeMarked = true;
+			},
+		});
+		expect(result.default.delegated).to.equal(true);
+		expect(nativeRuntimeMarked).to.equal(true);
+	});
+
+	it('delegates compartment .node imports and marks the runtime opaque', async () => {
+		const entryPath = join(runtimeRoot, 'entry.mjs');
+		writeFileSync(entryPath, "import addon from './addon.node'; export default addon;\n");
+		let nativeRuntimeMarked = false;
+		require.extensions['.node'] = (module) => {
+			module.exports = { delegated: true };
+		};
+		const result = await scopedImport(entryPath, {
+			mode: 'compartment',
+			runtimeRoot,
+			allowedPath: runtimeRoot,
+			resources: {},
+			markNativeRuntime: () => {
+				nativeRuntimeMarked = true;
+			},
+		});
+		expect(result.default.delegated).to.equal(true);
+		expect(nativeRuntimeMarked).to.equal(true);
+	});
+
+	it('delegates ESM .node imports and marks the runtime opaque', async () => {
+		const entryPath = join(runtimeRoot, 'entry.mjs');
+		writeFileSync(entryPath, "import addon from './addon.node'; export default addon;\n");
+		let nativeRuntimeMarked = false;
+		require.extensions['.node'] = (module) => {
+			module.exports = { delegated: true };
+		};
+		const result = await scopedImport(entryPath, {
+			...vmScope(),
+			runtimeRoot,
+			markNativeRuntime: () => {
+				nativeRuntimeMarked = true;
+			},
+		});
+		expect(result.default.delegated).to.equal(true);
+		expect(nativeRuntimeMarked).to.equal(true);
+	});
+
+	it('does not mark a failed optional native load as opaque', async () => {
+		const wrapperPath = join(runtimeRoot, 'wrapper.cjs');
+		writeFileSync(
+			wrapperPath,
+			"try { module.exports = require('./addon.node'); } catch { module.exports = { fallback: true }; }\n"
+		);
+		let nativeRuntimeMarked = false;
+		require.extensions['.node'] = () => {
+			throw new Error('ABI mismatch');
+		};
+		const result = await scopedImport(wrapperPath, {
+			...vmScope(),
+			runtimeRoot,
+			markNativeRuntime: () => {
+				nativeRuntimeMarked = true;
+			},
+		});
+		expect(result.default.fallback).to.equal(true);
+		expect(nativeRuntimeMarked).to.equal(false);
+	});
+
+	it('rejects a CJS native addon outside allowedPath', async () => {
+		const allowedPath = join(runtimeRoot, 'allowed');
+		const wrapperPath = join(allowedPath, 'wrapper.cjs');
+		mkdirSync(allowedPath);
+		writeFileSync(wrapperPath, "module.exports = require('../addon.node');\n");
+		require.extensions['.node'] = (module) => {
+			module.exports = { delegated: true };
+		};
+		let error;
+		try {
+			await scopedImport(wrapperPath, { ...vmScope(), runtimeRoot, allowedPath });
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error?.message).to.include('outside of allowed path');
 	});
 });
