@@ -312,6 +312,7 @@ requiredPermissions.set(functionsOperations.dropCustomFunctionProject.name, new 
 requiredPermissions.set(functionsOperations.packageComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.deployComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(functionsOperations.componentDeployPhase.name, new (permission as any)(true, []));
+requiredPermissions.set(functionsOperations.revertComponent.name, new (permission as any)(true, []));
 requiredPermissions.set(
 	deploymentOperations.handleListDeployments.name,
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS)

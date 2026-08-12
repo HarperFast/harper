@@ -488,6 +488,9 @@ async function runNpmPack(
 // loadComponentDirectories from loading its contents as components.
 export const ASIDE_STAGING_DIR = '.deploy-aside';
 const IN_PROGRESS_ASIDE_PREFIX = '.in-progress-';
+// Parked and known-disposable at park time (an evicted two-deploys-ago retained-previous). NEVER a
+// recovery candidate — see discardDirAside for why the distinction has to be in the name.
+const DISCARDED_ASIDE_PREFIX = '.discarded-';
 const RETIRED_ASIDE_PREFIX = '.retired-';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
@@ -528,18 +531,13 @@ const DEPLOYMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][
 // revert if unhappy; and a partially-failed activate can be swapped back cluster-wide.
 export const DEPLOY_PREVIOUS_DIR = '.deploy-previous';
 
-// Absolute path of the retained-previous copy for a component's live directory.
-function previousDirPathFor(liveDirPath: string): string {
-	return join(dirname(liveDirPath), DEPLOY_PREVIOUS_DIR, basename(liveDirPath));
-}
-
 // Max not-yet-activated staged builds kept per component before the oldest are evicted on the next
 // stage. A full deploy consumes its staged build immediately (activate renames it live), so this only
 // bounds `activate: false` stage-and-stops that are never activated. Configurable via
 // deployment_stagingRetention_maxCount.
 export const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
 
-function getStagingRetentionMaxCount(): number {
+export function getStagingRetentionMaxCount(): number {
 	const configured = getConfigValue(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
 	// Only a number or numeric string is a valid count; reject everything else (unset, boolean, array,
 	// blank) and fall back to the default — mirroring getPayloadRetentionMaxSize's defensive coercion.
@@ -601,72 +599,255 @@ async function pruneStagedBuilds(componentName: string, keepStagingId: string, m
 }
 
 /**
- * Atomically move `targetDirPath` aside into a hidden, per-component staging directory if it
- * exists, returning the aside staging directory (for best-effort cleanup) or null when there was
- * nothing to move.
+ * Park `targetDirPath` in this component's `.deploy-aside` directory under a name that marks it
+ * KNOWN-DISPOSABLE at the moment it is parked, and sweep it best-effort. Returns false when there
+ * was nothing there to park.
  *
- * Renaming the old directory aside — instead of clearing it in place — is immune to the race where
- * a still-running worker keeps writing into the directory (e.g. a live Next.js app writing into
- * `.next/cache`): an in-place recursive rm races that writer and fails with ENOTEMPTY, whereas the
- * rename is atomic and the old worker harmlessly keeps writing into the renamed inode until it is
- * replaced on restart. The aside lives on the same filesystem (sibling hidden dir under the same
- * parent) so the rename stays atomic, and is per-component so a sibling deploy never collides with
- * or sweeps another's aside.
+ * Renaming aside — instead of clearing in place — is immune to the race where a still-running worker
+ * keeps writing into the directory (e.g. a live Next.js app writing into `.next/cache`): an in-place
+ * recursive rm races that writer and fails with ENOTEMPTY, whereas the rename is atomic and the old
+ * worker harmlessly keeps writing into the renamed inode until it exits on restart.
+ *
+ * The `.discarded-` prefix is load-bearing, and is the whole reason this exists alongside the
+ * extraction transaction's `.in-progress-` asides. `.deploy-aside` has exactly ONE contract
+ * (harper#1849 review, @kriszyp): an `.in-progress-` directory with no matching `.retired-` marker is
+ * a ROLLBACK RECORD, and `recoverInterruptedComponentExtractions` restores the newest such directory
+ * OVER the live component path at startup. A tree that is already known to be garbage when it is
+ * parked — the evicted two-deploys-ago retained-previous below — must therefore never carry that
+ * prefix, or a crash between parking and sweeping would make startup recovery resurrect an ancient
+ * version over the current one. `.discarded-` says "never restore this", and cleanupExtractionPaths
+ * already removes anything that is not an unretired `.in-progress-`.
  */
-async function moveDirAside(targetDirPath: string): Promise<string | null> {
-	const asideStagingDir = join(dirname(targetDirPath), ASIDE_STAGING_DIR, basename(targetDirPath));
+async function discardDirAside(targetDirPath: string, componentName: string): Promise<boolean> {
+	const asideStagingDir = extractionStagingDirectory(targetDirPath);
 	try {
 		// lstat, not access(F_OK): access follows symlinks, so a DANGLING symlink at the path (left by a
 		// prior `file:`-directory deploy whose target was removed) would report ENOENT and be skipped
-		// here — then mkdir(targetDirPath) fails EEXIST because the dead link still occupies the path.
-		// lstat sees the link itself, so we move it aside like any other occupant.
+		// here — then a later mkdir fails EEXIST because the dead link still occupies the path. lstat
+		// sees the link itself, so we park it like any other occupant.
 		await lstat(targetDirPath);
 	} catch (err) {
-		if (err.code === 'ENOENT') return null; // nothing there to move
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false; // nothing there to park
 		throw err;
 	}
-	await mkdir(asideStagingDir, { recursive: true });
-	await rename(targetDirPath, join(asideStagingDir, `${process.pid}-${Date.now()}-${randomUUID()}`));
-	return asideStagingDir;
-}
-
-// Best-effort removal of a per-component aside staging directory. The old worker may still hold
-// files open in a renamed copy (the live writer that motivated the rename), so a failure here is
-// expected in that case and logged at trace rather than as a warning — the survivor is swept by
-// the next deploy.
-function cleanupAsideDir(asideStagingDir: string | null, componentName: string): void {
-	if (!asideStagingDir) return;
-	rm(asideStagingDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
-		logger.trace?.(`Deferred cleanup of previous ${componentName} component directory: ${err.message}`)
-	);
+	await ensureExtractionStagingDirectory(asideStagingDir);
+	const discardedPath = join(asideStagingDir, `${DISCARDED_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}`);
+	await rename(targetDirPath, discardedPath);
+	// Best-effort: the outgoing worker may still hold files open in the renamed copy, so a failure here
+	// is expected in that case and swept by the next deploy or the next startup recovery pass.
+	void cleanupExtractionPaths(
+		{ name: componentName, dirPath: targetDirPath, logger },
+		asideStagingDir,
+		new Set([discardedPath])
+	).catch((err) => logger.trace?.(`Deferred cleanup of discarded ${componentName} directory: ${errorMessage(err)}`));
+	return true;
 }
 
 /**
- * Retain the current live version of a component as its rollback source: rename it to
- * `.deploy-previous/<name>`, evicting any older retained-previous first. Returns the aside directory
- * holding the evicted older-previous (for best-effort cleanup), or null when there was no live
- * version to retain (a first-ever deploy).
+ * The retained-previous manifest for a component: which deployment produced the tree now sitting in
+ * `.deploy-previous/<name>`, which produced the tree now LIVE, and the root-config entry each one was
+ * activated with.
  *
- * The eviction moves the older-previous ASIDE (an atomic rename that can't fail on a directory a
- * lingering worker still holds open) rather than an in-place rm, so the subsequent rename onto
- * `.deploy-previous/<name>` never races an incomplete delete (ENOTEMPTY). Like the aside swap, the
- * still-running worker of the version being retained keeps writing into the renamed inode harmlessly
- * until it exits on restart.
+ * This is what makes `revert_component` addressable rather than a blind toggle (harper#1849 review,
+ * @kriszyp): the caller names the deployment it expects to end up live, so a retried request whose
+ * response was lost is a no-op instead of flipping the rejected release back in. It is also what lets
+ * a revert restore persistent state, not just the directory: `application_config` is the root-config
+ * entry (and install-lock entry) that belongs with each tree, so reverting away from a `package`
+ * deploy removes that package reference instead of leaving `installApplications()` free to reinstall
+ * the reverted-away version over the restored directory on the next cold start.
+ *
+ * `application_config: null` means "that version had no root-config entry" (a payload deploy) and is
+ * therefore an instruction to DELETE the entry on revert, not to leave it alone.
  */
-async function retainAsPrevious(liveDirPath: string): Promise<string | null> {
-	const previousPath = previousDirPathFor(liveDirPath);
+type RetainedVersion = {
+	deployment_id: string | null;
+	application_config: ApplicationConfig | null;
+};
+
+type RetainedPreviousManifest = {
+	previous: RetainedVersion;
+	live: RetainedVersion;
+};
+
+// Absolute path of the retained-previous copy for a component's live directory, and of the sidecar
+// manifest describing it. The manifest is a sibling FILE rather than something inside the retained
+// tree, so the tree stays a byte-for-byte copy of what was live.
+function previousDirPathFor(liveDirPath: string): string {
+	return join(dirname(liveDirPath), DEPLOY_PREVIOUS_DIR, basename(liveDirPath));
+}
+
+function previousManifestPathFor(liveDirPath: string): string {
+	return `${previousDirPathFor(liveDirPath)}.json`;
+}
+
+async function readRetainedPreviousManifest(liveDirPath: string): Promise<RetainedPreviousManifest | undefined> {
 	try {
-		await lstat(liveDirPath); // lstat, not access: see moveDirAside — a dangling symlink must still move
+		const parsed = JSON.parse(await readFile(previousManifestPathFor(liveDirPath), 'utf8'));
+		if (!parsed?.previous || !parsed?.live) return undefined;
+		return parsed as RetainedPreviousManifest;
 	} catch (err) {
-		if (err.code === 'ENOENT') return null; // no live version yet — nothing to retain
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
 		throw err;
 	}
-	// Evict the older retained-previous (2 deploys ago; its worker exited on the last restart) by moving
-	// it aside atomically, clearing the target for the rename below.
-	const evictedAside = await moveDirAside(previousPath);
-	await mkdir(dirname(previousPath), { recursive: true });
-	await rename(liveDirPath, previousPath);
-	return evictedAside;
+}
+
+async function writeRetainedPreviousManifest(
+	liveDirPath: string,
+	manifest: RetainedPreviousManifest
+): Promise<void> {
+	const manifestPath = previousManifestPathFor(liveDirPath);
+	// Temp + rename so a crash mid-write can never leave a half-written manifest, which would make a
+	// retained tree unaddressable (and so unrevertable).
+	const tempPath = `${manifestPath}.${process.pid}.${randomUUID()}.tmp`;
+	await mkdir(dirname(manifestPath), { recursive: true });
+	await writeFile(tempPath, JSON.stringify(manifest, null, 2), { mode: 0o600 });
+	await rename(tempPath, manifestPath);
+}
+
+/**
+ * Retain the tree this activation displaced as the component's rollback source
+ * (`.deploy-previous/<name>`), recording which deployment produced it and the root-config entry it
+ * was activated with. Called by activateStagedApplication after a committed swap, in place of simply
+ * deleting the displaced tree.
+ *
+ * Exactly one previous version is kept per component — this evicts the older one — so retention costs
+ * a bounded one extra copy per component rather than growing without limit.
+ *
+ * Best-effort by design: a component that cannot retain its previous version is still successfully
+ * deployed, it just isn't revertable. Failing the deploy here would be strictly worse.
+ */
+async function retainActivatedPrevious(
+	application: Application,
+	displacedPath: string | undefined,
+	deploymentId: string,
+	activatedConfig: ApplicationConfig | undefined,
+	outgoing: RetainedVersion
+): Promise<void> {
+	const liveDirPath = application.dirPath;
+	const previousPath = previousDirPathFor(liveDirPath);
+	try {
+		// Evict the older retained-previous (two deploys ago) before renaming this one into its place, so
+		// the rename never races an incomplete recursive delete (ENOTEMPTY). Also covers the first-deploy
+		// case, where any retained tree left over from a dropped-and-redeployed component is stale.
+		await discardDirAside(previousPath, application.name);
+		if (displacedPath) {
+			await mkdir(dirname(previousPath), { recursive: true });
+			await rename(displacedPath, previousPath);
+		}
+		// Written unconditionally: even a first-ever deploy that retained nothing has to record which
+		// deployment is now live, or the NEXT activation cannot name the tree it displaces and the
+		// component stays unrevertable forever.
+		await writeRetainedPreviousManifest(liveDirPath, {
+			previous: displacedPath ? outgoing : { deployment_id: null, application_config: null },
+			live: { deployment_id: deploymentId, application_config: activatedConfig ?? null },
+		});
+	} catch (err) {
+		logger.warn(
+			`Deployed ${application.name}, but could not retain its previous version for revert:`,
+			errorForLog(err as Error)
+		);
+	}
+}
+
+/** What a component can currently be reverted to, for reporting and for revert targeting. */
+export async function getRevertTarget(
+	componentDirPath: string
+): Promise<{ live: RetainedVersion; previous: RetainedVersion } | undefined> {
+	const manifest = await readRetainedPreviousManifest(componentDirPath);
+	if (!manifest) return undefined;
+	try {
+		await lstat(previousDirPathFor(componentDirPath));
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined; // manifest without a tree
+		throw err;
+	}
+	return { live: manifest.live, previous: manifest.previous };
+}
+
+/**
+ * Swap a component's live version with its retained previous version (`.deploy-previous/<name>`),
+ * atomically, then let watchers restart onto it. This is what backs `revert_component`: a customer can
+ * deploy, run their own health checks, and swap back fast — with no package resolution, artifact
+ * download or install, because the bytes are already on disk.
+ *
+ * ADDRESSED, NOT TOGGLED (harper#1849 review, @kriszyp). The caller passes the deployment id it
+ * expects to be live when this returns:
+ *   - already live → a no-op success, so an ordinary request retry whose first response was lost
+ *     cannot swap the rejected release back in.
+ *   - matches the retained previous → swap, and the displaced tree becomes the new retained previous
+ *     (so a deliberate, explicitly-targeted revert-of-a-revert still rolls forward).
+ *   - anything else → rejected, naming what this component can actually be reverted to.
+ *
+ * Returns the root-config entry the newly-live tree was originally activated with, so the caller can
+ * restore persistent config/install-lock state as part of the rollback, plus whether a swap happened.
+ *
+ * This method should only be called from the main thread.
+ */
+export async function revertApplication(
+	application: Application,
+	toDeploymentId: string
+): Promise<{ swapped: boolean; activatedConfig: ApplicationConfig | null; fromDeploymentId: string | null }> {
+	const liveDirPath = application.dirPath;
+	return withComponentPreparationLock(liveDirPath, async () => {
+		const target = await getRevertTarget(liveDirPath);
+		if (!target) {
+			throw new Error(
+				`Cannot revert ${application.name}: no previous version is retained. A component must have been ` +
+					`deployed over a prior version (which activation retains as .deploy-previous) to be reverted.`
+			);
+		}
+		if (target.live.deployment_id === toDeploymentId) {
+			// Already there. Idempotent so a retry is safe.
+			return { swapped: false, activatedConfig: target.live.application_config, fromDeploymentId: null };
+		}
+		if (target.previous.deployment_id !== toDeploymentId) {
+			throw new Error(
+				`Cannot revert ${application.name} to deployment '${toDeploymentId}': it is neither the live version ` +
+					`('${target.live.deployment_id ?? 'unknown'}') nor the retained previous version ` +
+					`('${target.previous.deployment_id ?? 'unknown'}'). Only the immediately-previous version is retained ` +
+					`on disk; redeploy the version you want with deploy_component instead.`
+			);
+		}
+
+		const previousPath = previousDirPathFor(liveDirPath);
+		const deployLifecycleId = await broadcastDeployStart(application.name);
+		try {
+			let liveExists = true;
+			try {
+				await lstat(liveDirPath);
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code === 'ENOENT') liveExists = false;
+				else throw err;
+			}
+			await mkdir(dirname(previousPath), { recursive: true });
+			if (liveExists) {
+				// Three-way atomic swap through a hidden holding path: live → holding, previous → live,
+				// holding(old live) → previous. The only window where `dirPath` is absent is between two
+				// atomic renames, and deploy:start suppresses watchers across it (same as activation).
+				const holding = join(dirname(previousPath), `.reverting-${basename(liveDirPath)}-${randomUUID()}`);
+				await rename(liveDirPath, holding);
+				await rename(previousPath, liveDirPath);
+				await rename(holding, previousPath);
+			} else {
+				// No live version to preserve; restore the previous into place. Nothing becomes the new
+				// retained previous, so the component can't be reverted again until its next deploy.
+				await rename(previousPath, liveDirPath);
+			}
+			application.useLiveBuildDir();
+			// Roles exchange: what was live is now the retained previous, and vice versa.
+			await writeRetainedPreviousManifest(liveDirPath, {
+				previous: liveExists ? target.live : { deployment_id: null, application_config: null },
+				live: target.previous,
+			});
+			return {
+				swapped: true,
+				activatedConfig: target.previous.application_config,
+				fromDeploymentId: target.live.deployment_id,
+			};
+		} finally {
+			broadcastDeployEnd(application.name, deployLifecycleId);
+		}
+	});
 }
 type ExtractionTransaction = {
 	commit(): Promise<void>;
@@ -1960,211 +2141,6 @@ export async function prepareApplication(application: Application) {
 	}
 }
 
-/**
- * Phase 1 of a two-phase deploy: build the INCOMING version of a component completely — download /
- * `npm pack` (incl. a git clone), extract, and `npm install` — into the hidden staging directory,
- * WITHOUT touching the live component directory.
- *
- * This is the slow, failure-prone half of a deploy, and doing it off to the side has two payoffs:
- *   - It is safe to run across the whole cluster and gate on: if a node can't fetch the package or
- *     `npm install` fails, that node reports the failure and NOTHING has changed anywhere — the live
- *     component is untouched on every node. Contrast the one-shot deploy, where a peer can fail
- *     mid-install with a half-written live directory while other peers have already gone live.
- *   - The staging directory is not the watched base of any component's file watcher and is ignored
- *     by the component loader (leading dot), so building here triggers no restart-on-change storm.
- *     No deploy:start/deploy:end watcher suppression is needed for this phase — that is reserved for
- *     activateApplication, which is the only phase that writes the live path.
- *
- * This method should only be called from the main thread.
- *
- * @param application The application to stage.
- * @returns The absolute path of the staging directory the incoming version was built into.
- */
-async function _legacyStageApplication(application: Application): Promise<string> {
-	application.useStagingBuildDir();
-	// Start from a clean slate so a retried stage (same deployment id) can't inherit a half-built
-	// tree from a previous attempt.
-	await rm(application.stagingDirPath, { recursive: true, force: true });
-	// Create the per-deploy staging parent (.deploy-staging/<stagingId>) up front. extractApplication's
-	// own mkdir only covers the payload path — for a `package` deploy the FIRST filesystem touch is the
-	// `npm pack`/git-clone spawn, whose cwd is this parent directory; without it the spawn fails with
-	// ENOENT (posix_spawn) before any tarball is produced.
-	await mkdir(dirname(application.stagingDirPath), { recursive: true });
-	try {
-		await application.writeTransientNpmrc();
-		try {
-			await application.startGitCredentialSession();
-			await extractApplication(application);
-		} finally {
-			await application.cleanupGitCredentialSession();
-		}
-		await installApplication(application);
-	} catch (err) {
-		// A failed stage leaves nothing live; remove the partial staging tree so it can't accumulate
-		// or be mistaken for a good build. Best-effort — never mask the original failure.
-		await rm(application.stagingDirPath, { recursive: true, force: true }).catch(() => {});
-		application.useLiveBuildDir();
-		throw err;
-	} finally {
-		await application.cleanupTransientNpmrc();
-	}
-	// Now that this stage succeeded, evict the oldest not-yet-activated staged builds for this component
-	// beyond the retention count (a full deploy consumes this one on activate; `activate: false`
-	// stage-and-stops are what actually accumulate). Best-effort; never fails the stage.
-	await pruneStagedBuilds(application.name, application.stagingId, getStagingRetentionMaxCount());
-	return application.stagingDirPath;
-}
-
-/**
- * Phase 2 of a two-phase deploy: swap the already-staged incoming version into the live component
- * directory in one atomic `rename()`, then let watchers restart onto it.
- *
- * This is the short, low-risk half — no network, no install, just a directory swap — so the window
- * during which the component is being replaced is as small as the filesystem allows, and it is only
- * entered once staging has succeeded (cluster-wide, when orchestrated by deploy_component).
- *
- * Bracketed with deploy:start/deploy:end so every thread's file watchers suppress restart-on-change
- * while the live directory is replaced (harper#488) — the same suppression the one-shot deploy used
- * to hold for the entire extract+install; here it wraps only the swap.
- *
- * The outgoing live version is not discarded — it is retained as `.deploy-previous/<name>` so
- * revert_component can swap it back. See retainAsPrevious.
- *
- * This method should only be called from the main thread.
- */
-export async function activateApplication(application: Application): Promise<void> {
-	const stagingDirPath = application.stagingDirPath;
-	try {
-		await access(stagingDirPath, constants.F_OK);
-	} catch (err) {
-		if (err.code === 'ENOENT') {
-			throw new Error(
-				`Cannot activate ${application.name}: no staged build found at ${stagingDirPath}. ` +
-					`Stage the component (stage_component) before activating it.`
-			);
-		}
-		throw err;
-	}
-	const deployLifecycleId = await broadcastDeployStart(application.name);
-	let evictedAside: string | null = null;
-	try {
-		// A live version already existing makes this a redeploy, not a first deploy. This is the two-phase
-		// equivalent of extractApplication's in-place isNewComponent check: in two-phase the build lands in
-		// a fresh staging dir, so extractApplication never sees the live dir — activate (the swap) is where
-		// we learn it. Gates deploy_component's restart-required marking (harper#674/#1806); must be read
-		// BEFORE retainAsPrevious renames the live dir away. lstat, not access: a dangling symlink still
-		// counts as an existing directory (see moveDirAside).
-		try {
-			await lstat(application.dirPath);
-			application.isNewComponent = false;
-		} catch (err) {
-			if (err.code === 'ENOENT') application.isNewComponent = true;
-			else throw err;
-		}
-		// Retain the current live version as the rollback source (.deploy-previous/<name>), then rename
-		// the staged copy into place. Both live under the components root, so the rename is same-fs and
-		// atomic — there is no interval where `dirPath` is a partially populated directory. retainAsPrevious
-		// tolerates a still-writing worker exactly as the old aside swap did.
-		evictedAside = await retainAsPrevious(application.dirPath);
-		await mkdir(dirname(application.dirPath), { recursive: true });
-		await rename(stagingDirPath, application.dirPath);
-		application.useLiveBuildDir();
-	} finally {
-		broadcastDeployEnd(application.name, deployLifecycleId);
-	}
-	// Best-effort cleanup of the EVICTED older-previous (the version from two deploys ago; see
-	// cleanupAsideDir) — NOT the retained previous, which is kept for revert. The rename already consumed
-	// stagingDirPath, so all that remains of staging is this deploy's now-empty parent
-	// (.deploy-staging/<stagingId>). Remove it with a NON-recursive rmdir, which succeeds only when it
-	// is empty — a belt-and-suspenders guard against ever recursively deleting a directory that could
-	// hold another deploy's build. ENOTEMPTY and ENOENT (already gone) are expected and ignored.
-	cleanupAsideDir(evictedAside, application.name);
-	rmdir(dirname(stagingDirPath)).catch((err) => {
-		if (err.code !== 'ENOTEMPTY' && err.code !== 'ENOENT')
-			logger.trace?.(`Deferred cleanup of ${application.name} staging directory: ${err.message}`);
-	});
-}
-
-/**
- * Swap a component's live version with its retained previous version (`.deploy-previous/<name>`),
- * atomically, then let watchers restart onto it. This is what backs revert_component: a customer can
- * activate a deploy, run their own health checks, and swap back if unhappy; and a partially-failed
- * activate can be rolled back cluster-wide.
- *
- * The swap is bidirectional: the outgoing live becomes the new retained previous, so a second revert
- * toggles forward again. Three same-filesystem renames via a hidden holding path — the only window
- * where `dirPath` is momentarily absent is between two atomic renames, and deploy:start suppresses
- * watchers across it (same as activate).
- *
- * Throws if there is no retained previous version (a component deployed only once, or never).
- *
- * This method should only be called from the main thread.
- */
-export async function revertApplication(application: Application): Promise<void> {
-	const liveDirPath = application.dirPath;
-	const previousPath = previousDirPathFor(liveDirPath);
-	try {
-		await lstat(previousPath);
-	} catch (err) {
-		if (err.code === 'ENOENT') {
-			throw new Error(
-				`Cannot revert ${application.name}: no previous version is retained. A component must have ` +
-					`been deployed over a prior version (which activate retains as .deploy-previous) to be reverted.`
-			);
-		}
-		throw err;
-	}
-	const deployLifecycleId = await broadcastDeployStart(application.name);
-	try {
-		// Does a live version currently exist? (It always should after a deploy, but guard so a missing
-		// live dir degrades to "restore previous" rather than throwing mid-swap.)
-		let liveExists = true;
-		try {
-			await lstat(liveDirPath);
-		} catch (err) {
-			if (err.code === 'ENOENT') liveExists = false;
-			else throw err;
-		}
-		await mkdir(dirname(previousPath), { recursive: true });
-		if (liveExists) {
-			// Three-way atomic swap: live → holding, previous → live, holding(old live) → previous.
-			const holding = join(dirname(previousPath), `.reverting-${basename(liveDirPath)}-${randomUUID()}`);
-			await rename(liveDirPath, holding);
-			await rename(previousPath, liveDirPath);
-			await rename(holding, previousPath);
-		} else {
-			// No live version to preserve; just restore the previous into place (nothing becomes the new
-			// previous, so the component can't be re-reverted until its next deploy).
-			await rename(previousPath, liveDirPath);
-		}
-		application.useLiveBuildDir();
-	} finally {
-		broadcastDeployEnd(application.name, deployLifecycleId);
-	}
-}
-
-/**
- * Discard a staged-but-not-activated build (an aborted two-phase deploy). Best-effort: removes the
- * staging tree and tears down any transient credential state. The live component directory is never
- * touched. Safe to call whether or not staging ever ran.
- */
-async function _legacyDiscardStagedApplication(application: Application): Promise<void> {
-	try {
-		await application.cleanupGitCredentialSession();
-	} catch {
-		/* best-effort */
-	}
-	try {
-		await application.cleanupTransientNpmrc();
-	} catch {
-		/* best-effort */
-	}
-	application.useLiveBuildDir();
-	await rm(application.stagingDirPath, { recursive: true, force: true }).catch((err) =>
-		logger.trace?.(`Failed to discard ${application.name} staging directory: ${err.message}`)
-	);
-}
-
 export function stagedApplicationPath(componentDirPath: string, deploymentId: string): string {
 	if (!DEPLOYMENT_ID_PATTERN.test(deploymentId)) throw new Error(`Invalid deployment id '${deploymentId}'`);
 	return join(dirname(componentDirPath), DEPLOY_STAGING_DIR, deploymentId, basename(componentDirPath));
@@ -2287,6 +2263,13 @@ export async function activateStagedApplication(
 		beforeSwap?: () => Promise<void>;
 		beforeCommit?: () => Promise<void>;
 		onRollback?: () => Promise<void>;
+		/**
+		 * The immutable activation specification this deployment is being activated with. Used only to
+		 * derive the root-config entry recorded alongside the retained previous version, so a later
+		 * `revert_component` can restore persistent config/install-lock state and not just the directory.
+		 * Omit it and the swap still happens — the component just isn't revertable afterwards.
+		 */
+		activationSpec?: Record<string, any>;
 	} = {}
 ): Promise<void> {
 	const stagingDirPath = stagedApplicationPath(application.dirPath, deploymentId);
@@ -2303,6 +2286,17 @@ export async function activateStagedApplication(
 		const activationDir = activationStagingDirectory(application.dirPath);
 		await ensureSecureDirectory(dirname(activationDir), true, 'Component activation staging path');
 		await ensureSecureDirectory(activationDir, true, 'Component activation staging path');
+		// Who is live right now, so the tree this activation displaces stays addressable for revert. Read
+		// before the swap, since the swap is what makes it "previous".
+		const outgoing: RetainedVersion = (await readRetainedPreviousManifest(application.dirPath).catch(
+			() => undefined
+		))?.live ?? {
+			// No manifest yet: either a first-ever deploy, or a component last activated by a Harper that
+			// predates retention. Record the config it is running so a revert can still restore that, even
+			// though its deployment id is unknowable and so cannot be a revert target.
+			deployment_id: null,
+			application_config: readConfigFile()?.[application.name] ?? null,
+		};
 		const deployLifecycleId = await broadcastDeployStart(application.name);
 		let backupPath: string | undefined;
 		let newMarkerPath: string | undefined;
@@ -2372,7 +2366,16 @@ export async function activateStagedApplication(
 		} finally {
 			broadcastDeployEnd(application.name, deployLifecycleId);
 		}
-		if (backupPath) await rm(backupPath, { recursive: true, force: true });
+		// The displaced tree is the component's rollback source now, not garbage: retain it as
+		// `.deploy-previous/<name>` with a manifest recording which deployment produced it. Best-effort —
+		// a component that can't retain its previous version is still deployed, just not revertable.
+		await retainActivatedPrevious(
+			application,
+			backupPath,
+			deploymentId,
+			hooks.activationSpec ? applicationConfigFromActivationSpec(hooks.activationSpec) : undefined,
+			outgoing
+		);
 		if (newMarkerPath) await rm(newMarkerPath, { force: true });
 		await rmdir(activationDir).catch((error) => {
 			if (!['ENOENT', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
@@ -2491,6 +2494,9 @@ export async function reconcileStagedApplicationArtifacts(
 			if (await hasCompleteStagedApplication(stagedPath)) {
 				await activateStagedApplication(new Application({ name: row.project }), entry.name, {
 					beforeCommit: () => persistActivation(row),
+					// A recovered roll-forward retains its displaced tree the same as a normal activation, so a
+					// deploy that crashed mid-swap is still revertable once the node is back up.
+					activationSpec: row.activation_spec,
 				});
 			} else {
 				const liveStat = await lstat(componentDirPath).catch(() => undefined);
@@ -2743,12 +2749,21 @@ async function getApplicationLockEntry(name: string): Promise<ApplicationConfig 
 	return entry;
 }
 
-export async function createApplicationActivationTransaction(
+/**
+ * Move a component's persisted root-config entry and boot-time install-lock entry to `nextConfig` as
+ * one reversible step, snapshotting the current values at commit time so `rollback()` restores exactly
+ * what was there.
+ *
+ * `nextConfig: null` is an instruction to REMOVE the entry, not to leave it alone — the case that
+ * matters when reverting away from a `package` deploy to a payload one, where a stale `package:` entry
+ * would let installApplications() reinstall the reverted-away version on the next cold start.
+ * `undefined` means "this caller has nothing to say about config" and the transaction is a no-op.
+ */
+export async function createApplicationConfigTransaction(
 	project: string,
-	spec: Record<string, any>
+	nextConfig: ApplicationConfig | null | undefined
 ): Promise<{ commit(): Promise<void>; rollback(): Promise<void> }> {
-	const nextConfig = applicationConfigFromActivationSpec(spec);
-	if (!nextConfig) return { commit: async () => {}, rollback: async () => {} };
+	if (nextConfig === undefined) return { commit: async () => {}, rollback: async () => {} };
 	let previousConfig: ApplicationConfig | undefined;
 	let previousLockConfig: ApplicationConfig | undefined;
 	let commitStarted = false;
@@ -2758,8 +2773,9 @@ export async function createApplicationActivationTransaction(
 			previousConfig = readConfigFile()?.[project];
 			previousLockConfig = await getApplicationLockEntry(project);
 			commitStarted = true;
-			await addConfig(project, nextConfig);
-			await updateApplicationLockEntry(project, nextConfig);
+			if (nextConfig === null) deleteConfigFromFile([project]);
+			else await addConfig(project, nextConfig);
+			await updateApplicationLockEntry(project, nextConfig ?? undefined);
 		},
 		async rollback() {
 			if (!commitStarted) return;
@@ -2769,6 +2785,15 @@ export async function createApplicationActivationTransaction(
 			commitStarted = false;
 		},
 	};
+}
+
+export async function createApplicationActivationTransaction(
+	project: string,
+	spec: Record<string, any>
+): Promise<{ commit(): Promise<void>; rollback(): Promise<void> }> {
+	// A payload deploy has no package reference to persist, so activating from it says nothing about
+	// root config and must leave whatever is there alone (undefined, not null).
+	return createApplicationConfigTransaction(project, applicationConfigFromActivationSpec(spec));
 }
 
 /**

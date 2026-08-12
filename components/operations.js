@@ -29,7 +29,6 @@ const {
 	Application,
 	prepareApplication,
 	stageApplication,
-	activateApplication,
 	revertApplication,
 	stagedApplicationPath,
 	hasCompleteStagedApplication,
@@ -39,6 +38,9 @@ const {
 	discardProjectActivationArtifacts,
 	updateApplicationLockEntry,
 	createApplicationActivationTransaction,
+	createApplicationConfigTransaction,
+	getRevertTarget,
+	getStagingRetentionMaxCount,
 	dropComponentDirectory,
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
@@ -52,7 +54,6 @@ const {
 	awaitDeploymentRow,
 	getDeploymentRow,
 	markDeploymentTerminal,
-	normalizePeerResult,
 	recordDeploymentPeers,
 	claimStagedDeployment,
 	expireOldStagedDeployments,
@@ -691,356 +692,6 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 }
 
 /**
- * Two-phase deploy orchestrator (origin node). Builds the incoming version into staging on every
- * node (phase 1, stage_component), gates on every node succeeding, then atomically swaps it live on
- * every node (phase 2, activate_component). The live component on every node is untouched until the
- * whole cluster has the bits in place, and the go-live window is just the swap + restart.
- */
-async function _legacyDeployComponentTwoPhase(req, credentialReferences) {
-	const { resolveCredentials } = require('./secretOperations.ts');
-	// Fail fast on a protected core name before we create any state or touch the cluster.
-	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
-
-	// The origin always records (a two-phase origin is never itself a replicated execution).
-	const emitter = req.progress ?? new ProgressEmitter();
-	if (!req.progress) req.progress = emitter;
-	const recorder = await DeploymentRecorder.create({
-		project: req.project,
-		package_identifier: req.package ?? null,
-		user: req.hdb_user?.username,
-		restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
-		credentials: credentialReferences.length ? credentialReferences : null,
-		emitter,
-	});
-	req._deploymentId = recorder.deploymentId;
-	const emit = (event, data) => emitter.emit(event, data);
-	const installCapture = createInstallCapture();
-	const rollingRestart = req.restart === 'rolling';
-	const recordPeer = (result) => {
-		recorder.recordPeer(result);
-		emit('peer', result);
-	};
-	let application;
-
-	try {
-		// Tee the payload into the row's blob (the replication channel peers read from) and re-source
-		// extraction from it. Two-phase requires systemReplicated, so peers always fetch from the row.
-		const extractionPayload = await sourceExtractionPayload({ req, recorder, isReplicatedExecution: false });
-		const resolvedCredentials = await resolveNodeCredentials({ req, resolveCredentials, isReplicatedExecution: false });
-		// stagingId = deployment id so peers (which build a fresh Application per sub-op) resolve the
-		// same staging path this deployment used.
-		application = buildDeployApplication({
-			req,
-			extractionPayload,
-			resolvedCredentials,
-			stagingId: recorder.deploymentId,
-			installCapture,
-			emitter,
-			emit,
-		});
-		// Strip tokens from req before any replication/log path; keep references (peers resolve those
-		// from their own hdb_secret copy). Strip the emitter and payload too — peers read the payload
-		// from the replicated row, keeping the sub-operation bodies small.
-		if (credentialReferences.length) req.credentials = credentialReferences;
-		else delete req.credentials;
-		delete req.progress;
-		delete req.payload;
-
-		// ===== PHASE 1: STAGE — build on every node; nothing goes live. =====
-		emit('phase', { phase: 'stage', status: 'start' });
-		await stageApplication(application);
-		const stageOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.DEPLOY_COMPONENT, { phase: 'stage' });
-		const stageResp = await server.replication.replicateOperation(stageOp, { onPeerResult: recordPeer });
-		if (stageResp?.replicated) recorder.recordPeers(stageResp.replicated);
-		emit('phase', { phase: 'stage', status: 'done' });
-
-		// ---- Cluster barrier: every node must have staged before ANY node activates. ----
-		if (!req.ignore_replication_errors) {
-			const failed = recorder.getFailedPeers();
-			if (failed.length > 0) {
-				await discardStagedApplication(application).catch(() => {});
-				throw new ServerError(
-					`Component '${req.project}' failed to stage on ${failed.length} of ` +
-						`${recorder.row.peer_results.length} peer node(s): ${describePeers(failed)}. No node was activated — ` +
-						`the live component is unchanged everywhere. See deployment ${recorder.deploymentId} (get_deployment), ` +
-						`or pass ignore_replication_errors: true to activate the nodes that did stage.`
-				);
-			}
-		}
-
-		// Validate the staged build before go-live (loads from the staging dir; see loadValidateComponent).
-		await loadValidateComponent({ dirPath: application.buildDirPath, emit });
-
-		// `activate: false` — stage-and-stop. The build is verified on every node; leave the row in a
-		// `staged` state and return its deployment_id so a later deploy_component({deployment_id}) can
-		// take it live. Nothing has gone live anywhere.
-		if (req.activate === false) {
-			emit('phase', { phase: 'staged', status: 'done' });
-			await recorder.finish('staged');
-			return {
-				message: `Staged component: ${application.name}`,
-				project: application.name,
-				staged: true,
-				deployment_id: recorder.deploymentId,
-			};
-		}
-
-		// ===== PHASE 2: ACTIVATE — atomic swap + restart, now the bits are in place everywhere. =====
-		// Persist root config now (not before staging) so a `package` config never points at a version
-		// that failed to stage.
-		if (req.package) await writeComponentRootConfig(req, credentialReferences);
-		// if doing a rolling restart set restart to false so peers don't also immediately restart.
-		req.restart = rollingRestart ? false : req.restart;
-
-		emit('phase', { phase: 'activate', status: 'start' });
-		await activateApplication(application);
-		const activateOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.DEPLOY_COMPONENT, {
-			phase: 'activate',
-			restart: req.restart,
-			deploymentId: recorder.deploymentId,
-		});
-		// Seal before the activate replicate burst (same #1170 rationale as one-shot).
-		recorder.seal();
-		const activateResp = await server.replication.replicateOperation(activateOp, { onPeerResult: recordPeer });
-		emit('phase', { phase: 'activate', status: 'done' });
-		let response = activateResp && typeof activateResp === 'object' ? activateResp : { message: '' };
-		if (activateResp?.replicated) recorder.recordPeers(activateResp.replicated);
-
-		// ---- Restart on the origin. ----
-		if (req.restart === true) {
-			emit('phase', { phase: 'restart', status: 'start' });
-			manageThreads.restartWorkers('http');
-			emit('phase', { phase: 'restart', status: 'done' });
-			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-		} else if (rollingRestart) {
-			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
-			emit('phase', { phase: 'restart', status: 'start' });
-			const jobResponse = await serverUtilities.executeJob({
-				operation: 'restart_service',
-				service: 'http',
-				replicated: true,
-			});
-			emit('phase', { phase: 'restart', status: 'done' });
-			response.restartJobId = jobResponse.job_id;
-			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
-		} else {
-			// No restart requested: a genuinely-new component still needs one to serve its routes
-			// (harper#674). activateApplication set isNewComponent from the pre-swap live dir above.
-			markRestartRequiredForDeploy(application);
-			response.message = `Successfully deployed: ${application.name}`;
-		}
-
-		// ---- Activate gate: rare, but a node can stage OK and then fail the swap. ----
-		await enforceActivatePeerGate({
-			req,
-			application,
-			emit,
-			failed: recorder.getFailedPeers(),
-			totalPeers: recorder.row.peer_results.length,
-			deploymentId: recorder.deploymentId,
-		});
-
-		response.deployment_id = recorder.deploymentId;
-		maybeReclaimPayload(recorder, emit);
-		emit('phase', { phase: 'success', status: 'done' });
-		await recorder.finish('success');
-		// After finish(), so this deploy's row is terminal and counts as the newest retained payload.
-		schedulePayloadRetentionPrune(recorder, req.project, emit);
-		return response;
-	} catch (err) {
-		// An aborted deploy leaves the live component untouched; drop any staged build so it can't leak.
-		if (application) await discardStagedApplication(application).catch(() => {});
-		throw await finalizeDeployFailure({ err, recorder, installCapture, emit });
-	}
-}
-
-/**
- * Peer stage phase (internal — NOT a public operation). Runs on a peer when the origin fans out
- * deploy_component tagged `_phase: 'stage'`: fetch the tarball from the replicated hdb_deployment row,
- * build + `npm install` into the hidden staging directory, and load-validate — never touching the live
- * path, writing config, or restarting. A failure here fails this peer's stage, which the origin's
- * barrier catches. No recorder (the origin owns the row) and no re-replication.
- */
-async function _legacyDeployPhaseStage(req) {
-	const { resolveCredentials } = require('./secretOperations.ts');
-	const emitter = null; // peers stream nothing back; the origin owns the emitter/recorder
-	const emit = () => {};
-	const installCapture = createInstallCapture();
-	let application;
-	try {
-		const extractionPayload = await sourceExtractionPayload({ req, recorder: null, isReplicatedExecution: true });
-		const resolvedCredentials = await resolveNodeCredentials({ req, resolveCredentials, isReplicatedExecution: true });
-		application = buildDeployApplication({
-			req,
-			extractionPayload,
-			resolvedCredentials,
-			stagingId: req._deploymentId,
-			installCapture,
-			emitter,
-			emit,
-		});
-		await stageApplication(application);
-		// Surface load-time errors on the staged build (no-op on the main thread, where replicated peer
-		// executions run — app code must not load there; see loadValidateComponent + DESIGN.md).
-		await loadValidateComponent({ dirPath: application.buildDirPath, emit });
-		return { message: `Staged component: ${req.project}`, project: req.project, staged: true };
-	} catch (err) {
-		if (application) await discardStagedApplication(application).catch(() => {});
-		throw await finalizeDeployFailure({ err, recorder: null, installCapture, emit });
-	}
-}
-
-/**
- * Peer activate phase (internal — NOT a public operation). Runs on a peer when the origin fans out
- * deploy_component tagged `_phase: 'activate'`: atomically swap the already-staged build (by deployment
- * id) into the live path, persist root config for a package deploy, and restart if the origin asked
- * for an immediate restart. No recorder, no re-replication.
- */
-async function _legacyDeployPhaseActivate(req) {
-	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
-	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
-	const application = new Application({
-		name: req.project,
-		packageIdentifier: req.package,
-		stagingId: req._deploymentId,
-	});
-	await activateApplication(application);
-	if (req.package) await writeComponentRootConfig(req, credentialReferences);
-	// The origin sets restart=true on the sub-op only for an immediate restart; rolling restarts are
-	// driven separately by the origin via a replicated restart_service job.
-	if (req.restart === true) manageThreads.restartWorkers('http');
-	// Not restarting now: mark restart-required per node for a genuinely-new component (harper#674), the
-	// same marking the one-shot peer path does — so a new component deployed cluster-wide with
-	// restart:false reports restartRequired on every node, not just the origin. A rolling restart, which
-	// also arrives here with restart:false, clears the flag when it reaches this node.
-	else markRestartRequiredForDeploy(application);
-	return { message: `Activated component: ${req.project}`, project: req.project, activated: true };
-}
-
-/**
- * Activate a previously-staged deployment cluster-wide — the second half of a stage-then-activate
- * flow, reached as `deploy_component({ deployment_id })` with no fresh payload. Swaps the staged build
- * into the live path on the origin, replicates the activate phase to peers (each activates its own
- * staged copy of the same deployment id), restarts, and marks the deployment row success.
- */
-async function _legacyDeployComponentActivateExisting(req, credentialReferences) {
-	const stagingId = req.deployment_id;
-	// An activate-by-id call carries no `package` — `harper activate` sends only project + deployment_id,
-	// and the docs describe this path as fetching/installing nothing — so recover the staged deployment's
-	// package identifier and credential references from its row. Without this, a component staged as a
-	// `package` deploy and activated later would never persist its root-config entry: not on the origin
-	// (writeComponentRootConfig is gated on `req.package`) and not on any peer either, since the fanned-out
-	// sub-op copies `package`/`credentials` from this same `req`. The package reference and the credential
-	// references that cold reinstalls and newly-joined peers depend on would be silently lost, leaving the
-	// component recorded as a plain directory. Explicit values on the request always win.
-	if (!req.package) {
-		const stagedRow = await getDeploymentRow(stagingId).catch((err) => {
-			log.warn(`Could not read deployment ${stagingId} to recover its package identifier`, err);
-			return undefined;
-		});
-		if (stagedRow?.package_identifier) {
-			req.package = stagedRow.package_identifier;
-			// The row stores credential REFERENCES (tokens were never persisted), which is exactly what
-			// root config should carry. Only fall back to them when the caller supplied none.
-			if (!req.credentials?.length && Array.isArray(stagedRow.credentials) && stagedRow.credentials.length) {
-				req.credentials = stagedRow.credentials;
-			}
-			credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
-		}
-	}
-	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
-	const emitter = req.progress ?? new ProgressEmitter();
-	if (!req.progress) req.progress = emitter;
-	const emit = (event, data) => emitter.emit(event, data);
-	const rollingRestart = req.restart === 'rolling';
-	const application = new Application({ name: req.project, packageIdentifier: req.package, stagingId });
-
-	emit('phase', { phase: 'activate', status: 'start' });
-	await activateApplication(application);
-	emit('phase', { phase: 'activate', status: 'done' });
-	// Persist root config now that the component is live (package deploys).
-	if (req.package) await writeComponentRootConfig(req, credentialReferences);
-
-	// Replicate the activate phase to peers (each activates its own staged copy of this deployment id).
-	req._deploymentId = stagingId;
-	delete req.progress;
-	const activateOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.DEPLOY_COMPONENT, {
-		phase: 'activate',
-		restart: rollingRestart ? false : req.restart,
-		deploymentId: stagingId,
-	});
-	// Collect per-peer outcomes so a partially-failed activate can be gated below. There is no
-	// DeploymentRecorder on this path (the row was created and finished as `staged` by the earlier
-	// stage-and-stop), so a local collector stands in for recorder.recordPeer/getFailedPeers.
-	const peers = createPeerResultCollector();
-	const rep = await server.replication.replicateOperation(activateOp, {
-		onPeerResult: (result) => {
-			peers.record(result);
-			emit('peer', result);
-		},
-	});
-	if (rep?.replicated) peers.recordAll(rep.replicated);
-
-	const response = {
-		message: `Activated component: ${req.project}`,
-		project: req.project,
-		activated: true,
-		deployment_id: stagingId,
-	};
-	if (rep?.replicated) response.replicated = rep.replicated;
-
-	if (req.restart === true) {
-		emit('phase', { phase: 'restart', status: 'start' });
-		manageThreads.restartWorkers('http');
-		emit('phase', { phase: 'restart', status: 'done' });
-		response.message = `Activated component: ${req.project}, restarting Harper`;
-	} else if (rollingRestart) {
-		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
-		emit('phase', { phase: 'restart', status: 'start' });
-		const jobResponse = await serverUtilities.executeJob({
-			operation: 'restart_service',
-			service: 'http',
-			replicated: true,
-		});
-		emit('phase', { phase: 'restart', status: 'done' });
-		response.restartJobId = jobResponse.job_id;
-		response.message = `Activated component: ${req.project}, restarting Harper`;
-	} else {
-		// No restart requested: activating a genuinely-new component still needs one to serve its routes
-		// (harper#674). activateApplication set isNewComponent from the pre-swap live dir above.
-		markRestartRequiredForDeploy(application);
-	}
-
-	// ---- Activate gate: a peer can hold a good staged build and still fail the swap. Same gate the
-	// two-phase activate phase uses, so revert_on_failure / ignore_replication_errors behave identically
-	// whether the activate came from a full deploy or from `deploy_component({ deployment_id })`.
-	try {
-		await enforceActivatePeerGate({
-			req,
-			application,
-			emit,
-			failed: peers.getFailed(),
-			totalPeers: peers.total,
-			deploymentId: stagingId,
-		});
-	} catch (err) {
-		// The origin went live but the cluster did not converge — record the terminal state before
-		// surfacing the failure, so get_deployment doesn't still read `staged`.
-		await markDeploymentTerminal(stagingId, 'failed').catch((markErr) =>
-			log.warn('Failed to mark deployment as failed after a partial activate', markErr)
-		);
-		throw err;
-	}
-
-	// Best-effort: flip the staged deployment row (left 'staged' by the stage-and-stop) to success now
-	// that it is live. Observability only — a tracking-write failure must not fail the activate.
-	await markDeploymentTerminal(stagingId, 'success').catch((err) =>
-		log.warn('Failed to mark staged deployment as activated', err)
-	);
-	return response;
-}
-
-/**
  * revert_component — swap a component's live version back to its retained previous version
  * (`.deploy-previous/<name>`, kept by the last activate), cluster-wide, then restart. Backs
  * customer-driven rollback (deploy → run your own health checks → revert if unhappy) and a
@@ -1137,16 +788,6 @@ async function discardDeploymentEverywhere(project, deploymentId, activationSpec
 	await server.replication
 		.replicateOperation(buildPhaseOperation('discard', deploymentId, project, activationSpec))
 		.catch(() => {});
-}
-
-function getStagingRetentionMaxCount() {
-	const value = Number(env.get(hdbTerms.CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT));
-	return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 5;
-}
-
-function getPayloadRetentionMaxCount() {
-	const value = Number(env.get(hdbTerms.CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXCOUNT));
-	return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 1;
 }
 
 async function pruneStagedDeploymentArtifacts(project, activationSpec) {
@@ -1265,6 +906,7 @@ async function deployComponentTwoPhase(req) {
 			},
 			beforeCommit: () => configTransaction.commit(),
 			onRollback: () => configTransaction.rollback(),
+			activationSpec,
 		});
 		activationCommitted = true;
 		const activateResponse = await server.replication.replicateOperation(
@@ -1404,6 +1046,7 @@ async function deployComponentActivateExisting(req) {
 			},
 			beforeCommit: () => configTransaction.commit(),
 			onRollback: () => configTransaction.rollback(),
+			activationSpec: spec,
 		});
 	} catch (error) {
 		if (claimed) await markDeploymentTerminal(req.deployment_id, 'staged').catch(() => {});
@@ -1533,6 +1176,7 @@ async function componentDeployPhase(req) {
 		},
 		beforeCommit: () => configTransaction.commit(),
 		onRollback: () => configTransaction.rollback(),
+		activationSpec: spec,
 	});
 	markRestartRequiredForDeploy(application);
 	return { message: `Activated component: ${req.project}`, project: req.project, activated: true };
@@ -1548,98 +1192,156 @@ function isTrustedReplicatedOperation(req) {
 	);
 }
 
-async function _revertComponent(req) {
+/**
+ * revert_component — put a component's retained previous version back in service, cluster-wide.
+ *
+ * This is the fast-rollback half of the deploy story, and it is deliberately a separate public
+ * operation rather than a deploy phase: it fetches nothing, resolves no package or secret, downloads
+ * no artifact and runs no install. The bytes it activates are already on disk on every node — the tree
+ * each node's last activation displaced and retained as `.deploy-previous/<name>` — so the whole
+ * cluster can go back to the version it was serving a minute ago at the cost of one atomic rename per
+ * node. It exists for the case operators actually hit: the one bad rollout that just happened.
+ *
+ * It is NOT a general "go to any past version" operation. Exactly one previous version is retained per
+ * component, so this reaches back exactly one activation. Returning to an older version is a redeploy
+ * (`deploy_component`), not a revert.
+ *
+ * `to_deployment_id` is required and names the deployment the caller expects to be live afterwards,
+ * which is what makes the operation idempotent under ordinary request retries (harper#1849 review): if
+ * that version is already live the call succeeds without touching anything, instead of toggling the
+ * rejected release back in. Targeting the retained previous swaps, and the displaced tree becomes the
+ * new retained previous — so an explicitly-targeted revert-of-a-revert still rolls forward.
+ *
+ * The swap is paired with persistent state. `revertApplication` reports the root-config entry the
+ * newly-live tree was originally activated with, and this applies it to both the root config and the
+ * boot-time install lock. Without that, reverting away from a `package` deploy would leave the config
+ * still naming the reverted-away package, and `installApplications()` would quietly reinstall it over
+ * the restored directory on the next cold start — undoing the rollback.
+ */
+async function revertComponent(req) {
 	if (req.project) req.project = path.parse(req.project).name;
 	const validation = validator.revertComponentValidator(req);
 	if (validation) throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	assertNotProtectedCoreComponent(req.project, req.force);
 
-	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	const isReplicatedExecution = isTrustedReplicatedOperation(req);
 	const emitter = isReplicatedExecution ? null : (req.progress ?? new ProgressEmitter());
-	if (emitter && !req.progress) req.progress = emitter;
-	// The origin records a rollback row for observability; a peer replaying the revert does not.
+	const emit = emitter ? (event, data) => emitter.emit(event, data) : () => {};
+	delete req.progress;
+
+	const application = new Application({ name: req.project });
+	// Read the retained-previous state before anything is created or moved: it supplies the deployment
+	// this rollback takes out of service (recorded as `rollback_of`, which the recorder can only accept
+	// at create time), and it lets an unrevertable request fail before a deployment row exists.
+	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const revertTarget = await getRevertTarget(path.join(componentsRoot, req.project));
+	// The origin records an auditable rollback row; a peer replaying the revert does not (the origin
+	// owns the row, exactly as in the deploy fan-out).
 	const recorder = isReplicatedExecution
 		? null
 		: await DeploymentRecorder.create({
 				project: req.project,
-				package_identifier: null,
 				user: req.hdb_user?.username,
 				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
-				rollback_of: req.deployment_id ?? null,
+				rollback_of: revertTarget?.live?.deployment_id ?? null,
 				emitter,
 			});
-	if (recorder) req._deploymentId = recorder.deploymentId;
-	const emit = (event, data) => emitter?.emit(event, data);
-	const installCapture = createInstallCapture(); // revert has no install output, but finalizeDeployFailure expects one
-	const rollingRestart = req.restart === 'rolling';
-
 	try {
-		const application = new Application({ name: req.project });
 		emit('phase', { phase: 'revert', status: 'start' });
-		await revertApplication(application);
+		const result = await revertApplication(application, req.to_deployment_id);
+		if (result.swapped) {
+			// Persist the reverted-to version's config + install lock. Compensating by swapping back is
+			// deliberate: a half-reverted node (new tree live, old config persisted) would reinstall the
+			// wrong version on its next cold start, which is the failure this pairing exists to prevent.
+			try {
+				const configTransaction = await createApplicationConfigTransaction(req.project, result.activatedConfig);
+				await configTransaction.commit();
+			} catch (configError) {
+				await revertApplication(application, result.fromDeploymentId).catch((swapBackError) => {
+					log.error(`Failed to undo the ${req.project} revert after its config write failed`, swapBackError);
+				});
+				throw configError;
+			}
+		}
 		emit('phase', { phase: 'revert', status: 'done' });
 
-		const response = { message: `Reverted component: ${req.project}`, project: req.project, reverted: true };
-		if (recorder) response.deployment_id = recorder.deploymentId;
-
-		// Replicate the revert to peers (direct invocation only; a peer replaying must not re-fan).
-		req.restart = rollingRestart ? false : req.restart;
-		if (!isReplicatedExecution) {
-			delete req.progress;
-			const revertOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT, {
-				restart: req.restart,
-				deploymentId: recorder?.deploymentId,
-			});
-			recorder?.seal();
-			const rep = await server.replication.replicateOperation(revertOp, {
-				onPeerResult: recorder
-					? (result) => {
-							recorder.recordPeer(result);
-							emit('peer', result);
-						}
-					: undefined,
-			});
-			if (recorder && rep?.replicated) recorder.recordPeers(rep.replicated);
-		}
-
-		// Restart on this node (peers replaying an immediate-restart revert restart locally; the rolling
-		// path is driven only by the direct invoker via a replicated restart_service job).
-		if (req.restart === true) {
-			emit('phase', { phase: 'restart', status: 'start' });
-			manageThreads.restartWorkers('http');
-			emit('phase', { phase: 'restart', status: 'done' });
-			response.message = `Reverted component: ${req.project}, restarting Harper`;
-		} else if (rollingRestart && !isReplicatedExecution) {
-			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
-			emit('phase', { phase: 'restart', status: 'start' });
-			const jobResponse = await serverUtilities.executeJob({
-				operation: 'restart_service',
-				service: 'http',
-				replicated: true,
-			});
-			emit('phase', { phase: 'restart', status: 'done' });
-			response.restartJobId = jobResponse.job_id;
-			response.message = `Reverted component: ${req.project}, restarting Harper`;
-		}
-
-		if (recorder && !req.ignore_replication_errors) {
-			const failed = recorder.getFailedPeers();
-			if (failed.length > 0) {
+		// Fan out to peers. The operation is idempotent and target-addressed, so a peer that already
+		// holds the target live converges to the same place without swapping — which is what makes a
+		// straight re-run of the same operation the right replication primitive here.
+		let replication;
+		if (req.replicated !== false && !isReplicatedExecution) {
+			replication = await server.replication.replicateOperation(
+				{
+					operation: hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT,
+					project: req.project,
+					to_deployment_id: req.to_deployment_id,
+					restart: req.restart === true,
+					...(req.force ? { force: req.force } : {}),
+					...(req.deployment_timeout !== undefined ? { deployment_timeout: req.deployment_timeout } : {}),
+				},
+				{
+					onPeerResult: (peerResult) => {
+						recorder?.recordPeer(peerResult);
+						emit('peer', peerResult);
+					},
+				}
+			);
+			if (replication?.replicated) recorder?.recordPeers(replication.replicated);
+			const failed = recorder?.getFailedPeers() ?? [];
+			if (failed.length && !req.ignore_replication_errors) {
 				throw new ServerError(
-					`Component '${req.project}' was reverted on the origin but failed to revert on ${failed.length} ` +
-						`of ${recorder.row.peer_results.length} peer node(s): ${describePeers(failed)}. ` +
-						`See deployment ${recorder.deploymentId} (get_deployment), or pass ignore_replication_errors: true.`
+					`Component '${req.project}' reverted on this node but failed on ${failed.length} peer node(s): ` +
+						`${describePeerFailures(failed)}. The cluster is split across versions; retry the revert (it is a ` +
+						`no-op on the nodes that already reverted) or roll forward with deploy_component.`
 				);
 			}
 		}
 
-		if (recorder) {
-			emit('phase', { phase: 'success', status: 'done' });
-			await recorder.finish('rolled_back');
-		}
-		return response;
-	} catch (err) {
-		throw await finalizeDeployFailure({ err, recorder, installCapture, emit });
+		const restart = await restartRevertedComponent(req, emit);
+		emit('phase', { phase: 'success', status: 'done' });
+		await recorder?.finish('rolled_back');
+		return {
+			message: result.swapped
+				? `Reverted component: ${req.project} to deployment ${req.to_deployment_id}${restart.restartMessage}`
+				: `Component ${req.project} is already running deployment ${req.to_deployment_id}; nothing to revert`,
+			project: req.project,
+			reverted: result.swapped,
+			to_deployment_id: req.to_deployment_id,
+			...(result.fromDeploymentId ? { from_deployment_id: result.fromDeploymentId } : {}),
+			...(recorder ? { deployment_id: recorder.deploymentId } : {}),
+			...(replication?.replicated ? { replicated: replication.replicated } : {}),
+			...(restart.restartJobId ? { restartJobId: restart.restartJobId } : {}),
+		};
+	} catch (error) {
+		const message = error?.message ?? String(error);
+		emit('error', { message, code: error?.statusCode ?? error?.code });
+		await recorder
+			?.finish('failed', error)
+			.catch((finishError) => log.warn('Failed to record component revert failure', finishError));
+		throw new ServerError(message, error?.statusCode);
 	}
+}
+
+/** Restart after a revert, mirroring the deploy path's restart handling. */
+async function restartRevertedComponent(req, emit) {
+	if (req.restart === true) {
+		emit('phase', { phase: 'restart', status: 'start' });
+		manageThreads.restartWorkers('http');
+		emit('phase', { phase: 'restart', status: 'done' });
+		return { restartMessage: ', restarting Harper' };
+	}
+	if (req.restart === 'rolling') {
+		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+		emit('phase', { phase: 'restart', status: 'start' });
+		const jobResponse = await serverUtilities.executeJob({
+			operation: 'restart_service',
+			service: 'http',
+			replicated: true,
+		});
+		emit('phase', { phase: 'restart', status: 'done' });
+		return { restartMessage: ', restarting Harper', restartJobId: jobResponse.job_id };
+	}
+	return { restartMessage: '' };
 }
 
 // ————————————————————————————————————————————————————————————————————————————
@@ -1788,138 +1490,9 @@ async function loadValidateComponent({ dirPath, emit }) {
 	if (lastError) throw lastError;
 }
 
-// Build a replicated sub-operation body for the peer fan-out. For the two-phase peer phases this is
-// `deploy_component` tagged with an internal `_phase` marker (`stage`/`activate`) — the wire format —
-// so no separate public op is exposed; revert uses operation `revert_component`. Carries only what a
-// peer needs: project, the deployment id (correlation + payload lookup + staging id), the internal
-// `_phase`, the build/config inputs, and credential REFERENCES (tokens are already stripped).
-function buildReplicatedSubOp(req, operation, { includePayload = false, restart, deploymentId, phase } = {}) {
-	const op = { operation, project: req.project, _deploymentId: deploymentId ?? req._deploymentId };
-	if (phase) op._phase = phase;
-	if (req.package) op.package = req.package;
-	if (req.install_command != null) op.install_command = req.install_command;
-	if (req.install_timeout != null) op.install_timeout = req.install_timeout;
-	if (req.install_allow_scripts !== undefined) op.install_allow_scripts = req.install_allow_scripts;
-	if (req.deployment_timeout != null) op.deployment_timeout = req.deployment_timeout;
-	if (req.urlPath !== undefined) op.urlPath = req.urlPath;
-	if (req.force !== undefined) op.force = req.force;
-	if (req.ignore_replication_errors !== undefined) op.ignore_replication_errors = req.ignore_replication_errors;
-	if (Array.isArray(req.credentials) && req.credentials.length) op.credentials = req.credentials;
-	if (includePayload && req.payload != null) op.payload = req.payload;
-	if (restart !== undefined) op.restart = restart;
-	return op;
-}
-
 // Render failed peer outcomes as "node (error)" for an operator-facing error message.
 function describePeers(failedPeers) {
 	return failedPeers.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? 'unknown error'})`).join(', ');
-}
-
-/**
- * Collect per-peer replication outcomes when there is no DeploymentRecorder to hold them — the
- * activate-existing path, where the hdb_deployment row was already created (and finished as `staged`)
- * by the earlier stage-and-stop. Mirrors DeploymentRecorder.recordPeer's semantics exactly: results are
- * normalized by the same normalizePeerResult and upserted by node name, so a peer reported both through
- * the streaming `onPeerResult` callback and again in replicateOperation's final `replicated` aggregate
- * is counted once, not twice.
- */
-function createPeerResultCollector() {
-	const list = [];
-	const record = (result) => {
-		const normalized = normalizePeerResult(result);
-		const nodeName = normalized.node;
-		const idx = nodeName ? list.findIndex((entry) => entry.node === nodeName) : -1;
-		if (idx >= 0) list[idx] = normalized;
-		else list.push(normalized);
-	};
-	return {
-		record,
-		recordAll(results) {
-			if (Array.isArray(results)) for (const result of results) record(result);
-		},
-		getFailed: () => list.filter((peer) => peer?.status === 'failed'),
-		get total() {
-			return list.length;
-		},
-	};
-}
-
-/**
- * Shared post-activate failure gate for every cluster-wide activate (the two-phase deploy's activate
- * phase and `deploy_component({ deployment_id })`). replicateOperation never rejects on a per-peer
- * failure — failures surface only as 'failed' peer entries — so without this gate a partially-failed
- * activate returns 2xx and silently leaves the cluster split across versions.
- *
- * Unless `ignore_replication_errors` is set, throws when any peer failed to activate. When
- * `revert_on_failure` is set, first rolls the origin and the peers that DID activate back to the
- * retained previous version so the cluster reconverges — best-effort, since a revert failure must not
- * mask the original activate failure.
- */
-async function enforceActivatePeerGate({ req, application, emit, failed, totalPeers, deploymentId }) {
-	if (req.ignore_replication_errors) return;
-	if (!failed || failed.length === 0) return;
-	let revertNote = '';
-	if (req.revert_on_failure) {
-		try {
-			emit('phase', { phase: 'revert', status: 'start' });
-			// The origin activated, so revert it.
-			await revertApplication(application);
-			// With `restart: true` the origin's workers already reloaded onto the new (failed-cluster)
-			// version — the origin restart runs before this gate — so the directory rollback above is not
-			// picked up on its own. The peers' revert op carries `restart`, so they DO come back on the
-			// previous version; without this the origin would be the one node left serving the new version,
-			// the exact opposite of the reconvergence revert_on_failure exists to provide. A rolling restart
-			// arrives here with `restart` already normalized to false and its peers likewise un-restarted,
-			// so origin and peers stay consistent in that case without a second restart.
-			if (req.restart === true) manageThreads.restartWorkers('http');
-			// Revert ONLY the peers that successfully activated (see selectRevertTargets): every known
-			// node minus the ones that failed to activate (still on the correct version) and minus this
-			// node (already reverted directly above; a second bidirectional revert would flip it back).
-			// replicateOperation has no subset targeting, so send point-to-point via sendOperationToNode.
-			const { getThisNodeName } = require('../server/nodeName.ts');
-			const activatedPeers = selectRevertTargets(server.nodes, failed, getThisNodeName());
-			const revertOp = buildReplicatedSubOp(req, hdbTerms.OPERATIONS_ENUM.REVERT_COMPONENT, {
-				restart: req.restart,
-				deploymentId,
-			});
-			revertOp.replicated = false; // point-to-point; the peer must not re-fan the revert
-			const revertResults = await Promise.allSettled(
-				activatedPeers.map((node) => server.replication.sendOperationToNode(node, revertOp))
-			);
-			const revertFailures = revertResults.filter((result) => result.status === 'rejected').length;
-			emit('phase', { phase: 'revert', status: 'done' });
-			revertNote =
-				` Rolled the origin and ${activatedPeers.length - revertFailures} of ${activatedPeers.length} ` +
-				`activated peer(s) back to the previous version (revert_on_failure); the ${failed.length} peer(s) ` +
-				`that never activated were left on their current (correct) version.` +
-				(revertFailures > 0 ? ` ${revertFailures} peer revert(s) also failed.` : '') +
-				` Verify with get_components.`;
-		} catch (revertErr) {
-			log.warn('revert_on_failure rollback failed', revertErr);
-			revertNote = ` An automatic rollback (revert_on_failure) was attempted but also failed: ${revertErr?.message ?? revertErr}.`;
-		}
-	}
-	throw new ServerError(
-		`Component '${application.name}' was activated on the origin but failed to activate on ${failed.length} ` +
-			`of ${totalPeers} peer node(s): ${describePeers(failed)}. Those nodes have the staged ` +
-			`build but did not go live.${revertNote} See deployment ${deploymentId} (get_deployment), or pass ` +
-			`ignore_replication_errors: true.`
-	);
-}
-
-// Choose which peers a revert_on_failure swap-back should target: every known node EXCEPT
-//   - `thisNodeName`: the origin, already reverted directly by the caller — a second (bidirectional)
-//     revert would flip it back to the just-activated version; and
-//   - any node in `failedPeers`: it never activated (its failure fired before activateApplication ran
-//     retainAsPrevious), so its live directory is still the correct pre-deploy version and reverting it
-//     would roll it back an EXTRA version onto a two-deploys-ago copy.
-// Pure and exported so the node-targeting logic (which had two review-caught bugs — the failed-peer
-// skip and the self-skip) is unit-testable without a live cluster. `nodes` is `server.nodes`, which
-// normally already excludes self, but a not-yet-named node can slip in (knownNodes) so self is guarded
-// here regardless — matching every other point-to-point fan-out in the code base (bin/restart.ts).
-function selectRevertTargets(nodes, failedPeers, thisNodeName) {
-	const failedNodeNames = new Set((failedPeers ?? []).map((peer) => peer.node).filter(Boolean));
-	return (nodes ?? []).filter((node) => node?.name !== thisNodeName && !failedNodeNames.has(node?.name));
 }
 
 // Reclaim the payload tarball for large deploys once every peer has installed from the blob. Dropping
@@ -2489,6 +2062,7 @@ exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
 exports.componentDeployPhase = componentDeployPhase;
+exports.revertComponent = revertComponent;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;

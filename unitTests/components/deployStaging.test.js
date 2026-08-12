@@ -20,9 +20,12 @@ const {
 	discardProjectActivationArtifacts,
 	reconcileStagedApplicationArtifacts,
 	createApplicationActivationTransaction,
+	revertApplication,
+	getRevertTarget,
 	stagedApplicationPath,
 	DEPLOY_STAGING_DIR,
 	DEPLOY_ACTIVATION_DIR,
+	DEPLOY_PREVIOUS_DIR,
 	ASIDE_STAGING_DIR,
 } = require('#src/components/Application');
 const { getConfigPath, readConfigFile } = require('#src/config/configUtils');
@@ -72,6 +75,8 @@ describe('two-phase component directory transaction', function () {
 		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, `${DEPLOY_PREVIOUS_DIR}`), { recursive: true, force: true });
 	}
 
 	it('builds a staged tree without touching the live component', async () => {
@@ -386,4 +391,201 @@ describe('two-phase component directory transaction', function () {
 		await cleanup(name);
 		await fs.rm(packageDirectory, { recursive: true, force: true });
 	});
+	// ————————————————————————————————————————————————————————————————————————————
+	// Retained previous + addressed revert (harper#1849 review, @kriszyp)
+	// ————————————————————————————————————————————————————————————————————————————
+
+	it('retains the tree an activation displaced, addressed by the deployment that produced it', async () => {
+		const name = fixtureName();
+		const firstId = randomUUID();
+		const secondId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('v1') });
+		await stageApplication(application, firstId);
+		await activateStagedApplication(application, firstId, { activationSpec: { package: null } });
+		application.payload = await makeComponentPayload('v2');
+		await stageApplication(application, secondId);
+		await activateStagedApplication(application, secondId, { activationSpec: { package: null } });
+
+		assert.match(await readMarker(application.dirPath), /v2/);
+		const retained = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		assert.match(await readMarker(retained), /v1/);
+
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.live.deployment_id, secondId);
+		assert.equal(target.previous.deployment_id, firstId);
+		await cleanup(name);
+	});
+
+	it('a first-ever deploy retains nothing, so there is no version to revert to', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('only') });
+		await stageApplication(application, deploymentId);
+		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
+
+		assert.equal(await getRevertTarget(application.dirPath), undefined);
+		await assert.rejects(
+			() => revertApplication(application, randomUUID()),
+			/no previous version is retained/,
+			'a component deployed once cannot be reverted'
+		);
+		await cleanup(name);
+	});
+
+	it('reverts to the named previous deployment and exchanges the retained roles', async () => {
+		const name = fixtureName();
+		const firstId = randomUUID();
+		const secondId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('v1') });
+		await stageApplication(application, firstId);
+		await activateStagedApplication(application, firstId, { activationSpec: { package: null } });
+		application.payload = await makeComponentPayload('v2');
+		await stageApplication(application, secondId);
+		await activateStagedApplication(application, secondId, { activationSpec: { package: null } });
+
+		const result = await revertApplication(application, firstId);
+
+		assert.equal(result.swapped, true);
+		assert.equal(result.fromDeploymentId, secondId);
+		assert.match(await readMarker(application.dirPath), /v1/, 'live is the reverted-to version');
+		assert.match(
+			await readMarker(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)),
+			/v2/,
+			'the displaced version becomes the new retained previous'
+		);
+
+		// Explicitly targeting the other direction rolls forward again.
+		const forward = await revertApplication(application, secondId);
+		assert.equal(forward.swapped, true);
+		assert.match(await readMarker(application.dirPath), /v2/);
+		await cleanup(name);
+	});
+
+	it('is a no-op when the named deployment is already live, so a retry cannot toggle it back', async () => {
+		const name = fixtureName();
+		const firstId = randomUUID();
+		const secondId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('v1') });
+		await stageApplication(application, firstId);
+		await activateStagedApplication(application, firstId, { activationSpec: { package: null } });
+		application.payload = await makeComponentPayload('v2');
+		await stageApplication(application, secondId);
+		await activateStagedApplication(application, secondId, { activationSpec: { package: null } });
+		await revertApplication(application, firstId);
+
+		// The delivery of the first response is lost and the caller retries the identical request. A
+		// bidirectional toggle would put the rejected v2 back live; an addressed revert must not.
+		const retry = await revertApplication(application, firstId);
+
+		assert.equal(retry.swapped, false, 'a repeated revert to the live version does nothing');
+		assert.match(await readMarker(application.dirPath), /v1/, 'still on the reverted-to version');
+		await cleanup(name);
+	});
+
+	it('refuses a deployment that is neither live nor the retained previous', async () => {
+		const name = fixtureName();
+		const firstId = randomUUID();
+		const secondId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('v1') });
+		await stageApplication(application, firstId);
+		await activateStagedApplication(application, firstId, { activationSpec: { package: null } });
+		application.payload = await makeComponentPayload('v2');
+		await stageApplication(application, secondId);
+		await activateStagedApplication(application, secondId, { activationSpec: { package: null } });
+
+		await assert.rejects(
+			() => revertApplication(application, randomUUID()),
+			/neither the live version .* nor the retained previous version/s,
+			'only one previous version is retained, so anything else is a redeploy'
+		);
+		assert.match(await readMarker(application.dirPath), /v2/, 'a refused revert changes nothing');
+		await cleanup(name);
+	});
+
+	it('retains exactly one previous version across three activations', async () => {
+		const name = fixtureName();
+		const ids = [randomUUID(), randomUUID(), randomUUID()];
+		const application = new Application({ name, payload: await makeComponentPayload('v1') });
+		for (const [index, id] of ids.entries()) {
+			if (index > 0) application.payload = await makeComponentPayload(`v${index + 1}`);
+			await stageApplication(application, id);
+			await activateStagedApplication(application, id, { activationSpec: { package: null } });
+		}
+
+		assert.match(await readMarker(application.dirPath), /v3/);
+		assert.match(await readMarker(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)), /v2/);
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.previous.deployment_id, ids[1], 'v1 is evicted; only v2 stays revertable');
+		await cleanup(name);
+	});
+
+	it('parks the evicted retained-previous where startup recovery will never restore it', async () => {
+		// The single `.deploy-aside` contract: an `.in-progress-` directory with no `.retired-` marker is
+		// a rollback record that recoverInterruptedComponentExtractions restores OVER the live component.
+		// An evicted two-deploys-ago tree is known garbage when parked, so it must not carry that prefix,
+		// or a crash before the sweep would resurrect an ancient version over the current one.
+		const name = fixtureName();
+		const ids = [randomUUID(), randomUUID(), randomUUID()];
+		const application = new Application({ name, payload: await makeComponentPayload('v1') });
+		for (const [index, id] of ids.entries()) {
+			if (index > 0) application.payload = await makeComponentPayload(`v${index + 1}`);
+			await stageApplication(application, id);
+			await activateStagedApplication(application, id, { activationSpec: { package: null } });
+		}
+
+		const asideDir = path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR, name);
+		const parked = existsSync(asideDir) ? await fs.readdir(asideDir) : [];
+		const unretired = parked.filter(
+			(entry) => entry.startsWith('.in-progress-') && !parked.includes(`.retired-${entry.slice('.in-progress-'.length)}`)
+		);
+		assert.deepEqual(unretired, [], 'an evicted previous is never left looking like a rollback record');
+		await cleanup(name);
+	});
+
+	it('reports the config each retained version was activated with, so a revert can restore it', async () => {
+		// This is what makes a revert durable across a cold restart: reverting away from a `package`
+		// deploy has to take the package reference out of root config too, or installApplications()
+		// reinstalls the reverted-away version over the restored directory on the next boot.
+		const name = fixtureName();
+		const packagedId = randomUUID();
+		const payloadId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('packaged') });
+		await stageApplication(application, packagedId);
+		await activateStagedApplication(application, packagedId, {
+			activationSpec: {
+				package: 'stage-fixture@1.0.0',
+				install_command: null,
+				install_timeout: null,
+				install_allow_scripts: null,
+				urlPath: null,
+				host: null,
+			},
+		});
+		application.payload = await makeComponentPayload('plain');
+		await stageApplication(application, payloadId);
+		await activateStagedApplication(application, payloadId, { activationSpec: { package: null } });
+
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.previous.application_config.package, 'stage-fixture@1.0.0');
+		const back = await revertApplication(application, packagedId);
+		assert.equal(back.activatedConfig.package, 'stage-fixture@1.0.0');
+		await cleanup(name);
+	});
+
+	it('moves a dangling symlink at the live path aside instead of failing EEXIST', async () => {
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+		const missingTarget = path.join(os.tmpdir(), `harper-missing-${randomUUID()}`);
+		await fs.mkdir(COMPONENTS_ROOT, { recursive: true });
+		await fs.symlink(missingTarget, application.dirPath, 'dir');
+
+		await stageApplication(application, deploymentId);
+		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
+
+		assert.equal((await fs.lstat(application.dirPath)).isSymbolicLink(), false);
+		assert.match(await readMarker(application.dirPath), /candidate/);
+		await cleanup(name);
+	});
+
 });

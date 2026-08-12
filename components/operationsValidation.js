@@ -32,6 +32,7 @@ module.exports = {
 	packageComponentValidator,
 	deployComponentValidator,
 	componentDeployPhaseValidator,
+	revertComponentValidator,
 	setComponentFileValidator,
 	getComponentFileValidator,
 	dropComponentFileValidator,
@@ -576,26 +577,30 @@ function componentDeployPhaseValidator(req) {
 
 /**
  * Validate revert_component requests — swap a component's live version back to its retained previous
- * version. No build inputs (nothing is fetched or installed); just the project, an optional restart,
- * and the replication controls.
+ * version. There are no build inputs: nothing is fetched, resolved or installed, because the bytes
+ * being reverted to are already on disk. Just the project, the version being targeted, an optional
+ * restart, and the replication controls.
  * @param req
  * @returns {*}
  */
-function _revertComponentValidator(req) {
+function revertComponentValidator(req) {
 	const revertSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
-		// The deployment being reverted, recorded as the rollback's `rollback_of` for the audit trail.
-		// Optional — revert operates on whatever version is currently live regardless. Same safe charset
-		// as elsewhere (it is an id, and this keeps the deploy family's `deployment_id` consistent).
-		deployment_id: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).optional().messages({
-			'string.pattern.base': `'deployment_id' must only contain letters, numbers, dashes, and underscores`,
+		// The deployment the caller expects to be live once this returns. REQUIRED, and the whole reason
+		// revert is safe to retry: a revert that names its target is a no-op when that version is already
+		// live, where a bare "swap to the other one" toggle would flip the rejected release back in if a
+		// caller retried after losing the first response (harper#1849 review).
+		to_deployment_id: Joi.string().pattern(DEPLOYMENT_ID_REGEX).required().messages({
+			'string.pattern.base': `'to_deployment_id' must be a UUID`,
+			'any.required': `'to_deployment_id' is required: name the deployment you expect to be live after the revert (list_deployments reports it, and deploy_component returns it)`,
 		}),
 		restart: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('rolling')).optional(),
 		deployment_timeout: Joi.number().min(0).optional(),
 		ignore_replication_errors: Joi.boolean().optional(),
+		force: Joi.boolean().optional(),
 	});
 
 	return validator.validateBySchema(req, revertSchema);

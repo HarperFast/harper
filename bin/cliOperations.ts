@@ -18,17 +18,21 @@ import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 
+// Plain name aliases. `revert` is deliberately NOT here — it lives in OP_VERB_PROPS below so it can
+// carry the `_cliVerb` marker its missing-target guard keys on, and buildRequest checks OP_ALIASES
+// first, so an entry here would shadow that.
 const OP_ALIASES = {
 	deploy: 'deploy_component',
 	package: 'package_component',
-	revert: 'revert_component',
 };
 
-// CLI verbs that are sugar over `deploy_component` with preset properties (the stage/activate phases
-// are folded into deploy_component; there are no separate stage/activate operations). `harper stage`
-// packages + uploads the incoming version to a hidden staging dir cluster-wide and stops before
-// go-live (`activate: false`), printing the staged deployment_id; `harper activate deployment_id=<id>`
-// takes that staged deployment live (no upload).
+// CLI verbs that map to an operation plus preset properties. `harper stage` and `harper activate` are
+// sugar over `deploy_component` (the stage/activate phases are folded into it; there are no separate
+// stage/activate operations): `harper stage` packages + uploads the incoming version to a hidden
+// staging dir cluster-wide and stops before go-live (`activate: false`), printing the staged
+// deployment_id, and `harper activate deployment_id=<id>` takes that staged deployment live (no
+// upload). `harper revert` is its own operation — `revert_component` — because it is a rollback rather
+// than a deploy phase, and uploads and installs nothing.
 const OP_VERB_PROPS: Record<string, Record<string, unknown>> = {
 	stage: { operation: 'deploy_component', activate: false, _cliVerb: 'stage' },
 	// `_cliVerb` is a CLI-internal marker (stripped before the request is sent) so verbRequirementError
@@ -36,6 +40,9 @@ const OP_VERB_PROPS: Record<string, Record<string, unknown>> = {
 	// "no deployment_id → full deploy" fallback would silently build a brand-new deploy from the CWD.
 	// It also tells the staged-deploy capability probe that this invocation needs two-phase support.
 	activate: { operation: 'deploy_component', _cliVerb: 'activate' },
+	// `harper revert` uploads nothing: the version it activates is already on every node. `_cliVerb`
+	// here only drives the missing-target guard below.
+	revert: { operation: 'revert_component', _cliVerb: 'revert' },
 };
 
 // Guard CLI-verb requirements that the operation itself can't enforce (the op has no notion of which
@@ -44,6 +51,11 @@ const OP_VERB_PROPS: Record<string, Record<string, unknown>> = {
 function verbRequirementError(req: any): string | null {
 	if (req._cliVerb === 'activate' && !req.deployment_id) {
 		return '`harper activate` requires a deployment_id from a prior `harper stage` — usage: harper activate project=<name> deployment_id=<id>';
+	}
+	// revert_component requires its target so a retry can't toggle the rejected release back in. Caught
+	// here too, so the CLI names the flag instead of surfacing a raw validation error.
+	if (req._cliVerb === 'revert' && !req.to_deployment_id) {
+		return '`harper revert` requires the deployment you want live again — usage: harper revert project=<name> to_deployment_id=<id> (list_deployments reports the id)';
 	}
 	return null;
 }

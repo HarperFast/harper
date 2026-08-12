@@ -325,6 +325,9 @@ export const OPERATIONS_ENUM = {
 	// older nodes fail closed instead of interpreting an unknown phase field as a one-shot deploy.
 	DEPLOY_COMPONENT: 'deploy_component',
 	COMPONENT_DEPLOY_PHASE: 'component_deploy_phase',
+	// Put a component's retained previous version back in service cluster-wide. A distinct public
+	// operation rather than a deploy phase: it fetches, resolves and installs nothing.
+	REVERT_COMPONENT: 'revert_component',
 	READ_TRANSACTION_LOG: 'read_transaction_log',
 	DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
 	INSTALL_NODE_MODULES: 'install_node_modules',
