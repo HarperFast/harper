@@ -19,6 +19,7 @@ const {
 	upsertEnvValues,
 	removeEnvKeys,
 } = require('../utility/envFile.ts');
+const { canonicalProjectName, projectNameFromPackage } = require('../utility/componentNames.ts');
 const { handleHDBError, ServerError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
@@ -107,7 +108,7 @@ function getCustomFunctions() {
  */
 function getCustomFunction(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	if (req.file) {
@@ -145,7 +146,7 @@ function getCustomFunction(req) {
  */
 async function setCustomFunction(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	if (req.file) {
@@ -185,7 +186,7 @@ async function setCustomFunction(req) {
  */
 async function dropCustomFunction(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	if (req.file) {
@@ -224,7 +225,7 @@ async function dropCustomFunction(req) {
  */
 async function addComponent(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	const validation = validator.addComponentValidator(req);
@@ -273,7 +274,7 @@ async function addComponent(req) {
  */
 async function dropCustomFunctionProject(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	const validation = validator.dropCustomFunctionProjectValidator(req);
@@ -328,7 +329,7 @@ async function dropCustomFunctionProject(req) {
  */
 async function packageComponent(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	const validation = validator.packageComponentValidator(req);
@@ -367,9 +368,9 @@ async function packageComponent(req) {
  */
 async function deployComponent(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	} else if (req.package) {
-		req.project = getProjectNameFromPackage(req.package);
+		req.project = projectNameFromPackage(req.package);
 	}
 
 	const validation = validator.deployComponentValidator(req);
@@ -802,32 +803,6 @@ function isSystemDatabaseReplicated() {
 	// Unknown shape — be conservative and assume not replicated rather than risking a
 	// strip that strands peers.
 	return false;
-}
-
-/**
- * Extracts a project name from the specified package name or URL
- * @param {string} pkg - Package name or URL
- * @returns {string} The project name
- */
-function getProjectNameFromPackage(pkg) {
-	if (pkg.startsWith('git+ssh://')) {
-		return path.basename(pkg.split('#')[0].replace(/\.git$/, ''));
-	}
-
-	if (pkg.startsWith('http://') || pkg.startsWith('https://')) {
-		return path.basename(new URL(pkg.replace(/\.git$/, '')).pathname);
-	}
-
-	if (pkg.startsWith('file://')) {
-		try {
-			const { name } = JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'), 'utf8'));
-			return path.basename(name);
-		} catch {
-			//
-		}
-	}
-
-	return path.basename(pkg);
 }
 
 /**

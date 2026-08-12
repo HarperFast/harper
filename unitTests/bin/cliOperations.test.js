@@ -810,6 +810,37 @@ describe('cliOperations', () => {
 		});
 	});
 
+	describe('transportContext', () => {
+		// `harper deploy setup=true` issues get_secrets_public_key + set_secret on the caller's behalf.
+		// Dropping the explicit credentials would silently perform (and audit) those mutations as
+		// whoever the saved login token is; dropping rejectUnauthorized would fail a self-signed target.
+		it('carries the connection fields and nothing else', () => {
+			assert.deepStrictEqual(
+				cliOperationsModule.transportContext({
+					operation: 'deploy_component',
+					setup: true,
+					token: 'ghp_secret',
+					package: 'github:owner/repo',
+					json: true,
+					target: 'https://example.com:9925',
+					auth_username: 'admin',
+					auth_password: 'pw',
+					rejectUnauthorized: false,
+				}),
+				{
+					target: 'https://example.com:9925',
+					auth_username: 'admin',
+					auth_password: 'pw',
+					rejectUnauthorized: false,
+				}
+			);
+		});
+
+		it('omits fields the caller did not supply, so normal resolution (env vars, saved token) still applies', () => {
+			assert.deepStrictEqual(cliOperationsModule.transportContext({ operation: 'set_secret' }), {});
+		});
+	});
+
 	describe('operation timeout selection', () => {
 		const target = 'https://example.com:9925/';
 

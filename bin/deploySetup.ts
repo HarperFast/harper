@@ -15,43 +15,28 @@
 //   3. encryptEnvelope(...)     → seal it locally into an `enc:v1:` envelope (pure client-side crypto)
 //   4. set_secret {envelope}    → store ciphertext, granted to the component
 //   5. print the `credentials` reference the deploy should use
+//
+// Every name this flow derives — the component it grants to, the host it labels the credential with,
+// the hdb_secret row it writes — has to match what the deploy will derive from its own request, or it
+// seals a credential the deploy cannot use. Those derivations therefore come from
+// utility/componentNames.ts, the one module both this client and the server's deploy path use.
 
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { execFileSync } from 'node:child_process';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { cliOperations } from './cliOperations.ts';
+import { cliOperations, transportContext } from './cliOperations.ts';
 import { encryptEnvelope } from '../utility/secretEnvelope.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
-
-// Mirror the server's derived secret names (secretOperations.ts `deriveRegistrySecretName` and
-// `deriveGitSecretName`) EXACTLY, so a `deploy setup` seal and a later literal-token deploy overwrite
-// the SAME hdb_secret row. git hosts get a `.git.` segment (and normalizeGitHost handling); registries
-// don't — without the segment, a git and a registry credential for the same host would collide.
-export function deriveSecretName(component: string, key: string, provider: string): string {
-	const componentPart = String(component).replace(/[^\w.-]+/g, '_');
-	if (provider === 'github') {
-		// mirrors gitCredentialServer.normalizeGitHost() + deriveGitSecretName's `.git.` segment
-		const hostPart = key
-			.trim()
-			.replace(/^[a-z0-9+.-]+:\/\//i, '')
-			.replace(/^\/\//, '')
-			.replace(/\/.*$/, '')
-			.replace(/^[^@]*@/, '')
-			.toLowerCase()
-			.replace(/[^\w.-]+/g, '_');
-		return `deploy.${componentPart}.git.${hostPart}`;
-	}
-	const registryPart = key
-		.trim()
-		.replace(/^https?:\/\//i, '')
-		.replace(/^\/\//, '')
-		.replace(/\/+$/, '')
-		.toLowerCase()
-		.replace(/[^\w.-]+/g, '_');
-	return `deploy.${componentPart}.${registryPart}`;
-}
+import {
+	canonicalProjectName,
+	deriveGitSecretName,
+	deriveRegistrySecretName,
+	directoryProjectName,
+	normalizeGitHost,
+	projectNameFromPackage,
+	GIT_HOST_PATTERN,
+	PROJECT_NAME_PATTERN,
+} from '../utility/componentNames.ts';
 
 function tryCommand(command: string, args: string[]): string {
 	try {
@@ -61,22 +46,55 @@ function tryCommand(command: string, args: string[]): string {
 	}
 }
 
-function defaultComponentName(): string {
-	try {
-		const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
-		if (typeof pkg.name === 'string' && pkg.name.length > 0) return pkg.name.replace(/^@[^/]+\//, '');
-	} catch {
-		// no package.json — fall back to the directory name
+/**
+ * The component (project) the credential is granted to, resolved the way `deploy_component` resolves
+ * the project it deploys: an explicit `project` canonicalized (`@scope/app` deploys as `app`),
+ * otherwise the name a `package` spec implies. Undefined when the request names neither — the caller
+ * prompts, defaulting to the same directory name a `harper deploy` from here would send.
+ *
+ * The grant has to name the project the later deploy actually runs as: `resolveCredentials` rejects a
+ * secret that isn't granted to it, so a name resolved any other way here seals a credential the
+ * deploy refuses to use.
+ */
+export function resolveComponentName(req: any): string | undefined {
+	if (typeof req.project === 'string' && req.project) return canonicalProjectName(req.project);
+	// Not canonicalized further, matching the server: a package-derived name is used as-is, so a spec
+	// that yields an unusable one (`…/repo.git` → `repo.git`) fails the grammar check below here rather
+	// than at deploy time.
+	if (typeof req.package === 'string' && req.package) return projectNameFromPackage(req.package);
+	return undefined;
+}
+
+/**
+ * The canonical bare host for a git credential — `https://github.com/owner/repo` and
+ * `git@github.com` both identify `github.com`. Resolved once and then used for everything the host
+ * decides: which `gh` account token is read, the derived secret name, and the `host` on the printed
+ * credentials entry. Without that, `host=ghe.example.com` would label (and store) the *default*
+ * host's `gh` token for the enterprise host, and a later deploy would hand a github.com credential to
+ * ghe.example.com.
+ *
+ * Anything still outside the deploy schema's `host` grammar after normalization is rejected here,
+ * rather than sealed into a credential entry the deploy would refuse.
+ */
+export function resolveGitHost(host: unknown): string {
+	const normalized = typeof host === 'string' ? normalizeGitHost(host) : '';
+	if (!GIT_HOST_PATTERN.test(normalized)) {
+		throw new Error(`Invalid git host ${JSON.stringify(host)} — expected a bare host, e.g. 'github.com'.`);
 	}
-	return path.basename(process.cwd());
+	return normalized;
 }
 
 export async function deploySetup(req: any): Promise<void> {
-	// 1. Fetch the cluster's public secrets key. Target + auth are resolved by cliOperations exactly
-	// as they are for a deploy (harper login, or CLI_TARGET + HARPER_CLI_USERNAME/PASSWORD).
+	// Every operation this flow issues rides the caller's connection context — the target, the
+	// explicitly passed credentials, the TLS strictness — so the seal is stored on the instance the
+	// user is talking to, as the identity they authenticated as. Only those fields carry over; the
+	// deploy args that brought us here (`setup`, `token`, `package`) never reach either body.
+	const transport = transportContext(req);
+
+	// 1. Fetch the cluster's public secrets key.
 	let keyResponse: any;
 	try {
-		keyResponse = await cliOperations({ operation: 'get_secrets_public_key', target: req.target }, true);
+		keyResponse = await cliOperations({ ...transport, operation: 'get_secrets_public_key' }, true);
 	} catch (error) {
 		throw new Error(
 			`Could not fetch the cluster's secrets public key: ${error instanceof Error ? error.message : String(error)}`
@@ -111,27 +129,35 @@ export async function deploySetup(req: any): Promise<void> {
 	}
 
 	// 3. Which component is the credential for? (the grant is scoped to it)
-	const component: string =
-		req.project ??
-		req.component ??
-		(
-			await inquirer.prompt({
-				type: 'input',
-				name: 'component',
-				message: 'Component (project) name this credential is for:',
-				default: defaultComponentName(),
-			})
-		).component;
+	const component =
+		resolveComponentName(req) ??
+		canonicalProjectName(
+			(
+				await inquirer.prompt({
+					type: 'input',
+					name: 'project',
+					message: 'Component (project) name this credential is for:',
+					default: directoryProjectName(),
+				})
+			).project ?? ''
+		);
+	if (!PROJECT_NAME_PATTERN.test(component)) {
+		throw new Error(
+			`"${component}" is not a usable component name — a deploy accepts letters, numbers, dashes and underscores.`
+		);
+	}
 
 	let credentialKey: string; // host (github) or registry (npm) — the credentials-entry discriminator
 	let credentialEntry: Record<string, string>;
 	let token: string | undefined = req.token;
 
 	if (provider === 'github') {
-		const host = req.host ?? 'github.com';
+		const host = resolveGitHost(req.host ?? 'github.com');
 		credentialKey = host;
 		if (!token) {
-			const ghToken = tryCommand('gh', ['auth', 'token']);
+			// Bound to the host being provisioned: `gh auth token` with no `--hostname` returns whichever
+			// host gh considers default, which for a GHE host is the wrong account's token.
+			const ghToken = tryCommand('gh', ['auth', 'token', '--hostname', host]);
 			// A fine-grained PAT is offered FIRST, and is therefore the default selection. What gets
 			// sealed here is durable and replayed on every cold deploy and rollback, so it should be
 			// the narrowest credential that does the job — one repo, Contents: Read-only. A `gh` CLI
@@ -141,8 +167,10 @@ export async function deploySetup(req: any): Promise<void> {
 			const choices: Array<{ name: string; value: string }> = [
 				{ name: 'Paste a fine-grained PAT (Contents: Read-only on this repo) — recommended', value: 'paste' },
 			];
+			// Offered only when gh actually holds a token for *this* host, so choosing it can't fall back
+			// to another host's credential.
 			if (ghToken) {
-				choices.push({ name: 'Use your gh CLI session token (broad account scopes)', value: 'gh' });
+				choices.push({ name: `Use your gh CLI session token for ${host} (broad account scopes)`, value: 'gh' });
 			}
 			const how =
 				choices.length === 1
@@ -167,7 +195,7 @@ export async function deploySetup(req: any): Promise<void> {
 			} else {
 				console.log(
 					chalk.gray(
-						'Create one at https://github.com/settings/personal-access-tokens/new\n' +
+						`Create one at https://${host}/settings/personal-access-tokens/new\n` +
 							'  Repository access → only your repo; Permissions → Contents: Read-only.'
 					)
 				);
@@ -177,7 +205,7 @@ export async function deploySetup(req: any): Promise<void> {
 		}
 		credentialEntry = { host };
 	} else {
-		const registry = req.registry ?? 'registry.npmjs.org';
+		const registry = typeof req.registry === 'string' && req.registry ? req.registry : 'registry.npmjs.org';
 		credentialKey = registry;
 		if (!token) {
 			console.log(chalk.gray('Tip: `npm token create --read-only` mints a granular npm token from the CLI.'));
@@ -193,12 +221,14 @@ export async function deploySetup(req: any): Promise<void> {
 	// 4. Seal the token locally. Only ciphertext leaves this machine.
 	const envelope = ENV_ENCRYPTED_PREFIX + encryptEnvelope(token, publicKey, fingerprint);
 
-	// 5. Store the sealed token, granted to the component. The server never sees the plaintext.
-	const secretName = deriveSecretName(component, credentialKey, provider);
-	await cliOperations(
-		{ operation: 'set_secret', name: secretName, envelope, grants: [component], target: req.target },
-		true
-	);
+	// 5. Store the sealed token, granted to the component. The server never sees the plaintext. The
+	// derived name is the one the server's literal-token path would use for the same component and
+	// host/registry, so re-running this rotates the same row rather than piling up a second one.
+	const secretName =
+		provider === 'github'
+			? deriveGitSecretName(component, credentialKey)
+			: deriveRegistrySecretName(component, credentialKey);
+	await cliOperations({ ...transport, operation: 'set_secret', name: secretName, envelope, grants: [component] }, true);
 
 	// 6. Print the credentials reference the deploy should use.
 	credentialEntry.secret = secretName;

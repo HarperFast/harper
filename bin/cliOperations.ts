@@ -6,19 +6,22 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
-import * as path from 'path';
 import * as fs from 'fs-extra';
+import * as path from 'node:path';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { streamPackagedDirectory, packageDirectory, scanPackageDirectory } from '../components/packageComponent.ts';
-import { normalizeGitHost } from '../components/gitCredentialServer.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
 import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
+// The `deploy setup` seal and this by-reference flag both name the same hdb_secret row, and the
+// server re-derives it from its own request — so the derivation lives in one dependency-free module
+// rather than being restated per caller (it also keeps `components/` off the CLI's import graph).
+import { deriveGitSecretName, directoryProjectName, normalizeGitHost } from '../utility/componentNames.ts';
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
@@ -35,16 +38,16 @@ const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or
 // the SSE parser sees no events.
 const SSE_OPERATIONS = new Set(['deploy_component']);
 
+// The fields that decide *where* an operation connects and *as whom* — see transportContext().
+const CONNECTION_FIELDS = ['target', 'auth_username', 'auth_password', 'rejectUnauthorized'];
+
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
 // They never get serialized into the request body. `username`/`password` are deliberately
 // NOT here: those args are payload fields (e.g. the user add_user/alter_user create/alter),
 // not transport — use `auth_username`/`auth_password` (or env-var/`harper login` auth) to
 // authenticate as a different user than the one being operated on.
 const TRANSPORT_ONLY_FIELDS = new Set([
-	'target',
-	'auth_username',
-	'auth_password',
-	'rejectUnauthorized',
+	...CONNECTION_FIELDS,
 	'json',
 	'skip_node_modules',
 	'skip_symlinks',
@@ -54,6 +57,21 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 	'ref',
 	'credential',
 ]);
+
+/**
+ * The connection half of a parsed CLI request, as a base for a *different* operation issued on the
+ * same command's behalf (`harper deploy setup=true` calls get_secrets_public_key and set_secret).
+ * Carrying these over keeps the sub-operation on the caller's target, identity, and TLS strictness;
+ * rebuilding a request with only `target` would silently authenticate with a saved login token
+ * instead of the credentials that were passed explicitly, and would fail against a self-signed
+ * target. Only these fields come along, so the originating command's own args (a deploy's `token`,
+ * `package`, …) never reach the sub-operation's body.
+ */
+function transportContext(req: any): any {
+	const context: any = {};
+	for (const field of CONNECTION_FIELDS) if (req[field] !== undefined) context[field] = req[field];
+	return context;
+}
 
 // Values that are opaque strings, never JSON. buildRequest otherwise JSON-parses every value, which
 // silently rewrites a git ref that happens to look numeric: `ref=1.0` becomes the number 1 (and then
@@ -266,6 +284,7 @@ export {
 	buildRequest,
 	redactCredentials,
 	refreshExpiredOperationToken,
+	transportContext,
 	resolveGitTarget,
 	resolveCredentialHost,
 	deriveGitSecretName,
@@ -494,18 +513,6 @@ function defaultProjectName(projectPath: string): string {
 	return path.basename(projectPath);
 }
 
-// Must produce the same name as the server's `deriveGitSecretName` (secretOperations.ts), so the
-// reference this attaches matches the row `harper deploy setup=true` sealed and a literal-token
-// deploy would use: `deploy.<component>.git.<host>`. Rather than restate the host-normalization
-// chain, this shares the server's own `normalizeGitHost` — a future host quirk added there then
-// can't drift from what the CLI sends. (gitCredentialServer.ts pulls in only node builtins plus
-// the error/logger utilities `bin/` already uses, so importing it costs the CLI nothing.)
-function deriveGitSecretName(component: string, host: string): string {
-	const hostPart = normalizeGitHost(host).replace(/[^\w.-]+/g, '_');
-	const componentPart = String(component).replace(/[^\w.-]+/g, '_');
-	return `deploy.${componentPart}.git.${hostPart}`;
-}
-
 // The credential only helps if it's for the host the package is cloned from: a `credential=gitlab.com`
 // against a github.com package builds a valid-looking reference the clone never asks for, and the
 // private deploy then fails as if nothing were configured. So the host comes from the package rather
@@ -563,7 +570,7 @@ const PREPARE_OPERATION: any = {
 		}
 
 		const projectPath = process.cwd();
-		if (!req.project) req.project = path.basename(projectPath);
+		if (!req.project) req.project = directoryProjectName(projectPath);
 		const packageOptions = {
 			skip_node_modules: req.skip_node_modules !== false,
 			skip_symlinks: req.skip_symlinks === true,
