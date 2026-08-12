@@ -261,7 +261,8 @@ export {
 	buildRequest,
 	redactCredentials,
 	refreshExpiredOperationToken,
-	resolveGitCommittish,
+	resolveGitTarget,
+	resolveCredentialHost,
 	deriveGitSecretName,
 };
 
@@ -270,8 +271,33 @@ export {
 // `harper deploy by_ref=true` deploys a pinned commit by reference instead of uploading a payload
 // blob. Client-side: only the runner has the git context. The no-flag default stays the payload deploy.
 
+// resolveGitRepo only recognizes GitHub remotes, so every by_ref package clones from this host. The
+// credential host is derived from it rather than taken on the user's word (see resolveCredentialHost).
+const GIT_PACKAGE_HOST = 'github.com';
+// SHA-1 (40) or SHA-256 (64) object IDs. A full object ID is already immutable, so it's the one form
+// of ref that needs no resolution; every other form can move.
+const FULL_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
+// `ls-remote` reaches the network, where git will otherwise block indefinitely on an interactive
+// credential prompt the CLI can't render. Fail fast instead, and cap the whole call.
+const NON_INTERACTIVE_GIT_ENV = {
+	GIT_TERMINAL_PROMPT: '0',
+	GIT_ASKPASS: 'echo',
+	SSH_ASKPASS: 'echo',
+	GIT_SSH_COMMAND: 'ssh -oBatchMode=yes',
+};
+const GIT_NETWORK_TIMEOUT_MS = 15000;
+
 function runGit(args: string[]): string {
 	return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+}
+
+function runGitNetwork(args: string[]): string {
+	return execFileSync('git', args, {
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'ignore'],
+		env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV },
+		timeout: GIT_NETWORK_TIMEOUT_MS,
+	}).trim();
 }
 
 function resolveGitRepo(): string {
@@ -290,27 +316,118 @@ function resolveGitRepo(): string {
 	return match[1];
 }
 
-function resolveGitCommittish(ref: unknown): string {
+// Prefer the configured `origin`: it carries whatever credentials, mirrors, and url.insteadOf
+// rewriting the user's git is already set up with. The public URL is only for a checkout that has
+// no remote at all (e.g. CI that exported GITHUB_REPOSITORY without adding one).
+function resolveGitRemote(repo: string): string {
+	try {
+		if (runGit(['remote', 'get-url', 'origin'])) return 'origin';
+	} catch {
+		// No origin.
+	}
+	return `https://${GIT_PACKAGE_HOST}/${repo}.git`;
+}
+
+// `ls-remote` reports an annotated tag's peeled commit on a trailing `^{}` line — but only when a
+// pattern matches that line, so the peel patterns have to be asked for explicitly. Without them a tag
+// resolves to the *tag object's* ID, which is not a commit the cluster can check out. Tags outrank
+// branches, matching git's own precedence for a bare name (gitrevisions).
+function resolveRefOnRemote(remote: string, ref: string): string | undefined {
+	let output: string;
+	try {
+		output = runGitNetwork([
+			'ls-remote',
+			remote,
+			ref,
+			`${ref}^{}`,
+			`refs/heads/${ref}`,
+			`refs/tags/${ref}`,
+			`refs/tags/${ref}^{}`,
+		]);
+	} catch {
+		return undefined; // unreachable, unauthenticated, or too slow to answer
+	}
+	const shaByRef = new Map<string, string>();
+	for (const line of output.split('\n')) {
+		const [sha, name] = line.split('\t');
+		if (sha && name) shaByRef.set(name, sha);
+	}
+	if (shaByRef.size === 1) return shaByRef.values().next().value; // an unambiguous match, whatever it matched
+	return shaByRef.get(`refs/tags/${ref}^{}`) ?? shaByRef.get(`refs/tags/${ref}`) ?? shaByRef.get(`refs/heads/${ref}`);
+}
+
+// An explicit ref= is pinned to an immutable SHA, exactly as HEAD is. Cluster peers resolve the
+// package independently, so `ref=main` — or a tag repointed between one peer fetching and another
+// re-fetching after a restart — would otherwise leave nodes running different commits. Resolution is
+// local where possible (`^{commit}` also dereferences annotated tags), then falls back to the remote
+// for a ref this checkout doesn't have (a shallow CI clone has almost none), and fails closed if
+// neither can name a commit: a ref that can't be pinned is the divergence the pin exists to prevent.
+function resolveExplicitRef(ref: string, repo: string): string {
+	// git parses options anywhere in its argv, so a ref spelled like one (`--upload-pack=…`) would be
+	// obeyed as an option instead of resolved. No real ref starts with `-` — git rejects those itself.
+	if (ref.startsWith('-')) throw new Error(`deploy by_ref: invalid ref=${ref} — a git ref cannot start with "-".`);
+	try {
+		return runGit(['rev-parse', '--verify', `${ref}^{commit}`]);
+	} catch {
+		// Not in this checkout — try the remote below.
+	}
+	if (FULL_OBJECT_ID.test(ref)) return ref; // already immutable; nothing to pin it to
+	const remote = resolveGitRemote(repo);
+	const resolved = resolveRefOnRemote(remote, ref);
+	if (resolved) return resolved;
+	throw new Error(
+		`deploy by_ref: could not resolve ref=${ref} to a commit, locally or on ${remote}. Peers resolve the ` +
+			'package independently, so a ref that moves would leave them on different commits — run `git fetch` ' +
+			'and retry, or pass a full commit SHA.'
+	);
+}
+
+// GitHub Actions checks out a *synthetic merge commit* on a `pull_request` run: GITHUB_SHA points at
+// refs/pull/<n>/merge, which a plain clone never fetches (its default refspec covers refs/heads/* and
+// refs/tags/* only), so deploying it fails server-side at clone time. The event payload carries the PR
+// head — a real commit on a real branch — so deploy that instead, from the head repo, which for a fork
+// isn't GITHUB_REPOSITORY. See the pull_request section of GitHub's events-that-trigger-workflows docs.
+function resolveActionsPullRequestHead(): { repo: string; committish: string } | undefined {
+	if (!/^refs\/pull\//.test(process.env.GITHUB_REF ?? '')) return undefined;
+	const eventPath = process.env.GITHUB_EVENT_PATH;
+	let head: any;
+	try {
+		if (eventPath) head = JSON.parse(fs.readFileSync(eventPath, 'utf8'))?.pull_request?.head;
+	} catch {
+		// Missing or unparseable payload — the error below is the useful outcome either way.
+	}
+	const committish = typeof head?.sha === 'string' ? head.sha : undefined;
+	const repo = typeof head?.repo?.full_name === 'string' ? head.repo.full_name : undefined;
+	if (!committish || !repo) {
+		throw new Error(
+			`deploy by_ref: GITHUB_SHA on a ${process.env.GITHUB_REF} run is a synthetic merge commit that a plain ` +
+				'clone cannot fetch, and the pull request head could not be read from GITHUB_EVENT_PATH. Pass the ' +
+				'head commit explicitly: ref=${{ github.event.pull_request.head.sha }}.'
+		);
+	}
+	if (repo !== process.env.GITHUB_REPOSITORY) {
+		process.stderr.write(`note: deploying the pull request head from ${repo}, not ${process.env.GITHUB_REPOSITORY}.\n`);
+	}
+	return { repo, committish };
+}
+
+// Repo and commit are resolved together because they aren't independent: on a pull_request run both
+// come from the PR head, and pairing a head SHA with the base repo would name a commit that repo
+// doesn't have.
+function resolveGitTarget(ref: unknown): { repo: string; committish: string } {
 	// buildRequest JSON-parses CLI args, so a numeric ref (e.g. `ref=1234567`) arrives as a number —
 	// coerce it back to a string rather than silently ignoring it and falling back to HEAD.
 	const refStr = typeof ref === 'string' || typeof ref === 'number' ? String(ref).trim() : '';
 	if (refStr.length > 0) {
-		// Resolve an explicit ref= to an immutable SHA too, rather than passing the name through.
-		// Cluster peers resolve the package independently, so `ref=main` — or a tag that moves
-		// between one peer fetching and another restarting and re-fetching — would otherwise leave
-		// nodes running different commits. `^{commit}` also dereferences annotated tags.
-		try {
-			return runGit(['rev-parse', `${refStr}^{commit}`]);
-		} catch {
-			// Not resolvable locally (e.g. a ref that only exists on the remote). Pass it through
-			// and let the cluster resolve it — losing the pin, but a deploy that works beats a
-			// deploy that fails on a ref the user can see on the remote.
-			return refStr;
-		}
+		const repo = resolveGitRepo();
+		return { repo, committish: resolveExplicitRef(refStr, repo) };
 	}
-	if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA;
+	const pullRequestHead = resolveActionsPullRequestHead();
+	if (pullRequestHead) return pullRequestHead;
+	const repo = resolveGitRepo();
+	if (process.env.GITHUB_SHA) return { repo, committish: process.env.GITHUB_SHA };
 	try {
-		return runGit(['rev-parse', 'HEAD']);
+		return { repo, committish: runGit(['rev-parse', 'HEAD']) };
 	} catch {
 		throw new Error('deploy by_ref: could not resolve HEAD — make at least one commit, or pass ref=<sha|tag>.');
 	}
@@ -324,7 +441,7 @@ function warnIfWorkingTreeDirty(): void {
 			);
 		}
 	} catch {
-		// Not a git repo; resolveGitRepo/resolveGitCommittish will surface a clearer error.
+		// Not a git repo; resolveGitTarget will surface a clearer error.
 	}
 }
 
@@ -337,7 +454,7 @@ function warnIfCommitNotPushed(committish: string): void {
 	try {
 		if (!runGit(['branch', '-r', '--contains', committish])) {
 			process.stderr.write(
-				`warning: commit ${committish.slice(0, 12)} isn't on any remote branch — push it, or the cluster ` +
+				`warning: commit ${committish.slice(0, 7)} isn't on any remote branch — push it, or the cluster ` +
 					"won't be able to clone it. (If you already pushed, run `git fetch` to refresh your remote refs.)\n"
 			);
 		}
@@ -369,28 +486,43 @@ function deriveGitSecretName(component: string, host: string): string {
 	return `deploy.${componentPart}.git.${hostPart}`;
 }
 
+// The credential only helps if it's for the host the package is cloned from: a `credential=gitlab.com`
+// against a github.com package builds a valid-looking reference the clone never asks for, and the
+// private deploy then fails as if nothing were configured. So the host comes from the package rather
+// than the user — an explicit value is accepted only when it agrees (`credential=github.com` is the
+// documented spelling), and rejected loudly rather than silently producing a mismatched pair.
+function resolveCredentialHost(credential: unknown, packageHost: string): string | undefined {
+	if (credential === undefined || credential === false || credential === '') return undefined;
+	if (credential === true) return packageHost;
+	const host = normalizeGitHost(String(credential));
+	if (host !== packageHost) {
+		throw new Error(
+			`deploy by_ref: credential=${credential} doesn't match the package host ${packageHost} — the clone ` +
+				`authenticates against ${packageHost}, so a credential for another host would never be used. Use ` +
+				'credential=true.'
+		);
+	}
+	return packageHost;
+}
+
 // Opt-in deploy-by-reference: resolve the pinned git ref (+ optional sealed credential) onto `req` —
 // a `git+https` package pinned by SHA, plus a `credentials` reference when `credential=` is set.
 // Exported for unit tests.
 export function prepareDeployByRef(req: any): void {
-	const repo = resolveGitRepo();
-	const committish = resolveGitCommittish(req.ref);
+	const { repo, committish } = resolveGitTarget(req.ref);
 	warnIfWorkingTreeDirty();
-	// Skipped under GITHUB_SHA: CI runs on a commit that is on the remote by construction, and a
-	// shallow/detached runner checkout has no remote-tracking branches to check against anyway.
+	// Skipped under GITHUB_SHA: on the one GitHub event where the checked-out commit isn't on a
+	// cloneable branch (pull_request), resolveGitTarget already substitutes the PR head, so what's
+	// left is pushed by construction — and a shallow/detached runner checkout has no remote-tracking
+	// branches to check it against anyway.
 	if (!process.env.GITHUB_SHA) warnIfCommitNotPushed(committish);
 	if (!req.project) req.project = defaultProjectName(process.cwd());
 	// git+https (not ssh): a private clone is authenticated by a git-host token credential (#1799),
 	// which rides over HTTPS. A public repo needs no credential at all.
-	req.package = `git+https://github.com/${repo}.git#${committish}`;
-	// `credential=github.com` (or `credential=true`) attaches the sealed-token reference the cluster
-	// resolves at fetch time — provision it once with `harper deploy setup=true`.
-	const credentialHost =
-		req.credential === true
-			? 'github.com'
-			: typeof req.credential === 'string' && req.credential.length > 0
-				? req.credential
-				: undefined;
+	req.package = `git+https://${GIT_PACKAGE_HOST}/${repo}.git#${committish}`;
+	// `credential=true` attaches the sealed-token reference the cluster resolves at fetch time —
+	// provision it once with `harper deploy setup=true`.
+	const credentialHost = resolveCredentialHost(req.credential, GIT_PACKAGE_HOST);
 	if (credentialHost && req.credentials === undefined) {
 		req.credentials = [{ host: credentialHost, secret: deriveGitSecretName(req.project, credentialHost) }];
 	}
