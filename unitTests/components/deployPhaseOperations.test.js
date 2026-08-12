@@ -113,6 +113,7 @@ describe('deploy_component two-phase orchestration', function () {
 		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR), { recursive: true, force: true });
 		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-aside'), { recursive: true, force: true });
+		await fs.rm(path.join(COMPONENTS_ROOT, '.deploy-previous'), { recursive: true, force: true });
 	});
 
 	function name() {
@@ -306,6 +307,105 @@ describe('deploy_component two-phase orchestration', function () {
 		await operations.deployComponent({ project, payload });
 
 		assert.equal(restartNeeded(), true, 'dependencies with no lockfile make the install opaque');
+	});
+
+	// ————————————————————————————————————————————————————————————————————————————
+	// revert_component (harper#1849 review, @kriszyp)
+	// ————————————————————————————————————————————————————————————————————————————
+
+	it('reverts the cluster to a named previous deployment and fans the target out to peers', async () => {
+		const project = name();
+		const first = await operations.deployComponent({ project, payload: await makePayload('rev-v1', '1.0.0') });
+		const second = await operations.deployComponent({ project, payload: await makePayload('rev-v2', '2.0.0') });
+		const fanout = [];
+		server.replication.replicateOperation = async (op) => {
+			fanout.push(op);
+			return { replicated: [] };
+		};
+
+		const result = await operations.revertComponent({ project, to_deployment_id: first.deployment_id });
+
+		assert.equal(result.reverted, true);
+		assert.equal(result.to_deployment_id, first.deployment_id);
+		assert.equal(result.from_deployment_id, second.deployment_id);
+		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /rev-v1/);
+		assert.equal(rows.get(result.deployment_id).status, 'rolled_back');
+		assert.equal(
+			rows.get(result.deployment_id).rollback_of,
+			second.deployment_id,
+			'the audit row records which deployment the rollback took out of service'
+		);
+		assert.equal(fanout.length, 1, 'peers get the revert');
+		assert.equal(fanout[0].operation, 'revert_component');
+		assert.equal(
+			fanout[0].to_deployment_id,
+			first.deployment_id,
+			'peers are told WHICH version to end on, so the fan-out is idempotent per node'
+		);
+	});
+
+	it('is a no-op when the requested deployment is already live, so a retry is safe', async () => {
+		const project = name();
+		const first = await operations.deployComponent({ project, payload: await makePayload('retry-v1', '1.0.0') });
+		await operations.deployComponent({ project, payload: await makePayload('retry-v2', '2.0.0') });
+		await operations.revertComponent({ project, to_deployment_id: first.deployment_id });
+
+		// The caller lost the first response and retried the identical request.
+		const retry = await operations.revertComponent({ project, to_deployment_id: first.deployment_id });
+
+		assert.equal(retry.reverted, false);
+		assert.match(retry.message, /already running/);
+		assert.match(
+			await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'),
+			/retry-v1/,
+			'a retried revert must not toggle the rejected version back in'
+		);
+	});
+
+	it('rejects a revert with no target, and one whose target is not retained', async () => {
+		const project = name();
+		await operations.deployComponent({ project, payload: await makePayload('target-v1', '1.0.0') });
+		await operations.deployComponent({ project, payload: await makePayload('target-v2', '2.0.0') });
+
+		await assert.rejects(
+			() => operations.revertComponent({ project }),
+			/to_deployment_id/,
+			'the target is mandatory — that is what makes a retry safe'
+		);
+		await assert.rejects(
+			() => operations.revertComponent({ project, to_deployment_id: '00000000-0000-4000-8000-000000000000' }),
+			/neither the live version/,
+			'only the immediately-previous version is retained'
+		);
+		assert.match(
+			await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'),
+			/target-v2/,
+			'a refused revert changes nothing'
+		);
+	});
+
+	it('takes the package reference out of root config when reverting away from a package deploy', async () => {
+		// Without this, installApplications() would reinstall the reverted-away package over the restored
+		// directory on the next cold start and silently undo the rollback.
+		const project = name();
+		const packaged = await operations.deployComponent({
+			project,
+			payload: await makePayload('cfg-packaged', '1.0.0'),
+		});
+		// Stamp root config as a package deploy would have, then activate a payload version over it.
+		const { addConfig } = require('#src/config/configUtils');
+		await addConfig(project, { package: 'some-pkg@1.0.0' });
+		const plain = await operations.deployComponent({ project, payload: await makePayload('cfg-plain', '2.0.0') });
+		assert.ok(plain.deployment_id);
+
+		await operations.revertComponent({ project, to_deployment_id: packaged.deployment_id });
+
+		const entry = readConfigFile()?.[project];
+		assert.equal(
+			entry?.package,
+			undefined,
+			'the reverted-to version had no package reference, so the stale one must be gone'
+		);
 	});
 
 	it('reclaims an oversized payload only after a full two-phase activation succeeds', async () => {
