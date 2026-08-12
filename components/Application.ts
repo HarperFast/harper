@@ -1128,9 +1128,17 @@ export async function extractApplication(
 				const stats = await stat(packagePath);
 
 				if (stats.isDirectory()) {
-					// If its a directory, symlink. A stale build target (e.g. a retried stage) would
-					// make symlink() throw EEXIST, so clear it first.
-					await rm(application.buildDirPath, { recursive: true, force: true });
+					// If its a directory, symlink. Anything already at the build target has to go first, or
+					// symlink() throws EEXIST — which on the in-place path means a redeploy of a
+					// directory-package component.
+					//
+					// Parked aside with an atomic rename, NOT removed in place. This returns early, before
+					// the extraction transaction below, so an in-place recursive rm here would delete the
+					// LIVE component tree outright: no aside, no rollback record, nothing for startup
+					// recovery to restore, and it races a still-running worker writing into the directory it
+					// is deleting (the ENOTEMPTY/EPERM hazard documented on discardDirAside). The rename is
+					// atomic and the sweep is best-effort afterwards.
+					await discardDirAside(application.buildDirPath, application.name);
 					await mkdir(dirname(application.buildDirPath), { recursive: true });
 					await symlink(packagePath, application.buildDirPath, 'dir');
 					// And return early since we're done; no extraction needed

@@ -753,4 +753,32 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(application.dirPath), /v2/, 'live is untouched');
 		await cleanup(name);
 	});
+	it('redeploys a local-directory package in place without destroying the live tree', async () => {
+		// This path returns early, BEFORE the extraction transaction, so clearing the build target with an
+		// in-place recursive rm would delete the LIVE tree outright: no aside, no rollback record, nothing
+		// for startup recovery, and it races a worker still writing into the directory being removed. It
+		// must be parked with an atomic rename instead.
+		const name = fixtureName();
+		const packageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-dirpkg-'));
+		await fs.writeFile(path.join(packageDirectory, 'marker.txt'), 'v2');
+		const application = new Application({ name, packageIdentifier: `file:${packageDirectory}` });
+
+		// A live tree is already there (the component was deployed before, by any means).
+		await fs.mkdir(application.dirPath, { recursive: true });
+		await fs.writeFile(path.join(application.dirPath, 'marker.txt'), 'v1');
+
+		await extractApplication(application);
+
+		assert.equal((await fs.lstat(application.dirPath)).isSymbolicLink(), true, 'the new version is linked');
+		assert.equal(await fs.readFile(path.join(application.dirPath, 'marker.txt'), 'utf8'), 'v2');
+		// Whatever was displaced must have been parked, not recursively removed in place. It is parked as
+		// disposable (`.discarded-`), so startup recovery will never restore it over the new version.
+		const asideDir = path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR, name);
+		const parked = existsSync(asideDir) ? await fs.readdir(asideDir) : [];
+		const recoverable = parked.filter((entry) => entry.startsWith('.in-progress-'));
+		assert.deepEqual(recoverable, [], 'the displaced tree is never left looking like a rollback record');
+
+		await cleanup(name);
+		await fs.rm(packageDirectory, { recursive: true, force: true });
+	});
 });
