@@ -98,11 +98,11 @@ logging:
 
 Type: `boolean`
 
-Default: `false`
+Default: `true`
 
-Enables audit (table transaction) logging. When enabled, Harper records every insert, update, and delete to a corresponding audit table. Audit log data is accessed via the `read_audit_log` operation.
+Enables transaction logging. When enabled, Harper records every insert, update, and delete to the database's transaction log. This history is read with the [`read_audit_log`](../database/transaction.md#read_audit_log) operation — a legacy name; there is a single transaction log, not a separate audit table.
 
-See [Database / Transaction Logging](../database/transaction.md) for details on using audit logs.
+See [Database / Transaction Logging](../database/transaction.md) for details on the transaction log.
 
 ```yaml
 logging:
@@ -115,7 +115,7 @@ Type: `string | number`
 
 Default: `3d`
 
-How long audit log entries are retained before automatic eviction. Accepts duration strings (e.g., `3d`, `12h`) or milliseconds.
+How long transaction log entries are retained before automatic eviction. Accepts duration strings (e.g., `3d`, `12h`) or milliseconds.
 
 ```yaml
 logging:

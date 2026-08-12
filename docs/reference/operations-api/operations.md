@@ -1163,13 +1163,13 @@ Operations for reading Harper logs.
 
 Detailed documentation: [Logging Operations](../logging/operations.md)
 
-| Operation                        | Description                                                            | Role Required |
-| -------------------------------- | ---------------------------------------------------------------------- | ------------- |
-| `read_log`                       | Returns entries from the primary `hdb.log`                             | super_user    |
-| `read_transaction_log`           | Returns transaction history for a table                                | super_user    |
-| `delete_transaction_logs_before` | Deletes transaction log entries older than a timestamp                 | super_user    |
-| `read_audit_log`                 | Returns verbose audit history for a table (requires audit log enabled) | super_user    |
-| `delete_audit_logs_before`       | Deletes audit log entries older than a timestamp                       | super_user    |
+| Operation                        | Description                                                                                                              | Role Required |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------- |
+| `read_log`                       | Returns entries from the primary `hdb.log`                                                                               | super_user    |
+| `read_transaction_log`           | Returns transaction history for a table                                                                                  | super_user    |
+| `delete_transaction_logs_before` | Deletes transaction log entries older than a timestamp                                                                   | super_user    |
+| `read_audit_log`                 | Returns verbose transaction history for a table, including original record values (requires transaction logging enabled) | super_user    |
+| `delete_audit_logs_before`       | Deletes transaction log entries older than a timestamp (deprecated alias of `delete_transaction_logs_before`)            | super_user    |
 
 ### `read_log`
 
@@ -1199,7 +1199,7 @@ Returns transaction history for a specific table. Optionally filter by `from`/`t
 
 ### `read_audit_log`
 
-Returns verbose audit history including original record state. Requires `logging.auditLog: true` in configuration. Filter by `search_type`: `hash_value`, `timestamp`, or `username`.
+Returns verbose transaction history including original record state. Requires transaction logging (`logging.auditLog: true`) in configuration. Filter by `search_type`: `hash_value`, `timestamp`, or `username`.
 
 ```json
 {

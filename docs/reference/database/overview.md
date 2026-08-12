@@ -114,7 +114,7 @@ For deeper coverage of each database feature, see the dedicated pages in this se
 - **[Jobs](./jobs.md)** — Asynchronous bulk data operations (CSV import/export, S3 import/export)
 - **[System Tables](./system-tables.md)** — Harper internal tables for analytics, data loader state, and other system features
 - **[Compaction](./compaction.md)** — Reducing database file size by eliminating fragmentation and free space
-- **[Transaction Logging](./transaction.md)** — Recording and querying a history of data changes via audit log and transaction log
+- **[Transaction Logging](./transaction.md)** — Recording and querying a history of data changes in the transaction log
 
 ## Related Documentation
 
