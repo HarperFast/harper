@@ -327,7 +327,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 		}
 		mkdirSync(path, { recursive: true });
 	}
-	const openLock = acquireDatabaseOpenLock(path);
+	const openLock = !options.name && !isReadOnlyMode() ? acquireDatabaseOpenLock(path) : 0;
 	try {
 		let db: RocksRootDatabase;
 		if (options.dupSort) {
@@ -343,7 +343,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 		db.env = {};
 		return db;
 	} finally {
-		releaseDatabaseOpenLock(openLock);
+		if (openLock) releaseDatabaseOpenLock(openLock);
 	}
 }
 

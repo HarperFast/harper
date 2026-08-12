@@ -91,10 +91,18 @@ function databaseOpenLockPath(dbPath: string): string {
  * shares opened handles process-wide, but two cold worker-thread opens can still race before
  * that registry entry exists and contend for RocksDB's process-local LOCK file.
  */
-export function acquireDatabaseOpenLock(dbPath: string): number {
+export function acquireDatabaseOpenLock(dbPath: string, maxWaitMilliseconds = 30_000): number {
 	mkdirSync(restoreMetaDir(dbPath), { recursive: true });
 	let token = tryFileLock(databaseOpenLockPath(dbPath));
-	while (token === 0) token = tryFileLock(databaseOpenLockPath(dbPath));
+	const startedAt = Date.now();
+	const sleeper = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+	while (token === 0) {
+		if (Date.now() - startedAt >= maxWaitMilliseconds) {
+			throw new Error(`Timed out acquiring RocksDB open lock for ${dbPath}`);
+		}
+		Atomics.wait(sleeper, 0, 0, 10);
+		token = tryFileLock(databaseOpenLockPath(dbPath));
+	}
 	return token;
 }
 
