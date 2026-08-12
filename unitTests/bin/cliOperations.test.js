@@ -1382,7 +1382,8 @@ describe('deploy by reference (by_ref)', () => {
 
 	beforeEach(() => {
 		savedEnv = new Map(GITHUB_ENV.map((name) => [name, process.env[name]]));
-		// Resolve deterministically from env so the tests never shell out to git.
+		// The default target resolves from env, so tests that aren't about git resolution get a fixed
+		// repo/SHA. The nested repo describe below overrides this to exercise git itself.
 		process.env.GITHUB_REPOSITORY = 'acme/demo';
 		process.env.GITHUB_SHA = 'abc123def456';
 		delete process.env.GITHUB_REF;
