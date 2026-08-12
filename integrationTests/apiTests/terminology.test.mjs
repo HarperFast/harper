@@ -416,7 +416,7 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 
 	// ── async job operations ────────────────────────────────────────────────
 
-	test('create job_guy database and working table for job tests', async () => {
+	test('runtime-created database immediately starts a job', async () => {
 		await client
 			.req()
 			.send({ operation: 'create_database', database: 'job_guy' })
@@ -427,9 +427,6 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 			.send({ operation: 'create_table', database: 'job_guy', table: 'working', primary_key: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'job_guy.working' successfully created.", r.text))
 			.expect(200);
-	});
-
-	test('delete_records_before with database param starts job', async () => {
 		const r = await client
 			.req()
 			.send({
