@@ -152,15 +152,24 @@ describe('Audit entry record flags match the body (#2153)', () => {
 			await T.patch(id, { a: 'n1' }, { timestamp: now + 100 });
 			// source/replication applies skip record validation, so an undefined value can reach the
 			// write path — the #2153 producer shape (pre-fix this minted a bodyless put advertising
-			// HAS_RECORD, wedging peers). The guard skips it before any write is staged.
-			const applyVersion = now + 200; // would win — skipping must not depend on losing
-			await T.put(id, undefined, { timestamp: applyVersion, source: {}, nodeId: 7 });
+			// HAS_RECORD, wedging peers). The guard skips it before any write is staged. Drive it the
+			// way the apply dispatcher does: a notification write on a source-context resource.
 			const absentId = 'r2-absent'; // locally-absent record: the production entries' no-previousVersion shape
-			await T.put(absentId, undefined, { timestamp: now + 300, source: {}, nodeId: 7 });
+			const applyValueless = async (targetId) => {
+				const ctx = { source: {} };
+				await transaction(ctx, async () => {
+					const resource = await T.getResource(targetId, ctx);
+					return resource._writeUpdate(targetId, undefined, true, { isNotification: true, nodeId: 7 });
+				});
+			};
+			const entriesBefore = [...T.auditStore.getRange({ start: 1 })].length;
+			await applyValueless(id);
+			await applyValueless(absentId);
 
-			for (const entry of T.auditStore.getRange({ start: 1 })) {
-				assert.notEqual(entry.version, applyVersion, 'valueless apply must not mint an audit entry');
-				assert.notEqual(entry.recordId, absentId, 'valueless apply of an absent record must not mint');
+			const entries = [...T.auditStore.getRange({ start: 1 })];
+			assert.equal(entries.length, entriesBefore, 'valueless applies must not mint audit entries');
+			for (const entry of entries) {
+				assert.notEqual(entry.recordId, absentId);
 			}
 			const record = await T.get(id);
 			assert.equal(record.a, 'n1', 'valueless apply must not disturb the record');
