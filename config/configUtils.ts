@@ -96,7 +96,7 @@ const RENAME_RETRY_MAX_DELAY_MS = 500;
 // Never notified; exists only so Atomics.wait can time out (a synchronous, CPU-idle sleep).
 const renameRetrySleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
-function atomicWriteFile(
+export function atomicWriteFile(
 	filePath,
 	content,
 	{
