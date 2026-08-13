@@ -25,7 +25,9 @@ describe('Table.getRecordCount', () => {
 	});
 
 	it('returns the exact count when the loop completes within the time budget', async function () {
-		const result = await RecordCountTable.getRecordCount();
+		// Pass an explicit, generous budget rather than relying on the ambient 500ms default so a
+		// contended CI runner can't blow the budget and flip this into the estimator path.
+		const result = await RecordCountTable.getRecordCount({ timeLimit: 60_000 });
 		assert.equal(result.recordCount, 30);
 		assert.equal(result.estimatedRange, undefined);
 	});
@@ -129,6 +131,8 @@ describe('Table.getRecordCount', () => {
 		if (origKeys) store.getKeysCount = (...args) => (calls++, origKeys(...args));
 		if (origStats) store.getStats = (...args) => (calls++, origStats(...args));
 		try {
+			// Explicit, generous budget (not the ambient 500ms default) so a slow CI runner can't blow
+			// the budget and trip the entry-count spy below.
 			const completed = await RecordCountTable.getRecordCount({ timeLimit: 60_000 });
 			assert.equal(completed.recordCount, 30);
 			assert.equal(completed.estimatedRange, undefined);
