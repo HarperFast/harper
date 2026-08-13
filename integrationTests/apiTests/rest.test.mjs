@@ -45,7 +45,8 @@ type SubObject @table(audit: false) @export {
 }
 `;
 
-const CONFIG_YAML = `rest: true
+const CONFIG_YAML = `rest:
+  exactCount: true
 graphqlSchema:
   files: '*.graphql'
 graphql: true
@@ -68,7 +69,7 @@ const SUBOBJECT_ROWS = [
 	{ id: '5', relatedId: '5', any: 'any-5' },
 ];
 
-// Second component whose REST mount disables the expensive exact scan.
+// Second component whose REST mount uses the default (exact counting NOT opted in).
 const SCHEMA_GATE_GRAPHQL = `
 type GatedWidget @table @export(rest: true, mqtt: false) {
 	id: ID @primaryKey
@@ -76,8 +77,7 @@ type GatedWidget @table @export(rest: true, mqtt: false) {
 }
 `;
 
-const CONFIG_GATE_YAML = `rest:
-  exactCount: false
+const CONFIG_GATE_YAML = `rest: true
 graphqlSchema:
   files: '*.graphql'
 graphql: true
@@ -340,12 +340,48 @@ suite('REST query syntax', { skip: skipSuite }, (ctx) => {
 			.expect((r) => assert.ok(!r.body || Object.keys(r.body).length === 0, r.text))
 			.expect(200);
 	});
+
+	test('[rest] an oversized page limit falls through to streaming with no count', () => {
+		// A limit past the max count-page size must not materialize a count page — the request is served
+		// normally (all rows) with no Content-Range, rather than buffering an unbounded page.
+		return client
+			.reqRest('/Related/?sort(id)&limit(0,20000)')
+			.set('Prefer', 'count=exact')
+			.expect((r) => assert.equal(r.headers['content-range'], undefined, r.text))
+			.expect((r) => assert.equal(r.body.length, 5, r.text))
+			.expect(200);
+	});
+
+	test('[rest] a collection read declares Vary: Prefer', () => {
+		// So a shared cache keys on Prefer and never serves count headers to a request that did not ask.
+		return client
+			.reqRest('/Related/?sort(id)&limit(2)')
+			.expect((r) => assert.match(r.headers['vary'] || '', /\bPrefer\b/i, r.text))
+			.expect(200);
+	});
+
+	test('[rest] DELETE with a limit and Prefer: count is not misrouted to the count path', () => {
+		// Regression: the count preference is GET/HEAD-only. A DELETE that also carried limit()+Prefer used
+		// to receive a materialized array from search() and throw instead of deleting.
+		return client
+			.req()
+			.send({ operation: 'insert', table: 'Related', records: [{ id: 'del-me', name: 'to-delete' }] })
+			.expect(200)
+			.then(() =>
+				request(client.restURL)
+					.delete('/Related/?id==del-me&limit(10)')
+					.set(client.headers)
+					.set('Prefer', 'count=exact')
+					.expect((r) => assert.ok(r.status >= 200 && r.status < 300, `expected 2xx, got ${r.status}: ${r.text}`))
+			)
+			.then(() => client.reqRest('/Related/?id==del-me').expect((r) => assert.equal(r.body.length, 0, r.text)));
+	});
 });
 
 // exactCount is a per-REST-mount policy, so it needs its own instance: two components exporting at
-// the root path share one mount (the handler dedupes), and the gated config would otherwise bleed
-// onto the main suite's routes.
-suite('REST count exactCount gate', { skip: skipSuite }, (ctx) => {
+// the root path share one mount (the handler dedupes), and this mount's default config would otherwise
+// bleed onto the main suite's routes (which opt in with exactCount: true).
+suite('REST count default (exact not opted in)', { skip: skipSuite }, (ctx) => {
 	let client;
 
 	before(async () => {
@@ -370,8 +406,8 @@ suite('REST count exactCount gate', { skip: skipSuite }, (ctx) => {
 		await teardownHarper(ctx);
 	});
 
-	// `rest: { exactCount: false }` serves count=exact as a cheap estimate instead.
-	test('[rest] exactCount:false downgrades count=exact to estimated', () => {
+	// Default (no exactCount opt-in): count=exact is served as a cheap estimate instead.
+	test('[rest] default downgrades count=exact to estimated', () => {
 		return client
 			.reqRest('/GatedWidget/?sort(id)&limit(2)')
 			.set('Prefer', 'count=exact')
@@ -381,8 +417,8 @@ suite('REST count exactCount gate', { skip: skipSuite }, (ctx) => {
 			.expect(200);
 	});
 
-	// estimated still works normally on a gated mount.
-	test('[rest] exactCount:false leaves count=estimated unchanged', () => {
+	// estimated still works normally on a default mount.
+	test('[rest] default leaves count=estimated unchanged', () => {
 		return client
 			.reqRest('/GatedWidget/?sort(id)&limit(2)')
 			.set('Prefer', 'count=estimated')

@@ -78,6 +78,17 @@ describe('Table.search count (REST pagination total-count)', () => {
 		assert.strictEqual(n, GROUP_B); // still returns every matching row, just no count
 	});
 
+	it('a non-finite, negative, or oversized limit falls through to streaming (no count)', function () {
+		// The count page must be a finite, non-negative integer no larger than the max count-page size;
+		// anything else (limit(Infinity)/limit(foo)->NaN, a negative, or an oversized limit) must not
+		// materialize a count page.
+		for (const limit of [Infinity, NaN, -1, 20000]) {
+			const results = CountTable.search({ limit, count: 'exact' });
+			assert.ok(!Array.isArray(results), `limit=${limit} must not materialize a count page`);
+			assert.strictEqual(results.recordCount, undefined);
+		}
+	});
+
 	it('estimated: returns the page plus a positive estimate, flagged non-exact', async function () {
 		const page = await CountTable.search({ limit: 5, count: 'estimated' });
 		assert.strictEqual(page.length, 5);

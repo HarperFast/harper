@@ -8,7 +8,7 @@ import { Resources } from '../resources/Resources.ts';
 import { Resource, missingMethod, allowedMethods } from '../resources/Resource.ts';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
-import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.ts';
+import { Headers, mergeHeaders, addVaryHeader } from '../server/serverHelpers/Headers.ts';
 import { generateJsonApi } from '../resources/openApi.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -135,12 +135,18 @@ function setCountHeaders(headers: Headers, offset: number, mode: string, page: a
 	headers.set('Range-Unit', 'items');
 	headers.set('Content-Range', `items ${range}/${totalStr}`);
 	headers.set('Preference-Applied', `count=${mode}`);
-	// Append (don't overwrite) so a resource that already exposed its own headers keeps them.
+	// Append (don't overwrite) so a resource that already exposed its own headers keeps them. Compare
+	// case-insensitive comma tokens, not substrings, so an unrelated existing token (e.g.
+	// `X-Content-Range-Metadata`) doesn't suppress the real `Content-Range` token.
 	const exposed = headers.get('Access-Control-Expose-Headers');
+	const existing = new Set(
+		(Array.isArray(exposed) ? exposed.join(',') : exposed || '')
+			.split(',')
+			.map((token) => token.trim().toLowerCase())
+			.filter(Boolean)
+	);
 	for (const name of ['Content-Range', 'Range-Unit', 'Preference-Applied']) {
-		if (!exposed || !String(exposed).toLowerCase().includes(name.toLowerCase())) {
-			headers.append('Access-Control-Expose-Headers', name, true);
-		}
+		if (!existing.has(name.toLowerCase())) headers.append('Access-Control-Expose-Headers', name, true);
 	}
 }
 
@@ -193,18 +199,22 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			(target as any).async = true;
 			resource = entry.Resource;
 			// Pagination total-count opt-in (no default): `Prefer: count=exact|estimated`. Table.search
-			// reads target.count to compute the total emitted as Content-Range below.
+			// reads target.count to compute the total emitted as Content-Range below. Only honored on
+			// GET/HEAD reads: setting it for other methods would hand their `search()` a materialized array
+			// instead of the AsyncIterable they iterate (e.g. a collection DELETE at Table.ts).
 			const prefer = headersObject['prefer'];
-			if (prefer) {
-				// A mount can disable the expensive exact scan with `rest: { exactCount: false }` (default
-				// enabled); a count=exact request is then served as a cheap estimate. Accept a string
-				// `"false"` too, since not every config source coerces to a boolean.
-				const exactDisabled = (httpOptions as any).exactCount === false || (httpOptions as any).exactCount === 'false';
+			if (prefer && (method === 'GET' || method === 'HEAD')) {
+				// Exact counting scans the full matched set, so it is opt-in per mount via
+				// `rest: { exactCount: true }` (default off); count=exact is otherwise served as a cheap
+				// estimate. Estimated is always available. Accept a string `"true"` too, since not every
+				// config source coerces to a boolean.
+				const exactEnabled = (httpOptions as any).exactCount === true || (httpOptions as any).exactCount === 'true';
 				for (const pref of parseHeaderValue(prefer as any)) {
 					const mode = (pref?.value as string | undefined)?.toLowerCase();
 					if (pref?.name === 'count' && (mode === 'exact' || mode === 'estimated')) {
-						// Downgrade is signaled back to the client via Preference-Applied.
-						(target as any).count = mode === 'exact' && exactDisabled ? 'estimated' : mode;
+						// A count=exact request on a mount that hasn't opted in is downgraded to estimated,
+						// signaled back to the client via Preference-Applied.
+						(target as any).count = mode === 'exact' && !exactEnabled ? 'estimated' : mode;
 						break;
 					}
 				}
@@ -406,6 +416,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			responseObject.body = serialize(responseData, request, responseObject);
 			if (method === 'HEAD') responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
 		}
+		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
+		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
+		// headers to a request that didn't ask, or a cached non-count response to one that did.
+		if ((method === 'GET' || method === 'HEAD') && (target as any)?.isCollection) addVaryHeader(headers, 'Prefer');
 		return responseObject;
 	} catch (error) {
 		error ??= new Error('Unknown error occurred');

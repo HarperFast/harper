@@ -136,6 +136,10 @@ const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 
 // (large filtered full-scan, in-memory sort) should still be gated by config before broad exposure.
 const MAX_EXACT_COUNT_SCAN = 1_000_000;
 const MAX_EXACT_COUNT_MS = 1_000;
+// Largest page a `Prefer: count=` request will materialize. A request whose limit exceeds this (or is
+// not a finite, non-negative integer, e.g. `limit(Infinity)`/`limit(foo)`) falls through to the normal
+// streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
+const MAX_COUNT_PAGE = 10_000;
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -3506,14 +3510,15 @@ export function makeTable(options) {
 			// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
 			// table estimate. Opt-in only — the default streaming path below is untouched.
 			//
-			// Requires a limit. Counting is a pagination feature, and with no limit the "page" is the
-			// entire matched set — materializing/draining it would be an unbounded operation on the most
-			// likely-hit path (a bare collection GET). A count request without a limit therefore falls
-			// through to the normal streaming path (no count emitted), so the guardrail below always
-			// applies to a bounded page rather than being skipped when `end` is undefined.
-			if (target.count && target.limit !== undefined) {
+			// Requires a bounded page. Counting is a pagination feature; the page limit must be a finite,
+			// non-negative integer no larger than MAX_COUNT_PAGE. A missing limit (a bare collection GET), a
+			// non-finite/negative/non-integer limit (limit(Infinity), limit(foo)), or an oversized one all
+			// fall through to the normal streaming path with no count, so a count request can't materialize
+			// an unbounded page before the guardrail below applies.
+			const pageLimit = target.limit as number;
+			if (target.count && Number.isInteger(pageLimit) && pageLimit >= 0 && pageLimit <= MAX_COUNT_PAGE) {
 				const wantExact = target.count === 'exact';
-				const pageEnd = offset + (target.limit as number);
+				const pageEnd = offset + pageLimit;
 				const countStart = performance.now();
 				return (async () => {
 					const page: any = [];
