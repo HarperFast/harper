@@ -1113,13 +1113,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 }
 
 /**
- * Estimates the entry count of a range comparator from the storage engine's statistical
- * range estimate (rocksdb-js estimateCount), blended with the table-fraction heuristic by the
- * estimate's confidence — a low-confidence estimate (tiny range at data-block granularity,
- * open-ended complement subtraction) leans on the old heuristic, a high-confidence one replaces
- * it. The range construction mirrors searchByIndex's comparator switch so the estimate covers
- * the same keys the search would iterate. Returns undefined when the store cannot estimate
- * ranges (LMDB, older rocksdb-js) or the comparator has no bounded range.
+ * Estimates a range comparator's entry count from the store's statistical estimate, blended with
+ * the table-fraction heuristic by the estimate's confidence so low-confidence estimates degrade
+ * to the old behavior. Returns undefined (caller falls back to the heuristic) when the store
+ * cannot estimate, the shape is unexpected, or the executed range wouldn't match this one.
  */
 function estimateRangeCondition(table, condition, searchType, fraction) {
 	const attributeName = condition[0] ?? condition.attribute;
@@ -1176,7 +1173,23 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 		default:
 			return undefined;
 	}
-	const { count, confidence } = store.estimateCount(range);
+	// Long string bounds get truncated + filtered at execution (searchByIndex), so the
+	// executed range is wider than this one; don't estimate what won't be iterated.
+	if (
+		(typeof range.start === 'string' && range.start.length > MAX_SEARCH_KEY_LENGTH) ||
+		(typeof range.end === 'string' && range.end.length > MAX_SEARCH_KEY_LENGTH)
+	) {
+		return undefined;
+	}
+	let count, confidence;
+	try {
+		({ count, confidence } = store.estimateCount(range) ?? {});
+	} catch {
+		// a concurrently closing/dropped store must degrade the plan, not fail the query
+		return undefined;
+	}
+	// The dependency pin can activate this path on an image rebuild; never trust the shape blind.
+	if (!Number.isFinite(count) || !(confidence >= 0 && confidence <= 1)) return undefined;
 	const heuristic = fraction * estimatedEntryCount(table.primaryStore) + 1;
 	return Math.max(1, Math.round(confidence * count + (1 - confidence) * heuristic));
 }
@@ -1259,8 +1272,6 @@ export function estimateCondition(table) {
 				} else if (Array.isArray(condition.value)) {
 					condition.estimated_count = Infinity;
 				} else condition.estimated_count = Infinity;
-				// for range queries, use the storage engine's statistical range estimate when
-				// available, falling back to an arbitrary fraction of the table
 			} else if (searchType === 'starts_with' || searchType === 'prefix')
 				condition.estimated_count =
 					estimateRangeCondition(table, condition, searchType, STARTS_WITH_ESTIMATE) ??
@@ -1287,6 +1298,12 @@ export function estimateCondition(table) {
 					condition.estimated_count =
 						estimateRangeCondition(table, condition, searchType, OPEN_RANGE_ESTIMATE) ??
 						OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+			}
+			// a negated condition matches the complement of its positive estimate — without this
+			// inversion a narrow negated range (or negated equals) looks highly selective, wins
+			// the condition ordering, and then executes as a full scan
+			if (condition.negated && isFinite(condition.estimated_count)) {
+				condition.estimated_count = Math.max(estimatedEntryCount(table.primaryStore) - condition.estimated_count, 1);
 			}
 			// we give a condition significantly more weight/preference if we will be ordering by it
 			if (typeof condition.descending === 'boolean') condition.estimated_count /= 2;
@@ -1709,5 +1726,5 @@ function estimatedEntryCount(store) {
 }
 
 export function intersectionEstimate(store, left, right) {
-	return (left * right) / estimatedEntryCount(store);
+	return (left * right) / Math.max(estimatedEntryCount(store), 1);
 }

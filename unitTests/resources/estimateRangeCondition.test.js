@@ -3,14 +3,6 @@ const assert = require('node:assert');
 const { estimateCondition } = require('#src/resources/search');
 const { MAXIMUM_KEY } = require('ordered-binary');
 
-// Range comparators historically estimated as fixed fractions of the table
-// (0.05 starts_with / 0.1 between / 0.3 open range). When the store provides
-// rocksdb-js estimateCount, the planner now uses the statistical range
-// estimate, blended with the fraction heuristic by the estimate's confidence.
-// These tests drive estimateCondition with synthetic stores so the dispatch,
-// range construction, and blend are covered regardless of the installed
-// rocksdb-js version (the capability is feature-detected).
-
 const ENTRY_COUNT = 1000;
 
 function makeStore(estimate) {
@@ -125,10 +117,59 @@ describe('estimateCondition range estimates', () => {
 		const estimated = estimate(table, { attribute: 'attr', comparator: 'between', value: [5, 10] });
 		assert.strictEqual(estimated, 1);
 	});
+
+	it('inverts negated conditions to the complement of the positive estimate', () => {
+		// a narrow negated range must not look highly selective — it executes as a full scan
+		const table = makeTable({ indexEstimate: { count: 10, confidence: 1 } });
+		const estimated = estimate(table, {
+			attribute: 'attr',
+			comparator: 'between',
+			value: [5, 10],
+			negated: true,
+		});
+		assert.strictEqual(estimated, ENTRY_COUNT - 10);
+
+		// pre-existing defect: negated equals also estimated its positive count
+		const eqTable = makeTable();
+		eqTable.indices.attr.getValuesCount = () => 3;
+		const negatedEquals = estimate(eqTable, {
+			attribute: 'attr',
+			comparator: 'equals',
+			value: 'x',
+			negated: true,
+		});
+		assert.strictEqual(negatedEquals, ENTRY_COUNT - 3);
+	});
+
+	it('falls back when the estimate shape is unexpected', () => {
+		for (const bad of [42, { count: NaN, confidence: 1 }, { count: 10 }, { count: 10, confidence: 2 }, null]) {
+			const table = makeTable({ indexEstimate: bad });
+			const estimated = estimate(table, { attribute: 'attr', comparator: 'between', value: [5, 10] });
+			assert.strictEqual(estimated, 0.1 * ENTRY_COUNT + 1, `shape ${JSON.stringify(bad)} must fall back`);
+		}
+	});
+
+	it('falls back when estimateCount throws', () => {
+		const table = makeTable({ indexEstimate: { count: 1, confidence: 1 } });
+		table.indices.attr.estimateCount = () => {
+			throw new Error('store closed');
+		};
+		const estimated = estimate(table, { attribute: 'attr', comparator: 'between', value: [5, 10] });
+		assert.strictEqual(estimated, 0.1 * ENTRY_COUNT + 1);
+	});
+
+	it('falls back for over-length string bounds (executed range is truncated + filtered)', () => {
+		const table = makeTable({ indexEstimate: { count: 1, confidence: 1 } });
+		const estimated = estimate(table, {
+			attribute: 'attr',
+			comparator: 'starts_with',
+			value: 'x'.repeat(2000),
+		});
+		assert.strictEqual(estimated, 0.05 * ENTRY_COUNT + 1);
+		assert.strictEqual(table.indices.attr.calls.length, 0);
+	});
 });
 
-// End-to-end against real stores; requires a rocksdb-js with estimateCount
-// (feature-detected — skipped until the dependency ships it).
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const supportsEstimateCount = typeof RocksDatabase.prototype.estimateCount === 'function';
 
@@ -167,24 +208,19 @@ const supportsEstimateCount = typeof RocksDatabase.prototype.estimateCount === '
 		const narrow = est({ attribute: 'score', comparator: 'between', value: [1000, 1100] });
 		const wide = est({ attribute: 'score', comparator: 'between', value: [1000, 11000] });
 		assert.ok(narrow < wide, `narrow (${narrow}) should be < wide (${wide})`);
-		// the wide range is half the table; the old heuristic would report
-		// 0.1 * N + 1 for both
 		assert.ok(wide > 0.15 * N, `wide (${wide}) should exceed the flat between heuristic`);
 	});
 
 	it('estimates starts_with from the real prefix range', () => {
 		const est = estimateCondition(T);
-		// all names share the "name-0" prefix up to 9999
 		const broad = est({ attribute: 'name', comparator: 'starts_with', value: 'name-0' });
 		const narrow = est({ attribute: 'name', comparator: 'starts_with', value: 'name-000' });
 		assert.ok(narrow < broad, `narrow (${narrow}) should be < broad (${broad})`);
 	});
 
 	it('orders open-range estimates by real range width', () => {
-		// The flat heuristic reported 30% + 1 for every open range; the
-		// statistical estimate must at least order them. (Absolute accuracy at
-		// this scale is block-granular — index entries are tiny, so a 20k-row
-		// index spans few data blocks.)
+		// absolute accuracy at this scale is block-granular (tiny index entries, few data
+		// blocks), so assert ordering, which is what condition planning consumes
 		const est = estimateCondition(T);
 		const tail10 = est({ attribute: 'score', comparator: 'gt', value: N - 2000 });
 		const tail50 = est({ attribute: 'score', comparator: 'gt', value: N / 2 });

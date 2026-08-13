@@ -66,13 +66,9 @@ export class RocksIndexStore extends RocksDatabase {
 	}
 }
 
-/**
- * Index entries are composite [indexedValue, primaryKey] keys, so inclusive/exclusive bounds on
- * indexed *values* translate to [value, MAXIMUM_KEY] composite bounds (mirroring getRange above)
- * rather than the encoded-byte successor the base implementation would apply. Defined only when
- * the installed rocksdb-js provides estimateCount, so `typeof store.estimateCount === 'function'`
- * remains a capability check on older versions.
- */
+// Bounds on indexed values must widen to [value, MAXIMUM_KEY] composite bounds (as in getRange),
+// not the base implementation's encoded-byte successor. Assigned conditionally so
+// `typeof store.estimateCount === 'function'` stays a capability probe on older rocksdb-js.
 if (typeof (RocksDatabase.prototype as any).estimateCount === 'function') {
 	(RocksIndexStore.prototype as any).estimateCount = function estimateCount(options?: any) {
 		let { start, end, exclusiveStart, inclusiveEnd } = options ?? {};
