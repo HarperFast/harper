@@ -41,7 +41,8 @@ describe('Audit entry record flags match the body (#2153)', () => {
 		const read = readAuditEntry(Buffer.from(entry));
 		assert.equal(read.type, 'patch');
 		assert.equal(read.extendedType & HAS_PARTIAL_RECORD, HAS_PARTIAL_RECORD);
-		// the empty body is guarded on read: no decode attempt, no throw
+		// the empty body is guarded on read: no decode attempt, no throw, stable across calls
+		assert.equal(read.getValue({}), undefined);
 		assert.equal(read.getValue({}), undefined);
 	});
 
@@ -58,13 +59,28 @@ describe('Audit entry record flags match the body (#2153)', () => {
 		assert.equal(read.getValue(storeMustNotBeTouched, false, baseRecord.version), undefined);
 	});
 
-	it('keeps HAS_RECORD when a body is present', () => {
+	it('keeps HAS_RECORD when a body is present, and getValue is idempotent', () => {
 		const encodedRecord = Buffer.from([0x81, 0xa1, 0x61, 0x01]); // msgpack {a: 1}
 		const entry = createAuditEntry({ ...baseRecord, encodedRecord });
 		const read = readAuditEntry(Buffer.from(entry));
 		assert.equal(read.type, 'put');
 		assert.equal(read.extendedType & HAS_RECORD, HAS_RECORD);
 		assert.deepEqual(read.getBinaryValue(), encodedRecord);
+		// decoding must not perturb the entry's own header decoder: repeated reads return the
+		// same cached value (decode runs once), never flipping to the empty-body path
+		let decodes = 0;
+		const store = {
+			decoder: {
+				decode: () => {
+					decodes++;
+					return { a: 1 };
+				},
+			},
+		};
+		const first = read.getValue(store);
+		assert.deepEqual(first, { a: 1 });
+		assert.equal(read.getValue(store), first);
+		assert.equal(decodes, 1);
 	});
 
 	it('tolerates a pre-fix malformed entry: HAS_RECORD set with no body', () => {
