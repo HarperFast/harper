@@ -1213,7 +1213,6 @@ An `{}` in the config system is context-dependent, and conflating the contexts i
 Removal therefore prunes: `deleteNestedValue` removes ancestors the deletion emptied, only when it actually deleted an existing leaf, and reports what it pruned. The overlap case — a file-declared empty scope an env layer temporarily populated — is tracked in the state file's `emptyScopeOriginals` (separate from `originalValues` so a marker can never mask or be consumed as a real leaf original at the same path; older state files lacking the field are defaulted). Restore consumes a marker only for a path the prune actually removed, so a scalar overwrite or an absent-leaf no-op can never resurrect a scope over live env-layer content. Note there are two coexisting mechanisms for "file `{}` is user content": `restoreBaseEmptyObjects` on the stateless compose path and the marker pair on the stateful removal path — if you touch one, check the other.
 
 Two durable limitations of the marker mechanism, both with user config-file content as the blast radius: markers can only be recorded at populate time, so a scope an env layer populated _before_ `emptyScopeOriginals` existed (any pre-upgrade boot) has no marker and prunes away on its first post-upgrade vacate; and a corrupt config-state file resets to fresh state — dropping `originalValues` and `emptyScopeOriginals` for every tracked path — after which the next removal prunes those scopes for good; `saveConfigState` writes via temp+rename precisely so a torn write cannot be the trigger, leaving genuine corruption (disk faults, hand edits) as the remaining path.
-
 ## Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)
 
 libuv's Windows fs-event callback rebuilds each event's absolute path, expands it with
@@ -1248,7 +1247,6 @@ absolute paths built from `cwd`, so its bases must be derived from the same spel
 paths are relative to `cwd` and reads stay on the configured `component.directory`. And a watcher
 that degrades to polling stays there for its lifetime, so a caller with no polling story of its own
 (`resources/blob.ts`) needs one — there it polls `readMore` on the existing no-progress deadline.
-
 ## No descriptor on the root config may outlive a turn (`config/configUtils.ts`, `config/RootConfigWatcher.ts`, `components/OptionsWatcher.ts`)
 
 `atomicWriteFile` replaces `harper-config.yaml` by rename-over and retries `EPERM`/`EACCES` with a
@@ -1272,3 +1270,28 @@ half-written file into a valid-looking env-only config. Its three outcomes are d
 one matters: a usable read withdraws the file's give-up report and restores the budget; giving up
 restores the budget (the write that repairs the file can itself be read mid-write) but leaves the
 report standing, since it is shared with every other watcher of that file; closing is terminal.
+
+## Query-plan range estimation blends statistical estimates by confidence (`search.ts`)
+
+`estimateCondition` estimates range comparators (`starts_with`/`prefix`, the `between` family,
+`lt`/`le`/`gt`/`ge`) via the store's `estimateCount({start, end, …}) → { count, confidence }`
+(rocksdb-js ≥ #778) instead of flat table fractions, blended as
+`round(confidence × count + (1 − confidence) × fraction-heuristic)` so a low-confidence estimate
+degrades to the historical behavior rather than replacing it. Invariants that are easy to break:
+
+- **Capability is feature-detected per store** (`typeof store.estimateCount === 'function'`), and
+  the `RocksIndexStore` override is assigned conditionally for the same reason — do not define it
+  unconditionally or the probe lies on older rocksdb-js. The result shape is validated
+  (`Number.isFinite(count)`, `0 ≤ confidence ≤ 1`) and the native call is try/caught because a
+  caret bump can activate this path on an image rebuild without a code change.
+- **The estimated range must be the executed range.** Construction mirrors `searchByIndex`'s
+  comparator switch; bounds longer than `MAX_SEARCH_KEY_LENGTH` fall back entirely because
+  execution truncates + filters (wider range than the estimable one). `RocksIndexStore` widens
+  value-space bounds to `[value, MAXIMUM_KEY]` composite bounds — the base implementation's
+  byte-successor semantics would exclude the wrong entries on composite `[value, primaryKey]` keys.
+- **Negated conditions invert at the root** (`estimateConditionForTable`): the estimate of the
+  positive range becomes `entryCount − estimate`. Without this a narrow negated range looks highly
+  selective, wins condition ordering, and executes as a full scan.
+- `estimatedEntryCount` reads `estimate-num-keys` (O(1)) rather than iterating; it skews high on
+  overwrite/delete-heavy data until compaction, which is acceptable for the relative-ordering and
+  explicitly-estimated consumers it feeds (and it is a divisor — keep the ≥1 floor).
