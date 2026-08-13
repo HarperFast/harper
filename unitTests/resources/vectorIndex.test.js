@@ -617,10 +617,11 @@ describe('HNSW post-sort distance', () => {
 	it('calculates distance without caching when an entry is unavailable', () => {
 		const sort = { attribute: 'vector', target: [1, 1], distance: 'euclidean' };
 		const context = {};
-		const distance = T.indices.vector.customIndex.propertyResolver([2, 0], context, null, sort);
+		const vector = [2, 0];
+		const distance = T.indices.vector.customIndex.propertyResolver(vector, context, null, sort);
 
 		assert.equal(distance, 2);
-		assert(context.vectorDistanceCaches.get(sort) instanceof WeakMap);
+		assert.equal(context.vectorDistanceCaches.get(sort).get(vector), 2);
 		assert.equal(T.indices.vector.customIndex.propertyResolver([2, 0], undefined, null, sort), 2);
 	});
 

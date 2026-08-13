@@ -1247,14 +1247,15 @@ export class HierarchicalNavigableSmallWorld {
 			let vectorDistanceCaches = context.vectorDistanceCaches;
 			if (!vectorDistanceCaches) vectorDistanceCaches = context.vectorDistanceCaches = new WeakMap();
 			let vectorDistances = vectorDistanceCaches.get(sortDefinition);
-			const cacheableEntry = entry && typeof entry === 'object';
-			if (vectorDistances && cacheableEntry) {
-				const difference = vectorDistances.get(entry);
+			const cacheKey =
+				entry && typeof entry === 'object' ? entry : vector && typeof vector === 'object' ? vector : null;
+			if (vectorDistances && cacheKey) {
+				const difference = vectorDistances.get(cacheKey);
 				if (difference !== undefined) return difference;
 			} else if (!vectorDistances) vectorDistanceCaches.set(sortDefinition, (vectorDistances = new WeakMap()));
 
 			const distance = this.exactDistance(sortDefinition, vector);
-			if (cacheableEntry) vectorDistances.set(entry, distance);
+			if (cacheKey) vectorDistances.set(cacheKey, distance);
 			return distance;
 		}
 		return vector;

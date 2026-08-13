@@ -3394,7 +3394,11 @@ export function makeTable(options) {
 						postOrdering = {
 							dbOrderedAttribute: sort.attribute,
 							dbOrderedSort: sort,
-							...sort.next,
+							attribute: sort.next.attribute,
+							descending: sort.next.descending,
+							next: sort.next.next,
+							target: (sort.next as any).target,
+							distance: (sort.next as any).distance,
 						};
 					}
 				} else {
@@ -4895,8 +4899,7 @@ export function makeTable(options) {
 					if (cachedDistance !== undefined) return cachedDistance;
 					if (!distanceSort) return;
 					const customIndex = indices[distanceSort.attribute].customIndex;
-					if (customIndex?.propertyResolver)
-						return customIndex.propertyResolver(object[distanceSort.attribute], context, entry, distanceSort);
+					return customIndex.propertyResolver(object[distanceSort.attribute], context, entry, distanceSort);
 				},
 			};
 			for (const attribute of this.attributes) {
@@ -5044,11 +5047,11 @@ export function makeTable(options) {
 					attribute.resolve.directReturn = true;
 				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
 					const customIndex = indices[attribute.name].customIndex;
-					propertyResolvers[attribute.name] = (object, context, entry, returnEntry, sort) => {
+					propertyResolvers[attribute.name] = (object, context, entry, returnEntry, sort, comparing) => {
 						const value = object[attribute.name];
 						const sortAttribute = sort?.attribute;
 						const resolvesSort =
-							returnEntry === false &&
+							comparing === true &&
 							(sortAttribute === attribute.name ||
 								(Array.isArray(sortAttribute) && sortAttribute[sortAttribute.length - 1] === attribute.name));
 						return customIndex.propertyResolver(value, context, entry, resolvesSort ? sort : undefined);
@@ -5629,14 +5632,17 @@ export function makeTable(options) {
 			for (let i = 0, l = attribute_name.length; i < l; i++) {
 				const attribute = attribute_name[i];
 				const resolver = resolvers?.[attribute];
-				value = resolver && value ? resolver(value, context, entry, false, i === l - 1 ? sort : undefined) : value?.[attribute];
+				value =
+					resolver && value
+						? resolver(value, context, entry, false, i === l - 1 ? sort : undefined, true)
+						: value?.[attribute];
 				entry = null; // can't use this in the nested object
 				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
 			return value;
 		}
 		const resolver = propertyResolvers[attribute_name];
-		return resolver ? resolver(record, context, entry, false, sort) : record[attribute_name];
+		return resolver ? resolver(record, context, entry, false, sort, true) : record[attribute_name];
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
