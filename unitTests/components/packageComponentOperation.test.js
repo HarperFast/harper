@@ -149,11 +149,13 @@ describe('package_component (handler)', () => {
 			);
 		});
 
-		// The node_modules fallback's catch only rethrows ENOENT, so any other realpath failure
-		// (here ENOTDIR, from a rootPath whose node_modules is a file) leaves pathToProject
-		// undefined and used to reach the packer. On the stream path that surfaces as a 200 with
-		// a truncated body, because the response headers are committed before the walk runs.
-		it('throws instead of packaging undefined when the fallback fails for a non-ENOENT reason', async () => {
+		// A broken installation is not a missing project. The node_modules fallback rethrows
+		// anything that isn't ENOENT (here ENOTDIR, from a rootPath whose node_modules is a
+		// file) so the operator sees the real cause; flattening it into "Unable to locate
+		// project" would send them looking for the wrong problem. Rethrowing is also what
+		// leaves pathToProject guaranteed past that block, which the stream shape needs —
+		// its headers are committed before the packer walks.
+		it('rethrows a non-ENOENT fallback failure with its original code', async () => {
 			const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'pkg-op-root-'));
 			fs.writeFileSync(path.join(rootPath, 'node_modules'), 'not a directory');
 			const priorRootPath = env.get(CONFIG_PARAMS.ROOTPATH);
@@ -161,7 +163,14 @@ describe('package_component (handler)', () => {
 			try {
 				await assert.rejects(
 					() => operations.packageComponent({ project: 'no-such-project', stream: true }),
-					/Unable to locate project/
+					(err) => {
+						assert.strictEqual(err.code, 'ENOTDIR', 'the original error code must survive');
+						assert.ok(
+							!/Unable to locate project/.test(err.message),
+							`a broken installation must not read as a missing project: ${err.message}`
+						);
+						return true;
+					}
 				);
 			} finally {
 				env.setProperty(CONFIG_PARAMS.ROOTPATH, priorRootPath);

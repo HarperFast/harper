@@ -373,14 +373,17 @@ async function packageComponent(req) {
 		try {
 			pathToProject = await fs.realpath(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project));
 		} catch (err) {
+			// Only a genuinely absent project earns the friendly message. Everything else —
+			// ENOTDIR from a broken installation, EACCES from a permissions problem — is rethrown
+			// with its code, path, and cause intact, rather than being flattened into a
+			// misleading "missing project". Rethrowing is also what guarantees pathToProject is
+			// set past this point, which the stream shape depends on: its response headers are
+			// committed before the packer walks, so a failure discovered later would reach the
+			// caller as a 200 with a truncated body instead of an error it can act on.
 			if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) throw new Error(`Unable to locate project '${project}'`);
+			throw err;
 		}
 	}
-	// The inner catch above swallows any non-ENOENT realpath failure, leaving pathToProject
-	// undefined. That has to be a thrown error rather than a walk of `undefined`: on the stream
-	// path the response headers are already committed by the time the packer runs, so the caller
-	// would receive a 200 with a truncated body instead of a failure it can act on.
-	if (!pathToProject) throw new Error(`Unable to locate project '${project}'`);
 
 	if (req.estimate) {
 		const { totalSize, danglingSymlinks } = await scanPackageDirectory(pathToProject, req);
