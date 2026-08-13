@@ -341,6 +341,17 @@ describe('HARPER_SET_CONFIG', function () {
 			assert.deepStrictEqual(fileConfig.myComponent, {}, 'Declared-empty scope must survive populate-then-vacate');
 		});
 
+		it('should save and restore the original of a top-level leaf named like an Object.prototype member', function () {
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ constructor: 5 });
+			const fileConfig = { constructor: 3 };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.constructor, 5);
+
+			delete process.env.HARPER_SET_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.constructor, 3, 'file original must be saved and restored');
+		});
+
 		it('should not resurrect a husk for a prototype-named path that was never a declared scope', function () {
 			process.env.HARPER_SET_CONFIG = JSON.stringify({ constructor: { port: 1 } });
 			const fileConfig = {};

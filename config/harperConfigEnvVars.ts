@@ -640,7 +640,7 @@ function applyConfigLayer(
 	const flatEnvConfig = flattenObject(envConfig);
 
 	for (const [path, value] of Object.entries(flatEnvConfig)) {
-		const currentSource = state.sources[path];
+		const currentSource = Object.prototype.hasOwnProperty.call(state.sources, path) ? state.sources[path] : undefined;
 		const currentValue = getNestedValue(fileConfig, path);
 
 		// Skip if this path has a source we should respect
@@ -782,7 +782,9 @@ function processEnvVar(
 			// Runtime: Only update values we previously set
 			const flatEnvConfig = flattenObject(parsedConfig);
 			for (const [path, value] of Object.entries(flatEnvConfig)) {
-				const currentSource = state.sources[path];
+				const currentSource = Object.prototype.hasOwnProperty.call(state.sources, path)
+					? state.sources[path]
+					: undefined;
 				const currentValue = getNestedValue(fileConfig, path);
 
 				// Skip if path has a tracked source that's not HARPER_DEFAULT_CONFIG
