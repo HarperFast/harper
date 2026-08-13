@@ -3346,6 +3346,11 @@ export function makeTable(options) {
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
 			const sort = typeof target.sort === 'object' && target.sort;
+			for (let order = sort; order; order = order.next) {
+				if (typeof order.attribute !== 'string') continue;
+				const customIndex = indices[order.attribute]?.customIndex;
+				if (customIndex?.exactDistance) customIndex.exactDistance(order, null);
+			}
 			let postOrdering;
 			if (sort) {
 				// TODO: Support index-assisted sorts of unions, which will require potentially recursively adding/modifying an order aligned condition and be able to recursively undo it if necessary
@@ -4895,11 +4900,12 @@ export function makeTable(options) {
 							!indices[distanceSort.attribute]?.customIndex?.propertyResolver)
 					)
 						distanceSort = distanceSort.next;
-					const cachedDistance = entry.distance ?? context?.vectorDistanceCaches?.get(distanceSort)?.get(entry);
-					if (cachedDistance !== undefined) return cachedDistance;
 					if (!distanceSort) return;
 					const customIndex = indices[distanceSort.attribute].customIndex;
-					return customIndex.propertyResolver(object[distanceSort.attribute], context, entry, distanceSort);
+					const vector = object[distanceSort.attribute];
+					const cachedDistance = entry.distance ?? context?.vectorDistanceCaches?.get(distanceSort)?.get(vector);
+					if (cachedDistance !== undefined) return cachedDistance;
+					return customIndex.propertyResolver(vector, context, entry, distanceSort);
 				},
 			};
 			for (const attribute of this.attributes) {

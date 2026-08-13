@@ -629,16 +629,26 @@ describe('HNSW post-sort distance', () => {
 		assert.equal(T.indices.vector.customIndex.propertyResolver([2, 0], undefined, null, sort), 2);
 	});
 
-	it('rejects a targetless post-sort query', async () => {
-		await assert.rejects(
+	it('rejects a targetless post-sort query', () => {
+		assert.throws(
 			() =>
-				fromAsync(
-					T.search({
-						conditions: [{ attribute: 'group', value: 'metric' }],
-						sort: { attribute: 'vector' },
-						select: ['id', '$distance'],
-					})
-				),
+				T.search({
+					conditions: [{ attribute: 'group', value: 'metric' }],
+					sort: { attribute: 'vector' },
+					select: ['id', '$distance'],
+				}),
+			{ message: 'The target vector must be an array' }
+		);
+	});
+
+	it('rejects a targetless vector sort before reading an empty result set', () => {
+		assert.throws(
+			() =>
+				T.search({
+					conditions: [{ attribute: 'group', value: 'empty' }],
+					sort: { attribute: 'vector' },
+					select: ['id', '$distance'],
+				}),
 			{ message: 'The target vector must be an array' }
 		);
 	});
@@ -705,17 +715,15 @@ describe('HNSW post-sort distance', () => {
 		assert.equal(results[0].$distance, 0);
 	});
 
-	it('rejects an unknown metric on the exact post-sort path', async () => {
+	it('rejects an unknown metric on the exact post-sort path', () => {
 		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
-		await assert.rejects(
+		assert.throws(
 			() =>
-				fromAsync(
-					T.search({
-						conditions: [{ attribute: 'group', value: 'metric' }],
-						sort: { attribute: 'vector', target: [1, 1], distance: 'manhattan' },
-						select: ['id', '$distance'],
-					})
-				),
+				T.search({
+					conditions: [{ attribute: 'group', value: 'metric' }],
+					sort: { attribute: 'vector', target: [1, 1], distance: 'manhattan' },
+					select: ['id', '$distance'],
+				}),
 			{ message: 'Unknown distance function' }
 		);
 		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);

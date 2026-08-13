@@ -1041,10 +1041,6 @@ export class HierarchicalNavigableSmallWorld {
 	 */
 	exactDistance(searchCondition: { target: number[]; distance?: string }, recordVector: number[] | Int8Array): number {
 		if (!Array.isArray(searchCondition.target)) throw new ClientError('The target vector must be an array');
-		if (recordVector == null) return Infinity; // missing vector sorts last
-		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
-		// float[] vector, but convert defensively in case a typed array slips through.
-		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
 		const fn =
 			searchCondition.distance === 'euclidean'
 				? euclideanDistance
@@ -1056,6 +1052,10 @@ export class HierarchicalNavigableSmallWorld {
 							? null
 							: this.distance;
 		if (!fn) throw new ClientError('Unknown distance function');
+		if (recordVector == null) return Infinity; // missing vector sorts last
+		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
+		// float[] vector, but convert defensively in case a typed array slips through.
+		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
 		return fn(searchCondition.target, vec);
 	}
 	/**
@@ -1247,8 +1247,7 @@ export class HierarchicalNavigableSmallWorld {
 			let vectorDistanceCaches = context.vectorDistanceCaches;
 			if (!vectorDistanceCaches) vectorDistanceCaches = context.vectorDistanceCaches = new WeakMap();
 			let vectorDistances = vectorDistanceCaches.get(sortDefinition);
-			const cacheKey =
-				entry && typeof entry === 'object' ? entry : vector && typeof vector === 'object' ? vector : null;
+			const cacheKey = vector && typeof vector === 'object' ? vector : null;
 			if (vectorDistances && cacheKey) {
 				const difference = vectorDistances.get(cacheKey);
 				if (difference !== undefined) return difference;
