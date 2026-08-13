@@ -341,6 +341,21 @@ describe('HARPER_SET_CONFIG', function () {
 			assert.deepStrictEqual(fileConfig.myComponent, {}, 'Declared-empty scope must survive populate-then-vacate');
 		});
 
+		it('should not resurrect a husk for a prototype-named path that was never a declared scope', function () {
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ constructor: { port: 1 } });
+			const fileConfig = {};
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.constructor.port, 1);
+
+			delete process.env.HARPER_SET_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(
+				Object.prototype.hasOwnProperty.call(fileConfig, 'constructor'),
+				false,
+				'no marker was ever recorded, so nothing may be restored'
+			);
+		});
+
 		it('should not resurrect a vacated scope over a value the env var just set', function () {
 			process.env.HARPER_SET_CONFIG = JSON.stringify({ a: { b: { c: 1 } } });
 			const fileConfig = { a: { b: {} } };

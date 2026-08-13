@@ -496,7 +496,7 @@ function recordEmptyAncestorOriginal(fileConfig: ConfigObject, state: ConfigStat
  */
 function restorePrunedEmptyAncestor(fileConfig: ConfigObject, state: ConfigState, prunedPaths: string[]): void {
 	for (const prunedPath of prunedPaths) {
-		if (state.emptyScopeOriginals[prunedPath]) {
+		if (Object.prototype.hasOwnProperty.call(state.emptyScopeOriginals, prunedPath)) {
 			setNestedValue(fileConfig, prunedPath, {});
 			delete state.emptyScopeOriginals[prunedPath];
 			return;
@@ -651,7 +651,7 @@ function applyConfigLayer(
 		// Store original value if requested and this is first time overriding
 		if (storeOriginals) {
 			if (!currentSource && currentValue != null) {
-				if (!(path in state.originalValues)) {
+				if (!Object.prototype.hasOwnProperty.call(state.originalValues, path)) {
 					state.originalValues[path] = currentValue;
 				}
 			} else if (currentValue == null) {
@@ -691,7 +691,7 @@ function handleDeletions(
 				(sourceName === 'HARPER_DEFAULT_CONFIG' ||
 					sourceName === 'HARPER_CONFIG' ||
 					sourceName === 'HARPER_SET_CONFIG') &&
-				path in state.originalValues
+				Object.prototype.hasOwnProperty.call(state.originalValues, path)
 			) {
 				setNestedValue(fileConfig, path, state.originalValues[path]);
 				delete state.originalValues[path];
@@ -794,7 +794,7 @@ function processEnvVar(
 				if (!currentSource) {
 					if (currentValue !== undefined && currentValue !== null) {
 						// Value exists but we never set it - store as original but don't override
-						if (!(path in state.originalValues)) {
+						if (!Object.prototype.hasOwnProperty.call(state.originalValues, path)) {
 							state.originalValues[path] = currentValue;
 						}
 						continue;
@@ -844,7 +844,7 @@ function cleanupRemovedEnvVar(
 	if (sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_CONFIG' || sourceName === 'HARPER_SET_CONFIG') {
 		const pathsToCleanup = Object.keys(state.sources).filter((path) => state.sources[path] === sourceName);
 		for (const path of pathsToCleanup) {
-			if (path in state.originalValues) {
+			if (Object.prototype.hasOwnProperty.call(state.originalValues, path)) {
 				// Restore original value
 				setNestedValue(fileConfig, path, state.originalValues[path]);
 				delete state.originalValues[path];
