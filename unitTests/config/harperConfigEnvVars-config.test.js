@@ -261,6 +261,22 @@ describe('HARPER_CONFIG', function () {
 			assert.strictEqual(editedConfig.myComponent, undefined, 'hand-deleted scope must stay deleted');
 		});
 
+		it('clears a stale marker even when the scope name collides with an Object.prototype member', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ constructor: { port: 1 } });
+			const fileConfig = { constructor: {} };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.constructor.port, 1);
+
+			// user hand-deletes the scope; the walk must see absence, not the prototype
+			const editedConfig = {};
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.strictEqual(editedConfig.constructor.port, 1);
+
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.strictEqual(editedConfig.constructor?.port, undefined, 'hand-deleted scope must stay deleted');
+		});
+
 		it('keeps the marker across a restart while a higher layer holds a scalar over the scope', function () {
 			process.env.HARPER_CONFIG = JSON.stringify({ myComponent: { port: 1 } });
 			const fileConfig = { myComponent: {} };

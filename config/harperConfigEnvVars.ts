@@ -28,6 +28,8 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { cloneDeep } from 'lodash';
 import { getBackupDirPath } from './configHelpers.ts';
+// Cyclic with configUtils (which imports this module); safe — the binding resolves at call time
+import { atomicWriteFile } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
@@ -464,7 +466,7 @@ function recordEmptyAncestorOriginal(fileConfig: ConfigObject, state: ConfigStat
 	const keys = path.split('.');
 	let current = fileConfig;
 	for (let i = 0; i < keys.length - 1; i++) {
-		current = current[keys[i]];
+		current = Object.prototype.hasOwnProperty.call(current, keys[i]) ? current[keys[i]] : undefined;
 		if (current === undefined) {
 			// An absent prefix cannot be a live file-declared empty scope, so markers at
 			// or under it are stale (the user deleted the scope while the env var held
@@ -592,11 +594,9 @@ function saveConfigState(rootPath: string, state: ConfigState): void {
 	// Ensure backup directory exists
 	fs.ensureDirSync(backupDir);
 
-	// Temp+rename: a torn state file resets to fresh on the next load, losing every
+	// Atomic write: a torn state file resets to fresh on the next load, losing every
 	// restoration record — the blast radius is user config-file content
-	const tmpPath = `${statePath}.${process.pid}.tmp`;
-	fs.writeJsonSync(tmpPath, state, { spaces: 2 });
-	fs.renameSync(tmpPath, statePath);
+	atomicWriteFile(statePath, JSON.stringify(state, null, 2) + '\n');
 }
 
 /**
