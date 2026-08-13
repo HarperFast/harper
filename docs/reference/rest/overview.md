@@ -33,10 +33,10 @@ rest: true
 rest:
   lastModified: true # enables Last-Modified response header support
   webSocket: false # disables automatic WebSocket support (enabled by default)
-  exactCount: false # serve Prefer: count=exact requests as estimates instead of scanning
+  exactCount: true # opt in to Prefer: count=exact scans (off by default; otherwise served as estimates)
 ```
 
-<VersionBadge version="v5.3.0" /> `exactCount` (default `false`) controls whether the [pagination total-count](./querying.md#pagination-and-total-count) feature honors `Prefer: count=exact`. Because an exact count scans the full matched set, it is off by default and such requests are served as cheaper estimates; set it to `true` for this application's REST interface to enable exact counts.
+<VersionBadge version="v5.3.0" /> `exactCount` (default `false`) controls whether the [pagination total-count](./querying.md#pagination-and-total-count) feature honors `Prefer: count=exact`. Because an exact count scans the full matched set, it is off by default; set this to `true` to enable exact counts for this application's REST interface. A `count=exact` request is otherwise served as a cheaper estimate.
 
 ## Tables and Their Automatic Endpoints
 

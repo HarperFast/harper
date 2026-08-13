@@ -179,16 +179,16 @@ GET /Product/?sort(+rating,-price)
 
 Use `limit(start,end)` to page through a collection, and opt in to a total match count with the `Prefer` request header (`Prefer: count=exact`) so a client can render pagination (for example "1-25 of 1,234") without a second request.
 
-Counting is opt-in: without the header, no count is computed and no count headers are returned. It also requires a `limit()` — a count request on an unbounded collection (no `limit()`) is served normally, with no count headers, since counting the whole collection would defeat the point of paging.
+Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a `limit()` within a supported page size — a request with no `limit()`, an oversized one, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
 
 ### Requesting a count
 
 Send a `Prefer` header on a `GET` (or `HEAD`) request to a collection:
 
-| Value             | Meaning                                                                                                         |
-| ----------------- | --------------------------------------------------------------------------------------------------------------- |
-| `count=exact`     | The exact number of matching records. Scans the full matched set, so it is more expensive than the page itself. |
-| `count=estimated` | A fast planner/table estimate. Cheap, approximate.                                                              |
+| Value             | Meaning                                                                                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `count=exact`     | The exact number of matching records. Scans the full matched set, so it is opt-in per mount (see below) and served as an estimate unless enabled. |
+| `count=estimated` | A fast planner/table estimate. Cheap, approximate.                                                                                                |
 
 ```http
 GET /Product/?category=software&limit(0,25)
@@ -218,9 +218,16 @@ The response status is always `200` — `Content-Range` is informational (Harper
 
 The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that reaches its internal work limit, or a query with no cardinality estimate (for example a `!=` or `=ct=` (contains) condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
 
-### Disabling exact counts
+### Enabling exact counts
 
-Because an exact count scans the full matched set, you can disable it in an application's REST configuration via the [`exactCount` option](./overview.md#configuration). With `exactCount: false`, a `count=exact` request is served as an estimate instead (the response reports `Preference-Applied: count=estimated`). Estimated counts are always available; the default is `true`.
+Because an exact count scans the full matched set, it is **off by default**. Enable it in an application's REST configuration via the [`exactCount` option](./overview.md#configuration):
+
+```yaml
+rest:
+  exactCount: true
+```
+
+Without it, a `count=exact` request is served as an estimate (the response reports `Preference-Applied: count=estimated`). Estimated counts are always available.
 
 <VersionBadge version="v4.3.0" />
 
