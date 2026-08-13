@@ -430,7 +430,11 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		// record-history reconstruction, and the read path tolerates the empty body.
 		if (!warnedBodylessMintTables.has(tableId)) {
 			warnedBodylessMintTables.add(tableId);
-			harperLogger.warn(`Audit entry (${type}) for record ${recordId} in table ${tableId} has no record body`);
+			// the stack identifies which write path delivered the undefined value (see #2153 follow-up)
+			harperLogger.warn(
+				`Audit entry (${type}) for record ${recordId} in table ${tableId} has no record body`,
+				new Error('bodyless audit mint')
+			);
 		}
 		action &= ~HAS_RECORD;
 	}
