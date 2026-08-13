@@ -7,6 +7,7 @@ import {
 } from '@harperfast/rocksdb-js';
 import { Id } from './ResourceInterface.ts';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
+import { ExtendedIterable } from '@harperfast/extended-iterable';
 
 declare module '@harperfast/rocksdb-js' {
 	interface DBI<T> {
@@ -36,26 +37,34 @@ export class RocksIndexStore extends RocksDatabase {
 		}
 		const translatedOptions = { ...options, start, end };
 		if (options.values === false) {
-			let first = true;
-			let previous: any;
-			return super
-				.getRange(translatedOptions)
-				.map(({ key }) => key[0])
-				.filter((key) => {
-					if (!first && compareKeys(previous, key) === 0) return false;
-					first = false;
-					previous = key;
-					return true;
-				});
+			const { limit, ...keyOptions } = translatedOptions;
+			const getKeys = () => super.getKeys(keyOptions);
+			return new ExtendedIterable({
+				*[Symbol.iterator]() {
+					if (limit !== undefined && limit <= 0) return;
+					let first = true;
+					let previous: any;
+					let yielded = 0;
+					for (const key of getKeys()) {
+						const indexedValue = key[0];
+						if (!first && compareKeys(previous, indexedValue) === 0) continue;
+						first = false;
+						previous = indexedValue;
+						yield indexedValue;
+						yielded++;
+						if (limit !== undefined && yielded >= limit) return;
+					}
+				},
+			});
 		}
 		return super.getRange(translatedOptions).map(({ key }) => {
 			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
 		});
 	}
 
-	getValues(indexedValue: any): Iterable<Id> {
+	getValues(indexedValue: any, options: Omit<StoreIteratorOptions, 'start' | 'end'> = {}): Iterable<Id> {
 		return super
-			.getKeys({ start: indexedValue, end: [indexedValue, MAXIMUM_KEY] })
+			.getKeys({ ...options, start: [indexedValue], end: [indexedValue, MAXIMUM_KEY] })
 			.map((key) => (key.length > 2 ? key.slice(1) : key[1]));
 	}
 

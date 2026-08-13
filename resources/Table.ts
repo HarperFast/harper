@@ -124,6 +124,7 @@ const RECORD_PRUNING_INTERVAL = 60000; // one minute
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
 const EVICTION_BATCH_SIZE = 100;
+const RECORD_EXPIRATION_BATCH_LIMIT = EVICTION_BATCH_SIZE * 100;
 // Cap on eviction-batch commits in flight at once, so commit I/O overlaps scan/staging without
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
@@ -6312,27 +6313,54 @@ export function makeTable(options) {
 				if (runningRecordExpiration) return;
 				runningRecordExpiration = true;
 				try {
+					let processed = 0;
+					let pendingEvictions: Promise<unknown>[] = [];
 					const expiresAtName = expiresAtProperty.name;
 					const index = indices[expiresAtName];
 					if (!index) throw new Error(`expiresAt attribute ${expiresAtProperty} must be indexed`);
-					for (const key of index.getRange({
+					expirationKeys: for (const key of index.getRange({
 						start: true,
 						values: false,
 						end: Date.now(),
 						snapshot: false,
 					})) {
-						for (const id of index.getValues(key)) {
+						for (const id of index.getValues(key, { snapshot: true })) {
 							const recordEntry = primaryStore.getEntry(id);
 							if (!recordEntry?.value) {
 								// cleanup the index if the record is gone
-								primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
+								if (primaryStore.ifVersion) {
+									primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
+								} else {
+									const transaction = new RocksTransaction(primaryStore.store);
+									const options = { transaction };
+									if (!primaryStore.getEntry(id, options)?.value) {
+										index.remove(key, id, options);
+										pendingEvictions.push(
+											transaction.commit().catch((error) => {
+												try {
+													transaction.abort();
+												} catch {}
+												if (error?.code !== 'ERR_BUSY')
+													logger.warn?.('Error cleaning dangling expiration index', id, error);
+											})
+										);
+									} else {
+										transaction.abort();
+									}
+								}
 							} else if (recordEntry.value[expiresAtName] < Date.now()) {
 								// make sure the record hasn't changed and won't change while removing
-								TableResource.evict(id, recordEntry.value, recordEntry.version);
+								pendingEvictions.push(Promise.resolve(TableResource.evict(id, recordEntry.value, recordEntry.version)));
 							}
+							if (++processed % EVICTION_BATCH_SIZE === 0) {
+								await Promise.all(pendingEvictions);
+								pendingEvictions = [];
+								await rest();
+							}
+							if (processed >= RECORD_EXPIRATION_BATCH_LIMIT) break expirationKeys;
 						}
-						await rest();
 					}
+					await Promise.all(pendingEvictions);
 				} catch (error) {
 					logger.error?.('Error in evicting old records', error);
 				} finally {

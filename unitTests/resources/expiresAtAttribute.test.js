@@ -120,6 +120,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const Table = makeTable('ExpiresAtIndexValues');
 		const expiresAt = Date.now() + 60_000;
 		await Table.put(0, { id: 0, expiresAt: expiresAt - 1 });
+		await Table.put(5, { id: 5, expiresAt: expiresAt - 1 });
 		await Table.put(1, { id: 1, expiresAt });
 		await Table.put(2, { id: 2, expiresAt });
 		await Table.put(3, { id: 3, expiresAt: expiresAt + 1 });
@@ -127,11 +128,55 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Table.primaryStore.committed;
 
 		const index = Table.indices.expiresAt;
+		const expirationKeys = index.getRange({ start: true, values: false, end: expiresAt + 1, snapshot: false });
+		assert.deepStrictEqual([...expirationKeys], [expiresAt - 1, expiresAt]);
+		assert.deepStrictEqual([...expirationKeys], [expiresAt - 1, expiresAt]);
+		assert.deepStrictEqual([...expirationKeys.map((value) => value)], [expiresAt - 1, expiresAt]);
 		assert.deepStrictEqual(
-			[...index.getRange({ start: true, values: false, end: expiresAt + 1, snapshot: false })],
+			[...index.getRange({ start: true, values: false, end: expiresAt + 1, limit: 2, snapshot: false })],
 			[expiresAt - 1, expiresAt]
 		);
-		assert.deepStrictEqual([...index.getValues(expiresAt)].sort(), [1, 2]);
+		const sweepEntries = [];
+		for (const key of expirationKeys) {
+			for (const id of index.getValues(key)) sweepEntries.push([key, id]);
+		}
+		assert.deepStrictEqual(sweepEntries, [
+			[expiresAt - 1, 0],
+			[expiresAt - 1, 5],
+			[expiresAt, 1],
+			[expiresAt, 2],
+		]);
+		assert.deepStrictEqual(
+			[...index.getValues(expiresAt)].sort((left, right) => left - right),
+			[1, 2]
+		);
 		assert.deepStrictEqual([...index.getValues(expiresAt + 2)], [[4, 'part']]);
+	});
+
+	it('physically evicts expired records and transactionally cleans dangling index entries', async function () {
+		const originalSetInterval = global.setInterval;
+		let runSweep;
+		global.setInterval = (callback, interval) => {
+			if (interval === 60_000) runSweep = callback;
+			return { unref() {} };
+		};
+		let Table;
+		try {
+			Table = makeTable('ExpiresAtSweep');
+		} finally {
+			global.setInterval = originalSetInterval;
+		}
+		assert(runSweep, 'table creation should register the expiration sweep');
+
+		const expiresAt = Date.now() - 1_000;
+		await Table.put(1, { id: 1, expiresAt });
+		await Table.put(2, { id: 2, expiresAt });
+		await Table.primaryStore.committed;
+		Table.primaryStore.removeSync(2);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1, 2]);
+
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], []);
 	});
 });
