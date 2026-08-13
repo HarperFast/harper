@@ -261,6 +261,27 @@ describe('HARPER_CONFIG', function () {
 			assert.strictEqual(editedConfig.myComponent, undefined, 'hand-deleted scope must stay deleted');
 		});
 
+		it('keeps the marker across a restart while a higher layer holds a scalar over the scope', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ myComponent: { port: 1 } });
+			const fileConfig = { myComponent: {} };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ myComponent: false });
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent, false);
+
+			// ordinary restart with both vars unchanged: occlusion is not deletion
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent, false);
+
+			// both layers released: the file-declared empty scope must come back
+			delete process.env.HARPER_SET_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.deepStrictEqual(fileConfig.myComponent, {}, 'marker must survive restarts under an occluding scalar');
+		});
+
 		it('keeps a declared-empty scope restorable across stacked CONFIG and SET layers', function () {
 			process.env.HARPER_CONFIG = JSON.stringify({ myComponent: { port: 1 } });
 			const fileConfig = { myComponent: {} };

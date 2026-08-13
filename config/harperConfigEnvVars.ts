@@ -441,7 +441,7 @@ function deleteNestedValue(obj: ConfigObject, path: string): string[] {
 	// Object.prototype member (`constructor`, `toString`) would pass, no-op the
 	// delete, and let the prune loop eat a deliberate empty scope.
 	if (!Object.prototype.hasOwnProperty.call(current, leafKey)) {
-		return []; // Absent leaf: nothing deleted, nothing to prune
+		return [];
 	}
 	delete current[leafKey];
 
@@ -465,12 +465,12 @@ function recordEmptyAncestorOriginal(fileConfig: ConfigObject, state: ConfigStat
 	let current = fileConfig;
 	for (let i = 0; i < keys.length - 1; i++) {
 		current = current[keys[i]];
-		if (!isPlainObject(current)) {
+		if (current === undefined) {
 			// An absent prefix cannot be a live file-declared empty scope, so markers at
 			// or under it are stale (the user deleted the scope while the env var held
-			// it) and must not resurrect it later. Keyed off absence, not emptiness: an
-			// apply's first leaf records the marker and populates the scope, so later
-			// leaves see it non-empty and must leave the marker alone.
+			// it) and must not resurrect it later. Only true absence qualifies: a scalar
+			// here is a higher layer occluding the scope, not the user deleting it, and
+			// emptiness is what an apply's first leaf creates right after recording.
 			const prefix = keys.slice(0, i + 1).join('.');
 			for (const markerPath of Object.keys(state.emptyScopeOriginals)) {
 				if (markerPath === prefix || markerPath.startsWith(prefix + '.')) {
@@ -479,6 +479,7 @@ function recordEmptyAncestorOriginal(fileConfig: ConfigObject, state: ConfigStat
 			}
 			return;
 		}
+		if (!isPlainObject(current)) return;
 		if (Object.keys(current).length === 0) {
 			state.emptyScopeOriginals[keys.slice(0, i + 1).join('.')] = true;
 			return;
@@ -591,7 +592,11 @@ function saveConfigState(rootPath: string, state: ConfigState): void {
 	// Ensure backup directory exists
 	fs.ensureDirSync(backupDir);
 
-	fs.writeJsonSync(statePath, state, { spaces: 2 });
+	// Temp+rename: a torn state file resets to fresh on the next load, losing every
+	// restoration record — the blast radius is user config-file content
+	const tmpPath = `${statePath}.${process.pid}.tmp`;
+	fs.writeJsonSync(tmpPath, state, { spaces: 2 });
+	fs.renameSync(tmpPath, statePath);
 }
 
 /**
@@ -651,8 +656,7 @@ function applyConfigLayer(
 					state.originalValues[path] = currentValue;
 				}
 			} else if (currentValue == null) {
-				// Observe the file at populate time even when re-asserting an owned
-				// leaf, so a scope the user hand-deleted clears its stale marker
+				// runs on re-assert too, so a hand-deleted scope clears its stale marker
 				recordEmptyAncestorOriginal(fileConfig, state, path);
 			}
 		}
