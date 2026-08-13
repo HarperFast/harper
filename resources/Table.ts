@@ -2237,9 +2237,10 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 			checkValidId(id);
-			if (fullUpdate && recordUpdate == null && (context as any)?.source) {
-				// A put delivered by a source/replication apply must carry the record content (only source
-				// applies skip record validation, so this is the one path a nullish full update can reach).
+			if (fullUpdate && recordUpdate == null && options?.isNotification) {
+				// A put delivered by a source/replication apply must carry the record content (source applies
+				// skip record validation, so this is the path a nullish full update can reach; isNotification
+				// scopes the guard to the apply dispatcher, not instance flows that fill from #changes).
 				// Applying it stores nothing and mints an audit-only entry misrepresenting the write (#2153);
 				// skip it instead — a later real write supersedes, and a redelivery of this version re-skips.
 				if (!warnedNullSourcePut) {
