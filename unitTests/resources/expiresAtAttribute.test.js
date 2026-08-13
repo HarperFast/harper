@@ -125,6 +125,11 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Table.put(3, { id: 3, expiresAt: expiresAt + 1 });
 		await Table.primaryStore.committed;
 
-		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)].sort(), [1, 2]);
+		const index = Table.indices.expiresAt;
+		assert.deepStrictEqual(
+			[...index.getRange({ start: true, values: false, end: expiresAt + 1, snapshot: false })],
+			[expiresAt - 1, expiresAt]
+		);
+		assert.deepStrictEqual([...index.getValues(expiresAt)].sort(), [1, 2]);
 	});
 });

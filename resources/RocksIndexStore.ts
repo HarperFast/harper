@@ -6,7 +6,7 @@ import {
 	RocksDatabase,
 } from '@harperfast/rocksdb-js';
 import { Id } from './ResourceInterface.ts';
-import { MAXIMUM_KEY } from 'ordered-binary';
+import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 
 declare module '@harperfast/rocksdb-js' {
 	interface DBI<T> {
@@ -36,6 +36,19 @@ export class RocksIndexStore extends RocksDatabase {
 			end = [end, MAXIMUM_KEY];
 		}
 		const translatedOptions = { ...options, start, end };
+		if (options.values === false) {
+			let first = true;
+			let previous: any;
+			return super
+				.getRange(translatedOptions)
+				.map(({ key }) => key[0])
+				.filter((key) => {
+					if (!first && compareKeys(previous, key) === 0) return false;
+					first = false;
+					previous = key;
+					return true;
+				});
+		}
 		return super.getRange(translatedOptions).map(({ key }) => {
 			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
 		});
