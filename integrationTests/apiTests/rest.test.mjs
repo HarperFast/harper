@@ -352,6 +352,16 @@ suite('REST query syntax', { skip: skipSuite }, (ctx) => {
 			.expect(200);
 	});
 
+	test('[rest] a deep-page offset past the scan budget falls through with no count', () => {
+		// limit(start,end) with a huge start is a huge offset; the count path must not iterate an unbounded
+		// offset before its guardrail engages, so the request falls through with no Content-Range.
+		return client
+			.reqRest('/Related/?sort(id)&limit(2000000,2000010)')
+			.set('Prefer', 'count=exact')
+			.expect((r) => assert.equal(r.headers['content-range'], undefined, r.text))
+			.expect(200);
+	});
+
 	test('[rest] a collection read declares Vary: Prefer', () => {
 		// So a shared cache keys on Prefer and never serves count headers to a request that did not ask.
 		return client

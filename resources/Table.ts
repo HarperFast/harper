@@ -3510,13 +3510,23 @@ export function makeTable(options) {
 			// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
 			// table estimate. Opt-in only — the default streaming path below is untouched.
 			//
-			// Requires a bounded page. Counting is a pagination feature; the page limit must be a finite,
-			// non-negative integer no larger than MAX_COUNT_PAGE. A missing limit (a bare collection GET), a
-			// non-finite/negative/non-integer limit (limit(Infinity), limit(foo)), or an oversized one all
-			// fall through to the normal streaming path with no count, so a count request can't materialize
-			// an unbounded page before the guardrail below applies.
+			// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
+			// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
+			// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
+			// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
+			// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
+			// normal streaming path with no count. This bounds the offset too: without it a huge offset would
+			// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
 			const pageLimit = target.limit as number;
-			if (target.count && Number.isInteger(pageLimit) && pageLimit >= 0 && pageLimit <= MAX_COUNT_PAGE) {
+			if (
+				target.count &&
+				Number.isInteger(pageLimit) &&
+				pageLimit >= 0 &&
+				pageLimit <= MAX_COUNT_PAGE &&
+				Number.isInteger(offset) &&
+				offset >= 0 &&
+				offset + pageLimit <= MAX_EXACT_COUNT_SCAN
+			) {
 				const wantExact = target.count === 'exact';
 				const pageEnd = offset + pageLimit;
 				const countStart = performance.now();

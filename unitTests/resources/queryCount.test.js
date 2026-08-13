@@ -89,6 +89,19 @@ describe('Table.search count (REST pagination total-count)', () => {
 		}
 	});
 
+	it('a negative or oversized-window offset falls through to streaming (no count)', function () {
+		// The offset must be a finite non-negative integer, and offset+limit must be within the scan
+		// budget — otherwise a huge offset would postpone the exact guardrail until it had been scanned.
+		for (const t of [
+			{ offset: -5, limit: 10 },
+			{ offset: 2_000_000, limit: 10 },
+		]) {
+			const results = CountTable.search({ ...t, count: 'exact' });
+			assert.ok(!Array.isArray(results), `offset=${t.offset} must not materialize a count page`);
+			assert.strictEqual(results.recordCount, undefined);
+		}
+	});
+
 	it('estimated: returns the page plus a positive estimate, flagged non-exact', async function () {
 		const page = await CountTable.search({ limit: 5, count: 'estimated' });
 		assert.strictEqual(page.length, 5);
