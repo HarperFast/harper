@@ -45,6 +45,19 @@ describe('Audit entry record flags match the body (#2153)', () => {
 		assert.equal(read.getValue({}), undefined);
 	});
 
+	it('a raw-content read of a bodyless partial returns undefined, not a reconstruction', () => {
+		const entry = createAuditEntry({ ...baseRecord, type: 'patch', encodedRecord: undefined });
+		const read = readAuditEntry(Buffer.from(entry));
+		// fullRecord=false asks for the entry's own (absent) content; the guard must return
+		// undefined instead of falling through to the auditTime reconstruction
+		const storeMustNotBeTouched = {
+			get getEntry() {
+				throw new Error('reconstruction must not run for a raw-content read');
+			},
+		};
+		assert.equal(read.getValue(storeMustNotBeTouched, false, baseRecord.version), undefined);
+	});
+
 	it('keeps HAS_RECORD when a body is present', () => {
 		const encodedRecord = Buffer.from([0x81, 0xa1, 0x61, 0x01]); // msgpack {a: 1}
 		const entry = createAuditEntry({ ...baseRecord, encodedRecord });

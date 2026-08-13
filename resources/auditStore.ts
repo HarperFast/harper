@@ -111,6 +111,9 @@ const MAX_DELETES_PER_CLEANUP = 1000;
 // setTimeout silently falls back to 1ms for delays past this, which would turn the backoff into the
 // hot loop it is meant to avoid — a `logging.auditRetention` over ~248 days reaches it via retention/10
 const MAX_CLEANUP_DELAY = 2 ** 31 - 1;
+// separate mint/read latches so a legacy-entry read warn can't mask the more actionable
+// "this node is still minting bodyless entries" signal for the same table
+const warnedBodylessMintTables = new Set<number>();
 const warnedBodylessTables = new Set<number>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
@@ -425,7 +428,10 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		// Readers decode the remainder whenever HAS_RECORD is set, so an audit-only commit minted with
 		// no body must not advertise one (#2153). HAS_PARTIAL_RECORD is kept: it also drives
 		// record-history reconstruction, and the read path tolerates the empty body.
-		harperLogger.warn(`Audit entry (${type}) for record ${recordId} in table ${tableId} has no record body`);
+		if (!warnedBodylessMintTables.has(tableId)) {
+			warnedBodylessMintTables.add(tableId);
+			harperLogger.warn(`Audit entry (${type}) for record ${recordId} in table ${tableId} has no record body`);
+		}
 		action &= ~HAS_RECORD;
 	}
 	let position = start + 1;
@@ -630,27 +636,28 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			getValue(store, fullRecord?, auditTime?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
 					if (decoder.position >= (end ?? buffer.byteLength)) {
-						// Entry advertises a record but has no body (minted before #2153); nothing to decode.
-						// Latched per table: this getter runs inside range scans, so an unlatched warn would
-						// repeat for every legacy entry on every replication/backfill pass.
+						// Entry advertises a record but has no body (minted before #2153): nothing to decode, and
+						// return undefined rather than falling through — this branch means the caller asked for the
+						// entry's own content (full-record consumers with an auditTime never enter it for partials
+						// and still reconstruct below). Warn latched per table: this getter runs inside range scans.
 						if (!warnedBodylessTables.has(tableId)) {
 							warnedBodylessTables.add(tableId);
 							harperLogger.warn(
 								`Audit entry (${EVENT_TYPES[action & 0xf]}) for table ${tableId} advertises a record but has no body; treating as having no record`
 							);
 						}
-					} else {
-						if (!value) {
-							value = decodeFromDatabase(
-								// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
-								// its own time), so skip the prefix heuristic — otherwise a classic record whose
-								// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
-								() => store.decoder.decode(buffer.subarray(decoder.position, end), { noMetadata: true }),
-								store.rootStore
-							);
-						}
-						return value;
+						return;
 					}
+					if (!value) {
+						value = decodeFromDatabase(
+							// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
+							// its own time), so skip the prefix heuristic — otherwise a classic record whose
+							// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
+							() => store.decoder.decode(buffer.subarray(decoder.position, end), { noMetadata: true }),
+							store.rootStore
+						);
+					}
+					return value;
 				}
 				if (action & HAS_PARTIAL_RECORD && auditTime) {
 					const recordId = this.recordId;
