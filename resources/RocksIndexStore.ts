@@ -67,6 +67,22 @@ export class RocksIndexStore extends RocksDatabase {
 }
 
 /**
+ * Index entries are composite [indexedValue, primaryKey] keys, so inclusive/exclusive bounds on
+ * indexed *values* translate to [value, MAXIMUM_KEY] composite bounds (mirroring getRange above)
+ * rather than the encoded-byte successor the base implementation would apply. Defined only when
+ * the installed rocksdb-js provides estimateCount, so `typeof store.estimateCount === 'function'`
+ * remains a capability check on older versions.
+ */
+if (typeof (RocksDatabase.prototype as any).estimateCount === 'function') {
+	(RocksIndexStore.prototype as any).estimateCount = function estimateCount(options?: any) {
+		let { start, end, exclusiveStart, inclusiveEnd } = options ?? {};
+		if (exclusiveStart && start !== undefined) start = [start, MAXIMUM_KEY];
+		if (inclusiveEnd && end !== undefined) end = [end, MAXIMUM_KEY];
+		return (RocksDatabase.prototype as any).estimateCount.call(this, { start, end });
+	};
+}
+
+/**
  * Add `getValuesCount` to the DBI prototype which is used by the `RocksDatabase` and `Transaction`
  * classes.
  */
