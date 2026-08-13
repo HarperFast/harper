@@ -389,6 +389,7 @@ export function makeTable(options) {
 	if (!attributes) attributes = [];
 	if (!properties) properties = projectAttributesToProperties(attributes);
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
+	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
@@ -2236,6 +2237,20 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 			checkValidId(id);
+			if (fullUpdate && recordUpdate == null && (context as any)?.source) {
+				// A put delivered by a source/replication apply must carry the record content (only source
+				// applies skip record validation, so this is the one path a nullish full update can reach).
+				// Applying it stores nothing and mints an audit-only entry misrepresenting the write (#2153);
+				// skip it instead — a later real write supersedes, and a redelivery of this version re-skips.
+				if (!warnedNullSourcePut) {
+					warnedNullSourcePut = true;
+					logger.warn?.(
+						`Skipping a source-applied put with no record content for ${tableName} id ${id} from node ${options?.nodeId}`,
+						new Error('valueless source put')
+					);
+				}
+				return;
+			}
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
