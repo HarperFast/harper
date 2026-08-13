@@ -614,7 +614,7 @@ describe('HNSW post-sort distance', () => {
 		assert.equal(nearFarVector[0].$distance, 0);
 	});
 
-	it('calculates distance without caching when an entry is unavailable', () => {
+	it('caches distance by vector when an entry is unavailable', () => {
 		const sort = { attribute: 'vector', target: [1, 1], distance: 'euclidean' };
 		const context = {};
 		const vector = [2, 0];
@@ -622,6 +622,10 @@ describe('HNSW post-sort distance', () => {
 
 		assert.equal(distance, 2);
 		assert.equal(context.vectorDistanceCaches.get(sort).get(vector), 2);
+	});
+
+	it('calculates distance without caching when context is unavailable', () => {
+		const sort = { attribute: 'vector', target: [1, 1], distance: 'euclidean' };
 		assert.equal(T.indices.vector.customIndex.propertyResolver([2, 0], undefined, null, sort), 2);
 	});
 
