@@ -111,9 +111,9 @@ const MAX_DELETES_PER_CLEANUP = 1000;
 // setTimeout silently falls back to 1ms for delays past this, which would turn the backoff into the
 // hot loop it is meant to avoid — a `logging.auditRetention` over ~248 days reaches it via retention/10
 const MAX_CLEANUP_DELAY = 2 ** 31 - 1;
-// separate mint/read latches so a legacy-entry read warn can't mask the more actionable
-// "this node is still minting bodyless entries" signal for the same table
-const warnedBodylessMintTables = new Set<number>();
+// separate mint/read latches so a legacy-entry read warn can't mask the still-minting signal;
+// mint latch keyed per (table, type) so one entry type can't silence another's producer stack
+const warnedBodylessMints = new Set<string>();
 const warnedBodylessTables = new Set<number>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
@@ -428,9 +428,9 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		// Readers decode the remainder whenever HAS_RECORD is set, so an audit-only commit minted with
 		// no body must not advertise one (#2153). HAS_PARTIAL_RECORD is kept: it also drives
 		// record-history reconstruction, and the read path tolerates the empty body.
-		if (!warnedBodylessMintTables.has(tableId)) {
-			warnedBodylessMintTables.add(tableId);
-			// the stack identifies which write path delivered the undefined value (see #2153 follow-up)
+		if (!warnedBodylessMints.has(`${tableId}:${type}`)) {
+			warnedBodylessMints.add(`${tableId}:${type}`);
+			// the Error's stack identifies which write path delivered the missing value
 			harperLogger.warn(
 				`Audit entry (${type}) for record ${recordId} in table ${tableId} has no record body`,
 				new Error('bodyless audit mint')
