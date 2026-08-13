@@ -536,6 +536,20 @@ describe('HNSW post-sort distance', () => {
 		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
 	});
 
+	it('returns the index-provided distance without post-ordering', async () => {
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target: [7, 8], distance: 'euclidean' },
+				limit: 1,
+				select: ['id', 'vector', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 4);
+		assert.deepEqual(results[0].vector, [7, 8]);
+		assert.equal(results[0].$distance, 0);
+	});
+
 	it('sorts a missing vector last among records with vectors', async () => {
 		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
 		const results = await fromAsync(
@@ -637,7 +651,7 @@ describe('HNSW post-sort distance', () => {
 					sort: { attribute: 'vector' },
 					select: ['id', '$distance'],
 				}),
-			{ message: 'The target vector must be an array' }
+			{ message: 'A target vector must be provided for an HNSW query' }
 		);
 	});
 
@@ -649,7 +663,7 @@ describe('HNSW post-sort distance', () => {
 					sort: { attribute: 'vector' },
 					select: ['id', '$distance'],
 				}),
-			{ message: 'The target vector must be an array' }
+			{ message: 'A target vector must be provided for an HNSW query' }
 		);
 	});
 

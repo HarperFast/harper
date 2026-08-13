@@ -1040,6 +1040,7 @@ export class HierarchicalNavigableSmallWorld {
 	 * and $distance.
 	 */
 	exactDistance(searchCondition: { target: number[]; distance?: string }, recordVector: number[] | Int8Array): number {
+		if (!searchCondition.target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(searchCondition.target)) throw new ClientError('The target vector must be an array');
 		const fn =
 			searchCondition.distance === 'euclidean'
@@ -1247,7 +1248,8 @@ export class HierarchicalNavigableSmallWorld {
 			let vectorDistanceCaches = context.vectorDistanceCaches;
 			if (!vectorDistanceCaches) vectorDistanceCaches = context.vectorDistanceCaches = new WeakMap();
 			let vectorDistances = vectorDistanceCaches.get(sortDefinition);
-			const cacheKey = vector && typeof vector === 'object' ? vector : null;
+			const cacheKey =
+				entry && typeof entry === 'object' ? entry : vector && typeof vector === 'object' ? vector : null;
 			if (vectorDistances && cacheKey) {
 				const difference = vectorDistances.get(cacheKey);
 				if (difference !== undefined) return difference;

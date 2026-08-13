@@ -4892,6 +4892,7 @@ export function makeTable(options) {
 				$record: (object, context, entry) => (entry ? { value: object } : object),
 				$distance: (object, context, entry, returnEntry, sort) => {
 					if (!entry) return;
+					if (entry.distance !== undefined) return entry.distance;
 					let distanceSort = sort;
 					while (
 						distanceSort &&
@@ -4903,7 +4904,8 @@ export function makeTable(options) {
 					if (!distanceSort) return;
 					const customIndex = indices[distanceSort.attribute].customIndex;
 					const vector = object[distanceSort.attribute];
-					const cachedDistance = entry.distance ?? context?.vectorDistanceCaches?.get(distanceSort)?.get(vector);
+					const distanceCache = context?.vectorDistanceCaches?.get(distanceSort);
+					const cachedDistance = distanceCache?.get(entry) ?? distanceCache?.get(vector);
 					if (cachedDistance !== undefined) return cachedDistance;
 					return customIndex.propertyResolver(vector, context, entry, distanceSort);
 				},
