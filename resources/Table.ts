@@ -3363,6 +3363,11 @@ export function makeTable(options) {
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
 			const sort = typeof target.sort === 'object' && target.sort;
+			for (let order = sort; order; order = order.next) {
+				if (typeof order.attribute !== 'string') continue;
+				const customIndex = indices[order.attribute]?.customIndex;
+				if (customIndex?.exactDistance) customIndex.exactDistance(order, null);
+			}
 			let postOrdering;
 			if (sort) {
 				// TODO: Support index-assisted sorts of unions, which will require potentially recursively adding/modifying an order aligned condition and be able to recursively undo it if necessary
@@ -3410,9 +3415,12 @@ export function makeTable(options) {
 					if (sort.next) {
 						postOrdering = {
 							dbOrderedAttribute: sort.attribute,
+							dbOrderedSort: sort,
 							attribute: sort.next.attribute,
 							descending: sort.next.descending,
 							next: sort.next.next,
+							target: (sort.next as any).target,
+							distance: (sort.next as any).distance,
 						};
 					}
 				} else {
@@ -3494,7 +3502,8 @@ export function makeTable(options) {
 				ensure_loaded,
 				true,
 				boundRowFilter,
-				includeExpired
+				includeExpired,
+				postOrdering
 			);
 			let results = TableResource.transformToOrderedSelect(
 				entries,
@@ -3555,10 +3564,9 @@ export function makeTable(options) {
 					function createComparator(order: Sort) {
 						const nextComparator = order.next && createComparator(order.next);
 						const descending = order.descending;
-						(context as any).sort = order; // make sure this is set to the current sort order
 						return (entryA, entryB) => {
-							const a = getAttributeValue(entryA, order.attribute, context);
-							const b = getAttributeValue(entryB, order.attribute, context);
+							const a = getAttributeValue(entryA, order.attribute, context, order);
+							const b = getAttributeValue(entryB, order.attribute, context, order);
 							const diff = descending
 								? compareKeys(convertToComparableKeys(b), convertToComparableKeys(a))
 								: compareKeys(convertToComparableKeys(a), convertToComparableKeys(b));
@@ -3599,7 +3607,12 @@ export function makeTable(options) {
 									// if the index has already provided the first order of sorting, we only need to sort
 									// within each grouping
 									if (dbOrderedAttribute) {
-										const groupingValue = getAttributeValue(entry, dbOrderedAttribute, context);
+										const groupingValue = getAttributeValue(
+											entry,
+											dbOrderedAttribute,
+											context,
+											(sort as any).dbOrderedSort
+										);
 										if (firstEntry) {
 											firstEntry = false;
 											lastGroupingValue = groupingValue;
@@ -3698,6 +3711,7 @@ export function makeTable(options) {
 		 * authorization verdict can't be made on bytes that differ from what the caller receives.
 		 * @param includeExpired when true, a row past its TTL but not yet swept is treated as a live
 		 * match rather than gone (used by the SQL engine's UPDATE/DELETE row-finder).
+		 * @param sort post-ordering owned by this selection
 		 * @returns
 		 */
 		static transformEntryForSelect(
@@ -3708,7 +3722,8 @@ export function makeTable(options) {
 			ensure_loaded?,
 			canSkip?,
 			rowFilter?,
-			includeExpired?
+			includeExpired?,
+			sort?
 		) {
 			let checkLoaded;
 			if (
@@ -3784,7 +3799,7 @@ export function makeTable(options) {
 						swrResource.setRecord(record);
 						const loadingFromSource = ensureLoadedFromSource(source, entry.key ?? entry, entry, context, swrResource);
 						if (loadingFromSource?.then) {
-							return loadingFromSource.then(transform);
+							return loadingFromSource.then(transform.bind(this));
 						}
 					}
 				}
@@ -3814,7 +3829,7 @@ export function makeTable(options) {
 									value = filterMap.fromRecord?.(record);
 								}
 							} else {
-								value = resolver(record, context, entry, true);
+								value = resolver(record, context, entry, true, sort);
 							}
 							const handleResolvedValue = (value: any) => {
 								if (resolver.directReturn) return callback(value, attribute_name);
@@ -3836,7 +3851,11 @@ export function makeTable(options) {
 											context,
 											targetReadTxn,
 											filterMap,
-											ensure_loaded
+											ensure_loaded,
+											undefined,
+											undefined,
+											undefined,
+											typeof attribute.sort === 'object' && attribute.sort
 										));
 									if (Array.isArray(value)) {
 										const results = [];
@@ -4888,8 +4907,24 @@ export function makeTable(options) {
 				$updatedTime: (object, context, entry) => entry.version,
 				$expiresAt: (object, context, entry) => entry.expiresAt,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
-				$distance: (object, context, entry) => {
-					return entry && (entry.distance ?? context?.vectorDistances?.get(entry));
+				$distance: (object, context, entry, returnEntry, sort) => {
+					if (!entry) return;
+					if (entry.distance !== undefined) return entry.distance;
+					let distanceSort = sort;
+					while (
+						distanceSort &&
+						(typeof distanceSort.attribute !== 'string' ||
+							!Array.isArray(distanceSort.target) ||
+							!indices[distanceSort.attribute]?.customIndex?.propertyResolver)
+					)
+						distanceSort = distanceSort.next;
+					if (!distanceSort) return;
+					const customIndex = indices[distanceSort.attribute].customIndex;
+					const vector = object[distanceSort.attribute];
+					const distanceCache = context?.vectorDistanceCaches?.get(distanceSort);
+					const cachedDistance = distanceCache?.get(entry) ?? distanceCache?.get(vector);
+					if (cachedDistance !== undefined) return cachedDistance;
+					return customIndex.propertyResolver(vector, context, entry, distanceSort);
 				},
 			};
 			for (const attribute of this.attributes) {
@@ -5037,9 +5072,14 @@ export function makeTable(options) {
 					attribute.resolve.directReturn = true;
 				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
 					const customIndex = indices[attribute.name].customIndex;
-					propertyResolvers[attribute.name] = (object, context, entry) => {
+					propertyResolvers[attribute.name] = (object, context, entry, returnEntry, sort, comparing) => {
 						const value = object[attribute.name];
-						return customIndex.propertyResolver(value, context, entry);
+						const sortAttribute = sort?.attribute;
+						const resolvesSort =
+							comparing === true &&
+							(sortAttribute === attribute.name ||
+								(Array.isArray(sortAttribute) && sortAttribute[sortAttribute.length - 1] === attribute.name));
+						return customIndex.propertyResolver(value, context, entry, resolvesSort ? sort : undefined);
 					};
 					propertyResolvers[attribute.name].directReturn = true;
 				}
@@ -5605,7 +5645,7 @@ export function makeTable(options) {
 			return transaction;
 		}
 	}
-	function getAttributeValue(entry, attribute_name, context) {
+	function getAttributeValue(entry, attribute_name, context, sort?) {
 		if (!entry) {
 			return;
 		}
@@ -5617,14 +5657,17 @@ export function makeTable(options) {
 			for (let i = 0, l = attribute_name.length; i < l; i++) {
 				const attribute = attribute_name[i];
 				const resolver = resolvers?.[attribute];
-				value = resolver && value ? resolver(value, context, entry) : value?.[attribute];
+				value =
+					resolver && value
+						? resolver(value, context, entry, false, i === l - 1 ? sort : undefined, true)
+						: value?.[attribute];
 				entry = null; // can't use this in the nested object
 				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
 			return value;
 		}
 		const resolver = propertyResolvers[attribute_name];
-		return resolver ? resolver(record, context, entry) : record[attribute_name];
+		return resolver ? resolver(record, context, entry, false, sort, true) : record[attribute_name];
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost

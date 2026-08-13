@@ -491,6 +491,285 @@ describe('HNSW search result loading (searchByIndex)', () => {
 	});
 });
 
+describe('HNSW post-sort distance', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const distanceCalculator = new HierarchicalNavigableSmallWorld();
+	let T;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWPostSortDistanceTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'rank' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean' }, type: 'Array' },
+			],
+		});
+		await T.put(1, { group: 'single', vector: [2, 0] });
+		await T.put(2, { group: 'metric', rank: 1, vector: [0.1, 0.1] });
+		await T.put(3, { group: 'metric', rank: 1, vector: [1.2, 0.8] });
+		await T.put(4, { group: 'metric', rank: 2, vector: [7, 8] });
+		await T.put(5, { group: 'missing' });
+		await T.put(6, { group: 'missing', vector: [2, 0] });
+	});
+
+	after(() => T.dropTable());
+
+	it('returns $distance when a selective condition leaves one result', async () => {
+		const query = {
+			conditions: [{ attribute: 'group', value: 'single' }],
+			sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
+			select: ['id', '$distance'],
+		};
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+
+		for (let i = 0; i < 2; i++) {
+			const results = await fromAsync(T.search(query));
+			assert.equal(results.length, 1);
+			assert(Number.isFinite(results[0].$distance));
+			assert.equal(results[0].$distance, 2);
+		}
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('returns the index-provided distance without post-ordering', async () => {
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target: [7, 8], distance: 'euclidean' },
+				limit: 1,
+				select: ['id', 'vector', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 4);
+		assert.deepEqual(results[0].vector, [7, 8]);
+		assert.equal(results[0].$distance, 0);
+	});
+
+	it('sorts a missing vector last among records with vectors', async () => {
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'missing' }],
+				sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
+				select: ['id', '$distance'],
+			})
+		);
+
+		assert.deepEqual(
+			results.map(({ id, $distance }) => [id, $distance]),
+			[
+				[6, 2],
+				[5, Infinity],
+			]
+		);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('resolves an object-form $distance select', async () => {
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'single' }],
+				sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
+				select: ['id', { name: '$distance' }],
+			})
+		);
+
+		assert.equal(results.length, 1);
+		assert.equal(results[0].$distance, 2);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('does not reuse distances across targets in the same context', async () => {
+		const context = {};
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const search = (target) =>
+			fromAsync(
+				T.search(
+					{
+						conditions: [{ attribute: 'group', value: 'metric' }],
+						sort: { attribute: 'vector', target, distance: 'euclidean' },
+						select: ['id', '$distance'],
+					},
+					context
+				)
+			);
+
+		const first = await search([0, 0]);
+		const second = await search([7, 8]);
+		assert.equal(first[0].id, 2);
+		assert.equal(second[0].id, 4);
+		assert.equal(second[0].$distance, 0);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('does not share the active sort between concurrent searches', async () => {
+		const context = {};
+		const search = (target) =>
+			fromAsync(
+				T.search(
+					{
+						conditions: [{ attribute: 'group', value: 'metric' }],
+						sort: { attribute: 'vector', target, distance: 'euclidean' },
+						select: ['id', '$distance'],
+					},
+					context
+				)
+			);
+
+		const [nearOrigin, nearFarVector] = await Promise.all([search([0, 0]), search([7, 8])]);
+		assert.equal(nearOrigin[0].id, 2);
+		assert.equal(nearFarVector[0].id, 4);
+		assert.equal(nearFarVector[0].$distance, 0);
+	});
+
+	it('caches distance by vector when an entry is unavailable', () => {
+		const sort = { attribute: 'vector', target: [1, 1], distance: 'euclidean' };
+		const context = {};
+		const vector = [2, 0];
+		const distance = T.indices.vector.customIndex.propertyResolver(vector, context, null, sort);
+
+		assert.equal(distance, 2);
+		assert.equal(context.vectorDistanceCaches.get(sort).get(vector), 2);
+	});
+
+	it('calculates distance without caching when context is unavailable', () => {
+		const sort = { attribute: 'vector', target: [1, 1], distance: 'euclidean' };
+		assert.equal(T.indices.vector.customIndex.propertyResolver([2, 0], undefined, null, sort), 2);
+	});
+
+	it('rejects a targetless post-sort query', () => {
+		assert.throws(
+			() =>
+				T.search({
+					conditions: [{ attribute: 'group', value: 'metric' }],
+					sort: { attribute: 'vector' },
+					select: ['id', '$distance'],
+				}),
+			{ message: 'A target vector must be provided for an HNSW query' }
+		);
+	});
+
+	it('rejects a targetless vector sort before reading an empty result set', () => {
+		assert.throws(
+			() =>
+				T.search({
+					conditions: [{ attribute: 'group', value: 'empty' }],
+					sort: { attribute: 'vector' },
+					select: ['id', '$distance'],
+				}),
+			{ message: 'A target vector must be provided for an HNSW query' }
+		);
+	});
+
+	it('does not resolve $distance or the vector from a stale sort', async () => {
+		const context = {};
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const sorted = await fromAsync(
+			T.search(
+				{
+					conditions: [{ attribute: 'group', value: 'single' }],
+					sort: { attribute: 'vector', target: [1, 1] },
+					select: ['id', 'vector', '$distance'],
+				},
+				context
+			)
+		);
+		assert.deepEqual(sorted[0].vector, [2, 0]);
+		assert.equal(sorted[0].$distance, 2);
+		const unsorted = await fromAsync(
+			T.search(
+				{
+					conditions: [{ attribute: 'group', value: 'single' }],
+					select: ['id', 'vector', '$distance'],
+				},
+				context
+			)
+		);
+		assert.equal(unsorted[0].$distance, undefined);
+		assert.deepEqual(unsorted[0].vector, [2, 0]);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('uses the full secondary vector sort definition during post-ordering', async () => {
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'metric' }],
+				sort: {
+					attribute: 'group',
+					next: { attribute: 'vector', target: [7, 8], distance: 'euclidean' },
+				},
+				select: ['id', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 4);
+		assert.equal(results[0].$distance, 0);
+	});
+
+	it('returns $distance for a secondary vector sort after an unindexed sort', async () => {
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'metric' }],
+				sort: {
+					attribute: 'rank',
+					next: { attribute: 'vector', target: [1.2, 0.8], distance: 'euclidean' },
+				},
+				select: ['id', 'vector', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 3);
+		assert.deepEqual(results[0].vector, [1.2, 0.8]);
+		assert.equal(results[0].$distance, 0);
+	});
+
+	it('rejects an unknown metric on the exact post-sort path', () => {
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		assert.throws(
+			() =>
+				T.search({
+					conditions: [{ attribute: 'group', value: 'metric' }],
+					sort: { attribute: 'vector', target: [1, 1], distance: 'manhattan' },
+					select: ['id', '$distance'],
+				}),
+			{ message: 'Unknown distance function' }
+		);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('uses the requested metric when a selective condition triggers post-sorting', async () => {
+		const target = [1, 1];
+		const vectors = new Map([
+			[2, [0.1, 0.1]],
+			[3, [1.2, 0.8]],
+			[4, [7, 8]],
+		]);
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'metric' }],
+				sort: { attribute: 'vector', target, distance: 'cosine' },
+				select: ['id', '$distance'],
+			})
+		);
+
+		assert.equal(results.length, 3);
+		assert.equal(results[0].id, 2);
+		for (const result of results) {
+			const expected = distanceCalculator.distance(target, vectors.get(result.id));
+			assert(Number.isFinite(result.$distance));
+			assert(Math.abs(result.$distance - expected) < 1e-9);
+		}
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+});
+
 describe('HNSW int8 quantization (quantization: "int8")', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const testInstance = new HierarchicalNavigableSmallWorld();
