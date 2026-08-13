@@ -1299,12 +1299,11 @@ export function estimateCondition(table) {
 						estimateRangeCondition(table, condition, searchType, OPEN_RANGE_ESTIMATE) ??
 						OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			}
-			// a negated condition matches the complement of its positive estimate — without this
-			// inversion a narrow negated range (or negated equals) looks highly selective, wins
-			// the condition ordering, and then executes as a full scan
-			if (condition.negated && isFinite(condition.estimated_count)) {
-				condition.estimated_count = Math.max(estimatedEntryCount(table.primaryStore) - condition.estimated_count, 1);
-			}
+			// a negated condition always executes as a full scan (searchByIndex forces
+			// needFullScan), so follow the filter-only convention used by contains/ends_with:
+			// estimate Infinity so its positive-range estimate can never win the
+			// driving-condition ordering
+			if (condition.negated) condition.estimated_count = Infinity;
 			// we give a condition significantly more weight/preference if we will be ordering by it
 			if (typeof condition.descending === 'boolean') condition.estimated_count /= 2;
 		}

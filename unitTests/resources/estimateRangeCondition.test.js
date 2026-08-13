@@ -118,8 +118,9 @@ describe('estimateCondition range estimates', () => {
 		assert.strictEqual(estimated, 1);
 	});
 
-	it('inverts negated conditions to the complement of the positive estimate', () => {
-		// a narrow negated range must not look highly selective — it executes as a full scan
+	it('estimates negated conditions as Infinity (they always full-scan)', () => {
+		// a narrow negated range must not look highly selective — the full-scan
+		// convention (contains/ends_with) keeps it out of the driving-condition slot
 		const table = makeTable({ indexEstimate: { count: 10, confidence: 1 } });
 		const estimated = estimate(table, {
 			attribute: 'attr',
@@ -127,9 +128,9 @@ describe('estimateCondition range estimates', () => {
 			value: [5, 10],
 			negated: true,
 		});
-		assert.strictEqual(estimated, ENTRY_COUNT - 10);
+		assert.strictEqual(estimated, Infinity);
 
-		// pre-existing defect: negated equals also estimated its positive count
+		// pre-existing defect: negated equals estimated its (possibly tiny) positive count
 		const eqTable = makeTable();
 		eqTable.indices.attr.getValuesCount = () => 3;
 		const negatedEquals = estimate(eqTable, {
@@ -138,7 +139,7 @@ describe('estimateCondition range estimates', () => {
 			value: 'x',
 			negated: true,
 		});
-		assert.strictEqual(negatedEquals, ENTRY_COUNT - 3);
+		assert.strictEqual(negatedEquals, Infinity);
 	});
 
 	it('falls back when the estimate shape is unexpected', () => {

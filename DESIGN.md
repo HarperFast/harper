@@ -1289,9 +1289,10 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
   execution truncates + filters (wider range than the estimable one). `RocksIndexStore` widens
   value-space bounds to `[value, MAXIMUM_KEY]` composite bounds — the base implementation's
   byte-successor semantics would exclude the wrong entries on composite `[value, primaryKey]` keys.
-- **Negated conditions invert at the root** (`estimateConditionForTable`): the estimate of the
-  positive range becomes `entryCount − estimate`. Without this a narrow negated range looks highly
-  selective, wins condition ordering, and executes as a full scan.
+- **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following
+  the filter-only convention (`contains`/`ends_with`): the negated flag always forces
+  `needFullScan`, so `estimated_count` here is execution-cost ordering, not result cardinality —
+  a narrow negated range must never look selective enough to become the driving condition.
 - `estimatedEntryCount` reads `estimate-num-keys` (O(1)) rather than iterating; it skews high on
   overwrite/delete-heavy data until compaction, which is acceptable for the relative-ordering and
   explicitly-estimated consumers it feeds (and it is a divisor — keep the ≥1 floor).
