@@ -10,7 +10,6 @@ import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 
 declare module '@harperfast/rocksdb-js' {
 	interface DBI<T> {
-		getValues(indexedValue: any): Iterable<Id>;
 		getValuesCount(indexedValue: any): number;
 	}
 }
@@ -54,7 +53,6 @@ export class RocksIndexStore extends RocksDatabase {
 		});
 	}
 
-	/** Return the primary keys stored under one exact indexed value. */
 	getValues(indexedValue: any): Iterable<Id> {
 		return super
 			.getKeys({ start: indexedValue, end: [indexedValue, MAXIMUM_KEY] })
