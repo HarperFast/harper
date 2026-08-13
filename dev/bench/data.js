@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786621938345,
+  "lastUpdate": 1786621942620,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -13461,6 +13461,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 2134.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "09c4580106cc399ea7a4dd7132361a61d2d2d561",
+          "message": "Merge pull request #2124 from HarperFast/fix/sql-engine-top-limit-normalization\n\nfix(sql-engine): honor SELECT TOP n and floor fractional LIMIT/OFFSET",
+          "timestamp": "2026-08-12T22:47:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/09c4580106cc399ea7a4dd7132361a61d2d2d561"
+        },
+        "date": 1786621941466,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 4956.45,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 4956.45,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 378.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1506.2,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 2799.5,
             "unit": "ms"
           }
         ]
