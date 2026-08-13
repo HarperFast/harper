@@ -513,6 +513,7 @@ describe('HNSW post-sort distance', () => {
 		await T.put(3, { group: 'metric', vector: [1.2, 0.8] });
 		await T.put(4, { group: 'metric', vector: [7, 8] });
 		await T.put(5, { group: 'missing' });
+		await T.put(6, { group: 'missing', vector: [2, 0] });
 	});
 
 	after(() => T.dropTable());
@@ -534,7 +535,7 @@ describe('HNSW post-sort distance', () => {
 		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
 	});
 
-	it('sorts a missing vector last without throwing for a singleton result', async () => {
+	it('sorts a missing vector last among records with vectors', async () => {
 		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
 		const results = await fromAsync(
 			T.search({
@@ -544,8 +545,13 @@ describe('HNSW post-sort distance', () => {
 			})
 		);
 
-		assert.equal(results.length, 1);
-		assert.equal(results[0].$distance, Infinity);
+		assert.deepEqual(
+			results.map(({ id, $distance }) => [id, $distance]),
+			[
+				[6, 2],
+				[5, Infinity],
+			]
+		);
 		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
 	});
 
@@ -587,36 +593,58 @@ describe('HNSW post-sort distance', () => {
 		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
 	});
 
+	it('does not share the active sort between concurrent searches', async () => {
+		const context = {};
+		const search = (target) =>
+			fromAsync(
+				T.search(
+					{
+						conditions: [{ attribute: 'group', value: 'metric' }],
+						sort: { attribute: 'vector', target, distance: 'euclidean' },
+						select: ['id', '$distance'],
+					},
+					context
+				)
+			);
+
+		const [nearOrigin, nearFarVector] = await Promise.all([search([0, 0]), search([7, 8])]);
+		assert.equal(nearOrigin[0].id, 2);
+		assert.equal(nearFarVector[0].id, 4);
+		assert.equal(nearFarVector[0].$distance, 0);
+	});
+
 	it('calculates distance without caching when an entry is unavailable', () => {
 		const sort = { attribute: 'vector', target: [1, 1], distance: 'euclidean' };
-		const context = { sort };
-		const distance = T.indices.vector.customIndex.propertyResolver([2, 0], context, null);
+		const context = {};
+		const distance = T.indices.vector.customIndex.propertyResolver([2, 0], context, null, sort);
 
 		assert.equal(distance, 2);
 		assert(context.vectorDistanceCaches.get(sort) instanceof WeakMap);
 	});
 
-	it('does not resolve $distance from a targetless or stale sort', async () => {
+	it('rejects a targetless post-sort query', async () => {
+		await assert.rejects(
+			() =>
+				fromAsync(
+					T.search({
+						conditions: [{ attribute: 'group', value: 'metric' }],
+						sort: { attribute: 'vector' },
+						select: ['id', '$distance'],
+					})
+				),
+			{ message: 'The target vector must be an array' }
+		);
+	});
+
+	it('does not resolve $distance or the vector from a stale sort', async () => {
 		const context = {};
 		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
-		const targetless = await fromAsync(
-			T.search(
-				{
-					conditions: [{ attribute: 'group', value: 'single' }],
-					sort: { attribute: 'vector' },
-					select: ['id', '$distance'],
-				},
-				context
-			)
-		);
-		assert.equal(targetless[0].$distance, undefined);
-
 		await fromAsync(
 			T.search(
 				{
 					conditions: [{ attribute: 'group', value: 'single' }],
 					sort: { attribute: 'vector', target: [1, 1] },
-					select: ['id', '$distance'],
+					select: ['id', 'vector', '$distance'],
 				},
 				context
 			)
@@ -625,13 +653,30 @@ describe('HNSW post-sort distance', () => {
 			T.search(
 				{
 					conditions: [{ attribute: 'group', value: 'single' }],
-					select: ['id', '$distance'],
+					select: ['id', 'vector', '$distance'],
 				},
 				context
 			)
 		);
 		assert.equal(unsorted[0].$distance, undefined);
+		assert.deepEqual(unsorted[0].vector, [2, 0]);
 		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('uses the full secondary vector sort definition during post-ordering', async () => {
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'metric' }],
+				sort: {
+					attribute: 'group',
+					next: { attribute: 'vector', target: [7, 8], distance: 'euclidean' },
+				},
+				select: ['id', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 4);
+		assert.equal(results[0].$distance, 0);
 	});
 
 	it('rejects an unknown metric on the exact post-sort path', async () => {

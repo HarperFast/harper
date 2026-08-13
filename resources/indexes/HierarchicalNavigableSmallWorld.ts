@@ -1040,6 +1040,7 @@ export class HierarchicalNavigableSmallWorld {
 	 * and $distance.
 	 */
 	exactDistance(searchCondition: { target: number[]; distance?: string }, recordVector: number[] | Int8Array): number {
+		if (!Array.isArray(searchCondition.target)) throw new ClientError('The target vector must be an array');
 		if (recordVector == null) return Infinity; // missing vector sorts last
 		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
 		// float[] vector, but convert defensively in case a typed array slips through.
@@ -1238,8 +1239,7 @@ export class HierarchicalNavigableSmallWorld {
 	 * @param context
 	 * @param entry
 	 */
-	propertyResolver(vector: number[], context: any, entry: any) {
-		const sortDefinition = context?.sort;
+	propertyResolver(vector: number[], context: any, entry: any, sortDefinition?: any) {
 		if (sortDefinition) {
 			// set up a cache for these so they can be accessed by $distance and not be recalculated during a sort
 			let vectorDistanceCaches = context.vectorDistanceCaches;

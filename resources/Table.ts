@@ -3393,9 +3393,8 @@ export function makeTable(options) {
 					if (sort.next) {
 						postOrdering = {
 							dbOrderedAttribute: sort.attribute,
-							attribute: sort.next.attribute,
-							descending: sort.next.descending,
-							next: sort.next.next,
+							dbOrderedSort: sort,
+							...sort.next,
 						};
 					}
 				} else {
@@ -3477,7 +3476,8 @@ export function makeTable(options) {
 				ensure_loaded,
 				true,
 				boundRowFilter,
-				includeExpired
+				includeExpired,
+				postOrdering
 			);
 			let results = TableResource.transformToOrderedSelect(
 				entries,
@@ -3538,10 +3538,9 @@ export function makeTable(options) {
 					function createComparator(order: Sort) {
 						const nextComparator = order.next && createComparator(order.next);
 						const descending = order.descending;
-						(context as any).sort = order; // make sure this is set to the current sort order
 						return (entryA, entryB) => {
-							const a = getAttributeValue(entryA, order.attribute, context);
-							const b = getAttributeValue(entryB, order.attribute, context);
+							const a = getAttributeValue(entryA, order.attribute, context, order);
+							const b = getAttributeValue(entryB, order.attribute, context, order);
 							const diff = descending
 								? compareKeys(convertToComparableKeys(b), convertToComparableKeys(a))
 								: compareKeys(convertToComparableKeys(a), convertToComparableKeys(b));
@@ -3583,7 +3582,12 @@ export function makeTable(options) {
 									// if the index has already provided the first order of sorting, we only need to sort
 									// within each grouping
 									if (dbOrderedAttribute) {
-										const groupingValue = getAttributeValue(entry, dbOrderedAttribute, context);
+										const groupingValue = getAttributeValue(
+											entry,
+											dbOrderedAttribute,
+											context,
+											(sort as any).dbOrderedSort
+										);
 										if (firstEntry) {
 											firstEntry = false;
 											lastGroupingValue = groupingValue;
@@ -3692,7 +3696,8 @@ export function makeTable(options) {
 			ensure_loaded?,
 			canSkip?,
 			rowFilter?,
-			includeExpired?
+			includeExpired?,
+			sort?
 		) {
 			let checkLoaded;
 			if (
@@ -3798,7 +3803,7 @@ export function makeTable(options) {
 									value = filterMap.fromRecord?.(record);
 								}
 							} else {
-								value = resolver(record, context, entry, true, (this as any)?.sort);
+								value = resolver(record, context, entry, true, sort);
 							}
 							const handleResolvedValue = (value: any) => {
 								if (resolver.directReturn) return callback(value, attribute_name);
@@ -3820,7 +3825,11 @@ export function makeTable(options) {
 											context,
 											targetReadTxn,
 											filterMap,
-											ensure_loaded
+											ensure_loaded,
+											undefined,
+											undefined,
+											undefined,
+											typeof attribute.sort === 'object' && attribute.sort
 										));
 									if (Array.isArray(value)) {
 										const results = [];
@@ -4878,7 +4887,8 @@ export function makeTable(options) {
 					if (cachedDistance !== undefined) return cachedDistance;
 					if (typeof sort?.attribute !== 'string' || !Array.isArray(sort.target)) return;
 					const customIndex = indices[sort.attribute]?.customIndex;
-					if (customIndex?.exactDistance) return customIndex.exactDistance(sort, object[sort.attribute]);
+					if (customIndex?.propertyResolver)
+						return customIndex.propertyResolver(object[sort.attribute], context, entry, sort);
 				},
 			};
 			for (const attribute of this.attributes) {
@@ -5026,9 +5036,9 @@ export function makeTable(options) {
 					attribute.resolve.directReturn = true;
 				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
 					const customIndex = indices[attribute.name].customIndex;
-					propertyResolvers[attribute.name] = (object, context, entry) => {
+					propertyResolvers[attribute.name] = (object, context, entry, returnEntry, sort) => {
 						const value = object[attribute.name];
-						return customIndex.propertyResolver(value, context, entry);
+						return customIndex.propertyResolver(value, context, entry, sort);
 					};
 					propertyResolvers[attribute.name].directReturn = true;
 				}
@@ -5594,7 +5604,7 @@ export function makeTable(options) {
 			return transaction;
 		}
 	}
-	function getAttributeValue(entry, attribute_name, context) {
+	function getAttributeValue(entry, attribute_name, context, sort?) {
 		if (!entry) {
 			return;
 		}
@@ -5606,14 +5616,14 @@ export function makeTable(options) {
 			for (let i = 0, l = attribute_name.length; i < l; i++) {
 				const attribute = attribute_name[i];
 				const resolver = resolvers?.[attribute];
-				value = resolver && value ? resolver(value, context, entry) : value?.[attribute];
+				value = resolver && value ? resolver(value, context, entry, false, sort) : value?.[attribute];
 				entry = null; // can't use this in the nested object
 				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
 			return value;
 		}
 		const resolver = propertyResolvers[attribute_name];
-		return resolver ? resolver(record, context, entry) : record[attribute_name];
+		return resolver ? resolver(record, context, entry, false, sort) : record[attribute_name];
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
