@@ -230,6 +230,37 @@ describe('HARPER_CONFIG', function () {
 			assert.deepStrictEqual(editedConfig.a, {}, 'no-op removal must not eat the empty scope');
 		});
 
+		it('does not prune when the absent key collides with an Object.prototype member', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ x: { constructor: 1 } });
+			const fileConfig = { x: { keep: 1 } };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.x.constructor, 1);
+
+			// user hand-edited the file down to a deliberate `x: {}` between boots
+			const editedConfig = { x: {} };
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.deepStrictEqual(editedConfig.x, {}, 'prototype-chain key must not defeat the absent-leaf guard');
+		});
+
+		it('clears a stale marker when the user hand-deletes the scope the env var populated', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ myComponent: { port: 1 } });
+			const fileConfig = { myComponent: {} };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent.port, 1);
+
+			// user hand-deletes the whole scope while the env var is still set;
+			// the CONFIG layer re-asserts its leaf on the next boot
+			const editedConfig = {};
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.strictEqual(editedConfig.myComponent.port, 1);
+
+			// removing the env var must not resurrect the hand-deleted scope
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.strictEqual(editedConfig.myComponent, undefined, 'hand-deleted scope must stay deleted');
+		});
+
 		it('keeps a declared-empty scope restorable across stacked CONFIG and SET layers', function () {
 			process.env.HARPER_CONFIG = JSON.stringify({ myComponent: { port: 1 } });
 			const fileConfig = { myComponent: {} };

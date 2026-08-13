@@ -437,7 +437,10 @@ function deleteNestedValue(obj: ConfigObject, path: string): string[] {
 	}
 
 	const leafKey = keys[keys.length - 1];
-	if (!(leafKey in current)) {
+	// Own-property check: `in` walks the prototype chain, so a leaf named like an
+	// Object.prototype member (`constructor`, `toString`) would pass, no-op the
+	// delete, and let the prune loop eat a deliberate empty scope.
+	if (!Object.prototype.hasOwnProperty.call(current, leafKey)) {
 		return []; // Absent leaf: nothing deleted, nothing to prune
 	}
 	delete current[leafKey];
@@ -462,7 +465,20 @@ function recordEmptyAncestorOriginal(fileConfig: ConfigObject, state: ConfigStat
 	let current = fileConfig;
 	for (let i = 0; i < keys.length - 1; i++) {
 		current = current[keys[i]];
-		if (!isPlainObject(current)) return;
+		if (!isPlainObject(current)) {
+			// An absent prefix cannot be a live file-declared empty scope, so markers at
+			// or under it are stale (the user deleted the scope while the env var held
+			// it) and must not resurrect it later. Keyed off absence, not emptiness: an
+			// apply's first leaf records the marker and populates the scope, so later
+			// leaves see it non-empty and must leave the marker alone.
+			const prefix = keys.slice(0, i + 1).join('.');
+			for (const markerPath of Object.keys(state.emptyScopeOriginals)) {
+				if (markerPath === prefix || markerPath.startsWith(prefix + '.')) {
+					delete state.emptyScopeOriginals[markerPath];
+				}
+			}
+			return;
+		}
 		if (Object.keys(current).length === 0) {
 			state.emptyScopeOriginals[keys.slice(0, i + 1).join('.')] = true;
 			return;
@@ -545,6 +561,9 @@ function loadConfigState(rootPath: string): ConfigState {
 			state.originalValues = {};
 		}
 		if (!state.emptyScopeOriginals) {
+			// Only the field is recoverable, not the information: a scope an env layer
+			// populated before this field existed has no marker and will not be restored
+			// on vacate (see DESIGN.md, env-config empty objects)
 			state.emptyScopeOriginals = {};
 		}
 		return state;
@@ -626,12 +645,14 @@ function applyConfigLayer(
 		}
 
 		// Store original value if requested and this is first time overriding
-		if (storeOriginals && !currentSource) {
-			if (currentValue != null) {
+		if (storeOriginals) {
+			if (!currentSource && currentValue != null) {
 				if (!(path in state.originalValues)) {
 					state.originalValues[path] = currentValue;
 				}
-			} else {
+			} else if (currentValue == null) {
+				// Observe the file at populate time even when re-asserting an owned
+				// leaf, so a scope the user hand-deleted clears its stale marker
 				recordEmptyAncestorOriginal(fileConfig, state, path);
 			}
 		}
@@ -687,7 +708,7 @@ function removeValuesWithSource(fileConfig: ConfigObject, state: ConfigState, so
 	const pathsToRemove = Object.keys(state.sources).filter((path) => state.sources[path] === sourceName);
 
 	for (const path of pathsToRemove) {
-		deleteNestedValue(fileConfig, path);
+		restorePrunedEmptyAncestor(fileConfig, state, deleteNestedValue(fileConfig, path));
 		delete state.sources[path];
 	}
 }
@@ -775,6 +796,8 @@ function processEnvVar(
 						}
 						continue;
 					}
+				}
+				if (currentValue == null) {
 					recordEmptyAncestorOriginal(fileConfig, state, path);
 				}
 
