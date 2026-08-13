@@ -1238,9 +1238,11 @@ export class HierarchicalNavigableSmallWorld {
 	 * @param vector
 	 * @param context
 	 * @param entry
+	 * @param sortDefinition
 	 */
 	propertyResolver(vector: number[], context: any, entry: any, sortDefinition?: any) {
 		if (sortDefinition) {
+			if (!context) return this.exactDistance(sortDefinition, vector);
 			// set up a cache for these so they can be accessed by $distance and not be recalculated during a sort
 			let vectorDistanceCaches = context.vectorDistanceCaches;
 			if (!vectorDistanceCaches) vectorDistanceCaches = context.vectorDistanceCaches = new WeakMap();

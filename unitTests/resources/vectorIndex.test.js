@@ -505,13 +505,14 @@ describe('HNSW post-sort distance', () => {
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'group', indexed: true },
+				{ name: 'rank' },
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean' }, type: 'Array' },
 			],
 		});
 		await T.put(1, { group: 'single', vector: [2, 0] });
-		await T.put(2, { group: 'metric', vector: [0.1, 0.1] });
-		await T.put(3, { group: 'metric', vector: [1.2, 0.8] });
-		await T.put(4, { group: 'metric', vector: [7, 8] });
+		await T.put(2, { group: 'metric', rank: 1, vector: [0.1, 0.1] });
+		await T.put(3, { group: 'metric', rank: 1, vector: [1.2, 0.8] });
+		await T.put(4, { group: 'metric', rank: 2, vector: [7, 8] });
 		await T.put(5, { group: 'missing' });
 		await T.put(6, { group: 'missing', vector: [2, 0] });
 	});
@@ -620,6 +621,7 @@ describe('HNSW post-sort distance', () => {
 
 		assert.equal(distance, 2);
 		assert(context.vectorDistanceCaches.get(sort) instanceof WeakMap);
+		assert.equal(T.indices.vector.customIndex.propertyResolver([2, 0], undefined, null, sort), 2);
 	});
 
 	it('rejects a targetless post-sort query', async () => {
@@ -639,7 +641,7 @@ describe('HNSW post-sort distance', () => {
 	it('does not resolve $distance or the vector from a stale sort', async () => {
 		const context = {};
 		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
-		await fromAsync(
+		const sorted = await fromAsync(
 			T.search(
 				{
 					conditions: [{ attribute: 'group', value: 'single' }],
@@ -649,6 +651,8 @@ describe('HNSW post-sort distance', () => {
 				context
 			)
 		);
+		assert.deepEqual(sorted[0].vector, [2, 0]);
+		assert.equal(sorted[0].$distance, 2);
 		const unsorted = await fromAsync(
 			T.search(
 				{
@@ -676,6 +680,23 @@ describe('HNSW post-sort distance', () => {
 		);
 
 		assert.equal(results[0].id, 4);
+		assert.equal(results[0].$distance, 0);
+	});
+
+	it('returns $distance for a secondary vector sort after an unindexed sort', async () => {
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'metric' }],
+				sort: {
+					attribute: 'rank',
+					next: { attribute: 'vector', target: [1.2, 0.8], distance: 'euclidean' },
+				},
+				select: ['id', 'vector', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 3);
+		assert.deepEqual(results[0].vector, [1.2, 0.8]);
 		assert.equal(results[0].$distance, 0);
 	});
 

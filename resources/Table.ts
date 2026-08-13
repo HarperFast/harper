@@ -3550,7 +3550,6 @@ export function makeTable(options) {
 					}
 					const comparator = createComparator(sort);
 					return {
-						sort,
 						async next() {
 							let iteration: IteratorResult<any>;
 							if (sortedArrayIterator) {
@@ -3686,6 +3685,7 @@ export function makeTable(options) {
 		 * authorization verdict can't be made on bytes that differ from what the caller receives.
 		 * @param includeExpired when true, a row past its TTL but not yet swept is treated as a live
 		 * match rather than gone (used by the SQL engine's UPDATE/DELETE row-finder).
+		 * @param sort post-ordering owned by this selection
 		 * @returns
 		 */
 		static transformEntryForSelect(
@@ -4883,12 +4883,20 @@ export function makeTable(options) {
 				$record: (object, context, entry) => (entry ? { value: object } : object),
 				$distance: (object, context, entry, returnEntry, sort) => {
 					if (!entry) return;
-					const cachedDistance = entry.distance ?? context?.vectorDistanceCaches?.get(sort)?.get(entry);
+					let distanceSort = sort;
+					while (
+						distanceSort &&
+						(typeof distanceSort.attribute !== 'string' ||
+							!Array.isArray(distanceSort.target) ||
+							!indices[distanceSort.attribute]?.customIndex?.propertyResolver)
+					)
+						distanceSort = distanceSort.next;
+					const cachedDistance = entry.distance ?? context?.vectorDistanceCaches?.get(distanceSort)?.get(entry);
 					if (cachedDistance !== undefined) return cachedDistance;
-					if (typeof sort?.attribute !== 'string' || !Array.isArray(sort.target)) return;
-					const customIndex = indices[sort.attribute]?.customIndex;
+					if (!distanceSort) return;
+					const customIndex = indices[distanceSort.attribute].customIndex;
 					if (customIndex?.propertyResolver)
-						return customIndex.propertyResolver(object[sort.attribute], context, entry, sort);
+						return customIndex.propertyResolver(object[distanceSort.attribute], context, entry, distanceSort);
 				},
 			};
 			for (const attribute of this.attributes) {
@@ -5038,7 +5046,12 @@ export function makeTable(options) {
 					const customIndex = indices[attribute.name].customIndex;
 					propertyResolvers[attribute.name] = (object, context, entry, returnEntry, sort) => {
 						const value = object[attribute.name];
-						return customIndex.propertyResolver(value, context, entry, sort);
+						const sortAttribute = sort?.attribute;
+						const resolvesSort =
+							returnEntry === false &&
+							(sortAttribute === attribute.name ||
+								(Array.isArray(sortAttribute) && sortAttribute[sortAttribute.length - 1] === attribute.name));
+						return customIndex.propertyResolver(value, context, entry, resolvesSort ? sort : undefined);
 					};
 					propertyResolvers[attribute.name].directReturn = true;
 				}
@@ -5616,7 +5629,7 @@ export function makeTable(options) {
 			for (let i = 0, l = attribute_name.length; i < l; i++) {
 				const attribute = attribute_name[i];
 				const resolver = resolvers?.[attribute];
-				value = resolver && value ? resolver(value, context, entry, false, sort) : value?.[attribute];
+				value = resolver && value ? resolver(value, context, entry, false, i === l - 1 ? sort : undefined) : value?.[attribute];
 				entry = null; // can't use this in the nested object
 				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
