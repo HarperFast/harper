@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786607094856,
+  "lastUpdate": 1786621938345,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -11621,6 +11621,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 341593,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "09c4580106cc399ea7a4dd7132361a61d2d2d561",
+          "message": "Merge pull request #2124 from HarperFast/fix/sql-engine-top-limit-normalization\n\nfix(sql-engine): honor SELECT TOP n and floor fractional LIMIT/OFFSET",
+          "timestamp": "2026-08-12T22:47:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/09c4580106cc399ea7a4dd7132361a61d2d2d561"
+        },
+        "date": 1786621936602,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 24304,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 24447,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 14552,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 26711552,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 3775,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 262124,
             "unit": "ops"
           }
         ]
