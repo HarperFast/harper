@@ -141,7 +141,7 @@ describe('Audit entry record flags match the body (#2153)', () => {
 			assert.equal(record.b, 'keep');
 		});
 
-		it('a superseded source apply of an undefined value mints a flag-consistent, decodable entry', async function () {
+		it('a source apply of an undefined value is skipped: no record change, no audit entry', async function () {
 			if (isLMDB) return this.skip();
 			const id = 'r2';
 			const context = {};
@@ -150,24 +150,21 @@ describe('Audit entry record flags match the body (#2153)', () => {
 			});
 			const now = Date.now();
 			await T.patch(id, { a: 'n1' }, { timestamp: now + 100 });
-			await T.patch(id, { a: 'n2' }, { timestamp: now + 200 });
-			// source/replication applies skip record validation, so an undefined value reaches the
-			// write path; fully superseded, it takes the audit-only escape with nothing to encode —
-			// the #2153 producer shape (pre-fix this minted HAS_RECORD with no body)
-			const loserVersion = now + 50;
-			await T.put(id, undefined, { timestamp: loserVersion, source: {}, nodeId: 7 });
+			// source/replication applies skip record validation, so an undefined value can reach the
+			// write path — the #2153 producer shape (pre-fix this minted a bodyless put advertising
+			// HAS_RECORD, wedging peers). The guard skips it before any write is staged.
+			const applyVersion = now + 200; // would win — skipping must not depend on losing
+			await T.put(id, undefined, { timestamp: applyVersion, source: {}, nodeId: 7 });
+			const absentId = 'r2-absent'; // locally-absent record: the production entries' no-previousVersion shape
+			await T.put(absentId, undefined, { timestamp: now + 300, source: {}, nodeId: 7 });
 
-			let loser;
 			for (const entry of T.auditStore.getRange({ start: 1 })) {
-				if (entry.version === loserVersion) loser = entry;
+				assert.notEqual(entry.version, applyVersion, 'valueless apply must not mint an audit entry');
+				assert.notEqual(entry.recordId, absentId, 'valueless apply of an absent record must not mint');
 			}
-			assert(loser, 'audit-only entry for the superseded apply should exist');
-			assert.equal(loser.type, 'put');
-			assert.equal(loser.extendedType & (HAS_RECORD | HAS_PARTIAL_RECORD), 0);
-			assert.equal(loser.getBinaryValue().length, 0);
-			assert.equal(loser.getValue(T.primaryStore), undefined);
 			const record = await T.get(id);
-			assert.equal(record.a, 'n2');
+			assert.equal(record.a, 'n1', 'valueless apply must not disturb the record');
+			assert.equal(await T.get(absentId), undefined);
 		});
 	});
 });
