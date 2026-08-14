@@ -504,6 +504,7 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 			installed.restore();
 		}
 
+		assert.ok(ingestContext);
 		assert.strictEqual(ingestContext.user, user);
 		assert.strictEqual(ingestContext.originatingOperation, 'deploy_component');
 		assert.strictEqual(ingestContext.session, session);
