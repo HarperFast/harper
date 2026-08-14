@@ -24,7 +24,7 @@ import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { workerData } from 'worker_threads';
+import { isMainThread, workerData } from 'worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
@@ -52,6 +52,39 @@ import {
 	RESTORE_META_DIR,
 	type RestoreLock,
 } from '../dataLayer/restoreMarker.ts';
+
+declare const threads: { sendToThread(threadId: number, message: any): boolean };
+
+const DATABASE_OPEN_LOCK_ACQUIRED = 'database_open_lock_acquired';
+const DATABASE_OPEN_LOCK_RELEASED = 'database_open_lock_released';
+const workerDatabaseOpenLocks = new Map<number, number>();
+
+if (isMainThread) {
+	manageThreads.onMessageByType(DATABASE_OPEN_LOCK_ACQUIRED, (message, port) => {
+		workerDatabaseOpenLocks.set(message.token, port.threadId);
+	});
+	manageThreads.onMessageByType(DATABASE_OPEN_LOCK_RELEASED, (message) => {
+		workerDatabaseOpenLocks.delete(message.token);
+	});
+	manageThreads.onThreadExit((threadId) => {
+		for (const [token, ownerThreadId] of workerDatabaseOpenLocks) {
+			if (ownerThreadId !== threadId) continue;
+			releaseDatabaseOpenLock(token);
+			workerDatabaseOpenLocks.delete(token);
+		}
+	});
+}
+
+function acquireTrackedDatabaseOpenLock(path: string): number {
+	const token = acquireDatabaseOpenLock(path);
+	if (!isMainThread) threads.sendToThread(0, { type: DATABASE_OPEN_LOCK_ACQUIRED, token });
+	return token;
+}
+
+function releaseTrackedDatabaseOpenLock(token: number): void {
+	releaseDatabaseOpenLock(token);
+	if (!isMainThread) threads.sendToThread(0, { type: DATABASE_OPEN_LOCK_RELEASED, token });
+}
 
 /**
  * Check if Harper is running in read-only mode.
@@ -327,7 +360,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 		}
 		mkdirSync(path, { recursive: true });
 	}
-	const openLock = !options.name && !isReadOnlyMode() ? acquireDatabaseOpenLock(path) : 0;
+	const openLock = !isReadOnlyMode() ? acquireTrackedDatabaseOpenLock(path) : 0;
 	try {
 		let db: RocksRootDatabase;
 		if (options.dupSort) {
@@ -343,7 +376,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 		db.env = {};
 		return db;
 	} finally {
-		if (openLock) releaseDatabaseOpenLock(openLock);
+		if (openLock) releaseTrackedDatabaseOpenLock(openLock);
 	}
 }
 
@@ -1221,6 +1254,13 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
 	held.push(lock);
 }
 
+type DatabaseOpenLock = { dbPath: string; token: number };
+
+function lockDatabaseOpenForDrop(dbPath: string, held: DatabaseOpenLock[]): void {
+	if (held.some((lock) => lock.dbPath === dbPath)) return;
+	held.push({ dbPath, token: acquireTrackedDatabaseOpenLock(dbPath) });
+}
+
 /**
  * Delete the database
  * @param databaseName
@@ -1236,53 +1276,63 @@ export async function dropDatabase(databaseName) {
 	// (before writing its marker), so both operations serialize on this one primitive rather than on
 	// a check-then-act marker probe. Released in the finally below.
 	const restoreLocks: RestoreLock[] = [];
+	const openLocks: DatabaseOpenLock[] = [];
 	try {
-		for (const tableName in dbTables) {
-			const table = dbTables[tableName];
-			rootStore = table.primaryStore.rootStore;
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-			lmdbDatabaseEnvs.delete(rootStore.path);
-			rocksdbDatabaseEnvs.delete(rootStore.path);
-		}
-
-		for (const tableName in dbTables) {
-			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
-		}
-
-		if (databaseName === 'data') {
-			for (const tableName in tables) {
-				delete tables[tableName];
+		try {
+			for (const tableName in dbTables) {
+				const table = dbTables[tableName];
+				rootStore = table.primaryStore.rootStore;
+				if (rootStore instanceof RocksDatabase) {
+					lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+					lockDatabaseOpenForDrop(rootStore.path, openLocks);
+				}
+				lmdbDatabaseEnvs.delete(rootStore.path);
+				rocksdbDatabaseEnvs.delete(rootStore.path);
 			}
-			delete tables[DEFINED_TABLES];
-		}
-		delete databases[databaseName];
 
-		databaseEventsEmitter.emit('dropDatabase', databaseName);
+			for (const tableName in dbTables) {
+				databaseEventsEmitter.emit('dropTable', tableName, databaseName);
+			}
 
-		if (rootStore) {
-			if (rootStore.status === 'open') {
+			if (databaseName === 'data') {
+				for (const tableName in tables) {
+					delete tables[tableName];
+				}
+				delete tables[DEFINED_TABLES];
+			}
+			delete databases[databaseName];
+
+			databaseEventsEmitter.emit('dropDatabase', databaseName);
+
+			if (rootStore) {
+				if (rootStore.status === 'open') {
+					if (rootStore instanceof RocksDatabase) {
+						rootStore.close();
+						rootStore.destroy();
+					} else {
+						await rootStore.close();
+						await unlink(rootStore.path);
+					}
+				}
+			} else {
+				rootStore = database({ database: databaseName, table: null });
+				// a tableless database resolves its root store here rather than in the loop above, so take
+				// the drop lock now (still before any destructive step)
+				if (rootStore instanceof RocksDatabase) {
+					lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+					lockDatabaseOpenForDrop(rootStore.path, openLocks);
+				}
 				if (rootStore instanceof RocksDatabase) {
 					rootStore.close();
 					rootStore.destroy();
-				} else {
+				} else if (rootStore.status === 'open') {
 					await rootStore.close();
 					await unlink(rootStore.path);
 				}
 			}
-		} else {
-			rootStore = database({ database: databaseName, table: null });
-			// a tableless database resolves its root store here rather than in the loop above, so take
-			// the drop lock now (still before any destructive step)
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-			if (rootStore instanceof RocksDatabase) {
-				rootStore.close();
-				rootStore.destroy();
-			} else if (rootStore.status === 'open') {
-				await rootStore.close();
-				await unlink(rootStore.path);
-			}
+		} finally {
+			for (const lock of openLocks) releaseTrackedDatabaseOpenLock(lock.token);
 		}
-
 		await deleteRootBlobPathsForDB(rootStore);
 	} finally {
 		for (const lock of restoreLocks) releaseRestoreLock(lock);

@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
-import { awaitJobCompleted, waitFor } from './utils/operations.mjs';
+import { awaitJobCompleted } from './utils/operations.mjs';
 
 // Resolve the CSV fixture path relative to this file so Harper can read it.
 const SUPPLIERS_CSV = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data/Suppliers.csv');
@@ -403,15 +403,11 @@ suite('Terminology aliases (database / primary_key)', (ctx) => {
 	});
 
 	test('drop_database with database param', async () => {
-		// The preceding drop_table signals syncSchemaMetadata across worker threads, which
-		// briefly reopens all schema RocksDB files including tuckerdoodle. If drop_database
-		// races that reopen it gets a "No locks available" LOCK error. Poll until the drop
-		// succeeds (workers release the lock quickly once their getDatabases pass finishes).
-		const r = await waitFor(() => client.req().send({ operation: 'drop_database', database: 'tuckerdoodle' }), {
-			until: (res) => res?.body?.message != null,
-			timeoutSeconds: 10,
-		});
-		assert.equal(r?.body?.message, "successfully deleted 'tuckerdoodle'", r?.text);
+		await client
+			.req()
+			.send({ operation: 'drop_database', database: 'tuckerdoodle' })
+			.expect((r) => assert.equal(r.body.message, "successfully deleted 'tuckerdoodle'", r.text))
+			.expect(200);
 	});
 
 	// ── async job operations ────────────────────────────────────────────────
