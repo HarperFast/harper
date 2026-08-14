@@ -196,7 +196,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 	});
 
 	it('indexes the effective expiration returned by a source fill', async function () {
-		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtSourceFill'));
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtSourceFill', 3_600));
 		const expiresAt = Date.now() - 1_000;
 		Table.sourcedFrom({
 			get(id) {

@@ -5971,7 +5971,6 @@ export function makeTable(options) {
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
 					if (responseHeaders)
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
-					if (expirationMs && sourceContext.expiresAt == undefined) sourceContext.expiresAt = Date.now() + expirationMs;
 					if (updatedRecord) {
 						if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
 						if (updatedRecord.status > 0 && updatedRecord.headers) {
@@ -6024,8 +6023,11 @@ export function makeTable(options) {
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
 						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
-						if (sourceContext.expiresAt === undefined && expiresAtProperty) {
-							sourceContext.expiresAt = expirationTimestamp(updatedRecord[expiresAtProperty.name]);
+						if (sourceContext.expiresAt === undefined) {
+							if (expiresAtProperty)
+								sourceContext.expiresAt = expirationTimestamp(updatedRecord[expiresAtProperty.name]);
+							if (sourceContext.expiresAt === undefined && expirationMs)
+								sourceContext.expiresAt = Date.now() + expirationMs;
 						}
 					}
 					resolved = true;
