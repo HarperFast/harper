@@ -365,9 +365,11 @@ export class DatabaseTransaction implements Transaction {
 	// position interior to it. A stored record that ties this transaction's (version, nodeId) is then
 	// that earlier write, and program order says this one supersedes it; without this the write path
 	// reads the tie as a re-delivered duplicate and drops it, since the staged-write chain that
-	// normally carries program order went with the committed batch. Replay only ever reads entries at
-	// or after the log's last-flushed position, so the entry being replayed is itself never durable —
-	// the tie can only come from a different, earlier entry of the same transaction.
+	// normally carries program order went with the committed batch. Entries at or after the log's
+	// last-flushed position were not flushed, and RocksDB's own WAL is off, so a replayed entry's
+	// write is not durable and the tie can only come from an earlier entry of the same transaction —
+	// except in the window where a flush completed but its position has not been recorded yet, where
+	// this also skips the re-delivery guards that make a commutative op idempotent.
 	declare partiallyCommitted?: boolean;
 	// Set when this transaction replays the local audit log during crash recovery (replayLogs.ts).
 	// Replayed records were valid when first written, so schema validation is skipped — a schema

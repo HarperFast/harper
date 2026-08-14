@@ -1955,7 +1955,7 @@ export function makeTable(options) {
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
-					// see the invalidate path above
+					// see the invalidate path above (same tie handling)
 					if (precedesExisting < 0 || (precedesExisting === 0 && !(context?.transaction as any)?.partiallyCommitted))
 						return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
@@ -2421,9 +2421,8 @@ export function makeTable(options) {
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					// A partially committed replay transaction carries the same program-order signal for its
 					// earlier writes, which are committed rather than staged and so have no chain left (see
-					// DatabaseTransaction.partiallyCommitted). Only a tie can change here — forcing an already
-					// winning write to 1 is a no-op — so testing it first keeps both reads off the path an
-					// ordinary write takes.
+					// DatabaseTransaction.partiallyCommitted). Only a tie can change here, so testing it first
+					// keeps both reads off the path an ordinary write takes.
 					if (precedesExisting === 0 && (priorStaged || (context?.transaction as any)?.partiallyCommitted))
 						precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
