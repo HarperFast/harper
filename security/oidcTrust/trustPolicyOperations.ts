@@ -24,9 +24,9 @@ const { HTTP_STATUS_CODES } = hdbErrors;
 const OIDC_TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
 
 /**
- * GitHub's default audience is the repository owner's URL, which every repository under that owner
- * shares. Accepting it would make a token minted by any repo in the org valid here, which is the one
- * mistake this field exists to prevent.
+ * The canonical statement of why `audience` matters: GitHub's default is the repository owner's URL,
+ * shared by every repository under that owner, so accepting it would make a token minted by any repo
+ * in the org valid here — the one mistake the field exists to prevent.
  */
 const SHARED_DEFAULT_AUDIENCE = /^https:\/\/github\.com\/[^/]+\/?$/i;
 
@@ -81,19 +81,23 @@ function toRecord(row: any): OidcTrustPolicy & Record<string, unknown> {
 }
 
 /**
- * Reads every enabled policy. The set is small and administrator-managed, so a scan is cheaper than
- * maintaining an index — and it keeps the matching order deterministic (by id) rather than
+ * The policy set is small and administrator-managed, so a scan beats maintaining an index — and
+ * sorting by id keeps both the listing and the exchange's match order deterministic rather than
  * dependent on an index's iteration order.
  */
-export async function loadEnabledPolicies(): Promise<OidcTrustPolicy[]> {
+async function readPolicies(includeDisabled: boolean): Promise<OidcTrustPolicy[]> {
 	const table = trustTable();
 	const policies: OidcTrustPolicy[] = [];
 	for await (const row of table.search([])) {
-		if (row.enabled === false) continue;
+		if (!includeDisabled && row.enabled === false) continue;
 		policies.push(toRecord(row));
 	}
-	policies.sort((a, b) => String(a.id).localeCompare(String(b.id)));
-	return policies;
+	return policies.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+}
+
+/** The policies the exchange will consider. */
+export function loadEnabledPolicies(): Promise<OidcTrustPolicy[]> {
+	return readPolicies(false);
 }
 
 /**
@@ -169,14 +173,7 @@ export async function addOidcTrust(req: any) {
 
 export async function listOidcTrust(req: any) {
 	requireSuperUser(req);
-
-	const table = trustTable();
-	const policies: unknown[] = [];
-	for await (const row of table.search([])) {
-		policies.push(toRecord(row));
-	}
-	policies.sort((a: any, b: any) => String(a.id).localeCompare(String(b.id)));
-	return { policies };
+	return { policies: await readPolicies(true) };
 }
 
 export async function dropOidcTrust(req: any) {

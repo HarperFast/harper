@@ -198,7 +198,7 @@ The layering is deliberate and worth preserving:
 
 - `claims.ts` is pure — normalization, matching, and write-time policy validation. It never touches the network or storage, so the rules that decide whether a workflow may act as a user are directly testable.
 - `jwks.ts` owns issuer keys. The rate-limit clock for unknown-`kid` refetches lives _outside_ the cache entry: a successful fetch replaces the entry, and a rate limit that resets whenever it fires is not a rate limit. Keeping it separate also means a genuine key rotation is picked up on first use rather than after the window.
-- `index.ts` verifies signature/issuer/audience and additionally requires `exp`, a bounded lifetime, and `jti`.
+- `identityToken.ts` verifies signature/issuer/audience and additionally requires `exp`, a bounded lifetime, and `jti`. It also owns `rejectToken`, shared with the exchange so both halves refuse identically.
 - `tokenExchange.ts` selects a policy and mints. Verification is memoized per audience, so N policies sharing one audience cost one signature check.
 
 Three constraints that look like choices but are not:
