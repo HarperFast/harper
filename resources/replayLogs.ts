@@ -226,7 +226,10 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					// durable yet at this point, so failing to record it is still recoverable — but tearing
 					// the transaction without it is not: the next boot would resume inside the transaction
 					// with no way to tell its own earlier write from a duplicate.
-					if (!newVersion && !versionCommittedInPieces && !tornStateUnknown && version !== resumedTornVersion) {
+					// Attempted even when the marker could not be READ: a failed read says nothing about
+					// whether it can be written, and skipping the write would leave the next boot with no
+					// record of this tear at all.
+					if (!newVersion && !versionCommittedInPieces && (tornStateUnknown || version !== resumedTornVersion)) {
 						if (!recordTornVersion(rootStore, version)) {
 							logger.fatal(
 								`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: an oversized transaction has to be committed in batches, and the marker recording that could not be written (${writes} written, ${skipped} skipped). Re-clone this node from a healthy leader to recover the unreplayed data.`
