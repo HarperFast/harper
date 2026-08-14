@@ -1276,6 +1276,10 @@ describe('deploy by reference (by_ref)', () => {
 			tagObjectSha = git('rev-parse', 'v2.0.0'); // the tag object, not the commit it points at
 			git('push', '-q', 'origin', 'HEAD:refs/heads/remote-only', 'v2.0.0');
 			git('tag', '-d', 'v2.0.0');
+			// A pull ref that exists both on the remote and locally, so the namespace rejection is
+			// tested against a ref that would otherwise resolve on either path.
+			git('push', '-q', 'origin', 'HEAD:refs/pull/42/head');
+			git('update-ref', 'refs/pull/42/head', remoteOnlySha);
 			git('checkout', '-q', headSha);
 			// Drop the remote-tracking refs push just created, so nothing resolves locally by accident
 			// (and so the "commit isn't on a remote branch" check has nothing to find).
@@ -1341,6 +1345,29 @@ describe('deploy by reference (by_ref)', () => {
 		// `git ls-remote` as an option and run that command.
 		it('rejects a ref that would be parsed as a git option', () => {
 			assert.throws(() => resolveGitTarget('--upload-pack=touch /tmp/pwned'), /cannot start with "-"/);
+		});
+
+		// A plain clone fetches refs/heads/* and refs/tags/* only. A commit named through any other
+		// namespace pins to an immutable SHA the cluster still can't check out — the same reachability
+		// failure as the pull_request merge commit, just reached by typing it explicitly.
+		describe('refs outside the cloneable namespaces', () => {
+			it('rejects refs/pull/<n>/head even though it resolves both locally and on the remote', () => {
+				// Guards the ordering: the namespace check runs before local resolution, so a checkout
+				// that has fetched the pull ref can't quietly pin an unreachable commit.
+				assert.throws(
+					() => resolveGitTarget('refs/pull/42/head'),
+					/outside refs\/heads\/ and refs\/tags\/[\s\S]*never check it out/
+				);
+			});
+
+			it('accepts a fully-qualified branch ref', () => {
+				assert.strictEqual(resolveGitTarget('refs/heads/remote-only').committish, remoteOnlySha);
+			});
+
+			it('accepts a fully-qualified tag ref, peeled to its commit', () => {
+				assert.strictEqual(resolveGitTarget('refs/tags/v2.0.0').committish, remoteOnlySha);
+				assert.notStrictEqual(resolveGitTarget('refs/tags/v2.0.0').committish, tagObjectSha);
+			});
 		});
 
 		// The cluster clones from the remote, so an unpushed commit fails server-side with an error far
