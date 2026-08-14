@@ -491,6 +491,360 @@ describe('HNSW search result loading (searchByIndex)', () => {
 	});
 });
 
+describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	// One table per primary-key type for the reverse-seek fallback below; both are built up front so
+	// the suite never creates or drops a table between other describes' queries.
+	const keyed = {};
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const define = (name) =>
+			table({
+				table: name,
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+				],
+			});
+		T = define('HNSWNodeCountTest');
+		keyed.numeric = define('HNSWSeekNumericKeyTest');
+		keyed.string = define('HNSWSeekStringKeyTest');
+	});
+
+	after(() => {
+		T.dropTable();
+		keyed.numeric.dropTable();
+		keyed.string.dropTable();
+	});
+
+	// The size that feeds autoScaleEf must reflect how many vectors are in the graph. Building the
+	// graph rewrites each node repeatedly as its neighbours change, so any source that counts stored
+	// entries without reconciling overwrites reads far high — RocksDB's estimate-num-keys measured
+	// 9x the true count on a 2,000-record index, which would silently push ef to its cap.
+	it('tracks the number of indexed vectors, not the number of writes made to the graph', async () => {
+		const N = 300;
+		for (let i = 0; i < N; i++) {
+			const a = (i / N) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const customIndex = T.indices.vector.customIndex;
+		const count = customIndex.resolveNodeCount();
+		assert(
+			count >= N && count <= N * 1.5,
+			`graph size ${count} should be close to the ${N} indexed vectors (each node is rewritten many times during construction)`
+		);
+	});
+
+	// Query-only workers never allocate a node id, so they never build the shared id counter and every
+	// resolution takes the reverse-seek fallback. Nothing else in the suite reaches it — indexing
+	// in-process always initializes the counter first. Both key types are here because review keeps
+	// raising them: the index store holds a primary-key mapping beside each graph node, and a
+	// `limit: 1` reverse seek would read wrong if a mapping key sorted into the numeric node-id range.
+	// The numeric keys start at 1,000,000 deliberately — with small ones the mapping keys and the node
+	// ids overlap, so the seek reads the same number either way and the test proves nothing.
+	for (const [label, key] of [
+		['numeric', (i) => 1_000_000 + i],
+		['string', (i) => `user-${String(i).padStart(3, '0')}`],
+	]) {
+		it(`resolves the same size from a reverse seek when the shared id counter is absent (${label} primary keys)`, async () => {
+			const Keyed = keyed[label];
+			for (let i = 0; i < 50; i++) {
+				const a = (i / 50) * Math.PI * 2;
+				await Keyed.put(key(i), { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+			}
+			const customIndex = Keyed.indices.vector.customIndex;
+			const fromCounter = customIndex.resolveNodeCount();
+			const idIncrementer = customIndex.idIncrementer;
+			customIndex.idIncrementer = undefined;
+			let fromSeek;
+			try {
+				fromSeek = customIndex.resolveNodeCount();
+			} finally {
+				customIndex.idIncrementer = idIncrementer;
+			}
+			assert(
+				fromCounter >= 50 && fromCounter < 200,
+				`precondition: the id counter should see about the 50 indexed vectors, got ${fromCounter}`
+			);
+			assert.strictEqual(fromSeek, fromCounter, 'the reverse-seek fallback must agree with the id counter');
+		});
+	}
+
+	it('does not truncate a limit against a memoized size taken before the table grew', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		// The first query memoizes the size below; the table then grows well past it inside the TTL.
+		// Widening ef for a limit must not be clamped by that stale size, or the limit comes back short.
+		const primed = customIndex.resolveNodeCount();
+		const before = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 250 })
+		);
+		assert.strictEqual(before.length, 250, `expected 250 rows at the primed size, got ${before.length}`);
+
+		for (let i = 300; i < 900; i++) {
+			const a = (i / 900) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const after = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 700 })
+		);
+		assert(primed < 700, `precondition: the memoized size (${primed}) must start below the limit under test`);
+		assert.strictEqual(after.length, 700, `stale memo truncated the limit: got ${after.length} of 700`);
+	});
+});
+
+describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	const N = 600;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWRoutingTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < N; i++) {
+			const a = (i / N) * Math.PI * 2;
+			const b = ((i * 7) % N) / N;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), b, (i % 11) / 11] });
+		}
+	});
+
+	after(() => {
+		T.dropTable();
+	});
+
+	// Layers above 0 only supply the next layer's entry point, so descending greedily must not cost
+	// accuracy. Compare against the same graph searched with the full ef at every layer — the
+	// pre-change behaviour — rather than against a fixed expectation.
+	it('returns the same neighbours as searching every layer at the full ef', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const originalSearchLayer = customIndex.searchLayer;
+		const targets = [
+			[1, 0, 0, 0],
+			[0, 1, 0.5, 0.2],
+			[-0.6, 0.3, 0.9, 0.4],
+			[0.2, -0.8, 0.1, 0.7],
+		];
+
+		const greedy = [];
+		for (const target of targets) {
+			greedy.push(
+				(
+					await fromAsync(
+						T.search({ sort: { attribute: 'vector', target, distance: 'cosine' }, select: ['id'], limit: 10 })
+					)
+				)
+					.map((r) => r.id)
+					.join(',')
+			);
+		}
+
+		// Every layer at the ef layer 0 actually resolves to — what search() passed down before greedy
+		// descent. Read it from a real query rather than efConstructionSearch, which is only the
+		// pre-change value when a schema configures one; this index takes the auto-scaled path.
+		const resolvedLayer0Ef = await captureLayer0Ef(T, { limit: 10 });
+		assert(resolvedLayer0Ef > 1, `expected an auto-scaled layer-0 ef, got ${resolvedLayer0Ef}`);
+		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+			return originalSearchLayer.call(this, v, epId, ep, level > 0 ? resolvedLayer0Ef : ef, level, ...rest);
+		};
+		try {
+			for (let i = 0; i < targets.length; i++) {
+				const full = (
+					await fromAsync(
+						T.search({
+							sort: { attribute: 'vector', target: targets[i], distance: 'cosine' },
+							select: ['id'],
+							limit: 10,
+						})
+					)
+				)
+					.map((r) => r.id)
+					.join(',');
+				assert.strictEqual(greedy[i], full, `greedy descent changed the result set for target ${i}`);
+			}
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
+	});
+});
+
+describe('HNSW limit above the resolved search ef', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	const N = 700; // > AUTO_EF_BASE (100), so the auto-scaled ef is well below the limits tested here
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWLimitTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		// a spread-out ring in 3-space so every record is a distinct, reachable point
+		for (let i = 0; i < N; i++) {
+			const a = (i / N) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 7) / 7] });
+		}
+	});
+
+	after(() => {
+		T.dropTable();
+	});
+
+	// The layer-0 candidate list holds at most `ef` entries, and ef resolves from the auto-scale
+	// (100 at this table size) — not from the query. A limit above it used to come back silently
+	// short, which also made a limit larger than the table unusable for enumerating the graph.
+	it('returns the requested number of rows when limit exceeds the auto-scaled ef', async () => {
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 400 })
+		);
+		assert.strictEqual(results.length, 400, `expected 400 rows, got ${results.length}`);
+		assert.strictEqual(new Set(results.map((r) => r.id)).size, 400, 'rows must be distinct');
+	});
+
+	it('caps at the table size rather than the candidate list when limit exceeds both', async () => {
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 5000 })
+		);
+		assert.strictEqual(results.length, N, `expected the whole table (${N}), got ${results.length}`);
+	});
+
+	it('honors offset + limit together', async () => {
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
+				select: ['id'],
+				offset: 250,
+				limit: 200,
+			})
+		);
+		assert.strictEqual(results.length, 200, `expected 200 rows after an offset of 250, got ${results.length}`);
+	});
+
+	// A per-query ef is an explicit cost ceiling, so it stays authoritative and bounds the result set;
+	// the limit-derived floor only applies when the caller has not said what to spend.
+	it('leaves an explicit per-query ef authoritative over the limit-derived floor', async () => {
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine', ef: 20 },
+				select: ['id'],
+				limit: 400,
+			})
+		);
+		assert.strictEqual(results.length, 20, `an explicit ef should bound the result set, got ${results.length}`);
+	});
+
+	// ef sizes a synchronous traversal holding every admitted candidate, so a caller-supplied limit
+	// must not be able to derive an unbounded one — LIMIT_EF_MAX is the only thing bounding it, since
+	// clamping to the graph size would need a count that is exact as of the query.
+	for (const [label, query] of [
+		['deep pagination', { offset: 5_000_000, limit: 10 }],
+		['a first-page limit', { limit: 1_000_000 }],
+	]) {
+		it(`bounds the limit-derived ef at LIMIT_EF_MAX under ${label}`, async () => {
+			const layer0Ef = await captureLayer0Ef(T, query);
+			assert.strictEqual(layer0Ef, 4 * 512, `layer-0 ef should be LIMIT_EF_MAX (${4 * 512}), got ${layer0Ef}`);
+		});
+	}
+
+	// The ceiling is what bounds the work, not the graph size: resolving a size exact enough to clamp
+	// against would put a store lookup back on every query, and an ef above the node count is free —
+	// the traversal runs out of reachable nodes first. The memo's timestamp only moves when the size
+	// was actually resolved, so it reports whether the limit path went back to the store.
+	it('does not re-resolve the graph size for a limit past the end of the table', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		customIndex.approximateNodeCount(); // memoize the size, so only a re-resolution moves the timestamp
+		let memoAt = customIndex.nodeCountAt;
+		const resolvedAt = memoAt;
+		let reresolutions = 0;
+		for (let i = 0; i < 10; i++) {
+			await fromAsync(
+				T.search({
+					sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
+					select: ['id'],
+					limit: 5000,
+				})
+			);
+			if (customIndex.nodeCountAt !== memoAt) {
+				reresolutions++;
+				memoAt = customIndex.nodeCountAt;
+			}
+		}
+		// Counting rather than asserting none: the memo expires on its own schedule, at most once per
+		// NODE_COUNT_TTL since it was last resolved. The regression re-resolves per query instead.
+		const explainable = Math.floor((Date.now() - resolvedAt) / 10_000); // NODE_COUNT_TTL
+		assert(
+			reresolutions <= explainable,
+			`a limit past the graph size re-resolved the node count ${reresolutions} times; the TTL explains at most ${explainable}`
+		);
+	});
+
+	// The predicate-aware visit budget (#1241) is what stops a selective filter crawling the graph,
+	// loading and freezing a record per visit. It is calibrated against the ef the index chooses for
+	// itself, so a caller's limit must not multiply into it — a limit-derived ef widens the candidate
+	// list (a bounded array), but must not buy a bigger record-loading budget.
+	it('keeps the filtered-traversal visit budget off the limit-derived ef', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const originalSearchLayer = customIndex.searchLayer;
+		const budgets = [];
+		customIndex.searchLayer = function (v, epId, ep, ef, level, options, distanceFn, filter, filterState) {
+			if (filterState) budgets.push(filterState.maxVisits);
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, options, distanceFn, filter, filterState);
+		};
+		try {
+			customIndex.search(
+				{ target: [1, 0, 0], comparator: 'sort' },
+				{ transaction: undefined },
+				() => true,
+				100_000 // a limit far above anything the index would choose for itself
+			);
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
+		const ceiling = 512 * customIndex.filterExpansion; // AUTO_EF_MAX * filterExpansion
+		assert(budgets.length > 0, 'expected the filtered path to build a visit budget');
+		for (const budget of budgets) {
+			assert(
+				budget <= ceiling,
+				`visit budget ${budget} exceeds the index's own ceiling (${ceiling}) — a caller's limit inflated it`
+			);
+		}
+	});
+});
+
+/** Run a query and report the ef layer 0 was actually searched at. */
+async function captureLayer0Ef(T, query) {
+	const customIndex = T.indices.vector.customIndex;
+	const originalSearchLayer = customIndex.searchLayer;
+	let layer0Ef = 0;
+	customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+		if (level === 0) layer0Ef = ef;
+		return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+	};
+	try {
+		await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], ...query })
+		);
+	} finally {
+		customIndex.searchLayer = originalSearchLayer;
+	}
+	return layer0Ef;
+}
+
 describe('HNSW post-sort distance', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const distanceCalculator = new HierarchicalNavigableSmallWorld();
