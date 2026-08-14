@@ -947,4 +947,126 @@ describe('two-phase component directory transaction', function () {
 		await cleanup(name);
 		await fs.rm(external, { recursive: true, force: true });
 	});
+	it('leaves external contents untouched when node_modules/@scope is a symlink', async () => {
+		// `readdir` follows symlinks, so a staged payload shipping `node_modules/@scope` as a link to
+		// somewhere else on the machine would otherwise have that directory's children enumerated as
+		// candidates — and a link in there whose target happened to point into staging would be removed and
+		// recreated, writing outside the component tree.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('scoped') });
+		const stagedPath = await stageApplication(application, deploymentId);
+
+		// An external directory holding a link that DOES point into staging — the dangerous shape.
+		const external = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-external-scope-'));
+		await fs.mkdir(path.join(stagedPath, 'vendor', 'probe'), { recursive: true });
+		await fs.writeFile(path.join(stagedPath, 'vendor', 'probe', 'index.js'), "module.exports = 'probe';\n");
+		await fs.symlink(path.join(stagedPath, 'vendor', 'probe'), path.join(external, 'bait'), 'dir');
+		const externalBaitTarget = await fs.readlink(path.join(external, 'bait'));
+
+		// node_modules/@scope is a LINK to that external directory.
+		await fs.mkdir(path.join(stagedPath, 'node_modules'), { recursive: true });
+		await fs.symlink(external, path.join(stagedPath, 'node_modules', '@scope'), 'dir');
+
+		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
+
+		assert.equal(
+			await fs.readlink(path.join(external, 'bait')),
+			externalBaitTarget,
+			'a link inside a symlinked scope directory is never rewritten'
+		);
+		assert.equal(
+			(await fs.lstat(path.join(application.dirPath, 'node_modules', '@scope'))).isSymbolicLink(),
+			true,
+			'the scope link itself is left as a link'
+		);
+		await cleanup(name);
+		await fs.rm(external, { recursive: true, force: true });
+	});
+
+	it('keeps the previous release live when a dependency link cannot be repaired', async () => {
+		// The repair is not best-effort: the link is only being touched because activation is about to
+		// invalidate its target, so a failure means the component would go live unable to resolve a
+		// dependency — which pre-swap load validation cannot catch, since the link was valid in staging.
+		const name = fixtureName();
+		const first = randomUUID();
+		const second = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('live-v1') });
+		await stageApplication(application, first);
+		await activateStagedApplication(application, first, { activationSpec: { package: null } });
+
+		application.payload = await makeComponentPayload('candidate-v2');
+		const stagedPath = await stageApplication(application, second);
+		await fs.mkdir(path.join(stagedPath, 'vendor', 'probe'), { recursive: true });
+		await fs.mkdir(path.join(stagedPath, 'node_modules'), { recursive: true });
+		await fs.symlink(path.join(stagedPath, 'vendor', 'probe'), path.join(stagedPath, 'node_modules', 'probe'), 'dir');
+		// Make recreating the link impossible: replace its parent with a read-only directory so the unlink
+		// and re-symlink cannot succeed.
+		await fs.chmod(path.join(stagedPath, 'node_modules'), 0o500);
+
+		try {
+			await assert.rejects(
+				() => activateStagedApplication(application, second, { activationSpec: { package: null } }),
+				'an unrepairable dependency link must fail the activation'
+			);
+			assert.match(
+				await readMarker(application.dirPath),
+				/live-v1/,
+				'the previous release is still live — the swap was compensated'
+			);
+		} finally {
+			await fs.chmod(path.join(stagedPath, 'node_modules'), 0o700).catch(() => {});
+		}
+		await cleanup(name);
+	});
+
+	it('resumes revert recovery when a first pass fails before the tree is moved back', async () => {
+		// The holding directory is the only durable evidence that recovery is unfinished, so it must not be
+		// consumed until the manifest and config writes are durable. A recovery marker carries the intended
+		// end state across restarts, and on re-entry it — not the manifest — is the source of truth, because
+		// an earlier attempt may already have exchanged the manifest and exchanging it twice flips it back.
+		const name = fixtureName();
+		const { application, first, second } = await twoActivations(name);
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		const manifestPath = `${previousPath}.json`;
+		const markerPath = `${previousPath}.recovering.json`;
+		const holding = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, `.reverting-${name}-${randomUUID()}`);
+
+		// Crash state: the reverted-to version is live, the displaced tree is still parked.
+		const staleManifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+		await fs.rm(application.dirPath, { recursive: true, force: true });
+		await fs.rename(previousPath, application.dirPath);
+		await fs.mkdir(holding, { recursive: true });
+		await fs.writeFile(path.join(holding, 'index.js'), "module.exports = 'displaced';\n");
+		// Stand in for a first pass that recorded its intent and then died: the marker is present.
+		await fs.writeFile(
+			markerPath,
+			JSON.stringify({ previous: staleManifest.live, live: staleManifest.previous }, null, 2)
+		);
+		// Make the manifest WRITE fail (its read still succeeds, and the marker is what recovery reads
+		// anyway) by putting a directory where the manifest file belongs.
+		await fs.rm(manifestPath, { recursive: true, force: true });
+		await fs.mkdir(manifestPath, { recursive: true });
+
+		const firstPass = await recoverInterruptedReverts(COMPONENTS_ROOT);
+
+		assert.equal(firstPass.has(name), true, 'the failed pass is reported, so the component is failed closed');
+		assert.equal(existsSync(holding), true, 'the holding tree survives, so a later pass can still finish');
+		assert.equal(existsSync(markerPath), true, 'and the recovery marker survives with it');
+
+		// Clear the injected fault and run recovery again, as the next process start would.
+		await fs.rm(manifestPath, { recursive: true, force: true });
+		const secondPass = await recoverInterruptedReverts(COMPONENTS_ROOT);
+
+		assert.equal(secondPass.size, 0, 'the second pass completes');
+		assert.match(await readMarker(application.dirPath), /v1/, 'the reverted-to version is live');
+		assert.match(await readMarker(previousPath), /displaced/, 'the displaced tree is retained again');
+		assert.equal(existsSync(holding), false, 'the holding tree is consumed only once everything is durable');
+		assert.equal(existsSync(markerPath), false, 'and the marker is cleared');
+		// The marker, not the twice-read manifest, decided the end state — so roles are exchanged once.
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.live.deployment_id, first);
+		assert.equal(target.previous.deployment_id, second);
+		await cleanup(name);
+	});
 });
