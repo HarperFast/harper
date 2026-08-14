@@ -78,6 +78,11 @@ describe('token-scoped operation narrowing', () => {
 		assert.strictEqual(request.hdb_user._expandedTokenOperations, first, 'expected one expansion');
 	});
 
+	// A null scope is what an unscoped policy stores; it must fall through to the role, not throw.
+	it('falls through to the role when the scope is null', () => {
+		assert.ok(isAllowed(opAuth.verifyPerms(requestAs({ super_user: true }, null), INSERT_FN)));
+	});
+
 	it('denies everything when the scope is empty', () => {
 		assert.ok(!isAllowed(opAuth.verifyPerms(requestAs({ super_user: true }, []), INSERT_FN)));
 	});

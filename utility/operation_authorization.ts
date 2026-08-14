@@ -593,8 +593,10 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 	// It can only subtract. The scope is never merged into `permission.operations`, because that field
 	// is not purely narrowing — gate 2 treats an explicit listing of an SU-only operation as a
 	// deliberate grant, so merging into it could widen instead.
+	// `!= null`, not `!== undefined`: an unscoped policy stores `operations: null`, and expanding a
+	// null would throw rather than fall through to the role.
 	const tokenOperations = requestJson.hdb_user?.tokenOperations;
-	if (tokenOperations !== undefined) {
+	if (tokenOperations != null) {
 		const scopedOps =
 			requestJson.hdb_user._expandedTokenOperations ??
 			(requestJson.hdb_user._expandedTokenOperations = expandOperationsPerms(tokenOperations));
