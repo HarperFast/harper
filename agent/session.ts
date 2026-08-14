@@ -60,8 +60,7 @@ export async function createSession(opts: CreateSessionOpts): Promise<AgentSessi
 		createdAt: now,
 		updatedAt: now,
 	};
-	// Keep session writes on the transactional Resource path so they retain the table lifecycle semantics;
-	// PrimaryRocksDatabase also guards raw puts with version metadata, but raw writes still bypass this path.
+	// Use the transactional Resource path for table lifecycle semantics; raw puts are versioned at the store boundary (#1762).
 	await getAgentSessionTable().put(row);
 	return row;
 }

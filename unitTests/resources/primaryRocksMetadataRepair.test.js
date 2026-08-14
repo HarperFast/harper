@@ -11,6 +11,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { Packr } = require('msgpackr');
 const { ACTION_32_BIT } = require('#src/resources/auditStore');
+const { createBlob, encodeBlobsWithFilePath } = require('#src/resources/blob');
 const {
 	RecordEncoder,
 	RecordObject,
@@ -173,6 +174,14 @@ describe('PrimaryRocksDatabase raw-write versioning (#1762)', function () {
 		setNextEncoding(stagedVersion, 0);
 		store.putSync('staged-version', { source: 'record-updater' }, { version: stagedVersion + 1 });
 		assert.strictEqual(store.getEntry('staged-version').version, stagedVersion);
+	});
+
+	it('does not inherit a stale blob flag on a wrapper-staged raw write', function () {
+		const blob = createBlob(Buffer.from('prior write'));
+		blob.saveInRecord = true;
+		encodeBlobsWithFilePath(() => store.encoder.encode({ blob }), 99, root);
+		store.putSync('after-blob', { source: 'raw-write' });
+		assert.strictEqual(rawStore.getBinarySync('after-blob').readUint32BE(8), ACTION_32_BIT << 24);
 	});
 
 	it('clears wrapper metadata when a raw binary write bypasses the encoder', function () {
