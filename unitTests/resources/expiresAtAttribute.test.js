@@ -370,6 +370,23 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		Table.cleanup();
 	});
 
+	it('retries a conflicting Rocks eviction batch', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtBatchConflict'));
+		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000 });
+		await Table.primaryStore.committed;
+		let commitAttempts = 0;
+
+		await runSweep({
+			beforeBatchCommit() {
+				commitAttempts++;
+				if (commitAttempts === 1) throw Object.assign(new Error('injected optimistic conflict'), { code: 'ERR_BUSY' });
+			},
+		});
+
+		assert.strictEqual(commitAttempts, 2, 'the conflicting batch should be re-staged and committed once');
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+	});
+
 	it('continues an expiration sweep beyond one RocksDB chunk', async function () {
 		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtSweepContinuation'));
 		const expiresAt = Date.now() - 1_000;

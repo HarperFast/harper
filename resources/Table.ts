@@ -6491,7 +6491,7 @@ export function makeTable(options) {
 			const batcher = isRocksDB ? createEvictionBatcher(() => cleanupClosed, testHooks) : undefined;
 			for (const entry of primaryStore.getRange({
 				start: false,
-				snapshot: false,
+				snapshot: false, // avoid holding a read snapshot for the duration of a full-table scan
 				versions: true,
 				lazy: true,
 			})) {
@@ -6505,6 +6505,8 @@ export function makeTable(options) {
 					count++;
 				}
 				if (action) {
+					// Blob deletion is a non-transactional side effect, so blob records stay on evict()'s
+					// per-record path where unlinking waits for the record removal to commit.
 					if (batcher && !(action === 'evict' && metadataFlags & HAS_BLOBS)) {
 						await batcher.add({ type: action, key, version });
 					} else {

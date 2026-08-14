@@ -21,7 +21,6 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 describe('Batched eviction (RocksDB)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let EvictTable;
-	let RetryTable;
 
 	const makeSource = () =>
 		class extends Resource {
@@ -72,12 +71,6 @@ describe('Batched eviction (RocksDB)', () => {
 			],
 		});
 		EvictTable.sourcedFrom(makeSource());
-		RetryTable = table({
-			table: 'EvictRetryTable',
-			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }],
-		});
-		RetryTable.sourcedFrom(makeSource());
 	});
 
 	it('physically evicts >EVICTION_BATCH_SIZE records across multiple batches and cleans indices', async function () {
@@ -102,37 +95,5 @@ describe('Batched eviction (RocksDB)', () => {
 			0,
 			'index entries must be removed with the records'
 		);
-	});
-
-	it('recovers from an optimistic commit conflict (ERR_BUSY) and still evicts', async function () {
-		const { Transaction } = require('@harperfast/rocksdb-js');
-		const originalCommit = Transaction.prototype.commit;
-		let injected = false;
-		let armed = false;
-		// Inject a single ERR_BUSY into the first commit after arming, simulating an optimistic
-		// write-write conflict. The batcher must abort, re-stage into a fresh transaction, and commit.
-		Transaction.prototype.commit = async function (...args) {
-			if (armed && !injected) {
-				injected = true;
-				const error = new Error('injected optimistic conflict');
-				error.code = 'ERR_BUSY';
-				throw error;
-			}
-			return originalCommit.apply(this, args);
-		};
-
-		const ids = [1000, 1001, 1002, 1003, 1004];
-		try {
-			RetryTable.setTTLExpiration(HOLD); // keep records resident (and un-evicted) until the conflict is armed
-			for (const id of ids) await RetryTable.get(id);
-			assert.equal(await waitForResident(RetryTable, ids), ids.length, 'records should be resident after warming');
-
-			armed = true; // the next commit (an eviction-batch commit) will hit the injected conflict
-			const resident = await evictAndWait(RetryTable, ids);
-			assert(injected, 'the injected ERR_BUSY conflict should have fired on a commit');
-			assert.equal(resident, 0, 'eviction should still complete after retrying the conflicting batch');
-		} finally {
-			Transaction.prototype.commit = originalCommit;
-		}
 	});
 });
