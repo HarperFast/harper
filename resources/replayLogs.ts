@@ -21,6 +21,29 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 let warnedReplayHappening = false;
 
+// Records the source-transaction version that replay is committing in pieces, so the next boot knows
+// which version it may have resumed into (harper#2161). Written before the batch it describes and
+// cleared once that version has been applied in full, so the durable state errs toward "torn": a
+// spurious marker only widens the tie handling in DatabaseTransaction.partiallyCommitted for one
+// version, while a missing one would let a later same-key write be dropped as a duplicate.
+const TORN_VERSION_KEY = Symbol.for('replay-torn-version');
+
+function readTornVersion(rootStore: RocksDatabase): number | undefined {
+	try {
+		return (rootStore as any).getSync(TORN_VERSION_KEY) || undefined;
+	} catch (error) {
+		logger.warn('Could not read the replay torn-transaction marker', error);
+	}
+}
+
+function recordTornVersion(rootStore: RocksDatabase, version: number): void {
+	try {
+		(rootStore as any).putSync(TORN_VERSION_KEY, version);
+	} catch (error) {
+		logger.warn('Could not record the replay torn-transaction marker', error);
+	}
+}
+
 // True when `updated` would DROP shared structures relative to `existing` — for either the classic
 // array form or the {named, typed} Map form, and for a form change between the two. Shared
 // structures only ever grow (ids are stable and append-only), so a shorter replayed buffer is a
@@ -88,10 +111,15 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let stagedBytes = 0;
 		let stagedWrites = 0;
 		let midVersionFlushes = 0;
-		// The version being replayed has already had part of itself committed — by this run, or (for the
-		// version replay resumed into) by a previous interrupted one.
+		// The version being replayed has already had part of itself committed by THIS run.
 		let versionCommittedInPieces = false;
-		let resumedIntoVersion = true;
+		// The version a previous replay left committed in pieces, if any (see recordTornVersion): a durable
+		// fact rather than an assumption, so a replay that never tore anything keeps the identity-tie dedup
+		// for every version it applies.
+		const resumedTornVersion = readTornVersion(rootStore);
+		// True when what is about to be committed, or has just been committed, is only part of its source
+		// transaction — the state in which losing a batch, or dropping a later same-key write, tears it.
+		const committingVersionIsTorn = () => versionCommittedInPieces || lastTimestamp === resumedTornVersion;
 		// Track forward progress so a backlog of unwritable entries can't grind the boot thread
 		// forever (harper#1266). `noProgressRun` counts every entry processed without a successful
 		// write since the last one — undecodable/corrupt skips AND entries for a dropped table — and
@@ -186,17 +214,24 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				// entry, so the batch overshoots the bound by at most the one write that crosses it.
 				const entryCost = (auditRecord.size ?? 0) + REPLAY_WRITE_OVERHEAD_BYTES;
 				if (newVersion || shouldFlushReplayBatch(stagedBytes + entryCost, stagedWrites + 1)) {
+					// Marked before the batch it describes is committed, so a crash between the two records a
+					// tear that did not happen rather than missing one that did.
+					if (!newVersion && !versionCommittedInPieces && version !== resumedTornVersion) {
+						recordTornVersion(rootStore, version);
+					}
+					const wasTorn = committingVersionIsTorn();
 					try {
-						// commit the last transaction since we are starting a new one
+						// commit what is staged; a new transaction is started below
 						transaction?.directCommitSync();
 					} catch (error) {
 						// The condition is "the transaction being committed was already committed in part",
-						// not "this is a mid-version commit": the batch that fails can equally be the LAST
-						// batch of a torn version, reached at the version boundary. Continuing then boots the
-						// node with a hole punched through one source transaction — this batch is lost, the
-						// iterator never revisits it (replay restarts from the log's last-flushed position,
-						// which a failed commit does not rewind), and later versions land on top of the gap.
-						if (!newVersion || versionCommittedInPieces) {
+						// not "this is a mid-version commit": the batch that fails can equally be the last
+						// batch of a version torn earlier — by this run or by the run before it — reached at
+						// the version boundary. Continuing then boots the node with a hole punched through one
+						// source transaction: this batch is lost, the iterator never revisits it (replay
+						// restarts from the log's last-flushed position, which a failed commit does not
+						// rewind), and later versions land on top of the gap.
+						if (!newVersion || wasTorn) {
 							logger.fatal(
 								`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: a batch of an oversized transaction failed to commit (${writes} written, ${skipped} skipped). Continuing would apply later writes over writes that were never committed. Re-clone this node from a healthy leader to recover the unreplayed data.`,
 								error
@@ -207,10 +242,9 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 						logger.error('Error committing replay transaction', error);
 					}
 					if (newVersion) {
+						// The version that just committed is whole again, so clear its marker.
+						if (wasTorn) recordTornVersion(rootStore, 0);
 						versionCommittedInPieces = false;
-						// lastTimestamp is still the previous version here, so a non-zero one means the version
-						// starting now is not the one replay resumed into.
-						if (lastTimestamp !== 0) resumedIntoVersion = false;
 					} else {
 						midVersionFlushes++;
 						versionCommittedInPieces = true;
@@ -235,12 +269,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;
 					transaction.timestamp = version;
-					// This version can already be durable in part two ways: this run committed an earlier
-					// batch of it, or a previous interrupted run did and replay resumed at a position inside
-					// it — the log's last-flushed position is a commit boundary, and with batching a commit
-					// boundary can fall inside a source transaction. Only the version replay resumed into can
-					// be in the second state. See DatabaseTransaction.partiallyCommitted.
-					transaction.partiallyCommitted = versionCommittedInPieces || resumedIntoVersion;
+					// This version can already be durable in part two ways: this run committed an earlier batch
+					// of it, or the run before it did — the log's last-flushed position is a commit boundary,
+					// so with batching it can fall inside a source transaction, and replay then resumes there.
+					// See DatabaseTransaction.partiallyCommitted.
+					transaction.partiallyCommitted = versionCommittedInPieces || version === resumedTornVersion;
 					// retries=1 routes operation.commit() through its retry path (no duplicate audit staging)
 					transaction.retries = 1;
 					// Explicit replay marker: skips schema validation (harper#1316) and makes save() stamp
@@ -346,13 +379,16 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				});
 			}
 		}
+		const lastVersionWasTorn = committingVersionIsTorn();
 		try {
 			transaction?.directCommitSync();
+			// Whatever was torn is whole again once its last batch commits.
+			if (lastVersionWasTorn) recordTornVersion(rootStore, 0);
 		} catch (error) {
 			// The last batch of a torn transaction failing here leaves that transaction durable in part,
 			// which the operator has to know about; a whole-transaction commit failing is the pre-existing
 			// all-or-nothing loss.
-			if (versionCommittedInPieces) {
+			if (lastVersionWasTorn) {
 				logger.fatal(
 					`Transaction-log replay in ${(rootStore as any).databaseName} database left an oversized transaction partially applied: its final batch failed to commit (${writes} written, ${skipped} skipped). Re-clone this node from a healthy leader to recover the unreplayed data.`,
 					error

@@ -6,16 +6,12 @@
  * exhausted heap mid-replay, and because the next boot restarts the same replay, the node never
  * came back up. Replay now also commits once the staged batch crosses its size bounds, mid-version.
  *
- * These exercise that mid-version commit on real crash/replay cycles and assert the properties it
- * must not break: a torn-and-recommitted transaction still replays completely, and a key written
- * twice in one transaction still ends at its LAST value even when the two writes land in different
- * batches (the committed earlier write ties the later one on version/nodeId, which without
- * `Context.partiallyCommitted` reads as a re-delivered duplicate and is dropped).
+ * A key written twice in one transaction must still end at its LAST value when the two writes land
+ * in different batches: the committed earlier write ties the later one on version/nodeId, which
+ * without `DatabaseTransaction.partiallyCommitted` reads as a re-delivered duplicate and is dropped.
  *
- * They do not reproduce the OOM itself (that needs a heap-constrained run over GB-scale logs), and
- * they do not crash BETWEEN two replay batches — the bound is covered by unit tests over
- * shouldFlushReplayBatch, and the re-application of a torn version rests on replay restarting from
- * the log's last-flushed position.
+ * Not covered here: the OOM itself (needs a heap-constrained run over GB-scale logs), a crash
+ * BETWEEN two replay batches, and commit failure.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual as equal } from 'node:assert';
