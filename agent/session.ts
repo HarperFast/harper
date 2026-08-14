@@ -60,12 +60,8 @@ export async function createSession(opts: CreateSessionOpts): Promise<AgentSessi
 		createdAt: now,
 		updatedAt: now,
 	};
-	// Write through the Resource-level `put` (transactional), NOT `primaryStore.put`: the transactional
-	// path stages the version/local-timestamp metadata so the record is stored with the metadata prefix.
-	// A raw `primaryStore.put` writes a prefix-less record, which — when it begins with classic shared-
-	// structure record-id #2 (byte 0x42 == 66) — is misread by the RocksDB decode heuristic as a
-	// timestamp-prefixed record (8 bytes stripped → corrupt → "Could not find typed structure"). See
-	// RecordEncoder.ts:328-335.
+	// Keep session writes on the transactional Resource path so they retain the table lifecycle semantics;
+	// PrimaryRocksDatabase also guards raw puts with version metadata, but raw writes still bypass this path.
 	await getAgentSessionTable().put(row);
 	return row;
 }

@@ -11,10 +11,19 @@ const { setupTestDBPath } = require('../testUtils');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { Packr } = require('msgpackr');
 const { ACTION_32_BIT } = require('#src/resources/auditStore');
-const { RecordEncoder, RecordObject, setNextEncoding } = require('#src/resources/RecordEncoder');
+const {
+	RecordEncoder,
+	RecordObject,
+	setNextEncoding,
+	stageRawPrimaryEncoding,
+} = require('#src/resources/RecordEncoder');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
+function asBinary(buffer) {
+	return { ['\x10binary-data\x02']: buffer };
+}
 
 describe('PrimaryRocksDatabase metadata repair (#2012)', function () {
 	let dbPath, root, store, rawStore;
@@ -95,9 +104,13 @@ describe('PrimaryRocksDatabase raw-write versioning (#1762)', function () {
 		root?.close();
 	});
 
-	it('versions mixed-shape async raw puts before classic structure id 0x42 can collide', async function () {
+	it('does not stage metadata for an encoder that is not initialized for RocksDB', function () {
+		assert.strictEqual(stageRawPrimaryEncoding({ useVersions: true, isRocksDB: false }, 123), false);
+	});
+
+	it('versions mixed-shape raw puts before classic structure id 0x42 can collide', function () {
 		for (let copy = 1; copy <= 2; copy++) {
-			await store.put(`failure-${copy}`, {
+			store.putSync(`failure-${copy}`, {
 				backend: 'unknown',
 				method: 'generate',
 				model: 'missing',
@@ -106,7 +119,7 @@ describe('PrimaryRocksDatabase raw-write versioning (#1762)', function () {
 			});
 		}
 		for (let copy = 1; copy <= 2; copy++) {
-			await store.put(`generate-${copy}`, {
+			store.putSync(`generate-${copy}`, {
 				backend: 'deterministic',
 				method: 'generate',
 				model: 'probe',
@@ -116,7 +129,7 @@ describe('PrimaryRocksDatabase raw-write versioning (#1762)', function () {
 			});
 		}
 		for (let copy = 1; copy <= 2; copy++) {
-			await store.put(`stream-${copy}`, {
+			store.putSync(`stream-${copy}`, {
 				backend: 'deterministic',
 				method: 'generateStream',
 				model: 'probe',
@@ -140,19 +153,32 @@ describe('PrimaryRocksDatabase raw-write versioning (#1762)', function () {
 
 	it('uses a positional version verbatim for sync raw puts', function () {
 		const version = 1_800_000_000_000.25;
-		store.putSync('explicit-version', { source: 'legacy-call-shape' }, version, 123);
+		store.putSync('explicit-version', { source: 'legacy-call-shape' }, version);
 		assert.strictEqual(store.getEntry('explicit-version').version, version);
 	});
 
+	it('uses a positional version verbatim for async raw puts', async function () {
+		const version = 1_800_000_000_000.5;
+		await store.put('explicit-async-version', { source: 'async-call-shape' }, version);
+		assert.strictEqual(store.getEntry('explicit-async-version').version, version);
+	});
+
+	it('replaces an unusable explicit version with a monotonic version', function () {
+		store.putSync('zero-version', { source: 'legacy-zero' }, 0);
+		assert(store.getEntry('zero-version').version > 0);
+	});
+
 	it('does not replace metadata already staged by recordUpdater', function () {
-		const version = 1_800_000_000_001.5;
-		setNextEncoding(version, 0);
-		store.putSync('staged-version', { source: 'record-updater' }, { version });
-		assert.strictEqual(store.getEntry('staged-version').version, version);
+		const stagedVersion = 1_800_000_000_001.5;
+		setNextEncoding(stagedVersion, 0);
+		store.putSync('staged-version', { source: 'record-updater' }, { version: stagedVersion + 1 });
+		assert.strictEqual(store.getEntry('staged-version').version, stagedVersion);
 	});
 
 	it('clears wrapper metadata when a raw binary write bypasses the encoder', function () {
-		store.putSync('binary', { ['\x10binary-data\x02']: Buffer.from([1, 2, 3]) }, 123);
+		const buffer = Buffer.from([1, 2, 3]);
+		store.putSync('binary', asBinary(buffer), 123);
+		assert.deepStrictEqual(rawStore.getBinarySync('binary'), buffer);
 		store.putSync('after-binary', { source: 'next-write' });
 		assert.notStrictEqual(store.getEntry('after-binary').version, 123);
 	});

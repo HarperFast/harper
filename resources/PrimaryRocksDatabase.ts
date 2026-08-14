@@ -150,7 +150,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		return when(this.getEntry(id, { ...options, async: true }), (entry: Entry) => entry?.value);
 	}
 
-	put(id: any, value: any, options?: any, _ifVersion?: any): any {
+	put(id: any, value: any, options?: any): any {
 		this.#cache?.delete(id);
 		const staged = stageRawPrimaryEncoding(this.#enc, typeof options === 'number' ? options : options?.version);
 		try {
@@ -180,7 +180,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		});
 	}
 
-	putSync(id: any, value: any, options?: any, _ifVersion?: any): any {
+	putSync(id: any, value: any, options?: any): any {
 		this.#cache?.delete(id);
 		const staged = stageRawPrimaryEncoding(this.#enc, typeof options === 'number' ? options : options?.version);
 		try {
