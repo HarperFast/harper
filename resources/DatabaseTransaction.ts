@@ -360,6 +360,15 @@ export class DatabaseTransaction implements Transaction {
 	// or external caching source); its commits retry transient conflicts without the request-path
 	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
 	declare sourceApply?: boolean;
+	// Set on a replay transaction whose source transaction may already be durable in part — because
+	// boot replay committed an earlier batch of it (harper#2161), or because replay resumed at a
+	// position interior to it. A stored record that ties this transaction's (version, nodeId) is then
+	// that earlier write, and program order says this one supersedes it; without this the write path
+	// reads the tie as a re-delivered duplicate and drops it, since the staged-write chain that
+	// normally carries program order went with the committed batch. Replay only ever reads entries at
+	// or after the log's last-flushed position, so the entry being replayed is itself never durable —
+	// the tie can only come from a different, earlier entry of the same transaction.
+	declare partiallyCommitted?: boolean;
 	// Set when this transaction replays the local audit log during crash recovery (replayLogs.ts).
 	// Replayed records were valid when first written, so schema validation is skipped — a schema
 	// that has since added required fields must not block replaying older records (harper#1316).

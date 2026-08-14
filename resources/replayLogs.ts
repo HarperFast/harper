@@ -81,13 +81,17 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let lastTimestamp = 0;
 		let writes = 0;
 		let skipped = 0;
-		// Staged since the last commit, so the batch can be flushed before it exhausts heap
-		// (harper#2161). The byte figure is an estimate: each write is charged its audit entry size
-		// plus a fixed overhead for what the entry size can't see (the write operation, the key, the
-		// prior record entry it retains, index staging).
+		// Staged since the last commit, so the batch can be committed before it exhausts heap
+		// (harper#2161). The byte figure is an estimate: the audit entry's own size, the prior record
+		// each staged write retains, and a fixed per-write overhead for the rest (write operation,
+		// key, index staging).
 		let stagedBytes = 0;
 		let stagedWrites = 0;
 		let midVersionFlushes = 0;
+		// The version being replayed has already had part of itself committed — by this run, or (for the
+		// version replay resumed into) by a previous interrupted one.
+		let versionCommittedInPieces = false;
+		let resumedIntoVersion = true;
 		// Track forward progress so a backlog of unwritable entries can't grind the boot thread
 		// forever (harper#1266). `noProgressRun` counts every entry processed without a successful
 		// write since the last one — undecodable/corrupt skips AND entries for a dropped table — and
@@ -174,37 +178,56 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					warnedReplayHappening = true;
 					console.warn('Harper was not properly shutdown, replaying transaction logs to synchronize database');
 				}
-				// A new version always starts a new transaction; within a version, one is also started
-				// once the staged batch outgrows memory, which is the only bound on a version carrying
-				// a very large number of writes (harper#2161). Mid-version tearing is safe here and only
-				// here: replay restarts from the log's last-flushed position and re-applies in timestamp
-				// order, so a version torn by a crash between flushes is re-applied in full on the next
-				// boot.
 				const newVersion = lastTimestamp !== version;
-				if (newVersion || shouldFlushReplayBatch(stagedBytes, stagedWrites)) {
-					if (!newVersion) midVersionFlushes++;
-					lastTimestamp = version;
-					stagedBytes = 0;
-					stagedWrites = 0;
+				// A version's writes all stage into one transaction, so a version carrying a very large
+				// number of them has no memory bound at all (harper#2161). Committing mid-version is safe
+				// for replay, and only for replay: what a crash leaves torn is re-applied on the next boot,
+				// from the log's last-flushed position and in timestamp order. The decision includes this
+				// entry, so the batch overshoots the bound by at most the one write that crosses it.
+				const entryCost = (auditRecord.size ?? 0) + REPLAY_WRITE_OVERHEAD_BYTES;
+				if (newVersion || shouldFlushReplayBatch(stagedBytes + entryCost, stagedWrites + 1)) {
 					try {
 						// commit the last transaction since we are starting a new one
 						transaction?.directCommitSync();
 					} catch (error) {
+						// The condition is "the transaction being committed was already committed in part",
+						// not "this is a mid-version commit": the batch that fails can equally be the LAST
+						// batch of a torn version, reached at the version boundary. Continuing then boots the
+						// node with a hole punched through one source transaction — this batch is lost, the
+						// iterator never revisits it (replay restarts from the log's last-flushed position,
+						// which a failed commit does not rewind), and later versions land on top of the gap.
+						if (!newVersion || versionCommittedInPieces) {
+							logger.fatal(
+								`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: a batch of an oversized transaction failed to commit (${writes} written, ${skipped} skipped). Continuing would apply later writes over writes that were never committed. Re-clone this node from a healthy leader to recover the unreplayed data.`,
+								error
+							);
+							transaction = undefined as any;
+							break;
+						}
 						logger.error('Error committing replay transaction', error);
 					}
+					if (newVersion) {
+						versionCommittedInPieces = false;
+						// lastTimestamp is still the previous version here, so a non-zero one means the version
+						// starting now is not the one replay resumed into.
+						if (lastTimestamp !== 0) resumedIntoVersion = false;
+					} else {
+						midVersionFlushes++;
+						versionCommittedInPieces = true;
+					}
+					lastTimestamp = version;
+					stagedBytes = 0;
+					stagedWrites = 0;
 					// Abort if replay has exceeded the total wall-clock budget even while making progress
 					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
 					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
-					// peg the boot thread indefinitely without tripping it. Checked only at a commit point:
-					// what was staged has just been committed in full and nothing is staged yet, so the
-					// abort only ever cuts BETWEEN writes. A mid-version cut leaves a partially applied
-					// source transaction, which is why this used to be pinned to version boundaries — but a
-					// single version can be arbitrarily large, so pinning it there let one oversized version
-					// peg the boot thread with no bound at all. An aborted replay already requires a
-					// re-clone, so bounding it wins over the torn-transaction window it may leave.
-					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
+					// peg the boot thread indefinitely without tripping it. Checked only at a version
+					// boundary: the prior version's transaction was just committed in full and the new one
+					// is not yet staged, so aborting never tears a same-version (same source-transaction)
+					// write batch in half. Re-clone to recover the unreplayed remainder.
+					if (newVersion && shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
 						logger.fatal(
-							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data; if the abort fell inside an oversized transaction, part of that transaction is applied and the rest is not.`
+							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
 						);
 						transaction = undefined as any; // already committed above; nothing staged for the new version
 						break;
@@ -212,6 +235,12 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;
 					transaction.timestamp = version;
+					// This version can already be durable in part two ways: this run committed an earlier
+					// batch of it, or a previous interrupted run did and replay resumed at a position inside
+					// it — the log's last-flushed position is a commit boundary, and with batching a commit
+					// boundary can fall inside a source transaction. Only the version replay resumed into can
+					// be in the second state. See DatabaseTransaction.partiallyCommitted.
+					transaction.partiallyCommitted = versionCommittedInPieces || resumedIntoVersion;
 					// retries=1 routes operation.commit() through its retry path (no duplicate audit staging)
 					transaction.retries = 1;
 					// Explicit replay marker: skips schema validation (harper#1316) and makes save() stamp
@@ -224,8 +253,9 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				writes++;
 				// Charged before the write, not after it: a write that throws part-way has still staged
 				// whatever it got through, and that must count against the flush bound.
-				stagedBytes += (auditRecord.size ?? 0) + REPLAY_WRITE_OVERHEAD_BYTES;
+				stagedBytes += entryCost;
 				stagedWrites++;
+				const writesBefore = transaction.writes.length;
 				switch (type) {
 					case 'put':
 						tableInstance._writeUpdate(recordId, record, true, options);
@@ -294,6 +324,13 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 						// saveStructures, which would set structureUpdate and re-log the structure during replay.
 					}
 				}
+				// The prior record each staged write read and holds for the life of the transaction
+				// (DatabaseTransaction.save()) is invisible to the audit entry's own size, and for a
+				// patch or delete of a wide record it is the dominant allocation — an update-shaped
+				// oversized transaction would otherwise reach the write bound holding gigabytes.
+				for (let i = writesBefore; i < transaction.writes.length; i++) {
+					stagedBytes += transaction.writes[i]?.entry?.size ?? 0;
+				}
 				// Forward progress: a write was staged successfully, so reset the no-progress
 				// trackers. Doing this AFTER the switch (not before) means a slow or throwing
 				// write is neither counted as progress nor charged to the stall bound (harper#1266).
@@ -312,11 +349,19 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		try {
 			transaction?.directCommitSync();
 		} catch (error) {
-			logger.error('Error committing replay transaction', error);
+			// The last batch of a torn transaction failing here leaves that transaction durable in part,
+			// which the operator has to know about; a whole-transaction commit failing is the pre-existing
+			// all-or-nothing loss.
+			if (versionCommittedInPieces) {
+				logger.fatal(
+					`Transaction-log replay in ${(rootStore as any).databaseName} database left an oversized transaction partially applied: its final batch failed to commit (${writes} written, ${skipped} skipped). Re-clone this node from a healthy leader to recover the unreplayed data.`,
+					error
+				);
+			} else {
+				logger.error('Error committing replay transaction', error);
+			}
 		}
 		if (writes > 0) logger.warn(`Replayed ${writes} records in ${(rootStore as any).databaseName} database`);
-		// Warn, like the replay summaries above it: the default log level is `warn`, and a node that
-		// is being diagnosed for a boot-time OOM loop is exactly where this line must not be invisible.
 		if (midVersionFlushes > 0)
 			logger.warn(
 				`Replay committed ${midVersionFlushes} intra-transaction batch(es) in ${(rootStore as any).databaseName} database: the log contains transactions too large to stage in memory as a single batch (harper#2161)`

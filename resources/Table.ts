@@ -1901,7 +1901,10 @@ export function makeTable(options) {
 				entry: this.#entry,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					// A tie is this transaction's own earlier, already-committed write when it is being applied
+					// in pieces (see DatabaseTransaction.partiallyCommitted) — program order, not a duplicate.
+					if (precedesExisting < 0 || (precedesExisting === 0 && !(context?.transaction as any)?.partiallyCommitted)) {
 						write.skipped = true;
 						return;
 					}
@@ -1951,7 +1954,10 @@ export function makeTable(options) {
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					// see the invalidate path above
+					if (precedesExisting < 0 || (precedesExisting === 0 && !(context?.transaction as any)?.partiallyCommitted))
+						return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let newRecord = null;
@@ -2413,7 +2419,11 @@ export function makeTable(options) {
 					// round, and must still go through the out-of-order merge below or its changes would be
 					// silently overwritten.
 					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
-					if (priorStaged && precedesExisting >= 0) precedesExisting = 1;
+					// A partially committed replay transaction carries the same program-order signal for its
+					// earlier writes, which are committed rather than staged and so have no chain left (see
+					// DatabaseTransaction.partiallyCommitted).
+					if ((priorStaged || (context?.transaction as any)?.partiallyCommitted) && precedesExisting >= 0)
+						precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;

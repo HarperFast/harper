@@ -59,6 +59,7 @@ benchmarks/compression/results/
 
 # northwind export_local test artifact
 test_export.json.json
+test_export_*.json
 
 # dev-mode boots (harper dev <fixture>) symlink node_modules/harper into the
 # fixture component dir; keep those out of commits

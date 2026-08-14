@@ -131,30 +131,22 @@ export function shouldAbortSlowReplay(totalElapsedMs: number, timeLimitMs = REPL
 	return totalElapsedMs >= timeLimitMs;
 }
 
-// Replay commits its DatabaseTransaction at a version boundary, so every write belonging to one
-// source transaction stages into a single in-memory batch (JS write operations plus the native
-// write batch). A version carrying a very large number of writes — a bulk load, or a peer
-// transaction replicated as one version — therefore has no bound at all, and exhausts heap before
-// any of the guards above can fire: they are progress- and time-based, and a replay that is happily
-// writing its way to an OOM trips neither. The process then dies mid-replay and the next boot
-// restarts the same replay, so the node never boots (harper#2161).
-//
-// Flushing mid-version is safe for REPLAY specifically (it is not for a live write, which has no
-// second chance): a torn version is re-applied in full on the next boot, because replay always
-// restarts from the log's last-flushed position and re-applies entries in timestamp order, which
-// is idempotent.
+// The guards above are progress- and time-based, so neither fires on a replay that is writing its
+// way to an OOM: every write of one source transaction stages into a single in-memory batch, and a
+// version carrying a very large number of writes has no bound at all. The process dies mid-replay
+// and the next boot restarts the same replay, so the node never boots (harper#2161). These bounds
+// are what lets replay commit that batch in pieces.
 
-// Estimated staged bytes before replay flushes mid-version. Deliberately far below any realistic
-// heap: the estimate below undercounts (it charges the audit entry, not the prior record entry each
-// write also retains), and a sync commit of a batch this size costs milliseconds, so there is no
-// reason to run closer to the edge.
+// Estimated staged bytes before replay commits mid-version. Deliberately far below any realistic
+// heap: the estimate is approximate, and a sync commit of a batch this size costs milliseconds.
 export const REPLAY_MAX_STAGED_BYTES = 32 * 1024 * 1024;
 
-// Staged write count bound, for the case the byte bound can't see: millions of tiny records whose
-// per-write JS overhead (write operation, key, retained entry, index staging) dwarfs their value.
+// Also bound the write count, for the shape the byte bound reads as small: many tiny records whose
+// per-write JS overhead dwarfs their value.
 export const REPLAY_MAX_STAGED_WRITES = 10_000;
 
-// Charged per staged write on top of the audit entry's own size, for that per-write overhead.
+// Charged per staged write for what neither the audit entry nor the retained prior record covers:
+// the write operation, the encoded key, index staging.
 export const REPLAY_WRITE_OVERHEAD_BYTES = 256;
 
 /**
