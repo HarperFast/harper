@@ -507,4 +507,74 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			`WS subscription kept delivering after bearer token expired (closed=${sub.closed})`
 		);
 	});
+
+	test('a scoped-token subscription survives rechecks and terminates at token expiry', async () => {
+		// A scoped token's attribution username is not a real hdb_user, so the recheck must use the
+		// token's embedded role — not re-resolve by name (which would kill this subscription, and
+		// after a colliding user is created would escalate it). Read is granted via the operations
+		// allowlist plus the same table read the other tests use.
+		const tokenResp = await client.req().send({
+			operation: 'create_authentication_tokens',
+			username: 'scoped-subscriber',
+			role: {
+				permission: {
+					operations: ['read_only'],
+					data: {
+						tables: {
+							Owned: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+						},
+					},
+				},
+			},
+			expires_in: 4,
+		});
+		strictEqual(tokenResp.status, 200, `scoped token issue failed: ${tokenResp.status} ${tokenResp.text}`);
+		const token = tokenResp.body?.operation_token;
+		ok(token, 'expected a scoped operation_token');
+		strictEqual(tokenResp.body?.refresh_token, undefined, 'scoped token must not carry a refresh token');
+
+		const stream = openSse(restURL, '/Owned/', { Authorization: `Bearer ${token}` });
+		try {
+			await sleep(800);
+			await insert({ id: `r-${seq++}`, value: 'scoped-before' });
+			await sleep(1000);
+			ok(stream.count() >= 1, `expected delivery while scoped token valid, saw ${stream.count()}`);
+
+			// Force a re-auth sweep with an unrelated user-change (a dedicated throwaway user, so this
+			// test doesn't depend on another's principals): the by-name recheck bug would terminate
+			// the scoped subscription here, since no 'scoped-subscriber' hdb_user exists.
+			await client
+				.req()
+				.send({
+					operation: 'add_user',
+					role: ROLE,
+					username: 'scoped_recheck_trigger',
+					password: 'Trig-pw-1414!',
+					active: true,
+				})
+				.expect(200);
+			await client.req().send({ operation: 'drop_user', username: 'scoped_recheck_trigger' }).expect(200);
+			await sleep(1500);
+			const afterRecheck = stream.count();
+			await insert({ id: `r-${seq++}`, value: 'scoped-after-recheck' });
+			ok(
+				await waitFor(() => stream.count() > afterRecheck, 5000),
+				'scoped subscription was wrongly terminated by an unrelated user-change recheck'
+			);
+
+			// It must still expire with the token (4s + sweep interval).
+			await sleep(4200);
+			const probe = stream.count();
+			await insert({ id: `r-${seq++}`, value: 'scoped-post-expiry' });
+			await sleep(1500);
+			await assertOracleAlive('scoped-token-oracle');
+			strictEqual(
+				stream.count(),
+				probe,
+				`scoped subscription kept delivering after token expiry (${stream.count() - probe} extra)`
+			);
+		} finally {
+			stream.close();
+		}
+	});
 });

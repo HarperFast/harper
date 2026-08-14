@@ -886,6 +886,25 @@ describe('test scoped tokens (inline role object)', () => {
 		}
 		assert.deepStrictEqual(error.statusCode, 401);
 	});
+
+	it('a scoped-token bearer cannot self-mint standing tokens for its attribution name', async () => {
+		// the escalation this guards: attribution 'existing_user' does not exist at mint, a real
+		// user with that name is created later, and the passwordless self-mint path would otherwise
+		// resolve to that real user and hand out full operation/refresh tokens.
+		const scopedBearer = {
+			username: 'existing_user',
+			active: true,
+			_scopedToken: true,
+			role: { role: '_scoped_token_x', id: '_scoped_token_x', permission: { operations: ['read_only'] } },
+		};
+		let error;
+		try {
+			await token_auth_plain.createTokens({ hdb_user: scopedBearer });
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 401);
+	});
 });
 
 describe('test validateLoginToken function', () => {

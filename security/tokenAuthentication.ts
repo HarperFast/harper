@@ -187,6 +187,12 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		// without a password (see operationAuthorizationState.ts).
 		let validatePassword: boolean = !isOperationAuthorizationBypassed();
 		if (!authObj.username && !authObj.password) {
+			// A scoped-token bearer must not self-mint: its username is an unverified attribution
+			// label, and resolving it here without a password would hand out standing operation/
+			// refresh tokens for whatever real user later takes that name (privilege escalation).
+			if (authObj.hdb_user?._scopedToken) {
+				throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+			}
 			// if the username and password are not provided, use the hdb_user making the request.
 			authObj.username = authObj.hdb_user?.username;
 			// the password would have been checked by authHandler before getting here
