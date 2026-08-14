@@ -6,6 +6,8 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
+import { ciIdentityAvailable, exchangeCiIdentityForToken } from './ciIdentityToken.ts';
+import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
@@ -764,7 +766,8 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 	options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
 	// Authentication precedence: explicitly configured credentials (dedicated args, URL
 	// userinfo, env vars) beat everything, then env-var tokens, then the saved `harper login`
-	// token, and only then the legacy `username=`/`password=` payload fallback below. The
+	// token, then a CI identity token exchanged via OIDC (#2171 — ambient, so it ranks below
+	// everything configured), and only then the legacy `username=`/`password=` fallback. The
 	// tokens must outrank that fallback: for add_user/alter_user those args are the credentials
 	// of the user being created/altered, so treating them as auth would authenticate as a user
 	// who doesn't exist yet (or as the wrong identity) instead of using the admin's session.
@@ -819,6 +822,13 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 			if (tokens.operation_token) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
+		} else if (ciIdentityAvailable()) {
+			// Last credential source: no configured token, but this runner can prove its identity to
+			// the cluster directly (#2171). Deliberately below the env-var and saved tokens — an
+			// explicitly configured credential should keep working exactly as it did when someone adds
+			// `id-token: write` to a workflow, rather than silently switching which identity deploys.
+			const operationToken = await exchangeCiIdentityForToken(options, target.resolvedTarget);
+			if (operationToken) options.headers.Authorization = `Bearer ${operationToken}`;
 		}
 	}
 	// Legacy fallback for operations where `username=`/`password=` genuinely ARE the caller's

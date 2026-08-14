@@ -299,6 +299,159 @@ describe('cliOperations', () => {
 		});
 	});
 
+	// OIDC trusted publishing (#2171): the runner proves its identity to the cluster instead of
+	// carrying a Harper credential. Ambient, so it ranks below everything explicitly configured.
+	describe('CI identity auth (OIDC)', () => {
+		const target = 'https://example.com:9925/';
+		const envVars = [
+			'HARPER_CLI_OPERATION_TOKEN',
+			'HARPER_CLI_REFRESH_TOKEN',
+			'CLI_TARGET_OPERATION_TOKEN',
+			'CLI_TARGET_REFRESH_TOKEN',
+			'ACTIONS_ID_TOKEN_REQUEST_URL',
+			'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+		];
+		const saved = {};
+		let originalFetch;
+		let identityRequests;
+
+		beforeEach(() => {
+			for (const v of envVars) {
+				saved[v] = process.env[v];
+				delete process.env[v];
+			}
+			process.env.ACTIONS_ID_TOKEN_REQUEST_URL = 'https://pipelines.example/idtoken?api-version=2.0';
+			process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'runner-request-token';
+
+			identityRequests = [];
+			originalFetch = globalThis.fetch;
+			globalThis.fetch = async (url) => {
+				identityRequests.push(new URL(String(url)));
+				return new Response(JSON.stringify({ value: 'identity.token.value' }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			};
+		});
+
+		afterEach(() => {
+			globalThis.fetch = originalFetch;
+			for (const v of envVars) {
+				if (saved[v] === undefined) delete process.env[v];
+				else process.env[v] = saved[v];
+			}
+		});
+
+		it('exchanges a CI identity for an operation token when nothing else is configured', async () => {
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				if (req.operation === 'exchange_oidc_token') {
+					return {
+						statusCode: 200,
+						body: JSON.stringify({ operation_token: 'oidc-op-token', username: 'ci-deploy', policy: 'p' }),
+					};
+				}
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			const result = await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.strictEqual(result.success, true);
+			assert.deepStrictEqual(
+				requested.map((r) => r.operation),
+				['exchange_oidc_token', 'test']
+			);
+			assert.strictEqual(requested[1].auth, 'Bearer oidc-op-token');
+			// The audience must be this instance, not the provider's shared default.
+			assert.strictEqual(identityRequests[0].searchParams.get('audience'), target);
+		});
+
+		// Adding `id-token: write` to a workflow that still sets HARPER_CLI_REFRESH_TOKEN must not
+		// silently change which identity deploys.
+		it('leaves a configured env token in charge', async () => {
+			process.env.HARPER_CLI_OPERATION_TOKEN = 'env-op-token';
+			tokenAuthModule.isJWTExpired = () => false;
+
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.deepStrictEqual(
+				requested.map((r) => r.operation),
+				['test']
+			);
+			assert.strictEqual(requested[0].auth, 'Bearer env-op-token');
+			assert.strictEqual(identityRequests.length, 0, 'must not ask the provider for an identity token');
+		});
+
+		it('leaves saved login credentials in charge', async () => {
+			saveCredentials(target, { operation_token: 'file-token', refresh_token: 'file-refresh' });
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let seenAuth;
+			commonUtilsModule.httpRequest = async (options) => {
+				seenAuth = options.headers.Authorization;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(seenAuth, 'Bearer file-token');
+			assert.strictEqual(identityRequests.length, 0);
+		});
+
+		// Same rationale as the env-var tokens: a local operation is trusted via bypassLocalAuth,
+		// which only applies when no Authorization header is present.
+		it('does not exchange for a local (no-target) operation', async () => {
+			const originalGetHdbPid = processManagementModule.getHdbPid;
+			const originalInitConfig = configUtilsModule.initConfig;
+			const originalGetConfigPath = configUtilsModule.getConfigPath;
+			const socketPath = path.join(testDir, 'oidc-local-check.sock');
+			fs.ensureFileSync(socketPath);
+			configUtilsModule.initConfig = () => {};
+			processManagementModule.getHdbPid = () => 12345;
+			configUtilsModule.getConfigPath = () => socketPath;
+
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			try {
+				await cliOperationsModule.cliOperations({ operation: 'test' }, true);
+			} finally {
+				processManagementModule.getHdbPid = originalGetHdbPid;
+				configUtilsModule.initConfig = originalInitConfig;
+				configUtilsModule.getConfigPath = originalGetConfigPath;
+			}
+
+			assert.strictEqual(identityRequests.length, 0);
+			assert.strictEqual(requested.length, 1);
+			assert.strictEqual(requested[0].auth, undefined);
+		});
+
+		// A rejected exchange must not leave a half-authenticated request; it goes out with no
+		// Authorization header and fails the way an unauthenticated request normally does.
+		it('proceeds unauthenticated when the exchange is rejected', async () => {
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				if (req.operation === 'exchange_oidc_token') {
+					return { statusCode: 401, body: JSON.stringify({ error: 'Identity token was rejected' }) };
+				}
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(requested[1].auth, undefined);
+		});
+	});
+
 	// The resolved target is an identity, not a credential: it keys ~/.harperdb/credentials.json, is
 	// echoed by "Connecting to ...", written to .env, and emitted by `harper login --for-ci`.
 	// Userinfo is stripped once, in normalizeTarget, so none of those sites can leak a password.
