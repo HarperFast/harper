@@ -964,6 +964,104 @@ describe('Test configUtils module', () => {
 			);
 			logger_trace_stub.restore();
 		});
+
+		it('mirrors the override into the nested configObj tree at the corresponding path', () => {
+			const nested_config = { operationsApi: { network: { port: 9925, securePort: 9925 } } };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, null);
+
+			expect(nested_config.operationsApi.network.securePort).to.equal(null);
+			config_obj_rw();
+		});
+
+		it('does not initialize configObj — that would permanently short-circuit getConfigObj()s lazy initConfig()', () => {
+			// getConfigObj() treats a falsy configObj as "not yet initialized" and calls initConfig();
+			// creating configObj as {} here (before any real config has been loaded, e.g. during
+			// install before the config file exists) would make that check pass on an empty tree
+			// forever, and componentLoader's root-component load would see zero components.
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', undefined);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, null);
+
+			expect(config_utils_rw.__get__('configObj')).to.be.undefined;
+			config_obj_rw();
+		});
+
+		it('does not clobber an existing scalar value (legacy shorthand) while descending the nested path', () => {
+			const nested_config = { threads: 4 };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.THREADS_COUNT, 2);
+
+			expect(nested_config).to.eql({ threads: 4 });
+			config_obj_rw();
+		});
+
+		it('deletes rather than writing an undefined value into the nested tree', () => {
+			// squashObj (below) never writes an undefined value as an enumerable key either; several
+			// root-config readers iterate configObj's own keys and assume every one holds a real value.
+			const nested_config = { databases: { data: { path: '/old' } } };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
+
+			expect(nested_config.hasOwnProperty('databases')).to.be.false;
+			config_obj_rw();
+		});
+
+		it('does not auto-vivify missing ancestors when the value being set is undefined', () => {
+			// If it did, the (now-empty) intermediate objects it created on the way to the deleted
+			// leaf would be left behind — and componentLoader.ts treats any truthy top-level config
+			// key as a component to load.
+			const nested_config = {};
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, undefined);
+
+			expect(nested_config).to.eql({});
+			config_obj_rw();
+		});
+
+		it('never mirrors a boot-props-file-only param (not a real config-tree path) into the nested tree', () => {
+			// SETTINGS_PATH_KEY ('settings_path') lives in BOOT_PROP_PARAMS, not the harper-config.yaml
+			// schema — CONFIG_PARAM_MAP still maps it (so the flat map keeps working), but splitting
+			// it on '_' and writing into the nested tree would create a bogus top-level
+			// configObj.settings.path, which componentLoader.ts would try to load as a component
+			// named 'settings'. installer.ts and testUtils.js's initTestEnvironment() both call
+			// setProperty() with this key on every install/test run.
+			const nested_config = { rootPath: '/hdb' };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY, '/hdb/settings.file');
+
+			expect(nested_config).to.eql({ rootPath: '/hdb' });
+			config_obj_rw();
+		});
+
+		it('flattening a throwaway doc does not make it the live config the mirror writes into', () => {
+			// flattenConfig() also runs on docs that are discarded moments later — the defaults doc in
+			// getDefaultConfig()/createConfigFile(), and the user-supplied doc installer.ts reads for
+			// an HDB_CONFIG install. When it installed those as configObj, the mirror above wrote the
+			// override into a tree nobody would ever read, which is the exact flat/nested divergence
+			// it exists to close. Only setActiveConfig()'s callers own the live tree.
+			const live_config = { operationsApi: { network: { port: 9925 } } };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', live_config);
+
+			config_utils_rw.flattenConfig({ operationsApi: { network: { port: 1 } } });
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9999);
+
+			expect(config_utils_rw.__get__('configObj')).to.equal(live_config);
+			expect(live_config.operationsApi.network.port).to.equal(9999);
+			config_obj_rw();
+		});
 	});
 
 	describe('Test updateConfigValue function', () => {
