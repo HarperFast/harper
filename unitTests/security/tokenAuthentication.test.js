@@ -648,8 +648,6 @@ describe('test validateOperationToken function', () => {
 });
 
 describe('test scoped tokens (inline role object)', () => {
-	// a plain (non-rewired) module instance: this suite runs entirely against real production
-	// behavior — real key files, real users cache, no stubs (AGENTS.md test style)
 	const token_auth_plain = require('#src/security/tokenAuthentication');
 	const SU_MINTER = {
 		username: 'admin_minter',

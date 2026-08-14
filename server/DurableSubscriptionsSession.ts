@@ -56,19 +56,19 @@ if (getWorkerIndex() === 0) {
 		for await (const will of getLastWill().search({})) {
 			const data = will.data;
 			const message = { ...will };
-			if (message.user?._scopedToken) {
-				// Never rehydrate a scoped-token bearer by name: its username is attribution only, and
-				// resolving it against hdb_user could substitute a real principal's permissions. The
-				// will record carries the token's own (downgraded) role — and must not outlive the token.
-				if (message.user.authExpiresAt && message.user.authExpiresAt * 1000 <= Date.now()) {
-					warn('Dropping will from an expired scoped token', data);
-					getLastWill().delete(will.id);
-					continue;
-				}
-			} else if (message.user?.username) {
-				message.user = await (server as any).getUser(message.user.username);
-			}
 			try {
+				if (message.user?._scopedToken) {
+					// Never rehydrate a scoped-token bearer by name: its username is attribution only, and
+					// resolving it against hdb_user could substitute a real principal's permissions. The
+					// will record carries the token's own (downgraded) role — and must not outlive the token.
+					if (message.user.authExpiresAt && message.user.authExpiresAt * 1000 <= Date.now()) {
+						warn('Dropping will from an expired scoped token', data);
+						getLastWill().delete(will.id);
+						continue;
+					}
+				} else if (message.user?.username) {
+					message.user = await (server as any).getUser(message.user.username);
+				}
 				await publishMessage(message, data, message);
 			} catch {
 				warn('Failed to publish will', data);

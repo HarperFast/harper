@@ -270,8 +270,8 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 /**
  * Mints a scoped token: a single operation-usable JWT that embeds an inline role object, so its
  * bearer needs no hdb_user or hdb_role row. Requires an authenticated super_user minter (or
- * trusted internal dispatch). `username` is attribution only and may name a non-existent user;
- * it defaults to the minter's username. No refresh token is issued and no user record is touched,
+ * trusted internal dispatch). `username` is attribution only, must NOT name an existing user,
+ * and defaults to `scoped:<minter>`. No refresh token is issued and no user record is touched,
  * so the token is irrevocable until expiry — size expires_in accordingly.
  */
 // Measured on the signed token (base64url payload + signature), so it reflects what the
