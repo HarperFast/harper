@@ -178,8 +178,8 @@
 		"@fastify/compress": "^8.3.1",
 		"@fastify/cors": "^11.2.0",
 		"@fastify/static": "^9.1.3",
-		"@harperfast/extended-iterable": "^1.0.1",
-		"@harperfast/rocksdb-js": "^2.7.1",
+		"@harperfast/extended-iterable": "1.0.3",
+		"@harperfast/rocksdb-js": "2.7.1",
 		"@harperfast/skills": "^1.10.8",
 		"@turf/area": "6.5.0",
 		"@turf/boolean-contains": "6.5.0",
@@ -223,7 +223,7 @@
 		"minimist": "1.2.8",
 		"moment": "2.30.1",
 		"mqtt-packet": "~9.0.1",
-		"msgpackr": "^2.0.5",
+		"msgpackr": "2.0.5",
 		"needle": "3.5.0",
 		"node-forge": "^1.3.1",
 		"node-stream-zip": "1.16.0",
@@ -244,7 +244,7 @@
 		"ses": "^1.15.0",
 		"stream-chain": "2.2.5",
 		"stream-json": "1.9.1",
-		"structon": "^1.0.7",
+		"structon": "1.0.7",
 		"systeminformation": "^5.31.4",
 		"tar-fs": "^3.1.2",
 		"tar-stream": "^3.1.8",
@@ -261,9 +261,9 @@
 		}
 	},
 	"optionalDependencies": {
-		"bufferutil": "^4.0.9",
-		"segfault-handler": "^1.3.0",
-		"utf-8-validate": "^5.0.10"
+		"bufferutil": "4.1.0",
+		"segfault-handler": "1.3.0",
+		"utf-8-validate": "5.0.10"
 	},
 	"peerDependencies": {
 		"@aws-sdk/client-bedrock-runtime": "^3.0.0",
