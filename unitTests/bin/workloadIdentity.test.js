@@ -1,14 +1,14 @@
 'use strict';
 
 const assert = require('node:assert');
-const { ciIdentityAvailable, exchangeCiIdentityForToken } = require('#src/bin/ciIdentityToken');
+const { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } = require('#src/bin/workloadIdentity');
 const commonUtilsModule = require('#src/utility/common_utils');
 
 const REQUEST_URL = 'https://pipelines.actions.githubusercontent.com/abc/idtoken?api-version=2.0';
 const REQUEST_TOKEN = 'runner-request-token';
 const AUDIENCE = 'https://my-instance.harperdb.io:9925/';
 
-describe('ciIdentityToken', () => {
+describe('workloadIdentity', () => {
 	let originalFetch;
 	let originalHttpRequest;
 	let originalEnv;
@@ -70,32 +70,32 @@ describe('ciIdentityToken', () => {
 		else process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = originalEnv.token;
 	});
 
-	describe('ciIdentityAvailable', () => {
+	describe('workloadIdentityAvailable', () => {
 		it('is true when the runner offers an identity token', () => {
-			assert.strictEqual(ciIdentityAvailable(), true);
+			assert.strictEqual(workloadIdentityAvailable(), true);
 		});
 
 		// GitHub sets both together; either one missing means the workflow did not grant
 		// `id-token: write`, which is a configuration answer rather than something to report.
 		it('is false unless both variables are present', () => {
 			delete process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
-			assert.strictEqual(ciIdentityAvailable(), false);
+			assert.strictEqual(workloadIdentityAvailable(), false);
 			process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = REQUEST_TOKEN;
 			delete process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
-			assert.strictEqual(ciIdentityAvailable(), false);
+			assert.strictEqual(workloadIdentityAvailable(), false);
 		});
 	});
 
-	describe('exchangeCiIdentityForToken', () => {
+	describe('exchangeWorkloadIdentityForToken', () => {
 		it('returns an operation token', async () => {
-			const token = await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE);
+			const token = await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE);
 			assert.strictEqual(token, 'minted-operation-token');
 		});
 
 		// The audience is what binds the token to this instance; GitHub's default is shared by every
 		// repository under an owner, so it must be set explicitly on the request.
 		it('requests the token for this instance as the audience', async () => {
-			await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE);
+			await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE);
 			assert.strictEqual(fetchCalls.length, 1);
 			assert.strictEqual(fetchCalls[0].url.searchParams.get('audience'), AUDIENCE);
 			// The api-version already on the URL must survive.
@@ -104,7 +104,7 @@ describe('ciIdentityToken', () => {
 		});
 
 		it('sends the identity token to exchange_oidc_token', async () => {
-			await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE);
+			await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE);
 			assert.strictEqual(operationCalls.length, 1);
 			assert.deepStrictEqual(operationCalls[0].body, {
 				operation: 'exchange_oidc_token',
@@ -113,7 +113,7 @@ describe('ciIdentityToken', () => {
 		});
 
 		it('names the policy and user it authenticated as', async () => {
-			await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE);
+			await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE);
 			assert.ok(
 				stderr.some((line) => line.includes('ci-deploy') && line.includes('my-app-prod')),
 				`expected the identity to be reported; got ${JSON.stringify(stderr)}`
@@ -122,14 +122,14 @@ describe('ciIdentityToken', () => {
 
 		it('does nothing on a runner with no identity to offer', async () => {
 			delete process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
-			assert.strictEqual(await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE), undefined);
+			assert.strictEqual(await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE), undefined);
 			assert.strictEqual(fetchCalls.length, 0);
 			assert.strictEqual(operationCalls.length, 0);
 		});
 
 		it('gives up without exchanging when the provider refuses a token', async () => {
 			globalThis.fetch = async () => new Response('forbidden', { status: 403 });
-			assert.strictEqual(await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE), undefined);
+			assert.strictEqual(await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE), undefined);
 			assert.strictEqual(operationCalls.length, 0, 'nothing to exchange');
 			assert.ok(stderr.some((line) => line.includes('403')));
 		});
@@ -137,7 +137,7 @@ describe('ciIdentityToken', () => {
 		it('gives up when the provider returns no token value', async () => {
 			globalThis.fetch = async () =>
 				new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } });
-			assert.strictEqual(await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE), undefined);
+			assert.strictEqual(await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE), undefined);
 			assert.strictEqual(operationCalls.length, 0);
 		});
 
@@ -148,7 +148,7 @@ describe('ciIdentityToken', () => {
 				statusCode: 401,
 				body: '{"error":"Identity token was rejected"}',
 			});
-			assert.strictEqual(await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE), undefined);
+			assert.strictEqual(await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE), undefined);
 			assert.ok(
 				stderr.some((line) => line.includes('list_oidc_trust')),
 				`expected actionable guidance; got ${JSON.stringify(stderr)}`
@@ -157,14 +157,14 @@ describe('ciIdentityToken', () => {
 
 		it('returns undefined when the exchange yields no token', async () => {
 			commonUtilsModule.httpRequest = async () => ({ statusCode: 200, body: '{}' });
-			assert.strictEqual(await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE), undefined);
+			assert.strictEqual(await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE), undefined);
 		});
 
 		it('survives a transport failure', async () => {
 			commonUtilsModule.httpRequest = async () => {
 				throw new Error('socket hang up');
 			};
-			assert.strictEqual(await exchangeCiIdentityForToken({ headers: {} }, AUDIENCE), undefined);
+			assert.strictEqual(await exchangeWorkloadIdentityForToken({ headers: {} }, AUDIENCE), undefined);
 			assert.ok(stderr.some((line) => line.includes('socket hang up')));
 		});
 	});

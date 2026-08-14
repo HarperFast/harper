@@ -11,24 +11,18 @@
 // call replicateOperation, which would double-apply on top of it.
 
 import Joi from 'joi';
-import { databases } from '../../resources/databases.ts';
-import * as terms from '../../utility/hdbTerms.ts';
-import { ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
-import { validateBySchema } from '../../validation/validationWrapper.ts';
-import { getUsersWithRolesCache } from '../user.ts';
-import { validateTrustPolicyClaims } from './claims.ts';
+import { databases } from '../../../resources/databases.ts';
+import * as terms from '../../../utility/hdbTerms.ts';
+import { ClientError, hdbErrors } from '../../../utility/errors/hdbError.ts';
+import { validateBySchema } from '../../../validation/validationWrapper.ts';
+import { getUsersWithRolesCache } from '../../user.ts';
+import { validateClaimConstraintShape } from './claims.ts';
 import { normalizeIssuer } from './jwks.ts';
+import { profileForIssuer } from './providers/index.ts';
 import type { OidcTrustPolicy } from './types.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const OIDC_TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
-
-/**
- * The canonical statement of why `audience` matters: GitHub's default is the repository owner's URL,
- * shared by every repository under that owner, so accepting it would make a token minted by any repo
- * in the org valid here — the one mistake the field exists to prevent.
- */
-const SHARED_DEFAULT_AUDIENCE = /^https:\/\/github\.com\/[^/]+\/?$/i;
 
 const POLICY_ID = Joi.string()
 	.min(1)
@@ -125,15 +119,12 @@ export async function addOidcTrust(req: any) {
 	);
 
 	const issuer = normalizeIssuer(req.issuer);
-	if (SHARED_DEFAULT_AUDIENCE.test(req.audience)) {
-		throw new ClientError(
-			`'audience' must identify this instance, not '${req.audience}' — an issuer's default audience is ` +
-				`shared by every repository under an owner, so a token minted for any of them would be accepted here. ` +
-				`Use the instance URL the CI client targets.`
-		);
-	}
-	// Throws ClientError naming the first structural problem.
-	validateTrustPolicyClaims(req.claims);
+	// Issuer-specific rules live in the provider profile; an unregistered issuer gets the strict
+	// generic profile rather than a permissive default. Each throws ClientError naming the problem.
+	const profile = profileForIssuer(issuer);
+	profile.assertAudienceIsSpecific(req.audience);
+	validateClaimConstraintShape(req.claims);
+	profile.assertPolicyIsSpecific(req.claims);
 
 	// Resolve the target user now: a policy pointing at a user that does not exist would fail only at
 	// exchange time, in CI, with nothing to point at. Read the users cache directly rather than

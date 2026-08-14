@@ -41,8 +41,8 @@ import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
-import * as trustPolicyOperations from '../../security/oidcTrust/trustPolicyOperations.ts';
-import * as tokenExchange from '../../security/oidcTrust/tokenExchange.ts';
+import * as trustPolicyOperations from '../../security/authn/oidc/trustPolicyOperations.ts';
+import * as tokenExchange from '../../security/authn/oidc/tokenExchange.ts';
 import { contextStorage } from '../../resources/transaction.ts';
 import { isMainThread } from 'node:worker_threads';
 import {

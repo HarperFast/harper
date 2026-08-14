@@ -6,16 +6,16 @@
 // (Map-backed mocks on databases.system).
 
 const assert = require('node:assert');
-const testUtils = require('../../testUtils.js');
+const testUtils = require('../../../testUtils.js');
 testUtils.preTestPrep();
 
 const fs = require('node:fs');
 const path = require('node:path');
 const jwt = require('jsonwebtoken');
 const { generateKeyPairSync, createPublicKey } = require('node:crypto');
-const { exchangeOidcToken } = require('#src/security/oidcTrust/tokenExchange');
-const { addOidcTrust } = require('#src/security/oidcTrust/trustPolicyOperations');
-const { clearJwksCache } = require('#src/security/oidcTrust/jwks');
+const { exchangeOidcToken } = require('#src/security/authn/oidc/tokenExchange');
+const { addOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
+const { clearJwksCache } = require('#src/security/authn/oidc/jwks');
 const { validateOperationToken, clearJWTRSAKeysCache, decodeJWT } = require('#src/security/tokenAuthentication');
 const { databases } = require('#src/resources/databases');
 const { setUsersWithRolesCache } = require('#src/security/user');
@@ -25,8 +25,9 @@ const terms = require('#src/utility/hdbTerms');
 const TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
 const TOKEN_USE_TABLE = 'hdb_oidc_token_use';
 const ISSUER = 'https://token.actions.githubusercontent.com';
-const JWKS_URI = ISSUER + '/.well-known/jwks';
-const DISCOVERY_URI = ISSUER + '/.well-known/openid-configuration';
+// An issuer with no registered provider profile — served by the same fake JWKS, so the generic
+// profile is exercised end-to-end with zero provider code.
+const GENERIC_ISSUER = 'https://kubernetes.default.svc';
 const AUDIENCE = 'https://my-instance.harperdb.io:9925/';
 const WORKFLOW_REF = 'HarperFast/my-app/.github/workflows/deploy.yml@refs/heads/main';
 const OIDC_KID = 'gh-signing-key';
@@ -121,11 +122,21 @@ describe('exchangeOidcToken', () => {
 		useTable = installMockTable(TOKEN_USE_TABLE, 'id');
 		await seedUsers();
 		realFetch = globalThis.fetch;
-		globalThis.fetch = async (url) =>
-			new Response(
-				JSON.stringify(String(url) === DISCOVERY_URI ? { issuer: ISSUER, jwks_uri: JWKS_URI } : { keys: [signingJwk] }),
-				{ status: 200, headers: { 'content-type': 'application/json' } }
+		// Serves discovery for any issuer asked about, and one shared key set, so a second issuer needs
+		// no extra plumbing.
+		globalThis.fetch = async (url) => {
+			const asString = String(url);
+			const discoveryFor = [ISSUER, GENERIC_ISSUER].find(
+				(issuer) => asString === issuer + '/.well-known/openid-configuration'
 			);
+			const body = discoveryFor
+				? { issuer: discoveryFor, jwks_uri: discoveryFor + '/.well-known/jwks' }
+				: { keys: [signingJwk] };
+			return new Response(JSON.stringify(body), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			});
+		};
 	});
 
 	afterEach(() => {
@@ -317,6 +328,124 @@ describe('exchangeOidcToken', () => {
 			}
 		);
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: forged }));
+	});
+
+	// Replay is keyed on a hash of the token, not on `jti`, so an issuer that omits it is still
+	// protected — which is the point of the change: Azure uses `uti`, others omit it entirely.
+	it('refuses to spend a token twice even when it carries no jti', async () => {
+		await addPolicy();
+		const { jti: _jti, ...withoutJti } = JSON.parse(
+			Buffer.from(identityToken().split('.')[1], 'base64url').toString('utf8')
+		);
+		const token = jwt.sign(withoutJti, issuerPrivateKey, {
+			algorithm: 'RS256',
+			header: { alg: 'RS256', kid: OIDC_KID },
+		});
+
+		const result = await exchangeOidcToken({ operation: 'exchange_oidc_token', token });
+		assert.strictEqual(result.username, 'ci-deploy');
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));
+	});
+
+	it('stores only a hash, never the token itself', async () => {
+		await addPolicy();
+		const token = identityToken();
+		await exchangeOidcToken({ operation: 'exchange_oidc_token', token });
+
+		const [record] = [...useTable.mock.rows.values()];
+		assert.ok(!JSON.stringify(record).includes(token), 'the raw token must not be stored');
+		assert.ok(!/eyJ/.test(JSON.stringify(record)), 'nothing JWT-shaped should be stored');
+	});
+
+	// A pull_request_target run executes the base repo's workflow with its secrets while a fork
+	// controls the code. Denied unless the policy opts in by constraining event_name.
+	it('denies a pull_request_target run when the policy does not constrain event_name', async () => {
+		await addPolicy();
+		await assertRejected(
+			exchangeOidcToken({
+				operation: 'exchange_oidc_token',
+				token: identityToken({ event_name: 'pull_request_target' }),
+			})
+		);
+	});
+
+	it('allows a pull_request_target run when the policy opts in', async () => {
+		await addPolicy({
+			claims: { repository_id: '67890', workflow_ref: WORKFLOW_REF, event_name: 'pull_request_target' },
+		});
+		const result = await exchangeOidcToken({
+			operation: 'exchange_oidc_token',
+			token: identityToken({ event_name: 'pull_request_target' }),
+		});
+		assert.strictEqual(result.username, 'ci-deploy');
+	});
+
+	// The generic profile with no provider code: a Kubernetes-shaped token, a policy pinning `sub`.
+	describe('an issuer with no registered profile', () => {
+		function serviceAccountToken(overrides = {}) {
+			const now = Math.floor(Date.now() / 1000);
+			return jwt.sign(
+				{
+					iss: GENERIC_ISSUER,
+					aud: AUDIENCE,
+					sub: 'system:serviceaccount:prod:deployer',
+					iat: now,
+					exp: now + 300,
+					...overrides,
+				},
+				issuerPrivateKey,
+				{ algorithm: 'RS256', header: { alg: 'RS256', kid: OIDC_KID } }
+			);
+		}
+
+		it('exchanges a token whose sub the policy pins', async () => {
+			await addOidcTrust(
+				asAdmin({
+					id: 'k8s-prod',
+					issuer: GENERIC_ISSUER,
+					audience: AUDIENCE,
+					claims: { sub: 'system:serviceaccount:prod:deployer' },
+					user: 'ci-deploy',
+				})
+			);
+			const result = await exchangeOidcToken({ operation: 'exchange_oidc_token', token: serviceAccountToken() });
+			assert.strictEqual(result.username, 'ci-deploy');
+			assert.strictEqual(result.policy, 'k8s-prod');
+		});
+
+		it('rejects a different service account', async () => {
+			await addOidcTrust(
+				asAdmin({
+					id: 'k8s-prod',
+					issuer: GENERIC_ISSUER,
+					audience: AUDIENCE,
+					claims: { sub: 'system:serviceaccount:prod:deployer' },
+					user: 'ci-deploy',
+				})
+			);
+			await assertRejected(
+				exchangeOidcToken({
+					operation: 'exchange_oidc_token',
+					token: serviceAccountToken({ sub: 'system:serviceaccount:prod:attacker' }),
+				})
+			);
+		});
+
+		it('refuses to store a policy that does not pin sub', async () => {
+			await assert.rejects(
+				() =>
+					addOidcTrust(
+						asAdmin({
+							id: 'k8s-loose',
+							issuer: GENERIC_ISSUER,
+							audience: AUDIENCE,
+							claims: { namespace: 'prod' },
+							user: 'ci-deploy',
+						})
+					),
+				/must pin `sub`/
+			);
+		});
 	});
 
 	it('rejects malformed input', async () => {
