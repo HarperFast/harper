@@ -438,6 +438,24 @@ describe('exchangeOidcToken', () => {
 		});
 	});
 
+	// End to end: the policy's scope reaches the minted token, so verifyPerms can narrow on it.
+	it('carries the policy operation scope into the minted token', async () => {
+		await addPolicy({ operations: ['deploy_component'] });
+		const result = await exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() });
+
+		const payload = JSON.parse(Buffer.from(result.operation_token.split('.')[1], 'base64url').toString('utf8'));
+		assert.deepStrictEqual(payload.operations, ['deploy_component']);
+		assert.strictEqual(payload.username, 'ci-deploy');
+	});
+
+	it('omits the claim entirely when the policy does not scope', async () => {
+		await addPolicy();
+		const result = await exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() });
+
+		const payload = JSON.parse(Buffer.from(result.operation_token.split('.')[1], 'base64url').toString('utf8'));
+		assert.strictEqual(payload.operations, undefined, 'an unscoped token must look exactly as it did before');
+	});
+
 	it('rejects malformed input', async () => {
 		await addPolicy();
 		for (const token of ['not-a-jwt', 'a.b.c']) {
