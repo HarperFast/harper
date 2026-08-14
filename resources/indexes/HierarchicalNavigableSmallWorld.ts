@@ -1110,10 +1110,8 @@ export class HierarchicalNavigableSmallWorld {
 	 * and $distance.
 	 */
 	exactDistance(searchCondition: { target: number[]; distance?: string }, recordVector: number[] | Int8Array): number {
-		if (recordVector == null) return Infinity; // missing vector sorts last
-		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
-		// float[] vector, but convert defensively in case a typed array slips through.
-		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
+		if (!searchCondition.target) throw new ClientError('A target vector must be provided for an HNSW query');
+		if (!Array.isArray(searchCondition.target)) throw new ClientError('The target vector must be an array');
 		const fn =
 			searchCondition.distance === 'euclidean'
 				? euclideanDistance
@@ -1121,7 +1119,14 @@ export class HierarchicalNavigableSmallWorld {
 					? dotProductDistance
 					: searchCondition.distance === 'cosine'
 						? cosineDistance
-						: this.distance;
+						: searchCondition.distance
+							? null
+							: this.distance;
+		if (!fn) throw new ClientError('Unknown distance function');
+		if (recordVector == null) return Infinity; // missing vector sorts last
+		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
+		// float[] vector, but convert defensively in case a typed array slips through.
+		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
 		return fn(searchCondition.target, vec);
 	}
 	/**
@@ -1306,27 +1311,24 @@ export class HierarchicalNavigableSmallWorld {
 	 * @param vector
 	 * @param context
 	 * @param entry
+	 * @param sortDefinition
 	 */
-	propertyResolver(vector: number[], context: any, entry: any) {
-		const sortDefinition = context?.sort;
+	propertyResolver(vector: number[], context: any, entry: any, sortDefinition?: any) {
 		if (sortDefinition) {
+			if (!context) return this.exactDistance(sortDefinition, vector);
 			// set up a cache for these so they can be accessed by $distance and not be recalculated during a sort
-			let vectorDistances = sortDefinition.vectorDistances;
-			if (vectorDistances) {
-				const difference = vectorDistances.get(entry);
-				if (difference) return difference;
-			} else vectorDistances = context.vectorDistances = sortDefinition.vectorDistances = new Map();
+			let vectorDistanceCaches = context.vectorDistanceCaches;
+			if (!vectorDistanceCaches) vectorDistanceCaches = context.vectorDistanceCaches = new WeakMap();
+			let vectorDistances = vectorDistanceCaches.get(sortDefinition);
+			const cacheKey =
+				entry && typeof entry === 'object' ? entry : vector && typeof vector === 'object' ? vector : null;
+			if (vectorDistances && cacheKey) {
+				const difference = vectorDistances.get(cacheKey);
+				if (difference !== undefined) return difference;
+			} else if (!vectorDistances) vectorDistanceCaches.set(sortDefinition, (vectorDistances = new WeakMap()));
 
-			let distanceFunction = this.distance;
-			if (sortDefinition.type)
-				distanceFunction =
-					sortDefinition.distance === 'euclidean'
-						? euclideanDistance
-						: sortDefinition.distance === 'dotProduct'
-							? dotProductDistance
-							: cosineDistance;
-			const distance = distanceFunction(sortDefinition.target, vector);
-			vectorDistances.set(entry, distance);
+			const distance = this.exactDistance(sortDefinition, vector);
+			if (cacheKey) vectorDistances.set(cacheKey, distance);
 			return distance;
 		}
 		return vector;

@@ -100,6 +100,11 @@ export async function setupTestApp() {
 
 	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'));
 	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, `${testHost}:9925`);
+	// The operations API is always plain HTTP in this harness (matching OPERATIONSAPI_NETWORK_PORT
+	// above); an ambient install whose securePort is also set (e.g. operationsApi.network.securePort:
+	// 9925) would otherwise leave that stale TLS port in the effective config alongside our plain-port
+	// override, so operations-API clients intermittently hit the wrong listener.
+	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, null);
 	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
 	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, `${testHost}:9926`);
 	setProperty(hdbTerms.CONFIG_PARAMS.MQTT_NETWORK_PORT, `${testHost}:1883`);

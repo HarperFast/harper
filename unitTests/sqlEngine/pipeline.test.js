@@ -15,6 +15,7 @@ const alasql = require('alasql');
 
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
+const { normalizeStatement } = require('#src/sqlEngine/parser/normalizer');
 const { EngineUnsupportedError } = require('#src/sqlEngine/errors');
 const { ClientError, IndexRebuildingError } = require('#src/utility/errors/hdbError');
 
@@ -380,6 +381,74 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 		);
 		assert.strictEqual(mockTable._lastTarget.limit, 2);
 		assert.strictEqual(mockTable._lastTarget.offset, 1);
+	});
+
+	it('TOP n behaves like LIMIT n and pushes to Table.search', async () => {
+		// `SELECT TOP n` is AlaSQL's SQL-Server spelling of LIMIT; previously it was
+		// silently dropped, returning every row instead of n (and never falling back).
+		const data = await runSql('SELECT TOP 2 name FROM dev.user WHERE age > 0 ORDER BY age');
+		assert.deepStrictEqual(
+			data.map((r) => r.name),
+			['bob', 'alice']
+		);
+		assert.strictEqual(mockTable._lastTarget.limit, 2);
+	});
+
+	it('rejects TOP combined with LIMIT as ambiguous (→ legacy fallback)', async () => {
+		await assert.rejects(
+			() => runSql('SELECT TOP 2 name FROM dev.user WHERE age > 0 ORDER BY age LIMIT 3'),
+			EngineUnsupportedError
+		);
+	});
+
+	it('floors a fractional LIMIT/OFFSET to match legacy truncation', async () => {
+		// AlaSQL parses `LIMIT 2.9`/`OFFSET 1.9` verbatim; legacy truncates them (2 rows,
+		// skip 1). PhysicalLimit's `yielded >= cap` check would instead over-yield (3 rows)
+		// on a fractional cap, so the normalizer floors both.
+		const data = await runSql('SELECT name FROM dev.user WHERE age > 0 ORDER BY age LIMIT 2.9 OFFSET 1.9');
+		assert.deepStrictEqual(
+			data.map((r) => r.name),
+			['alice', 'dave']
+		);
+		assert.strictEqual(mockTable._lastTarget.limit, 2);
+		assert.strictEqual(mockTable._lastTarget.offset, 1);
+	});
+
+	it('rejects TOP … PERCENT (fraction, not a count → legacy fallback)', async () => {
+		// AlaSQL sets top.value=50 and percent=true; mapping it to limit=50 would return
+		// all rows instead of 50% of them. Defer to legacy until percentage limiting exists.
+		await assert.rejects(
+			() => runSql('SELECT TOP 50 PERCENT name FROM dev.user WHERE age > 0 ORDER BY age'),
+			EngineUnsupportedError
+		);
+	});
+
+	it('rejects a LIMIT/TOP of 0 (legacy treats 0 as "no limit" → all rows)', async () => {
+		// Legacy AlaSQL returns ALL rows for `LIMIT 0`/`TOP 0`; the new engine would return
+		// none. Defer to legacy so `auto` mode stays identical.
+		await assert.rejects(() => runSql('SELECT name FROM dev.user WHERE age > 0 LIMIT 0'), EngineUnsupportedError);
+		await assert.rejects(() => runSql('SELECT TOP 0 name FROM dev.user WHERE age > 0'), EngineUnsupportedError);
+	});
+
+	it('rejects a row count past legacy 32-bit coercion (→ legacy fallback)', async () => {
+		// Legacy coerces counts >= 2^31 to 32 bits (`LIMIT 2^32` returns none, huge OFFSET
+		// wraps to 0); the new engine would apply them literally. Defer to legacy.
+		await assert.rejects(
+			() => runSql('SELECT name FROM dev.user WHERE age > 0 LIMIT 4294967296'),
+			EngineUnsupportedError
+		);
+	});
+
+	it('defers a present-but-unreadable LIMIT rather than silently dropping it', () => {
+		// Unreachable via SQL today (AlaSQL only accepts a numeric literal here), so this
+		// exercises the invariant at the AST level: a LIMIT clause that is present but not a
+		// static number must fall back, never return all rows unbounded.
+		const ast = {
+			from: [{ databaseid: 'dev', tableid: 'user' }],
+			columns: [{ columnid: '*' }],
+			limit: { value: null },
+		};
+		assert.throws(() => normalizeStatement(ast, 'select'), EngineUnsupportedError);
 	});
 
 	it('does NOT push LIMIT into the scan when a residual filter remains', async () => {

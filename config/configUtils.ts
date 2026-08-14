@@ -49,6 +49,14 @@ let flatDefaultConfigObj;
 let flatConfigObj;
 let configObj;
 
+// Canonical param names that live in CONFIG_PARAM_MAP but do NOT correspond to a path in the
+// harper-config.yaml schema (BOOT_PROP_PARAMS is boot-props-file-only bookkeeping — see its own
+// comment). Splitting one of these on '_' and writing it into the nested configObj tree would
+// silently create a bogus top-level section (e.g. 'settings_path' -> configObj.settings.path),
+// which componentLoader.ts treats as a real component to load, since it iterates every truthy
+// top-level key of the root config.
+const NON_NESTED_CONFIG_PARAMS = new Set<string>(Object.values(hdbTerms.BOOT_PROP_PARAMS));
+
 export function resolvePath(relativePath: string) {
 	if (relativePath?.startsWith('~/')) {
 		return path.join(hdbUtils.getHomeDir(), relativePath.slice(1));
@@ -96,7 +104,7 @@ const RENAME_RETRY_MAX_DELAY_MS = 500;
 // Never notified; exists only so Atomics.wait can time out (a synchronous, CPU-idle sleep).
 const renameRetrySleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
-function atomicWriteFile(
+export function atomicWriteFile(
 	filePath,
 	content,
 	{
@@ -193,8 +201,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc, skipFsValidation);
 
-	const configObj = configDoc.toJSON();
-	flatConfigObj = flattenConfig(configObj);
+	flatConfigObj = setActiveConfig(configDoc.toJSON());
 
 	// Create new config file and write config doc to it.
 	const hdbRoot = configDoc.getIn(['rootPath']) as string;
@@ -500,9 +507,9 @@ export function initConfig(force = false) {
 
 		// Validates config doc and if required sets default values for some parameters.
 		validateConfig(configDoc);
-		const configObj = configDoc.toJSON();
-		(server as any).config = configObj;
-		flatConfigObj = flattenConfig(configObj);
+		const parsedConfig = configDoc.toJSON();
+		(server as any).config = parsedConfig;
+		flatConfigObj = setActiveConfig(parsedConfig);
 
 		// If config has old version of logrotate enabled let user know it has been deprecated.
 		if (flatConfigObj['logging_rotation_rotate']) {
@@ -690,6 +697,41 @@ export function updateConfigObject(param: string, value: any) {
 	}
 
 	flatConfigObj[configObjKey.toLowerCase()] = value;
+
+	// Keep the nested config tree in sync too: componentLoader (root components) and other
+	// nested-path readers derive behavior — e.g. a component's network port/protocol — from
+	// getConfigObj()'s tree, not the flattened map, so an override that only touched flatConfigObj
+	// was invisible to them. configObj is unset only before a live config has ever been installed
+	// (setActiveConfig), i.e. during install; don't auto-vivify it, since getConfigObj() reads its
+	// falsiness as "not yet initialized" and an empty object would short-circuit that lazy init
+	// permanently.
+	if (configObj != null && !NON_NESTED_CONFIG_PARAMS.has(configObjKey)) {
+		const pathSegments = configObjKey.split('_');
+		let node = configObj;
+		for (let i = 0; i < pathSegments.length - 1; i++) {
+			const segment = pathSegments[i];
+			if (node[segment] === undefined) {
+				// Auto-vivifying ancestors only to delete the leaf would leave empty sections behind,
+				// which componentLoader.ts would treat as components to load.
+				if (value === undefined) return;
+				node[segment] = {};
+			} else if (typeof node[segment] !== 'object' || node[segment] === null) {
+				// A legacy scalar shorthand for this key (e.g. `threads: 4`); descending would replace
+				// it with {} out from under other readers. Leaves the two views disagreeing on this
+				// param, so say so rather than diverging silently.
+				logger.trace(
+					`Config param '${configObjKey}' not mirrored into the nested config: '${segment}' holds a scalar value`
+				);
+				return;
+			}
+			node = node[segment];
+		}
+		// squashObj never writes an undefined value as an enumerable key either; root-config readers
+		// (e.g. bin/run.ts) iterate configObj's own keys and assume every one holds a real value.
+		const leaf = pathSegments[pathSegments.length - 1];
+		if (value === undefined) delete node[leaf];
+		else node[leaf] = value;
+	}
 }
 
 /**
@@ -855,7 +897,7 @@ export function updateConfigValue(
 	}
 	atomicWriteFile(configFileLocation, String(configDoc));
 	if (update_config_obj) {
-		flatConfigObj = flattenConfig(configDoc.toJSON());
+		flatConfigObj = setActiveConfig(configDoc.toJSON());
 	}
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
 }
@@ -874,9 +916,25 @@ function backupConfigFile(configPath, hdbRoot) {
 	}
 }
 
+/**
+ * Flattens `obj` and installs it as the live config — the nested tree getConfigObj() hands out and
+ * updateConfigObject() mirrors overrides into. Only callers that own the live config may do this:
+ * flattenConfig() also runs on docs that are discarded moments later (the defaults doc, the
+ * user-supplied doc installer.ts reads for HDB_CONFIG), and no reader of configObj can tell one of
+ * those from the real thing.
+ * @param obj
+ * @returns the flattened config
+ */
+function setActiveConfig(obj) {
+	const flatObj = flattenConfig(obj);
+	configObj = obj;
+	return flatObj;
+}
+
 const PRESERVED_PROPERTIES = ['databases'];
 /**
  * Flattens the JSON version of Harper config with underscores separating each parent/child key.
+ * Does NOT install `obj` as the live config — see setActiveConfig() for that.
  * @param obj
  * @returns {null}
  */
@@ -885,10 +943,7 @@ export function flattenConfig(obj) {
 	if (obj?.operationsApi?.network) obj.operationsApi.network = { ...obj.http, ...obj.operationsApi.network };
 	if (obj?.operationsApi) obj.operationsApi.tls = { ...obj.tls, ...obj.operationsApi.tls };
 
-	configObj = obj;
-	const flatObj = squashObj(obj);
-
-	return flatObj;
+	return squashObj(obj);
 
 	function squashObj(obj) {
 		let result = {};
