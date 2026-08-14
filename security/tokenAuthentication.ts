@@ -257,12 +257,20 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
  * to this token — nothing here re-checks that.
  */
 export async function createOperationToken(
-	user: { username: string; super_user: boolean },
+	user: { username: string; super_user: boolean; operations?: string[] },
 	expiresIn: StringValue
 ): Promise<string> {
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
+	const payload: { username: string; super_user: boolean; operations?: string[] } = {
+		username: user.username,
+		super_user: user.super_user,
+	};
+	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. Absent means
+	// the role governs alone, which is every token minted before this existed.
+	if (user.operations?.length) payload.operations = user.operations;
+
 	return jwt.sign(
-		{ username: user.username, super_user: user.super_user },
+		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
 			expiresIn,
@@ -307,6 +315,12 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 		if (tokenType === TOKEN_TYPE.REFRESH && !password.validate(user.refresh_token, token)) {
 			throw new Error('Invalid token');
 		}
+
+		// Surfaced on the user rather than merged into role.permission.operations: that field is not
+		// purely narrowing (verifyPerms gate 2 treats an explicit SU-only listing as a grant), so
+		// merging a token scope into it could widen rather than narrow. verifyPerms intersects this
+		// separately, ahead of every bypass.
+		if (Array.isArray(tokenVerified.operations)) user.tokenOperations = tokenVerified.operations;
 
 		return user;
 	} catch (err) {

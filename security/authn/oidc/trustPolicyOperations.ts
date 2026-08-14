@@ -19,6 +19,7 @@ import { getUsersWithRolesCache } from '../../user.ts';
 import { validateClaimConstraintShape } from './claims.ts';
 import { normalizeIssuer } from './jwks.ts';
 import { profileForIssuer } from './providers/index.ts';
+import { expandOperationsPerms } from '../../../utility/operationPermissions.ts';
 import type { OidcTrustPolicy } from './types.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
@@ -44,6 +45,21 @@ function validate(validation: any): void {
 	if (validation) throw new ClientError(validation.message);
 }
 
+/**
+ * A typo in an operation name would otherwise fail closed at request time, in CI, with nothing to
+ * point at — so it is caught here, where the reader is the administrator who wrote it. Group names
+ * are accepted: expandOperationsPerms resolves them, and a name that expands to only itself and is
+ * not a known operation is the typo we are looking for.
+ */
+function assertOperationsAreKnown(operations: string[]): void {
+	const known = new Set<string>(Object.values(terms.OPERATIONS_ENUM));
+	for (const name of expandOperationsPerms(operations)) {
+		if (!known.has(name)) {
+			throw new ClientError(`operations contains '${name}', which is not a Harper operation`);
+		}
+	}
+}
+
 function trustTable() {
 	const table = (databases as any).system?.[OIDC_TRUST_TABLE];
 	if (!table) {
@@ -66,6 +82,7 @@ function toRecord(row: any): OidcTrustPolicy & Record<string, unknown> {
 		audience: row.audience,
 		claims: row.claims ?? {},
 		user: row.user,
+		operations: row.operations ?? null,
 		enabled: row.enabled !== false,
 		description: row.description ?? null,
 		updated_by: row.updated_by ?? null,
@@ -112,6 +129,7 @@ export async function addOidcTrust(req: any) {
 				audience: Joi.string().min(1).max(512).required(),
 				claims: Joi.object().min(1).required(),
 				user: Joi.string().min(1).max(512).required(),
+				operations: Joi.array().items(Joi.string().min(1)).min(1).max(100).unique(),
 				enabled: Joi.boolean(),
 				description: Joi.string().allow('').max(1024),
 			}).unknown(true)
@@ -123,6 +141,7 @@ export async function addOidcTrust(req: any) {
 	// generic profile rather than a permissive default. Each throws ClientError naming the problem.
 	const profile = profileForIssuer(issuer);
 	profile.assertAudienceIsSpecific(req.audience);
+	if (req.operations) assertOperationsAreKnown(req.operations);
 	validateClaimConstraintShape(req.claims);
 	profile.assertPolicyIsSpecific(req.claims);
 
@@ -146,6 +165,7 @@ export async function addOidcTrust(req: any) {
 		audience: req.audience,
 		claims: req.claims,
 		user: req.user,
+		operations: req.operations ?? null,
 		enabled: req.enabled !== false,
 		description: req.description ?? null,
 		updated_by: req.hdb_user?.username ?? null,

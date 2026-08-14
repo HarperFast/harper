@@ -582,6 +582,29 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 
 	const permsResponse = new PermissionResponseObject();
 
+	// Token-scoped narrowing: a minted operation token may carry a subset of what its user's role
+	// allows, so one credential can be handed out with less authority than the user has (an OIDC
+	// trust policy uses this to scope a single workflow).
+	//
+	// Deliberately the FIRST authorization check in this function. Both the super_user bypass and the
+	// `operations` gate-2 grant below `return null` early, so a narrowing check placed after either
+	// would be silently bypassable by exactly the identities it most needs to constrain.
+	//
+	// It can only subtract. The scope is never merged into `permission.operations`, because that field
+	// is not purely narrowing — gate 2 treats an explicit listing of an SU-only operation as a
+	// deliberate grant, so merging into it could widen instead.
+	const tokenOperations = requestJson.hdb_user?.tokenOperations;
+	if (tokenOperations !== undefined) {
+		const scopedOps =
+			requestJson.hdb_user._expandedTokenOperations ??
+			(requestJson.hdb_user._expandedTokenOperations = expandOperationsPerms(tokenOperations));
+		const opApiName = requiredPermissions.get(op)?.api_name ?? op;
+		if (!scopedOps.has(opApiName)) {
+			harperLogger.info(`Operation '${opApiName}' is outside the scope of the presented token`);
+			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
+		}
+	}
+
 	if (
 		commonUtils.isEmptyOrZeroLength(requestJson.hdb_user?.role) ||
 		commonUtils.isEmptyOrZeroLength(requestJson.hdb_user?.role?.permission)

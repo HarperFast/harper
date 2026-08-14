@@ -203,9 +203,14 @@ export async function exchangeOidcToken(req: any) {
 		await recordTokenUse(fingerprint, claims, policy.id);
 
 		const operationToken = await createOperationToken(
-			{ username: user.username, super_user: user.role?.permission?.super_user === true },
+			{
+				username: user.username,
+				super_user: user.role?.permission?.super_user === true,
+				operations: policy.operations,
+			},
 			EXCHANGED_TOKEN_LIFETIME_SECONDS
 		);
+		if (policy.operations?.length) audit.scoped_operations = policy.operations;
 
 		logger.info?.(`OIDC exchange: policy '${policy.id}' authenticated '${user.username}' for ${audit.principal}`);
 		auditExchange(req, username, AUTH_AUDIT_STATUS.SUCCESS, audit);

@@ -188,6 +188,30 @@ describe('oidc trustPolicyOperations', () => {
 			assert.strictEqual(installed.mock.rows.get('my-app-prod').user, 'admin');
 		});
 
+		it('stores an operation scope', async () => {
+			await addOidcTrust(su('add_oidc_trust', validPolicy({ operations: ['deploy_component'] })));
+			assert.deepStrictEqual(installed.mock.rows.get('my-app-prod').operations, ['deploy_component']);
+		});
+
+		it('accepts an operation group', async () => {
+			await addOidcTrust(su('add_oidc_trust', validPolicy({ operations: ['read_only'] })));
+			assert.deepStrictEqual(installed.mock.rows.get('my-app-prod').operations, ['read_only']);
+		});
+
+		// A typo would otherwise fail closed at request time, in CI, with nothing to point at.
+		it('rejects an operation name that is not a Harper operation', async () => {
+			await assert.rejects(
+				() => addOidcTrust(su('add_oidc_trust', validPolicy({ operations: ['deploy_compnent'] }))),
+				/not a Harper operation/
+			);
+			assert.strictEqual(installed.mock.rows.size, 0, 'expected nothing stored');
+		});
+
+		it('leaves operations null when the policy does not scope', async () => {
+			await addOidcTrust(su('add_oidc_trust', validPolicy()));
+			assert.strictEqual(installed.mock.rows.get('my-app-prod').operations, null);
+		});
+
 		it('rejects a malformed id', async () => {
 			for (const id of ['', 'has spaces', 'has/slash', 'x'.repeat(129)]) {
 				await assert.rejects(() => addOidcTrust(su('add_oidc_trust', validPolicy({ id }))));

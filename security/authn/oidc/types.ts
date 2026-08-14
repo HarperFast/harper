@@ -19,6 +19,11 @@ export interface OidcTrustPolicy {
 	claims: Record<string, ClaimConstraint>;
 	/** The exchanged token authenticates as this user, whose role is the least-privilege boundary. */
 	user: string;
+	/**
+	 * Optional narrowing of that boundary: the minted token may perform only these operations, even
+	 * where the role allows more. Never widens — an operation the role forbids stays forbidden.
+	 */
+	operations?: string[];
 	/** Defaults to true; false keeps the policy for reference without honoring it. */
 	enabled?: boolean;
 	description?: string;
