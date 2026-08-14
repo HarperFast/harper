@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, closeDatabase, dropDatabase } = require('#src/resources/databases');
+const { table: createTable, closeDatabase, dropDatabase } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { Transaction: RocksTransaction } = require('@harperfast/rocksdb-js');
 const { asBinary } = require('lmdb');
@@ -10,6 +10,19 @@ const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resou
 const { existsSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
+
+const activeTables = new Set();
+const table = (options) => {
+	const Table = createTable(options);
+	activeTables.add(Table);
+	return Table;
+};
+
+afterEach(async function () {
+	const tables = [...activeTables];
+	activeTables.clear();
+	await Promise.all(tables.map((Table) => Table.cleanup()));
+});
 
 // A schema @expiresAt attribute must be authoritative over the table-level expiration default, in both
 // directions. Previously the field only armed a separate index-pruning sweep (which can only remove
