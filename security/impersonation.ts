@@ -17,9 +17,28 @@ import { attachWorkloadIdentityToUser } from './credentialProvenance.ts';
  * Hashing the (already downgraded) permission content isolates distinct permission sets while
  * letting identical ones share a cache entry. The paired __updatedtime__ of 0 keeps the memo key
  * stable across requests; the content hash in the name is what invalidates on permission change.
+ *
+ * Object keys are canonicalized before hashing so two structurally-identical permission sets that
+ * differ only in key order (e.g. from different client request shapes) map to the same name and
+ * share one cache slot — otherwise they would each consume a distinct slot (never an aliasing bug,
+ * but it worsens the bounded synthetic-role cache pressure).
  */
 export function syntheticRoleName(prefix: string, permission: object): string {
-	return `${prefix}_${createHash('sha256').update(JSON.stringify(permission)).digest('hex').slice(0, 24)}`;
+	return `${prefix}_${createHash('sha256').update(canonicalJSON(permission)).digest('hex').slice(0, 24)}`;
+}
+
+/** Deterministic JSON with recursively sorted object keys (array order is preserved). */
+function canonicalJSON(value: any): string {
+	return JSON.stringify(value, (_key, v) =>
+		v && typeof v === 'object' && !Array.isArray(v)
+			? Object.keys(v)
+					.sort()
+					.reduce((acc: any, k) => {
+						acc[k] = v[k];
+						return acc;
+					}, {})
+			: v
+	);
 }
 
 /**

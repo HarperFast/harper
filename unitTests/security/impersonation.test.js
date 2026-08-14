@@ -707,5 +707,13 @@ describe('security/impersonation.ts', () => {
 			assert.strictEqual(a.role.role, b.role.role);
 			assert.notStrictEqual(a.role.role, c.role.role);
 		});
+
+		it('permission key order does not change the synthetic role identity', async () => {
+			const p1 = { operations: ['read_only'], structure_user: false };
+			const p2 = { structure_user: false, operations: ['read_only'] };
+			const a = await buildScopedTokenUser(undefined, { username: 'a', role: { permission: p1 } }, true);
+			const b = await buildScopedTokenUser(undefined, { username: 'b', role: { permission: p2 } }, true);
+			assert.strictEqual(a.role.role, b.role.role, 'reordered keys must map to the same cache identity');
+		});
 	});
 });
