@@ -2,17 +2,9 @@
 
 // 5.3.0 — introduces system.hdb_oidc_trust for OIDC trusted publishing (#2171).
 //
-// Fresh installs get the table automatically via utility/mount_hdb.ts (which iterates
-// json/systemSchema.json on first boot). This directive handles the upgrade path: existing
-// installs that already have a system schema need the new table added explicitly.
-//
-// IMPORTANT: this directive must be versioned to the first release that ships the trust-policy
-// operations depending on the table. Directives only run when
-// current_version < directive_version <= upgrade_version (see
-// directivesController.getVersionsForUpgrade), so tagging it for a later release than the
-// dependent code means it never fires and the table is missing on upgraded installs —
-// exchange_oidc_token would then fail on every node that upgraded rather than installed fresh
-// (see the mis-tagging history documented in 5-1-0.ts).
+// Fresh installs get the table from json/systemSchema.json; this covers existing installs. The
+// version must match the release that ships the dependent operations — see 5-1-0.ts for what
+// happens when it does not, and DESIGN.md "System table bootstrap" for the three touchpoints.
 
 import { databases } from '../../resources/databases.ts';
 import systemSchema from '../../json/systemSchema.json';

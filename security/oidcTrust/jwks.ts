@@ -1,11 +1,10 @@
 /**
  * OIDC discovery and JWKS retrieval for trusted publishing (#2171).
  *
- * The issuer's signing keys are the root of trust for an exchanged token, so this module is
- * deliberately conservative: HTTPS only, bounded response size, bounded fetch time, and a rate limit
- * on the refetch that an unrecognized `kid` triggers. That last one matters because the exchange
- * endpoint is unauthenticated — without it, a stream of forged `kid`s becomes one outbound fetch per
- * request, against the issuer and on Harper's own event loop.
+ * The issuer's signing keys are the root of trust for an exchanged token, and the endpoint that
+ * reaches them is unauthenticated — hence HTTPS only, bounded body, bounded time, and a rate limit
+ * on the refetch an unrecognized `kid` triggers, without which forged `kid`s become one outbound
+ * fetch per request.
  */
 
 import { createPublicKey, type KeyObject } from 'node:crypto';
@@ -20,17 +19,13 @@ const JWKS_CACHE_TTL_MS = 3_600_000;
 /** Floor between refetches triggered by an unrecognized `kid`. */
 const MIN_REFETCH_INTERVAL_MS = 60_000;
 /**
- * How long a cached key set may still be used after a refetch fails. Issuers rotate signing keys
- * rarely, so a network blip should not break deploys — but an unbounded fallback would keep honoring
- * a key set long after a key was pulled.
+ * How long a cached key set survives a failed refetch. Bounded, so a network blip does not break
+ * deploys but a pulled key does not stay honored forever.
  */
 const STALE_KEY_GRACE_MS = 86_400_000;
 const FETCH_TIMEOUT_MS = 5_000;
 const MAX_RESPONSE_BYTES = 1_048_576;
-/**
- * Asymmetric key types only. An `oct` (symmetric) key in a JWKS is the setup for the classic
- * algorithm-confusion attack, where a public value is replayed as an HMAC secret.
- */
+/** Asymmetric only: an `oct` key in a JWKS is the setup for algorithm confusion. */
 const SUPPORTED_KEY_TYPES = ['RSA', 'EC'];
 
 interface IssuerKeys {
@@ -41,9 +36,9 @@ interface IssuerKeys {
 const issuerKeyCache = new Map<string, IssuerKeys>();
 const inFlightLoads = new Map<string, Promise<IssuerKeys>>();
 /**
- * When an unrecognized `kid` last drove a refetch, per issuer. Kept outside the cache entry on
- * purpose: the entry is replaced by every successful fetch, and a rate limit that resets whenever it
- * fires is not a rate limit.
+ * When an unrecognized `kid` last drove a refetch, per issuer. Outside the cache entry on purpose:
+ * every successful fetch replaces that entry, and a rate limit that resets whenever it fires is not
+ * a rate limit. Separating them also lets a genuine key rotation be picked up on first use.
  */
 const unknownKidRefetchAt = new Map<string, number>();
 
@@ -55,9 +50,8 @@ export function clearJwksCache(): void {
 }
 
 /**
- * Validates and canonicalizes an issuer URL. The result is both the cache key and the discovery
- * base, so it has to be stable: a policy stored with a trailing slash and one without must not end
- * up as two entries pointing at the same issuer.
+ * Canonicalizes an issuer URL. The result is both the cache key and the discovery base, so a policy
+ * stored with a trailing slash and one without must not become two entries for the same issuer.
  */
 export function normalizeIssuer(issuer: unknown): string {
 	if (typeof issuer !== 'string' || issuer === '') throw new ClientError('issuer is required');
@@ -73,9 +67,8 @@ export function normalizeIssuer(issuer: unknown): string {
 }
 
 /**
- * Reads a JSON response with a hard byte ceiling. `content-length` is checked first as a cheap
- * rejection, then the body is counted as it streams, because the header is advisory and a hostile
- * endpoint can simply omit it.
+ * `content-length` is checked first as a cheap rejection, then the body is counted as it streams —
+ * the header is advisory, and a hostile endpoint can simply omit it.
  */
 async function readBoundedJson(response: Response, url: string): Promise<any> {
 	const declaredLength = Number(response.headers.get('content-length'));
@@ -116,14 +109,13 @@ async function fetchJson(url: string): Promise<any> {
 }
 
 /**
- * Resolves the issuer's `jwks_uri` via OIDC discovery. The discovery document's own `issuer` must
- * equal the one we asked about — the spec requires it, and it is what stops a misdirected discovery
- * document from quietly re-pointing an issuer we trust.
+ * The discovery document's own `issuer` must equal the one we asked about — the spec requires it,
+ * and it stops a misdirected document from quietly re-pointing an issuer we trust.
  */
 async function discoverJwksUri(issuer: string): Promise<string> {
 	const document = await fetchJson(issuer + DISCOVERY_PATH);
-	// normalizeIssuer raises a ClientError, which is the wrong shape for a malformed *server*
-	// response — an unparseable `issuer` here is the issuer misbehaving, not the caller.
+	// Swallowed rather than propagated: normalizeIssuer raises ClientError, the wrong shape for a
+	// malformed *server* response.
 	let declaredIssuer: string | undefined;
 	try {
 		declaredIssuer = normalizeIssuer(document?.issuer);
@@ -141,9 +133,8 @@ async function discoverJwksUri(issuer: string): Promise<string> {
 }
 
 /**
- * Converts a JWK to a usable public key, or returns undefined for one we will not honor. A single
- * unusable entry must not poison the whole set: issuers publish keys for other purposes, and future
- * key types should degrade to "not usable here" rather than to a failed fetch.
+ * Undefined for a key we will not honor. One unusable entry must not poison the set: issuers publish
+ * keys for other purposes, and an unknown future type should degrade rather than fail the fetch.
  */
 function toSigningKey(jwk: any): KeyObject | undefined {
 	if (!jwk || typeof jwk !== 'object') return undefined;
@@ -186,13 +177,7 @@ function loadIssuerKeys(issuer: string): Promise<IssuerKeys> {
 	return load;
 }
 
-/**
- * Resolves the public key an issuer used to sign a token, by `kid`.
- *
- * An unrecognized `kid` against a fresh cache means either a genuine key rotation or a forged
- * header. Both look identical from here, so the refetch that distinguishes them is rate-limited
- * rather than unconditional.
- */
+/** Resolves the public key an issuer used to sign a token, by `kid`. */
 export async function getSigningKey(issuer: string, kid: unknown): Promise<KeyObject> {
 	if (typeof kid !== 'string' || kid === '') throw new ClientError('Token has no key id', 401);
 	const normalizedIssuer = normalizeIssuer(issuer);

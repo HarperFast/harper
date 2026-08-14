@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const { generateKeyPairSync, createPublicKey } = require('node:crypto');
 const jwt = require('jsonwebtoken');
-const { verifyIdentityToken } = require('#src/security/oidcTrust/index');
+const { verifyIdentityToken } = require('#src/security/oidcTrust/identityToken');
 
 const ISSUER = 'https://token.actions.githubusercontent.com';
 const AUDIENCE = 'https://my-instance.harperdb.io:9925/';

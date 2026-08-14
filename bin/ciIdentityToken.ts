@@ -1,13 +1,10 @@
 /**
- * CI-side half of OIDC trusted publishing (#2171).
- *
- * On a runner that offers an OIDC identity token, the CLI can authenticate with no stored Harper
- * credential at all: it asks the CI provider for a token addressed to this instance, and trades it
- * for a short-lived operation token via `exchange_oidc_token`.
+ * CI-side half of OIDC trusted publishing (#2171): ask the provider for an identity token addressed
+ * to this instance, trade it for a short-lived operation token via `exchange_oidc_token`.
  *
  * GitHub Actions only for now. Other providers expose the same idea through different plumbing, so
- * detection stays explicit rather than guessed — a runner we do not recognize simply falls through
- * to the CLI's other credential sources.
+ * detection stays explicit rather than guessed — an unrecognized runner falls through to the CLI's
+ * other credential sources.
  */
 
 import { httpRequest } from '../utility/common_utils.ts';
@@ -19,20 +16,16 @@ const GITHUB_TOKEN_REQUEST_TOKEN = 'ACTIONS_ID_TOKEN_REQUEST_TOKEN';
 const IDENTITY_REQUEST_TIMEOUT_MS = 10_000;
 
 /**
- * True when this process is running somewhere that can mint an identity token. Both variables are
- * required: GitHub sets them together, and their absence on an Actions runner means the workflow
- * did not grant `id-token: write` — which is a configuration answer, not a failure to report here.
+ * Both variables are required: GitHub sets them together, so their absence means the workflow did
+ * not grant `id-token: write` — a configuration answer, not a failure to report here.
  */
 export function ciIdentityAvailable(): boolean {
 	return Boolean(process.env[GITHUB_TOKEN_REQUEST_URL] && process.env[GITHUB_TOKEN_REQUEST_TOKEN]);
 }
 
 /**
- * Asks GitHub for an identity token addressed to `audience`.
- *
- * The audience is what binds the token to this Harper instance. GitHub's default audience is the
- * repository owner's URL, shared by every repository under that owner, so passing the resolved
- * target explicitly is not a nicety — it is what makes the token unusable anywhere else.
+ * Passing `audience` explicitly is what makes the token unusable anywhere else — GitHub's default is
+ * shared org-wide (see SHARED_DEFAULT_AUDIENCE in security/oidcTrust/trustPolicyOperations.ts).
  */
 async function requestGithubIdentityToken(audience: string): Promise<string> {
 	const requestUrl = new URL(process.env[GITHUB_TOKEN_REQUEST_URL] as string);
@@ -56,12 +49,10 @@ async function requestGithubIdentityToken(audience: string): Promise<string> {
 }
 
 /**
- * Trades a CI identity token for a Harper operation token, or returns undefined when this runner
- * has no identity to offer.
- *
- * Failures are reported and swallowed rather than thrown. This runs as the last credential source
- * before the request would go out unauthenticated, and the resulting 401 says nothing useful — so
- * the reason the exchange did not work is worth printing even though it is not, by itself, fatal.
+ * Trades a CI identity token for a Harper operation token, or undefined when there is no identity to
+ * offer. Failures are reported and swallowed: this is the last credential source before the request
+ * goes out unauthenticated, and the resulting 401 says nothing useful, so the reason is worth
+ * printing even though it is not by itself fatal.
  */
 export async function exchangeCiIdentityForToken(options: any, audience: string): Promise<string | undefined> {
 	if (!ciIdentityAvailable()) return undefined;
