@@ -537,10 +537,13 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 
 		const stream = openSse(restURL, '/Owned/', { Authorization: `Bearer ${token}` });
 		try {
-			await sleep(800);
+			await sleep(800); // let the subscription establish
+			const before = stream.count();
 			await insert({ id: `r-${seq++}`, value: 'scoped-before' });
-			await sleep(1000);
-			ok(stream.count() >= 1, `expected delivery while scoped token valid, saw ${stream.count()}`);
+			ok(
+				await waitFor(() => stream.count() > before, 6000),
+				`expected delivery while scoped token valid, saw ${stream.count()}`
+			);
 
 			// Now create a REAL user colliding with the token's attribution name, holding a role with
 			// NO read on Owned. This both triggers a re-auth sweep and sets up the substitution trap:

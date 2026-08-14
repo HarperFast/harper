@@ -625,13 +625,6 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 }
 
 /**
- * Verifies permissions and restrictions for the NoSQL operation based on the user's assigned role.
- *
- * @param requestJson - The request body as json
- * @param operation - The name of the operation specified in the request.
- * @returns { null | PermissionResponseObject } - null if permissions match, errors are consolidated into PermissionResponseObj.
- */
-/**
  * Gate 1 of the role `operations` allowlist, callable from every authorization path. The SQL path
  * (chooseOperation → checkASTPermissions) never reaches verifyPerms, so it must call this
  * directly — otherwise an allowlisted role could reach unlisted operations through `sql`.
@@ -640,7 +633,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 export function verifyOperationsAllowlist(requestJson: any, operationFunctionName: string) {
 	const rolePermission = requestJson.hdb_user?.role?.permission;
 	const allowedOperationsList = rolePermission?.operations;
-	if (allowedOperationsList === undefined) return null;
+	if (allowedOperationsList == null) return null;
 	// _expandedOperations is pre-built at cache-load time (O(1) lookup).
 	// Fall back to on-demand expansion for inline-asserted roles (e.g. impersonation via hdb_user in body).
 	const allowedOps = rolePermission._expandedOperations ?? expandOperationsPerms(allowedOperationsList);
@@ -653,6 +646,13 @@ export function verifyOperationsAllowlist(requestJson: any, operationFunctionNam
 	return null;
 }
 
+/**
+ * Verifies permissions and restrictions for the NoSQL operation based on the user's assigned role.
+ *
+ * @param requestJson - The request body as json
+ * @param operation - The name of the operation specified in the request.
+ * @returns { null | PermissionResponseObject } - null if permissions match, errors are consolidated into PermissionResponseObj.
+ */
 export function verifyPerms(requestJson: any, operation: any, options?: { apiOperation?: string }) {
 	if (
 		requestJson === null ||

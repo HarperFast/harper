@@ -33,9 +33,8 @@ function getDurableSession() {
 }
 let _LastWill: any;
 /**
- * A scoped-token will must not publish past the token's expiry — expiry is the token's only
- * revocation. Keyed off the persisted will principal so both the abnormal-disconnect path and
- * worker-0 restart replay enforce it identically (they previously read different sources).
+ * A scoped token's only revocation is expiry, so its will must not publish past it. Keyed off the
+ * persisted will principal (not any live session user) so both will paths agree on one source.
  */
 function isWillFromExpiredScopedToken(will: any): boolean {
 	const user = will?.user;
@@ -68,12 +67,11 @@ if (getWorkerIndex() === 0) {
 			const message = { ...will };
 			try {
 				if (message.user?._scopedToken) {
-					// Never rehydrate a scoped-token bearer by name: its username is attribution only, and
-					// resolving it against hdb_user could substitute a real principal's permissions. The
-					// will record carries the token's own (downgraded) role — and must not outlive the token.
+					// A scoped token's username is attribution only; never rehydrate it by name (that could
+					// substitute a real principal). The will carries the token's own downgraded role.
 					if (isWillFromExpiredScopedToken(message)) {
 						warn('Dropping will from an expired scoped token', data);
-						getLastWill().delete(will.id);
+						await getLastWill().delete(will.id);
 						continue;
 					}
 				} else if (message.user?.username) {
@@ -83,7 +81,7 @@ if (getWorkerIndex() === 0) {
 			} catch {
 				warn('Failed to publish will', data);
 			}
-			getLastWill().delete(will.id);
+			await getLastWill().delete(will.id);
 		}
 	})();
 }
@@ -407,11 +405,13 @@ class SubscriptionsSession {
 			try {
 				if (!clientTerminated) {
 					const will = await getLastWill().get(this.sessionId);
-					// Same expiry rule as restart replay, keyed off the PERSISTED will principal (not
-					// this.user): a later same-clientId session with no will leaves the prior scoped
-					// will row in place, and its own this.user may be a different (non-scoped) principal.
 					if (will && !isWillFromExpiredScopedToken(will)) {
-						await publishMessage(will, will.data, context);
+						// A scoped will publishes under its own embedded role, not this.user: a later
+						// same-clientId session (possibly a different, more privileged principal) can read
+						// back the prior session's leftover will row, and it must not gain that principal's
+						// permissions. Non-scoped wills keep the existing behavior.
+						const willContext = will.user?._scopedToken ? { ...context, user: will.user } : context;
+						await publishMessage(will, will.data, willContext);
 					}
 				}
 			} finally {

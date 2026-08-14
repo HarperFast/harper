@@ -241,9 +241,8 @@ export async function authentication(request, nextHandler) {
 										throw error;
 									}
 								}
-								// Any other rejection (e.g. 'token expired') must propagate as a credential
-								// rejection: falling through would cache and proceed with an undefined user —
-								// an expired token would act as anonymous instead of 401.
+								// A non-'invalid token' rejection (e.g. expired) must propagate, not fall
+								// through to caching an undefined user (which would read as anonymous).
 								throw error;
 							}
 							break;

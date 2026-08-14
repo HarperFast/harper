@@ -113,8 +113,7 @@ export async function buildScopedTokenUser(
 	if ((await getUsersWithRolesCache())?.has(username)) {
 		throw new ClientError(`'username' must not name an existing user; scoped-token attribution is a label`);
 	}
-	// Downgrade first so validation and the content hash see the effective permission set
-	// (same silent downgrade as impersonation).
+	// Downgrade first so validation and the content hash see the effective permission set.
 	const permission = {
 		...payload.role.permission,
 		super_user: false,
