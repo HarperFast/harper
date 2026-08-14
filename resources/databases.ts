@@ -96,6 +96,7 @@ const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
+const DATABASE_CLOSE_TIMEOUT = 10_000;
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
 /**
@@ -1239,12 +1240,24 @@ export async function dropDatabase(databaseName) {
 			rocksdbDatabaseEnvs.delete(rootStore.path);
 		}
 
+		const cleanupCompletions: Promise<void>[] = [];
 		for (const tableName in dbTables) {
 			try {
-				dbTables[tableName].cleanup?.();
+				const completion = dbTables[tableName].cleanup?.();
+				if (completion?.then) {
+					cleanupCompletions.push(
+						completion.catch((error) =>
+							logger.warn(`Error awaiting cleanup for table ${databaseName}.${tableName}:`, error)
+						)
+					);
+				}
 			} catch (error) {
 				logger.warn(`Error cleaning up table ${databaseName}.${tableName} while dropping database:`, error);
 			}
+		}
+		await Promise.all(cleanupCompletions);
+
+		for (const tableName in dbTables) {
 			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 		}
 
@@ -1295,9 +1308,21 @@ export async function dropDatabase(databaseName) {
  * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
  * progress, per the restore marker checks in the scan).
  */
-export async function closeDatabase(databaseName: string): Promise<boolean> {
+const closingDatabases = new Map<string, Promise<boolean>>();
+
+export function closeDatabase(databaseName: string): Promise<boolean> {
+	const activeClose = closingDatabases.get(databaseName);
+	if (activeClose) return activeClose;
+	const completion = closeDatabaseOnce(databaseName).finally(() => closingDatabases.delete(databaseName));
+	closingDatabases.set(databaseName, completion);
+	return completion;
+}
+
+async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return false;
+	const tableEntries: [string, any][] = [];
+	for (const tableName in dbTables) tableEntries.push([tableName, dbTables[tableName]]);
 	const rootStores = new Set<any>();
 	const cleanupCompletions: Promise<void>[] = [];
 	const closeStore = (store: any, description: string) => {
@@ -1307,8 +1332,7 @@ export async function closeDatabase(databaseName: string): Promise<boolean> {
 			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
 		}
 	};
-	for (const tableName in dbTables) {
-		const table: any = dbTables[tableName];
+	for (const [tableName, table] of tableEntries) {
 		if (!table?.primaryStore) continue;
 		try {
 			const completion = table.cleanup?.();
@@ -1324,9 +1348,22 @@ export async function closeDatabase(databaseName: string): Promise<boolean> {
 		}
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
 	}
-	await Promise.all(cleanupCompletions);
-	for (const tableName in dbTables) {
-		const table: any = dbTables[tableName];
+	let timeout: NodeJS.Timeout | undefined;
+	const timedOut = Symbol('timedOut');
+	const cleanupResult = await Promise.race([
+		Promise.all(cleanupCompletions),
+		new Promise<typeof timedOut>((resolve) => {
+			timeout = setTimeout(() => resolve(timedOut), DATABASE_CLOSE_TIMEOUT);
+			timeout.unref();
+		}),
+	]);
+	if (timeout) clearTimeout(timeout);
+	if (cleanupResult === timedOut) {
+		logger.warn(
+			`Timed out after ${DATABASE_CLOSE_TIMEOUT}ms waiting for expiration cleanup while closing database ${databaseName}; closing its stores to avoid leaking native handles.`
+		);
+	}
+	for (const [tableName, table] of tableEntries) {
 		if (!table?.primaryStore) continue;
 		for (const indexName in table.indices || {}) {
 			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);

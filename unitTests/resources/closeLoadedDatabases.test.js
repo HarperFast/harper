@@ -95,10 +95,22 @@ describe('RocksDB handle release', function () {
 		cleanup.restore();
 	});
 
+	it('coalesces concurrent closes of the same database', async function () {
+		const rootStore = openRocksDb('closerelease5');
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		const first = closeDatabase('closerelease5');
+		const second = closeDatabase('closerelease5');
+		assert.strictEqual(second, first, 'concurrent callers should share one close operation');
+		await first;
+
+		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
 	it('dropDatabase runs table cleanup before destroying its stores', async function () {
 		const Table = table({
 			table: 'expiring',
-			database: 'droprelease5',
+			database: 'droprelease6',
 			attributes: [
 				{ attribute: 'id', isPrimaryKey: true },
 				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
@@ -106,7 +118,7 @@ describe('RocksDB handle release', function () {
 		});
 		const cleanup = sinon.spy(Table, 'cleanup');
 
-		await dropDatabase('droprelease5');
+		await dropDatabase('droprelease6');
 
 		assert.strictEqual(cleanup.callCount, 1, 'table cleanup should run before its database is destroyed');
 		cleanup.restore();

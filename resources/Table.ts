@@ -1411,9 +1411,9 @@ export function makeTable(options) {
 			const expirationDrainDeadline = Date.now() + LOCK_TIMEOUT;
 			while (runningRecordExpiration) {
 				if (Date.now() >= expirationDrainDeadline) {
-					throw new Error(
-						`dropTable() timed out waiting for the expiration sweep on ${tableName}; refusing to drop its column families while cleanup is active.`
-					);
+					const message = `dropTable() timed out waiting for the expiration sweep on ${tableName}; the table is unloaded and its drop will complete on restart or same-name create.`;
+					logger.warn?.(message);
+					throw new Error(message);
 				}
 				await rest();
 			}
@@ -2088,10 +2088,10 @@ export function makeTable(options) {
 				} else {
 					const removalEntry = entry ?? currentEntry ?? primaryStore.getEntry(id);
 					if (!removalEntry || removalEntry.version !== existingVersion) return;
-					updateIndices(id, removalEntry.value, null, options);
-					if (removalEntry?.value && removalEntry.metadataFlags & HAS_BLOBS) {
+					updateIndices(id, existingRecord, null, options);
+					if (existingRecord && removalEntry.metadataFlags & HAS_BLOBS) {
 						primaryStore.remove(removalEntry.key, options);
-						deleteBlobsAfterCommit = prepareBlobDeletion(removalEntry.value);
+						deleteBlobsAfterCommit = prepareBlobDeletion(existingRecord);
 					} else {
 						removeEntry(primaryStore, removalEntry, options);
 					}
