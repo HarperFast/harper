@@ -22,7 +22,7 @@ import {
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 
-import { basename, dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative } from 'node:path';
 import {
 	access,
 	chmod,
@@ -32,6 +32,7 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	readlink,
 	rename,
 	rm,
 	rmdir,
@@ -2431,6 +2432,70 @@ async function readStagedCompletion(stagingDirPath: string): Promise<{ installat
 	}
 }
 
+/**
+ * Re-point dependency links that the activation swap invalidated.
+ *
+ * `npm install` runs against the STAGING directory, and activation then renames that directory to the
+ * live path. Any dependency npm materialized as a link with an ABSOLUTE target inside the staging
+ * directory therefore dangles the moment the rename happens — the path it names no longer exists.
+ *
+ * This is the normal case for a `file:` dependency on Windows, where npm creates a directory JUNCTION
+ * and junctions are always absolute. On Linux npm writes a relative symlink (`../vendor/probe`), which
+ * survives the move untouched, which is why this only ever bites on Windows — the failure there is a
+ * bare `Cannot find module '<dep>'` at component load, well after a deploy that reported success.
+ *
+ * Each such link is recreated pointing at the same relative location under the LIVE directory. Links
+ * whose targets are relative, or absolute but outside the staging tree (a dependency deliberately
+ * linked elsewhere on the machine), are left exactly as they are.
+ */
+async function repointStagedDependencyLinks(liveDirPath: string, stagingDirPath: string): Promise<number> {
+	const nodeModulesPath = join(liveDirPath, 'node_modules');
+	let topLevel;
+	try {
+		topLevel = await readdir(nodeModulesPath, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+		throw error;
+	}
+	// Package links live at `node_modules/<name>` or, for a scoped package, `node_modules/@scope/<name>`.
+	const candidates: string[] = [];
+	for (const entry of topLevel) {
+		if (entry.name.startsWith('.')) continue;
+		if (entry.name.startsWith('@')) {
+			const scopePath = join(nodeModulesPath, entry.name);
+			for (const scoped of await readdir(scopePath, { withFileTypes: true }).catch(() => [])) {
+				candidates.push(join(scopePath, scoped.name));
+			}
+			continue;
+		}
+		candidates.push(join(nodeModulesPath, entry.name));
+	}
+
+	let repointed = 0;
+	for (const linkPath of candidates) {
+		const linkStat = await lstat(linkPath).catch(() => undefined);
+		if (!linkStat?.isSymbolicLink()) continue;
+		const target = await readlink(linkPath).catch(() => undefined);
+		if (!target || !isAbsolute(target)) continue;
+		const withinStaging = relative(stagingDirPath, target);
+		// `..` or an absolute result means the target is outside the staging tree — not ours to touch.
+		if (!withinStaging || withinStaging.startsWith('..') || isAbsolute(withinStaging)) continue;
+		try {
+			await rm(linkPath, { force: true });
+			await symlink(join(liveDirPath, withinStaging), linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+			repointed++;
+		} catch (error) {
+			// Best-effort: a link we cannot repoint is reported, not fatal. The deploy already succeeded,
+			// and failing it here would leave the component live but the operation reporting failure.
+			logger.warn(
+				`Could not re-point the ${basename(linkPath)} dependency link after activating ${basename(liveDirPath)}:`,
+				errorForLog(error as Error)
+			);
+		}
+	}
+	return repointed;
+}
+
 /** Atomically replace the live component and compensate if persistent activation work fails. */
 export async function activateStagedApplication(
 	application: Application,
@@ -2551,6 +2616,15 @@ export async function activateStagedApplication(
 		} finally {
 			broadcastDeployEnd(application.name, deployLifecycleId);
 		}
+		// npm installed against the staging path; the rename above just invalidated any absolute link it
+		// created inside it (a `file:` dependency junction on Windows). Repoint before anything loads.
+		const repointed = await repointStagedDependencyLinks(application.dirPath, stagingDirPath);
+		if (repointed) {
+			logger.debug?.(
+				`Re-pointed ${repointed} dependency link(s) in ${application.name} from the staging path to the live path`
+			);
+		}
+
 		// The displaced tree is the component's rollback source now, not garbage: retain it as
 		// `.deploy-previous/<name>` with a manifest recording which deployment produced it. Best-effort —
 		// a component that can't retain its previous version is still deployed, just not revertable.

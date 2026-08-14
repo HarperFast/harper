@@ -893,4 +893,58 @@ describe('two-phase component directory transaction', function () {
 		assert.equal(reconciliation.recovered.includes(deploymentId), false, 'a failed reconciliation is not "recovered"');
 		await cleanup(name);
 	});
+	it('re-points a dependency link whose absolute target the activation swap invalidated', async () => {
+		// npm installs against the STAGING directory, and activation renames that directory to the live
+		// path — so any dependency npm materialized with an ABSOLUTE target inside staging dangles the
+		// instant the rename lands. That is the normal shape of a `file:` dependency on Windows, where npm
+		// creates a junction and junctions are always absolute; on Linux it writes a relative symlink that
+		// survives the move. The Windows symptom is a bare `Cannot find module '<dep>'` at component load,
+		// well after a deploy that reported success.
+		//
+		// Absolute links exist on every platform, so the behavior is reproducible here regardless of OS.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('with-dep') });
+		const stagedPath = await stageApplication(application, deploymentId);
+
+		// Stand in for what `npm install --force` leaves behind for `file:vendor/probe`: a real vendored
+		// directory, plus an ABSOLUTE link to it from node_modules.
+		await fs.mkdir(path.join(stagedPath, 'vendor', 'probe'), { recursive: true });
+		await fs.writeFile(path.join(stagedPath, 'vendor', 'probe', 'index.js'), "module.exports = 'probe';\n");
+		await fs.mkdir(path.join(stagedPath, 'node_modules'), { recursive: true });
+		await fs.symlink(path.join(stagedPath, 'vendor', 'probe'), path.join(stagedPath, 'node_modules', 'probe'), 'dir');
+		// A scoped package, and a link deliberately pointing OUTSIDE staging, which must be left alone.
+		const external = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-external-dep-'));
+		await fs.writeFile(path.join(external, 'index.js'), "module.exports = 'external';\n");
+		await fs.mkdir(path.join(stagedPath, 'node_modules', '@scope'), { recursive: true });
+		await fs.symlink(
+			path.join(stagedPath, 'vendor', 'probe'),
+			path.join(stagedPath, 'node_modules', '@scope', 'scoped'),
+			'dir'
+		);
+		await fs.symlink(external, path.join(stagedPath, 'node_modules', 'external'), 'dir');
+
+		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
+
+		// The dependency has to be resolvable from the LIVE tree, which is the whole point.
+		assert.equal(
+			await fs.readFile(path.join(application.dirPath, 'node_modules', 'probe', 'index.js'), 'utf8'),
+			"module.exports = 'probe';\n",
+			'the staged-path link was re-pointed at the live path'
+		);
+		assert.equal(
+			await fs.readFile(path.join(application.dirPath, 'node_modules', '@scope', 'scoped', 'index.js'), 'utf8'),
+			"module.exports = 'probe';\n",
+			'scoped packages are re-pointed too'
+		);
+		// Untouched: an absolute link to somewhere outside the staging tree is a deliberate choice.
+		assert.equal(
+			await fs.readlink(path.join(application.dirPath, 'node_modules', 'external')),
+			external,
+			'a link outside staging is left exactly as it was'
+		);
+
+		await cleanup(name);
+		await fs.rm(external, { recursive: true, force: true });
+	});
 });
