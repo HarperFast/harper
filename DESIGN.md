@@ -323,6 +323,31 @@ in write batch", poisoning the whole database env until restart. The regression 
 of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
 bindings).
 
+## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
+
+`create_authentication_tokens` with an inline `role` **object** mints a `sub: 'scoped-operation'`
+JWT that embeds its whole (downgraded, deep-validated) permission set; the bearer needs no
+`hdb_user`/`hdb_role` row and the `username` is attribution only. Minting is super_user-gated
+(or trusted internal dispatch via `isOperationAuthorizationBypassed()`); a string `role` keeps its
+legacy meaning (component-defined token, rejected by `validateOperationToken`). Scoped tokens get
+no refresh token, touch no user record, and are therefore **irrevocable until expiry** — expiry is
+the only control, which is why `auth.ts` evicts cached Bearer identities at exact `authExpiresAt`
+rather than waiting for the auth-cache TTL.
+
+The invariant to preserve when touching any synthetic (inline/impersonated/scoped) role:
+`permissionsTranslator.getRolePermissions` memoizes translated permissions **by role name** (keyed
+further by `__updatedtime__` + schema). A synthetic role must therefore never carry a constant
+name or a per-request timestamp — two different permission sets would alias one cache slot (a
+same-millisecond `Date.now()` was enough), leaking one principal's translated permissions to
+another. `syntheticRoleName()` derives the name from a hash of the post-downgrade permission
+content with `__updatedtime__: 0`, so identical sets share a slot and distinct sets can't collide;
+`applyImpersonation` re-keys all three impersonation modes the same way (Mode B/C previously wrote
+downgraded copies under the *persisted* role's name). Relatedly, the role `operations` allowlist
+gate in `verifyPerms` must stay **ahead of** the ambient privilege early-returns (super_user,
+structure_user, system-table allowances): persisted roles can't combine `super_user` with other
+permission keys, but inline roles can combine `structure_user` with an allowlist, and the gate
+ordering is what keeps unlisted schema ops unreachable.
+
 ## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
 
 A renewed **certificate** and a renewed **private key** reach a worker's live TLS secure context
