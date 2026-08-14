@@ -1407,7 +1407,15 @@ export function makeTable(options) {
 			// next startup (or on a same-name create).
 			delete databases[databaseName][tableName];
 			TableResource.cleanup();
-			while (runningRecordExpiration) await rest();
+			const expirationDrainDeadline = Date.now() + LOCK_TIMEOUT;
+			while (runningRecordExpiration) {
+				if (Date.now() >= expirationDrainDeadline) {
+					throw new Error(
+						`dropTable() timed out waiting for the expiration sweep on ${tableName}; refusing to drop its column families while cleanup is active.`
+					);
+				}
+				await rest();
+			}
 			// The above stops new source-fill writes from starting, but a write from a get()
 			// that already returned to its caller may still be in flight. Dropping the column
 			// families out from under that write is a genuine invariant violation, not just a

@@ -1240,7 +1240,11 @@ export async function dropDatabase(databaseName) {
 		}
 
 		for (const tableName in dbTables) {
-			dbTables[tableName].cleanup?.();
+			try {
+				dbTables[tableName].cleanup?.();
+			} catch (error) {
+				logger.warn(`Error cleaning up table ${databaseName}.${tableName} while dropping database:`, error);
+			}
 			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 		}
 

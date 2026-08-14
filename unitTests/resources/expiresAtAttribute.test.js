@@ -380,15 +380,43 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert(Table.primaryStore.getEntry(secondEntry.value)?.value, 'cleanup must stop the sweep before its next entry');
 	});
 
-	it('cancels the expiration sweep before dropping a table', async function () {
-		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtTableDrop'));
-		const cleanup = sinon.spy(Table, 'cleanup');
+	it('waits for an active expiration sweep before dropping a table', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() =>
+			table({
+				table: 'ExpiresAtTableDrop',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+					{ name: 'payload', type: 'Blob' },
+				],
+			})
+		);
+		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: createBlob(Buffer.alloc(20_000, 8)) });
+		await Table.primaryStore.committed;
 
-		await Table.dropTable();
-		await runSweep();
-
-		assert.strictEqual(cleanup.callCount, 1);
-		cleanup.restore();
+		const originalEvict = Table.evict;
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
+			evictionStarted = true;
+			await blockedEviction;
+			return originalEvict.apply(this, args);
+		});
+		try {
+			const sweep = runSweep();
+			await waitFor(() => evictionStarted, { message: 'the eviction should start' });
+			let dropResolved = false;
+			const drop = Table.dropTable().then(() => (dropResolved = true));
+			await delay(10);
+			assert.strictEqual(dropResolved, false, 'drop must wait for the active sweep');
+			releaseEviction();
+			await Promise.all([sweep, drop]);
+		} finally {
+			releaseEviction();
+			evictStub.restore();
+		}
 	});
 
 	it('preserves retained tombstones while removing their dangling expiration index entries', async function () {
