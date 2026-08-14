@@ -22,7 +22,7 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
  * mutate the same directory concurrently.
  *
  * Restore metadata lives in an isolated `` `restore` `` directory *beside* the database directory
- * (never inside it, since a restore purges the destination). Each database's two files are keyed by
+ * (never inside it, since a restore purges the destination). Each database's metadata files are keyed by
  * a hash of the database directory name rather than being suffixed onto the name itself. That keeps
  * them out of the database-name namespace — a legal database literally named `orders.restoring`
  * would otherwise be mistaken for the restore marker of `orders`, and a 250-character name plus a
@@ -51,6 +51,8 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
  *   content or the complete new content, so a torn write can never replace a valid marker with one
  *   the scan reads as empty (and therefore honors as no block). An intact marker is also never
  *   rewritten at all — see `beginRestore`.
+ * - `<meta-dir>/<key>.open` — a short-lived mutex around root RocksDB opens and destroys. The main thread tracks
+ *   managed worker holders and releases their token if the worker exits before it can clean up.
  */
 
 // The backtick makes this an illegal database name (schemaRegex rejects `/` and backtick only), so
@@ -97,19 +99,19 @@ function databaseOpenLockPath(dbPath: string): string {
 }
 
 /**
- * Serialize native RocksDB opens for one database across worker threads. rocksdb-js normally
- * shares opened handles process-wide, but two cold worker-thread opens can still race before
- * that registry entry exists and contend for RocksDB's process-local LOCK file.
+ * Serialize root RocksDB opens and destroys for one database. rocksdb-js releases its registry
+ * entry before `DestroyDB`, so a concurrent reopen must wait until destruction is complete.
  */
 export function acquireDatabaseOpenLock(dbPath: string, maxWaitMilliseconds = 30_000): number {
 	mkdirSync(restoreMetaDir(dbPath), { recursive: true });
 	let token = tryFileLock(databaseOpenLockPath(dbPath));
 	const startedAt = Date.now();
-	const sleeper = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+	let sleeper: Int32Array;
 	while (token === 0) {
 		if (Date.now() - startedAt >= maxWaitMilliseconds) {
 			throw new Error(`Timed out acquiring RocksDB open lock for ${dbPath}`);
 		}
+		sleeper ??= new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 		Atomics.wait(sleeper, 0, 0, 10);
 		token = tryFileLock(databaseOpenLockPath(dbPath));
 	}
