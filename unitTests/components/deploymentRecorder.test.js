@@ -483,9 +483,14 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		const writeContexts = [];
 		const installed = installMockDeploymentTable();
 		installed.mock.put = async (row) => {
-			writeContexts.push(contextStorage.getStore());
+			const context = contextStorage.getStore();
+			const writeContext = {
+				...context,
+				transactionTimeoutBudget: context?.transaction?.timeoutBudget,
+			};
+			writeContexts.push(writeContext);
 			if (row.payload_blob) {
-				ingestContext = contextStorage.getStore();
+				ingestContext = writeContext;
 			}
 			installed.mock.rows.set(row.deployment_id, row);
 		};
@@ -499,19 +504,25 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 			installed.restore();
 		}
 
+		assert.ok(ingestContext);
 		assert.strictEqual(ingestContext.user, user);
 		assert.strictEqual(ingestContext.originatingOperation, 'deploy_component');
 		assert.strictEqual(ingestContext.session, session);
 		assert.strictEqual(ingestContext.signal, signal);
+		assert.ok(ingestContext.transaction);
 		assert.notStrictEqual(ingestContext.transaction, ambientTransaction);
-		assert.strictEqual(ingestContext.transaction.timeoutBudget, configuredBudget);
+		assert.strictEqual(ingestContext.transactionTimeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
 		assert.strictEqual(ingestContext.isExplicit, undefined);
 		assert.strictEqual(ingestContext.authorize, undefined);
 		assert.strictEqual(ingestContext.timestamp, undefined);
 		assert.strictEqual(ingestContext.sourceApply, undefined);
 		assert.strictEqual(ingestContext.replicatedConfirmation, undefined);
 		assert.strictEqual(ambientContext.transaction, ambientTransaction);
+		assert.strictEqual(ambientTransaction.timeoutBudget, undefined);
 		assert.strictEqual(writeContexts.length, 2);
+		assert.strictEqual(writeContexts[0].transactionTimeoutBudget, 0);
+		assert.ok(writeContexts.every((context) => context.transaction));
+		assert.notStrictEqual(writeContexts[0].transaction, writeContexts[1].transaction);
 		assert.ok(writeContexts.every((context) => context.transaction !== ambientTransaction));
 	});
 
