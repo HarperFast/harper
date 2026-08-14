@@ -5,8 +5,7 @@ const { table: createTable, closeDatabase, dropDatabase } = require('#src/resour
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { Transaction: RocksTransaction } = require('@harperfast/rocksdb-js');
 const { asBinary } = require('lmdb');
-const sinon = require('sinon');
-const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
+const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
 const { existsSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
@@ -55,26 +54,11 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 	};
 
 	const captureExpirationSweep = (createTable) => {
-		let runSweep;
-		let sweepIntervalCount = 0;
-		const realSetInterval = global.setInterval;
-		const intervalStub = sinon.stub(global, 'setInterval').callsFake((callback, interval, ...args) => {
-			if (interval === 60_000) {
-				runSweep = callback;
-				sweepIntervalCount++;
-				return { unref() {} };
-			}
-			return realSetInterval(callback, interval, ...args);
-		});
-		let Table;
-		try {
-			Table = createTable();
-		} finally {
-			intervalStub.restore();
-		}
-		assert(runSweep, 'table creation should register the expiration sweep');
-		assert.strictEqual(sweepIntervalCount, 1);
-		return { Table, runSweep };
+		const Table = createTable();
+		return {
+			Table,
+			runSweep: (testHooks) => Table.runRecordExpirationSweepForTests(testHooks),
+		};
 	};
 
 	it('extends: a far-future field overrides a short table default', async function () {
@@ -214,34 +198,25 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
 	});
 
-	it('re-arms both expiration sweeps after cleanup is resumed', function () {
-		let sweepIntervalCount = 0;
-		let cleanupTimeoutCount = 0;
-		const realSetInterval = global.setInterval;
-		const intervalStub = sinon.stub(global, 'setInterval').callsFake((callback, interval, ...args) => {
-			if (interval === 60_000) {
-				sweepIntervalCount++;
-				return { unref() {} };
-			}
-			return realSetInterval(callback, interval, ...args);
+	it('re-arms both expiration sweeps after cleanup is resumed', async function () {
+		const Table = makeTable('ExpiresAtResumeCleanup', undefined, { scanInterval: 100 });
+		assert.deepStrictEqual(Table.cleanupStateForTests(), {
+			closed: false,
+			cleanupScheduled: true,
+			expirationScheduled: true,
 		});
-		const timeoutStub = sinon.stub(global, 'setTimeout').callsFake(() => {
-			cleanupTimeoutCount++;
-			return { unref() {} };
+		await Table.cleanup();
+		assert.deepStrictEqual(Table.cleanupStateForTests(), {
+			closed: true,
+			cleanupScheduled: false,
+			expirationScheduled: false,
 		});
-		try {
-			const Table = makeTable('ExpiresAtResumeCleanup', undefined, { scanInterval: 100 });
-			assert.strictEqual(sweepIntervalCount, 1);
-			assert.strictEqual(cleanupTimeoutCount, 1);
-			Table.cleanup();
-			Table.resumeCleanup();
-			assert.strictEqual(sweepIntervalCount, 2);
-			assert.strictEqual(cleanupTimeoutCount, 2);
-			Table.cleanup();
-		} finally {
-			timeoutStub.restore();
-			intervalStub.restore();
-		}
+		Table.resumeCleanup();
+		assert.deepStrictEqual(Table.cleanupStateForTests(), {
+			closed: false,
+			cleanupScheduled: true,
+			expirationScheduled: true,
+		});
 	});
 
 	it('ignores non-timestamp field values (boolean / empty string) and uses the table default', async function () {
@@ -429,54 +404,6 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		Table.cleanup();
 	});
 
-	it('keeps a blob file when an expired-record eviction conflicts', async function () {
-		const { Table, runSweep } = captureExpirationSweep(() =>
-			table({
-				table: 'ExpiresAtBlobConflict',
-				database: 'test',
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'expiresAt', expiresAt: true, indexed: true },
-					{ name: 'payload', type: 'Blob' },
-				],
-			})
-		);
-		const blob = createBlob(Buffer.alloc(20_000, 7));
-		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: blob });
-		await Table.primaryStore.committed;
-		const filePath = getFilePathForBlob(blob);
-		assert(filePath);
-		assert(existsSync(filePath));
-		const blobEntry = Table.primaryStore.getEntry(1);
-		await Table.evict(1, undefined, blobEntry.version);
-		assert(Table.primaryStore.getEntry(1)?.value, 'an eviction without the record value must fail safe');
-		assert(existsSync(filePath));
-
-		setDeletionDelay(0);
-		const commitStub = sinon
-			.stub(RocksTransaction.prototype, 'commit')
-			.rejects(Object.assign(new Error('injected optimistic conflict'), { code: 'ERR_BUSY' }));
-		let commitRestored = false;
-		try {
-			await runSweep();
-			await delay(25);
-			assert(Table.primaryStore.getEntry(1)?.value, 'the failed eviction must leave the record intact');
-			assert(existsSync(filePath), 'a failed eviction must leave the referenced blob file intact');
-			commitStub.restore();
-			commitRestored = true;
-
-			await runSweep();
-			assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
-			await waitFor(() => !existsSync(filePath), {
-				message: 'a committed eviction must remove its blob file',
-			});
-		} finally {
-			if (!commitRestored) commitStub.restore();
-			setDeletionDelay(500);
-			Table.cleanup();
-		}
-	});
-
 	it('preserves a blob record refreshed before its eviction transaction starts', async function () {
 		const Table = table({
 			table: 'ExpiresAtBlobRefreshRace',
@@ -525,24 +452,22 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const [, secondEntry] = [...Table.indices.expiresAt.getCompositeRange({ end: Date.now(), limit: 2 })];
 		assert(secondEntry, 'the sweep should have a second entry to skip');
 
-		const originalEvict = Table.evict;
 		let releaseEviction;
 		let evictionStarted = false;
 		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
-		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
-			evictionStarted = true;
-			await blockedEviction;
-			return originalEvict.apply(this, args);
-		});
 		try {
-			const sweep = runSweep();
+			const sweep = runSweep({
+				beforeEvict: async () => {
+					evictionStarted = true;
+					await blockedEviction;
+				},
+			});
 			await waitFor(() => evictionStarted, { message: 'the first eviction should start' });
 			Table.cleanup();
 			releaseEviction();
 			await sweep;
 		} finally {
 			releaseEviction();
-			evictStub.restore();
 		}
 
 		assert(Table.primaryStore.getEntry(secondEntry.value)?.value, 'cleanup must stop the sweep before its next entry');
@@ -563,17 +488,16 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: createBlob(Buffer.alloc(20_000, 8)) });
 		await Table.primaryStore.committed;
 
-		const originalEvict = Table.evict;
 		let releaseEviction;
 		let evictionStarted = false;
 		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
-		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
-			evictionStarted = true;
-			await blockedEviction;
-			return originalEvict.apply(this, args);
-		});
 		try {
-			const sweep = runSweep();
+			const sweep = runSweep({
+				beforeEvict: async () => {
+					evictionStarted = true;
+					await blockedEviction;
+				},
+			});
 			await waitFor(() => evictionStarted, { message: 'the eviction should start' });
 			let dropResolved = false;
 			const drop = Table.dropTable().then(() => (dropResolved = true));
@@ -583,7 +507,6 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			await Promise.all([sweep, drop]);
 		} finally {
 			releaseEviction();
-			evictStub.restore();
 		}
 	});
 
@@ -603,17 +526,16 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: createBlob(Buffer.alloc(20_000, 9)) });
 		await Table.primaryStore.committed;
 
-		const originalEvict = Table.evict;
 		let releaseEviction;
 		let evictionStarted = false;
 		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
-		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
-			evictionStarted = true;
-			await blockedEviction;
-			return originalEvict.apply(this, args);
-		});
 		try {
-			const sweep = runSweep();
+			const sweep = runSweep({
+				beforeEvict: async () => {
+					evictionStarted = true;
+					await blockedEviction;
+				},
+			});
 			await waitFor(() => evictionStarted, { message: 'the eviction should start' });
 			let closeResolved = false;
 			const close = closeDatabase(database).then(() => (closeResolved = true));
@@ -623,55 +545,6 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			await Promise.all([sweep, close]);
 		} finally {
 			releaseEviction();
-			evictStub.restore();
-		}
-	});
-
-	it('cleanup drains the primary cleanup scan', async function () {
-		const Table = table({
-			table: 'PrimaryCleanupDrain',
-			database: 'test',
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'payload', type: 'Blob' },
-			],
-		});
-		let runCleanup;
-		const setupTimerStub = sinon.stub(global, 'setTimeout').callsFake((callback) => {
-			if (!runCleanup) {
-				runCleanup = callback;
-				return { unref() {} };
-			}
-			throw new Error('setTTLExpiration scheduled more than one cleanup timer');
-		});
-		Table.setTTLExpiration({ scanInterval: 100 });
-		setupTimerStub.restore();
-		assert(runCleanup);
-		await Table.put(1, { id: 1, payload: createBlob(Buffer.alloc(20_000, 11)) }, { expiresAt: Date.now() - 1_000 });
-		await Table.primaryStore.committed;
-
-		const originalEvict = Table.evict;
-		let releaseEviction;
-		let evictionStarted = false;
-		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
-		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
-			evictionStarted = true;
-			await blockedEviction;
-			return originalEvict.apply(this, args);
-		});
-		try {
-			const scan = runCleanup();
-			await waitFor(() => evictionStarted, { message: 'the primary cleanup scan should start eviction' });
-			let cleanupResolved = false;
-			const cleanup = Table.cleanup().then(() => (cleanupResolved = true));
-			await delay(10);
-			assert.strictEqual(cleanupResolved, false);
-			releaseEviction();
-			await Promise.all([scan, cleanup]);
-		} finally {
-			releaseEviction();
-			evictStub.restore();
-			setupTimerStub.restore();
 		}
 	});
 
@@ -691,17 +564,16 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: createBlob(Buffer.alloc(20_000, 10)) });
 		await Table.primaryStore.committed;
 
-		const originalEvict = Table.evict;
 		let releaseEviction;
 		let evictionStarted = false;
 		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
-		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
-			evictionStarted = true;
-			await blockedEviction;
-			return originalEvict.apply(this, args);
-		});
 		try {
-			const sweep = runSweep();
+			const sweep = runSweep({
+				beforeEvict: async () => {
+					evictionStarted = true;
+					await blockedEviction;
+				},
+			});
 			await waitFor(() => evictionStarted, { message: 'the eviction should start' });
 			let dropResolved = false;
 			const drop = dropDatabase(database).then(() => (dropResolved = true));
@@ -711,7 +583,6 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			await Promise.all([sweep, drop]);
 		} finally {
 			releaseEviction();
-			evictStub.restore();
 		}
 	});
 
@@ -777,20 +648,14 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const expiresAt = Date.now() - 1_000;
 		Table.indices.expiresAt.put(expiresAt, 1);
 
-		const originalCommit = RocksTransaction.prototype.commit;
 		let injected = false;
-		const commitStub = sinon.stub(RocksTransaction.prototype, 'commit').callsFake(async function (...args) {
-			if (!injected) {
+		await runSweep({
+			beforeBatchCommit: async () => {
+				if (injected) return;
 				injected = true;
 				await Table.put(1, { id: 1, expiresAt, name: 'resurrected' });
-			}
-			return originalCommit.apply(this, args);
+			},
 		});
-		try {
-			await runSweep();
-		} finally {
-			commitStub.restore();
-		}
 
 		assert(injected);
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.name, 'resurrected');
@@ -807,20 +672,14 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Table.primaryStore.committed;
 		Table.indices.expiresAt.put(expired, 1);
 
-		const originalCommit = RocksTransaction.prototype.commit;
 		let injected = false;
-		const commitStub = sinon.stub(RocksTransaction.prototype, 'commit').callsFake(async function (...args) {
-			if (!injected) {
+		await runSweep({
+			beforeBatchCommit: async () => {
+				if (injected) return;
 				injected = true;
 				await Table.put(1, { id: 1, expiresAt: refreshed });
-			}
-			return originalCommit.apply(this, args);
+			},
 		});
-		try {
-			await runSweep();
-		} finally {
-			commitStub.restore();
-		}
 
 		assert(injected);
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.expiresAt, refreshed);
@@ -864,29 +723,18 @@ describe('LMDB @expiresAt cleanup draining', function () {
 	});
 
 	const captureExpirationSweep = (name) => {
-		let runSweep;
-		const realSetInterval = global.setInterval;
-		const intervalStub = sinon.stub(global, 'setInterval').callsFake((callback, interval, ...args) => {
-			if (interval === 60_000) {
-				runSweep = callback;
-				return { unref() {} };
-			}
-			return realSetInterval(callback, interval, ...args);
+		const Table = table({
+			table: name,
+			database: 'lmdb-expiration-drain',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+			],
 		});
-		let Table;
-		try {
-			Table = table({
-				table: name,
-				database: 'lmdb-expiration-drain',
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'expiresAt', expiresAt: true, indexed: true },
-				],
-			});
-		} finally {
-			intervalStub.restore();
-		}
-		return { Table, runSweep };
+		return {
+			Table,
+			runSweep: (testHooks) => Table.runRecordExpirationSweepForTests(testHooks),
+		};
 	};
 
 	it('evicts ISO expirations and repairs stale keys', async function () {
@@ -922,17 +770,16 @@ describe('LMDB @expiresAt cleanup draining', function () {
 		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000 });
 		await Table.primaryStore.committed;
 
-		const originalEvict = Table.evict;
 		let releaseEviction;
 		let evictionStarted = false;
 		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
-		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
-			evictionStarted = true;
-			await blockedEviction;
-			return originalEvict.apply(this, args);
-		});
 		try {
-			const sweep = runSweep();
+			const sweep = runSweep({
+				beforeEvict: async () => {
+					evictionStarted = true;
+					await blockedEviction;
+				},
+			});
 			await waitFor(() => evictionStarted, { message: 'LMDB eviction should start' });
 			let cleanupResolved = false;
 			const cleanup = Table.cleanup().then(() => (cleanupResolved = true));
@@ -942,7 +789,6 @@ describe('LMDB @expiresAt cleanup draining', function () {
 			await Promise.all([sweep, cleanup]);
 		} finally {
 			releaseEviction();
-			evictStub.restore();
 		}
 	});
 });

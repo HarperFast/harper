@@ -5346,6 +5346,16 @@ export function makeTable(options) {
 			if (expiresAtProperty) runRecordExpirationEviction();
 			if (audit) addDeleteRemoval();
 		}
+		static runRecordExpirationSweepForTests(testHooks?: ExpirationSweepTestHooks) {
+			return runRecordExpirationEviction(testHooks, false) ?? Promise.resolve();
+		}
+		static cleanupStateForTests() {
+			return {
+				closed: cleanupClosed,
+				cleanupScheduled: !cleanupClosed && !!cleanupTimer,
+				expirationScheduled: !cleanupClosed && !!recordExpirationInterval,
+			};
+		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
 		}
@@ -6267,7 +6277,11 @@ export function makeTable(options) {
 	// catches anything modified between staging and commit: on conflict (ERR_BUSY) we re-stage once
 	// into a fresh transaction (dropping the now-changed record) and otherwise skip the batch, leaving
 	// those records for the next cleanup cycle.
-	function createEvictionBatcher(isCancelled: () => boolean = () => false) {
+	type ExpirationSweepTestHooks = {
+		beforeEvict?: () => MaybePromise<void>;
+		beforeBatchCommit?: () => MaybePromise<void>;
+	};
+	function createEvictionBatcher(isCancelled: () => boolean = () => false, testHooks?: ExpirationSweepTestHooks) {
 		type EvictItem =
 			| { type: 'evict'; key: any; version: number; indexedExpiration?: number }
 			| { type: 'tombstone'; key: any; version: number }
@@ -6365,6 +6379,7 @@ export function makeTable(options) {
 					return;
 				}
 				try {
+					await testHooks?.beforeBatchCommit?.();
 					await transaction.commit();
 					return;
 				} catch (error: any) {
@@ -6566,7 +6581,7 @@ export function makeTable(options) {
 			primaryStore.remove(id, version);
 		});
 	}
-	function runRecordExpirationEviction() {
+	function runRecordExpirationEviction(testHooks?: ExpirationSweepTestHooks, schedule = true) {
 		if (getWorkerIndex() !== 0 || cleanupClosed) return;
 		const expiresAtName = expiresAtProperty.name;
 		const indexedExpiration = (entry: Entry): number | undefined =>
@@ -6575,7 +6590,7 @@ export function makeTable(options) {
 				: expirationTimestamp(entry.expiresAt);
 
 		async function sweepRocks(index: any, cutoff: number) {
-			const batcher = createEvictionBatcher(() => cleanupClosed);
+			const batcher = createEvictionBatcher(() => cleanupClosed, testHooks);
 			let after: any[] | undefined;
 			try {
 				while (!cleanupClosed && primaryStore.rootStore.status === 'open') {
@@ -6603,6 +6618,7 @@ export function makeTable(options) {
 							const currentExpiration = indexedExpiration(recordEntry);
 							if (currentExpiration !== undefined && currentExpiration < cutoff) {
 								if (recordEntry.metadataFlags & HAS_BLOBS) {
+									await testHooks?.beforeEvict?.();
 									await TableResource.evict(entry.value, recordEntry.value, recordEntry.version, currentExpiration);
 								} else {
 									backpressure = batcher.add({
@@ -6668,6 +6684,7 @@ export function makeTable(options) {
 						} else {
 							const currentExpiration = indexedExpiration(recordEntry);
 							if (currentExpiration !== undefined && currentExpiration < cutoff) {
+								await testHooks?.beforeEvict?.();
 								operation = TableResource.evict(id, recordEntry.value, recordEntry.version, currentExpiration);
 							} else if (compareKeys(key, currentExpiration) !== 0) {
 								operation = primaryStore.ifVersion(id, recordEntry.version, () => {
@@ -6716,6 +6733,7 @@ export function makeTable(options) {
 		}
 
 		const runSweep = () => (recordExpirationCompletion = sweep());
+		if (!schedule) return runSweep();
 		recordExpirationInterval = setInterval(runSweep, RECORD_PRUNING_INTERVAL);
 		recordExpirationInterval.unref();
 	}

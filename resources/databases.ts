@@ -96,7 +96,12 @@ const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
-const DATABASE_CLOSE_TIMEOUT = 10_000;
+const DEFAULT_DATABASE_CLOSE_TIMEOUT = 10_000;
+let databaseCloseTimeout = DEFAULT_DATABASE_CLOSE_TIMEOUT;
+
+export function setDatabaseCloseTimeoutForTests(timeout = DEFAULT_DATABASE_CLOSE_TIMEOUT): void {
+	databaseCloseTimeout = timeout;
+}
 
 async function waitForTableCleanup(completions: Promise<void>[]): Promise<boolean> {
 	let timeout: NodeJS.Timeout | undefined;
@@ -104,7 +109,7 @@ async function waitForTableCleanup(completions: Promise<void>[]): Promise<boolea
 	const result = await Promise.race([
 		Promise.all(completions),
 		new Promise<typeof timedOut>((resolve) => {
-			timeout = setTimeout(() => resolve(timedOut), DATABASE_CLOSE_TIMEOUT);
+			timeout = setTimeout(() => resolve(timedOut), databaseCloseTimeout);
 			timeout.unref();
 		}),
 	]);
@@ -1270,7 +1275,7 @@ export async function dropDatabase(databaseName) {
 		if (!(await waitForTableCleanup(cleanupCompletions))) {
 			for (const tableName in dbTables) dbTables[tableName].resumeCleanup?.();
 			throw new Error(
-				`Timed out after ${DATABASE_CLOSE_TIMEOUT}ms waiting for cleanup; refusing to destroy database ${databaseName} while cleanup is active.`
+				`Timed out after ${databaseCloseTimeout}ms waiting for cleanup; refusing to destroy database ${databaseName} while cleanup is active.`
 			);
 		}
 		for (const tableName in dbTables) {
@@ -1373,7 +1378,7 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 	if (!(await waitForTableCleanup(cleanupCompletions))) {
 		for (const [, table] of tableEntries) table.resumeCleanup?.();
 		throw new Error(
-			`Timed out after ${DATABASE_CLOSE_TIMEOUT}ms waiting for cleanup; refusing to close database ${databaseName} while cleanup is active.`
+			`Timed out after ${databaseCloseTimeout}ms waiting for cleanup; refusing to close database ${databaseName} while cleanup is active.`
 		);
 	}
 	for (const [tableName, table] of tableEntries) {

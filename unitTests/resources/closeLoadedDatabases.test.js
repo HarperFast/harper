@@ -16,9 +16,11 @@ const {
 	closeDatabase,
 	closeLoadedDatabases,
 	dropDatabase,
+	setDatabaseCloseTimeoutForTests,
 } = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
-const sinon = require('sinon');
+const { createBlob } = require('#src/resources/blob');
+const { waitFor } = require('../waitFor.js');
 
 describe('RocksDB handle release', function () {
 	before(function () {
@@ -87,12 +89,9 @@ describe('RocksDB handle release', function () {
 				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
 			],
 		});
-		const cleanup = sinon.spy(Table, 'cleanup');
-
 		await closeDatabase('closerelease4');
 
-		assert.strictEqual(cleanup.callCount, 1, 'table cleanup should run before its database closes');
-		cleanup.restore();
+		assert.strictEqual(Table.cleanupStateForTests().closed, true);
 	});
 
 	it('coalesces concurrent closes of the same database', async function () {
@@ -108,32 +107,45 @@ describe('RocksDB handle release', function () {
 	});
 
 	it('fails closed and resumes cleanup when close times out', async function () {
+		this.timeout(30000);
 		const Table = table({
 			table: 'expiring',
 			database: 'closetimeout6',
 			attributes: [
 				{ attribute: 'id', isPrimaryKey: true },
 				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+				{ attribute: 'payload', type: 'Blob' },
 			],
 		});
 		const rootStore = Table.primaryStore.rootStore;
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
-		const cleanup = sinon.stub(Table, 'cleanup').returns(new Promise(() => {}));
-		const resume = sinon.spy(Table, 'resumeCleanup');
-		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await Table.put(1, {
+			id: 1,
+			expiresAt: Date.now() - 1_000,
+			payload: createBlob(Buffer.alloc(20_000, 1)),
+		});
+		await Table.primaryStore.committed;
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		const sweep = Table.runRecordExpirationSweepForTests({
+			beforeEvict: async () => {
+				evictionStarted = true;
+				await blockedEviction;
+			},
+		});
+		await waitFor(() => evictionStarted, { message: 'the expiration sweep should start' });
+		setDatabaseCloseTimeoutForTests(25);
 		try {
-			const closing = closeDatabase('closetimeout6');
-			const rejected = assert.rejects(closing, /refusing to close database/);
-			await clock.tickAsync(10_001);
-			await rejected;
+			await assert.rejects(closeDatabase('closetimeout6'), /refusing to close database/);
 			assert.ok(refCountFor(rootStore.path) > 0, 'timed-out close must retain native handles');
 			assert.strictEqual(rootStore.status, 'open');
-			assert.strictEqual(resume.callCount, 1);
+			assert.strictEqual(Table.cleanupStateForTests().closed, false);
 		} finally {
-			clock.restore();
-			cleanup.restore();
-			resume.restore();
+			setDatabaseCloseTimeoutForTests();
+			releaseEviction();
 		}
+		await sweep;
 		await closeDatabase('closetimeout6');
 	});
 
@@ -146,41 +158,51 @@ describe('RocksDB handle release', function () {
 				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
 			],
 		});
-		const cleanup = sinon.spy(Table, 'cleanup');
-
 		await dropDatabase('droprelease6');
 
-		assert.strictEqual(cleanup.callCount, 1, 'table cleanup should run before its database is destroyed');
-		cleanup.restore();
+		assert.strictEqual(Table.cleanupStateForTests().closed, true);
 	});
 
 	it('fails closed and resumes cleanup when drop times out', async function () {
+		this.timeout(30000);
 		const Table = table({
 			table: 'expiring',
 			database: 'droptimeout7',
 			attributes: [
 				{ attribute: 'id', isPrimaryKey: true },
 				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+				{ attribute: 'payload', type: 'Blob' },
 			],
 		});
 		const rootStore = Table.primaryStore.rootStore;
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
-		const cleanup = sinon.stub(Table, 'cleanup').returns(new Promise(() => {}));
-		const resume = sinon.spy(Table, 'resumeCleanup');
-		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await Table.put(1, {
+			id: 1,
+			expiresAt: Date.now() - 1_000,
+			payload: createBlob(Buffer.alloc(20_000, 2)),
+		});
+		await Table.primaryStore.committed;
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		const sweep = Table.runRecordExpirationSweepForTests({
+			beforeEvict: async () => {
+				evictionStarted = true;
+				await blockedEviction;
+			},
+		});
+		await waitFor(() => evictionStarted, { message: 'the expiration sweep should start' });
+		setDatabaseCloseTimeoutForTests(25);
 		try {
-			const dropping = dropDatabase('droptimeout7');
-			const rejected = assert.rejects(dropping, /refusing to destroy database/);
-			await clock.tickAsync(10_001);
-			await rejected;
+			await assert.rejects(dropDatabase('droptimeout7'), /refusing to destroy database/);
 			assert.ok(refCountFor(rootStore.path) > 0, 'timed-out drop must retain native handles');
 			assert.strictEqual(rootStore.status, 'open');
-			assert.strictEqual(resume.callCount, 1);
+			assert.strictEqual(Table.cleanupStateForTests().closed, false);
 		} finally {
-			clock.restore();
-			cleanup.restore();
-			resume.restore();
+			setDatabaseCloseTimeoutForTests();
+			releaseEviction();
 		}
+		await sweep;
 		await dropDatabase('droptimeout7');
 	});
 });
