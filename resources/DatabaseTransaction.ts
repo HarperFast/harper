@@ -335,6 +335,7 @@ export class DatabaseTransaction implements Transaction {
 	// link with no writes that is being read in a loop would otherwise masquerade as write activity and
 	// keep a write-holding head immortal.
 	declare writeTimeout: number;
+	timeoutBudget = 0;
 	validated = 0;
 	timestamp = 0;
 	retries = 0;
@@ -385,7 +386,7 @@ export class DatabaseTransaction implements Transaction {
 		// `writes`/`next` are checked inline first: this is a hot path and the dominant case is a
 		// single-store transaction that has never written.
 		if ((this.writes.length === 0 && !this.next) || this.open !== TRANSACTION_STATE.OPEN || !this.hasPendingWrites()) {
-			this.timeout = txnExpiration;
+			this.timeout = Math.max(txnExpiration, this.timeoutBudget);
 		}
 		if (this.transaction) {
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
@@ -578,10 +579,10 @@ export class DatabaseTransaction implements Transaction {
 		// A write is activity: it re-arms the idle limit on this link even though the reads it
 		// performs no longer do (see getReadTxn), so a transaction that keeps writing stays alive
 		// and only an idle one holding write intents is reaped.
-		this.timeout = txnExpiration;
+		this.timeout = Math.max(txnExpiration, this.timeoutBudget ?? 0);
 		// Independent write-recency signal for chainStillActive (see the field comment) — reads never
 		// touch this, only writes do.
-		this.writeTimeout = txnExpiration;
+		this.writeTimeout = this.timeout;
 		this.linkWrite(operation);
 		this.writes.push(operation);
 		if (!operation.deferSave) {
@@ -1107,6 +1108,7 @@ export interface CommitResolution {
 	next?: CommitResolution;
 }
 export interface Transaction {
+	timeoutBudget?: number;
 	commit(options): MaybePromise<CommitResolution>;
 	abort?(): any;
 }
@@ -1190,7 +1192,7 @@ function startMonitoringTxns() {
 					// receives them, and a multi-store transaction can be writing database B while this
 					// head only reads A). The logical transaction is still active, so re-arm this link
 					// rather than aborting the whole chain out from under it.
-					txn.timeout = txnExpiration;
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				} else if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
 					// Abort and surface an error rather than force-committing a partial write set: silently
 					// committing on the application's behalf breaks atomicity and can leave orphaned
@@ -1226,7 +1228,7 @@ function startMonitoringTxns() {
 					} catch (error) {
 						harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
 					}
-					txn.timeout = txnExpiration;
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				}
 			} else {
 				txn.timeout -= txnExpiration;

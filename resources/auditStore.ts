@@ -111,6 +111,10 @@ const MAX_DELETES_PER_CLEANUP = 1000;
 // setTimeout silently falls back to 1ms for delays past this, which would turn the backoff into the
 // hot loop it is meant to avoid — a `logging.auditRetention` over ~248 days reaches it via retention/10
 const MAX_CLEANUP_DELAY = 2 ** 31 - 1;
+// separate mint/read latches so a legacy-entry read warn can't mask the still-minting signal;
+// mint latch keyed per (table, type) so one entry type can't silence another's producer stack
+const warnedBodylessMints = new Set<string>();
+const warnedBodylessTables = new Set<number>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
@@ -416,9 +420,23 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		originatingOperation,
 		previousAdditionalAuditRefs,
 	} = auditRecord;
-	const action = EVENT_TYPES[type];
+	let action = EVENT_TYPES[type];
 	if (!action) {
 		throw new Error(`Invalid audit entry type ${type}`);
+	}
+	if (action & (HAS_RECORD | HAS_PARTIAL_RECORD) && !encodedRecord?.length) {
+		// Readers decode the remainder whenever HAS_RECORD is set, so an audit-only commit minted with
+		// no body must not advertise one (#2153). HAS_PARTIAL_RECORD is kept: it also drives
+		// record-history reconstruction, and the read path tolerates the empty body.
+		if (!warnedBodylessMints.has(`${tableId}:${type}`)) {
+			warnedBodylessMints.add(`${tableId}:${type}`);
+			// the Error's stack identifies which write path delivered the missing value
+			harperLogger.warn(
+				`Audit entry (${type}) for record ${recordId} in table ${tableId} has no record body`,
+				new Error('bodyless audit mint')
+			);
+		}
+		action &= ~HAS_RECORD;
 	}
 	let position = start + 1;
 	if (previousVersion) {
@@ -621,6 +639,19 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			},
 			getValue(store, fullRecord?, auditTime?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
+					if (decoder.position >= (end ?? buffer.byteLength)) {
+						// Entry advertises a record but has no body (minted before #2153): nothing to decode, and
+						// return undefined rather than falling through — this branch means the caller asked for the
+						// entry's own content (full-record consumers with an auditTime never enter it for partials
+						// and still reconstruct below). Warn latched per table: this getter runs inside range scans.
+						if (!warnedBodylessTables.has(tableId)) {
+							warnedBodylessTables.add(tableId);
+							harperLogger.warn(
+								`Audit entry (${EVENT_TYPES[action & 0xf]}) for table ${tableId} advertises a record but has no body; treating as having no record`
+							);
+						}
+						return;
+					}
 					if (!value) {
 						value = decodeFromDatabase(
 							// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries

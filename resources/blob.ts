@@ -443,6 +443,13 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		}
 
 		const filePath = getFilePath(storageInfo);
+		// Retain the file for this read. `start()` runs at construction, so the hold covers the open —
+		// including its retry loop, which waits up to `blobReadTimeout` — and the transfer after it.
+		// The residual gap is decoding the record to getting here, which the retention window covers.
+		// Released on every terminal path: a failed open, a cancel, and closeFd() for everything that
+		// gets as far as a descriptor. Null means reclamation already claimed the file; the open below
+		// then fails with the normal missing-file error.
+		const releaseBlobHold = holdBlobFile(this);
 		let fd: number;
 		let position = 0;
 		let totalContentRead = 0;
@@ -465,6 +472,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				close(fd);
 				fd = null;
 			}
+			releaseBlobHold?.();
 		};
 		let previouslyFinishedWriting = false;
 		const blob = this;
@@ -511,6 +519,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											)
 										: new BlobReadError(`Blob file not found for ${filePath}`, BLOB_GONE_STATUS)
 									: error;
+							releaseBlobHold?.(); // no descriptor was acquired, so closeFd() will not run
 							reject(readError);
 							blob.#onError?.forEach((callback) => callback(readError));
 						} else {
@@ -798,7 +807,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			},
 			cancel() {
 				cancelled = true;
-				closeFd();
+				closeFd(); // releases the hold, including when cancelled before any open succeeded
 				clearTimeout(timer);
 				clearTimeout(openTimer);
 				if (watcher) watcher.close();
@@ -845,35 +854,392 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		return storageInfoForBlob.get(this)?.saving ?? Promise.resolve();
 	}
 }
-let deletionDelay = 500;
+const DEFAULT_RECLAMATION_DELAY = 2000;
+let reclamationDelayOverride: number | undefined;
+// A held file is reclaimed once its wait reaches this age, so a hold that is never released (an
+// abandoned replication send whose thread died with the lock) cannot pin a file forever. Set above
+// the replication blob timeout (900s) so it cannot expire under a send that is still legitimately
+// running; a cap that fires is logged, since it deletes bytes something claimed to need.
+const RECLAMATION_AGE_CAP = 1_200_000;
+// Backstop poll interval for a held entry: a hold released on another thread cannot notify this one.
+const HELD_RECHECK_INTERVAL = 1000;
+
+interface PendingReclamation {
+	blob: Blob;
+	deadline: number;
+	enqueuedAt: number;
+	supersededAt: number;
+	unlinking?: boolean;
+}
+// Keyed by file path, which is unique per store — a fileId is a per-store counter, so two databases
+// can hold the same one.
+const pendingReclamation = new Map<string, PendingReclamation>();
+let reclamationTimer: NodeJS.Timeout | undefined;
+let nextReclamationDeadline = Infinity;
+// Deadline of the entry at the back of the queue; see enqueue().
+let queueTailDeadline = 0;
+
+/**
+ * How long a superseded blob file stays on disk. Blob deletion is driven by record supersession —
+ * `RecordEncoder` unlinks the prior row's blobs on every write — but the file is opened lazily, by
+ * path, when a consumer calls `stream()`/`bytes()`, so a reader that resolved the record just
+ * before the write opens a file that is already gone. On the HTTP path that ENOENT lands after the
+ * response headers are committed. The delay is what covers that gap, and 500ms was too short for a
+ * slow or backpressured response; the cost of the larger default is only the churn produced within
+ * the window. Configurable via storage.blobRetention; 0 reclaims as soon as the queue drains.
+ */
+function getReclamationDelay(): number {
+	const configured = reclamationDelayOverride ?? envGet(CONFIG_PARAMS.STORAGE_BLOBRETENTION);
+	if (configured == null) return DEFAULT_RECLAMATION_DELAY;
+	const delay = Number(configured);
+	if (!Number.isFinite(delay) || delay < 0) {
+		if (!invalidRetentionLogged) {
+			invalidRetentionLogged = true;
+			logger.warn?.(
+				`Ignoring invalid storage.blobRetention value ${configured}; using the default of ${DEFAULT_RECLAMATION_DELAY}ms`
+			);
+		}
+		return DEFAULT_RECLAMATION_DELAY;
+	}
+	return Math.min(delay, MAX_SET_TIMEOUT_MS);
+}
+let invalidRetentionLogged = false;
+
+// Cross-worker state for one blob file, in the store's shared buffer — the same mechanism the blob
+// file-id allocator above uses. Two Int32 slots:
+//   [HOLDS]      how many consumers are using the file right now, across every worker
+//   [REREFERENCED] set when a record version referencing the file again is written, so the worker
+//                  that queued the reclamation (which may be a different one) drops it
+// A lock cannot express either: it is binary, so it cannot count concurrent holders, and it carries
+// no signal a reclaiming worker can read other than "taken".
+const HOLDS = 0;
+const REREFERENCED = 1;
+// Claimed by a reclaimer that has established there are no holders. A hold that arrives afterwards
+// sees a negative count and knows the file is already going away, which closes the window between
+// checking for holders and unlinking.
+const RECLAIMING = -1 << 20;
+// One fixed table per store rather than a buffer per fileId: `getUserSharedBuffer` documents no
+// eviction, and every other use in Harper keys a small fixed set ('next-id', 'blob-file-id'), so a
+// key per blob would grow without bound on a churning table. Slots are shared by hash, which can
+// only ever over-retain — a collision defers someone else's reclamation, it never unlinks early.
+const HOLD_TABLE_SLOTS = 4096;
+const holdTables = new WeakMap<object, Int32Array>();
+
+function blobHoldTable(store: any): Int32Array {
+	let table = holdTables.get(store);
+	if (!table) {
+		const buffer = store.getUserSharedBuffer('blob-hold-table', new ArrayBuffer(HOLD_TABLE_SLOTS * 8));
+		table = new Int32Array(buffer, 0, HOLD_TABLE_SLOTS * 2);
+		holdTables.set(store, table);
+	}
+	return table;
+}
+
+function blobHoldSlot(fileId: string): number {
+	let hash = 0;
+	for (let i = 0; i < fileId.length; i++) hash = (hash * 31 + fileId.charCodeAt(i)) | 0;
+	return ((hash >>> 0) % HOLD_TABLE_SLOTS) * 2;
+}
+
+/** The two shared counters for a blob file: `[slot + HOLDS]` and `[slot + REREFERENCED]`. */
+function blobHoldState(store: any, fileId: string): { table: Int32Array; slot: number } | undefined {
+	try {
+		return { table: blobHoldTable(store), slot: blobHoldSlot(fileId) };
+	} catch (error) {
+		// A closed store cannot supply the buffer; the caller treats that as "cannot establish state"
+		logger.debug?.('Could not get shared blob hold state', fileId, error);
+		return undefined;
+	}
+}
+
+/** Exposed for tests that need to act as a second worker against the same shared table. */
+export function getBlobHoldStateForTesting(store: any, fileId: string) {
+	return blobHoldState(store, fileId);
+}
+
+/**
+ * Retain a blob file until the returned release function is called (or the age cap is reached), for
+ * a consumer whose need for the bytes outlives the record version that referenced them — primarily
+ * replication, where a peer that has not yet fetched a superseded blob gets a clean 404 from the
+ * sender, classifies it as unrecoverable at source, and advances its resume cursor past a record
+ * whose bytes it will never have (harper-pro#403/#388).
+ *
+ * Counted in shared memory, not in this thread's map: the consumer and the write that supersedes it
+ * routinely run on different worker threads, so a thread-local signal would be invisible to the
+ * thread that does the unlinking.
+ *
+ * Returns null when the file is already being reclaimed — the bytes may be gone, and no hold can
+ * bring them back.
+ */
+export function holdBlobFile(blob: Blob): (() => void) | null {
+	const storageInfo = storageInfoForBlob.get(blob);
+	const fileId = storageInfo?.fileId;
+	const store = storageInfo?.store;
+	if (!fileId || !store) return () => {};
+	const state = blobHoldState(store, fileId);
+	if (!state) return () => {};
+	const { table, slot } = state;
+	if (Atomics.add(table, slot + HOLDS, 1) < 0) {
+		Atomics.sub(table, slot + HOLDS, 1);
+		return null;
+	}
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		if (Atomics.sub(table, slot + HOLDS, 1) === 1) scheduleReclamation(Date.now());
+	};
+}
+
+/**
+ * Whether a record version referencing this file again was written since it was queued — by any
+ * worker. Reading clears it, so the next supersession starts from a clean slate.
+ */
+function consumeRereferenced(storageInfo: StorageInfo | undefined): boolean {
+	const store = storageInfo?.store;
+	const fileId = storageInfo?.fileId;
+	if (!store || !fileId) return false;
+	const state = blobHoldState(store, fileId);
+	if (!state) throw new Error(`Could not read hold state for blob ${fileId}`);
+	return Atomics.exchange(state.table, state.slot + REREFERENCED, 0) === 1;
+}
+
+/**
+ * Whether an open read snapshot can still see the record version that referenced this file. A blob
+ * reference is fixed when a reader's snapshot is taken, not when the record is decoded, so a reader
+ * inside a transaction is entitled to these bytes for as long as its snapshot lives — which is the
+ * gap between resolving a record and calling stream() that a time window can only approximate.
+ *
+ * `getOldestSnapshotTimestamp()` reports the oldest unreleased snapshot in whole unix SECONDS, or 0
+ * when none is held. Reads outside a transaction take no snapshot at all ("no transaction means read
+ * latest", DatabaseTransaction.getReadTxn), and LMDB exposes no equivalent, so both fall through to
+ * the retention window. The second of granularity is padded rather than rounded: a snapshot opened
+ * in the same second as the supersession is treated as possibly older than it.
+ */
+function snapshotStillSees(storageInfo: StorageInfo | undefined, supersededAt: number): boolean {
+	const oldestSnapshotSeconds = storageInfo?.store?.getOldestSnapshotTimestamp?.();
+	if (!oldestSnapshotSeconds) return false;
+	return oldestSnapshotSeconds * 1000 <= supersededAt + 1000;
+}
+
+/** Undo a reclaimer's claim once its unlink has landed, leaving the slot usable again. */
+function releaseReclaimClaim(storageInfo: StorageInfo | undefined): void {
+	const store = storageInfo?.store;
+	const fileId = storageInfo?.fileId;
+	if (!store || !fileId) return;
+	const state = blobHoldState(store, fileId);
+	if (state) Atomics.compareExchange(state.table, state.slot + HOLDS, RECLAIMING, 0);
+}
+
+/**
+ * Whether anything is still using the file. `claim` is for the reclaimer: it atomically takes the
+ * count from 0 to RECLAIMING so a hold cannot be acquired between this check and the unlink.
+ */
+function isBlobHeld(storageInfo: StorageInfo | undefined, claim = false): boolean {
+	const store = storageInfo?.store;
+	const fileId = storageInfo?.fileId;
+	if (!store || !fileId) return false;
+	const state = blobHoldState(store, fileId);
+	if (!state) throw new Error(`Could not read hold state for blob ${fileId}`);
+	if (claim) return Atomics.compareExchange(state.table, state.slot + HOLDS, 0, RECLAIMING) !== 0;
+	return Atomics.load(state.table, state.slot + HOLDS) > 0;
+}
+
+/**
+ * Cancel a queued reclamation because a record version being written references the file again: the
+ * retain-on-update check covers only the write that supersedes, not a file already queued by an
+ * earlier one. Cancelling at encode rather than at commit means an aborted write leaves the file
+ * unreclaimed until the orphan sweeper runs (#2156) — chosen deliberately over the alternative
+ * failure, which is unlinking a file the committed record still points at.
+ *
+ * The signal is recorded in shared memory as well as in this worker's queue, because the worker that
+ * queued the reclamation may not be this one.
+ */
+function cancelBlobReclamation(storageInfo: StorageInfo): void {
+	if (!storageInfo?.fileId || !storageInfo.store) return;
+	const state = blobHoldState(storageInfo.store, storageInfo.fileId);
+	if (state) {
+		if (Atomics.load(state.table, state.slot + HOLDS) < 0) {
+			// Already claimed by a reclaimer: the file is on its way out and the record being written
+			// will reference bytes that are about to disappear. Nothing to cancel; say so rather than
+			// letting it be silent.
+			logger.warn?.(
+				`Blob file ${storageInfo.fileId} is being reclaimed while a record is being written that references it`
+			);
+			return;
+		}
+		Atomics.store(state.table, state.slot + REREFERENCED, 1);
+	}
+	if (pendingReclamation.size === 0) return;
+	let filePath: string;
+	try {
+		filePath = getFilePath(storageInfo);
+	} catch (error) {
+		logger.debug?.('Could not resolve blob path to cancel pending reclamation', error);
+		return;
+	}
+	if (!pendingReclamation.delete(filePath)) return;
+	if (pendingReclamation.size === 0) resetDrainedQueue();
+}
+
+/** A drained queue has no tail to order against and nothing left to wake up for. */
+function resetDrainedQueue(): void {
+	queueTailDeadline = 0;
+	if (reclamationTimer) {
+		clearTimeout(reclamationTimer);
+		reclamationTimer = undefined;
+		nextReclamationDeadline = Infinity;
+	}
+}
+
 /**
  * Delete the file for the blob
  * @param blob
  */
 export function deleteBlob(blob: Blob): void {
 	const filePath = getFilePathForBlob(blob as any);
-	if (filePath) scheduleBlobFileDeletion(filePath);
+	if (!filePath) {
+		return;
+	}
+	const now = Date.now();
+	const storageInfo = storageInfoForBlob.get(blob);
+	if (storageInfo?.store && storageInfo.fileId) {
+		// A genuine supersession clears any re-reference recorded for an earlier one.
+		const state = blobHoldState(storageInfo.store, storageInfo.fileId);
+		if (state) Atomics.store(state.table, state.slot + REREFERENCED, 0);
+	}
+	// Reusing the queued entry when two writes supersede the same file keeps the age cap measuring
+	// from the first supersession.
+	const pending = pendingReclamation.get(filePath) ?? { blob, deadline: 0, enqueuedAt: now, supersededAt: now };
+	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
 }
 
-function scheduleBlobFileDeletion(filePath: string): void {
-	setTimeout(() => {
-		// TODO: we need to determine when any read transaction are done with the file, and then delete it, this is a hack to just give it some time for that
+/**
+ * (Re-)insert an entry at the back of the queue with a deadline no earlier than the entry already
+ * there. Deadlines are therefore non-decreasing, which is what lets the drain stop at the first
+ * entry not yet due instead of scanning the whole queue on every wakeup — at the cost that a
+ * shortened delay (reconfigured `storage.blobRetention`) takes effect no sooner than the entries
+ * queued ahead of it.
+ */
+function enqueue(filePath: string, pending: PendingReclamation, deadline: number): number {
+	pending.deadline = Math.max(deadline, queueTailDeadline);
+	queueTailDeadline = pending.deadline;
+	pendingReclamation.delete(filePath);
+	pendingReclamation.set(filePath, pending);
+	return pending.deadline;
+}
+
+function scheduleReclamation(deadline: number): void {
+	if (reclamationTimer && deadline >= nextReclamationDeadline) return;
+	if (reclamationTimer) clearTimeout(reclamationTimer);
+	nextReclamationDeadline = deadline;
+	const delay = Math.min(Math.max(0, deadline - Date.now()), MAX_SET_TIMEOUT_MS);
+	reclamationTimer = setTimeout(runReclamation, delay);
+	// Unref-ed: the plain timer this replaced kept the process alive for its 500ms, but the window is
+	// now long enough that doing the same would hold a shutting-down process open for seconds per
+	// drain. A process that exits inside the window leaves its superseded files for the orphan
+	// sweeper — the same outcome as a crash inside the old 500ms, and the safe direction. Flushing
+	// the queue on `beforeExit` is NOT the alternative: that event fires whenever a thread's loop
+	// transiently empties, not only at shutdown, so it deletes files that are still inside their
+	// window or actively held.
+	reclamationTimer.unref?.();
+}
+
+function runReclamation(): void {
+	reclamationTimer = undefined;
+	nextReclamationDeadline = Infinity;
+	const now = Date.now();
+	const ageCap = Math.max(RECLAMATION_AGE_CAP, getReclamationDelay());
+	let earliest = Infinity;
+	for (const [filePath, pending] of pendingReclamation) {
+		if (pending.unlinking) continue;
+		if (pending.deadline > now) {
+			earliest = pending.deadline;
+			break; // insertion order is deadline order; nothing behind this entry is due
+		}
+		const storageInfo = storageInfoForBlob.get(pending.blob);
+		const expired = now - pending.enqueuedAt >= ageCap;
+		let held: boolean;
+		try {
+			if (consumeRereferenced(storageInfo)) {
+				// A record version referencing this file again was written, possibly on another worker.
+				// The file is live; drop the reclamation rather than unlinking under it.
+				pendingReclamation.delete(filePath);
+				continue;
+			}
+			// A snapshot that can still see the superseded version pins the file as surely as a hold.
+			// Checked before claiming so the claim is not taken and immediately handed back.
+			if (!expired && snapshotStillSees(storageInfo, pending.supersededAt)) {
+				const deferred = enqueue(filePath, pending, now + HELD_RECHECK_INTERVAL);
+				if (deferred < earliest) earliest = deferred;
+				continue;
+			}
+			// Claim it in the same operation that establishes there are no holders, so a hold cannot
+			// slip in between. Not claimed once expired: the age cap deliberately reclaims held bytes.
+			held = isBlobHeld(storageInfo, !expired);
+		} catch (error) {
+			// Reading shared state can fail on a closed store, and this is a timer callback: throwing
+			// here takes the worker down. A store that never reopens would retry forever, so an
+			// unreadable entry still ages out through the cap.
+			logger.debug?.('Could not determine blob hold state; deferring reclamation', filePath, error);
+			if (!expired) {
+				const deferred = enqueue(filePath, pending, now + HELD_RECHECK_INTERVAL);
+				if (deferred < earliest) {
+					earliest = deferred;
+				}
+				continue;
+			}
+			held = false;
+		}
+		if (held && !expired) {
+			// A release on this thread reschedules directly; this poll is the backstop for a release on
+			// another thread, and is bounded below because a 0ms delay would spin the timer. Re-queuing
+			// also guarantees the age cap gets a wakeup if the holder never releases.
+			const recheck = Math.min(
+				now + Math.max(getReclamationDelay(), HELD_RECHECK_INTERVAL),
+				pending.enqueuedAt + ageCap
+			);
+			const deferred = enqueue(filePath, pending, recheck);
+			if (deferred < earliest) {
+				earliest = deferred;
+			}
+			continue;
+		}
+		if (held) {
+			logger.warn?.(
+				`Reclaiming blob file ${filePath} after ${Math.round((now - pending.enqueuedAt) / 1000)}s: it is ` +
+					`still held, but has reached the blob retention age cap`
+			);
+		}
+		// Keep the entry until the unlink lands so a concurrent re-reference can tell that the file is
+		// already going away instead of silently adopting a doomed path.
+		pending.unlinking = true;
 		unlink(filePath, (error) => {
+			pendingReclamation.delete(filePath);
+			if (pendingReclamation.size === 0) queueTailDeadline = 0;
+			// Hand the slot back: it is shared by hash, so leaving it claimed would make every later
+			// hold on a colliding fileId report the file as already reclaimed.
+			releaseReclaimClaim(storageInfo);
 			if (error) logger.debug?.('Error trying to remove blob file', error);
 		});
-	}, deletionDelay);
+	}
+	if (earliest !== Infinity) scheduleReclamation(earliest);
 }
 
 export function prepareBlobDeletion(object: any): () => void {
-	const filePaths: string[] = [];
+	const blobs: Blob[] = [];
 	findBlobsInObject(object, (blob) => {
-		const filePath = getFilePathForBlob(blob as any);
-		if (filePath) filePaths.push(filePath);
+		if (getFilePathForBlob(blob as any)) blobs.push(blob);
 	});
-	return () => filePaths.forEach(scheduleBlobFileDeletion);
+	return () => blobs.forEach(deleteBlob);
 }
-export function setDeletionDelay(delay: number) {
-	deletionDelay = delay;
+
+/**
+ * Test knob: the delay between a blob being superseded and its file being reclaimed. `undefined`
+ * restores the configured value.
+ */
+export function setDeletionDelay(delay: number | undefined) {
+	reclamationDelayOverride = delay;
 }
 export type BlobCreationOptions = {
 	type?: string; // the MIME type of the blob
@@ -1790,6 +2156,10 @@ addExtension({
 				throw new Error('Unable to save blob without file id');
 			}
 			storageInfo.recordId = encodeForStorageForRecordId;
+			// A record version being written now references this file, so any reclamation queued by an
+			// earlier supersession is void — the retain-on-update check in RecordEncoder only covers the
+			// write that supersedes, not a file already awaiting reclamation from a previous one.
+			cancelBlobReclamation(storageInfo);
 			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 		}
 		if (storageInfo) {
@@ -1987,6 +2357,13 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 			} catch (error) {
 				logger.error?.('Error searching audit log for references to potential orphaned blobs failed', error);
 			}
+		}
+		// A file inside its retention window is unreferenced by any live record — which is exactly what
+		// makes it look like an orphan — but it is deliberately still on disk for readers that resolved
+		// the superseded record. Sweeping it here would undo the retention. It is already queued for
+		// reclamation, so leaving it costs nothing.
+		for (const path of pathsToCheck) {
+			if (pendingReclamation.has(path)) pathsToCheck.delete(path);
 		}
 		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
 		orphansDeleted += pathsToCheck.size;

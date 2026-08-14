@@ -454,15 +454,22 @@ function countRecords(rawDbi): { records: number; unversioned: number } {
  * the RocksDB lock — run in-process (inspector) on a live instance, or offline.
  */
 export function verifyMigratedDatabase(databasePath: string): Record<string, { records: number; unversioned: number }> {
-	const rootStore = RocksDatabase.open(databasePath, {});
-	const dbisDb = RocksDatabase.open(databasePath, {
-		name: INTERNAL_DBIS_NAME,
-		sharedStructuresKey: Symbol.for('structures'),
-	});
+	// Every open handle, so a failure at any point (e.g. the second open throwing on lock
+	// contention) cannot leak an earlier handle that would hold the RocksDB lock on the very
+	// diagnostic path operators use after a broken migration.
+	const handles: RocksDatabase[] = [];
 	const report: Record<string, { records: number; unversioned: number }> = {};
 	try {
+		handles.push(RocksDatabase.open(databasePath, {}));
+		const dbisDb = RocksDatabase.open(databasePath, {
+			name: INTERNAL_DBIS_NAME,
+			sharedStructuresKey: Symbol.for('structures'),
+		});
+		handles.push(dbisDb);
 		for (const { key, value: attribute } of dbisDb.getRange({})) {
 			if (typeof key === 'symbol' || !attribute?.isPrimaryKey) continue;
+			// per-table handles close per-iteration so a many-table sweep does not hold every CF
+			// handle open at once; only the two pre-loop opens need the leak-safety array
 			const rawDbi = RocksDatabase.open(databasePath, { name: key, encoding: false });
 			try {
 				report[key] = countRecords(rawDbi);
@@ -471,8 +478,13 @@ export function verifyMigratedDatabase(databasePath: string): Record<string, { r
 			}
 		}
 	} finally {
-		dbisDb.close();
-		rootStore.close();
+		for (const handle of handles.reverse()) {
+			try {
+				handle.close();
+			} catch (error) {
+				console.error('Error closing verification store', error);
+			}
+		}
 	}
 	return report;
 }
