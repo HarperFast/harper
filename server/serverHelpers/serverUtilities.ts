@@ -42,6 +42,7 @@ import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
 import * as trustPolicyOperations from '../../security/oidcTrust/trustPolicyOperations.ts';
+import * as tokenExchange from '../../security/oidcTrust/tokenExchange.ts';
 import { contextStorage } from '../../resources/transaction.ts';
 import { isMainThread } from 'node:worker_threads';
 import {
@@ -253,7 +254,10 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 			!bypassAuth &&
 			json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
 			json.operation !== terms.OPERATIONS_ENUM.LOGIN &&
-			json.operation !== terms.OPERATIONS_ENUM.LOGOUT
+			json.operation !== terms.OPERATIONS_ENUM.LOGOUT &&
+			// Same rationale: the OIDC exchange authenticates its own caller (#2171), so there is no
+			// hdb_user for verifyPerms to check against.
+			json.operation !== terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN
 		) {
 			const functionToCheck = job_operation_function === undefined ? operation_function : job_operation_function;
 			const operation_json = json.search_operation ? json.search_operation : json;
@@ -587,6 +591,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.DROP_OIDC_TRUST,
 		new OperationFunctionObject(trustPolicyOperations.dropOidcTrust)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
+		new OperationFunctionObject(tokenExchange.exchangeOidcToken)
 	);
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,

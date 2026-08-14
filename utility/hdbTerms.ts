@@ -352,6 +352,7 @@ export const OPERATIONS_ENUM = {
 	ADD_OIDC_TRUST: 'add_oidc_trust',
 	LIST_OIDC_TRUST: 'list_oidc_trust',
 	DROP_OIDC_TRUST: 'drop_oidc_trust',
+	EXCHANGE_OIDC_TOKEN: 'exchange_oidc_token',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 	AGENT_PROMPT: 'agent_prompt',

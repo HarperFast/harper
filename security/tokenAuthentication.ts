@@ -246,6 +246,32 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 	return { operation_token: operationToken };
 }
 
+/**
+ * Signs a standalone operation token. No refresh token, no write to the user record.
+ *
+ * createTokens cannot serve this: it overwrites hdb_user.refresh_token as a side effect, silently
+ * revoking whatever credential that user already held (#2018). The OIDC exchange (#2171) exists so
+ * CI holds no durable credential at all, so minting one on its behalf would defeat the point.
+ *
+ * The caller is responsible for having established that the user exists, is active, and is entitled
+ * to this token — nothing here re-checks that.
+ */
+export async function createOperationToken(
+	user: { username: string; super_user: boolean },
+	expiresIn: StringValue
+): Promise<string> {
+	const keys: JWTRSAKeys = await getJWTRSAKeys();
+	return jwt.sign(
+		{ username: user.username, super_user: user.super_user },
+		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
+		{
+			expiresIn,
+			algorithm: RSA_ALGORITHM,
+			subject: TOKEN_TYPE.OPERATION,
+		} satisfies SignOptions
+	);
+}
+
 export async function validateOperationToken(token: string): Promise<any> {
 	return validateToken(token, TOKEN_TYPE.OPERATION);
 }

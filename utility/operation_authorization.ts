@@ -48,6 +48,7 @@ import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
 import * as trustPolicyOperations from '../security/oidcTrust/trustPolicyOperations.ts';
+import * as tokenExchange from '../security/oidcTrust/tokenExchange.ts';
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -374,6 +375,12 @@ requiredPermissions.set(
 requiredPermissions.set(
 	trustPolicyOperations.dropOidcTrust.name,
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_OIDC_TRUST)
+);
+// The exchange is unauthenticated by design — it authenticates its own caller against a trust
+// policy, the way create_authentication_tokens does against a password.
+requiredPermissions.set(
+	tokenExchange.exchangeOidcToken.name,
+	new (permission as any)(false, [], terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)
 );
 
 //Below are functions that are currently open to all roles
