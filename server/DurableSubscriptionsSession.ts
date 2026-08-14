@@ -426,10 +426,8 @@ class SubscriptionsSession {
 				if (!clientTerminated) {
 					const will = await getLastWill().get(this.sessionId);
 					if (will && !isWillFromExpiredScopedToken(will)) {
-						// A scoped will publishes under its own embedded role, not this.user: a later
-						// same-clientId session (possibly a different, more privileged principal) can read
-						// back the prior session's leftover will row, and it must not gain that principal's
-						// permissions. Non-scoped wills keep the existing behavior.
+						// A scoped will authorizes under its own embedded role, never the disconnecting
+						// session's user (which may be a later same-clientId reconnect).
 						const willContext = will.user?._scopedToken ? { ...context, user: will.user } : context;
 						await publishMessage(will, will.data, willContext);
 					}
