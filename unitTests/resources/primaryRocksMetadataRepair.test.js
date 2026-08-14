@@ -10,6 +10,7 @@ const fs = require('fs-extra');
 const { setupTestDBPath } = require('../testUtils');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { Packr } = require('msgpackr');
+const { ACTION_32_BIT } = require('#src/resources/auditStore');
 const { RecordEncoder, RecordObject, setNextEncoding } = require('#src/resources/RecordEncoder');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
@@ -67,5 +68,103 @@ describe('PrimaryRocksDatabase metadata repair (#2012)', function () {
 
 		const viaGet = store.getSync('legacy');
 		assert(viaGet instanceof RecordObject);
+	});
+});
+
+describe('PrimaryRocksDatabase raw-write versioning (#1762)', function () {
+	let dbPath, root, store, rawStore;
+
+	before(function () {
+		if (isLMDB) return this.skip();
+		dbPath = path.join(setupTestDBPath(), 'rocks-raw-write-versioning');
+		fs.removeSync(dbPath);
+		root = RocksDatabase.open(dbPath, {});
+		store = new PrimaryRocksDatabase(dbPath, {
+			name: 'RawWriteTest/',
+			encoder: { Encoder: RecordEncoder },
+			useVersions: true,
+			sharedStructuresKey: Symbol.for('structures'),
+		}).open();
+		store.initStore(root);
+		rawStore = RocksDatabase.open(dbPath, { name: 'RawWriteTest/', encoding: false });
+	});
+
+	after(function () {
+		rawStore?.close();
+		store?.close();
+		root?.close();
+	});
+
+	it('versions mixed-shape async raw puts before classic structure id 0x42 can collide', async function () {
+		for (let copy = 1; copy <= 2; copy++) {
+			await store.put(`failure-${copy}`, {
+				backend: 'unknown',
+				method: 'generate',
+				model: 'missing',
+				success: false,
+				error_code: 'backend_not_found',
+			});
+		}
+		for (let copy = 1; copy <= 2; copy++) {
+			await store.put(`generate-${copy}`, {
+				backend: 'deterministic',
+				method: 'generate',
+				model: 'probe',
+				success: true,
+				prompt_tokens: 1,
+				completion_tokens: 1,
+			});
+		}
+		for (let copy = 1; copy <= 2; copy++) {
+			await store.put(`stream-${copy}`, {
+				backend: 'deterministic',
+				method: 'generateStream',
+				model: 'probe',
+				success: true,
+			});
+		}
+
+		const bytes = rawStore.getBinarySync('stream-2');
+		assert.strictEqual(bytes.readUint32BE(8), ACTION_32_BIT << 24, 'raw write must include a zero flags word');
+		assert.strictEqual(
+			bytes[12],
+			0x42,
+			`precondition: stream shape must use classic structure id 0x42; bytes=${bytes.toString('hex')}`
+		);
+		assert.deepStrictEqual(
+			{ ...store.getSync('stream-2') },
+			{ backend: 'deterministic', method: 'generateStream', model: 'probe', success: true }
+		);
+		assert(store.getEntry('stream-2').version > 0);
+	});
+
+	it('uses a positional version verbatim for sync raw puts', function () {
+		const version = 1_800_000_000_000.25;
+		store.putSync('explicit-version', { source: 'legacy-call-shape' }, version, 123);
+		assert.strictEqual(store.getEntry('explicit-version').version, version);
+	});
+
+	it('does not replace metadata already staged by recordUpdater', function () {
+		const version = 1_800_000_000_001.5;
+		setNextEncoding(version, 0);
+		store.putSync('staged-version', { source: 'record-updater' }, { version });
+		assert.strictEqual(store.getEntry('staged-version').version, version);
+	});
+
+	it('clears wrapper metadata when a raw binary write bypasses the encoder', function () {
+		store.putSync('binary', { ['\x10binary-data\x02']: Buffer.from([1, 2, 3]) }, 123);
+		store.putSync('after-binary', { source: 'next-write' });
+		assert.notStrictEqual(store.getEntry('after-binary').version, 123);
+	});
+
+	it('clears wrapper metadata when the store rejects before encoding', function () {
+		const closed = new PrimaryRocksDatabase(dbPath, {
+			name: 'ClosedRawWriteTest/',
+			encoder: { Encoder: RecordEncoder },
+		});
+		closed.initStore(root);
+		assert.throws(() => closed.putSync('closed', { source: 'failure' }, 456), /Database not open/);
+		store.putSync('after-failure', { source: 'next-write' });
+		assert.notStrictEqual(store.getEntry('after-failure').version, 456);
 	});
 });

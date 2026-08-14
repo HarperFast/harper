@@ -133,6 +133,9 @@ let encodeForStorageForRecordId: number = undefined; // only enable encoding of 
 let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
+export function resetBlobsWereEncoded() {
+	blobsWereEncoded = false;
+}
 // the header is 8 bytes
 const DEFAULT_BLOB_READ_TIMEOUT = 20000;
 /**
