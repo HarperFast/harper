@@ -270,6 +270,25 @@ suite('Token authentication', (ctx) => {
 			.expect(403);
 	});
 
+	test('scoped token can invoke an explicitly-listed super_user-only operation (gate-2 delegation)', async () => {
+		// get_configuration is SU-only; listing it in operations is a deliberate admin grant, so the
+		// gate-2 bypass must allow it for this non-super_user scoped token.
+		const mint = await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				username: 'config-reader',
+				role: { permission: { operations: ['get_configuration'] } },
+			})
+			.expect(200);
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${mint.body.operation_token}`)
+			.send({ operation: 'get_configuration' })
+			.expect(200);
+	});
+
 	test('scoped token mint with an unknown operation name is rejected', async () => {
 		await client
 			.req()

@@ -526,12 +526,13 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 				},
 			},
 			// Long enough that the multi-step recheck phase below (add_role + add_user + sweep +
-			// delivery probe) completes well before expiry, so the survives-recheck assertion never
-			// races the expiry sweep.
-			expires_in: 10,
+			// delivery probe, up to ~8s) completes well before expiry, so the survives-recheck
+			// assertion never races the expiry sweep.
+			expires_in: 20,
 		});
 		strictEqual(tokenResp.status, 200, `scoped token issue failed: ${tokenResp.status} ${tokenResp.text}`);
 		const token = tokenResp.body?.operation_token;
+		const mintedAt = Date.now();
 		ok(token, 'expected a scoped operation_token');
 		strictEqual(tokenResp.body?.refresh_token, undefined, 'scoped token must not carry a refresh token');
 
@@ -572,9 +573,9 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 				'scoped subscription was wrongly re-resolved to the colliding hdb_user (terminated or substituted)'
 			);
 
-			// It must still expire with the token. The recheck phase above consumed several seconds of
-			// the 10s lifetime; sleep long enough to clear the remaining life plus a sweep interval.
-			await sleep(8000);
+			// It must still expire with the token. Anchor on the mint time so the recheck phase's
+			// variable duration can't leave us short: wait until well past the 20s lifetime + sweep.
+			await sleep(Math.max(0, mintedAt + 22000 - Date.now()));
 			const probe = stream.count();
 			await insert({ id: `r-${seq++}`, value: 'scoped-post-expiry' });
 			await sleep(1500);
