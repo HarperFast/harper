@@ -1904,7 +1904,7 @@ export function makeTable(options) {
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					// A tie is this transaction's own earlier, already-committed write when it is being applied
 					// in pieces (see DatabaseTransaction.partiallyCommitted) — program order, not a duplicate.
-					if (precedesExisting < 0 || (precedesExisting === 0 && !(context?.transaction as any)?.partiallyCommitted)) {
+					if (precedesExisting < 0 || (precedesExisting === 0 && !context?.transaction?.partiallyCommitted)) {
 						write.skipped = true;
 						return;
 					}
@@ -1956,8 +1956,7 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					// see the invalidate path above (same tie handling)
-					if (precedesExisting < 0 || (precedesExisting === 0 && !(context?.transaction as any)?.partiallyCommitted))
-						return;
+					if (precedesExisting < 0 || (precedesExisting === 0 && !context?.transaction?.partiallyCommitted)) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let newRecord = null;
@@ -2423,8 +2422,7 @@ export function makeTable(options) {
 					// earlier writes, which are committed rather than staged and so have no chain left (see
 					// DatabaseTransaction.partiallyCommitted). Only a tie can change here, so testing it first
 					// keeps both reads off the path an ordinary write takes.
-					if (precedesExisting === 0 && (priorStaged || (context?.transaction as any)?.partiallyCommitted))
-						precedesExisting = 1;
+					if (precedesExisting === 0 && (priorStaged || context?.transaction?.partiallyCommitted)) precedesExisting = 1;
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
 					const type = fullUpdate ? 'put' : 'patch';
 					let residencyId: number | undefined;
