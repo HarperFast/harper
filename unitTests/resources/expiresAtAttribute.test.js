@@ -5,7 +5,7 @@ const { table: createTable, closeDatabase, dropDatabase } = require('#src/resour
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { Transaction: RocksTransaction } = require('@harperfast/rocksdb-js');
 const { asBinary } = require('lmdb');
-const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
 const { existsSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
@@ -211,6 +211,12 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			cleanupScheduled: false,
 			expirationScheduled: false,
 		});
+		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000 });
+		assert.deepStrictEqual(Table.cleanupStateForTests(), {
+			closed: true,
+			cleanupScheduled: false,
+			expirationScheduled: false,
+		});
 		Table.resumeCleanup();
 		assert.deepStrictEqual(Table.cleanupStateForTests(), {
 			closed: false,
@@ -404,6 +410,36 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		Table.cleanup();
 	});
 
+	it('keeps a blob when eviction lacks the record and unlinks it after a committed eviction', async function () {
+		const Table = table({
+			table: 'ExpiresAtBlobFailSafe',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		const blob = createBlob(Buffer.alloc(20_000, 7));
+		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: blob });
+		await Table.primaryStore.committed;
+		const filePath = getFilePathForBlob(blob);
+		const entry = Table.primaryStore.getEntry(1);
+
+		await Table.evict(1, undefined, entry.version);
+		assert(Table.primaryStore.getEntry(1)?.value, 'eviction without the record must fail safe');
+		assert(existsSync(filePath), 'fail-safe eviction must keep the referenced blob');
+
+		setDeletionDelay(0);
+		try {
+			await Table.evict(1, entry.value, entry.version);
+			assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+			await waitFor(() => !existsSync(filePath), { message: 'committed eviction should unlink the blob' });
+		} finally {
+			setDeletionDelay(500);
+		}
+	});
+
 	it('preserves a blob record refreshed before its eviction transaction starts', async function () {
 		const Table = table({
 			table: 'ExpiresAtBlobRefreshRace',
@@ -543,6 +579,41 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			assert.strictEqual(closeResolved, false, 'close must wait for the active sweep');
 			releaseEviction();
 			await Promise.all([sweep, close]);
+		} finally {
+			releaseEviction();
+		}
+	});
+
+	it('cleanup drains the primary cleanup scan', async function () {
+		const Table = table({
+			table: 'PrimaryCleanupDrain',
+			database: 'test',
+			expiration: 1,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		await Table.put(1, { id: 1, payload: createBlob(Buffer.alloc(20_000, 11)) }, { expiresAt: Date.now() - 1_000 });
+		await Table.primaryStore.committed;
+
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		try {
+			const scan = Table.runPrimaryCleanupScanForTests({
+				beforeEvict: async () => {
+					evictionStarted = true;
+					await blockedEviction;
+				},
+			});
+			await waitFor(() => evictionStarted, { message: 'the primary cleanup scan should start eviction' });
+			let cleanupResolved = false;
+			const cleanup = Table.cleanup().then(() => (cleanupResolved = true));
+			await delay(10);
+			assert.strictEqual(cleanupResolved, false);
+			releaseEviction();
+			await Promise.all([scan, cleanup]);
 		} finally {
 			releaseEviction();
 		}

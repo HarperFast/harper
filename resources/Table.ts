@@ -440,10 +440,10 @@ export function makeTable(options) {
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
-	let cleanupTimer: NodeJS.Timeout;
+	let cleanupTimer: NodeJS.Timeout | undefined;
 	let cleanupClosed = false;
 	let cleanupWasScheduled = false;
-	let recordExpirationInterval: NodeJS.Timeout;
+	let recordExpirationInterval: NodeJS.Timeout | undefined;
 	let missingExpirationIndexReported = false;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
@@ -5332,8 +5332,14 @@ export function makeTable(options) {
 		static cleanup() {
 			deleteCallbackHandle?.remove();
 			cleanupClosed = true;
-			if (cleanupTimer) clearTimeout(cleanupTimer);
-			if (recordExpirationInterval) clearInterval(recordExpirationInterval);
+			if (cleanupTimer) {
+				clearTimeout(cleanupTimer);
+				cleanupTimer = undefined;
+			}
+			if (recordExpirationInterval) {
+				clearInterval(recordExpirationInterval);
+				recordExpirationInterval = undefined;
+			}
 			return Promise.all([lastEvictionCompletion, recordExpirationCompletion]).then(() => undefined);
 		}
 		static resumeCleanup() {
@@ -5348,6 +5354,9 @@ export function makeTable(options) {
 		}
 		static runRecordExpirationSweepForTests(testHooks?: ExpirationSweepTestHooks) {
 			return runRecordExpirationEviction(testHooks, false) ?? Promise.resolve();
+		}
+		static runPrimaryCleanupScanForTests(testHooks?: ExpirationSweepTestHooks) {
+			return (lastEvictionCompletion = lastEvictionCompletion.then(() => runPrimaryCleanupScan(testHooks)));
 		}
 		static cleanupStateForTests() {
 			return {
@@ -6447,6 +6456,79 @@ export function makeTable(options) {
 		};
 	}
 
+	async function runPrimaryCleanupScan(testHooks?: ExpirationSweepTestHooks): Promise<void> {
+		if (cleanupClosed) return;
+		const rootStore = primaryStore.rootStore;
+		if (rootStore.status !== 'open') return;
+		const operationTracker = createCleanupOperationTracker();
+		const evictThreshold =
+			Math.pow(cleanupPriority, 8) * (envMngr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_EVICTIONFACTOR) ?? 100000);
+		const adjustedEviction = evictionMs / Math.pow(Math.max(cleanupPriority, 1), 4);
+		logger.debug?.(
+			`Starting cleanup scan for ${tableName}, evict threshold ${evictThreshold}, adjusted eviction ${adjustedEviction}ms`
+		);
+		function shouldEvict(expiresAt: number, version: number, metadataFlags: number, record: any) {
+			const evictWhen = expiresAt + adjustedEviction - Date.now();
+			if (evictWhen < 0) return true;
+			if (cleanupPriority) {
+				let size = primaryStore.lastSize;
+				if (metadataFlags & HAS_BLOBS) {
+					findBlobsInObject(record, (blob) => {
+						if (blob.size) size += blob.size;
+					});
+				}
+				logger.trace?.(
+					`shouldEvict adjusted ${evictWhen} ${size}, ${(evictWhen * (expiresAt - version)) / size} < ${evictThreshold}`
+				);
+				return (evictWhen * (expiresAt - version)) / size < evictThreshold;
+			}
+			return false;
+		}
+
+		try {
+			let count = 0;
+			const removeDeletedRecords = !audit || isRocksDB;
+			const batcher = isRocksDB ? createEvictionBatcher(() => cleanupClosed, testHooks) : undefined;
+			for (const entry of primaryStore.getRange({
+				start: false,
+				snapshot: false,
+				versions: true,
+				lazy: true,
+			})) {
+				if (cleanupClosed) break;
+				const { key, value: record, version, expiresAt, metadataFlags } = entry;
+				let action: 'tombstone' | 'evict' | undefined;
+				if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
+					action = 'tombstone';
+				} else if (expiresAt != undefined && shouldEvict(expiresAt, version, metadataFlags, record)) {
+					action = 'evict';
+					count++;
+				}
+				if (action) {
+					if (batcher && !(action === 'evict' && metadataFlags & HAS_BLOBS)) {
+						await batcher.add({ type: action, key, version });
+					} else {
+						if (action === 'evict') await testHooks?.beforeEvict?.();
+						const resolution =
+							action === 'tombstone'
+								? removeEntry(primaryStore, entry, version)
+								: TableResource.evict(key, record, version);
+						if (resolution) {
+							const backpressure = operationTracker.add(resolution);
+							if (backpressure) await backpressure;
+						}
+					}
+				}
+				await rest();
+			}
+			if (batcher) await batcher.drain();
+			await operationTracker.drain();
+			logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
+		} catch (error) {
+			logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
+		}
+	}
+
 	function scheduleCleanup(priority?: number): Promise<void> | void {
 		if (cleanupClosed) return;
 		let runImmediately = false;
@@ -6483,89 +6565,14 @@ export function makeTable(options) {
 						() =>
 							(lastEvictionCompletion = lastEvictionCompletion.then(async () => {
 								if (cleanupClosed) return;
-								// schedule the next run for when the next cleanup interval should occur (or now if it is in the past)
-								startNextTimer(Math.max(nextScheduled + cleanupInterval, Date.now()));
-								const rootStore = primaryStore.rootStore;
-								if (rootStore.status !== 'open') {
-									clearTimeout(cleanupTimer);
+								if (primaryStore.rootStore.status !== 'open') {
+									if (cleanupTimer) clearTimeout(cleanupTimer);
+									cleanupTimer = undefined;
 									return;
 								}
-								const operationTracker = createCleanupOperationTracker();
-								const evictThreshold =
-									Math.pow(cleanupPriority, 8) *
-									(envMngr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_EVICTIONFACTOR) ?? 100000);
-								const adjustedEviction = evictionMs / Math.pow(Math.max(cleanupPriority, 1), 4);
-								logger.debug?.(
-									`Starting cleanup scan for ${tableName}, evict threshold ${evictThreshold}, adjusted eviction ${adjustedEviction}ms`
-								);
-								function shouldEvict(expiresAt: number, version: number, metadataFlags: number, record: any) {
-									const evictWhen = expiresAt + adjustedEviction - Date.now();
-									if (evictWhen < 0) return true;
-									else if (cleanupPriority) {
-										let size = primaryStore.lastSize;
-										if (metadataFlags & HAS_BLOBS) {
-											findBlobsInObject(record, (blob) => {
-												if (blob.size) size += blob.size;
-											});
-										}
-										logger.trace?.(
-											`shouldEvict adjusted ${evictWhen} ${size}, ${(evictWhen * (expiresAt - version)) / size} < ${evictThreshold}`
-										);
-										// heuristic to determine if we should perform early eviction based on priority
-										return (evictWhen * (expiresAt - version)) / size < evictThreshold;
-									}
-									return false;
-								}
-
-								try {
-									let count = 0;
-									let removeDeletedRecords = !audit || isRocksDB;
-									// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
-									// the per-record commit cost; LMDB keeps the per-record path (eventTurnBatching already
-									// coalesces async writes per event turn).
-									const batcher = isRocksDB ? createEvictionBatcher(() => cleanupClosed) : undefined;
-									// iterate through all entries to find expired records and deleted records
-									for (const entry of primaryStore.getRange({
-										start: false,
-										snapshot: false, // we don't want to keep read transaction snapshots open
-										versions: true,
-										lazy: true, // only want to access metadata most of the time
-									})) {
-										if (cleanupClosed) break;
-										const { key, value: record, version, expiresAt, metadataFlags } = entry;
-										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
-										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
-										let action: 'tombstone' | 'evict' | undefined;
-										if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
-											action = 'tombstone';
-										} else if (expiresAt != undefined && shouldEvict(expiresAt, version, metadataFlags, record)) {
-											action = 'evict';
-											count++;
-										}
-										if (action) {
-											// Blob-bearing records delete their blob files as a non-transactional side effect, so
-											// they stay on the per-record evict() path that preserves the existing blob/commit ordering.
-											if (batcher && !(action === 'evict' && metadataFlags & HAS_BLOBS)) {
-												await batcher.add({ type: action, key, version });
-											} else {
-												const resolution =
-													action === 'tombstone'
-														? removeEntry(primaryStore, entry, version)
-														: TableResource.evict(key, record, version);
-												if (resolution) {
-													const backpressure = operationTracker.add(resolution);
-													if (backpressure) await backpressure;
-												}
-											}
-										}
-										await rest();
-									}
-									if (batcher) await batcher.drain();
-									await operationTracker.drain();
-									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
-								} catch (error) {
-									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
-								}
+								// schedule the next run for when the next cleanup interval should occur (or now if it is in the past)
+								startNextTimer(Math.max(nextScheduled + cleanupInterval, Date.now()));
+								await runPrimaryCleanupScan();
 								resolve(undefined);
 								cleanupPriority = 0; // reset the priority
 							})),
