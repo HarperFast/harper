@@ -190,24 +190,28 @@ System tables replicate by default. To opt out, add the name to `NON_REPLICATING
 
 If the table needs `audit: true`, set it both in the schema (for fresh installs) **and** on the `CreateTableObject` instance in the directive (for upgrades) — otherwise the two paths diverge.
 
-## OIDC trusted publishing (`security/oidcTrust/`)
+## OIDC trusted publishing (`security/authn/oidc/`)
 
-`exchange_oidc_token` lets a CI runner authenticate with no stored Harper credential (#2171): it presents an identity token minted by its provider, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [])` registration).
+`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [])` registration).
 
-The layering is deliberate and worth preserving:
+**The core is issuer-agnostic; everything issuer-specific lives in `providers/`.** That split is the point of the layout, not an accident of it — a new workload-identity issuer should be a profile, not a change to verification, matching, or storage.
 
-- `claims.ts` is pure — normalization, matching, and write-time policy validation. It never touches the network or storage, so the rules that decide whether a workflow may act as a user are directly testable.
-- `jwks.ts` owns issuer keys. The rate-limit clock for unknown-`kid` refetches lives _outside_ the cache entry: a successful fetch replaces the entry, and a rate limit that resets whenever it fires is not a rate limit. Keeping it separate also means a genuine key rotation is picked up on first use rather than after the window.
-- `identityToken.ts` verifies signature/issuer/audience and additionally requires `exp`, a bounded lifetime, and `jti`. It also owns `rejectToken`, shared with the exchange so both halves refuse identically.
-- `tokenExchange.ts` selects a policy and mints. Verification is memoized per audience, so N policies sharing one audience cost one signature check.
+- `claims.ts` — matching and constraint _shape_ validation. Knows nothing about any issuer.
+- `jwks.ts` — issuer keys. The rate-limit clock for unknown-`kid` refetches lives _outside_ the cache entry: a successful fetch replaces the entry, and a rate limit that resets whenever it fires is not a rate limit. Keeping it separate also means a genuine key rotation is picked up on first use rather than after the window.
+- `identityToken.ts` — signature, issuer, audience, `exp`, and a bounded lifetime. Owns `rejectToken`, shared with the exchange so both halves refuse identically.
+- `tokenExchange.ts` — policy selection, replay, minting, audit. Verification is memoized per audience, so N policies sharing one cost one signature check.
+- `providers/` — `assertPolicyIsSpecific` / `assertAudienceIsSpecific` / `normalizeClaims` / `describePrincipal` / optional `vetoClaims`, resolved by normalized issuer.
 
-Three constraints that look like choices but are not:
+**An unregistered issuer gets `providers/generic.ts`, which is strict rather than permissive:** the policy must pin `sub`. That is what makes Kubernetes service accounts, GCP service accounts, and SPIFFE SVIDs work with zero provider code — each has a stable canonical subject. GitHub needs its own profile precisely because its `sub` is the one claim you should _not_ pin: it varies by trigger, and its format changed for repositories created after 2026-07-15.
+
+Four constraints that look like choices but are not:
 
 1. **Every rejection returns the same message.** The endpoint is unauthenticated; a caller told which check failed can enumerate a policy one claim at a time. Reasons go to the `oidc-trust` logger.
-2. **A policy must gate the ref.** `validateTrustPolicyClaims` rejects a policy pinning only repository + workflow, because anyone who can push a branch could then add that workflow to it and mint a token. This is stricter than npm's trusted-publishing model, which mitigates the same hole with environment protection instead.
+2. **A GitHub policy must gate the ref.** `githubActionsProfile.assertPolicyIsSpecific` rejects a policy pinning only repository + workflow, because anyone who can push a branch could then add that workflow to it and mint a token. Stricter than npm's trusted-publishing model, which mitigates the same hole with environment protection instead — and profile-scoped, so it never constrains another issuer.
 3. **`createOperationToken`, not `createTokens`.** `createTokens` overwrites `hdb_user.refresh_token` as a side effect, so minting for CI would silently revoke whatever credential that user already held (#2018) — the exact problem this feature removes.
+4. **No per-policy operation allowlist.** Least privilege is the role of the user the policy names. A second authorization mechanism beside roles is one more place for the two to disagree, and Harper's existing `permission.operations` is not purely narrowing — gate 2 in `operation_authorization.ts` treats an explicit listing of an SU-only operation as a deliberate grant, so a naive reuse could _widen_ rather than narrow.
 
-`hdb_oidc_token_use` (created lazily via `table()`, not the system schema) records spent `jti`s with `expiresAt` set past the token's own expiry. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
+`hdb_oidc_token_use` (created lazily via `table()`, not the system schema) records spent tokens keyed on a SHA-256 of the token itself, with `expiresAt` past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token rather than `jti` because not every issuer emits one (Azure uses `uti`) and a replayed token is byte-identical by definition. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
 
 ## Table drops, the `dropping` tombstone, and ghost tables
 

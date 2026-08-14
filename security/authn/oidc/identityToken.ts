@@ -8,10 +8,10 @@
 
 import jwt, { type Algorithm, type JwtPayload } from 'jsonwebtoken';
 import type { KeyObject } from 'node:crypto';
-import { ClientError } from '../../utility/errors/hdbError.ts';
-import { loggerWithTag } from '../../utility/logging/logger.ts';
+import { ClientError } from '../../../utility/errors/hdbError.ts';
+import { loggerWithTag } from '../../../utility/logging/logger.ts';
 import { getSigningKey as defaultGetSigningKey, normalizeIssuer } from './jwks.ts';
-import { normalizeTokenClaims } from './claims.ts';
+import { profileForIssuer } from './providers/index.ts';
 import type { TokenClaims } from './types.ts';
 
 const logger = loggerWithTag('oidc-trust');
@@ -101,8 +101,8 @@ export async function verifyIdentityToken(
 	if (typeof payload.iat === 'number' && payload.exp - payload.iat > MAX_TOKEN_LIFETIME_SECONDS) {
 		rejectToken(`token lifetime exceeds ${MAX_TOKEN_LIFETIME_SECONDS}s`);
 	}
-	// A token we cannot identify is one the exchange cannot replay-protect.
-	if (typeof payload.jti !== 'string' || payload.jti === '') rejectToken('token has no jti claim');
+	// No `jti` requirement: not every issuer emits one (Azure uses `uti`, others omit it), and the
+	// exchange keys replay on a hash of the token itself, which is universal.
 
-	return normalizeTokenClaims(payload as TokenClaims);
+	return profileForIssuer(issuer).normalizeClaims(payload as TokenClaims);
 }

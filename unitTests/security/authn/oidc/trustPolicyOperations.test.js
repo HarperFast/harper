@@ -5,7 +5,7 @@
 // without stubs.
 
 const assert = require('node:assert');
-const testUtils = require('../../testUtils.js');
+const testUtils = require('../../../testUtils.js');
 testUtils.preTestPrep();
 
 const {
@@ -13,7 +13,7 @@ const {
 	listOidcTrust,
 	dropOidcTrust,
 	loadEnabledPolicies,
-} = require('#src/security/oidcTrust/trustPolicyOperations');
+} = require('#src/security/authn/oidc/trustPolicyOperations');
 const { databases } = require('#src/resources/databases');
 const { setUsersWithRolesCache } = require('#src/security/user');
 const terms = require('#src/utility/hdbTerms');
@@ -92,7 +92,7 @@ function validPolicy(overrides = {}) {
 	};
 }
 
-describe('oidcTrust trustPolicyOperations', () => {
+describe('oidc trustPolicyOperations', () => {
 	let installed;
 
 	beforeEach(async () => {

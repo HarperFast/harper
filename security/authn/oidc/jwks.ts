@@ -8,8 +8,8 @@
  */
 
 import { createPublicKey, type KeyObject } from 'node:crypto';
-import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
+import { loggerWithTag } from '../../../utility/logging/logger.ts';
+import { ClientError, ServerError } from '../../../utility/errors/hdbError.ts';
 
 const logger = loggerWithTag('oidc-trust');
 

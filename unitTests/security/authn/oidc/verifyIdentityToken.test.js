@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const { generateKeyPairSync, createPublicKey } = require('node:crypto');
 const jwt = require('jsonwebtoken');
-const { verifyIdentityToken } = require('#src/security/oidcTrust/identityToken');
+const { verifyIdentityToken } = require('#src/security/authn/oidc/identityToken');
 
 const ISSUER = 'https://token.actions.githubusercontent.com';
 const AUDIENCE = 'https://my-instance.harperdb.io:9925/';
@@ -139,10 +139,13 @@ describe('verifyIdentityToken', () => {
 		await assertRejected(sign(claimsFor({ exp: NOW_SECONDS + 86_400 })));
 	});
 
-	// Without a jti the exchange cannot record the token as spent, so it cannot be replay-protected.
-	it('rejects a token with no jti claim', async () => {
+	// Replay is keyed on a hash of the token itself, so `jti` is not required — which is what lets
+	// issuers that use `uti` (Azure) or omit it entirely work with no provider code.
+	it('accepts a token with no jti claim', async () => {
 		const { jti: _jti, ...withoutJti } = claimsFor();
-		await assertRejected(sign(withoutJti));
+		const claims = await verify(sign(withoutJti));
+		assert.strictEqual(claims.repository_id, '67890');
+		assert.strictEqual(claims.jti, undefined);
 	});
 
 	it('rejects a token whose kid is unknown to the key lookup', async () => {

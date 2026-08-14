@@ -6,7 +6,7 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
-import { ciIdentityAvailable, exchangeCiIdentityForToken } from './ciIdentityToken.ts';
+import { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } from './workloadIdentity.ts';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
@@ -822,12 +822,12 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 			if (tokens.operation_token) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
-		} else if (ciIdentityAvailable()) {
+		} else if (workloadIdentityAvailable()) {
 			// Last credential source: no configured token, but this runner can prove its identity to
 			// the cluster directly (#2171). Deliberately below the env-var and saved tokens — an
 			// explicitly configured credential should keep working exactly as it did when someone adds
 			// `id-token: write` to a workflow, rather than silently switching which identity deploys.
-			const operationToken = await exchangeCiIdentityForToken(options, target.resolvedTarget);
+			const operationToken = await exchangeWorkloadIdentityForToken(options, target.resolvedTarget);
 			if (operationToken) options.headers.Authorization = `Bearer ${operationToken}`;
 		}
 	}

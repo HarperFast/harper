@@ -2,13 +2,13 @@
 
 const assert = require('node:assert');
 const { generateKeyPairSync, createPublicKey } = require('node:crypto');
-const { getSigningKey, normalizeIssuer, clearJwksCache } = require('#src/security/oidcTrust/jwks');
+const { getSigningKey, normalizeIssuer, clearJwksCache } = require('#src/security/authn/oidc/jwks');
 
 const ISSUER = 'https://token.actions.githubusercontent.com';
 const JWKS_URI = 'https://token.actions.githubusercontent.com/.well-known/jwks';
 const DISCOVERY_URI = ISSUER + '/.well-known/openid-configuration';
 
-describe('oidcTrust jwks', () => {
+describe('oidc jwks', () => {
 	describe('normalizeIssuer', () => {
 		it('drops a trailing slash so one issuer is one cache entry', () => {
 			assert.strictEqual(normalizeIssuer(ISSUER + '/'), ISSUER);
