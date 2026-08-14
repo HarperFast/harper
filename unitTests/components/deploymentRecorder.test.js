@@ -520,6 +520,7 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		assert.strictEqual(ambientTransaction.timeoutBudget, undefined);
 		assert.strictEqual(writeContexts.length, 2);
 		assert.ok(writeContexts.every((context) => context.transaction));
+		assert.notStrictEqual(writeContexts[0].transaction, writeContexts[1].transaction);
 		assert.ok(writeContexts.every((context) => context.transaction !== ambientTransaction));
 	});
 
