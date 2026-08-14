@@ -442,6 +442,40 @@ module.exports = {
  * @param operation - The operation specified in the call.
  * @returns {null | PermissionResponseObject} - null if permissions match, errors returned in the PermissionResponseObject
  */
+/**
+ * Token-scoped narrowing: a minted operation token may carry a subset of what its user's role allows,
+ * so one credential can be handed out with less authority than the user has (an OIDC trust policy
+ * uses this to scope a single workflow). Returns a denial, or undefined when the scope permits — or
+ * when there is no scope, which is every token minted before this existed.
+ *
+ * Shared by verifyPerms AND verifyPermsAST, and called first in both. Three ways this gets bypassed
+ * if it moves:
+ *
+ * 1. `sql` dispatches to verifyPermsAST, in a branch mutually exclusive with the verifyPerms call
+ *    (server/serverHelpers/serverUtilities.ts). A gate in only one of them means a token scoped to
+ *    `get_status` can still run arbitrary SQL against whatever its role can reach.
+ * 2. Both functions `return null` early for a super_user — the identity that most needs constraining.
+ * 3. verifyPerms' `operations` gate 2 also returns null, treating an explicit listing of an SU-only
+ *    operation as a deliberate grant.
+ *
+ * It can only subtract. The scope is deliberately NOT merged into `permission.operations`, because
+ * that field is not purely narrowing (see gate 2) — merging into it could widen instead.
+ */
+function tokenScopeDenial(userObject: any, opApiName: string) {
+	// `!= null`, not `!== undefined`: an unscoped policy stores `operations: null`, and expanding a
+	// null would throw rather than fall through to the role.
+	const tokenOperations = userObject?.tokenOperations;
+	if (tokenOperations == null) return undefined;
+
+	const scopedOps =
+		userObject._expandedTokenOperations ??
+		(userObject._expandedTokenOperations = expandOperationsPerms(tokenOperations));
+	if (scopedOps.has(opApiName)) return undefined;
+
+	harperLogger.info(`Operation '${opApiName}' is outside the scope of the presented token`);
+	return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
+}
+
 export function verifyPermsAST(ast, userObject, operation) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
@@ -456,6 +490,13 @@ export function verifyPermsAST(ast, userObject, operation) {
 		harperLogger.info('verify_perms_ast has a null operation parameter');
 		throw handleHDBError(new Error());
 	}
+
+	// `operation` here is the SQL statement variant (select/insert/...), not the API operation, so the
+	// scope is checked against `sql` — the operation the caller actually invoked. Ahead of the AST
+	// parsing below as well as the super_user bypass: a denied scope should not parse attacker SQL.
+	const scopeDenial = tokenScopeDenial(userObject, terms.OPERATIONS_ENUM.SQL);
+	if (scopeDenial) return scopeDenial;
+
 	try {
 		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
 		const bucket = bucketModule.default || bucketModule;
@@ -582,30 +623,8 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 
 	const permsResponse = new PermissionResponseObject();
 
-	// Token-scoped narrowing: a minted operation token may carry a subset of what its user's role
-	// allows, so one credential can be handed out with less authority than the user has (an OIDC
-	// trust policy uses this to scope a single workflow).
-	//
-	// Deliberately the FIRST authorization check in this function. Both the super_user bypass and the
-	// `operations` gate-2 grant below `return null` early, so a narrowing check placed after either
-	// would be silently bypassable by exactly the identities it most needs to constrain.
-	//
-	// It can only subtract. The scope is never merged into `permission.operations`, because that field
-	// is not purely narrowing — gate 2 treats an explicit listing of an SU-only operation as a
-	// deliberate grant, so merging into it could widen instead.
-	// `!= null`, not `!== undefined`: an unscoped policy stores `operations: null`, and expanding a
-	// null would throw rather than fall through to the role.
-	const tokenOperations = requestJson.hdb_user?.tokenOperations;
-	if (tokenOperations != null) {
-		const scopedOps =
-			requestJson.hdb_user._expandedTokenOperations ??
-			(requestJson.hdb_user._expandedTokenOperations = expandOperationsPerms(tokenOperations));
-		const opApiName = requiredPermissions.get(op)?.api_name ?? op;
-		if (!scopedOps.has(opApiName)) {
-			harperLogger.info(`Operation '${opApiName}' is outside the scope of the presented token`);
-			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
-		}
-	}
+	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, requiredPermissions.get(op)?.api_name ?? op);
+	if (scopeDenial) return scopeDenial;
 
 	if (
 		commonUtils.isEmptyOrZeroLength(requestJson.hdb_user?.role) ||
