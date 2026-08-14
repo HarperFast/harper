@@ -8,6 +8,8 @@ const { setAuditRetention } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const {
+	blobFileMissingOrIncomplete,
+	repairBlobFile,
 	getFilePathForBlob,
 	setDeletionDelay,
 	holdBlobFile,
@@ -36,6 +38,7 @@ const {
 	openSync,
 	writeSync,
 	ftruncateSync,
+	readFileSync,
 	closeSync,
 	statSync,
 	truncateSync,
@@ -1629,6 +1632,123 @@ describe('shouldDestroyIdleBlobSource (paused-source progress gate)', () => {
 		// pipeline that never drains — the 19h prerender blob-replication wedge. Must be torn down.
 		assert.strictEqual(shouldDestroyIdleBlobSource(true, 1024, 1024), true);
 		assert.strictEqual(shouldDestroyIdleBlobSource(true, 0, 0), true);
+	});
+});
+
+describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-pro#699)', () => {
+	let BlobRepairTest;
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		BlobRepairTest = table({
+			table: 'BlobRepairTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	// Create a saved, file-backed blob and return { blob, filePath }.
+	async function savedBlob(id) {
+		const blob = await createBlob(Readable.from(randomBytes(25000)));
+		await BlobRepairTest.put({ id, blob });
+		const record = await BlobRepairTest.get(id);
+		const filePath = getFilePathForBlob(record.blob);
+		assert.ok(filePath && existsSync(filePath));
+		return { blob: record.blob, filePath };
+	}
+	function stampHeaderType(filePath, type) {
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, Buffer.from([0, type]), 0, 2, 0);
+		} finally {
+			closeSync(fd);
+		}
+	}
+
+	it('reports an intact saved blob as complete', async () => {
+		const { blob } = await savedBlob('intact');
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+	});
+
+	it('reports a missing backing file', async () => {
+		const { blob, filePath } = await savedBlob('missing');
+		unlinkSync(filePath);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports a PENDING-stamped stub (aborted re-streamable receive, harper-pro#481)', async () => {
+		const { blob, filePath } = await savedBlob('pending');
+		stampHeaderType(filePath, 0xfe);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports an ERROR-stamped stub (same classification as the repair sweep)', async () => {
+		const { blob, filePath } = await savedBlob('errstub');
+		stampHeaderType(filePath, 0xff);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports a file truncated below its header', async () => {
+		const { blob, filePath } = await savedBlob('short');
+		const fd = openSync(filePath, 'r+');
+		try {
+			ftruncateSync(fd, 4);
+		} finally {
+			closeSync(fd);
+		}
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports an uncompressed file shorter than its header claims', async () => {
+		const { blob, filePath } = await savedBlob('torn');
+		const fd = openSync(filePath, 'r+');
+		try {
+			ftruncateSync(fd, statSync(filePath).size - 1);
+		} finally {
+			closeSync(fd);
+		}
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports a save that never completed (pre-completion size sentinel)', async () => {
+		const { blob, filePath } = await savedBlob('sentinel');
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, Buffer.from([0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), 0, 8, 0);
+		} finally {
+			closeSync(fd);
+		}
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('returns undefined for a blob with no repair question to answer (unsaved/inline)', async () => {
+		const blob = await createBlob(Readable.from(randomBytes(64)));
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), undefined);
+	});
+
+	it('repairBlobFile streams replacement bytes INTO the existing fileId of a damaged blob', async () => {
+		const { blob, filePath } = await savedBlob('repair-target');
+		const original = readFileSync(filePath);
+		stampHeaderType(filePath, 0xfe); // PENDING stub: the dangling state harper-pro#699 heals
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+		const saving = repairBlobFile(blob, Readable.from(original.subarray(8)));
+		assert.ok(saving, 'repair should start on a damaged blob');
+		await saving;
+		assert.strictEqual(getFilePathForBlob(blob), filePath); // same fileId — record needs no rewrite
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+		assert.deepStrictEqual(readFileSync(filePath).subarray(8), original.subarray(8));
+	});
+
+	it('repairBlobFile declines on a healthy blob', async () => {
+		const { blob } = await savedBlob('repair-healthy');
+		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(16))), undefined);
+	});
+
+	it('repairBlobFile declines on an unsaved blob', async () => {
+		const blob = await createBlob(Readable.from(randomBytes(64)));
+		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(16))), undefined);
 	});
 });
 
