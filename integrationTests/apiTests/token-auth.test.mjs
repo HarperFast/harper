@@ -281,4 +281,82 @@ suite('Token authentication', (ctx) => {
 			.expect((r) => assert.ok(r.text.includes('totally_fake_op'), r.text))
 			.expect(400);
 	});
+
+	test('scoped token allowlist is enforced on the SQL path', async () => {
+		// operations includes sql (via read_only) → SELECT allowed
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({ operation: 'sql', sql: `SELECT * FROM ${SCHEMA}.${TABLE} WHERE ${PRIMARY_KEY} = 1` })
+			.expect((r) => assert.equal(r.body.length, 1, r.text))
+			.expect(200);
+
+		// operations without sql → SQL denied even though table CRUD perms would allow the read
+		const noSqlMint = await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				username: 'no-sql-service',
+				role: {
+					permission: {
+						operations: ['search_by_hash'],
+						[SCHEMA]: {
+							tables: {
+								[TABLE]: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+			})
+			.expect(200);
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${noSqlMint.body.operation_token}`)
+			.send({ operation: 'sql', sql: `SELECT * FROM ${SCHEMA}.${TABLE} WHERE ${PRIMARY_KEY} = 1` })
+			.expect((r) => assert.ok(r.text.includes('not permitted'), r.text))
+			.expect(403);
+	});
+
+	test('an expired scoped token stops working through the authorization cache', async () => {
+		const mintResponse = await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				username: 'short-lived',
+				role: {
+					permission: {
+						operations: ['read_only'],
+						[SCHEMA]: {
+							tables: {
+								[TABLE]: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+				expires_in: '2s',
+			})
+			.expect(200);
+		const shortToken = mintResponse.body.operation_token;
+		const search = () =>
+			request(client.operationsURL)
+				.post('')
+				.set('Content-Type', 'application/json')
+				.set('Authorization', `Bearer ${shortToken}`)
+				.send({
+					operation: 'search_by_hash',
+					schema: SCHEMA,
+					table: TABLE,
+					primary_key: PRIMARY_KEY,
+					hash_values: [1],
+					get_attributes: ['*'],
+				});
+		// first use validates and populates the authorization cache; second proves the cached path
+		await search().expect(200);
+		await search().expect(200);
+		await new Promise((resolve) => setTimeout(resolve, 2500));
+		// expiry must be exact even for a cached identity, and must reject — not act as anonymous
+		await search().expect(401);
+	});
 });

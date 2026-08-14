@@ -256,6 +256,22 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 			// path. This changes no outcome today — the branch that would act on the denial is dead
 			// (#2202) — but #2202 needs an unforgeable carrier before making it live.
 			if (!bypassAuth) {
+				// The SQL path never reaches verifyPerms, so the role `operations` allowlist must be
+				// enforced here — otherwise an allowlisted role reaches unlisted operations via `sql`.
+				// json.operation is already the API name ('sql', or the outer job op like 'export_local').
+				const allowlistDenial = opAuth.verifyOperationsAllowlist(json, json.operation);
+				if (allowlistDenial) {
+					operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+					operationLog.warn(`User '${json.hdb_user?.username}' is not permitted to ${json.operation}`);
+					throw handleHDBError(
+						new Error(),
+						allowlistDenial,
+						hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						undefined,
+						true
+					);
+				}
 				// `json.operation` explicitly — the operation this dispatch already resolved, not a
 				// field read back off the request body.
 				const astPermCheck = sql.checkASTPermissions(json, parsedSqlObject, json.operation);

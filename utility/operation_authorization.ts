@@ -430,6 +430,7 @@ requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new (permission as any)
 module.exports = {
 	verifyPerms,
 	verifyPermsAST,
+	verifyOperationsAllowlist,
 	verifyBulkLoadAttributePerms,
 	registerOperationPermission,
 	unregisterOperationPermission,
@@ -630,6 +631,28 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
  * @param operation - The name of the operation specified in the request.
  * @returns { null | PermissionResponseObject } - null if permissions match, errors are consolidated into PermissionResponseObj.
  */
+/**
+ * Gate 1 of the role `operations` allowlist, callable from every authorization path. The SQL path
+ * (chooseOperation → checkASTPermissions) never reaches verifyPerms, so it must call this
+ * directly — otherwise an allowlisted role could reach unlisted operations through `sql`.
+ * Returns null when allowed (or no allowlist present), a PermissionResponseObject denial otherwise.
+ */
+export function verifyOperationsAllowlist(requestJson: any, operationFunctionName: string) {
+	const rolePermission = requestJson.hdb_user?.role?.permission;
+	const allowedOperationsList = rolePermission?.operations;
+	if (allowedOperationsList === undefined) return null;
+	// _expandedOperations is pre-built at cache-load time (O(1) lookup).
+	// Fall back to on-demand expansion for inline-asserted roles (e.g. impersonation via hdb_user in body).
+	const allowedOps = rolePermission._expandedOperations ?? expandOperationsPerms(allowedOperationsList);
+	// operationFunctionName is the internal camelCase function name; allowedOps contains snake_case
+	// API names. Resolve via the api_name stored on the permission entry (set at registration time).
+	const opApiName = requiredPermissions.get(operationFunctionName)?.api_name ?? operationFunctionName;
+	if (!allowedOps.has(opApiName)) {
+		return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
+	}
+	return null;
+}
+
 export function verifyPerms(requestJson: any, operation: any, options?: { apiOperation?: string }) {
 	if (
 		requestJson === null ||
@@ -684,19 +707,9 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// (super_user, structure_user, system-table allowances) — otherwise a role combining one of
 	// those flags with a restrictive allowlist could reach ops outside its list. Gate 2 (the
 	// SU-only-op bypass for explicitly listed ops) stays below, after the ambient privilege checks.
-	const rolePermission = requestJson.hdb_user?.role?.permission;
-	const allowedOperationsList = rolePermission?.operations;
-	if (allowedOperationsList !== undefined) {
-		// _expandedOperations is pre-built at cache-load time (O(1) lookup).
-		// Fall back to on-demand expansion for inline-asserted roles (e.g. impersonation via hdb_user in body).
-		const allowedOps = rolePermission._expandedOperations ?? expandOperationsPerms(allowedOperationsList);
-		// op is the internal camelCase function name; allowedOps contains snake_case API names.
-		// Resolve via the api_name stored on the permission entry (set at registration time).
-		const opApiName = requiredPermissions.get(op)?.api_name ?? op;
-		if (!allowedOps.has(opApiName)) {
-			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
-		}
-	}
+	const allowlistDenial = verifyOperationsAllowlist(requestJson, op);
+	if (allowlistDenial) return allowlistDenial;
+	const allowedOperationsList = requestJson.hdb_user?.role?.permission?.operations;
 
 	const isSuperUser = !!requestJson.hdb_user?.role?.permission?.super_user;
 	const structureUser = requestJson.hdb_user?.role?.permission?.structure_user;

@@ -13,6 +13,13 @@ module.exports = {
 const rolePermsMap = Object.create(null);
 const permsTemplateObj = (permsKey) => ({ key: permsKey, perms: {} });
 
+// Synthetic roles (impersonation/scoped tokens, names prefixed '_' by syntheticRoleName) have
+// content-derived names, so their population is unbounded — they get their own LRU-bounded map
+// instead of the permanent rolePermsMap, or minting many distinct permission sets would grow a
+// per-worker memo that is never freed.
+const MAX_SYNTHETIC_ROLE_ENTRIES = 256;
+const syntheticRolePermsMap = new Map();
+
 const schemaPermsTemplate = (describePerm = false) => ({
 	describe: describePerm,
 	tables: {},
@@ -80,6 +87,23 @@ function getRolePermissions(role) {
 		// schema - if either have changed since the last time the function was called for the role, we re-run the
 		// translation to get an updated permissions set
 		const permsKey = JSON.stringify([role['__updatedtime__'], nonSysSchema]);
+
+		if (roleName.startsWith('_')) {
+			const cached = syntheticRolePermsMap.get(roleName);
+			if (cached && cached.key === permsKey) {
+				// re-insert to refresh LRU recency
+				syntheticRolePermsMap.delete(roleName);
+				syntheticRolePermsMap.set(roleName, cached);
+				return cached.perms;
+			}
+			const newRolePerms = translateRolePermissions(role, nonSysSchema);
+			syntheticRolePermsMap.delete(roleName);
+			syntheticRolePermsMap.set(roleName, { key: permsKey, perms: newRolePerms });
+			if (syntheticRolePermsMap.size > MAX_SYNTHETIC_ROLE_ENTRIES) {
+				syntheticRolePermsMap.delete(syntheticRolePermsMap.keys().next().value);
+			}
+			return newRolePerms;
+		}
 
 		//If key exists already, we can return the cached value
 		if (rolePermsMap[roleName] && rolePermsMap[roleName].key === permsKey) {

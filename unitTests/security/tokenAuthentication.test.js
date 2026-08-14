@@ -795,14 +795,15 @@ describe('test scoped tokens (inline role object)', () => {
 		assert.notDeepStrictEqual(error, undefined);
 	});
 
-	it('oversized permission object is rejected at mint', async () => {
+	it('a permission object producing an oversized token is rejected at mint', async () => {
 		let error;
 		try {
-			await mint({ role: { permission: { operations: ['read_only'], notes: 'x'.repeat(9000) } } });
+			// valid but huge: duplicate operation entries are legal, so only the size gate rejects this
+			await mint({ role: { permission: { operations: new Array(800).fill('search_by_value') } } });
 		} catch (e) {
 			error = e;
 		}
-		assert.match(error.message, /at most/);
+		assert.match(error.message, /exceeds/);
 	});
 
 	it('validateOperationToken accepts a scoped token and builds a synthetic user', async () => {

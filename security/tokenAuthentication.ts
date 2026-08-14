@@ -274,8 +274,9 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
  * it defaults to the minter's username. No refresh token is issued and no user record is touched,
  * so the token is irrevocable until expiry — size expires_in accordingly.
  */
-// Keeps the resulting Bearer token comfortably inside common HTTP header limits.
-const MAX_SCOPED_PERMISSION_SIZE = 8192;
+// Measured on the signed token (base64url payload + signature), so it reflects what the
+// Authorization header actually carries; keeps tokens inside common 16KB header limits.
+const MAX_SCOPED_TOKEN_LENGTH = 12288;
 
 async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
 	if (authObj.password) {
@@ -284,16 +285,11 @@ async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
 	if (authObj.purpose) {
 		throw new ClientError("'purpose' cannot be combined with an inline 'role' object");
 	}
-	if (JSON.stringify(authObj.role).length > MAX_SCOPED_PERMISSION_SIZE) {
-		throw new ClientError(`'role' must serialize to at most ${MAX_SCOPED_PERMISSION_SIZE} bytes`);
-	}
 	const scopedUser = buildScopedTokenUser(
 		authObj.hdb_user,
 		{ username: authObj.username, role: authObj.role as ImpersonatePayload['role'] },
 		isOperationAuthorizationBypassed()
 	);
-	logger.info(`Scoped token minted by "${authObj.hdb_user?.username ?? '<internal>'}" for "${scopedUser.username}"`);
-
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const operationToken = jwt.sign(
 		{
@@ -308,6 +304,16 @@ async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
 			algorithm: RSA_ALGORITHM,
 			subject: TOKEN_TYPE.SCOPED,
 		} satisfies SignOptions
+	);
+	if (operationToken.length > MAX_SCOPED_TOKEN_LENGTH) {
+		throw new ClientError(
+			`the minted token exceeds ${MAX_SCOPED_TOKEN_LENGTH} bytes and would not fit in an Authorization header; reduce the role permission size`
+		);
+	}
+	// role.role is the content hash of the granted permission set — logged so an operator can
+	// correlate outstanding tokens with what they grant.
+	logger.info(
+		`Scoped token minted by "${authObj.hdb_user?.username ?? '<internal>'}" for "${scopedUser.username}" (${scopedUser.role.role})`
 	);
 	return { operation_token: operationToken };
 }
@@ -461,11 +467,10 @@ function buildUserFromScopedToken(claims: JwtPayload): User {
 		throw new Error('Invalid token');
 	}
 	const permission: Record<string, unknown> = { ...embedded, super_user: false, cluster_user: false };
-	// Content-derived role identity with a stable timestamp: see syntheticRoleName. Computed from
-	// the server-side downgraded clone, so the memo key always reflects the effective permissions.
+	// Hashed from the server-side downgraded clone (before the _expandedOperations Set is attached),
+	// so the memo key reflects the effective permissions — see syntheticRoleName.
 	const roleName = syntheticRoleName('_scoped_token', permission);
 	if (Array.isArray(permission.operations)) {
-		// Pre-expand so the verifyPerms gate does an O(1) lookup instead of rebuilding a Set per request.
 		permission._expandedOperations = expandOperationsPerms(permission.operations as string[]);
 	}
 	return {

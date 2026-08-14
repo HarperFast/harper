@@ -103,15 +103,14 @@ export function buildScopedTokenUser(minter: User | undefined, payload: Imperson
 	if (!username || typeof username !== 'string') {
 		throw new ClientError("A scoped token requires a 'username'");
 	}
-	// Downgrade before deep validation and hashing, so a supplied super_user/cluster_user flag is
-	// neutralized (same silent downgrade as impersonation) rather than tripping the SU-perms check.
+	// Downgrade first so validation and the content hash see the effective permission set
+	// (same silent downgrade as impersonation).
 	const permission = {
 		...payload.role.permission,
 		super_user: false,
 		cluster_user: false,
 	} as UserRole['permission'];
-	// The token's permissions are minted once and used many times, so the full persisted-role
-	// validation applies: a malformed shape must fail here with a 400, not at every use.
+	// Full persisted-role validation: a malformed shape must fail at mint (400), not at every use.
 	const deepValidation = addRoleValidation({ role: 'scoped_token', permission });
 	if (deepValidation) throw deepValidation;
 	const roleName = syntheticRoleName('_scoped_token', permission);
