@@ -483,9 +483,10 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		const writeContexts = [];
 		const installed = installMockDeploymentTable();
 		installed.mock.put = async (row) => {
-			writeContexts.push(contextStorage.getStore());
+			const writeContext = { ...contextStorage.getStore() };
+			writeContexts.push(writeContext);
 			if (row.payload_blob) {
-				ingestContext = contextStorage.getStore();
+				ingestContext = writeContext;
 			}
 			installed.mock.rows.set(row.deployment_id, row);
 		};
@@ -503,6 +504,7 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		assert.strictEqual(ingestContext.originatingOperation, 'deploy_component');
 		assert.strictEqual(ingestContext.session, session);
 		assert.strictEqual(ingestContext.signal, signal);
+		assert.ok(ingestContext.transaction);
 		assert.notStrictEqual(ingestContext.transaction, ambientTransaction);
 		assert.strictEqual(ingestContext.transaction.timeoutBudget, configuredBudget);
 		assert.strictEqual(ingestContext.isExplicit, undefined);
@@ -512,6 +514,7 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		assert.strictEqual(ingestContext.replicatedConfirmation, undefined);
 		assert.strictEqual(ambientContext.transaction, ambientTransaction);
 		assert.strictEqual(writeContexts.length, 2);
+		assert.ok(writeContexts.every((context) => context.transaction));
 		assert.ok(writeContexts.every((context) => context.transaction !== ambientTransaction));
 	});
 
