@@ -422,6 +422,74 @@ describe('Scope', () => {
 		await scope.close();
 	});
 
+	it('reports an async entry-handler failure without an unhandled rejection', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+		await scope.ready;
+		const unhandled = [];
+		const recordUnhandled = (error) => unhandled.push(error);
+		process.on('unhandledRejection', recordUnhandled);
+		try {
+			let handlerStarted = false;
+			let failHandler;
+			const handlerFailure = new Promise((_, reject) => {
+				failHandler = reject;
+			});
+			scope.handleEntry(async () => {
+				handlerStarted = true;
+				await handlerFailure;
+			});
+			const initialLoads = scope.waitForInitialLoads();
+			await waitFor(() => handlerStarted);
+			failHandler(new Error('injected entry handler failure'));
+			await assert.rejects(initialLoads, /injected entry handler failure/);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepEqual(unhandled, [], 'the handled load failure must not produce an unhandled rejection');
+		} finally {
+			process.off('unhandledRejection', recordUnhandled);
+			await scope.close();
+		}
+	});
+
+	it('handles an async entry-handler failure after initial load', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+		await scope.ready;
+		const unhandled = [];
+		const recordUnhandled = (error) => unhandled.push(error);
+		process.on('unhandledRejection', recordUnhandled);
+		try {
+			let handlerFailed = false;
+			const entryHandler = scope.handleEntry(async (entry) => {
+				if (entry.eventType !== 'change') return;
+				handlerFailed = true;
+				throw new Error('injected post-load entry handler failure');
+			});
+			await scope.waitForInitialLoads();
+			entryHandler.emit('all', { eventType: 'change' });
+			await waitFor(() => handlerFailed);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepEqual(unhandled, [], 'a post-load failure must not produce an unhandled rejection');
+		} finally {
+			process.off('unhandledRejection', recordUnhandled);
+			await scope.close();
+		}
+	});
+
 	it('should not create entry handler from options change before handleEntry is called (RE-8)', async () => {
 		// Reproduce the race in RE-8: OptionsWatcher fires a `change` event for the
 		// `files` key BEFORE handleApplication (and thus handleEntry) runs. In the

@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, database, databases, getDatabases, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const harperLogger = require('#src/utility/logging/harper_logger');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 
 const TEST_DB = 'test';
 
@@ -27,6 +28,16 @@ function getDbisDb() {
 // test engine-agnostic under `test:unit` and `test:unit:lmdb`. Returns a
 // restore function.
 function stubFailingDrop(store, error) {
+	if (store instanceof RocksDatabase) {
+		const rocksPrototype = Object.getPrototypeOf(Object.getPrototypeOf(store));
+		const originalDropSync = rocksPrototype.dropSync;
+		rocksPrototype.dropSync = () => {
+			throw error;
+		};
+		return () => {
+			rocksPrototype.dropSync = originalDropSync;
+		};
+	}
 	const original = { drop: store.drop, dropSync: store.dropSync };
 	store.dropSync = () => {
 		throw error;
@@ -111,18 +122,15 @@ describe('dropTable ghost regression', () => {
 	});
 
 	it('tolerates an already-dropped column family and completes the drop', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const Raced = defineTable('GhostAlreadyDropped');
 		await Raced.put({ id: 1, str: 'data' });
 		// A concurrent worker already dropped the shared column family (drops are
 		// broadcast to every thread), so the storage engine reports the redundant
 		// drop as "Column family already dropped!". The family being gone is the
 		// intended outcome, so the drop operation must succeed rather than fail.
-		const restore = stubFailingDrop(Raced.primaryStore, new Error('Invalid argument: Column family already dropped!'));
-		try {
-			await Raced.dropTable();
-		} finally {
-			restore();
-		}
+		Raced.primaryStore.dropSync();
+		await Raced.dropTable();
 		// the table is removed from the live schema...
 		assert.equal(
 			databases[TEST_DB]?.GhostAlreadyDropped,
@@ -138,6 +146,83 @@ describe('dropTable ghost regression', () => {
 		);
 	});
 
+	it('keeps a live-drop tombstone when an already-dropped response leaves its column family present', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const TABLE = `GhostLiveStillPresent_${process.pid}_${Date.now()}`;
+		const Stuck = defineTable(TABLE);
+		await Stuck.put({ id: 1, str: 'data' });
+		const restore = stubFailingDrop(Stuck.primaryStore, new Error('Invalid argument: Column family already dropped!'));
+		try {
+			await assert.rejects(() => Stuck.dropTable(), /Column families remain after drop/);
+		} finally {
+			restore();
+		}
+
+		assert.equal(getDbisDb().getSync(`${TABLE}/`)?.dropping, true, 'the live-drop tombstone must survive');
+		const Fresh = defineTable(TABLE);
+		await Fresh.put({ id: 2, str: 'fresh' });
+		assert.equal(await Fresh.get(1), undefined, 'the recovery must remove the old column family before recreation');
+		await Fresh.dropTable();
+	});
+
+	it('drops an orphaned RocksDB column family during a live drop', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const TABLE = `GhostOrphanedColumn_${process.pid}_${Date.now()}`;
+		const Orphaned = defineTable(TABLE);
+		await Orphaned.put({ id: 1, str: 'data' });
+		const rootStore = Orphaned.primaryStore.rootStore;
+		const orphan = new RocksDatabase(rootStore.path, { name: `${TABLE}/formerIndex` }).open();
+		orphan.putSync('orphan', 'data');
+		orphan.close();
+
+		await Orphaned.dropTable();
+		assert.equal(
+			rootStore.columns.some((columnName) => columnName.startsWith(`${TABLE}/`)),
+			false,
+			'a live drop must remove every table-prefixed column family, including orphaned indexes'
+		);
+	});
+
+	it('keeps a tombstone when an already-dropped response leaves its column family present', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const TABLE = `GhostStillPresent_${process.pid}_${Date.now()}`;
+		const Stuck = defineTable(TABLE);
+		await Stuck.put({ id: 1, str: 'data' });
+		const dbisDb = getDbisDb();
+		const meta = dbisDb.getSync(`${TABLE}/`);
+		meta.dropping = true;
+		await dbisDb.put(`${TABLE}/`, meta);
+		assert.ok(Stuck.primaryStore.rootStore.columns.includes(`${TABLE}/`), 'the test column family should exist');
+
+		const rocksPrototype = Object.getPrototypeOf(Stuck.primaryStore);
+		const originalDropSync = rocksPrototype.dropSync;
+		rocksPrototype.dropSync = () => {
+			throw new Error('Invalid argument: Column family already dropped!');
+		};
+		try {
+			resetDatabases();
+			getDatabases();
+		} finally {
+			rocksPrototype.dropSync = originalDropSync;
+		}
+		assert.ok(
+			database({ database: TEST_DB, table: null }).columns.includes(`${TABLE}/`),
+			'the mocked redundant drop should leave the column family present'
+		);
+
+		assert.equal(
+			getDbisDb().getSync(`${TABLE}/`)?.dropping,
+			true,
+			'the tombstone must remain until the column family is actually gone'
+		);
+		assert.equal(databases[TEST_DB]?.[TABLE], undefined, 'a failed cleanup must not leave a live table class');
+
+		const Fresh = defineTable(TABLE);
+		await Fresh.put({ id: 2, str: 'fresh' });
+		assert.equal(await Fresh.get(1), undefined, 'the retry must remove the old column family before recreation');
+		await Fresh.dropTable();
+	});
+
 	it('does not clobber a same-name table created during a tolerated drop race', async function () {
 		// Exercises the RocksDB drop path (synchronous dropSync under the exclusive
 		// lock) and its tombstone-guarded catalog removal; the LMDB path keeps the
@@ -146,21 +231,22 @@ describe('dropTable ghost regression', () => {
 		const Raced = defineTable('GhostDropRaceCreate');
 		await Raced.put({ id: 1, str: 'data' });
 		const dbisDb = getDbisDb();
-		const originalDrop = Raced.primaryStore.dropSync;
+		const rocksPrototype = Object.getPrototypeOf(Object.getPrototypeOf(Raced.primaryStore));
+		const originalDrop = rocksPrototype.dropSync;
 		// Simulate the race: while this drop holds the lock, the catalog already
 		// carries a fresh, non-tombstoned row for a same-name table (as a concurrent
 		// create's completeInterruptedDrop would have left it). The guard must see
 		// the fresh row on its re-read and skip removal so it is not clobbered.
-		Raced.primaryStore.dropSync = () => {
+		rocksPrototype.dropSync = () => {
 			const fresh = { ...dbisDb.getSync('GhostDropRaceCreate/') };
 			delete fresh.dropping;
 			dbisDb.putSync('GhostDropRaceCreate/', fresh);
 			throw new Error('Column family already dropped!');
 		};
 		try {
-			await Raced.dropTable();
+			await assert.rejects(() => Raced.dropTable(), /Column families remain after drop/);
 		} finally {
-			Raced.primaryStore.dropSync = originalDrop;
+			rocksPrototype.dropSync = originalDrop;
 		}
 		// the new table's catalog row must survive - cleanup only runs when this
 		// drop's own tombstone is still the live primary row

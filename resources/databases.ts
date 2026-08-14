@@ -773,6 +773,9 @@ function initStores(
 			continue;
 		}
 		const generation = tableDef.primary?.dropGeneration;
+		// A tombstone must remove an already-loaded class even when its storage
+		// cleanup fails; otherwise this worker can keep serving a dropped table.
+		definedTables?.delete(tableName);
 		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
@@ -784,7 +787,6 @@ function initStores(
 				// place that sweeps), the prior generation's entry would otherwise never
 				// be cleared.
 				clearInterruptedDropEntries(path, tableName);
-				definedTables?.delete(tableName);
 			} catch (error) {
 				const attempt = failedAttempts + 1;
 				setInterruptedDropAttempts(path, tableName, generation, attempt);
@@ -2292,8 +2294,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
 	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 	if (rootStore instanceof RocksDatabase) {
+		const columnPrefix = tableName + '/';
 		for (const columnName of (rootStore as any).columns) {
-			if (columnName.startsWith(tableName + '/')) {
+			if (columnName.startsWith(columnPrefix)) {
 				const columnStore = openRocksDatabase(rootStore.path, { name: columnName });
 				try {
 					columnStore.dropSync();
@@ -2303,6 +2306,14 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 					columnStore.close();
 				}
 			}
+		}
+		const remainingColumnFamilies = (rootStore as any).columns.filter((columnName) =>
+			columnName.startsWith(columnPrefix)
+		);
+		if (remainingColumnFamilies.length) {
+			throw new Error(
+				`Column families remain after interrupted drop of table ${databaseName}.${tableName}: ${remainingColumnFamilies.join(', ')}`
+			);
 		}
 	} else {
 		// LMDB reuses an existing named sub-database on open, so the stores must

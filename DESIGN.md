@@ -203,6 +203,10 @@ interrupted drop instead of resurrecting the table. Without this, surviving cata
 silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
 (with their data, if the column families were never actually removed).
 
+On RocksDB, treating a redundant `dropSync()` as success is safe only after re-listing the live
+column families: both the drop and recovery paths remove catalog rows only when none still begin
+with `T/`.
+
 ## MCP protocol surface (`components/mcp/`)
 
 The MCP Streamable-HTTP transport (spec `2025-06-18`) is served at `/mcp` under **two profiles**: an

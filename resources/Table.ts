@@ -403,6 +403,7 @@ export function makeTable(options) {
 	// new ones (droppingTable) once a drop has actually started.
 	const pendingSourceCommits = new Set<Promise<any>>();
 	let droppingTable = false;
+	const tableIsDropping = () => droppingTable || (dbisDb as any)?.getSync?.(tableName + '/')?.dropping === true;
 	let createdTimeProperty: Attribute | undefined,
 		updatedTimeProperty: Attribute | undefined,
 		expiresAtProperty: Attribute | undefined;
@@ -1475,21 +1476,32 @@ export function makeTable(options) {
 					while (!rootStore.tryLock('update-attributes')) {}
 					let removed = false;
 					try {
-						for (const attribute of attributes) {
-							const index = indices[attribute.name];
-							if (index)
+						const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
+						if (!currentPrimary?.dropping) {
+							removed = false;
+						} else {
+							const columnPrefix = TableResource.tableName + '/';
+							for (const columnName of (rootStore as any).columns) {
+								if (!columnName.startsWith(columnPrefix)) continue;
+								const columnStore = new RocksDatabase(rootStore.path, { name: columnName }).open();
 								try {
-									index.dropSync();
+									columnStore.dropSync();
 								} catch (error) {
 									ignoreAlreadyDropped(error);
+								} finally {
+									columnStore.close();
 								}
+							}
+							const remainingColumnFamilies = (rootStore as any).columns.filter((columnName) =>
+								columnName.startsWith(columnPrefix)
+							);
+							if (remainingColumnFamilies.length) {
+								throw new Error(
+									`Column families remain after drop of table ${databaseName}.${tableName}: ${remainingColumnFamilies.join(', ')}`
+								);
+							}
+							removed = removeTombstonedCatalog();
 						}
-						try {
-							primaryStore.dropSync();
-						} catch (error) {
-							ignoreAlreadyDropped(error);
-						}
-						removed = removeTombstonedCatalog();
 					} finally {
 						rootStore.unlock('update-attributes');
 					}
@@ -5969,6 +5981,10 @@ export function makeTable(options) {
 					nodeName: 'source',
 					commit: (txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
+						if (tableIsDropping()) {
+							sourceWrite.skipped = true;
+							return;
+						}
 						if (existingEntry?.version !== existingVersion) {
 							// don't do anything if the version has changed
 							sourceWrite.skipped = true;
@@ -6090,7 +6106,7 @@ export function makeTable(options) {
 					TableResource.userEmbedders
 				);
 				if (embedBefore) await embedBefore();
-				if (droppingTable) {
+				if (tableIsDropping()) {
 					// Re-check right before staging the write: dropTable() may have started
 					// while we were awaiting the embed step above (harper#1381).
 					sourceContext.transaction.abort();

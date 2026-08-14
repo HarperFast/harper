@@ -474,6 +474,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 						})
 						.finally(() => pendingOperations.delete(tracked));
 					pendingOperations.add(tracked);
+					// Keep the tracked rejection available to waitForInitialLoads().
+					void tracked.catch(() => {});
 				}
 			};
 
@@ -487,7 +489,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 			// Track this promise so the component loader can await it
 			this.#pendingInitialLoads.add(initialLoadPromise);
-			initialLoadPromise.finally(() => this.#pendingInitialLoads.delete(initialLoadPromise));
+			void initialLoadPromise.finally(() => this.#pendingInitialLoads.delete(initialLoadPromise)).catch(() => {});
 
 			return wrapped;
 		};
