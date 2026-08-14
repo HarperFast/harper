@@ -333,22 +333,32 @@ function resolveGitRemote(repo: string): string {
 	return `https://${GIT_PACKAGE_HOST}/${repo}.git`;
 }
 
+// A plain clone fetches refs/heads/* and refs/tags/* and nothing else, so those are the only
+// namespaces a deployable ref can live in. A commit named through any other — refs/pull/<n>/head is
+// the one people reach for — pins to a perfectly immutable SHA that the cluster then cannot check
+// out, failing the clone exactly as the pull_request merge commit would. Rejecting the namespace
+// catches that here, where the user can act on it, rather than on the cluster. It can't catch a bare
+// SHA that happens to be unreachable: an object ID carries no namespace to inspect.
+function assertCloneableRefNamespace(ref: string): void {
+	if (!ref.startsWith('refs/') || ref.startsWith('refs/heads/') || ref.startsWith('refs/tags/')) return;
+	throw new Error(
+		`deploy by_ref: ref=${ref} is outside refs/heads/ and refs/tags/, the only namespaces a clone ` +
+			'fetches — the cluster could resolve that commit but never check it out. Pass a branch or tag the ' +
+			'commit is on.'
+	);
+}
+
 // `ls-remote` reports an annotated tag's peeled commit on a trailing `^{}` line — but only when a
 // pattern matches that line, so the peel patterns have to be asked for explicitly. Without them a tag
-// resolves to the *tag object's* ID, which is not a commit the cluster can check out. Tags outrank
-// branches, matching git's own precedence for a bare name (gitrevisions).
+// resolves to the *tag object's* ID, which is not a commit the cluster can check out. Every pattern is
+// namespace-qualified: passing the bare `ref` as its own pattern would match any namespace ls-remote
+// happens to serve, which is how an unreachable ref would slip through as a lone "unambiguous" match.
 function resolveRefOnRemote(remote: string, ref: string): string | undefined {
+	const qualified = ref.startsWith('refs/');
+	const patterns = qualified ? [ref, `${ref}^{}`] : [`refs/tags/${ref}`, `refs/tags/${ref}^{}`, `refs/heads/${ref}`];
 	let output: string;
 	try {
-		output = runGitNetwork([
-			'ls-remote',
-			remote,
-			ref,
-			`${ref}^{}`,
-			`refs/heads/${ref}`,
-			`refs/tags/${ref}`,
-			`refs/tags/${ref}^{}`,
-		]);
+		output = runGitNetwork(['ls-remote', remote, ...patterns]);
 	} catch {
 		return undefined; // unreachable, unauthenticated, or too slow to answer
 	}
@@ -357,7 +367,9 @@ function resolveRefOnRemote(remote: string, ref: string): string | undefined {
 		const [sha, name] = line.split('\t');
 		if (sha && name) shaByRef.set(name, sha);
 	}
-	if (shaByRef.size === 1) return shaByRef.values().next().value; // an unambiguous match, whatever it matched
+	// Peeled commit first (an annotated tag object isn't checkout-able), then tags over branches, which
+	// is git's own precedence for a bare name (gitrevisions).
+	if (qualified) return shaByRef.get(`${ref}^{}`) ?? shaByRef.get(ref);
 	return shaByRef.get(`refs/tags/${ref}^{}`) ?? shaByRef.get(`refs/tags/${ref}`) ?? shaByRef.get(`refs/heads/${ref}`);
 }
 
@@ -371,6 +383,9 @@ function resolveExplicitRef(ref: string, repo: string): string {
 	// git parses options anywhere in its argv, so a ref spelled like one (`--upload-pack=…`) would be
 	// obeyed as an option instead of resolved. No real ref starts with `-` — git rejects those itself.
 	if (ref.startsWith('-')) throw new Error(`deploy by_ref: invalid ref=${ref} — a git ref cannot start with "-".`);
+	// Checked before local resolution, not just remote: a checkout that has fetched refs/pull/<n>/head
+	// resolves it happily, and the resulting SHA is just as unreachable for the cluster's clone.
+	assertCloneableRefNamespace(ref);
 	try {
 		return runGit(['rev-parse', '--verify', `${ref}^{commit}`]);
 	} catch {
