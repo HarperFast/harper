@@ -510,12 +510,11 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 
 	test('a scoped-token subscription survives rechecks and terminates at token expiry', async () => {
 		// A scoped token's attribution username is not a real hdb_user, so the recheck must use the
-		// token's embedded role — not re-resolve by name (which would kill this subscription, and
-		// after a colliding user is created would escalate it). Read is granted via the operations
-		// allowlist plus the same table read the other tests use.
+		// token's embedded role — not re-resolve by name. Read is granted via the operations allowlist
+		// plus the same table read the other tests use.
 		const tokenResp = await client.req().send({
 			operation: 'create_authentication_tokens',
-			username: 'scoped-subscriber',
+			username: 'scoped_collider',
 			role: {
 				permission: {
 					operations: ['read_only'],
@@ -526,7 +525,10 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 					},
 				},
 			},
-			expires_in: 4,
+			// Long enough that the multi-step recheck phase below (add_role + add_user + sweep +
+			// delivery probe) completes well before expiry, so the survives-recheck assertion never
+			// races the expiry sweep.
+			expires_in: 10,
 		});
 		strictEqual(tokenResp.status, 200, `scoped token issue failed: ${tokenResp.status} ${tokenResp.text}`);
 		const token = tokenResp.body?.operation_token;
@@ -540,30 +542,36 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			await sleep(1000);
 			ok(stream.count() >= 1, `expected delivery while scoped token valid, saw ${stream.count()}`);
 
-			// Force a re-auth sweep with an unrelated user-change (a dedicated throwaway user, so this
-			// test doesn't depend on another's principals): the by-name recheck bug would terminate
-			// the scoped subscription here, since no 'scoped-subscriber' hdb_user exists.
+			// Now create a REAL user colliding with the token's attribution name, holding a role with
+			// NO read on Owned. This both triggers a re-auth sweep and sets up the substitution trap:
+			// if the recheck re-resolved the scoped principal by name it would adopt this user's
+			// (no-read) permissions and terminate the subscription. Continued delivery proves the
+			// embedded scoped role — not the colliding hdb_user — governs the recheck.
+			await client
+				.req()
+				.send({ operation: 'add_role', role: 'scoped_collider_role', permission: { super_user: false } })
+				.expect(200);
 			await client
 				.req()
 				.send({
 					operation: 'add_user',
-					role: ROLE,
-					username: 'scoped_recheck_trigger',
-					password: 'Trig-pw-1414!',
+					role: 'scoped_collider_role',
+					username: 'scoped_collider',
+					password: 'Collide-pw-1414!',
 					active: true,
 				})
 				.expect(200);
-			await client.req().send({ operation: 'drop_user', username: 'scoped_recheck_trigger' }).expect(200);
 			await sleep(1500);
 			const afterRecheck = stream.count();
 			await insert({ id: `r-${seq++}`, value: 'scoped-after-recheck' });
 			ok(
 				await waitFor(() => stream.count() > afterRecheck, 5000),
-				'scoped subscription was wrongly terminated by an unrelated user-change recheck'
+				'scoped subscription was wrongly re-resolved to the colliding hdb_user (terminated or substituted)'
 			);
 
-			// It must still expire with the token (4s + sweep interval).
-			await sleep(4200);
+			// It must still expire with the token. The recheck phase above consumed several seconds of
+			// the 10s lifetime; sleep long enough to clear the remaining life plus a sweep interval.
+			await sleep(8000);
 			const probe = stream.count();
 			await insert({ id: `r-${seq++}`, value: 'scoped-post-expiry' });
 			await sleep(1500);

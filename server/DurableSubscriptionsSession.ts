@@ -397,7 +397,11 @@ class SubscriptionsSession {
 			try {
 				if (!clientTerminated) {
 					const will = await getLastWill().get(this.sessionId);
-					if (will) {
+					// A scoped token is revocable only by expiry: don't publish its will past exp, so
+					// this live-disconnect path matches what restart replay already enforces.
+					const scopedExpiry = this.user?._scopedToken ? this.user.authExpiresAt : undefined;
+					const expired = scopedExpiry && scopedExpiry * 1000 <= Date.now();
+					if (will && !expired) {
 						await publishMessage(will, will.data, context);
 					}
 				}

@@ -336,13 +336,17 @@ rather than waiting for the auth-cache TTL.
 
 The attribution `username` must NOT name an existing `hdb_user` (rejected at mint; the default is
 `scoped:<minter>`): code paths that rehydrate a user by name would otherwise substitute the real
-principal's permissions for the token's — or fail-closed on the non-existent name. The two known
-by-name sites are handled: the MQTT last-will replay (`DurableSubscriptionsSession.ts` persists the
-scoped role/marker/expiry on the will and skips rehydration) and the live-subscription stale-auth
-recheck (`Resource.ts` `registerLiveSubscriptionForContext` treats the embedded role as the
-identity; `authExpiresAt` handles expiry). **Any future by-name rehydration must check
-`_scopedToken`.** A user _created after minting_ with a colliding name re-opens the hazard only at
-unguarded future sites — another reason to prefer short expiries.
+principal's permissions for the token's — or fail-closed on the non-existent name. The three known
+by-name sites are handled, all by the same `_scopedToken` short-circuit: the MQTT last-will replay
+(`DurableSubscriptionsSession.ts` persists the scoped role/marker/expiry on the will and skips
+rehydration — and both the restart-replay and the live abnormal-disconnect paths refuse to publish
+a scoped will past `authExpiresAt`), the live-subscription stale-auth recheck (`Resource.ts`
+`registerLiveSubscriptionForContext` keeps the embedded role as the identity), and the MCP
+`list_changed` session refresh (`components/mcp/listChanged.ts` `refreshSessionUser`). The scoped
+principal also cannot self-mint standing tokens: the passwordless path of `createTokens` rejects an
+`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`.** A
+user _created after minting_ with a colliding name is therefore inert at every current site; the
+residual is only some _new_ unguarded by-name site — another reason to prefer short expiries.
 
 Scope of the `operations` allowlist: it gates the **operations API** (including the `sql` path,
 which never reaches `verifyPerms` and calls `verifyOperationsAllowlist` directly from

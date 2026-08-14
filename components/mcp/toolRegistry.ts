@@ -60,6 +60,9 @@ export interface ToolDescriptor {
 /** Authenticated user object as Harper builds it (subset we touch). */
 export interface AuthedUser {
 	username?: string;
+	// Set on scoped-token principals; their username is attribution only and must not be
+	// re-resolved against hdb_user (see security/tokenAuthentication.ts).
+	_scopedToken?: boolean;
 	role?: {
 		role?: string;
 		permission?: {
