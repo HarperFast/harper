@@ -28,19 +28,19 @@ let warnedReplayHappening = false;
 // version, while a missing one would let a later same-key write be dropped as a duplicate.
 const TORN_VERSION_KEY = Symbol.for('replay-torn-version');
 
+// Throws rather than defaulting: without this state replay cannot tell its own earlier write from a
+// re-delivered duplicate, and a store that cannot serve one key is not one to replay a log into.
 function readTornVersion(rootStore: RocksDatabase): number | undefined {
-	try {
-		return (rootStore as any).getSync(TORN_VERSION_KEY) || undefined;
-	} catch (error) {
-		logger.warn('Could not read the replay torn-transaction marker', error);
-	}
+	return (rootStore as any).getSync(TORN_VERSION_KEY) || undefined;
 }
 
-function recordTornVersion(rootStore: RocksDatabase, version: number): void {
+function recordTornVersion(rootStore: RocksDatabase, version: number): boolean {
 	try {
 		(rootStore as any).putSync(TORN_VERSION_KEY, version);
+		return true;
 	} catch (error) {
 		logger.warn('Could not record the replay torn-transaction marker', error);
+		return false;
 	}
 }
 
@@ -111,12 +111,14 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let stagedBytes = 0;
 		let stagedWrites = 0;
 		let midVersionFlushes = 0;
-		// The version being replayed has already had part of itself committed by THIS run.
 		let versionCommittedInPieces = false;
 		// The version a previous replay left committed in pieces, if any (see recordTornVersion): a durable
-		// fact rather than an assumption, so a replay that never tore anything keeps the identity-tie dedup
-		// for every version it applies.
+		// fact rather than an assumption, so a replay that tore nothing keeps the identity-tie dedup for
+		// every version it applies.
 		const resumedTornVersion = readTornVersion(rootStore);
+		// Set by every path that leaves entries unread: the marker must outlive an aborted replay, since the
+		// rest of that source transaction is still to come.
+		let abortedReplay = false;
 		// True when what is about to be committed, or has just been committed, is only part of its source
 		// transaction — the state in which losing a batch, or dropping a later same-key write, tears it.
 		const committingVersionIsTorn = () => versionCommittedInPieces || lastTimestamp === resumedTornVersion;
@@ -138,6 +140,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				logger.fatal(
 					`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table. Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
 				);
+				abortedReplay = true;
 				break;
 			}
 			const {
@@ -215,9 +218,19 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				const entryCost = (auditRecord.size ?? 0) + REPLAY_WRITE_OVERHEAD_BYTES;
 				if (newVersion || shouldFlushReplayBatch(stagedBytes + entryCost, stagedWrites + 1)) {
 					// Marked before the batch it describes is committed, so a crash between the two records a
-					// tear that did not happen rather than missing one that did.
+					// tear that did not happen rather than missing one that did. Nothing of this version is
+					// durable yet at this point, so failing to record it is still recoverable — but tearing
+					// the transaction without it is not: the next boot would resume inside the transaction
+					// with no way to tell its own earlier write from a duplicate.
 					if (!newVersion && !versionCommittedInPieces && version !== resumedTornVersion) {
-						recordTornVersion(rootStore, version);
+						if (!recordTornVersion(rootStore, version)) {
+							logger.fatal(
+								`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: an oversized transaction has to be committed in batches, and the marker recording that could not be written (${writes} written, ${skipped} skipped). Re-clone this node from a healthy leader to recover the unreplayed data.`
+							);
+							transaction = undefined as any;
+							abortedReplay = true;
+							break;
+						}
 					}
 					const wasTorn = committingVersionIsTorn();
 					try {
@@ -237,6 +250,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 								error
 							);
 							transaction = undefined as any;
+							abortedReplay = true;
 							break;
 						}
 						logger.error('Error committing replay transaction', error);
@@ -264,6 +278,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
 						);
 						transaction = undefined as any; // already committed above; nothing staged for the new version
+						abortedReplay = true;
 						break;
 					}
 					transaction = new DatabaseTransaction();
@@ -382,8 +397,10 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		const lastVersionWasTorn = committingVersionIsTorn();
 		try {
 			transaction?.directCommitSync();
-			// Whatever was torn is whole again once its last batch commits.
-			if (lastVersionWasTorn) recordTornVersion(rootStore, 0);
+			// Only an iteration that ran to the end of the log leaves the torn transaction whole; every
+			// abort path above stops with entries of it unread, and this commit would otherwise no-op over
+			// a discarded transaction and clear the marker they exist to preserve.
+			if (lastVersionWasTorn && !abortedReplay) recordTornVersion(rootStore, 0);
 		} catch (error) {
 			// The last batch of a torn transaction failing here leaves that transaction durable in part,
 			// which the operator has to know about; a whole-transaction commit failing is the pre-existing
