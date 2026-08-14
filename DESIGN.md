@@ -335,11 +335,14 @@ the only control, which is why `auth.ts` evicts cached Bearer identities at exac
 rather than waiting for the auth-cache TTL.
 
 The attribution `username` must NOT name an existing `hdb_user` (rejected at mint; the default is
-`scoped:<minter>`): code paths that rehydrate a user by name (e.g. the MQTT last-will replay in
-`DurableSubscriptionsSession.ts`) would otherwise substitute the real principal's permissions for
-the token's. Mint-time rejection plus the `_scopedToken` guard at the replay site cover this; any
-future by-name rehydration must check `_scopedToken` too. A user _created after minting_ with a
-colliding name re-opens the by-name hazard, which is another reason to prefer short expiries.
+`scoped:<minter>`): code paths that rehydrate a user by name would otherwise substitute the real
+principal's permissions for the token's — or fail-closed on the non-existent name. The two known
+by-name sites are handled: the MQTT last-will replay (`DurableSubscriptionsSession.ts` persists the
+scoped role/marker/expiry on the will and skips rehydration) and the live-subscription stale-auth
+recheck (`Resource.ts` `registerLiveSubscriptionForContext` treats the embedded role as the
+identity; `authExpiresAt` handles expiry). **Any future by-name rehydration must check
+`_scopedToken`.** A user _created after minting_ with a colliding name re-opens the hazard only at
+unguarded future sites — another reason to prefer short expiries.
 
 Scope of the `operations` allowlist: it gates the **operations API** (including the `sql` path,
 which never reaches `verifyPerms` and calls `verifyOperationsAllowlist` directly from
