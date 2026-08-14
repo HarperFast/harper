@@ -1406,6 +1406,8 @@ export function makeTable(options) {
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
 			delete databases[databaseName][tableName];
+			TableResource.cleanup();
+			while (runningRecordExpiration) await rest();
 			// The above stops new source-fill writes from starting, but a write from a get()
 			// that already returned to its caller may still be in flight. Dropping the column
 			// families out from under that write is a genuine invariant violation, not just a
@@ -2046,9 +2048,9 @@ export function makeTable(options) {
 			let committed = false;
 			try {
 				// A raw Rocks read transaction can reuse an older snapshot. Reject an already-refreshed
-				// record before consulting that snapshot; the transaction read below guards later races.
+				// record before consulting it; commit-time conflict detection guards later races.
 				if (!primaryStore.ifVersion) {
-					currentEntry = primaryStore.getEntry(id);
+					currentEntry = primaryStore.getEntry(id, { lazy: true });
 					if (!currentEntry || currentEntry.version !== existingVersion) return;
 				}
 				if (hasSourceGet || audit) {
@@ -6368,6 +6370,7 @@ export function makeTable(options) {
 					const entries = [...index.getCompositeRange({ after, end: cutoff, limit: EVICTION_BATCH_SIZE })];
 					if (entries.length === 0) break;
 					let completedChunk = true;
+					let entriesSinceYield = 0;
 					for (const entry of entries) {
 						if (recordExpirationCancelled || primaryStore.rootStore.status !== 'open') {
 							completedChunk = false;
@@ -6395,6 +6398,10 @@ export function makeTable(options) {
 							}
 						}
 						if (backpressure) await backpressure;
+						if (++entriesSinceYield >= 10) {
+							entriesSinceYield = 0;
+							await rest();
+						}
 					}
 					if (!completedChunk) break;
 					if (previousAfter && compareKeys(after, previousAfter) <= 0) {

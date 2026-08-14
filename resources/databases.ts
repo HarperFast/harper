@@ -967,6 +967,7 @@ function initStores(
 				table.updatedAttributes();
 			}
 		} else {
+			if (recreateForEngineChange) table.cleanup?.();
 			table = setTable(
 				tables,
 				tableName,

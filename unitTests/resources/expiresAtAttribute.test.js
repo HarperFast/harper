@@ -241,9 +241,11 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const expiresAt = Date.now() - 1_000;
 		await Table.put(1, { id: 1, expiresAt });
 		await Table.put(2, { id: 2, expiresAt });
+		await Table.put([3, 'part'], { id: [3, 'part'], expiresAt });
 		await Table.primaryStore.committed;
 		Table.primaryStore.removeSync(2);
-		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1, 2]);
+		Table.primaryStore.removeSync([3, 'part']);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1, 2, [3, 'part']]);
 
 		await runSweep();
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
@@ -376,6 +378,17 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		}
 
 		assert(Table.primaryStore.getEntry(secondEntry.value)?.value, 'cleanup must stop the sweep before its next entry');
+	});
+
+	it('cancels the expiration sweep before dropping a table', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtTableDrop'));
+		const cleanup = sinon.spy(Table, 'cleanup');
+
+		await Table.dropTable();
+		await runSweep();
+
+		assert.strictEqual(cleanup.callCount, 1);
+		cleanup.restore();
 	});
 
 	it('preserves retained tombstones while removing their dangling expiration index entries', async function () {
