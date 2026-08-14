@@ -197,7 +197,6 @@ export async function loadComponentDirectories(
 		}
 	}
 	if (isMainThread && !stagedArtifactsReconciled) {
-		stagedArtifactsReconciled = true;
 		try {
 			const reconciliation = await reconcileStagedApplicationArtifacts(CF_ROUTES_DIR, getDeploymentRow, async (row) => {
 				const transaction = await createApplicationActivationTransaction(row.project, row.activation_spec);
@@ -224,8 +223,23 @@ export async function loadComponentDirectories(
 			for (const [deploymentId, error] of reconciliation.errors) {
 				harperLogger.error(`Could not reconcile staged component deployment '${deploymentId}':`, errorForLog(error));
 			}
+			// FAIL CLOSED. An activation we could not finish leaves the live tree and its durable
+			// configuration disagreeing — the swapped-in code with the previous release's root config, or no
+			// live directory at all after an interrupted rename — while the deployment row still claims the
+			// activation is incomplete. Loading that is worse than not loading it: the component serves
+			// requests whose behavior nobody can predict from either the code or the config, and the next
+			// cold start may reinstall over it. So the affected component does not load.
+			for (const [project, error] of reconciliation.failedProjects) {
+				if (!failedRecoveries.has(project)) failedRecoveries.set(project, error);
+			}
+			// Only a clean pass retires the one-shot guard, so a later reload cycle retries instead of
+			// leaving a component permanently unrecovered and permanently unloadable.
+			if (reconciliation.errors.size === 0) stagedArtifactsReconciled = true;
 		} catch (error) {
+			// The scan itself failed, so we cannot tell WHICH components are affected and cannot fail just
+			// those closed. Abort startup rather than load every component over possibly-unreconciled state.
 			harperLogger.error('Could not inspect staged component deployments during startup:', errorForLog(error as Error));
+			throw error;
 		}
 	}
 	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before

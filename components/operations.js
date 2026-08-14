@@ -1253,13 +1253,35 @@ async function revertComponent(req) {
 			// Persist the reverted-to version's config + install lock. Compensating by swapping back is
 			// deliberate: a half-reverted node (new tree live, old config persisted) would reinstall the
 			// wrong version on its next cold start, which is the failure this pairing exists to prevent.
+			//
+			// The transaction is held OUTSIDE the try so the compensation can roll it back. `commit()` makes
+			// two persistent writes (root config, then the boot-time application lock); if the first
+			// succeeds and the second throws, swapping the directories back is not enough on its own —
+			// root config would still name the reverted-to release while the original tree is live again,
+			// which is the very mismatch this pairing exists to prevent, and a cold start could act on it.
+			const configTransaction = await createApplicationConfigTransaction(req.project, result.activatedConfig);
 			try {
-				const configTransaction = await createApplicationConfigTransaction(req.project, result.activatedConfig);
 				await configTransaction.commit();
 			} catch (configError) {
+				const compensationErrors = [];
+				// Undo the persistent writes first, then the directory swap, so the node is never left with
+				// the original tree live and the reverted-to configuration persisted.
+				await configTransaction.rollback().catch((rollbackError) => {
+					compensationErrors.push(rollbackError);
+					log.error(`Failed to roll back the ${req.project} revert configuration write`, rollbackError);
+				});
 				await revertApplication(application, result.fromDeploymentId).catch((swapBackError) => {
+					compensationErrors.push(swapBackError);
 					log.error(`Failed to undo the ${req.project} revert after its config write failed`, swapBackError);
 				});
+				if (compensationErrors.length) {
+					throw new ServerError(
+						`Failed to revert ${req.project}: ${configError?.message ?? configError}. Compensation also ` +
+							`failed (${compensationErrors.map((error) => error?.message ?? error).join('; ')}), so this ` +
+							`node may be serving a version its persisted configuration does not name.`,
+						configError?.statusCode
+					);
+				}
 				throw configError;
 			}
 		}

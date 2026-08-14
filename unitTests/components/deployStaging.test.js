@@ -23,6 +23,7 @@ const {
 	revertApplication,
 	getRevertTarget,
 	recoverInterruptedReverts,
+	createApplicationConfigTransaction,
 	extractApplication,
 	stagedApplicationPath,
 	DEPLOY_STAGING_DIR,
@@ -721,7 +722,7 @@ describe('two-phase component directory transaction', function () {
 
 	it('startup recovery re-retains the displaced tree when only the retain step was lost', async () => {
 		const name = fixtureName();
-		const { application } = await twoActivations(name);
+		const { application, first, second } = await twoActivations(name);
 		// Simulate a crash after `rename(previous, live)` but before `rename(holding, previous)`: the
 		// reverted-to version is live, and the displaced tree is still parked.
 		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
@@ -737,6 +738,19 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(application.dirPath), /v1/, 'the reverted-to version stays live');
 		assert.match(await readMarker(previousPath), /displaced/, 'the displaced tree is retained again');
 		assert.equal(existsSync(holding), false);
+
+		// The directories are only half the state. The manifest was written before the swap, so completing
+		// the recovery has to exchange its roles too — otherwise it names the retained tree as live and the
+		// live tree as retained, and the retry below matches its target against the reversed `previous`
+		// entry and swaps the successful revert straight back out.
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.live.deployment_id, first, 'the manifest names the reverted-to version as live');
+		assert.equal(target.previous.deployment_id, second, 'and the displaced version as the retained one');
+
+		// Idempotency has to survive the recovery: re-issuing the same addressed revert changes nothing.
+		const retry = await revertApplication(application, first);
+		assert.equal(retry.swapped, false, 'a retry after recovery is a no-op, not a swap back');
+		assert.match(await readMarker(application.dirPath), /v1/, 'still on the reverted-to version');
 		await cleanup(name);
 	});
 
@@ -780,5 +794,92 @@ describe('two-phase component directory transaction', function () {
 
 		await cleanup(name);
 		await fs.rm(packageDirectory, { recursive: true, force: true });
+	});
+	it('rolls both persistent writes back, so a failed commit cannot leave config half-applied', async () => {
+		// commit() makes TWO persistent writes — root config, then the boot-time application lock — and
+		// arms rollback (`commitStarted`) BEFORE either. That is what lets a caller whose commit threw
+		// partway undo the write that did land: without it, compensating by swapping the directories back
+		// still left root config naming the version just rolled away from, for a cold start to act on.
+		//
+		// A genuinely partial commit is not injectable from a test: the lock is READ (getApplicationLockEntry)
+		// before the config write, so any corruption that would break the lock write breaks that read first
+		// and fails before mutating anything. What is verifiable is the property the compensation depends
+		// on — that rollback restores the exact pre-commit state of both writes.
+		const name = fixtureName();
+		const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-cfg-rollback-'));
+		const priorRootEnv = process.env.ROOTPATH;
+		const priorRootConfig = getConfigPath(CONFIG_PARAMS.ROOTPATH);
+		process.env.ROOTPATH = configRoot;
+		environment.setProperty(CONFIG_PARAMS.ROOTPATH, configRoot);
+		await fs.writeFile(path.join(configRoot, 'harper-config.yaml'), `rootPath: ${JSON.stringify(configRoot)}\n`);
+		const lockPath = path.join(configRoot, 'harper-application-lock.json');
+		const readLock = async () => JSON.parse(await fs.readFile(lockPath, { encoding: 'utf8' })).applications[name];
+		try {
+			// The version that is live now, and that a revert would be rolling back to.
+			const original = await createApplicationConfigTransaction(name, { package: 'example@1.0.0' });
+			await original.commit();
+			assert.deepEqual(readConfigFile()[name], { package: 'example@1.0.0' });
+			assert.deepEqual(await readLock(), { package: 'example@1.0.0' });
+
+			const reverting = await createApplicationConfigTransaction(name, { package: 'example@2.0.0' });
+			await reverting.commit();
+			assert.deepEqual(readConfigFile()[name], { package: 'example@2.0.0' }, 'both writes moved forward');
+			assert.deepEqual(await readLock(), { package: 'example@2.0.0' });
+
+			await reverting.rollback();
+
+			assert.deepEqual(
+				readConfigFile()[name],
+				{ package: 'example@1.0.0' },
+				'rollback restores the root config the commit replaced'
+			);
+			assert.deepEqual(await readLock(), { package: 'example@1.0.0' }, 'and the application-lock entry');
+
+			// A transaction that never committed must not touch anything on rollback, so compensation on an
+			// early failure cannot clobber a live config.
+			const untouched = await createApplicationConfigTransaction(name, { package: 'example@3.0.0' });
+			await untouched.rollback();
+			assert.deepEqual(readConfigFile()[name], { package: 'example@1.0.0' }, 'no-op rollback changes nothing');
+		} finally {
+			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
+			else process.env.ROOTPATH = priorRootEnv;
+			environment.setProperty(CONFIG_PARAMS.ROOTPATH, priorRootConfig);
+			await fs.rm(configRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('reports the component whose activation persistence failed, so it can be kept from loading', async () => {
+		// Startup reconciliation used to only LOG a failure to finish an `activating` deployment, then carry
+		// on into normal component loading — serving a swapped-in tree whose durable configuration still
+		// described the previous release. The caller can only fail that component closed if it is told which
+		// component failed, which a deployment id alone does not give it.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+		await stageApplication(application, deploymentId);
+		await fs.mkdir(application.dirPath, { recursive: true });
+
+		const row = {
+			deployment_id: deploymentId,
+			project: name,
+			status: 'activating',
+			activation_spec: { package: null },
+		};
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async () => row,
+			async () => {
+				throw new Error('simulated activation-persistence failure');
+			}
+		);
+
+		assert.equal(reconciliation.errors.has(deploymentId), true, 'the failure is reported by deployment');
+		assert.equal(
+			reconciliation.failedProjects.get(name)?.message,
+			'simulated activation-persistence failure',
+			'and attributed to the component, so the loader can fail it closed'
+		);
+		assert.equal(reconciliation.recovered.includes(deploymentId), false, 'a failed reconciliation is not "recovered"');
+		await cleanup(name);
 	});
 });

@@ -813,11 +813,36 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 					}
 				);
 				if (!previousExists) {
+					// The swap's second rename landed (the reverted-to version is live) and only the retain step
+					// was lost, so finish it — directory, manifest and durable config together.
+					//
+					// The manifest is still the PRE-swap one: revertApplication writes it only after all three
+					// renames, so reaching here means it was never updated. Leaving it alone would be actively
+					// harmful rather than merely stale: it names the version that is now RETAINED as live and the
+					// version that is now LIVE as previous, so a retry of the same addressed revert would match
+					// its target against the reversed `previous` entry and swap the successful revert back out —
+					// destroying the idempotency the addressed target exists to provide. Roles are exchanged here
+					// exactly as revertApplication would have.
+					const staleManifest = await readRetainedPreviousManifest(liveDirPath);
 					await mkdir(dirname(previousPath), { recursive: true });
 					await rename(holding, previousPath);
+					if (staleManifest) {
+						await writeRetainedPreviousManifest(liveDirPath, {
+							previous: staleManifest.live,
+							live: staleManifest.previous,
+						});
+						// Config was never committed either (revertComponent commits after the swap returns), so it
+						// still describes the version this revert moved away from. Bring it in line with what is
+						// actually live, or a cold start reinstalls the reverted-away release over it.
+						const configTransaction = await createApplicationConfigTransaction(
+							componentName,
+							staleManifest.previous.application_config
+						);
+						await configTransaction.commit();
+					}
 					logger.warn(
-						`Completed an interrupted ${componentName} revert: the reverted-to version is live and the ` +
-							`version it displaced is retained again`
+						`Completed an interrupted ${componentName} revert: the reverted-to version is live, the ` +
+							`version it displaced is retained again, and its configuration has been reconciled`
 					);
 					return;
 				}
@@ -2603,10 +2628,20 @@ export async function reconcileStagedApplicationArtifacts(
 	componentsRootDirPath: string,
 	getDeployment: DeploymentLookup,
 	persistActivation: (row: Record<string, any>) => Promise<void>
-): Promise<{ recovered: string[]; removed: string[]; errors: Map<string, Error> }> {
+): Promise<{
+	recovered: string[];
+	removed: string[];
+	errors: Map<string, Error>;
+	failedProjects: Map<string, Error>;
+}> {
 	const recovered = new Set<string>();
 	const removed: string[] = [];
 	const errors = new Map<string, Error>();
+	// Same failures as `errors`, keyed by COMPONENT rather than deployment id. An activation whose
+	// persistent work could not be completed leaves the live tree and its durable configuration
+	// disagreeing, so the caller has to be able to keep that specific component from loading — which it
+	// cannot do from a deployment id.
+	const failedProjects = new Map<string, Error>();
 	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
 	let deploymentEntries = [];
 	try {
@@ -2624,8 +2659,10 @@ export async function reconcileStagedApplicationArtifacts(
 			removed.push(entry.name);
 			continue;
 		}
+		// Declared outside the try so the catch can attribute a reconciliation failure to its component.
+		let row: Record<string, any> | undefined;
 		try {
-			let row = await getDeployment(entry.name);
+			row = await getDeployment(entry.name);
 			if (!row || !safeComponentName(row.project)) {
 				await rm(deploymentPath, { recursive: true, force: true });
 				removed.push(entry.name);
@@ -2668,7 +2705,9 @@ export async function reconcileStagedApplicationArtifacts(
 			await removeActivationArtifacts(componentDirPath, entry.name);
 			recovered.add(entry.name);
 		} catch (error) {
-			errors.set(entry.name, error instanceof Error ? error : new Error(String(error)));
+			const reconcileError = error instanceof Error ? error : new Error(String(error));
+			errors.set(entry.name, reconcileError);
+			if (safeComponentName(row?.project)) failedProjects.set(row.project, reconcileError);
 		}
 	}
 
@@ -2696,7 +2735,9 @@ export async function reconcileStagedApplicationArtifacts(
 						await rm(artifactPath, { recursive: true, force: true });
 						recovered.add(deploymentId);
 					} catch (error) {
-						errors.set(deploymentId, error instanceof Error ? error : new Error(String(error)));
+						const reconcileError = error instanceof Error ? error : new Error(String(error));
+						errors.set(deploymentId, reconcileError);
+						failedProjects.set(projectEntry.name, reconcileError);
 					}
 				} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveStat) {
 					await rename(artifactPath, livePath);
@@ -2709,7 +2750,7 @@ export async function reconcileStagedApplicationArtifacts(
 		await rmdir(activationRoot).catch(() => {});
 	}
 	await rmdir(stagingRoot).catch(() => {});
-	return { recovered: [...recovered], removed, errors };
+	return { recovered: [...recovered], removed, errors, failedProjects };
 }
 
 /**
