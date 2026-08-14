@@ -9,8 +9,6 @@ const assert = require('node:assert');
 const testUtils = require('../../../testUtils.js');
 testUtils.preTestPrep();
 
-const fs = require('node:fs');
-const path = require('node:path');
 const jwt = require('jsonwebtoken');
 const { generateKeyPairSync, createPublicKey } = require('node:crypto');
 const { exchangeOidcToken } = require('#src/security/authn/oidc/tokenExchange');
@@ -19,7 +17,6 @@ const { clearJwksCache } = require('#src/security/authn/oidc/jwks');
 const { validateOperationToken, clearJWTRSAKeysCache, decodeJWT } = require('#src/security/tokenAuthentication');
 const { databases } = require('#src/resources/databases');
 const { setUsersWithRolesCache } = require('#src/security/user');
-const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 
 const TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
@@ -34,22 +31,6 @@ const OIDC_KID = 'gh-signing-key';
 
 let issuerPrivateKey;
 let signingJwk;
-
-/** Writes the RSA keys createOperationToken signs with into the isolated test base path. */
-function installJwtSigningKeys() {
-	const passphrase = 'test-passphrase';
-	const { privateKey, publicKey } = generateKeyPairSync('rsa', {
-		modulusLength: 2048,
-		publicKeyEncoding: { type: 'spki', format: 'pem' },
-		privateKeyEncoding: { type: 'pkcs8', format: 'pem', cipher: 'aes-256-cbc', passphrase },
-	});
-	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
-	fs.mkdirSync(keysDir, { recursive: true });
-	fs.writeFileSync(path.join(keysDir, terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), privateKey);
-	fs.writeFileSync(path.join(keysDir, terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME), publicKey);
-	fs.writeFileSync(path.join(keysDir, terms.JWT_ENUM.JWT_PASSPHRASE_NAME), passphrase);
-	clearJWTRSAKeysCache();
-}
 
 function installMockTable(name, primaryKey) {
 	const rows = new Map();
@@ -95,13 +76,17 @@ const asAdmin = (body) => ({
 });
 
 describe('exchangeOidcToken', () => {
+	let removeJwtKeys;
 	let trustTable;
 	let useTable;
 	let realFetch;
 	let tokenCounter = 0;
 
 	before(() => {
-		installJwtSigningKeys();
+		// Shared helper so the keys are removed afterwards — they live in a directory another suite
+		// asserts is empty (see testUtils.installTestJwtKeys).
+		removeJwtKeys = testUtils.installTestJwtKeys();
+		clearJWTRSAKeysCache();
 		const pair = generateKeyPairSync('rsa', {
 			modulusLength: 2048,
 			publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -143,6 +128,11 @@ describe('exchangeOidcToken', () => {
 		globalThis.fetch = realFetch;
 		trustTable.restore();
 		useTable.restore();
+	});
+
+	after(() => {
+		removeJwtKeys();
+		clearJWTRSAKeysCache();
 	});
 
 	function identityToken(overrides = {}) {
