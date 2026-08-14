@@ -4,7 +4,7 @@
 	"timezone": "America/New_York",
 	"schedule": ["before 9am on Monday"],
 	"semanticCommits": "enabled",
-	"prConcurrentLimit": 2,
+	"prConcurrentLimit": 20,
 	"minimumReleaseAge": "7 days",
 	"internalChecksFilter": "strict",
 	"automerge": true,
@@ -30,8 +30,56 @@
 			"groupName": "all non-major dependencies",
 			"groupSlug": "all-minor-patch",
 			"matchUpdateTypes": ["minor", "patch"],
-			"excludePackageNames": ["alasql"],
+			"matchPackageNames": [
+				"!alasql",
+				"!@harperfast/extended-iterable",
+				"!lmdb",
+				"!msgpackr",
+				"!cbor-x",
+				"!ordered-binary",
+				"!structon",
+				"!node",
+				"!docker.io/node",
+				"!argon2",
+				"!bufferutil",
+				"!utf-8-validate",
+				"!segfault-handler"
+			],
 			"matchCurrentVersion": "!/^0/"
+		},
+		{
+			"description": "Majors are merged by a human.",
+			"matchUpdateTypes": ["major"],
+			"automerge": false
+		},
+		{
+			"description": "A 0.x release conveys breaking changes in its minor, which Renovate still classifies as `minor`. The group above already excludes 0.x; this covers the individual PRs it leaves behind.",
+			"matchCurrentVersion": "/^0/",
+			"automerge": false
+		},
+		{
+			"description": "Compiled addons, the at-rest/wire encoders, and the SQL engine are merged by a human, and get their own PR rather than riding in a group. Keep this list and the exclusions above in step: a name in only one of them either rides the group while blocking the group's automerge, or is silently automergeable.",
+			"matchPackageNames": [
+				"@harperfast/extended-iterable",
+				"lmdb",
+				"msgpackr",
+				"cbor-x",
+				"ordered-binary",
+				"structon",
+				"alasql",
+				"argon2",
+				"bufferutil",
+				"utf-8-validate",
+				"segfault-handler",
+				"node",
+				"docker.io/node"
+			],
+			"automerge": false
+		},
+		{
+			"description": "rocksdb-js is proposed by .github/workflows/update-rocksdb-js.yml on every upstream release. Renovate would open a second PR for the same bump, and that workflow's cleanup only closes PRs on its own head branch.",
+			"matchPackageNames": ["@harperfast/rocksdb-js"],
+			"enabled": false
 		}
 	]
 }
