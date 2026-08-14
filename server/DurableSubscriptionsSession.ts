@@ -32,6 +32,16 @@ function getDurableSession() {
 	return _DurableSession;
 }
 let _LastWill: any;
+/**
+ * A scoped-token will must not publish past the token's expiry — expiry is the token's only
+ * revocation. Keyed off the persisted will principal so both the abnormal-disconnect path and
+ * worker-0 restart replay enforce it identically (they previously read different sources).
+ */
+function isWillFromExpiredScopedToken(will: any): boolean {
+	const user = will?.user;
+	return !!(user?._scopedToken && user.authExpiresAt && user.authExpiresAt * 1000 <= Date.now());
+}
+
 function getLastWill() {
 	if (!_LastWill) {
 		_LastWill = table({
@@ -61,7 +71,7 @@ if (getWorkerIndex() === 0) {
 					// Never rehydrate a scoped-token bearer by name: its username is attribution only, and
 					// resolving it against hdb_user could substitute a real principal's permissions. The
 					// will record carries the token's own (downgraded) role — and must not outlive the token.
-					if (message.user.authExpiresAt && message.user.authExpiresAt * 1000 <= Date.now()) {
+					if (isWillFromExpiredScopedToken(message)) {
 						warn('Dropping will from an expired scoped token', data);
 						getLastWill().delete(will.id);
 						continue;
@@ -397,11 +407,10 @@ class SubscriptionsSession {
 			try {
 				if (!clientTerminated) {
 					const will = await getLastWill().get(this.sessionId);
-					// A scoped token is revocable only by expiry: don't publish its will past exp, so
-					// this live-disconnect path matches what restart replay already enforces.
-					const scopedExpiry = this.user?._scopedToken ? this.user.authExpiresAt : undefined;
-					const expired = scopedExpiry && scopedExpiry * 1000 <= Date.now();
-					if (will && !expired) {
+					// Same expiry rule as restart replay, keyed off the PERSISTED will principal (not
+					// this.user): a later same-clientId session with no will leaves the prior scoped
+					// will row in place, and its own this.user may be a different (non-scoped) principal.
+					if (will && !isWillFromExpiredScopedToken(will)) {
 						await publishMessage(will, will.data, context);
 					}
 				}
