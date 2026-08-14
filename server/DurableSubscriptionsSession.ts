@@ -56,11 +56,18 @@ if (getWorkerIndex() === 0) {
 		for await (const will of getLastWill().search({})) {
 			const data = will.data;
 			const message = { ...will };
-			// Never rehydrate a scoped-token bearer by name: its username is attribution only, and
-			// resolving it against hdb_user could substitute a real principal's permissions. The
-			// persisted user object already carries the token's own (downgraded) role.
-			if (message.user?.username && !message.user._scopedToken)
+			if (message.user?._scopedToken) {
+				// Never rehydrate a scoped-token bearer by name: its username is attribution only, and
+				// resolving it against hdb_user could substitute a real principal's permissions. The
+				// will record carries the token's own (downgraded) role — and must not outlive the token.
+				if (message.user.authExpiresAt && message.user.authExpiresAt * 1000 <= Date.now()) {
+					warn('Dropping will from an expired scoped token', data);
+					getLastWill().delete(will.id);
+					continue;
+				}
+			} else if (message.user?.username) {
 				message.user = await (server as any).getUser(message.user.username);
+			}
 			try {
 				await publishMessage(message, data, message);
 			} catch {
@@ -129,7 +136,11 @@ export async function getSession({
 	}
 	if (will) {
 		will.id = sessionId;
-		will.user = { username: user?.username };
+		// A scoped-token bearer's will must carry the token's own role and expiry: its username is
+		// attribution only and cannot be rehydrated from hdb_user at replay time.
+		will.user = user?._scopedToken
+			? { username: user.username, _scopedToken: true, role: user.role, authExpiresAt: user.authExpiresAt }
+			: { username: user?.username };
 		// Must be durably persisted before CONNACK is sent (getSession() resolving is what lets
 		// mqtt.ts send CONNACK). Otherwise a client that connects and then disconnects abruptly
 		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()

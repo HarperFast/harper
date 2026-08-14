@@ -648,6 +648,9 @@ describe('test validateOperationToken function', () => {
 });
 
 describe('test scoped tokens (inline role object)', () => {
+	// a plain (non-rewired) module instance: this suite runs entirely against real production
+	// behavior — real key files, real users cache, no stubs (AGENTS.md test style)
+	const token_auth_plain = require('#src/security/tokenAuthentication');
 	const SU_MINTER = {
 		username: 'admin_minter',
 		active: true,
@@ -661,23 +664,22 @@ describe('test scoped tokens (inline role object)', () => {
 	let scopedKeysPath;
 
 	before(async () => {
-		// real key files and a real users cache — no stubs or rewiring (AGENTS.md test style)
 		scopedKeysPath = path.join(testUtils.getMockTestPath(), 'keys');
 		fs.mkdirpSync(scopedKeysPath);
 		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPass'), PASSPHRASE_VALUE);
 		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPrivate.key'), PRIVATE_KEY_VALUE);
 		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPublic.key'), PUBLIC_KEY_VALUE);
-		token_auth.clearJWTRSAKeysCache();
+		token_auth_plain.clearJWTRSAKeysCache();
 		await user.setUsersWithRolesCache(new Map([['existing_user', { username: 'existing_user', active: true }]]));
 	});
 
 	after(() => {
 		fs.removeSync(scopedKeysPath);
-		token_auth.clearJWTRSAKeysCache();
+		token_auth_plain.clearJWTRSAKeysCache();
 	});
 
 	function mint(overrides = {}) {
-		return token_auth.createTokens({
+		return token_auth_plain.createTokens({
 			hdb_user: SU_MINTER,
 			role: { permission: { operations: ['read_only'] } },
 			...overrides,
@@ -807,7 +809,7 @@ describe('test scoped tokens (inline role object)', () => {
 
 	it('validateOperationToken accepts a scoped token and builds a synthetic user', async () => {
 		const { operation_token } = await mint({ username: 'svc' });
-		const scopedUser = await token_auth.validateOperationToken(operation_token);
+		const scopedUser = await token_auth_plain.validateOperationToken(operation_token);
 		assert.deepStrictEqual(scopedUser.username, 'svc');
 		assert.deepStrictEqual(scopedUser.active, true);
 		assert.deepStrictEqual(scopedUser._scopedToken, true);
@@ -825,9 +827,9 @@ describe('test scoped tokens (inline role object)', () => {
 		const tokenB = (await mint({ role: { permission: { operations: ['standard_user'] } } })).operation_token;
 		const tokenC = (await mint({ role: { permission: { operations: ['read_only'] } }, username: 'other' }))
 			.operation_token;
-		const userA = await token_auth.validateOperationToken(tokenA);
-		const userB = await token_auth.validateOperationToken(tokenB);
-		const userC = await token_auth.validateOperationToken(tokenC);
+		const userA = await token_auth_plain.validateOperationToken(tokenA);
+		const userB = await token_auth_plain.validateOperationToken(tokenB);
+		const userC = await token_auth_plain.validateOperationToken(tokenC);
 		assert.notDeepStrictEqual(userA.role.role, userB.role.role);
 		assert.deepStrictEqual(userA.role.role, userC.role.role);
 	});
@@ -836,7 +838,7 @@ describe('test scoped tokens (inline role object)', () => {
 		const { operation_token } = await mint({ expires_in: '-1' });
 		let error;
 		try {
-			await token_auth.validateOperationToken(operation_token);
+			await token_auth_plain.validateOperationToken(operation_token);
 		} catch (e) {
 			error = e;
 		}
@@ -852,7 +854,7 @@ describe('test scoped tokens (inline role object)', () => {
 		parts[1] = Buffer.from(JSON.stringify(payload)).toString('base64url');
 		let error;
 		try {
-			await token_auth.validateOperationToken(parts.join('.'));
+			await token_auth_plain.validateOperationToken(parts.join('.'));
 		} catch (e) {
 			error = e;
 		}
@@ -861,7 +863,7 @@ describe('test scoped tokens (inline role object)', () => {
 
 	it('scoped token is not accepted as a refresh or login token', async () => {
 		const { operation_token } = await mint();
-		for (const validator of [token_auth.validateRefreshToken, token_auth.validateLoginToken]) {
+		for (const validator of [token_auth_plain.validateRefreshToken, token_auth_plain.validateLoginToken]) {
 			let error;
 			try {
 				await validator(operation_token);
@@ -880,7 +882,7 @@ describe('test scoped tokens (inline role object)', () => {
 		);
 		let error;
 		try {
-			await token_auth.validateOperationToken(legacyToken);
+			await token_auth_plain.validateOperationToken(legacyToken);
 		} catch (e) {
 			error = e;
 		}
