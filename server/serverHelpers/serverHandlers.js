@@ -114,10 +114,10 @@ function authHandler(req, resp, done) {
 	const isAuthOperation = !NO_AUTH_OPERATIONS.includes(req.body.operation);
 	if (
 		isAuthOperation ||
-		// If create token is called without username/password in the body it needs to be authorized
+		// Create token needs to be authorized when called without username/password in the body, or
+		// with an inline role object (scoped-token minting is gated on the authenticated requester)
 		(req.body.operation === terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
-			!req.body.username &&
-			!req.body.password)
+			((!req.body.username && !req.body.password) || (req.body.role && typeof req.body.role === 'object')))
 	) {
 		pAuthorize(req, resp)
 			.then(async (userData) => {

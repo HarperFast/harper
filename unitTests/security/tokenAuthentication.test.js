@@ -647,6 +647,252 @@ describe('test validateOperationToken function', () => {
 	});
 });
 
+describe('test scoped tokens (inline role object)', () => {
+	let rw_get_tokens;
+	let update_stub;
+	let signalling_stub;
+	const SU_MINTER = {
+		username: 'admin_minter',
+		active: true,
+		role: { role: 'super_user', id: 'su-id', permission: { super_user: true } },
+	};
+	const NON_SU_MINTER = {
+		username: 'basic_minter',
+		active: true,
+		role: { role: 'basic', id: 'basic-id', permission: { super_user: false } },
+	};
+
+	before(() => {
+		sandbox.restore();
+		rw_get_tokens = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
+	});
+
+	beforeEach(() => {
+		update_stub = sandbox.stub(insert, 'update').callsFake(async () => {
+			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
+		});
+		signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake(() => {});
+	});
+
+	afterEach(() => {
+		sandbox.restore();
+	});
+
+	after(() => {
+		rw_get_tokens();
+	});
+
+	function mint(overrides = {}) {
+		return token_auth.createTokens({
+			hdb_user: SU_MINTER,
+			role: { permission: { operations: ['read_only'] } },
+			...overrides,
+		});
+	}
+
+	it('non-super_user minter is rejected with 403', async () => {
+		let error;
+		try {
+			await mint({ hdb_user: NON_SU_MINTER });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /super_user/);
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('unauthenticated mint is rejected with 403', async () => {
+		let error;
+		try {
+			await mint({ hdb_user: undefined });
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('happy path: single token, no refresh token, no persistence, no user-change broadcast', async () => {
+		const result = await mint();
+		assert.notDeepStrictEqual(result.operation_token, undefined);
+		assert.deepStrictEqual(result.refresh_token, undefined);
+		assert(update_stub.called === false);
+		assert(signalling_stub.called === false);
+
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.sub, 'scoped-operation');
+		assert.deepStrictEqual(payload.username, 'admin_minter');
+		assert.deepStrictEqual(payload.minted_by, 'admin_minter');
+		assert.deepStrictEqual(payload.super_user, false);
+		assert.deepStrictEqual(payload.role.permission.operations, ['read_only']);
+	});
+
+	it('username is arbitrary attribution and need not exist', async () => {
+		const result = await mint({ username: 'reporting-service' });
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.username, 'reporting-service');
+		assert.deepStrictEqual(payload.minted_by, 'admin_minter');
+	});
+
+	it('embedded super_user/cluster_user are downgraded at mint', async () => {
+		const result = await mint({
+			role: { permission: { super_user: true, cluster_user: true, operations: ['read_only'] } },
+		});
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.role.permission.super_user, false);
+		assert.deepStrictEqual(payload.role.permission.cluster_user, false);
+	});
+
+	it('password cannot be combined with an inline role', async () => {
+		let error;
+		try {
+			await mint({ password: 'pass' });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /password/);
+	});
+
+	it('purpose cannot be combined with an inline role', async () => {
+		let error;
+		try {
+			await mint({ purpose: 'login' });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /purpose/);
+	});
+
+	it('unknown operation names are rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: { operations: ['totally_fake_op'] } } });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /totally_fake_op/);
+	});
+
+	it('array permission is rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: ['not-an-object'] } });
+		} catch (e) {
+			error = e;
+		}
+		assert.notDeepStrictEqual(error, undefined);
+	});
+
+	it('malformed structure_user type is rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: { structure_user: 'yes' } } });
+		} catch (e) {
+			error = e;
+		}
+		assert.notDeepStrictEqual(error, undefined);
+	});
+
+	it('oversized permission object is rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: { operations: ['read_only'], notes: 'x'.repeat(9000) } } });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /at most/);
+	});
+
+	it('validateOperationToken accepts a scoped token and builds a synthetic user', async () => {
+		const { operation_token } = await mint({ username: 'svc' });
+		const user = await token_auth.validateOperationToken(operation_token);
+		assert.deepStrictEqual(user.username, 'svc');
+		assert.deepStrictEqual(user.active, true);
+		assert.deepStrictEqual(user._scopedToken, true);
+		assert.deepStrictEqual(user._mintedBy, 'admin_minter');
+		assert.match(user.role.role, /^_scoped_token_[0-9a-f]{24}$/);
+		assert.deepStrictEqual(user.role.permission.super_user, false);
+		assert.deepStrictEqual(user.role.permission.cluster_user, false);
+		// operations pre-expanded for the verifyPerms gate
+		assert(user.role.permission._expandedOperations instanceof Set);
+		assert(user.role.permission._expandedOperations.has('search_by_hash'));
+		assert(!user.role.permission._expandedOperations.has('insert'));
+	});
+
+	it('distinct permission sets get distinct synthetic role identities; identical sets share', async () => {
+		const tokenA = (await mint({ role: { permission: { operations: ['read_only'] } } })).operation_token;
+		const tokenB = (await mint({ role: { permission: { operations: ['standard_user'] } } })).operation_token;
+		const tokenC = (await mint({ role: { permission: { operations: ['read_only'] } }, username: 'other' }))
+			.operation_token;
+		const userA = await token_auth.validateOperationToken(tokenA);
+		const userB = await token_auth.validateOperationToken(tokenB);
+		const userC = await token_auth.validateOperationToken(tokenC);
+		assert.notDeepStrictEqual(userA.role.role, userB.role.role);
+		assert.deepStrictEqual(userA.role.role, userC.role.role);
+	});
+
+	it('expired scoped token is rejected with 403', async () => {
+		const { operation_token } = await mint({ expires_in: '-1' });
+		let error;
+		try {
+			await token_auth.validateOperationToken(operation_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'token expired');
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('tampered scoped token is rejected', async () => {
+		const { operation_token } = await mint();
+		const parts = operation_token.split('.');
+		const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+		payload.role.permission.operations = ['standard_user'];
+		parts[1] = Buffer.from(JSON.stringify(payload)).toString('base64url');
+		let error;
+		try {
+			await token_auth.validateOperationToken(parts.join('.'));
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 401);
+	});
+
+	it('scoped token is not accepted as a refresh or login token', async () => {
+		const { operation_token } = await mint();
+		for (const validator of [token_auth.validateRefreshToken, token_auth.validateLoginToken]) {
+			let error;
+			try {
+				await validator(operation_token);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error.statusCode, 401);
+		}
+	});
+
+	it('legacy string-role tokens are still rejected by validateOperationToken', async () => {
+		const validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u) => {
+			return { username: u, role: { permission: { super_user: true } } };
+		});
+		const { operation_token } = await token_auth.createTokens({
+			username: 'HDB_USER',
+			password: 'pass',
+			role: 'component_role',
+		});
+		validate_user_stub.restore();
+		let error;
+		try {
+			await token_auth.validateOperationToken(operation_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 401);
+	});
+});
+
 describe('test validateLoginToken function', () => {
 	let rw_get_tokens;
 	let jwt_spy;

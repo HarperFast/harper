@@ -325,6 +325,18 @@ describe('Test serverHandlers.js module ', () => {
 			});
 		});
 
+		it('Should require auth for create auth tokens with an inline role object', () => {
+			auth_stub.resolves(TEST_USER);
+			const test_req = testUtils.deepClone(TEST_AUTH_REQ);
+			test_req.body.username = 'attribution-only';
+			test_req.body.role = { permission: { operations: ['read_only'] } };
+
+			serverHandlers_rw.authHandler(test_req, {}, (err, data) => {
+				assert.ok(data === undefined, 'Should not return anything for valid auth');
+				assert.ok(test_req.body.hdb_user === TEST_USER, 'Scoped-token mint must carry the authenticated requester');
+			});
+		});
+
 		it('Should throw error if thrown from auth', () => {
 			auth_stub.rejects(TEST_ERR);
 

@@ -39,6 +39,7 @@ suite('Token authentication', (ctx) => {
 	let admin;
 	let operationToken;
 	let refreshToken;
+	let scopedToken;
 	let authorizeLocal;
 
 	before(async () => {
@@ -192,5 +193,92 @@ suite('Token authentication', (ctx) => {
 		const response = await client.req().send({ operation: 'create_authentication_tokens' }).expect(200);
 		assert.notStrictEqual(response.body.operation_token, undefined, response.text);
 		assert.notStrictEqual(response.body.refresh_token, undefined, response.text);
+	});
+
+	test('scoped token: super_user mints an inline-role token for a non-existent username', async () => {
+		const response = await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				username: 'reporting-service',
+				role: {
+					permission: {
+						operations: ['read_only'],
+						[SCHEMA]: {
+							tables: {
+								// insert granted at the table level on purpose: the operations
+								// allowlist below must deny it anyway (gate 1 runs first)
+								[TABLE]: { read: true, insert: true, update: false, delete: false, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+			})
+			.expect(200);
+		assert.notStrictEqual(response.body.operation_token, undefined, response.text);
+		assert.strictEqual(response.body.refresh_token, undefined, response.text);
+		scopedToken = response.body.operation_token;
+	});
+
+	test('scoped token bearer can run a listed read operation', async () => {
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({
+				operation: 'search_by_hash',
+				schema: SCHEMA,
+				table: TABLE,
+				primary_key: PRIMARY_KEY,
+				hash_values: [1],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.equal(r.body.length, 1, r.text))
+			.expect(200);
+	});
+
+	test('scoped token bearer reports its attribution username via user_info', async () => {
+		const response = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({ operation: 'user_info' })
+			.expect(200);
+		assert.equal(response.body.username, 'reporting-service', response.text);
+	});
+
+	test('scoped token bearer is denied an unlisted operation despite table-level permission', async () => {
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({
+				operation: 'insert',
+				schema: SCHEMA,
+				table: TABLE,
+				records: [{ employeeid: 99, firstname: 'Denied' }],
+			})
+			.expect((r) => assert.ok(r.text.includes('not permitted'), r.text))
+			.expect(403);
+	});
+
+	test('scoped token bearer is denied super_user-only operations', async () => {
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({ operation: 'get_configuration' })
+			.expect(403);
+	});
+
+	test('scoped token mint with an unknown operation name is rejected', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				role: { permission: { operations: ['totally_fake_op'] } },
+			})
+			.expect((r) => assert.ok(r.text.includes('totally_fake_op'), r.text))
+			.expect(400);
 	});
 });

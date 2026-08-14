@@ -1,12 +1,26 @@
-import type { User } from './user.ts';
+import { createHash } from 'node:crypto';
+import type { User, UserRole } from './user.ts';
 import type { ImpersonatePayload } from '../server/operationsServer.ts';
 import { getUsersWithRolesCache } from './user.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
+import { addRoleValidation } from '../validation/role_validation.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { getRoleByName } from './role.ts';
 import { attachScopeToUser } from './operationScope.ts';
 import { attachWorkloadIdentityToUser } from './credentialProvenance.ts';
+
+/**
+ * Content-derived identity for synthetic (inline) roles. getRolePermissions memoizes translated
+ * permissions by role name, so synthetic roles must never share a constant name: two inline roles
+ * with different permissions would alias in that cache and leak permissions across principals.
+ * Hashing the (already downgraded) permission content isolates distinct permission sets while
+ * letting identical ones share a cache entry. The paired __updatedtime__ of 0 keeps the memo key
+ * stable across requests; the content hash in the name is what invalidates on permission change.
+ */
+export function syntheticRoleName(prefix: string, permission: object): string {
+	return `${prefix}_${createHash('sha256').update(JSON.stringify(permission)).digest('hex').slice(0, 24)}`;
+}
 
 /**
  * Applies impersonation to a request. The authenticated user must be a super_user.
@@ -49,6 +63,17 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 	// a lesser role — and then mint a 30-day credential that createTokens would no longer refuse.
 	attachWorkloadIdentityToUser(impersonatedUser, (authenticatedUser as any).fromWorkloadIdentity);
 
+	// Re-key the synthetic role by its effective (post-downgrade) content so it can never alias
+	// another impersonation's permissions or poison a persisted role's memoized translation —
+	// getRolePermissions caches by role name (see syntheticRoleName).
+	if (impersonatedUser.role) {
+		impersonatedUser.role = {
+			...impersonatedUser.role,
+			role: syntheticRoleName('_impersonated', impersonatedUser.role.permission),
+			__updatedtime__: 0,
+		};
+	}
+
 	// Tag for audit trail
 	impersonatedUser._impersonated = true;
 	impersonatedUser._impersonatedBy = authenticatedUser.username;
@@ -60,9 +85,52 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 	return impersonatedUser;
 }
 
-function validatePayload(payload: ImpersonatePayload): void {
+/**
+ * Builds the synthetic user embedded in a scoped authentication token
+ * (create_authentication_tokens with an inline `role` object). Same gate and downgrade rules as
+ * impersonation Mode A. `trusted` marks internal dispatch (operation authorization bypassed),
+ * where no authenticated minter exists.
+ */
+export function buildScopedTokenUser(minter: User | undefined, payload: ImpersonatePayload, trusted = false): User {
+	if (!trusted && !minter?.role?.permission?.super_user) {
+		throw new ClientError('Only super_user can create a token with an inline role', 403);
+	}
+	validatePayload(payload, 'scoped token role');
+	if (!payload.role) {
+		throw new ClientError("A scoped token requires 'role' with 'permission'");
+	}
+	const username = payload.username || minter?.username;
+	if (!username || typeof username !== 'string') {
+		throw new ClientError("A scoped token requires a 'username'");
+	}
+	// Downgrade before deep validation and hashing, so a supplied super_user/cluster_user flag is
+	// neutralized (same silent downgrade as impersonation) rather than tripping the SU-perms check.
+	const permission = {
+		...payload.role.permission,
+		super_user: false,
+		cluster_user: false,
+	} as UserRole['permission'];
+	// The token's permissions are minted once and used many times, so the full persisted-role
+	// validation applies: a malformed shape must fail here with a 400, not at every use.
+	const deepValidation = addRoleValidation({ role: 'scoped_token', permission });
+	if (deepValidation) throw deepValidation;
+	const roleName = syntheticRoleName('_scoped_token', permission);
+	return {
+		username,
+		active: true,
+		role: {
+			permission,
+			role: roleName,
+			id: roleName,
+			__updatedtime__: 0,
+			__createdtime__: 0,
+		},
+	};
+}
+
+function validatePayload(payload: ImpersonatePayload, context = 'impersonate payload'): void {
 	if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-		throw new ClientError('Invalid impersonate payload: must be an object');
+		throw new ClientError(`Invalid ${context}: must be an object`);
 	}
 
 	const hasRole = payload.role !== undefined;
@@ -70,33 +138,31 @@ function validatePayload(payload: ImpersonatePayload): void {
 	const hasRoleName = typeof payload.role_name === 'string' && payload.role_name.length > 0;
 
 	if (!hasRole && !hasUsername && !hasRoleName) {
-		throw new ClientError(
-			"Invalid impersonate payload: must include 'username', 'role_name', or 'role' with 'permission'"
-		);
+		throw new ClientError(`Invalid ${context}: must include 'username', 'role_name', or 'role' with 'permission'`);
 	}
 
 	if (hasRole) {
 		if (typeof payload.role !== 'object' || payload.role === null) {
-			throw new ClientError("Invalid impersonate payload: 'role' must be an object");
+			throw new ClientError(`Invalid ${context}: 'role' must be an object`);
 		}
 		if (typeof payload.role.permission !== 'object' || payload.role.permission === null) {
-			throw new ClientError("Invalid impersonate payload: 'role.permission' must be an object");
+			throw new ClientError(`Invalid ${context}: 'role.permission' must be an object`);
 		}
-		validateOperationsField(payload.role.permission);
+		validateOperationsField(payload.role.permission, context);
 	}
 }
 
-function validateOperationsField(permission: Record<string, unknown>): void {
+function validateOperationsField(permission: Record<string, unknown>, context = 'impersonate payload'): void {
 	const operations = permission.operations;
 	if (operations === undefined) return;
 
 	if (!Array.isArray(operations)) {
-		throw new ClientError("Invalid impersonate payload: 'operations' must be an array");
+		throw new ClientError(`Invalid ${context}: 'operations' must be an array`);
 	}
 
 	const invalidOp = validateOperations(operations);
 	if (invalidOp !== null) {
-		throw new ClientError(`Invalid impersonate payload: unknown operation '${invalidOp}'`);
+		throw new ClientError(`Invalid ${context}: unknown operation '${invalidOp}'`);
 	}
 }
 
