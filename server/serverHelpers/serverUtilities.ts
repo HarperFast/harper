@@ -81,6 +81,40 @@ export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
  * handles the response to the sender.
  */
 // TODO: Replace Function type with an actual function type (e.g. (): Thingy)
+/**
+ * Fields stripped from an operation body before it reaches the operations log.
+ *
+ * `credentials` carries a transient token on deploy_component (`registryAuth` is its pre-rename
+ * name — still stripped, since this runs ahead of the validation that now rejects it). `value` /
+ * `values` carry .env secrets from set_env_value; `value` / `envelope` carry secrets from
+ * set_secret. `token` is the login-purpose token (login) and the CI identity token
+ * (exchange_oidc_token); `refresh_token` is the 30-day credential (refresh_operation_token).
+ *
+ * Redaction runs *before* the handler, so a rejected request logs a still-spendable credential —
+ * which is why a new secret-bearing field belongs here rather than left to the default (harper#1527
+ * was this same miss for set_env_value).
+ */
+export const UNLOGGABLE_OPERATION_FIELDS = [
+	'hdb_user',
+	'hdbAuthHeader',
+	'password',
+	'payload',
+	'credentials',
+	'registryAuth',
+	'value',
+	'values',
+	'envelope',
+	'token',
+	'refresh_token',
+];
+
+/** Callers gate this on log level: it allocates, and the operations log is often off. */
+export function redactForOperationLog(body: Record<string, any>): Record<string, any> {
+	const clean = { ...body };
+	for (const field of UNLOGGABLE_OPERATION_FIELDS) delete clean[field];
+	return clean;
+}
+
 export async function processLocalTransaction(req: OperationRequest, operationFunction: Function) {
 	try {
 		if (
@@ -89,28 +123,7 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
 				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
-			// Need to remove auth variables and secret-bearing fields, but we don't want to create
-			// an object unless the logging is actually going to happen. credentials carries a
-			// transient token on deploy_component (registryAuth is its pre-rename name — still
-			// stripped, since this runs ahead of the validation that now rejects it, and a stale
-			// caller's token must not reach the log); value/values carry .env secrets from
-			// set_env_value; value/envelope carry secrets from set_secret — none may reach the
-			// operations log.
-			/* eslint-disable no-unused-vars, @typescript-eslint/no-unused-vars */
-			const {
-				hdb_user,
-				hdbAuthHeader,
-				password,
-				payload,
-				credentials,
-				registryAuth,
-				value,
-				values,
-				envelope,
-				...cleanBody
-			} = req.body;
-			/* eslint-enable no-unused-vars, @typescript-eslint/no-unused-vars */
-			operationLog.info(cleanBody);
+			operationLog.info(redactForOperationLog(req.body));
 		}
 	} catch (e) {
 		operationLog.error(e);
