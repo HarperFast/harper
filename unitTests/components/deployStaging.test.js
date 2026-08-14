@@ -63,6 +63,19 @@ async function readMarker(directory) {
 	return fs.readFile(path.join(directory, 'index.js'), 'utf8');
 }
 
+// Entries currently parked in a component's `.deploy-aside`. discardDirAside sweeps asynchronously
+// (`void cleanupExtractionPaths(...)`) and that sweep rmdir's the directory once it is empty, so an
+// existsSync-then-readdir races it. An absent directory means everything was already swept, which
+// satisfies every assertion below just as well as an empty one.
+async function parkedAsideEntries(componentName) {
+	try {
+		return await fs.readdir(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR, componentName));
+	} catch (error) {
+		if (error.code === 'ENOENT') return [];
+		throw error;
+	}
+}
+
 describe('two-phase component directory transaction', function () {
 	this.timeout(30_000);
 	let sequence = 0;
@@ -536,8 +549,7 @@ describe('two-phase component directory transaction', function () {
 			await activateStagedApplication(application, id, { activationSpec: { package: null } });
 		}
 
-		const asideDir = path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR, name);
-		const parked = existsSync(asideDir) ? await fs.readdir(asideDir) : [];
+		const parked = await parkedAsideEntries(name);
 		const unretired = parked.filter(
 			(entry) =>
 				entry.startsWith('.in-progress-') && !parked.includes(`.retired-${entry.slice('.in-progress-'.length)}`)
@@ -787,8 +799,7 @@ describe('two-phase component directory transaction', function () {
 		assert.equal(await fs.readFile(path.join(application.dirPath, 'marker.txt'), 'utf8'), 'v2');
 		// Whatever was displaced must have been parked, not recursively removed in place. It is parked as
 		// disposable (`.discarded-`), so startup recovery will never restore it over the new version.
-		const asideDir = path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR, name);
-		const parked = existsSync(asideDir) ? await fs.readdir(asideDir) : [];
+		const parked = await parkedAsideEntries(name);
 		const recoverable = parked.filter((entry) => entry.startsWith('.in-progress-'));
 		assert.deepEqual(recoverable, [], 'the displaced tree is never left looking like a rollback record');
 
