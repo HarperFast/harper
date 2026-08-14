@@ -1232,6 +1232,7 @@ export async function dropDatabase(databaseName) {
 	try {
 		for (const tableName in dbTables) {
 			const table = dbTables[tableName];
+			table.cleanup?.();
 			rootStore = table.primaryStore.rootStore;
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 			lmdbDatabaseEnvs.delete(rootStore.path);
@@ -1303,6 +1304,11 @@ export function closeDatabase(databaseName: string): boolean {
 	for (const tableName in dbTables) {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
+		try {
+			table.cleanup?.();
+		} catch (error) {
+			logger.warn(`Error cleaning up table ${databaseName}.${tableName} while closing database:`, error);
+		}
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
 		for (const indexName in table.indices || {}) {
 			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);

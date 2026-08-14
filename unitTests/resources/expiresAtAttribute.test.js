@@ -3,6 +3,13 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { Transaction: RocksTransaction } = require('@harperfast/rocksdb-js');
+const { asBinary } = require('lmdb');
+const sinon = require('sinon');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
+const { existsSync } = require('node:fs');
+const { setTimeout: delay } = require('node:timers/promises');
+const { waitFor } = require('../waitFor.js');
 
 // A schema @expiresAt attribute must be authoritative over the table-level expiration default, in both
 // directions. Previously the field only armed a separate index-pruning sweep (which can only remove
@@ -17,10 +24,11 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		setMainIsWorker(true);
 	});
 
-	const makeTable = (name, expirationSeconds) =>
+	const makeTable = (name, expirationSeconds, options = {}) =>
 		table({
 			table: name,
 			database: 'test',
+			...options,
 			...(expirationSeconds == null ? {} : { expiration: expirationSeconds }),
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
@@ -31,6 +39,29 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 	const storedExpiresAt = async (Table, id) => {
 		await Table.primaryStore.committed;
 		return Table.primaryStore.getEntry(id)?.expiresAt;
+	};
+
+	const captureExpirationSweep = (createTable) => {
+		let runSweep;
+		let sweepIntervalCount = 0;
+		const realSetInterval = global.setInterval;
+		const intervalStub = sinon.stub(global, 'setInterval').callsFake((callback, interval, ...args) => {
+			if (interval === 60_000) {
+				runSweep = callback;
+				sweepIntervalCount++;
+				return { unref() {} };
+			}
+			return realSetInterval(callback, interval, ...args);
+		});
+		let Table;
+		try {
+			Table = createTable();
+		} finally {
+			intervalStub.restore();
+		}
+		assert(runSweep, 'table creation should register the expiration sweep');
+		assert.strictEqual(sweepIntervalCount, 1);
+		return { Table, runSweep };
 	};
 
 	it('extends: a far-future field overrides a short table default', async function () {
@@ -133,8 +164,12 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.deepStrictEqual([...expirationKeys], [expiresAt - 1, expiresAt]);
 		assert.deepStrictEqual([...expirationKeys.map((value) => value)], [expiresAt - 1, expiresAt]);
 		assert.deepStrictEqual(
-			[...index.getRange({ start: true, values: false, end: expiresAt + 1, limit: 2, snapshot: false })],
-			[expiresAt - 1, expiresAt]
+			[...index.getRange({ start: true, values: false, end: expiresAt + 2, limit: 1, snapshot: false })],
+			[expiresAt - 1]
+		);
+		assert.deepStrictEqual(
+			[...index.getRange({ start: true, values: false, end: expiresAt + 2, offset: 1, limit: 2, snapshot: false })],
+			[expiresAt, expiresAt + 1]
 		);
 		const sweepEntries = [];
 		for (const key of expirationKeys) {
@@ -151,22 +186,57 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			[1, 2]
 		);
 		assert.deepStrictEqual([...index.getValues(expiresAt + 2)], [[4, 'part']]);
+
+		const firstChunk = [...index.getCompositeRange({ end: expiresAt + 2, limit: 2 })];
+		const cursor = firstChunk.at(-1).cursor;
+		const savedCursor = structuredClone(cursor);
+		assert.deepStrictEqual(
+			[...index.getCompositeRange({ end: expiresAt + 2, limit: 20 })].map((entry) => entry.value),
+			[0, 5, 1, 2, 3, [4, 'part']]
+		);
+		assert.deepStrictEqual(cursor, savedCursor);
+		assert.deepStrictEqual(
+			[...index.getCompositeRange({ after: cursor, end: expiresAt + 2, limit: 20 })].map((entry) => entry.value),
+			[1, 2, 3, [4, 'part']]
+		);
+	});
+
+	it('keeps exact Rocks index matching distinct for similar values', async function () {
+		const Table = table({
+			table: 'SimilarIndexValues',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'label', indexed: true },
+			],
+		});
+		await Table.put(1, { id: 1, label: 'hello' });
+		await Table.put(4, { id: 4, label: 'hello' });
+		await Table.put(2, { id: 2, label: 'hello world' });
+		await Table.put(3, { id: 3, label: 'hell' });
+		await Table.put([5, 'part'], { id: [5, 'part'], label: 'hello' });
+		await Table.primaryStore.committed;
+
+		const index = Table.indices.label;
+		assert.deepStrictEqual([...index.getValues('hello')], [1, 4, [5, 'part']]);
+		assert.deepStrictEqual([...index.getValues('hello', { offset: 1, limit: 1 })], [4]);
+		assert.deepStrictEqual([...index.getValues('hello', { reverse: true })], [[5, 'part'], 4, 1]);
+		assert.deepStrictEqual([...index.getValues('hello', { reverse: true, offset: 1, limit: 1 })], [4]);
+		assert.deepStrictEqual([...index.getValues('hello world')], [2]);
+		assert.deepStrictEqual([...index.getValues('hell')], [3]);
+
+		const searchResults = [];
+		for await (const record of Table.search({
+			allowFullScan: false,
+			conditions: [{ attribute: 'label', value: 'hello' }],
+		})) {
+			searchResults.push(record.id);
+		}
+		assert.deepStrictEqual(searchResults, [1, 4, [5, 'part']]);
 	});
 
 	it('physically evicts expired records and transactionally cleans dangling index entries', async function () {
-		const originalSetInterval = global.setInterval;
-		let runSweep;
-		global.setInterval = (callback, interval) => {
-			if (interval === 60_000) runSweep = callback;
-			return { unref() {} };
-		};
-		let Table;
-		try {
-			Table = makeTable('ExpiresAtSweep');
-		} finally {
-			global.setInterval = originalSetInterval;
-		}
-		assert(runSweep, 'table creation should register the expiration sweep');
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtSweep'));
 
 		const expiresAt = Date.now() - 1_000;
 		await Table.put(1, { id: 1, expiresAt });
@@ -178,5 +248,239 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await runSweep();
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], []);
+		Table.cleanup();
+	});
+
+	it('continues an expiration sweep beyond one RocksDB chunk', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtSweepContinuation'));
+		const expiresAt = Date.now() - 1_000;
+		await Promise.all(Array.from({ length: 505 }, (_, id) => Table.put(id, { id, expiresAt })));
+		await Table.primaryStore.committed;
+
+		await runSweep();
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], []);
+		for (let id = 0; id < 505; id++) assert.strictEqual(Table.primaryStore.getEntry(id)?.value, undefined);
+		Table.cleanup();
+	});
+
+	it('keeps a blob file when an expired-record eviction conflicts', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() =>
+			table({
+				table: 'ExpiresAtBlobConflict',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+					{ name: 'payload', type: 'Blob' },
+				],
+			})
+		);
+		const blob = createBlob(Buffer.alloc(20_000, 7));
+		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: blob });
+		await Table.primaryStore.committed;
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath);
+		assert(existsSync(filePath));
+
+		setDeletionDelay(0);
+		const commitStub = sinon
+			.stub(RocksTransaction.prototype, 'commit')
+			.rejects(Object.assign(new Error('injected optimistic conflict'), { code: 'ERR_BUSY' }));
+		let commitRestored = false;
+		try {
+			await runSweep();
+			await delay(25);
+			assert(Table.primaryStore.getEntry(1)?.value, 'the failed eviction must leave the record intact');
+			assert(existsSync(filePath), 'a failed eviction must leave the referenced blob file intact');
+			commitStub.restore();
+			commitRestored = true;
+
+			await runSweep();
+			assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+			await waitFor(() => !existsSync(filePath), {
+				message: 'a committed eviction must remove its blob file',
+			});
+		} finally {
+			if (!commitRestored) commitStub.restore();
+			setDeletionDelay(500);
+			Table.cleanup();
+		}
+	});
+
+	it('preserves a blob record refreshed before its eviction transaction starts', async function () {
+		const Table = table({
+			table: 'ExpiresAtBlobRefreshRace',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		const oldBlob = createBlob(Buffer.alloc(20_000, 5));
+		const freshBlob = createBlob(Buffer.alloc(20_000, 6));
+		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: oldBlob });
+		await Table.primaryStore.committed;
+		const expiredEntry = Table.primaryStore.getEntry(1);
+
+		const freshExpiresAt = Date.now() + 60_000;
+		await Table.put(1, { id: 1, expiresAt: freshExpiresAt, payload: freshBlob });
+		await Table.primaryStore.committed;
+		assert.notStrictEqual(Table.primaryStore.getEntry(1).version, expiredEntry.version);
+		await Table.evict(1, expiredEntry.value, expiredEntry.version);
+
+		const refreshed = Table.primaryStore.getEntry(1)?.value;
+		assert.strictEqual(refreshed.expiresAt, freshExpiresAt);
+		assert.strictEqual(refreshed.payload.id, freshBlob.id);
+		assert(existsSync(getFilePathForBlob(freshBlob)), 'the refreshed record must retain its blob file');
+		Table.cleanup();
+	});
+
+	it('stops a running expiration sweep when the table is cleaned up', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() =>
+			table({
+				table: 'ExpiresAtSweepCancellation',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+					{ name: 'payload', type: 'Blob' },
+				],
+			})
+		);
+		const expiresAt = Date.now() - 1_000;
+		await Table.put('a', { id: 'a', expiresAt, payload: createBlob(Buffer.alloc(20_000, 3)) });
+		await Table.put('b', { id: 'b', expiresAt, payload: createBlob(Buffer.alloc(20_000, 4)) });
+		await Table.primaryStore.committed;
+		const [, secondEntry] = [...Table.indices.expiresAt.getCompositeRange({ end: Date.now(), limit: 2 })];
+		assert(secondEntry, 'the sweep should have a second entry to skip');
+
+		const originalEvict = Table.evict;
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
+			evictionStarted = true;
+			await blockedEviction;
+			return originalEvict.apply(this, args);
+		});
+		try {
+			const sweep = runSweep();
+			await waitFor(() => evictionStarted, { message: 'the first eviction should start' });
+			Table.cleanup();
+			releaseEviction();
+			await sweep;
+		} finally {
+			releaseEviction();
+			evictStub.restore();
+		}
+
+		assert(Table.primaryStore.getEntry(secondEntry.value)?.value, 'cleanup must stop the sweep before its next entry');
+	});
+
+	it('preserves retained tombstones while removing their dangling expiration index entries', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() =>
+			makeTable('ExpiresAtTombstoneSweep', undefined, { audit: true })
+		);
+
+		const expiresAt = Date.now() - 1_000;
+		await Table.put(1, { id: 1, expiresAt });
+		await Table.delete(1);
+		await Table.primaryStore.committed;
+		const tombstone = Table.primaryStore.getEntry(1);
+		assert(tombstone);
+		assert.strictEqual(tombstone.value, null);
+		const tombstoneMetadata = {
+			version: tombstone.version,
+			expiresAt: tombstone.expiresAt,
+			metadataFlags: tombstone.metadataFlags,
+			residencyId: tombstone.residencyId,
+		};
+		Table.indices.expiresAt.put(expiresAt, 1);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1]);
+
+		await runSweep();
+		const retained = Table.primaryStore.getEntry(1);
+		assert(retained);
+		assert.strictEqual(retained.value, null);
+		assert.deepStrictEqual(
+			{
+				version: retained.version,
+				expiresAt: retained.expiresAt,
+				metadataFlags: retained.metadataFlags,
+				residencyId: retained.residencyId,
+			},
+			tombstoneMetadata
+		);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], []);
+		Table.cleanup();
+	});
+
+	it('conflicts dangling cleanup with a concurrent primary resurrection', async function () {
+		const Table = makeTable('ExpiresAtDanglingConflict');
+		const expiresAt = Date.now() + 60_000;
+		Table.indices.expiresAt.put(expiresAt, 1);
+
+		const transaction = new RocksTransaction(Table.primaryStore.store);
+		const options = { transaction };
+		assert.strictEqual(Table.primaryStore.getEntry(1, options), undefined);
+		Table.primaryStore.removeSync(1, options);
+		Table.indices.expiresAt.remove(expiresAt, 1, options);
+		await Table.put(1, { id: 1, expiresAt });
+		await assert.rejects(transaction.commit(), (error) => error?.code === 'ERR_BUSY');
+
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.id, 1);
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.expiresAt, expiresAt);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1]);
+		Table.cleanup();
+	});
+
+	it('keeps a resurrection and its index when the real sweep cleanup conflicts', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtSweepConflict'));
+		const expiresAt = Date.now() - 1_000;
+		Table.indices.expiresAt.put(expiresAt, 1);
+
+		const originalCommit = RocksTransaction.prototype.commit;
+		let injected = false;
+		const commitStub = sinon.stub(RocksTransaction.prototype, 'commit').callsFake(async function (...args) {
+			if (!injected) {
+				injected = true;
+				await Table.put(1, { id: 1, expiresAt, name: 'resurrected' });
+			}
+			return originalCommit.apply(this, args);
+		});
+		try {
+			await runSweep();
+		} finally {
+			commitStub.restore();
+		}
+
+		assert(injected);
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.name, 'resurrected');
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1]);
+		Table.cleanup();
+	});
+
+	it('conflicts retained-tombstone cleanup with a concurrent primary resurrection', async function () {
+		const Table = makeTable('ExpiresAtTombstoneConflict', undefined, { audit: true });
+		const expiresAt = Date.now() + 60_000;
+		await Table.put(1, { id: 1, expiresAt });
+		await Table.delete(1);
+		await Table.primaryStore.committed;
+		Table.indices.expiresAt.put(expiresAt, 1);
+
+		const transaction = new RocksTransaction(Table.primaryStore.store);
+		const options = { transaction };
+		const tombstone = Table.primaryStore.getEntry(1, options);
+		assert.strictEqual(tombstone.value, null);
+		const encodedTombstone = Table.primaryStore.getBinarySync(1, options);
+		Table.primaryStore.putSync(1, asBinary(encodedTombstone), options);
+		Table.indices.expiresAt.remove(expiresAt, 1, options);
+		await Table.put(1, { id: 1, expiresAt, name: 'resurrected' });
+		await assert.rejects(transaction.commit(), (error) => error?.code === 'ERR_BUSY');
+
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.name, 'resurrected');
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1]);
+		Table.cleanup();
 	});
 });

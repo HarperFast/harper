@@ -104,6 +104,18 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 
 ---
 
+## Record expiration sweeps
+
+RocksDB `@expiresAt` sweeps walk one bounded composite-index range at a time with a fixed cutoff and an
+owned `(expiresAt, primaryKey)` cursor. A sweep never holds an iterator snapshot across an `await`, and it
+continues until every index entry at or before that cutoff has been considered. This keeps memory and native
+iterator lifetime bounded without leaving a permanent backlog when more than one chunk expires together.
+
+Dangling-index cleanup reads and writes the primary key in the same RocksDB transaction as the index removal.
+The primary write is a conflict guard against concurrent resurrection: absent keys receive a transactional
+remove, while retained audit tombstones are rewritten byte-for-byte so their version and retention semantics do
+not change. An `ERR_BUSY` abort leaves the newly written record and index authoritative for the next sweep.
+
 ## Path routing & parameterised routes
 
 `Resources.ts` is the registry that maps URL paths to `Resource` classes. Resources are registered (`jsResource.ts`) from a component's exports:

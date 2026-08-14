@@ -851,17 +851,26 @@ let deletionDelay = 500;
  * @param blob
  */
 export function deleteBlob(blob: Blob): void {
-	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob as any);
-	if (!filePath) {
-		return;
-	}
+	if (filePath) scheduleBlobFileDeletion(filePath);
+}
+
+function scheduleBlobFileDeletion(filePath: string): void {
 	setTimeout(() => {
 		// TODO: we need to determine when any read transaction are done with the file, and then delete it, this is a hack to just give it some time for that
 		unlink(filePath, (error) => {
 			if (error) logger.debug?.('Error trying to remove blob file', error);
 		});
 	}, deletionDelay);
+}
+
+export function prepareBlobDeletion(object: any): () => void {
+	const filePaths: string[] = [];
+	findBlobsInObject(object, (blob) => {
+		const filePath = getFilePathForBlob(blob as any);
+		if (filePath) filePaths.push(filePath);
+	});
+	return () => filePaths.forEach(scheduleBlobFileDeletion);
 }
 export function setDeletionDelay(delay: number) {
 	deletionDelay = delay;

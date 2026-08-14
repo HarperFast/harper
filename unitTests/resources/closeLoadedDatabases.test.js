@@ -9,8 +9,16 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, database, getDatabases, closeDatabase, closeLoadedDatabases } = require('#src/resources/databases');
+const {
+	table,
+	database,
+	getDatabases,
+	closeDatabase,
+	closeLoadedDatabases,
+	dropDatabase,
+} = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
+const sinon = require('sinon');
 
 describe('RocksDB handle release', function () {
 	before(function () {
@@ -68,5 +76,39 @@ describe('RocksDB handle release', function () {
 		closeLoadedDatabases();
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'tableless database should be released');
+	});
+
+	it('closeDatabase runs table cleanup before closing its stores', function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'closerelease4',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		const cleanup = sinon.spy(Table, 'cleanup');
+
+		closeDatabase('closerelease4');
+
+		assert.strictEqual(cleanup.callCount, 1, 'table cleanup should run before its database closes');
+		cleanup.restore();
+	});
+
+	it('dropDatabase runs table cleanup before destroying its stores', async function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'droprelease5',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		const cleanup = sinon.spy(Table, 'cleanup');
+
+		await dropDatabase('droprelease5');
+
+		assert.strictEqual(cleanup.callCount, 1, 'table cleanup should run before its database is destroyed');
+		cleanup.restore();
 	});
 });
