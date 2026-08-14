@@ -259,8 +259,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 						logger.error('Error committing replay transaction', error);
 					}
 					if (newVersion) {
-						// The version that just committed is whole again, so clear its marker.
-						if (wasTorn) recordTornVersion(rootStore, 0);
+						// Only a version that actually committed is whole again. Without the transaction check,
+						// the no-op commit at the FIRST entry of a run — nothing is staged yet — would clear the
+						// marker before this boot has replayed anything, and with an unreadable marker (every
+						// version reads as torn) that discards the record of a real tear from the run before.
+						if (wasTorn && transaction) recordTornVersion(rootStore, 0);
 						versionCommittedInPieces = false;
 					} else {
 						midVersionFlushes++;
@@ -404,7 +407,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 			// Only an iteration that ran to the end of the log leaves the torn transaction whole; every
 			// abort path above stops with entries of it unread, and this commit would otherwise no-op over
 			// a discarded transaction and clear the marker they exist to preserve.
-			if (lastVersionWasTorn && !abortedReplay) recordTornVersion(rootStore, 0);
+			if (lastVersionWasTorn && !abortedReplay && transaction) recordTornVersion(rootStore, 0);
 		} catch (error) {
 			// The last batch of a torn transaction failing here leaves that transaction durable in part,
 			// which the operator has to know about; a whole-transaction commit failing is the pre-existing
