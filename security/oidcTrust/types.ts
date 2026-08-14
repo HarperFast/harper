@@ -23,12 +23,16 @@ export interface OidcTrustPolicy {
 	audience: string;
 	/** Claim constraints, matched against the normalized token claims. */
 	claims: Record<string, ClaimConstraint>;
-	/** Harper user the exchanged token authenticates as. */
+	/**
+	 * Harper user the exchanged token authenticates as. Least privilege is this user's role — the
+	 * policy deliberately carries no operation allowlist of its own, because a second authorization
+	 * mechanism running alongside roles is one more place for the two to disagree.
+	 */
 	user: string;
-	/** When set, the minted token is usable only for these operations. */
-	operations?: string[];
 	/** Defaults to true; false keeps the policy for reference without honoring it. */
 	enabled?: boolean;
+	/** Free-text note for whoever reads `list_oidc_trust` a year from now. */
+	description?: string;
 }
 
 /** Claims carried by a verified identity token, plus the derived entries normalizeTokenClaims adds. */
