@@ -131,6 +131,48 @@ export function shouldAbortSlowReplay(totalElapsedMs: number, timeLimitMs = REPL
 	return totalElapsedMs >= timeLimitMs;
 }
 
+// Replay commits its DatabaseTransaction at a version boundary, so every write belonging to one
+// source transaction stages into a single in-memory batch (JS write operations plus the native
+// write batch). A version carrying a very large number of writes — a bulk load, or a peer
+// transaction replicated as one version — therefore has no bound at all, and exhausts heap before
+// any of the guards above can fire: they are progress- and time-based, and a replay that is happily
+// writing its way to an OOM trips neither. The process then dies mid-replay and the next boot
+// restarts the same replay, so the node never boots (harper#2161).
+//
+// Flushing mid-version is safe for REPLAY specifically (it is not for a live write, which has no
+// second chance): a torn version is re-applied in full on the next boot, because replay always
+// restarts from the log's last-flushed position and re-applies entries in timestamp order, which
+// is idempotent.
+
+// Estimated staged bytes before replay flushes mid-version. Deliberately far below any realistic
+// heap: the estimate below undercounts (it charges the audit entry, not the prior record entry each
+// write also retains), and a sync commit of a batch this size costs milliseconds, so there is no
+// reason to run closer to the edge.
+export const REPLAY_MAX_STAGED_BYTES = 32 * 1024 * 1024;
+
+// Staged write count bound, for the case the byte bound can't see: millions of tiny records whose
+// per-write JS overhead (write operation, key, retained entry, index staging) dwarfs their value.
+export const REPLAY_MAX_STAGED_WRITES = 10_000;
+
+// Charged per staged write on top of the audit entry's own size, for that per-write overhead.
+export const REPLAY_WRITE_OVERHEAD_BYTES = 256;
+
+/**
+ * Whether replay should commit and restart its transaction mid-version because the staged batch has
+ * grown past what may be held in memory (harper#2161).
+ *
+ * @param stagedBytes  estimated bytes staged since the last commit
+ * @param stagedWrites writes staged since the last commit
+ */
+export function shouldFlushReplayBatch(
+	stagedBytes: number,
+	stagedWrites: number,
+	byteLimit = REPLAY_MAX_STAGED_BYTES,
+	writeLimit = REPLAY_MAX_STAGED_WRITES
+): boolean {
+	return stagedBytes >= byteLimit || stagedWrites >= writeLimit;
+}
+
 /**
  * Wraps a transaction-log query iterator so a corrupt/torn frame ends that log's iteration
  * cleanly instead of escaping as an uncaughtException. rocksdb-js throws a bounded RangeError

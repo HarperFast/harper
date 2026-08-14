@@ -13,6 +13,10 @@ const {
 	REPLAY_NO_PROGRESS_TIME_SKIP_FLOOR,
 	shouldAbortSlowReplay,
 	REPLAY_WALL_CLOCK_LIMIT_MS,
+	shouldFlushReplayBatch,
+	REPLAY_MAX_STAGED_BYTES,
+	REPLAY_MAX_STAGED_WRITES,
+	REPLAY_WRITE_OVERHEAD_BYTES,
 } = require('#src/resources/replayLogsGuards');
 
 // Regression tests for the unclean-shutdown replay guards. Without these, an audit log
@@ -302,5 +306,34 @@ describe('shouldAbortSlowReplay', () => {
 		// shouldAbortSlowReplay fires purely on total elapsed time — writes or not.
 		assert.strictEqual(shouldAbortSlowReplay(5000, 1000), true);
 		assert.strictEqual(shouldAbortSlowReplay(500, 1000), false);
+	});
+});
+
+describe('shouldFlushReplayBatch', () => {
+	it('exposes bounds well below any realistic heap', () => {
+		assert.strictEqual(REPLAY_MAX_STAGED_BYTES, 32 * 1024 * 1024);
+		assert.strictEqual(REPLAY_MAX_STAGED_WRITES, 10_000);
+		assert.strictEqual(REPLAY_WRITE_OVERHEAD_BYTES, 256);
+	});
+
+	it('does not flush a batch below both bounds', () => {
+		assert.strictEqual(shouldFlushReplayBatch(0, 0), false);
+		assert.strictEqual(shouldFlushReplayBatch(REPLAY_MAX_STAGED_BYTES - 1, REPLAY_MAX_STAGED_WRITES - 1), false);
+	});
+
+	it('flushes on the byte bound alone (few, very large records)', () => {
+		assert.strictEqual(shouldFlushReplayBatch(REPLAY_MAX_STAGED_BYTES, 1), true);
+		assert.strictEqual(shouldFlushReplayBatch(REPLAY_MAX_STAGED_BYTES + 1, 1), true);
+	});
+
+	it('flushes on the write bound alone (many tiny records whose overhead the bytes miss)', () => {
+		assert.strictEqual(shouldFlushReplayBatch(0, REPLAY_MAX_STAGED_WRITES), true);
+		assert.strictEqual(shouldFlushReplayBatch(0, REPLAY_MAX_STAGED_WRITES + 1), true);
+	});
+
+	it('honors caller-supplied bounds (used to keep unit tests fast/deterministic)', () => {
+		assert.strictEqual(shouldFlushReplayBatch(999, 9, 1000, 10), false);
+		assert.strictEqual(shouldFlushReplayBatch(1000, 9, 1000, 10), true);
+		assert.strictEqual(shouldFlushReplayBatch(999, 10, 1000, 10), true);
 	});
 });
