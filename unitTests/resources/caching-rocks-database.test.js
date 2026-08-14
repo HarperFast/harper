@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { VERSION_NOT_UNIQUE_FLAG } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
@@ -18,7 +19,7 @@ describe('PrimaryRocksDatabase', function () {
 		TestTable = table({
 			table: 'PrimaryRocksTest',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
 		});
 	});
 
@@ -108,5 +109,17 @@ describe('PrimaryRocksDatabase', function () {
 		await TestTable.put(8, { name: 'eight updated' }); // clears cache entry
 		const result = await TestTable.get(8);
 		assert.equal(result.name, 'eight updated');
+	});
+
+	it('marks a record whose version was reused by a resequenced write', async function () {
+		const now = Date.now();
+		await TestTable.put(9, { name: 'base', count: 0 });
+		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		const inOrder = TestTable.primaryStore.getEntry(9);
+		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		const resequenced = TestTable.primaryStore.getEntry(9);
+		assert.equal(resequenced.version, inOrder.version);
+		assert.equal(resequenced.value.count, 2);
+		assert(resequenced.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
 	});
 });

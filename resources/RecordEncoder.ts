@@ -122,6 +122,8 @@ export const HAS_NODE_ID = 64;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
+// Cross-package record-header contract with rocksdb-js VERSION_NOT_UNIQUE_FLAG.
+export const VERSION_NOT_UNIQUE_FLAG = 0x10000;
 
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.
@@ -806,6 +808,9 @@ export function recordUpdater(store, tableId, auditStore) {
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
+		if (isRocksDB && record !== undefined && existingEntry?.version != null && newVersion <= existingEntry.version) {
+			metadataInNextEncoding = Math.max(metadataInNextEncoding, 0) | VERSION_NOT_UNIQUE_FLAG;
+		}
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;

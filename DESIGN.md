@@ -40,6 +40,23 @@ Consequence: never replace `entry.value` with a copy of `updatedRecord` in this 
 
 The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
 
+## getFromSource() keeps source versions separate from fill ordering
+
+`getFromSource()` reserves a fallback timestamp before calling the source so competing first fills
+whose source does not report a version have a stable ordering token. An inherited request/transaction
+timestamp is used when present; otherwise the storage engine supplies a monotonic timestamp. After
+the source responds, a valid positive, finite, Date-representable `sourceContext.lastModified` is the
+record's candidate version, and the reserved timestamp is only its fallback. A 304 retains the
+existing version.
+
+Revalidations retain exact-CAS semantics, and a source miss cannot delete a record that raced the
+fetch. First fills may replace a raced record only when their candidate version orders after it. A
+RocksDB replacement whose candidate cannot advance the current version stores at the current version
+and carries `VERSION_NOT_UNIQUE_FLAG`; [rocksdb-js#766](https://github.com/HarperFast/rocksdb-js/pull/766)
+then refuses to publish or confirm that version through the VerificationTable. This avoids inventing
+an epsilon timestamp solely to force replacement while keeping stale record-cache values from being
+vouched as fresh.
+
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.

@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { VERSION_NOT_UNIQUE_FLAG } = require('#src/resources/RecordEncoder');
 const { waitFor } = require('../waitFor.js');
 
 describe('Caching', () => {
@@ -107,7 +108,14 @@ describe('Caching', () => {
 		ConflictCachingTable.sourcedFrom({
 			get(id, context) {
 				return new Promise((resolve) => {
-					conflictSourceRequest = { id, timestamp: context.timestamp, respond: resolve };
+					conflictSourceRequest = {
+						id,
+						timestamp: context.timestamp,
+						respond(value, lastModified) {
+							context.lastModified = lastModified;
+							resolve(value);
+						},
+					};
 				});
 			},
 		});
@@ -516,7 +524,7 @@ describe('Caching', () => {
 		assert(ConflictCachingTable.primaryStore.getEntry(id).version > sourceTimestamp);
 	});
 
-	it('advances a revalidation version when the request timestamp predates the cached record', async function () {
+	it('reuses a revalidation version when the request timestamp predates the cached record', async function () {
 		const id = 614;
 		await ConflictCachingTable.put(id, { id, name: 'seed-regression' });
 		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'seed-regression');
@@ -525,14 +533,67 @@ describe('Caching', () => {
 		await waitFor(() => ConflictCachingTable.primaryStore.getEntry(id)?.metadataFlags);
 		const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
 		conflictSourceRequest = null;
-		const fill = ConflictCachingTable.get(id, { timestamp: existingVersion - 1000 });
+		const requestTimestamp = existingVersion - 1000;
+		const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
 		await waitFor(() => conflictSourceRequest?.id === id);
-		assert(conflictSourceRequest.timestamp > invalidatedVersion);
+		assert.equal(conflictSourceRequest.timestamp, requestTimestamp);
 		conflictSourceRequest.respond({ id, name: 'refreshed' });
 		assert.equal((await fill).name, 'refreshed');
 		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
 		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'refreshed');
-		assert(ConflictCachingTable.primaryStore.getEntry(id).version > invalidatedVersion);
+		const refreshedEntry = ConflictCachingTable.primaryStore.getEntry(id);
+		assert.equal(refreshedEntry.version, invalidatedVersion);
+		assert(refreshedEntry.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
+	});
+
+	it('uses a source-reported version before the transaction timestamp', async function () {
+		const id = 615;
+		const requestTimestamp = nextConflictTimestamp();
+		const reportedVersion = requestTimestamp - 100;
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		conflictSourceRequest.respond({ id, name: 'reported-version' }, reportedVersion);
+		assert.equal((await fill).getUpdatedTime(), reportedVersion);
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, reportedVersion);
+	});
+
+	it('clamps an older source-reported revalidation version instead of using the request timestamp', async function () {
+		const id = 620;
+		await ConflictCachingTable.put(id, { id, name: 'seed-reported-version' });
+		await ConflictCachingTable.invalidate(id);
+		await waitFor(() => ConflictCachingTable.primaryStore.getEntry(id)?.metadataFlags);
+		const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+		const requestTimestamp = nextConflictTimestamp();
+		const reportedVersion = invalidatedVersion - 1000;
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		conflictSourceRequest.respond({ id, name: 'reported-revalidation' }, reportedVersion);
+		assert.equal((await fill).getUpdatedTime(), invalidatedVersion);
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		const refreshedEntry = ConflictCachingTable.primaryStore.getEntry(id);
+		assert.equal(refreshedEntry.version, invalidatedVersion);
+		assert(refreshedEntry.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
+	});
+
+	it('falls back from an invalid source-reported version', async function () {
+		for (const [id, reportedVersion] of [
+			[616, Infinity],
+			[617, NaN],
+			[618, -1],
+			[619, Number.MAX_VALUE],
+		]) {
+			const requestTimestamp = nextConflictTimestamp();
+			conflictSourceRequest = null;
+			const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
+			await waitFor(() => conflictSourceRequest?.id === id);
+			conflictSourceRequest.respond({ id, name: 'fallback-version' }, reportedVersion);
+			assert.equal((await fill).getUpdatedTime(), requestTimestamp);
+			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+			assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, requestTimestamp);
+		}
 	});
 
 	it('first source fill replaces an older raced record and its index entries', async function () {
