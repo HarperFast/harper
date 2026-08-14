@@ -141,7 +141,9 @@ describe('mcp/tools/operations — registration', () => {
 			'delete_secret',
 			'get_secrets_public_key',
 		];
-		const oidcTrustOps = ['add_oidc_trust', 'list_oidc_trust', 'drop_oidc_trust'];
+		// exchange_oidc_token matches no DEFAULT_ALLOW glob today, but it is the operation that hands
+		// out a credential — pinned here so a future glob cannot quietly pull it onto the surface.
+		const oidcTrustOps = ['add_oidc_trust', 'list_oidc_trust', 'drop_oidc_trust', 'exchange_oidc_token'];
 		const credentialOps = [...secretOps, ...oidcTrustOps];
 		assert.deepEqual([...DEFAULT_EXCLUDED].sort(), [...credentialOps].sort());
 

@@ -160,6 +160,7 @@ export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'add_oidc_trust',
 	'list_oidc_trust',
 	'drop_oidc_trust',
+	'exchange_oidc_token',
 ]);
 
 /**

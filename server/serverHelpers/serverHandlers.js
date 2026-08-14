@@ -41,6 +41,9 @@ const NO_AUTH_OPERATIONS = [
 	terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS,
 	terms.OPERATIONS_ENUM.LOGIN,
 	terms.OPERATIONS_ENUM.LOGOUT,
+	// The OIDC exchange *is* the authentication (#2171): the caller proves identity with a token
+	// from a trusted issuer, not with Harper credentials it does not have.
+	terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
 ];
 
 const UNSAFE_REQUEST_BODY_PROPERTIES = ['__proto__', 'constructor', 'prototype'];
