@@ -97,6 +97,20 @@ const logger = forComponent('storage');
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
 const DATABASE_CLOSE_TIMEOUT = 10_000;
+
+async function waitForTableCleanup(completions: Promise<void>[]): Promise<boolean> {
+	let timeout: NodeJS.Timeout | undefined;
+	const timedOut = Symbol('timedOut');
+	const result = await Promise.race([
+		Promise.all(completions),
+		new Promise<typeof timedOut>((resolve) => {
+			timeout = setTimeout(() => resolve(timedOut), DATABASE_CLOSE_TIMEOUT);
+			timeout.unref();
+		}),
+	]);
+	if (timeout) clearTimeout(timeout);
+	return result !== timedOut;
+}
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
 /**
@@ -1255,7 +1269,11 @@ export async function dropDatabase(databaseName) {
 				logger.warn(`Error cleaning up table ${databaseName}.${tableName} while dropping database:`, error);
 			}
 		}
-		await Promise.all(cleanupCompletions);
+		if (!(await waitForTableCleanup(cleanupCompletions))) {
+			throw new Error(
+				`Timed out after ${DATABASE_CLOSE_TIMEOUT}ms waiting for expiration cleanup; refusing to destroy database ${databaseName} while cleanup is active.`
+			);
+		}
 
 		for (const tableName in dbTables) {
 			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
@@ -1348,17 +1366,7 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 		}
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
 	}
-	let timeout: NodeJS.Timeout | undefined;
-	const timedOut = Symbol('timedOut');
-	const cleanupResult = await Promise.race([
-		Promise.all(cleanupCompletions),
-		new Promise<typeof timedOut>((resolve) => {
-			timeout = setTimeout(() => resolve(timedOut), DATABASE_CLOSE_TIMEOUT);
-			timeout.unref();
-		}),
-	]);
-	if (timeout) clearTimeout(timeout);
-	if (cleanupResult === timedOut) {
+	if (!(await waitForTableCleanup(cleanupCompletions))) {
 		logger.warn(
 			`Timed out after ${DATABASE_CLOSE_TIMEOUT}ms waiting for expiration cleanup while closing database ${databaseName}; closing its stores to avoid leaking native handles.`
 		);

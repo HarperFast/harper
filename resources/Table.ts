@@ -2089,7 +2089,8 @@ export function makeTable(options) {
 					const removalEntry = entry ?? currentEntry ?? primaryStore.getEntry(id);
 					if (!removalEntry || removalEntry.version !== existingVersion) return;
 					updateIndices(id, existingRecord, null, options);
-					if (existingRecord && removalEntry.metadataFlags & HAS_BLOBS) {
+					if (removalEntry.metadataFlags & HAS_BLOBS) {
+						if (!existingRecord) return;
 						primaryStore.remove(removalEntry.key, options);
 						deleteBlobsAfterCommit = prepareBlobDeletion(existingRecord);
 					} else {

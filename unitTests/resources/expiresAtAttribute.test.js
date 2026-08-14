@@ -286,6 +286,10 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const filePath = getFilePathForBlob(blob);
 		assert(filePath);
 		assert(existsSync(filePath));
+		const blobEntry = Table.primaryStore.getEntry(1);
+		await Table.evict(1, undefined, blobEntry.version);
+		assert(Table.primaryStore.getEntry(1)?.value, 'an eviction without the record value must fail safe');
+		assert(existsSync(filePath));
 
 		setDeletionDelay(0);
 		const commitStub = sinon
