@@ -449,6 +449,7 @@ export function makeTable(options) {
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
 	let hasSurfacedComputed = false;
 	let runningRecordExpiration: boolean;
+	let recordExpirationCompletion: Promise<void> = Promise.resolve();
 	const isRocksDB = primaryStore instanceof RocksDatabase;
 	type BigInt64ArrayAndMaxSafeId = BigInt64Array & { maxSafeId: number };
 	let idIncrementer: BigInt64ArrayAndMaxSafeId;
@@ -5238,6 +5239,7 @@ export function makeTable(options) {
 			deleteCallbackHandle?.remove();
 			recordExpirationCancelled = true;
 			if (recordExpirationInterval) clearInterval(recordExpirationInterval);
+			return recordExpirationCompletion;
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
@@ -6439,7 +6441,8 @@ export function makeTable(options) {
 		}
 
 		async function sweep() {
-			if (runningRecordExpiration || recordExpirationCancelled) return;
+			if (runningRecordExpiration) return recordExpirationCompletion;
+			if (recordExpirationCancelled) return;
 			runningRecordExpiration = true;
 			try {
 				if (primaryStore.rootStore.status !== 'open') return;
@@ -6462,7 +6465,8 @@ export function makeTable(options) {
 			}
 		}
 
-		recordExpirationInterval = setInterval(sweep, RECORD_PRUNING_INTERVAL);
+		const runSweep = () => (recordExpirationCompletion = sweep());
+		recordExpirationInterval = setInterval(runSweep, RECORD_PRUNING_INTERVAL);
 		recordExpirationInterval.unref();
 	}
 	function residencyFromFunction(shardOrResidencyList: ResidencyDefinition): string[] | void {

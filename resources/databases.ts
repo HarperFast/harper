@@ -1295,10 +1295,11 @@ export async function dropDatabase(databaseName) {
  * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
  * progress, per the restore marker checks in the scan).
  */
-export function closeDatabase(databaseName: string): boolean {
+export async function closeDatabase(databaseName: string): Promise<boolean> {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return false;
 	const rootStores = new Set<any>();
+	const cleanupCompletions: Promise<void>[] = [];
 	const closeStore = (store: any, description: string) => {
 		try {
 			store?.close?.();
@@ -1310,11 +1311,23 @@ export function closeDatabase(databaseName: string): boolean {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		try {
-			table.cleanup?.();
+			const completion = table.cleanup?.();
+			if (completion?.then) {
+				cleanupCompletions.push(
+					completion.catch((error) =>
+						logger.warn(`Error awaiting cleanup for table ${databaseName}.${tableName}:`, error)
+					)
+				);
+			}
 		} catch (error) {
 			logger.warn(`Error cleaning up table ${databaseName}.${tableName} while closing database:`, error);
 		}
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
+	}
+	await Promise.all(cleanupCompletions);
+	for (const tableName in dbTables) {
+		const table: any = dbTables[tableName];
+		if (!table?.primaryStore) continue;
 		for (const indexName in table.indices || {}) {
 			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
 		}
@@ -1356,7 +1369,7 @@ export function closeDatabase(databaseName: string): boolean {
  * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
  * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
  */
-export function closeLoadedDatabases(): void {
+export async function closeLoadedDatabases(): Promise<void> {
 	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
@@ -1373,7 +1386,7 @@ export function closeLoadedDatabases(): void {
 		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
 			isRocks = true;
 		}
-		if (isRocks) closeDatabase(databaseName);
+		if (isRocks) await closeDatabase(databaseName);
 	}
 }
 // HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than

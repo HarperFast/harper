@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, closeDatabase } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { Transaction: RocksTransaction } = require('@harperfast/rocksdb-js');
 const { asBinary } = require('lmdb');
@@ -224,6 +224,9 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.deepStrictEqual([...index.getValues('hello', { reverse: true, offset: 1, limit: 1 })], [4]);
 		assert.deepStrictEqual([...index.getValues('hello world')], [2]);
 		assert.deepStrictEqual([...index.getValues('hell')], [3]);
+		assert.strictEqual(index.getValuesCount('hello'), 3);
+		assert.strictEqual(index.getValuesCount('hello world'), 1);
+		assert.strictEqual(index.getValuesCount('hell'), 1);
 
 		const searchResults = [];
 		for await (const record of Table.search({
@@ -413,6 +416,46 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			assert.strictEqual(dropResolved, false, 'drop must wait for the active sweep');
 			releaseEviction();
 			await Promise.all([sweep, drop]);
+		} finally {
+			releaseEviction();
+			evictStub.restore();
+		}
+	});
+
+	it('waits for an active expiration sweep before closing a database', async function () {
+		const database = 'ExpiresAtDatabaseClose';
+		const { Table, runSweep } = captureExpirationSweep(() =>
+			table({
+				table: 'expiring',
+				database,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+					{ name: 'payload', type: 'Blob' },
+				],
+			})
+		);
+		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: createBlob(Buffer.alloc(20_000, 9)) });
+		await Table.primaryStore.committed;
+
+		const originalEvict = Table.evict;
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
+			evictionStarted = true;
+			await blockedEviction;
+			return originalEvict.apply(this, args);
+		});
+		try {
+			const sweep = runSweep();
+			await waitFor(() => evictionStarted, { message: 'the eviction should start' });
+			let closeResolved = false;
+			const close = closeDatabase(database).then(() => (closeResolved = true));
+			await delay(10);
+			assert.strictEqual(closeResolved, false, 'close must wait for the active sweep');
+			releaseEviction();
+			await Promise.all([sweep, close]);
 		} finally {
 			releaseEviction();
 			evictStub.restore();

@@ -46,7 +46,7 @@ describe('RocksDB handle release', function () {
 		const dbPath = rootStore.path;
 		assert.ok(refCountFor(dbPath) > 0, 'database should be open before close');
 
-		closeDatabase('closerelease1');
+		await closeDatabase('closerelease1');
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'no native handles should remain after closeDatabase');
 	});
@@ -58,7 +58,7 @@ describe('RocksDB handle release', function () {
 		if (!(a instanceof RocksDatabase)) return this.skip();
 		assert.ok(refCountFor(a.path) > 0 && refCountFor(b.path) > 0, 'both databases should be open');
 
-		closeLoadedDatabases();
+		await closeLoadedDatabases();
 
 		assert.strictEqual(refCountFor(a.path), 0, 'database a should be released');
 		assert.strictEqual(refCountFor(b.path), 0, 'database b should be released');
@@ -73,12 +73,12 @@ describe('RocksDB handle release', function () {
 		const dbPath = rootStore.path;
 		assert.ok(refCountFor(dbPath) > 0, 'tableless database should be open');
 
-		closeLoadedDatabases();
+		await closeLoadedDatabases();
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'tableless database should be released');
 	});
 
-	it('closeDatabase runs table cleanup before closing its stores', function () {
+	it('closeDatabase runs table cleanup before closing its stores', async function () {
 		const Table = table({
 			table: 'expiring',
 			database: 'closerelease4',
@@ -89,7 +89,7 @@ describe('RocksDB handle release', function () {
 		});
 		const cleanup = sinon.spy(Table, 'cleanup');
 
-		closeDatabase('closerelease4');
+		await closeDatabase('closerelease4');
 
 		assert.strictEqual(cleanup.callCount, 1, 'table cleanup should run before its database closes');
 		cleanup.restore();
