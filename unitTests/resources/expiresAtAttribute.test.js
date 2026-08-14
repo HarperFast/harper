@@ -195,8 +195,28 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		Table.cleanup();
 	});
 
-	it('re-arms the expiration sweep after cleanup is resumed', function () {
+	it('indexes the effective expiration returned by a source fill', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtSourceFill'));
+		const expiresAt = Date.now() - 1_000;
+		Table.sourcedFrom({
+			get(id) {
+				return { id, expiresAt: new Date(expiresAt).toISOString() };
+			},
+		});
+
+		await Table.get(1);
+		await waitFor(() => Table.primaryStore.getEntry(1)?.value, { message: 'source fill should be stored' });
+		await Table.primaryStore.committed;
+		assert.strictEqual(Table.primaryStore.getEntry(1).expiresAt, expiresAt);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1]);
+
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+	});
+
+	it('re-arms both expiration sweeps after cleanup is resumed', function () {
 		let sweepIntervalCount = 0;
+		let cleanupTimeoutCount = 0;
 		const realSetInterval = global.setInterval;
 		const intervalStub = sinon.stub(global, 'setInterval').callsFake((callback, interval, ...args) => {
 			if (interval === 60_000) {
@@ -205,14 +225,21 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			}
 			return realSetInterval(callback, interval, ...args);
 		});
+		const timeoutStub = sinon.stub(global, 'setTimeout').callsFake(() => {
+			cleanupTimeoutCount++;
+			return { unref() {} };
+		});
 		try {
-			const Table = makeTable('ExpiresAtResumeCleanup');
+			const Table = makeTable('ExpiresAtResumeCleanup', undefined, { scanInterval: 100 });
 			assert.strictEqual(sweepIntervalCount, 1);
+			assert.strictEqual(cleanupTimeoutCount, 1);
 			Table.cleanup();
 			Table.resumeCleanup();
 			assert.strictEqual(sweepIntervalCount, 2);
+			assert.strictEqual(cleanupTimeoutCount, 2);
 			Table.cleanup();
 		} finally {
+			timeoutStub.restore();
 			intervalStub.restore();
 		}
 	});
@@ -877,6 +904,17 @@ describe('LMDB @expiresAt cleanup draining', function () {
 		assert.strictEqual(Table.primaryStore.getEntry(2)?.value.expiresAt, current);
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(current)], [2]);
 		Table.cleanup();
+	});
+
+	it('paginates duplicate expiration values across bounded chunks', async function () {
+		const { Table, runSweep } = captureExpirationSweep('LmdbExpirationPagination');
+		const expiresAt = Date.now() - 1_000;
+		for (let id = 0; id < 205; id++) await Table.put(id, { id, expiresAt });
+		await Table.primaryStore.committed;
+
+		await runSweep();
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], []);
+		for (let id = 0; id < 205; id++) assert.strictEqual(Table.primaryStore.getEntry(id)?.value, undefined);
 	});
 
 	it('does not resolve cleanup while LMDB eviction writes are active', async function () {

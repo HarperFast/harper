@@ -332,7 +332,7 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
 	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
-	if (!isPrimaryKey && Table.expiresAtAttributeName === attribute_name) {
+	if (!isPrimaryKey && Table.expiresAtAttributeName !== undefined && Table.expiresAtAttributeName === attribute_name) {
 		value = normalizeExpirationSearchValue(value);
 	}
 	let start;
@@ -955,7 +955,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			return recordFilter;
 		}
 	}
-	const normalizeExpirationValue = !isPrimaryKey && Table?.expiresAtAttributeName === attribute;
+	const normalizeExpirationValue =
+		!isPrimaryKey && Table?.expiresAtAttributeName !== undefined && Table.expiresAtAttributeName === attribute;
 	if (normalizeExpirationValue) value = normalizeExpirationSearchValue(value);
 	if (value instanceof Date) value = value.getTime();
 
@@ -1061,7 +1062,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		canUseIndex?: boolean,
 		allowObjectMatching?: boolean
 	) {
-		const normalizeRecordExpiration = !isPrimaryKey && Table?.expiresAtAttributeName === attribute;
+		const normalizeRecordExpiration =
+			!isPrimaryKey && Table?.expiresAtAttributeName !== undefined && Table.expiresAtAttributeName === attribute;
 		let thresholdRemainingMisses: number;
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
@@ -1186,7 +1188,8 @@ export function estimateCondition(table) {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 					const index = table.indices[attribute_name];
 					let value = condition[1] ?? condition.value;
-					if (table.expiresAtAttributeName === attribute_name) value = normalizeExpirationSearchValue(value);
+					if (table.expiresAtAttributeName !== undefined && table.expiresAtAttributeName === attribute_name)
+						value = normalizeExpirationSearchValue(value);
 					condition.estimated_count = index ? index.getValuesCount(value) : Infinity;
 				}
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
@@ -1202,7 +1205,8 @@ export function estimateCondition(table) {
 				if (Array.isArray(condition.value) && index) {
 					// Sum of per-value matches (over-counts duplicates but is a fine ceiling)
 					let estimate = 0;
-					const normalizeExpiration = table.expiresAtAttributeName === attribute_name;
+					const normalizeExpiration =
+						table.expiresAtAttributeName !== undefined && table.expiresAtAttributeName === attribute_name;
 					for (const item of condition.value) {
 						estimate += index.getValuesCount(normalizeExpiration ? normalizeExpirationSearchValue(item) : item);
 					}

@@ -6024,6 +6024,9 @@ export function makeTable(options) {
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
 						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
+						if (sourceContext.expiresAt === undefined && expiresAtProperty) {
+							sourceContext.expiresAt = expirationTimestamp(updatedRecord[expiresAtProperty.name]);
+						}
 					}
 					resolved = true;
 					const resolvedEntry: Entry = {
@@ -6644,6 +6647,7 @@ export function makeTable(options) {
 				if (cleanupClosed) break;
 				let afterId: any;
 				for (;;) {
+					if (cleanupClosed) break;
 					const ids = [
 						...index.getValues(key, {
 							start: afterId,
@@ -6654,6 +6658,7 @@ export function makeTable(options) {
 					if (ids.length === 0) break;
 					afterId = ids.at(-1);
 					for (const id of ids) {
+						if (cleanupClosed) break;
 						const recordEntry = primaryStore.getEntry(id);
 						let operation: MaybePromise<unknown> | void;
 						if (recordEntry?.value == null) {
@@ -6674,6 +6679,7 @@ export function makeTable(options) {
 						if (backpressure) await backpressure;
 					}
 					await operationTracker.drain();
+					await rest();
 					if (ids.length < EVICTION_BATCH_SIZE) break;
 				}
 				await rest();
