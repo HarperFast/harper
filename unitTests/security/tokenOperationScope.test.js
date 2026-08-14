@@ -8,6 +8,7 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const opAuth = require('#src/utility/operation_authorization');
+const sql = require('#src/sqlTranslator/index');
 
 // `insertData` is the internal function name for the `insert` operation; verifyPerms resolves the
 // api_name via the permission registry, which is what a scope is written against.
@@ -85,5 +86,47 @@ describe('token-scoped operation narrowing', () => {
 
 	it('denies everything when the scope is empty', () => {
 		assert.ok(!isAllowed(opAuth.verifyPerms(requestAs({ super_user: true }, []), INSERT_FN)));
+	});
+});
+
+// `sql` dispatches to verifyPermsAST, in a branch mutually exclusive with the verifyPerms call in
+// chooseOperation. A gate in only one of them lets a token scoped to e.g. get_status run arbitrary
+// SQL against whatever its role can reach — which would falsify the whole "can only subtract" claim.
+describe('token-scoped narrowing on the SQL path', () => {
+	function userWithScope(permission, tokenOperations) {
+		const user = { username: 'ci-deploy', role: { role: 'r', permission } };
+		if (tokenOperations !== undefined) user.tokenOperations = tokenOperations;
+		return user;
+	}
+
+	function checkSql(statement, user) {
+		const parsed = sql.convertSQLToAST(statement);
+		return sql.checkASTPermissions({ operation: 'sql', sql: statement, hdb_user: user }, parsed);
+	}
+
+	it('denies SQL when the scope does not include it', () => {
+		const denial = checkSql('SELECT * FROM data.dog', userWithScope({ super_user: true }, ['get_status']));
+		assert.ok(denial, 'a token scoped away from sql must not be able to run SQL');
+	});
+
+	// The dangerous case: verifyPermsAST returns null unconditionally for a super_user.
+	it('denies a super_user whose scope excludes SQL', () => {
+		const denial = checkSql('DELETE FROM data.dog', userWithScope({ super_user: true }, ['deploy_component']));
+		assert.ok(denial, 'the super_user bypass must not outrank the token scope');
+	});
+
+	it('allows SQL when the scope includes it', () => {
+		const denial = checkSql('SELECT * FROM data.dog', userWithScope({ super_user: true }, ['sql']));
+		assert.strictEqual(denial, null, 'an in-scope sql statement should reach the normal perms checks');
+	});
+
+	it('allows SQL through a group that contains it', () => {
+		const denial = checkSql('SELECT * FROM data.dog', userWithScope({ super_user: true }, ['read_only']));
+		assert.strictEqual(denial, null);
+	});
+
+	it('is inert for a token with no scope', () => {
+		const denial = checkSql('SELECT * FROM data.dog', userWithScope({ super_user: true }));
+		assert.strictEqual(denial, null);
 	});
 });
