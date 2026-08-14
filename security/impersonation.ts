@@ -27,7 +27,8 @@ export function syntheticRoleName(prefix: string, permission: object): string {
 	return `${prefix}_${createHash('sha256').update(canonicalJSON(permission)).digest('hex').slice(0, 24)}`;
 }
 
-/** Deterministic JSON with recursively sorted object keys (array order is preserved). */
+// Array order is intentionally preserved: operations is order-insensitive semantically, but
+// canonicalizing it too would be a broader behavior change than this cache-sharing fix needs.
 function canonicalJSON(value: any): string {
 	return JSON.stringify(value, (_key, v) =>
 		v && typeof v === 'object' && !Array.isArray(v)
