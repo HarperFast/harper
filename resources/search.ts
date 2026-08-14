@@ -5,7 +5,7 @@ import { SKIP } from '@harperfast/extended-iterable';
 import { expirationTimestamp, INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
-import { lastMetadata } from './RecordEncoder.ts';
+import { lastMetadata, type Entry } from './RecordEncoder.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 
@@ -332,7 +332,7 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
 	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
-	if (!isPrimaryKey && findAttribute(Table.attributes, attribute_name)?.expiresAt) {
+	if (!isPrimaryKey && Table.expiresAtAttributeName === attribute_name) {
 		value = normalizeExpirationSearchValue(value);
 	}
 	let start;
@@ -955,7 +955,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			return recordFilter;
 		}
 	}
-	const normalizeExpirationValue = !isPrimaryKey && findAttribute(Table?.attributes, attribute)?.expiresAt;
+	const normalizeExpirationValue = !isPrimaryKey && Table?.expiresAtAttributeName === attribute;
 	if (normalizeExpirationValue) value = normalizeExpirationSearchValue(value);
 	if (value instanceof Date) value = value.getTime();
 
@@ -1061,7 +1061,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		canUseIndex?: boolean,
 		allowObjectMatching?: boolean
 	) {
-		const normalizeRecordExpiration = !isPrimaryKey && findAttribute(Table?.attributes, attribute)?.expiresAt;
+		const normalizeRecordExpiration = !isPrimaryKey && Table?.expiresAtAttributeName === attribute;
 		let thresholdRemainingMisses: number;
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
@@ -1077,10 +1077,15 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 		let misses = 0;
 		let filteredSoFar = 3; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
-		function recordFilter(record: any) {
+		function recordFilter(record: any, entry?: Entry) {
 			// `record` may be null/undefined when called via a nested-path filter
 			// where an intermediate property is missing.
-			let value = record == null ? undefined : record[attribute];
+			let value =
+				normalizeRecordExpiration && entry?.expiresAt !== undefined
+					? entry.expiresAt
+					: record == null
+						? undefined
+						: record[attribute];
 			if (normalizeRecordExpiration) value = normalizeExpirationSearchValue(value);
 			let matches: boolean;
 			if (typeof value !== 'object' || !value || allowObjectMatching) matches = filter(value);
@@ -1181,7 +1186,7 @@ export function estimateCondition(table) {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 					const index = table.indices[attribute_name];
 					let value = condition[1] ?? condition.value;
-					if (findAttribute(table.attributes, attribute_name)?.expiresAt) value = normalizeExpirationSearchValue(value);
+					if (table.expiresAtAttributeName === attribute_name) value = normalizeExpirationSearchValue(value);
 					condition.estimated_count = index ? index.getValuesCount(value) : Infinity;
 				}
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
@@ -1197,7 +1202,7 @@ export function estimateCondition(table) {
 				if (Array.isArray(condition.value) && index) {
 					// Sum of per-value matches (over-counts duplicates but is a fine ceiling)
 					let estimate = 0;
-					const normalizeExpiration = findAttribute(table.attributes, attribute_name)?.expiresAt;
+					const normalizeExpiration = table.expiresAtAttributeName === attribute_name;
 					for (const item of condition.value) {
 						estimate += index.getValuesCount(normalizeExpiration ? normalizeExpirationSearchValue(item) : item);
 					}

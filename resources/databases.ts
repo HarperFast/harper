@@ -2209,7 +2209,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					try {
 						const resolver = attribute.resolve;
 						const value = attribute.expiresAt
-							? expirationTimestamp(expiresAt)
+							? expiresAt === undefined
+								? expirationTimestamp(record?.[property])
+								: expirationTimestamp(expiresAt)
 							: record && (resolver ? resolver(record) : record[property]);
 						if (index.customIndex) {
 							index.customIndex.index(key, value);

@@ -133,6 +133,48 @@ describe('Test hdbChildIpcHandler module', () => {
 			await schema_handler(test_event);
 			expect(log_error_stub).to.have.been.called;
 		});
+
+		it('retries a restore close failure and still acknowledges through the schema work', async () => {
+			const closeStub = sandbox.stub();
+			closeStub.onFirstCall().rejects(new Error('cleanup still active'));
+			closeStub.onSecondCall().resolves(true);
+			const cleanStub = sandbox.stub().resolves();
+			const syncStub = sandbox.stub().resolves();
+			const restoreClose = server_itc_handlers.__set__('closeDatabase', closeStub);
+			const restoreClean = server_itc_handlers.__set__('cleanLmdbMap', cleanStub);
+			const restoreSync = server_itc_handlers.__set__('syncSchemaMetadata', syncStub);
+			try {
+				await schema_handler({
+					type: 'schema',
+					message: { originator: 12345, operation: 'restore_backup', schema: 'test' },
+				});
+				expect(closeStub).to.have.been.calledTwice;
+				expect(cleanStub).to.have.been.calledOnce;
+				expect(syncStub).to.have.been.calledOnce;
+			} finally {
+				restoreSync();
+				restoreClean();
+				restoreClose();
+			}
+		});
+
+		it('resolves a restore close failure without rescanning an open database', async () => {
+			const closeStub = sandbox.stub().rejects(new Error('cleanup still active'));
+			const cleanStub = sandbox.stub().resolves();
+			const restoreClose = server_itc_handlers.__set__('closeDatabase', closeStub);
+			const restoreClean = server_itc_handlers.__set__('cleanLmdbMap', cleanStub);
+			try {
+				await schema_handler({
+					type: 'schema',
+					message: { originator: 12345, operation: 'restore_backup', schema: 'test' },
+				});
+				expect(closeStub).to.have.been.calledTwice;
+				expect(cleanStub).not.to.have.been.called;
+			} finally {
+				restoreClean();
+				restoreClose();
+			}
+		});
 	});
 
 	describe('Test componentStatusRequestHandler function', () => {

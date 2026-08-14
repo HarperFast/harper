@@ -594,6 +594,7 @@ export function makeTable(options) {
 		static databasePath = databasePath;
 		static databaseName = databaseName;
 		static attributes = attributes;
+		static expiresAtAttributeName = expiresAtIndexName;
 		static description = description;
 		static properties = properties;
 		static hidden = hidden;
@@ -2068,7 +2069,7 @@ export function makeTable(options) {
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 		 */
-		static evict(id, existingRecord, existingVersion) {
+		static evict(id, existingRecord, existingVersion, existingExpiresAtIndexValue?: number) {
 			let entry;
 			let deleteBlobsAfterCommit: (() => void) | undefined;
 			let currentEntry;
@@ -2101,15 +2102,30 @@ export function makeTable(options) {
 					// lmdb: the index cleanup and the record removal are both version-guarded optimistic writes.
 					// Capture both promises so a real write failure on either resolves through evict()'s catch
 					// below rather than escaping as an unhandled rejection from the fire-and-forget callers.
+					const removalEntry = entry ?? primaryStore.getEntry(id);
 					const indexCleanup = primaryStore.ifVersion(id, existingVersion, () => {
-						updateIndices(id, existingRecord, null, undefined, undefined, entry?.expiresAt);
+						updateIndices(
+							id,
+							existingRecord,
+							null,
+							undefined,
+							undefined,
+							existingExpiresAtIndexValue ?? removalEntry?.expiresAt
+						);
 					});
-					const removal = removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
+					const removal = removeEntry(primaryStore, removalEntry, existingVersion);
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
 					const removalEntry = entry ?? currentEntry ?? primaryStore.getEntry(id);
 					if (!removalEntry || removalEntry.version !== existingVersion) return;
-					updateIndices(id, existingRecord, null, options, undefined, removalEntry.expiresAt);
+					updateIndices(
+						id,
+						existingRecord,
+						null,
+						options,
+						undefined,
+						existingExpiresAtIndexValue ?? removalEntry.expiresAt
+					);
 					if (removalEntry.metadataFlags & HAS_BLOBS) {
 						if (!existingRecord) return;
 						primaryStore.remove(removalEntry.key, options);
@@ -6248,13 +6264,15 @@ export function makeTable(options) {
 	// those records for the next cleanup cycle.
 	function createEvictionBatcher(isCancelled: () => boolean = () => false) {
 		type EvictItem =
-			| { type: 'evict' | 'tombstone'; key: any; version: number }
+			| { type: 'evict'; key: any; version: number; indexedExpiration?: number }
+			| { type: 'tombstone'; key: any; version: number }
 			| { type: 'dangling-index'; key: any; indexedValue: any; index: any }
 			| {
 					type: 'stale-index';
 					key: any;
 					version: number;
 					indexedValue: any;
+					metadataExpiration: number | undefined;
 					currentExpiration: number | undefined;
 					index: any;
 			  };
@@ -6288,7 +6306,7 @@ export function makeTable(options) {
 						!entry ||
 						entry.value == null ||
 						entry.version !== item.version ||
-						compareKeys(entry.expiresAt, item.currentExpiration) !== 0 ||
+						compareKeys(entry.expiresAt, item.metadataExpiration) !== 0 ||
 						compareKeys(item.indexedValue, item.currentExpiration) === 0
 					)
 						continue;
@@ -6309,7 +6327,7 @@ export function makeTable(options) {
 					if (entry.value == null) continue; // already removed
 					if (entry.metadataFlags & HAS_BLOBS) continue; // per-record evict() owns blob/commit ordering
 					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
-					updateIndices(item.key, entry.value, null, options, undefined, entry.expiresAt);
+					updateIndices(item.key, entry.value, null, options, undefined, item.indexedExpiration ?? entry.expiresAt);
 				}
 				removeEntry(primaryStore, entry, options);
 				staged++;
@@ -6546,6 +6564,10 @@ export function makeTable(options) {
 	function runRecordExpirationEviction() {
 		if (getWorkerIndex() !== 0 || cleanupClosed) return;
 		const expiresAtName = expiresAtProperty.name;
+		const indexedExpiration = (entry: Entry): number | undefined =>
+			entry.expiresAt === undefined
+				? expirationTimestamp(entry.value?.[expiresAtName])
+				: expirationTimestamp(entry.expiresAt);
 
 		async function sweepRocks(index: any, cutoff: number) {
 			const batcher = createEvictionBatcher(() => cleanupClosed);
@@ -6572,25 +6594,30 @@ export function makeTable(options) {
 								indexedValue: entry.key,
 								index,
 							});
-						} else if (recordEntry.expiresAt < cutoff) {
-							if (recordEntry.metadataFlags & HAS_BLOBS) {
-								await TableResource.evict(entry.value, recordEntry.value, recordEntry.version);
-							} else {
+						} else {
+							const currentExpiration = indexedExpiration(recordEntry);
+							if (currentExpiration !== undefined && currentExpiration < cutoff) {
+								if (recordEntry.metadataFlags & HAS_BLOBS) {
+									await TableResource.evict(entry.value, recordEntry.value, recordEntry.version, currentExpiration);
+								} else {
+									backpressure = batcher.add({
+										type: 'evict',
+										key: entry.value,
+										version: recordEntry.version,
+										indexedExpiration: currentExpiration,
+									});
+								}
+							} else if (compareKeys(entry.key, currentExpiration) !== 0) {
 								backpressure = batcher.add({
-									type: 'evict',
+									type: 'stale-index',
 									key: entry.value,
 									version: recordEntry.version,
+									indexedValue: entry.key,
+									metadataExpiration: recordEntry.expiresAt,
+									currentExpiration,
+									index,
 								});
 							}
-						} else if (compareKeys(entry.key, recordEntry.expiresAt) !== 0) {
-							backpressure = batcher.add({
-								type: 'stale-index',
-								key: entry.value,
-								version: recordEntry.version,
-								indexedValue: entry.key,
-								currentExpiration: recordEntry.expiresAt,
-								index,
-							});
 						}
 						if (backpressure) await backpressure;
 						if (++entriesSinceYield >= 10) {
@@ -6615,22 +6642,39 @@ export function makeTable(options) {
 			const operationTracker = createCleanupOperationTracker();
 			for (const key of index.getRange({ start: true, values: false, end: cutoff, snapshot: false })) {
 				if (cleanupClosed) break;
-				for (const id of index.getValues(key)) {
-					const recordEntry = primaryStore.getEntry(id);
-					let operation: MaybePromise<unknown> | void;
-					if (recordEntry?.value == null) {
-						operation = primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
-					} else if (recordEntry.expiresAt < cutoff) {
-						operation = TableResource.evict(id, recordEntry.value, recordEntry.version);
-					} else if (compareKeys(key, recordEntry.expiresAt) !== 0) {
-						operation = primaryStore.ifVersion(id, recordEntry.version, () => {
-							index.remove(key, id);
-							if (recordEntry.expiresAt !== undefined && recordEntry.expiresAt >= 0)
-								index.put(recordEntry.expiresAt, id);
-						});
+				let afterId: any;
+				for (;;) {
+					const ids = [
+						...index.getValues(key, {
+							start: afterId,
+							exclusiveStart: afterId !== undefined,
+							limit: EVICTION_BATCH_SIZE,
+						}),
+					];
+					if (ids.length === 0) break;
+					afterId = ids.at(-1);
+					for (const id of ids) {
+						const recordEntry = primaryStore.getEntry(id);
+						let operation: MaybePromise<unknown> | void;
+						if (recordEntry?.value == null) {
+							operation = primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
+						} else {
+							const currentExpiration = indexedExpiration(recordEntry);
+							if (currentExpiration !== undefined && currentExpiration < cutoff) {
+								operation = TableResource.evict(id, recordEntry.value, recordEntry.version, currentExpiration);
+							} else if (compareKeys(key, currentExpiration) !== 0) {
+								operation = primaryStore.ifVersion(id, recordEntry.version, () => {
+									const removals = [index.remove(key, id)];
+									if (currentExpiration !== undefined) removals.push(index.put(currentExpiration, id));
+									return Promise.all(removals);
+								});
+							}
+						}
+						const backpressure = operationTracker.add(operation);
+						if (backpressure) await backpressure;
 					}
-					const backpressure = operationTracker.add(operation);
-					if (backpressure) await backpressure;
+					await operationTracker.drain();
+					if (ids.length < EVICTION_BATCH_SIZE) break;
 				}
 				await rest();
 			}

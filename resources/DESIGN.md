@@ -112,6 +112,9 @@ Its index stores one canonical, non-negative epoch-millisecond number derived fr
 whether the API value was a number, numeric string, ISO string, or `Date`. Writes, index rebuilds, index searches,
 and scan filters apply the same normalization. `expirationIndexVersion` participates in the normal resumable
 schema reindex flow so stores created before canonicalization are rebuilt without a separate open-time scan.
+Rows created before expiration metadata was stored fall back to their public field during that rebuild and while
+sweeping; an explicit no-expiration metadata sentinel never falls back. This preserves upgrade behavior without
+making every open scan the table.
 
 RocksDB `@expiresAt` sweeps walk one bounded composite-index range at a time with a fixed cutoff and an
 owned `(expiresAt, primaryKey)` cursor. A sweep never holds an iterator snapshot across an `await`, and it

@@ -168,6 +168,42 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		Table.cleanup();
 	});
 
+	it('preserves expiration for legacy rows that have a field but no stored metadata', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtLegacyMetadata'));
+		const expiresAt = Date.now() - 1_000;
+		const record = { id: 1, expiresAt: new Date(expiresAt).toISOString() };
+		Table.primaryStore.putSync(1, record);
+		Table.indices.expiresAt.put(expiresAt, 1);
+		assert.strictEqual(Table.primaryStore.getEntry(1).expiresAt, undefined);
+
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], []);
+		Table.cleanup();
+	});
+
+	it('re-arms the expiration sweep after cleanup is resumed', function () {
+		let sweepIntervalCount = 0;
+		const realSetInterval = global.setInterval;
+		const intervalStub = sinon.stub(global, 'setInterval').callsFake((callback, interval, ...args) => {
+			if (interval === 60_000) {
+				sweepIntervalCount++;
+				return { unref() {} };
+			}
+			return realSetInterval(callback, interval, ...args);
+		});
+		try {
+			const Table = makeTable('ExpiresAtResumeCleanup');
+			assert.strictEqual(sweepIntervalCount, 1);
+			Table.cleanup();
+			Table.resumeCleanup();
+			assert.strictEqual(sweepIntervalCount, 2);
+			Table.cleanup();
+		} finally {
+			intervalStub.restore();
+		}
+	});
+
 	it('ignores non-timestamp field values (boolean / empty string) and uses the table default', async function () {
 		const Bool = makeTable('ExpiresAtBool', 100);
 		const Empty = makeTable('ExpiresAtEmpty', 100);
@@ -551,7 +587,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		}
 	});
 
-	it('cleanup drains the primary cleanup scan and prevents writes from rearming it', async function () {
+	it('cleanup drains the primary cleanup scan', async function () {
 		const Table = table({
 			table: 'PrimaryCleanupDrain',
 			database: 'test',
@@ -561,15 +597,15 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			],
 		});
 		let runCleanup;
-		const realSetTimeout = global.setTimeout;
-		const timeoutStub = sinon.stub(global, 'setTimeout').callsFake((callback, timeout, ...args) => {
+		const setupTimerStub = sinon.stub(global, 'setTimeout').callsFake((callback) => {
 			if (!runCleanup) {
 				runCleanup = callback;
 				return { unref() {} };
 			}
-			return realSetTimeout(callback, timeout, ...args);
+			throw new Error('setTTLExpiration scheduled more than one cleanup timer');
 		});
 		Table.setTTLExpiration({ scanInterval: 100 });
+		setupTimerStub.restore();
 		assert(runCleanup);
 		await Table.put(1, { id: 1, payload: createBlob(Buffer.alloc(20_000, 11)) }, { expiresAt: Date.now() - 1_000 });
 		await Table.primaryStore.committed;
@@ -592,13 +628,10 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			assert.strictEqual(cleanupResolved, false);
 			releaseEviction();
 			await Promise.all([scan, cleanup]);
-			const timerCount = timeoutStub.callCount;
-			await Table.put(2, { id: 2 }, { expiresAt: Date.now() + 60_000 });
-			assert.strictEqual(timeoutStub.callCount, timerCount, 'cleanup must prevent a write from rearming the scan');
 		} finally {
 			releaseEviction();
 			evictStub.restore();
-			timeoutStub.restore();
+			setupTimerStub.restore();
 		}
 	});
 
@@ -790,7 +823,7 @@ describe('LMDB @expiresAt cleanup draining', function () {
 		setMainIsWorker(true);
 	});
 
-	it('does not resolve cleanup while LMDB eviction writes are active', async function () {
+	const captureExpirationSweep = (name) => {
 		let runSweep;
 		const realSetInterval = global.setInterval;
 		const intervalStub = sinon.stub(global, 'setInterval').callsFake((callback, interval, ...args) => {
@@ -803,7 +836,7 @@ describe('LMDB @expiresAt cleanup draining', function () {
 		let Table;
 		try {
 			Table = table({
-				table: 'LmdbExpirationDrain',
+				table: name,
 				database: 'lmdb-expiration-drain',
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
@@ -813,6 +846,28 @@ describe('LMDB @expiresAt cleanup draining', function () {
 		} finally {
 			intervalStub.restore();
 		}
+		return { Table, runSweep };
+	};
+
+	it('evicts ISO expirations and repairs stale keys', async function () {
+		const { Table, runSweep } = captureExpirationSweep('LmdbExpirationCorrectness');
+		const expired = Date.now() - 1_000;
+		const current = Date.now() + 60_000;
+		await Table.put(1, { id: 1, expiresAt: new Date(expired).toISOString() });
+		await Table.put(2, { id: 2, expiresAt: current });
+		await Table.primaryStore.committed;
+		await Table.indices.expiresAt.put(expired, 2);
+
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expired)], []);
+		assert.strictEqual(Table.primaryStore.getEntry(2)?.value.expiresAt, current);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(current)], [2]);
+		Table.cleanup();
+	});
+
+	it('does not resolve cleanup while LMDB eviction writes are active', async function () {
+		const { Table, runSweep } = captureExpirationSweep('LmdbExpirationDrain');
 		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000 });
 		await Table.primaryStore.committed;
 
