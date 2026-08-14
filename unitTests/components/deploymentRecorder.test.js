@@ -483,7 +483,11 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		const writeContexts = [];
 		const installed = installMockDeploymentTable();
 		installed.mock.put = async (row) => {
-			const writeContext = { ...contextStorage.getStore() };
+			const context = contextStorage.getStore();
+			const writeContext = {
+				...context,
+				transactionTimeoutBudget: context?.transaction?.timeoutBudget,
+			};
 			writeContexts.push(writeContext);
 			if (row.payload_blob) {
 				ingestContext = writeContext;
@@ -506,13 +510,14 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		assert.strictEqual(ingestContext.signal, signal);
 		assert.ok(ingestContext.transaction);
 		assert.notStrictEqual(ingestContext.transaction, ambientTransaction);
-		assert.strictEqual(ingestContext.transaction.timeoutBudget, configuredBudget);
+		assert.strictEqual(ingestContext.transactionTimeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
 		assert.strictEqual(ingestContext.isExplicit, undefined);
 		assert.strictEqual(ingestContext.authorize, undefined);
 		assert.strictEqual(ingestContext.timestamp, undefined);
 		assert.strictEqual(ingestContext.sourceApply, undefined);
 		assert.strictEqual(ingestContext.replicatedConfirmation, undefined);
 		assert.strictEqual(ambientContext.transaction, ambientTransaction);
+		assert.strictEqual(ambientTransaction.timeoutBudget, undefined);
 		assert.strictEqual(writeContexts.length, 2);
 		assert.ok(writeContexts.every((context) => context.transaction));
 		assert.ok(writeContexts.every((context) => context.transaction !== ambientTransaction));
