@@ -267,7 +267,12 @@ export async function createOperationToken(
 	};
 	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. Absent means
 	// the role governs alone, which is every token minted before this existed.
-	if (user.operations?.length) payload.operations = user.operations;
+	//
+	// `!= null` rather than a truthiness check on purpose: an EMPTY scope means "no operations", and
+	// a length check would drop it from the payload, leaving the token unscoped — a security control
+	// failing open. add_oidc_trust rejects an empty array, but a row can reach the table by
+	// replication from a peer, so this must not depend on that.
+	if (user.operations != null) payload.operations = user.operations;
 
 	return jwt.sign(
 		payload,

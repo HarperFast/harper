@@ -19,7 +19,7 @@ import { getUsersWithRolesCache } from '../../user.ts';
 import { validateClaimConstraintShape } from './claims.ts';
 import { normalizeIssuer } from './jwks.ts';
 import { profileForIssuer } from './providers/index.ts';
-import { expandOperationsPerms } from '../../../utility/operationPermissions.ts';
+import { validateOperations } from '../../../utility/operationPermissions.ts';
 import type { OidcTrustPolicy } from './types.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
@@ -46,17 +46,15 @@ function validate(validation: any): void {
 }
 
 /**
- * A typo in an operation name would otherwise fail closed at request time, in CI, with nothing to
- * point at — so it is caught here, where the reader is the administrator who wrote it. Group names
- * are accepted: expandOperationsPerms resolves them, and a name that expands to only itself and is
- * not a known operation is the typo we are looking for.
+ * A typo would otherwise fail closed at request time, in CI, with nothing to point at — so it is
+ * caught here, where the reader is the administrator who wrote it. Delegates to the same helper
+ * add_role/alter_role use, which accepts group names and operations registered at runtime via
+ * server.registerOperation; a local OPERATIONS_ENUM check would reject those.
  */
 function assertOperationsAreKnown(operations: string[]): void {
-	const known = new Set<string>(Object.values(terms.OPERATIONS_ENUM));
-	for (const name of expandOperationsPerms(operations)) {
-		if (!known.has(name)) {
-			throw new ClientError(`operations contains '${name}', which is not a Harper operation`);
-		}
+	const invalidOperation = validateOperations(operations);
+	if (invalidOperation != null) {
+		throw new ClientError(`operations contains '${invalidOperation}', which is not a Harper operation`);
 	}
 }
 

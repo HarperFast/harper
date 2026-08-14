@@ -17,6 +17,7 @@ const {
 const { databases } = require('#src/resources/databases');
 const { setUsersWithRolesCache } = require('#src/security/user');
 const terms = require('#src/utility/hdbTerms');
+const opAuth = require('#src/utility/operation_authorization');
 
 const OIDC_TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
 const ISSUER = 'https://token.actions.githubusercontent.com';
@@ -205,6 +206,20 @@ describe('oidc trustPolicyOperations', () => {
 				/not a Harper operation/
 			);
 			assert.strictEqual(installed.mock.rows.size, 0, 'expected nothing stored');
+		});
+
+		// Operations registered at runtime via server.registerOperation are grantable in a role's
+		// allowlist, so a policy must be able to scope to them too — this is why validation delegates
+		// to validateOperations rather than checking OPERATIONS_ENUM locally.
+		it('accepts a dynamically registered operation', async () => {
+			const dynamicOp = 'test_dynamic_scope_op';
+			opAuth.registerOperationPermission(dynamicOp, { requiresSu: true });
+			try {
+				await addOidcTrust(su('add_oidc_trust', validPolicy({ operations: [dynamicOp] })));
+				assert.deepStrictEqual(installed.mock.rows.get('my-app-prod').operations, [dynamicOp]);
+			} finally {
+				opAuth.unregisterOperationPermission(dynamicOp);
+			}
 		});
 
 		it('leaves operations null when the policy does not scope', async () => {
