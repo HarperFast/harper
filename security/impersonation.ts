@@ -91,7 +91,11 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
  * impersonation Mode A. `trusted` marks internal dispatch (operation authorization bypassed),
  * where no authenticated minter exists.
  */
-export function buildScopedTokenUser(minter: User | undefined, payload: ImpersonatePayload, trusted = false): User {
+export async function buildScopedTokenUser(
+	minter: User | undefined,
+	payload: ImpersonatePayload,
+	trusted = false
+): Promise<User> {
 	if (!trusted && !minter?.role?.permission?.super_user) {
 		throw new ClientError('Only super_user can create a token with an inline role', 403);
 	}
@@ -99,9 +103,15 @@ export function buildScopedTokenUser(minter: User | undefined, payload: Imperson
 	if (!payload.role) {
 		throw new ClientError("A scoped token requires 'role' with 'permission'");
 	}
-	const username = payload.username || minter?.username;
+	const username = payload.username || (minter?.username && `scoped:${minter.username}`);
 	if (!username || typeof username !== 'string') {
 		throw new ClientError("A scoped token requires a 'username'");
+	}
+	// The attribution name must never collide with a real principal: paths that rehydrate a user
+	// by name (e.g. MQTT last-will replay) would resolve the token's bearer to that user's full
+	// permissions. This also keeps scoped-token activity distinguishable in audit logs.
+	if ((await getUsersWithRolesCache())?.has(username)) {
+		throw new ClientError(`'username' must not name an existing user; scoped-token attribution is a label`);
 	}
 	// Downgrade first so validation and the content hash see the effective permission set
 	// (same silent downgrade as impersonation).

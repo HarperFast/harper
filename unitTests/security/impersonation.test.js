@@ -641,8 +641,12 @@ describe('security/impersonation.ts', () => {
 	describe('buildScopedTokenUser', () => {
 		const { buildScopedTokenUser } = require('#src/security/impersonation');
 
-		it('trusted internal dispatch can mint without an authenticated minter', () => {
-			const user = buildScopedTokenUser(
+		before(async () => {
+			await userModule.setUsersWithRolesCache(new Map([['real_user', { username: 'real_user', active: true }]]));
+		});
+
+		it('trusted internal dispatch can mint without an authenticated minter', async () => {
+			const user = await buildScopedTokenUser(
 				undefined,
 				{ username: 'internal-svc', role: { permission: { operations: ['read_only'] } } },
 				true
@@ -652,32 +656,50 @@ describe('security/impersonation.ts', () => {
 			assert.strictEqual(user.role.permission.super_user, false);
 		});
 
-		it('untrusted mint without a super_user minter is rejected with 403', () => {
-			assert.throws(
+		it('untrusted mint without a super_user minter is rejected with 403', async () => {
+			await assert.rejects(
 				() => buildScopedTokenUser(undefined, { role: { permission: { operations: ['read_only'] } } }, false),
 				(err) => err.statusCode === 403
 			);
 		});
 
-		it('trusted mint without any username is rejected', () => {
-			assert.throws(
+		it('trusted mint without any username is rejected', async () => {
+			await assert.rejects(
 				() => buildScopedTokenUser(undefined, { role: { permission: { operations: ['read_only'] } } }, true),
 				(err) => /username/.test(err.message)
 			);
 		});
 
-		it('identical permission content produces the same synthetic role identity', () => {
-			const a = buildScopedTokenUser(
+		it('an attribution username naming an existing user is rejected', async () => {
+			await assert.rejects(
+				() =>
+					buildScopedTokenUser(
+						undefined,
+						{ username: 'real_user', role: { permission: { operations: ['read_only'] } } },
+						true
+					),
+				(err) => /must not name an existing user/.test(err.message)
+			);
+		});
+
+		it('default attribution is the scoped-prefixed minter name', async () => {
+			const minter = makeSuperUser('the_admin');
+			const user = await buildScopedTokenUser(minter, { role: { permission: { operations: ['read_only'] } } });
+			assert.strictEqual(user.username, 'scoped:the_admin');
+		});
+
+		it('identical permission content produces the same synthetic role identity', async () => {
+			const a = await buildScopedTokenUser(
 				undefined,
 				{ username: 'a', role: { permission: { operations: ['read_only'] } } },
 				true
 			);
-			const b = buildScopedTokenUser(
+			const b = await buildScopedTokenUser(
 				undefined,
 				{ username: 'b', role: { permission: { operations: ['read_only'] } } },
 				true
 			);
-			const c = buildScopedTokenUser(
+			const c = await buildScopedTokenUser(
 				undefined,
 				{ username: 'c', role: { permission: { operations: ['insert'] } } },
 				true

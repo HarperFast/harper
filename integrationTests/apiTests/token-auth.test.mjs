@@ -206,8 +206,7 @@ suite('Token authentication', (ctx) => {
 						operations: ['read_only'],
 						[SCHEMA]: {
 							tables: {
-								// insert granted at the table level on purpose: the operations
-								// allowlist below must deny it anyway (gate 1 runs first)
+								// insert deliberately granted: the operations allowlist must still deny the insert op
 								[TABLE]: { read: true, insert: true, update: false, delete: false, attribute_permissions: [] },
 							},
 						},

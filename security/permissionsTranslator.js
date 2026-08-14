@@ -91,7 +91,6 @@ function getRolePermissions(role) {
 		if (roleName.startsWith('_')) {
 			const cached = syntheticRolePermsMap.get(roleName);
 			if (cached && cached.key === permsKey) {
-				// re-insert to refresh LRU recency
 				syntheticRolePermsMap.delete(roleName);
 				syntheticRolePermsMap.set(roleName, cached);
 				return cached.perms;

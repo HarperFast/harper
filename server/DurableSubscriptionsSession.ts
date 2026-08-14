@@ -56,7 +56,11 @@ if (getWorkerIndex() === 0) {
 		for await (const will of getLastWill().search({})) {
 			const data = will.data;
 			const message = { ...will };
-			if (message.user?.username) message.user = await (server as any).getUser(message.user.username);
+			// Never rehydrate a scoped-token bearer by name: its username is attribution only, and
+			// resolving it against hdb_user could substitute a real principal's permissions. The
+			// persisted user object already carries the token's own (downgraded) role.
+			if (message.user?.username && !message.user._scopedToken)
+				message.user = await (server as any).getUser(message.user.username);
 			try {
 				await publishMessage(message, data, message);
 			} catch {

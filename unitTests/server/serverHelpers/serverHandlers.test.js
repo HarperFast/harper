@@ -331,8 +331,6 @@ describe('Test serverHandlers.js module ', () => {
 			test_req.body.username = 'attribution-only';
 			test_req.body.role = { permission: { operations: ['read_only'] } };
 
-			// done() fires asynchronously after pAuthorize resolves — await it so the assertions
-			// run inside the test rather than after it completes
 			await new Promise((resolve, reject) =>
 				serverHandlers_rw.authHandler(test_req, {}, (err) => (err ? reject(err) : resolve()))
 			);

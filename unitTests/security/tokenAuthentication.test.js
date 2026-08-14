@@ -648,9 +648,6 @@ describe('test validateOperationToken function', () => {
 });
 
 describe('test scoped tokens (inline role object)', () => {
-	let rw_get_tokens;
-	let update_stub;
-	let signalling_stub;
 	const SU_MINTER = {
 		username: 'admin_minter',
 		active: true,
@@ -661,28 +658,22 @@ describe('test scoped tokens (inline role object)', () => {
 		active: true,
 		role: { role: 'basic', id: 'basic-id', permission: { super_user: false } },
 	};
+	let scopedKeysPath;
 
-	before(() => {
-		sandbox.restore();
-		rw_get_tokens = token_auth.__set__(
-			'getJWTRSAKeys',
-			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
-		);
-	});
-
-	beforeEach(() => {
-		update_stub = sandbox.stub(insert, 'update').callsFake(async () => {
-			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
-		});
-		signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake(() => {});
-	});
-
-	afterEach(() => {
-		sandbox.restore();
+	before(async () => {
+		// real key files and a real users cache — no stubs or rewiring (AGENTS.md test style)
+		scopedKeysPath = path.join(testUtils.getMockTestPath(), 'keys');
+		fs.mkdirpSync(scopedKeysPath);
+		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPass'), PASSPHRASE_VALUE);
+		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPrivate.key'), PRIVATE_KEY_VALUE);
+		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPublic.key'), PUBLIC_KEY_VALUE);
+		token_auth.clearJWTRSAKeysCache();
+		await user.setUsersWithRolesCache(new Map([['existing_user', { username: 'existing_user', active: true }]]));
 	});
 
 	after(() => {
-		rw_get_tokens();
+		fs.removeSync(scopedKeysPath);
+		token_auth.clearJWTRSAKeysCache();
 	});
 
 	function mint(overrides = {}) {
@@ -714,16 +705,14 @@ describe('test scoped tokens (inline role object)', () => {
 		assert.deepStrictEqual(error.statusCode, 403);
 	});
 
-	it('happy path: single token, no refresh token, no persistence, no user-change broadcast', async () => {
+	it('happy path: single token, no refresh token, scoped-prefixed default attribution', async () => {
 		const result = await mint();
 		assert.notDeepStrictEqual(result.operation_token, undefined);
 		assert.deepStrictEqual(result.refresh_token, undefined);
-		assert(update_stub.called === false);
-		assert(signalling_stub.called === false);
 
 		const payload = jwt.decode(result.operation_token);
 		assert.deepStrictEqual(payload.sub, 'scoped-operation');
-		assert.deepStrictEqual(payload.username, 'admin_minter');
+		assert.deepStrictEqual(payload.username, 'scoped:admin_minter');
 		assert.deepStrictEqual(payload.minted_by, 'admin_minter');
 		assert.deepStrictEqual(payload.super_user, false);
 		assert.deepStrictEqual(payload.role.permission.operations, ['read_only']);
@@ -734,6 +723,16 @@ describe('test scoped tokens (inline role object)', () => {
 		const payload = jwt.decode(result.operation_token);
 		assert.deepStrictEqual(payload.username, 'reporting-service');
 		assert.deepStrictEqual(payload.minted_by, 'admin_minter');
+	});
+
+	it('an attribution username naming an existing user is rejected', async () => {
+		let error;
+		try {
+			await mint({ username: 'existing_user' });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /must not name an existing user/);
 	});
 
 	it('embedded super_user/cluster_user are downgraded at mint', async () => {
@@ -808,18 +807,17 @@ describe('test scoped tokens (inline role object)', () => {
 
 	it('validateOperationToken accepts a scoped token and builds a synthetic user', async () => {
 		const { operation_token } = await mint({ username: 'svc' });
-		const user = await token_auth.validateOperationToken(operation_token);
-		assert.deepStrictEqual(user.username, 'svc');
-		assert.deepStrictEqual(user.active, true);
-		assert.deepStrictEqual(user._scopedToken, true);
-		assert.deepStrictEqual(user._mintedBy, 'admin_minter');
-		assert.match(user.role.role, /^_scoped_token_[0-9a-f]{24}$/);
-		assert.deepStrictEqual(user.role.permission.super_user, false);
-		assert.deepStrictEqual(user.role.permission.cluster_user, false);
-		// operations pre-expanded for the verifyPerms gate
-		assert(user.role.permission._expandedOperations instanceof Set);
-		assert(user.role.permission._expandedOperations.has('search_by_hash'));
-		assert(!user.role.permission._expandedOperations.has('insert'));
+		const scopedUser = await token_auth.validateOperationToken(operation_token);
+		assert.deepStrictEqual(scopedUser.username, 'svc');
+		assert.deepStrictEqual(scopedUser.active, true);
+		assert.deepStrictEqual(scopedUser._scopedToken, true);
+		assert.deepStrictEqual(scopedUser._mintedBy, 'admin_minter');
+		assert.match(scopedUser.role.role, /^_scoped_token_[0-9a-f]{24}$/);
+		assert.deepStrictEqual(scopedUser.role.permission.super_user, false);
+		assert.deepStrictEqual(scopedUser.role.permission.cluster_user, false);
+		assert(scopedUser.role.permission._expandedOperations instanceof Set);
+		assert(scopedUser.role.permission._expandedOperations.has('search_by_hash'));
+		assert(!scopedUser.role.permission._expandedOperations.has('insert'));
 	});
 
 	it('distinct permission sets get distinct synthetic role identities; identical sets share', async () => {
@@ -875,18 +873,14 @@ describe('test scoped tokens (inline role object)', () => {
 	});
 
 	it('legacy string-role tokens are still rejected by validateOperationToken', async () => {
-		const validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u) => {
-			return { username: u, role: { permission: { super_user: true } } };
-		});
-		const { operation_token } = await token_auth.createTokens({
-			username: 'HDB_USER',
-			password: 'pass',
-			role: 'component_role',
-		});
-		validate_user_stub.restore();
+		const legacyToken = jwt.sign(
+			{ username: 'existing_user', role: 'component_role' },
+			{ key: PRIVATE_KEY_VALUE, passphrase: PASSPHRASE_VALUE },
+			{ algorithm: 'RS256', subject: 'operation', expiresIn: '1d' }
+		);
 		let error;
 		try {
-			await token_auth.validateOperationToken(operation_token);
+			await token_auth.validateOperationToken(legacyToken);
 		} catch (e) {
 			error = e;
 		}

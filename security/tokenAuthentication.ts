@@ -285,7 +285,7 @@ async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
 	if (authObj.purpose) {
 		throw new ClientError("'purpose' cannot be combined with an inline 'role' object");
 	}
-	const scopedUser = buildScopedTokenUser(
+	const scopedUser = await buildScopedTokenUser(
 		authObj.hdb_user,
 		{ username: authObj.username, role: authObj.role as ImpersonatePayload['role'] },
 		isOperationAuthorizationBypassed()
