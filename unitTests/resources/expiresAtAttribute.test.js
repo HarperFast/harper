@@ -124,6 +124,50 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.strictEqual(await storedExpiresAt(Table, 1), fieldExpiresAt);
 	});
 
+	it('canonicalizes supported expiration shapes in the index and in searches', async function () {
+		const Table = makeTable('ExpiresAtCanonicalIndex');
+		const expiresAt = Date.now() + 3_600_000;
+		const values = [expiresAt, String(expiresAt), new Date(expiresAt).toISOString(), new Date(expiresAt)];
+		for (let id = 0; id < values.length; id++) await Table.put(id, { id, expiresAt: values[id] });
+		await Table.primaryStore.committed;
+
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [0, 1, 2, 3]);
+		for (const value of values) {
+			const ids = [];
+			for await (const record of Table.search({
+				allowFullScan: false,
+				conditions: [{ attribute: 'expiresAt', value }],
+			})) {
+				ids.push(record.id);
+			}
+			assert.deepStrictEqual(ids, [0, 1, 2, 3]);
+		}
+		Table.cleanup();
+	});
+
+	it('rebuilds a legacy expiration index into the canonical format', async function () {
+		const tableName = 'ExpiresAtCanonicalRebuild';
+		const Table = makeTable(tableName);
+		const expiresAt = Date.now() + 3_600_000;
+		const isoExpiresAt = new Date(expiresAt).toISOString();
+		await Table.put(1, { id: 1, expiresAt: isoExpiresAt });
+		await Table.primaryStore.committed;
+
+		const attribute = Table.attributes.find((candidate) => candidate.name === 'expiresAt');
+		const descriptor = Table.dbisDB.getSync(attribute.key);
+		delete descriptor.expirationIndexVersion;
+		await Table.dbisDB.put(attribute.key, descriptor);
+		await Table.indices.expiresAt.clear();
+		await Table.indices.expiresAt.put(isoExpiresAt, 1);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(isoExpiresAt)], [1]);
+
+		const Reloaded = makeTable(tableName);
+		await Reloaded.indexingOperation;
+		assert.deepStrictEqual([...Reloaded.indices.expiresAt.getValues(isoExpiresAt)], []);
+		assert.deepStrictEqual([...Reloaded.indices.expiresAt.getValues(expiresAt)], [1]);
+		Table.cleanup();
+	});
+
 	it('ignores non-timestamp field values (boolean / empty string) and uses the table default', async function () {
 		const Bool = makeTable('ExpiresAtBool', 100);
 		const Empty = makeTable('ExpiresAtEmpty', 100);
@@ -134,6 +178,19 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			const stored = await storedExpiresAt(T, 1);
 			assert(stored >= before + 100_000 && stored <= Date.now() + 100_000, `unexpected stored expiresAt ${stored}`);
 		}
+	});
+
+	it('does not index or evict a field-only record without a valid expiration', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtNoExpiration'));
+		await Table.put(1, { id: 1 });
+		await Table.put(2, { id: 2, expiresAt: -1 });
+		await Table.primaryStore.committed;
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(-1)], []);
+
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.id, 1);
+		assert.strictEqual(Table.primaryStore.getEntry(2)?.value.id, 2);
+		Table.cleanup();
 	});
 
 	// End-to-end: stamping the field into the expiry metadata makes read-hiding enforce it on a
@@ -265,6 +322,34 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await runSweep();
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], []);
 		for (let id = 0; id < 505; id++) assert.strictEqual(Table.primaryStore.getEntry(id)?.value, undefined);
+		Table.cleanup();
+	});
+
+	it('physically evicts an expired ISO-string value', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtIsoSweep'));
+		const expiresAt = Date.now() - 1_000;
+		await Table.put(1, { id: 1, expiresAt: new Date(expiresAt).toISOString() });
+		await Table.primaryStore.committed;
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1]);
+
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], []);
+		Table.cleanup();
+	});
+
+	it('removes a stale expired key while preserving a refreshed record and its current key', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtStaleKey'));
+		const expired = Date.now() - 1_000;
+		const current = Date.now() + 60_000;
+		await Table.put(1, { id: 1, expiresAt: current });
+		await Table.primaryStore.committed;
+		Table.indices.expiresAt.put(expired, 1);
+
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.expiresAt, current);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expired)], []);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(current)], [1]);
 		Table.cleanup();
 	});
 
@@ -466,6 +551,57 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		}
 	});
 
+	it('cleanup drains the primary cleanup scan and prevents writes from rearming it', async function () {
+		const Table = table({
+			table: 'PrimaryCleanupDrain',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		let runCleanup;
+		const realSetTimeout = global.setTimeout;
+		const timeoutStub = sinon.stub(global, 'setTimeout').callsFake((callback, timeout, ...args) => {
+			if (!runCleanup) {
+				runCleanup = callback;
+				return { unref() {} };
+			}
+			return realSetTimeout(callback, timeout, ...args);
+		});
+		Table.setTTLExpiration({ scanInterval: 100 });
+		assert(runCleanup);
+		await Table.put(1, { id: 1, payload: createBlob(Buffer.alloc(20_000, 11)) }, { expiresAt: Date.now() - 1_000 });
+		await Table.primaryStore.committed;
+
+		const originalEvict = Table.evict;
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
+			evictionStarted = true;
+			await blockedEviction;
+			return originalEvict.apply(this, args);
+		});
+		try {
+			const scan = runCleanup();
+			await waitFor(() => evictionStarted, { message: 'the primary cleanup scan should start eviction' });
+			let cleanupResolved = false;
+			const cleanup = Table.cleanup().then(() => (cleanupResolved = true));
+			await delay(10);
+			assert.strictEqual(cleanupResolved, false);
+			releaseEviction();
+			await Promise.all([scan, cleanup]);
+			const timerCount = timeoutStub.callCount;
+			await Table.put(2, { id: 2 }, { expiresAt: Date.now() + 60_000 });
+			assert.strictEqual(timeoutStub.callCount, timerCount, 'cleanup must prevent a write from rearming the scan');
+		} finally {
+			releaseEviction();
+			evictStub.restore();
+			timeoutStub.restore();
+		}
+	});
+
 	it('waits for an active expiration sweep before destroying a database', async function () {
 		const database = 'ExpiresAtDatabaseDrop';
 		const { Table, runSweep } = captureExpirationSweep(() =>
@@ -589,6 +725,39 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		Table.cleanup();
 	});
 
+	it('does not remove a refreshed expiration key when stale-key cleanup conflicts', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtStaleConflict'));
+		const expired = Date.now() - 1_000;
+		const current = Date.now() + 60_000;
+		const refreshed = current + 60_000;
+		await Table.put(1, { id: 1, expiresAt: current });
+		await Table.primaryStore.committed;
+		Table.indices.expiresAt.put(expired, 1);
+
+		const originalCommit = RocksTransaction.prototype.commit;
+		let injected = false;
+		const commitStub = sinon.stub(RocksTransaction.prototype, 'commit').callsFake(async function (...args) {
+			if (!injected) {
+				injected = true;
+				await Table.put(1, { id: 1, expiresAt: refreshed });
+			}
+			return originalCommit.apply(this, args);
+		});
+		try {
+			await runSweep();
+		} finally {
+			commitStub.restore();
+		}
+
+		assert(injected);
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.expiresAt, refreshed);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(refreshed)], [1]);
+		await runSweep();
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expired)], []);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(refreshed)], [1]);
+		Table.cleanup();
+	});
+
 	it('conflicts retained-tombstone cleanup with a concurrent primary resurrection', async function () {
 		const Table = makeTable('ExpiresAtTombstoneConflict', undefined, { audit: true });
 		const expiresAt = Date.now() + 60_000;
@@ -610,5 +779,64 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.name, 'resurrected');
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1]);
 		Table.cleanup();
+	});
+});
+
+describe('LMDB @expiresAt cleanup draining', function () {
+	if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return;
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('does not resolve cleanup while LMDB eviction writes are active', async function () {
+		let runSweep;
+		const realSetInterval = global.setInterval;
+		const intervalStub = sinon.stub(global, 'setInterval').callsFake((callback, interval, ...args) => {
+			if (interval === 60_000) {
+				runSweep = callback;
+				return { unref() {} };
+			}
+			return realSetInterval(callback, interval, ...args);
+		});
+		let Table;
+		try {
+			Table = table({
+				table: 'LmdbExpirationDrain',
+				database: 'lmdb-expiration-drain',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+				],
+			});
+		} finally {
+			intervalStub.restore();
+		}
+		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000 });
+		await Table.primaryStore.committed;
+
+		const originalEvict = Table.evict;
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		const evictStub = sinon.stub(Table, 'evict').callsFake(async function (...args) {
+			evictionStarted = true;
+			await blockedEviction;
+			return originalEvict.apply(this, args);
+		});
+		try {
+			const sweep = runSweep();
+			await waitFor(() => evictionStarted, { message: 'LMDB eviction should start' });
+			let cleanupResolved = false;
+			const cleanup = Table.cleanup().then(() => (cleanupResolved = true));
+			await delay(10);
+			assert.strictEqual(cleanupResolved, false);
+			releaseEviction();
+			await Promise.all([sweep, cleanup]);
+		} finally {
+			releaseEviction();
+			evictStub.restore();
+		}
 	});
 });

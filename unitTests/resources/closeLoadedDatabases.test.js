@@ -107,6 +107,36 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
+	it('fails closed and resumes cleanup when close times out', async function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'closetimeout6',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const cleanup = sinon.stub(Table, 'cleanup').returns(new Promise(() => {}));
+		const resume = sinon.spy(Table, 'resumeCleanup');
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		try {
+			const closing = closeDatabase('closetimeout6');
+			const rejected = assert.rejects(closing, /refusing to close database/);
+			await clock.tickAsync(10_001);
+			await rejected;
+			assert.ok(refCountFor(rootStore.path) > 0, 'timed-out close must retain native handles');
+			assert.strictEqual(rootStore.status, 'open');
+			assert.strictEqual(resume.callCount, 1);
+		} finally {
+			clock.restore();
+			cleanup.restore();
+			resume.restore();
+		}
+		await closeDatabase('closetimeout6');
+	});
+
 	it('dropDatabase runs table cleanup before destroying its stores', async function () {
 		const Table = table({
 			table: 'expiring',
@@ -122,5 +152,35 @@ describe('RocksDB handle release', function () {
 
 		assert.strictEqual(cleanup.callCount, 1, 'table cleanup should run before its database is destroyed');
 		cleanup.restore();
+	});
+
+	it('fails closed and resumes cleanup when drop times out', async function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'droptimeout7',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const cleanup = sinon.stub(Table, 'cleanup').returns(new Promise(() => {}));
+		const resume = sinon.spy(Table, 'resumeCleanup');
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		try {
+			const dropping = dropDatabase('droptimeout7');
+			const rejected = assert.rejects(dropping, /refusing to destroy database/);
+			await clock.tickAsync(10_001);
+			await rejected;
+			assert.ok(refCountFor(rootStore.path) > 0, 'timed-out drop must retain native handles');
+			assert.strictEqual(rootStore.status, 'open');
+			assert.strictEqual(resume.callCount, 1);
+		} finally {
+			clock.restore();
+			cleanup.restore();
+			resume.restore();
+		}
+		await dropDatabase('droptimeout7');
 	});
 });

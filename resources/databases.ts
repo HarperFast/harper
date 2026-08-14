@@ -9,7 +9,7 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
-import { makeTable, ignoreAlreadyDropped } from './Table.ts';
+import { expirationTimestamp, makeTable, ignoreAlreadyDropped } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import {
 	CONFIG_PARAMS,
@@ -1250,15 +1250,13 @@ export async function dropDatabase(databaseName) {
 			const table = dbTables[tableName];
 			rootStore = table.primaryStore.rootStore;
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-			lmdbDatabaseEnvs.delete(rootStore.path);
-			rocksdbDatabaseEnvs.delete(rootStore.path);
 		}
 
 		const cleanupCompletions: Promise<void>[] = [];
 		for (const tableName in dbTables) {
 			try {
 				const completion = dbTables[tableName].cleanup?.();
-				if (completion?.then) {
+				if (typeof completion?.then === 'function') {
 					cleanupCompletions.push(
 						completion.catch((error) =>
 							logger.warn(`Error awaiting cleanup for table ${databaseName}.${tableName}:`, error)
@@ -1270,9 +1268,15 @@ export async function dropDatabase(databaseName) {
 			}
 		}
 		if (!(await waitForTableCleanup(cleanupCompletions))) {
+			for (const tableName in dbTables) dbTables[tableName].resumeCleanup?.();
 			throw new Error(
-				`Timed out after ${DATABASE_CLOSE_TIMEOUT}ms waiting for expiration cleanup; refusing to destroy database ${databaseName} while cleanup is active.`
+				`Timed out after ${DATABASE_CLOSE_TIMEOUT}ms waiting for cleanup; refusing to destroy database ${databaseName} while cleanup is active.`
 			);
+		}
+		for (const tableName in dbTables) {
+			const tableRootStore = dbTables[tableName].primaryStore.rootStore;
+			lmdbDatabaseEnvs.delete(tableRootStore.path);
+			rocksdbDatabaseEnvs.delete(tableRootStore.path);
 		}
 
 		for (const tableName in dbTables) {
@@ -1354,7 +1358,7 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 		if (!table?.primaryStore) continue;
 		try {
 			const completion = table.cleanup?.();
-			if (completion?.then) {
+			if (typeof completion?.then === 'function') {
 				cleanupCompletions.push(
 					completion.catch((error) =>
 						logger.warn(`Error awaiting cleanup for table ${databaseName}.${tableName}:`, error)
@@ -1367,8 +1371,9 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
 	}
 	if (!(await waitForTableCleanup(cleanupCompletions))) {
-		logger.warn(
-			`Timed out after ${DATABASE_CLOSE_TIMEOUT}ms waiting for expiration cleanup while closing database ${databaseName}; closing its stores to avoid leaking native handles.`
+		for (const [, table] of tableEntries) table.resumeCleanup?.();
+		throw new Error(
+			`Timed out after ${DATABASE_CLOSE_TIMEOUT}ms waiting for cleanup; refusing to close database ${databaseName} while cleanup is active.`
 		);
 	}
 	for (const [tableName, table] of tableEntries) {
@@ -1412,7 +1417,8 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
  * handles linger process-wide (and, e.g., block an online `restore_backup` from confirming the
  * database is closed). The `system` database is intentionally left open: it is non-enumerable here
  * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
- * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
+ * table during teardown. A cleanup timeout is logged here and leaves the handles open rather than
+ * closing them while writes are active.
  */
 export async function closeLoadedDatabases(): Promise<void> {
 	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
@@ -1431,7 +1437,13 @@ export async function closeLoadedDatabases(): Promise<void> {
 		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
 			isRocks = true;
 		}
-		if (isRocks) await closeDatabase(databaseName);
+		if (isRocks) {
+			try {
+				await closeDatabase(databaseName);
+			} catch (error) {
+				logger.warn(`Could not close database ${databaseName} during worker shutdown:`, error);
+			}
+		}
 	}
 }
 // HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
@@ -1621,7 +1633,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attribute.name = attribute.attribute;
 			attribute.indexed = true;
 		} else attribute.attribute = attribute.name;
-		if (attribute.expiresAt) attribute.indexed = true;
+		if (attribute.expiresAt) {
+			attribute.indexed = true;
+			attribute.expirationIndexVersion = 1;
+		}
 	}
 	let hasChanges;
 	let releaseExclusiveLock: () => void;
@@ -1913,6 +1928,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			const commonChanged =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
+				attributeDescriptor.expirationIndexVersion !== attribute.expirationIndexVersion ||
 				attributeDescriptor.nullable !== attribute.nullable ||
 				attributeDescriptor.version !== attribute.version ||
 				attributeDescriptor.enumerable !== attribute.enumerable ||
@@ -2168,7 +2184,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			}
 			let outstanding = 0;
 			// this means that a new attribute has been introduced that needs to be indexed
-			for (const { key, value: record } of Table.primaryStore.getRange({
+			for (const { key, value: record, expiresAt } of Table.primaryStore.getRange({
 				start,
 				lazy: attributesLength < 4,
 				versions: true,
@@ -2192,7 +2208,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					const index = attribute.dbi;
 					try {
 						const resolver = attribute.resolve;
-						const value = record && (resolver ? resolver(record) : record[property]);
+						const value = attribute.expiresAt
+							? expirationTimestamp(expiresAt)
+							: record && (resolver ? resolver(record) : record[property]);
 						if (index.customIndex) {
 							index.customIndex.index(key, value);
 							didSynchronousIndexing = true;

@@ -107,6 +107,12 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 
 ## Record expiration sweeps
 
+An `@expiresAt` attribute is a public timestamp field backed by the record encoder's expiration metadata.
+Its index stores one canonical, non-negative epoch-millisecond number derived from that metadata, regardless of
+whether the API value was a number, numeric string, ISO string, or `Date`. Writes, index rebuilds, index searches,
+and scan filters apply the same normalization. `expirationIndexVersion` participates in the normal resumable
+schema reindex flow so stores created before canonicalization are rebuilt without a separate open-time scan.
+
 RocksDB `@expiresAt` sweeps walk one bounded composite-index range at a time with a fixed cutoff and an
 owned `(expiresAt, primaryKey)` cursor. A sweep never holds an iterator snapshot across an `await`, and it
 continues until every index entry at or before that cutoff has been considered. This keeps memory and native
@@ -116,6 +122,10 @@ Dangling-index cleanup reads and writes the primary key in the same RocksDB tran
 The primary write is a conflict guard against concurrent resurrection: absent keys receive a transactional
 remove, while retained audit tombstones are rewritten byte-for-byte so their version and retention semantics do
 not change. An `ERR_BUSY` abort leaves the newly written record and index authoritative for the next sweep.
+
+Table cleanup is a join point for both the primary reclamation scan and the `@expiresAt` index sweep. Database
+close and drop wait for that join before closing or destroying stores. A timeout fails closed: handles and
+registries remain live and cleanup scheduling is resumed, so active work is never raced by teardown.
 
 ## Path routing & parameterised routes
 

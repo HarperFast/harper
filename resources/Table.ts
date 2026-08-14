@@ -110,6 +110,7 @@ export type Attribute = {
 	computedFromExpression?: any;
 	embed?: { source: string; model: string };
 	version?: any;
+	expirationIndexVersion?: number;
 	properties?: Array<Attribute>;
 	elements?: Attribute;
 	sealed?: boolean;
@@ -133,6 +134,7 @@ const EVICTION_BATCH_SIZE = 100;
 // Cap on eviction-batch commits in flight at once, so commit I/O overlaps scan/staging without
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
+const MAX_CLEANUP_CONCURRENCY = 50;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
@@ -145,6 +147,17 @@ const LOCK_TIMEOUT = 10000;
 export function ignoreAlreadyDropped(error: any): void {
 	if (error?.message?.includes('Column family already dropped')) return;
 	throw error;
+}
+
+export function expirationTimestamp(value: any): number | undefined {
+	let timestamp = NaN;
+	if (typeof value === 'number' || typeof value === 'bigint') timestamp = Number(value);
+	else if (value instanceof Date) timestamp = value.getTime();
+	else if (typeof value === 'string' && value.trim() !== '') {
+		const numeric = Number(value);
+		timestamp = Number.isFinite(numeric) ? numeric : Date.parse(value);
+	}
+	return Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : undefined;
 }
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
@@ -418,6 +431,7 @@ export function makeTable(options) {
 		if (attribute.expiresAt) expiresAtProperty = attribute;
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 	}
+	const expiresAtIndexName = expiresAtProperty?.name;
 	let deleteCallbackHandle: { remove: () => void };
 	let prefetchIds = [];
 	let prefetchCallbacks = [];
@@ -427,8 +441,9 @@ export function makeTable(options) {
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
 	let cleanupTimer: NodeJS.Timeout;
+	let cleanupClosed = false;
+	let cleanupWasScheduled = false;
 	let recordExpirationInterval: NodeJS.Timeout;
-	let recordExpirationCancelled = false;
 	let missingExpirationIndexReported = false;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
@@ -1408,15 +1423,20 @@ export function makeTable(options) {
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
 			delete databases[databaseName][tableName];
-			TableResource.cleanup();
-			const expirationDrainDeadline = Date.now() + LOCK_TIMEOUT;
-			while (runningRecordExpiration) {
-				if (Date.now() >= expirationDrainDeadline) {
-					const message = `dropTable() timed out waiting for the expiration sweep on ${tableName}; the table is unloaded and its drop will complete on restart or same-name create.`;
-					logger.warn?.(message);
-					throw new Error(message);
-				}
-				await rest();
+			const cleanupCompletion = TableResource.cleanup();
+			let cleanupTimer: NodeJS.Timeout;
+			const cleanupTimedOut = Symbol('cleanupTimedOut');
+			const cleanupResult = await Promise.race([
+				cleanupCompletion,
+				new Promise<typeof cleanupTimedOut>((resolve) => {
+					cleanupTimer = setTimeout(() => resolve(cleanupTimedOut), LOCK_TIMEOUT);
+				}),
+			]);
+			clearTimeout(cleanupTimer!);
+			if (cleanupResult === cleanupTimedOut) {
+				const message = `dropTable() timed out waiting for cleanup on ${tableName}; the table is unloaded and its drop will complete on restart or same-name create.`;
+				logger.warn?.(message);
+				throw new Error(message);
 			}
 			// The above stops new source-fill writes from starting, but a write from a get()
 			// that already returned to its caller may still be in flight. Dropping the column
@@ -2082,14 +2102,14 @@ export function makeTable(options) {
 					// Capture both promises so a real write failure on either resolves through evict()'s catch
 					// below rather than escaping as an unhandled rejection from the fire-and-forget callers.
 					const indexCleanup = primaryStore.ifVersion(id, existingVersion, () => {
-						updateIndices(id, existingRecord, null);
+						updateIndices(id, existingRecord, null, undefined, undefined, entry?.expiresAt);
 					});
 					const removal = removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
 					const removalEntry = entry ?? currentEntry ?? primaryStore.getEntry(id);
 					if (!removalEntry || removalEntry.version !== existingVersion) return;
-					updateIndices(id, existingRecord, null, options);
+					updateIndices(id, existingRecord, null, options, undefined, removalEntry.expiresAt);
 					if (removalEntry.metadataFlags & HAS_BLOBS) {
 						if (!existingRecord) return;
 						primaryStore.remove(removalEntry.key, options);
@@ -2891,26 +2911,12 @@ export function makeTable(options) {
 						// Read from recordToStore so the metadata matches exactly what the pruning sweep later
 						// reads back. Falls back to the table default when the field is unset or not a timestamp.
 						const fieldExpiresAt = expiresAtProperty ? recordToStore?.[expiresAtProperty.name] : undefined;
-						// Coerce only genuine timestamp shapes: a number/bigint epoch, a Date, or a numeric/ISO
-						// string. Booleans, empty/whitespace strings, and null/undefined fall through to NaN so a
-						// nonsensical field value uses the table default rather than expiring the record at epoch 0.
-						let fieldExpiresAtMs = NaN;
-						if (typeof fieldExpiresAt === 'number' || typeof fieldExpiresAt === 'bigint')
-							fieldExpiresAtMs = Number(fieldExpiresAt);
-						else if (fieldExpiresAt instanceof Date) fieldExpiresAtMs = fieldExpiresAt.getTime();
-						else if (typeof fieldExpiresAt === 'string' && fieldExpiresAt.trim() !== '') {
-							const numeric = Number(fieldExpiresAt);
-							fieldExpiresAtMs = Number.isFinite(numeric) ? numeric : Date.parse(fieldExpiresAt);
-						}
+						const fieldExpiresAtMs = expirationTimestamp(fieldExpiresAt);
 						// Only a finite, non-negative epoch counts: negatives collide with the -1 "no expiration"
 						// sentinel (the encoder omits HAS_EXPIRATION for <0, but the field sweep would still evict a
 						// negative field value), so treat a negative/NaN field as unset and use the table default.
 						expiresAt =
-							Number.isFinite(fieldExpiresAtMs) && fieldExpiresAtMs >= 0
-								? fieldExpiresAtMs
-								: expirationMs
-									? expirationMs + Date.now()
-									: -1;
+							fieldExpiresAtMs !== undefined ? fieldExpiresAtMs : expirationMs ? expirationMs + Date.now() : -1;
 					}
 					if (!fullUpdate) {
 						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
@@ -2932,7 +2938,14 @@ export function makeTable(options) {
 							}
 						})()
 					);
-					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
+					updateIndices(
+						id,
+						existingRecord,
+						recordToStore,
+						transaction && { transaction },
+						expiresAt,
+						priorStaged?.expiresAt ?? existingEntry?.expiresAt
+					);
 
 					writeCommit(true);
 					if (expiresAt >= 0) {
@@ -2987,7 +3000,7 @@ export function makeTable(options) {
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
 						if (storeRecord) {
-							write.stagedEntry = { value: recordToStore };
+							write.stagedEntry = { value: recordToStore, expiresAt };
 							// blobs this write saved are referenced by its audit entry (if it wrote one), which
 							// then owns their lifetime; and any record an earlier write in this transaction
 							// stored is now replaced, so mark those writes for the superseded-blob cleanup
@@ -3114,7 +3127,14 @@ export function makeTable(options) {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
 					}
-					updateIndices(id, existingRecord, null, transaction && { transaction });
+					updateIndices(
+						id,
+						existingRecord,
+						null,
+						transaction && { transaction },
+						undefined,
+						priorStaged?.expiresAt ?? existingEntry?.expiresAt
+					);
 					if (audit || trackDeletes) {
 						updateRecord(
 							id,
@@ -5295,9 +5315,20 @@ export function makeTable(options) {
 		}
 		static cleanup() {
 			deleteCallbackHandle?.remove();
-			recordExpirationCancelled = true;
+			cleanupClosed = true;
+			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (recordExpirationInterval) clearInterval(recordExpirationInterval);
-			return recordExpirationCompletion;
+			return Promise.all([lastEvictionCompletion, recordExpirationCompletion]).then(() => undefined);
+		}
+		static resumeCleanup() {
+			if (!cleanupClosed) return;
+			cleanupClosed = false;
+			if (cleanupWasScheduled) {
+				lastCleanupInterval = undefined;
+				scheduleCleanup();
+			}
+			if (expiresAtProperty) runRecordExpirationEviction();
+			if (audit) addDeleteRemoval();
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
@@ -5323,7 +5354,14 @@ export function makeTable(options) {
 	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
 	if (expiresAtProperty) runRecordExpirationEviction();
 	return TableResource;
-	function updateIndices(id: any, existingRecord: any, record: any, options?: any) {
+	function updateIndices(
+		id: any,
+		existingRecord: any,
+		record: any,
+		options?: any,
+		expiresAtIndexValue?: number,
+		existingExpiresAtIndexValue?: number
+	) {
 		let hasChanges;
 		// iterate the entries from the record
 		// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
@@ -5340,8 +5378,26 @@ export function makeTable(options) {
 			// the real [value, id] entry was removed, orphaning it against the now-deleted record. A record
 			// that is present but whose attribute is null is a different case (record is a truthy object) and
 			// still indexes under null. See harper#1894 (F-149).
-			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
-			const existingValue = existingRecord && (resolver ? resolver(existingRecord) : existingRecord[key]);
+			const expirationIndex = expiresAtIndexName !== undefined && key === expiresAtIndexName;
+			const value =
+				record == null
+					? undefined
+					: expirationIndex
+						? expiresAtIndexValue !== undefined && expiresAtIndexValue >= 0
+							? expiresAtIndexValue
+							: undefined
+						: resolver
+							? resolver(record)
+							: record[key];
+			const existingValue =
+				existingRecord &&
+				(expirationIndex
+					? existingExpiresAtIndexValue !== undefined && existingExpiresAtIndexValue >= 0
+						? existingExpiresAtIndexValue
+						: undefined
+					: resolver
+						? resolver(existingRecord)
+						: existingRecord[key]);
 			if (value === existingValue && !isIndexing) {
 				continue;
 			}
@@ -6022,7 +6078,14 @@ export function makeTable(options) {
 							sourceWrite.skipped = true;
 							return;
 						}
-						updateIndices(id, existingRecord, updatedRecord, transaction && { transaction });
+						updateIndices(
+							id,
+							existingRecord,
+							updatedRecord,
+							transaction && { transaction },
+							sourceContext.expiresAt,
+							existingEntry?.expiresAt
+						);
 						if (updatedRecord) {
 							if (existingEntry) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
@@ -6186,7 +6249,15 @@ export function makeTable(options) {
 	function createEvictionBatcher(isCancelled: () => boolean = () => false) {
 		type EvictItem =
 			| { type: 'evict' | 'tombstone'; key: any; version: number }
-			| { type: 'dangling-index'; key: any; indexedValue: any; index: any };
+			| { type: 'dangling-index'; key: any; indexedValue: any; index: any }
+			| {
+					type: 'stale-index';
+					key: any;
+					version: number;
+					indexedValue: any;
+					currentExpiration: number | undefined;
+					index: any;
+			  };
 		let pending: EvictItem[] = [];
 		const inFlight = new Set<Promise<void>>();
 
@@ -6211,6 +6282,25 @@ export function makeTable(options) {
 					staged++;
 					continue;
 				}
+				if (item.type === 'stale-index') {
+					const entry = primaryStore.getEntry(item.key, options);
+					if (
+						!entry ||
+						entry.value == null ||
+						entry.version !== item.version ||
+						compareKeys(entry.expiresAt, item.currentExpiration) !== 0 ||
+						compareKeys(item.indexedValue, item.currentExpiration) === 0
+					)
+						continue;
+					const encodedRecord = primaryStore.getBinarySync(item.key, options);
+					if (encodedRecord === undefined) continue;
+					primaryStore.putSync(item.key, asBinary(encodedRecord.slice()), options);
+					item.index.remove(item.indexedValue, item.key, options);
+					if (item.currentExpiration !== undefined && item.currentExpiration >= 0)
+						item.index.put(item.currentExpiration, item.key, options);
+					staged++;
+					continue;
+				}
 				const entry = primaryStore.getEntry(item.key, options);
 				if (!entry || entry.version !== item.version) continue; // gone or changed since the scan; leave for next cycle
 				if (item.type === 'tombstone') {
@@ -6219,7 +6309,7 @@ export function makeTable(options) {
 					if (entry.value == null) continue; // already removed
 					if (entry.metadataFlags & HAS_BLOBS) continue; // per-record evict() owns blob/commit ordering
 					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
-					updateIndices(item.key, entry.value, null, options);
+					updateIndices(item.key, entry.value, null, options, undefined, entry.expiresAt);
 				}
 				removeEntry(primaryStore, entry, options);
 				staged++;
@@ -6296,7 +6386,31 @@ export function makeTable(options) {
 			},
 		};
 	}
+
+	function createCleanupOperationTracker() {
+		const inFlight = new Set<Promise<void>>();
+		return {
+			add(operation: MaybePromise<unknown> | void): Promise<void> | void {
+				if (operation == null) return;
+				const tracked = Promise.resolve(operation)
+					.then(
+						() => undefined,
+						(error) => {
+							logger.error?.('Cleanup error', error);
+						}
+					)
+					.finally(() => inFlight.delete(tracked));
+				inFlight.add(tracked);
+				if (inFlight.size >= MAX_CLEANUP_CONCURRENCY) return Promise.race(inFlight);
+			},
+			drain(): Promise<void[]> {
+				return Promise.all(inFlight);
+			},
+		};
+	}
+
 	function scheduleCleanup(priority?: number): Promise<void> | void {
+		if (cleanupClosed) return;
 		let runImmediately = false;
 		if (priority) {
 			// run immediately if there is a big increase in priority
@@ -6307,6 +6421,7 @@ export function makeTable(options) {
 		if (cleanupInterval === lastCleanupInterval && !runImmediately) return;
 		lastCleanupInterval = cleanupInterval;
 		if (getWorkerIndex() === getWorkerCount() - 1) {
+			cleanupWasScheduled = true;
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (!cleanupInterval) return;
@@ -6323,11 +6438,13 @@ export function makeTable(options) {
 					? Date.now()
 					: Math.ceil((Date.now() - startOfYear.getTime()) / nextInterval) * nextInterval + startOfYear.getTime();
 				const startNextTimer = (nextScheduled) => {
+					if (cleanupClosed) return;
 					logger.trace?.(`Scheduled next cleanup scan at ${new Date(nextScheduled)}`);
 					// noinspection JSVoidFunctionReturnValueUsed
 					cleanupTimer = setTimeout(
 						() =>
 							(lastEvictionCompletion = lastEvictionCompletion.then(async () => {
+								if (cleanupClosed) return;
 								// schedule the next run for when the next cleanup interval should occur (or now if it is in the past)
 								startNextTimer(Math.max(nextScheduled + cleanupInterval, Date.now()));
 								const rootStore = primaryStore.rootStore;
@@ -6335,9 +6452,7 @@ export function makeTable(options) {
 									clearTimeout(cleanupTimer);
 									return;
 								}
-								const MAX_CLEANUP_CONCURRENCY = 50;
-								const outstandingCleanupOperations = new Array(MAX_CLEANUP_CONCURRENCY);
-								let cleanupIndex = 0;
+								const operationTracker = createCleanupOperationTracker();
 								const evictThreshold =
 									Math.pow(cleanupPriority, 8) *
 									(envMngr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_EVICTIONFACTOR) ?? 100000);
@@ -6370,7 +6485,7 @@ export function makeTable(options) {
 									// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
 									// the per-record commit cost; LMDB keeps the per-record path (eventTurnBatching already
 									// coalesces async writes per event turn).
-									const batcher = isRocksDB ? createEvictionBatcher() : undefined;
+									const batcher = isRocksDB ? createEvictionBatcher(() => cleanupClosed) : undefined;
 									// iterate through all entries to find expired records and deleted records
 									for (const entry of primaryStore.getRange({
 										start: false,
@@ -6378,6 +6493,7 @@ export function makeTable(options) {
 										versions: true,
 										lazy: true, // only want to access metadata most of the time
 									})) {
+										if (cleanupClosed) break;
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
 										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
@@ -6399,17 +6515,15 @@ export function makeTable(options) {
 														? removeEntry(primaryStore, entry, version)
 														: TableResource.evict(key, record, version);
 												if (resolution) {
-													await outstandingCleanupOperations[cleanupIndex];
-													outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
-														logger.error?.('Cleanup error', error);
-													});
-													if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;
+													const backpressure = operationTracker.add(resolution);
+													if (backpressure) await backpressure;
 												}
 											}
 										}
 										await rest();
 									}
 									if (batcher) await batcher.drain();
+									await operationTracker.drain();
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
@@ -6430,21 +6544,21 @@ export function makeTable(options) {
 		});
 	}
 	function runRecordExpirationEviction() {
-		if (getWorkerIndex() !== 0) return;
+		if (getWorkerIndex() !== 0 || cleanupClosed) return;
 		const expiresAtName = expiresAtProperty.name;
 
 		async function sweepRocks(index: any, cutoff: number) {
-			const batcher = createEvictionBatcher(() => recordExpirationCancelled);
+			const batcher = createEvictionBatcher(() => cleanupClosed);
 			let after: any[] | undefined;
 			try {
-				while (!recordExpirationCancelled && primaryStore.rootStore.status === 'open') {
+				while (!cleanupClosed && primaryStore.rootStore.status === 'open') {
 					const previousAfter = after;
 					const entries = [...index.getCompositeRange({ after, end: cutoff, limit: EVICTION_BATCH_SIZE })];
 					if (entries.length === 0) break;
 					let completedChunk = true;
 					let entriesSinceYield = 0;
 					for (const entry of entries) {
-						if (recordExpirationCancelled || primaryStore.rootStore.status !== 'open') {
+						if (cleanupClosed || primaryStore.rootStore.status !== 'open') {
 							completedChunk = false;
 							break;
 						}
@@ -6458,7 +6572,7 @@ export function makeTable(options) {
 								indexedValue: entry.key,
 								index,
 							});
-						} else if (recordEntry.value[expiresAtName] < cutoff) {
+						} else if (recordEntry.expiresAt < cutoff) {
 							if (recordEntry.metadataFlags & HAS_BLOBS) {
 								await TableResource.evict(entry.value, recordEntry.value, recordEntry.version);
 							} else {
@@ -6468,6 +6582,15 @@ export function makeTable(options) {
 									version: recordEntry.version,
 								});
 							}
+						} else if (compareKeys(entry.key, recordEntry.expiresAt) !== 0) {
+							backpressure = batcher.add({
+								type: 'stale-index',
+								key: entry.value,
+								version: recordEntry.version,
+								indexedValue: entry.key,
+								currentExpiration: recordEntry.expiresAt,
+								index,
+							});
 						}
 						if (backpressure) await backpressure;
 						if (++entriesSinceYield >= 10) {
@@ -6489,22 +6612,34 @@ export function makeTable(options) {
 		}
 
 		async function sweepLmdb(index: any, cutoff: number) {
+			const operationTracker = createCleanupOperationTracker();
 			for (const key of index.getRange({ start: true, values: false, end: cutoff, snapshot: false })) {
+				if (cleanupClosed) break;
 				for (const id of index.getValues(key)) {
 					const recordEntry = primaryStore.getEntry(id);
+					let operation: MaybePromise<unknown> | void;
 					if (recordEntry?.value == null) {
-						primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
-					} else if (recordEntry.value[expiresAtName] < cutoff) {
-						TableResource.evict(id, recordEntry.value, recordEntry.version);
+						operation = primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
+					} else if (recordEntry.expiresAt < cutoff) {
+						operation = TableResource.evict(id, recordEntry.value, recordEntry.version);
+					} else if (compareKeys(key, recordEntry.expiresAt) !== 0) {
+						operation = primaryStore.ifVersion(id, recordEntry.version, () => {
+							index.remove(key, id);
+							if (recordEntry.expiresAt !== undefined && recordEntry.expiresAt >= 0)
+								index.put(recordEntry.expiresAt, id);
+						});
 					}
+					const backpressure = operationTracker.add(operation);
+					if (backpressure) await backpressure;
 				}
 				await rest();
 			}
+			await operationTracker.drain();
 		}
 
 		async function sweep() {
 			if (runningRecordExpiration) return recordExpirationCompletion;
-			if (recordExpirationCancelled) return;
+			if (cleanupClosed) return;
 			runningRecordExpiration = true;
 			try {
 				if (primaryStore.rootStore.status !== 'open') return;
@@ -6516,6 +6651,7 @@ export function makeTable(options) {
 					}
 					return;
 				}
+				if (index.isIndexing) return;
 				missingExpirationIndexReported = false;
 				const cutoff = Date.now();
 				if (isRocksDB) await sweepRocks(index, cutoff);

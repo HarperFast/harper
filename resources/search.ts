@@ -2,7 +2,7 @@ import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
 import { SKIP } from '@harperfast/extended-iterable';
-import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
+import { expirationTimestamp, INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
@@ -13,6 +13,11 @@ import { RocksDatabase } from '@harperfast/rocksdb-js';
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;
 const STARTS_WITH_ESTIMATE = 0.05;
+
+function normalizeExpirationSearchValue(value: any): any {
+	if (Array.isArray(value)) return value.map(normalizeExpirationSearchValue);
+	return expirationTimestamp(value) ?? value;
+}
 
 function getStringPrefixUpperBound(prefix: string): Uint8Array {
 	const maximumEncodedLength = prefix.length * 3 + 3;
@@ -327,6 +332,9 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
 	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
+	if (!isPrimaryKey && findAttribute(Table.attributes, attribute_name)?.expiresAt) {
+		value = normalizeExpirationSearchValue(value);
+	}
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
 	if (value instanceof Date) value = value.getTime();
@@ -947,6 +955,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			return recordFilter;
 		}
 	}
+	const normalizeExpirationValue = !isPrimaryKey && findAttribute(Table?.attributes, attribute)?.expiresAt;
+	if (normalizeExpirationValue) value = normalizeExpirationSearchValue(value);
 	if (value instanceof Date) value = value.getTime();
 
 	let baseFilter;
@@ -1051,6 +1061,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		canUseIndex?: boolean,
 		allowObjectMatching?: boolean
 	) {
+		const normalizeRecordExpiration = !isPrimaryKey && findAttribute(Table?.attributes, attribute)?.expiresAt;
 		let thresholdRemainingMisses: number;
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
@@ -1069,7 +1080,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		function recordFilter(record: any) {
 			// `record` may be null/undefined when called via a nested-path filter
 			// where an intermediate property is missing.
-			const value = record == null ? undefined : record[attribute];
+			let value = record == null ? undefined : record[attribute];
+			if (normalizeRecordExpiration) value = normalizeExpirationSearchValue(value);
 			let matches: boolean;
 			if (typeof value !== 'object' || !value || allowObjectMatching) matches = filter(value);
 			else if (Array.isArray(value)) matches = value.some(filter);
@@ -1168,7 +1180,9 @@ export function estimateCondition(table) {
 				} else {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 					const index = table.indices[attribute_name];
-					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
+					let value = condition[1] ?? condition.value;
+					if (findAttribute(table.attributes, attribute_name)?.expiresAt) value = normalizeExpirationSearchValue(value);
+					condition.estimated_count = index ? index.getValuesCount(value) : Infinity;
 				}
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
@@ -1183,8 +1197,9 @@ export function estimateCondition(table) {
 				if (Array.isArray(condition.value) && index) {
 					// Sum of per-value matches (over-counts duplicates but is a fine ceiling)
 					let estimate = 0;
+					const normalizeExpiration = findAttribute(table.attributes, attribute_name)?.expiresAt;
 					for (const item of condition.value) {
-						estimate += index.getValuesCount(item);
+						estimate += index.getValuesCount(normalizeExpiration ? normalizeExpirationSearchValue(item) : item);
 					}
 					condition.estimated_count = estimate;
 				} else if (Array.isArray(condition.value)) {
