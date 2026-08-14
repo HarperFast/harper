@@ -47,6 +47,7 @@ import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
+import * as trustPolicyOperations from '../security/oidcTrust/trustPolicyOperations.ts';
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -357,6 +358,22 @@ requiredPermissions.set(
 requiredPermissions.set(
 	secretOperations.getSecretsPublicKey.name,
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY)
+);
+
+// OIDC trust policies (#2171). A policy lets an external CI run authenticate as a Harper user, so
+// these are SU-only; the handlers ALSO enforce super_user directly so they cannot be delegated
+// through a role's `operations` allowlist (gate-2 bypass below).
+requiredPermissions.set(
+	trustPolicyOperations.addOidcTrust.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.ADD_OIDC_TRUST)
+);
+requiredPermissions.set(
+	trustPolicyOperations.listOidcTrust.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_OIDC_TRUST)
+);
+requiredPermissions.set(
+	trustPolicyOperations.dropOidcTrust.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_OIDC_TRUST)
 );
 
 //Below are functions that are currently open to all roles

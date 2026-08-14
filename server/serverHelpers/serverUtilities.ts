@@ -41,6 +41,7 @@ import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
+import * as trustPolicyOperations from '../../security/oidcTrust/trustPolicyOperations.ts';
 import { contextStorage } from '../../resources/transaction.ts';
 import { isMainThread } from 'node:worker_threads';
 import {
@@ -577,6 +578,15 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY,
 		new OperationFunctionObject(secretOperations.getSecretsPublicKey)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.ADD_OIDC_TRUST, new OperationFunctionObject(trustPolicyOperations.addOidcTrust));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.LIST_OIDC_TRUST,
+		new OperationFunctionObject(trustPolicyOperations.listOidcTrust)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.DROP_OIDC_TRUST,
+		new OperationFunctionObject(trustPolicyOperations.dropOidcTrust)
 	);
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
