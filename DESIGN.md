@@ -49,6 +49,11 @@ the source responds, a valid positive, finite, Date-representable `sourceContext
 record's candidate version, and the reserved timestamp is only its fallback. A 304 retains the
 existing version.
 
+The ordering token is not installed on `sourceContext.timestamp`: the source-resolution transaction
+keeps its own default timestamp, so a slow fetch does not backdate its transaction-log entry. LMDB
+stores the source candidate directly, preserving its separate source-version/local-time semantics;
+only RocksDB clamps a non-advancing candidate because it uses one version for both roles.
+
 Revalidations retain exact-CAS semantics, and a source miss cannot delete a record that raced the
 fetch. First fills may replace a raced record only when their candidate version orders after it. A
 RocksDB replacement whose candidate cannot advance the current version stores at the current version
@@ -56,6 +61,9 @@ and carries `VERSION_NOT_UNIQUE_FLAG`; [rocksdb-js#766](https://github.com/Harpe
 then refuses to publish or confirm that version through the VerificationTable. This avoids inventing
 an epsilon timestamp solely to force replacement while keeping stale record-cache values from being
 vouched as fresh.
+
+The flag is also applied to ordinary resequenced RocksDB writes. Those records remain ineligible for
+VerificationTable fast-path confirmation until a later write advances their version.
 
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 

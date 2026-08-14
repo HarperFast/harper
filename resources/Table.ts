@@ -132,6 +132,7 @@ type MaybePromise<T> = T | Promise<T>;
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
+const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
 const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
@@ -6059,7 +6060,6 @@ export function makeTable(options) {
 			noCacheStore: droppingTable,
 			source: null,
 			transaction: undefined,
-			timestamp: sourceTimestamp,
 			expiresAt: undefined,
 			lastModified: undefined,
 		};
@@ -6091,9 +6091,9 @@ export function makeTable(options) {
 						typeof reportedVersion === 'number' &&
 						Number.isFinite(reportedVersion) &&
 						reportedVersion > 0 &&
-						!Number.isNaN(new Date(reportedVersion).getTime());
+						reportedVersion <= MAX_DATE_TIMESTAMP;
 					sourceVersion = validReportedVersion ? reportedVersion : sourceTimestamp;
-					hasChanges = invalidated || sourceVersion > existingVersion || !existingRecord;
+					hasChanges = invalidated || (validReportedVersion && reportedVersion > existingVersion) || !existingRecord;
 					const resolveDuration = performance.now() - start;
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
 					if (responseHeaders)
@@ -6225,7 +6225,6 @@ export function makeTable(options) {
 							existingEntry?.version !== existingVersion &&
 							(existingVersion != null || !updatedRecord || precedesExistingVersion(sourceVersion, existingEntry) <= 0)
 						) {
-							// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
 							sourceWrite.skipped = true;
 							return;
 						}

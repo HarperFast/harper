@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { VERSION_NOT_UNIQUE_FLAG } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, constants } = require('@harperfast/rocksdb-js');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -19,7 +19,12 @@ describe('PrimaryRocksDatabase', function () {
 		TestTable = table({
 			table: 'PrimaryRocksTest',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'count' },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+			],
 		});
 	});
 
@@ -113,13 +118,32 @@ describe('PrimaryRocksDatabase', function () {
 
 	it('marks a record whose version was reused by a resequenced write', async function () {
 		const now = Date.now();
+		const expiresAt = now + 60_000;
 		await TestTable.put(9, { name: 'base', count: 0 });
 		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
 		const inOrder = TestTable.primaryStore.getEntry(9);
-		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50, expiresAt });
 		const resequenced = TestTable.primaryStore.getEntry(9);
 		assert.equal(resequenced.version, inOrder.version);
 		assert.equal(resequenced.value.count, 2);
+		assert.equal(resequenced.expiresAt, expiresAt);
 		assert(resequenced.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
 	});
+
+	(constants?.VERSION_NOT_UNIQUE_FLAG === VERSION_NOT_UNIQUE_FLAG ? it : it.skip)(
+		'does not vouch for stale cached data after a version-reusing write',
+		async function () {
+			const now = Date.now();
+			await TestTable.put(11, { name: 'base', count: 0 });
+			await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+			await TestTable.get(11);
+			await TestTable.get(11);
+			const inOrder = TestTable.primaryStore.getEntry(11);
+			assert(TestTable.primaryStore.verifyVersion(11, inOrder.version));
+
+			await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+			assert.equal((await TestTable.get(11)).count, 2);
+			assert(!TestTable.primaryStore.verifyVersion(11, inOrder.version));
+		}
+	);
 });
