@@ -18,5 +18,6 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      # @main deliberately: the point is to track the gate's parser, not a frozen copy
-      - uses: HarperFast/dispatch/actions/review-coverage@main
+      # org policy requires full-sha pinning; renovate bumps this, so it still tracks
+      # the gate's parser (dispatch@main) at dep-bot cadence
+      - uses: HarperFast/dispatch/actions/review-coverage@a3210e62d4ffce378898605fd6afb3d4e1d0bee1 # main
