@@ -445,6 +445,7 @@ export function makeTable(options) {
 	let cleanupWasScheduled = false;
 	let recordExpirationInterval: NodeJS.Timeout | undefined;
 	let missingExpirationIndexReported = false;
+	let missingSourceExpirationReported = false;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
@@ -5413,7 +5414,7 @@ export function makeTable(options) {
 			// the real [value, id] entry was removed, orphaning it against the now-deleted record. A record
 			// that is present but whose attribute is null is a different case (record is a truthy object) and
 			// still indexes under null. See harper#1894 (F-149).
-			const expirationIndex = expiresAtIndexName !== undefined && key === expiresAtIndexName;
+			const expirationIndex = key === expiresAtIndexName;
 			const value =
 				record == null
 					? undefined
@@ -5990,6 +5991,7 @@ export function makeTable(options) {
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
 					if (responseHeaders)
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
+					if (expirationMs && sourceContext.expiresAt == undefined) sourceContext.expiresAt = Date.now() + expirationMs;
 					if (updatedRecord) {
 						if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
 						if (updatedRecord.status > 0 && updatedRecord.headers) {
@@ -6042,11 +6044,16 @@ export function makeTable(options) {
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
 						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
-						if (sourceContext.expiresAt === undefined) {
-							if (expiresAtProperty)
-								sourceContext.expiresAt = expirationTimestamp(updatedRecord[expiresAtProperty.name]);
-							if (sourceContext.expiresAt === undefined && expirationMs)
-								sourceContext.expiresAt = Date.now() + expirationMs;
+						if (
+							sourceContext.expiresAt === undefined &&
+							expiresAtProperty &&
+							expirationTimestamp(updatedRecord[expiresAtProperty.name]) !== undefined &&
+							!missingSourceExpirationReported
+						) {
+							missingSourceExpirationReported = true;
+							logger.warn?.(
+								`Source for table "${tableName}" returned an @expiresAt field without setting context.expiresAt; the field does not set cache expiration.`
+							);
 						}
 					}
 					resolved = true;

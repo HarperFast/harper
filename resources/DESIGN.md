@@ -116,6 +116,11 @@ Rows created before expiration metadata was stored fall back to their public fie
 sweeping; an explicit no-expiration metadata sentinel never falls back. This preserves upgrade behavior without
 making every open scan the table.
 
+The expiration index represents the effective stored expiration, not an ordinary field-value index. An explicit
+`options.expiresAt` or `context.expiresAt` override can therefore differ from the serialized field while remaining
+authoritative for index searches and reclamation. Source/cache fills do not infer TTL from the returned field; the
+source must set `sourceContext.expiresAt`, with table expiration providing the fallback.
+
 RocksDB `@expiresAt` sweeps walk one bounded composite-index range at a time with a fixed cutoff and an
 owned `(expiresAt, primaryKey)` cursor. A sweep never holds an iterator snapshot across an `await`, and it
 continues until every index entry at or before that cutoff has been considered. This keeps memory and native

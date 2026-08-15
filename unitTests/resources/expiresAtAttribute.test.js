@@ -87,8 +87,20 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 	it('lets an explicit options.expiresAt override the field', async function () {
 		const Table = makeTable('ExpiresAtOptionsOverride', 3);
 		const optionExpiresAt = Date.now() + 60_000;
-		await Table.put(1, { id: 1, expiresAt: Date.now() + 3_600_000 }, { expiresAt: optionExpiresAt });
+		const fieldExpiresAt = optionExpiresAt + 3_600_000;
+		await Table.put(1, { id: 1, expiresAt: fieldExpiresAt }, { expiresAt: optionExpiresAt });
 		assert.strictEqual(await storedExpiresAt(Table, 1), optionExpiresAt);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(optionExpiresAt)], [1]);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(fieldExpiresAt)], []);
+		const matchingOverride = [];
+		for await (const record of Table.search({
+			allowFullScan: false,
+			conditions: [{ attribute: 'expiresAt', value: optionExpiresAt }],
+		})) {
+			matchingOverride.push(record);
+		}
+		assert.strictEqual(matchingOverride.length, 1);
+		assert.strictEqual(matchingOverride[0].expiresAt, fieldExpiresAt);
 	});
 
 	it('keeps the field value across a patch that does not touch it', async function () {
@@ -179,20 +191,23 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		Table.cleanup();
 	});
 
-	it('indexes the effective expiration returned by a source fill', async function () {
+	it('uses source context rather than the returned field for cache expiration', async function () {
 		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtSourceFill', 3_600));
-		const expiresAt = Date.now() - 1_000;
+		const contextExpiresAt = Date.now() - 1_000;
+		const fieldExpiresAt = contextExpiresAt + 3_600_000;
 		Table.sourcedFrom({
-			get(id) {
-				return { id, expiresAt: new Date(expiresAt).toISOString() };
+			get(id, context) {
+				context.expiresAt = contextExpiresAt;
+				return { id, expiresAt: new Date(fieldExpiresAt).toISOString() };
 			},
 		});
 
 		await Table.get(1);
 		await waitFor(() => Table.primaryStore.getEntry(1)?.value, { message: 'source fill should be stored' });
 		await Table.primaryStore.committed;
-		assert.strictEqual(Table.primaryStore.getEntry(1).expiresAt, expiresAt);
-		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], [1]);
+		assert.strictEqual(Table.primaryStore.getEntry(1).expiresAt, contextExpiresAt);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(contextExpiresAt)], [1]);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(fieldExpiresAt)], []);
 
 		await runSweep();
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
