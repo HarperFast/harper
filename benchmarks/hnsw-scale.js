@@ -11,6 +11,8 @@
  *   node benchmarks/hnsw-scale.js [--n=5000,10000,25000] [--dims=768] [--queries=50]
  *                                 [--clusters=N] [--ef=auto] [--quantization=int8|none]
  *                                 [--upper-ef=N]   (override ef used above layer 0)
+ *                                 [--stream]       (two-pass generation; no float pool held — for N
+ *                                                   where the pool alone would not fit in memory)
  *                                 [--json=path]
  */
 
@@ -55,6 +57,8 @@ const UPPER_EF =
 // median pairwise distance is ~0.37, not ~0.95), so any ef/recall conclusion has to be confirmed on
 // real vectors before it is trusted.
 const CORPUS = argv.corpus ? String(argv.corpus) : undefined;
+const STREAM = argv.stream !== undefined;
+if (STREAM && CORPUS) throw new Error('--stream generates synthetically; it cannot be combined with --corpus');
 const INTRA_COS = Number(argv['intra-cos'] ?? 0.75);
 const NOISE = argv.noise !== undefined ? Number(argv.noise) : Math.sqrt((1 / (INTRA_COS * INTRA_COS) - 1) / DIMS);
 
@@ -210,6 +214,148 @@ function rowToArray(pool, i, dims) {
 	return out;
 }
 
+/** gauss() over a caller-owned RNG, so a stream's draws are independent of Math.random. */
+function gaussStream(rand) {
+	let spare = null;
+	return () => {
+		if (spare !== null) {
+			const s = spare;
+			spare = null;
+			return s;
+		}
+		let u, v, s;
+		do {
+			u = rand() * 2 - 1;
+			v = rand() * 2 - 1;
+			s = u * u + v * v;
+		} while (s === 0 || s >= 1);
+		const mul = Math.sqrt((-2 * Math.log(s)) / s);
+		spare = v * mul;
+		return u * mul;
+	};
+}
+
+/**
+ * Row-at-a-time corpus generator for --stream: same Gaussian mixture as buildCorpus, but driven by
+ * its own RNG stream so re-instantiating it replays the identical rows regardless of how many draws
+ * the index makes from Math.random for level assignment in between. Returns a reused buffer — the
+ * caller copies what it keeps.
+ */
+function corpusStream(n, dims, nClusters, seed) {
+	const rand = mulberry32(seed);
+	const g = gaussStream(rand);
+	const centroids = new Float32Array(nClusters * dims);
+	for (let c = 0; c < nClusters; c++) {
+		let mag = 0;
+		for (let d = 0; d < dims; d++) {
+			const x = g();
+			centroids[c * dims + d] = x;
+			mag += x * x;
+		}
+		mag = Math.sqrt(mag) || 1;
+		for (let d = 0; d < dims; d++) centroids[c * dims + d] /= mag;
+	}
+	const row = new Float32Array(dims);
+	let i = 0;
+	return () => {
+		if (i >= n) return null;
+		const c = (rand() * nClusters) | 0;
+		let mag = 0;
+		for (let d = 0; d < dims; d++) {
+			const x = centroids[c * dims + d] + g() * NOISE;
+			row[d] = x;
+			mag += x * x;
+		}
+		mag = Math.sqrt(mag) || 1;
+		for (let d = 0; d < dims; d++) row[d] /= mag;
+		i++;
+		return row;
+	};
+}
+
+/**
+ * Two-pass streaming build. Pass 1 replays the corpus to collect the query source rows (evenly
+ * spaced, like loadCorpus's holdout) and perturbs them into queries on yet another RNG stream.
+ * Pass 2 replays it again, feeding each row to the index and folding it into the brute-force
+ * ground truth and the corpus diagnostic as it streams by. Peak memory is the graph plus one row;
+ * GT folding time is measured per row and excluded from buildMs.
+ */
+function streamBuild(hnsw, n, dims, nClusters) {
+	const srcIdx = new Set();
+	for (let q = 0; q < N_QUERIES; q++) srcIdx.add(Math.floor((q * n) / N_QUERIES));
+	const sources = [];
+	{
+		const next = corpusStream(n, dims, nClusters, SEED + 1);
+		for (let i = 0; i < n; i++) {
+			const row = next();
+			if (srcIdx.has(i)) sources.push(row.slice());
+		}
+	}
+	const qg = gaussStream(mulberry32(SEED + 2));
+	const queries = sources.map((src) => {
+		const v = Array.from(src);
+		let mag = 0;
+		for (let d = 0; d < dims; d++) {
+			v[d] += qg() * NOISE * 0.5;
+			mag += v[d] * v[d];
+		}
+		mag = Math.sqrt(mag) || 1;
+		for (let d = 0; d < dims; d++) v[d] /= mag;
+		return v;
+	});
+
+	const gtTop = queries.map(() => []); // per query: ascending [{dist, i}], length <= TOP_K
+	const probes = Math.min(20, queries.length);
+	const sepNearBest = new Float64Array(probes).fill(Infinity);
+	let sepRandSum = 0;
+	const next = corpusStream(n, dims, nClusters, SEED + 1);
+	const buildStart = performance.now();
+	let gtMsAcc = 0;
+	let lastLog = buildStart;
+	for (let i = 0; i < n; i++) {
+		const row = next();
+		hnsw.index('r' + i, rowToArray(row, 0, dims), undefined, {});
+		const t0 = performance.now();
+		for (let q = 0; q < queries.length; q++) {
+			const query = queries[q];
+			let dot = 0;
+			for (let d = 0; d < dims; d++) dot += row[d] * query[d];
+			const dist = 1 - dot;
+			const top = gtTop[q];
+			if (top.length < TOP_K || dist < top[top.length - 1].dist) {
+				let at = top.length;
+				while (at > 0 && top[at - 1].dist > dist) at--;
+				top.splice(at, 0, { dist, i });
+				if (top.length > TOP_K) top.pop();
+			}
+			if (i < 3000 && q < probes) {
+				if (dist < sepNearBest[q]) sepNearBest[q] = dist;
+				if (i < 200) sepRandSum += dist;
+			}
+		}
+		gtMsAcc += performance.now() - t0;
+		if ((i + 1) % 250_000 === 0) {
+			const now = performance.now();
+			console.log(
+				`  … ${i + 1}/${n} indexed, ${((now - buildStart) / 60000).toFixed(1)}min elapsed, ` +
+					`${(250_000 / ((now - lastLog) / 1000)).toFixed(0)} rows/s this chunk`
+			);
+			lastLog = now;
+		}
+	}
+	const buildMs = performance.now() - buildStart - gtMsAcc;
+	let sepNear = 0;
+	for (let p = 0; p < probes; p++) sepNear += sepNearBest[p];
+	return {
+		buildMs,
+		queries,
+		groundTruth: gtTop.map((top) => new Set(top.map((t) => t.i))),
+		gtMs: gtMsAcc,
+		sepNear: sepNear / probes,
+		sepRand: sepRandSum / (probes * 200),
+	};
+}
+
 /** Ground truth over unit-normalized rows: cosine distance = 1 - dot. */
 function bruteForceTopK(pool, n, dims, query, k) {
 	const dist = new Float64Array(n);
@@ -302,7 +448,11 @@ for (const N of SIZES) {
 	global.gc?.();
 	Math.random = mulberry32(SEED); // identical corpus + level assignments for every configuration
 	_spare = null;
-	const { pool, queryPool } = CORPUS ? loadCorpus(CORPUS, N, DIMS, N_QUERIES) : buildCorpus(N, DIMS, nClusters);
+	const { pool, queryPool } = STREAM
+		? {}
+		: CORPUS
+			? loadCorpus(CORPUS, N, DIMS, N_QUERIES)
+			: buildCorpus(N, DIMS, nClusters);
 
 	const store = new MemoryStore();
 	const options = { distance: 'cosine', quantization: QUANTIZATION };
@@ -313,38 +463,46 @@ for (const N of SIZES) {
 	const hnsw = new HierarchicalNavigableSmallWorld(store, options);
 	instrument(hnsw);
 
-	const buildStart = performance.now();
-	for (let i = 0; i < N; i++) hnsw.index('r' + i, rowToArray(pool, i, DIMS), undefined, {});
-	const buildMs = performance.now() - buildStart;
+	let buildMs;
+	let queries = [];
+	let groundTruth;
+	let gtMs = 0;
+	let sepNear = 0;
+	let sepRand = 0;
+	if (STREAM) {
+		({ buildMs, queries, groundTruth, gtMs, sepNear, sepRand } = streamBuild(hnsw, N, DIMS, nClusters));
+	} else {
+		const buildStart = performance.now();
+		for (let i = 0; i < N; i++) hnsw.index('r' + i, rowToArray(pool, i, DIMS), undefined, {});
+		buildMs = performance.now() - buildStart;
+	}
 
 	const shape = graphShape(store);
 
-	// queries drawn from the same distribution (perturbed corpus rows)
-	const queries = [];
-	for (let q = 0; q < N_QUERIES; q++) {
-		if (queryPool) {
-			// real corpus: a held-out embedding, never indexed
-			queries.push(rowToArray(queryPool, q, DIMS));
-			continue;
+	// queries drawn from the same distribution (perturbed corpus rows); --stream built its own above
+	if (!STREAM)
+		for (let q = 0; q < N_QUERIES; q++) {
+			if (queryPool) {
+				// real corpus: a held-out embedding, never indexed
+				queries.push(rowToArray(queryPool, q, DIMS));
+				continue;
+			}
+			// synthetic: perturb an indexed row so rank 1 is not trivially the query itself
+			const src = (Math.random() * N) | 0;
+			const v = rowToArray(pool, src, DIMS);
+			let mag = 0;
+			for (let d = 0; d < DIMS; d++) {
+				v[d] += gauss() * NOISE * 0.5;
+				mag += v[d] * v[d];
+			}
+			mag = Math.sqrt(mag) || 1;
+			for (let d = 0; d < DIMS; d++) v[d] /= mag;
+			queries.push(v);
 		}
-		// synthetic: perturb an indexed row so rank 1 is not trivially the query itself
-		const src = (Math.random() * N) | 0;
-		const v = rowToArray(pool, src, DIMS);
-		let mag = 0;
-		for (let d = 0; d < DIMS; d++) {
-			v[d] += gauss() * NOISE * 0.5;
-			mag += v[d] * v[d];
-		}
-		mag = Math.sqrt(mag) || 1;
-		for (let d = 0; d < DIMS; d++) v[d] /= mag;
-		queries.push(v);
-	}
 
 	// corpus diagnostic: how separated is the true nearest neighbour from a random row?
 	// (if these are close, the corpus is effectively uniform and no ANN can help)
-	let sepNear = 0;
-	let sepRand = 0;
-	{
+	if (!STREAM) {
 		const probes = 20;
 		for (let p = 0; p < probes; p++) {
 			const q = queries[p % queries.length];
@@ -361,11 +519,11 @@ for (const N of SIZES) {
 		}
 		sepNear /= probes;
 		sepRand /= probes * 200;
-	}
 
-	const gtStart = performance.now();
-	const groundTruth = queries.map((q) => bruteForceTopK(pool, N, DIMS, q, TOP_K));
-	const gtMs = performance.now() - gtStart;
+		const gtStart = performance.now();
+		groundTruth = queries.map((q) => bruteForceTopK(pool, N, DIMS, q, TOP_K));
+		gtMs = performance.now() - gtStart;
+	}
 
 	for (const efSpec of EF_SWEEP) {
 		const queryEf = efSpec === 'auto' ? undefined : Number(efSpec);
