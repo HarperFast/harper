@@ -1603,7 +1603,7 @@ export function initBlobUnlinkQueue(rootStore: any): void {
 		const interval = setInterval(() => {
 			// self-clear once the database is closed/dropped so the interval's closure doesn't
 			// pin the store and spin on a dead handle
-			if ((rootStore as any).opened === false || (rootStore as any).dbisDb?.opened === false) {
+			if ((rootStore as any).status === 'closed' || (rootStore as any).dbisDb?.status === 'closed') {
 				clearInterval(interval);
 				mainSafetyDrains.delete(rootStore);
 				return;
