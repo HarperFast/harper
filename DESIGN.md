@@ -791,6 +791,29 @@ graphs being identical, though equal metrics do not prove it. It is the expected
 the upper layers are sparse enough that a greedy walk reaches the same entry point, which is why
 standard HNSW descends this way.
 
+## `efConstruction` auto-scales with the graph, for the same reason search `ef` does
+
+The connection-building pass selects each node's stored edges from a candidate list of
+`efConstruction` entries. Held at a constant (100) while the corpus grows, edge quality erodes in a
+way no search-side setting can compensate: at 1M nodes (768-dim, int8, calibrated hard corpus)
+recall@10 fell to 0.935 and sweeping the search `ef` from 512 to 1536 only reached 0.957 raw / 0.967
+set at 4.7x the latency — the missing neighbours were not deep in the candidate list, they were
+unreachable. Rebuilding the identical corpus (same seed, same level assignments) with
+`efConstruction` 200 restored 0.985/0.997 and made queries _faster_ at the same `ef` (3,110 nodes
+visited vs 3,948 — better-selected edges route more directly). Quantization contributed ~1.5 points
+(float32 rebuild: 0.952); construction quality was the dominant term. Full sweep in #2180.
+
+So when the schema does not configure `efConstruction`, it scales as `base * sqrt(nodes /
+AUTO_EFC_REF)` from the same memoized node count the search-side auto-scale already resolves,
+capped at `AUTO_EFC_MAX`. Scaling starts at 250K nodes: efC 100 held recall through 500K
+(0.978), so smaller graphs — the common case — build exactly as before. The sqrt shape mirrors the
+search-side scale; the cost is build time (1.77x at 1M for efC 200), paid only by tables that
+actually grow large, and partly returned as cheaper queries. An explicit `efConstruction` stays
+authoritative: it is a per-index decision about build cost, and it also seeds the search `ef`, so
+overriding it would surprise twice. Nodes indexed before the graph crossed a scale threshold keep
+their original edges — the scale applies to inserts from that point on, and a reindex rebuilds
+uniformly at the final size's efC.
+
 ## An approximate index returns at most `ef` rows, so `limit` has to reach it
 
 Layer 0 keeps at most `ef` candidates, and ef resolves from the auto-scale, not from the query. A

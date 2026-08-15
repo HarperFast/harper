@@ -596,6 +596,97 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 	});
 });
 
+describe('HNSW construction ef auto-scale (#2180)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	let Pinned;
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWEfcAutoScaleTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		Pinned = table({
+			table: 'HNSWEfcPinnedTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine', efConstruction: 64 }, type: 'Array' },
+			],
+		});
+	});
+
+	after(() => {
+		T.dropTable();
+		Pinned.dropTable();
+	});
+
+	// The efs the connection pass actually searched with during one put. The routing descent runs at
+	// ROUTING_EF (1), so every ef > 1 seen during index() is the resolved efConstruction.
+	async function connectionEfsDuringPut(Table, id) {
+		const customIndex = Table.indices.vector.customIndex;
+		const original = Object.getPrototypeOf(customIndex).searchLayer;
+		const efs = new Set();
+		customIndex.searchLayer = function (queryVector, entryPointId, entryPoint, ef, level, ...rest) {
+			if (ef > 1) efs.add(ef);
+			return original.call(this, queryVector, entryPointId, entryPoint, ef, level, ...rest);
+		};
+		try {
+			const a = (id / 100) * Math.PI * 2;
+			await Table.put(id, { vector: [Math.cos(a), Math.sin(a), (id % 5) / 5] });
+		} finally {
+			delete customIndex.searchLayer;
+		}
+		return efs;
+	}
+
+	// Force the memoized node count so the scale point is exercised without building a 1M-node graph.
+	// The memo TTL (10s) comfortably covers one put.
+	function mockNodeCount(Table, count) {
+		const customIndex = Table.indices.vector.customIndex;
+		customIndex.nodeCount = count;
+		customIndex.nodeCountAt = Date.now();
+	}
+
+	it('builds small graphs at the base efConstruction, unchanged', async () => {
+		for (let i = 0; i < 20; i++) {
+			const a = (i / 20) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const efs = await connectionEfsDuringPut(T, 20);
+		assert.deepStrictEqual([...efs], [100], `expected the base efConstruction below the scale point, got ${[...efs]}`);
+	});
+
+	it('scales the connection candidate list once the graph passes the reference size', async () => {
+		mockNodeCount(T, 1_000_000);
+		// base 100 * sqrt(1M / 250K) = 200 — the point measured in #2180 (recall 0.935 -> 0.985)
+		const efs = await connectionEfsDuringPut(T, 21);
+		assert.deepStrictEqual([...efs], [200], `expected the auto-scaled efConstruction at 1M nodes, got ${[...efs]}`);
+	});
+
+	it('caps the auto-scale at AUTO_EFC_MAX', async () => {
+		mockNodeCount(T, 100_000_000);
+		const efs = await connectionEfsDuringPut(T, 22);
+		assert.deepStrictEqual([...efs], [512], `expected the capped efConstruction, got ${[...efs]}`);
+	});
+
+	it('leaves an explicitly configured efConstruction authoritative at any graph size', async () => {
+		for (let i = 0; i < 5; i++) {
+			const a = (i / 5) * Math.PI * 2;
+			await Pinned.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		mockNodeCount(Pinned, 1_000_000);
+		const efs = await connectionEfsDuringPut(Pinned, 5);
+		assert.deepStrictEqual([...efs], [64], `expected the schema-configured efConstruction, got ${[...efs]}`);
+	});
+});
+
 describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let T;

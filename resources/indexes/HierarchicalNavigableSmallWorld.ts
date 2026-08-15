@@ -73,6 +73,21 @@ const ROUTING_EF = 1;
 // AUTO_EF_MAX so the worst case stays the same order as the index's own auto-scaled ceiling; a
 // caller who genuinely wants more sets an explicit `ef` and owns the cost.
 const LIMIT_EF_MAX = 4 * AUTO_EF_MAX;
+// Auto-scaled construction ef, used only when an index does not explicitly configure efConstruction.
+// The connection-building pass in index() selects each node's stored edges from a candidate list of
+// this size; held constant while the corpus grows, edge quality erodes until true neighbours become
+// unreachable at ANY search ef — at 1M nodes (768-dim, int8) recall@10 plateaued at 0.94–0.97 from
+// ef 512 to 1536, while efConstruction 200 restored 0.985/0.997 AND made queries faster at the same
+// ef (21% fewer nodes visited; better-selected edges route more directly). See #2180 for the sweep.
+// Scaling starts at AUTO_EFC_REF nodes so smaller graphs build exactly as before; sqrt keeps growth
+// gentle; the cap bounds per-insert cost (build time was 1.77x at 1M for efC 200). An explicitly
+// configured efConstruction is a per-index decision about build cost and stays authoritative.
+const AUTO_EFC_REF = 250_000;
+const AUTO_EFC_MAX = 512;
+function autoScaleEfConstruction(base: number, nodeCount: number): number {
+	const scaled = Math.round(base * Math.sqrt(Math.max(1, nodeCount / AUTO_EFC_REF)));
+	return Math.min(AUTO_EFC_MAX, Math.max(base, scaled));
+}
 // How long a resolved graph size is reused before it is looked up again (see approximateNodeCount).
 // ef moves with the square root of the count and is capped, so a slightly stale size is immaterial;
 // this only has to be short enough that a table growing from empty picks up a larger ef promptly.
@@ -198,6 +213,7 @@ export class HierarchicalNavigableSmallWorld {
 	distance: (a: number[], b: number[]) => number;
 	int8 = true; // store vectors as int8-quantized bins by default; opt out with `quantization: "none"`
 	efSearchConfigured = false; // whether the schema set an explicit search ef; if not, search ef auto-scales with N
+	efConstructionConfigured = false; // whether the schema set an explicit efConstruction; if not, it auto-scales with N
 	// Caches the Int8Array-converted clone of a frozen (decoded-from-disk) int8 node, keyed by the
 	// frozen node the object store hands back. WeakMap so entries are collected when the store evicts
 	// the frozen node — without it, every cache hit on a frozen node would re-slice and re-clone.
@@ -214,6 +230,7 @@ export class HierarchicalNavigableSmallWorld {
 		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured search ef (or efConstruction, which seeds it); otherwise auto-scale.
 		this.efSearchConfigured = options?.efConstructionSearch !== undefined || options?.efConstruction !== undefined;
+		this.efConstructionConfigured = options?.efConstruction !== undefined;
 		this.distance =
 			options?.distance === 'euclidean'
 				? euclideanDistance
@@ -375,9 +392,14 @@ export class HierarchicalNavigableSmallWorld {
 				connections[i] = [];
 			}
 
-			// Connect the new element to neighbors at its level and below
+			// Connect the new element to neighbors at its level and below. The candidate-list size
+			// auto-scales with the graph unless the schema pinned it; approximateNodeCount is memoized,
+			// so this stays O(1) per insert.
+			const efConstruction = this.efConstructionConfigured
+				? this.efConstruction
+				: autoScaleEfConstruction(this.efConstruction, this.approximateNodeCount());
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
-				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l, options);
+				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, efConstruction, l, options);
 				neighbors = neighbors.slice(0, this.M << 1) as SearchResults;
 
 				if (neighbors.length === 0 && l === 0) {
