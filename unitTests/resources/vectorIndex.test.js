@@ -646,12 +646,17 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 		return efs;
 	}
 
-	// Force the memoized node count so the scale point is exercised without building a 1M-node graph.
-	// The memo TTL (10s) comfortably covers one put.
-	function mockNodeCount(Table, count) {
+	// Force the resolved node count (the write path reads it directly, not through the memo) so the
+	// scale point is exercised without building a 1M-node graph. Instance-level shadow; the count
+	// source itself is covered by the graph-size describe above.
+	async function withNodeCount(Table, count, run) {
 		const customIndex = Table.indices.vector.customIndex;
-		customIndex.nodeCount = count;
-		customIndex.nodeCountAt = Date.now();
+		customIndex.resolveNodeCount = () => count;
+		try {
+			return await run();
+		} finally {
+			delete customIndex.resolveNodeCount;
+		}
 	}
 
 	it('builds small graphs at the base efConstruction, unchanged', async () => {
@@ -664,15 +669,13 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 	});
 
 	it('scales the connection candidate list once the graph passes the reference size', async () => {
-		mockNodeCount(T, 1_000_000);
 		// base 100 * sqrt(1M / 250K) = 200 — the point measured in #2180 (recall 0.935 -> 0.985)
-		const efs = await connectionEfsDuringPut(T, 21);
+		const efs = await withNodeCount(T, 1_000_000, () => connectionEfsDuringPut(T, 21));
 		assert.deepStrictEqual([...efs], [200], `expected the auto-scaled efConstruction at 1M nodes, got ${[...efs]}`);
 	});
 
 	it('caps the auto-scale at AUTO_EFC_MAX', async () => {
-		mockNodeCount(T, 100_000_000);
-		const efs = await connectionEfsDuringPut(T, 22);
+		const efs = await withNodeCount(T, 100_000_000, () => connectionEfsDuringPut(T, 22));
 		assert.deepStrictEqual([...efs], [512], `expected the capped efConstruction, got ${[...efs]}`);
 	});
 
@@ -681,8 +684,7 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 			const a = (i / 5) * Math.PI * 2;
 			await Pinned.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
 		}
-		mockNodeCount(Pinned, 1_000_000);
-		const efs = await connectionEfsDuringPut(Pinned, 5);
+		const efs = await withNodeCount(Pinned, 1_000_000, () => connectionEfsDuringPut(Pinned, 5));
 		assert.deepStrictEqual([...efs], [64], `expected the schema-configured efConstruction, got ${[...efs]}`);
 	});
 });

@@ -188,7 +188,8 @@ directive @indexed(
 	distance: String
 	"""
 	Construction effort/recall parameter (HNSW). Higher values improve recall at
-	the cost of build time and memory.
+	the cost of build time and memory. When omitted, it auto-scales with graph
+	size; setting it pins both the build-side value and the search-side default.
 	"""
 	efConstruction: Int
 	"""

@@ -804,15 +804,28 @@ visited vs 3,948 — better-selected edges route more directly). Quantization co
 (float32 rebuild: 0.952); construction quality was the dominant term. Full sweep in #2180.
 
 So when the schema does not configure `efConstruction`, it scales as `base * sqrt(nodes /
-AUTO_EFC_REF)` from the same memoized node count the search-side auto-scale already resolves,
-capped at `AUTO_EFC_MAX`. Scaling starts at 250K nodes: efC 100 held recall through 500K
-(0.978), so smaller graphs — the common case — build exactly as before. The sqrt shape mirrors the
-search-side scale; the cost is build time (1.77x at 1M for efC 200), paid only by tables that
-actually grow large, and partly returned as cheaper queries. An explicit `efConstruction` stays
-authoritative: it is a per-index decision about build cost, and it also seeds the search `ef`, so
-overriding it would surprise twice. Nodes indexed before the graph crossed a scale threshold keep
-their original edges — the scale applies to inserts from that point on, and a reindex rebuilds
-uniformly at the final size's efC.
+AUTO_EFC_REF)`, capped at `AUTO_EFC_MAX`, read on each insert directly from the id counter
+(`resolveNodeCount` — always initialized on the write path, so this is one atomic load; the
+search-side memo exists to keep the _fallback_ seek off the query path, which the write path never
+takes). Scaling starts at 250K nodes: efC 100 held recall through 500K (0.978), so smaller graphs —
+the common case — build exactly as before. The sqrt shape mirrors the search-side scale; the cost
+is build time (1.77x at 1M for efC 200), paid only by tables that actually grow large, and partly
+returned as cheaper queries. An explicit `efConstruction` stays authoritative: it is a per-index
+decision about build cost — though note it also seeds the search `ef`, so pinning it to cut build
+cost also pins query-time `ef`; there is currently no "pinned build, auto search" combination.
+
+Two caveats are accepted deliberately, both inherited from the count being a lifetime high-water
+mark of allocated node ids rather than a live count. First, churn: a table that deletes heavily
+(TTL eviction, delete-and-reinsert ingest) reads high forever, so its build-side efC can sit at the
+cap while the live graph is small — bounded at `AUTO_EFC_MAX` (5.12x base build cost), it wastes
+build CPU but never hurts recall. The search side accepted the same over-count as "slightly
+generous ef" on an opt-in read path; the write path inherits it as a known cost until a live count
+exists (tracked follow-up). Second, ramp history: nodes indexed before the graph crossed a scale
+threshold keep their original edges — the scale applies to inserts from that point on. A reindex in
+a live process rebuilds roughly uniformly (the id counter keeps its high-water mark), but a reindex
+after a restart re-seeds the counter from the largest id in the rebuilding store and therefore
+repeats the ramp — its first 250K nodes rebuild at the base efC. Both converge to the same steady
+state as the graph grows past the knee.
 
 ## An approximate index returns at most `ef` rows, so `limit` has to reach it
 

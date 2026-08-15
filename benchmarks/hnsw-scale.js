@@ -352,7 +352,7 @@ function streamBuild(hnsw, n, dims, nClusters) {
 		groundTruth: gtTop.map((top) => new Set(top.map((t) => t.i))),
 		gtMs: gtMsAcc,
 		sepNear: sepNear / probes,
-		sepRand: sepRandSum / (probes * 200),
+		sepRand: sepRandSum / (probes * Math.min(200, n)),
 	};
 }
 
@@ -518,7 +518,7 @@ for (const N of SIZES) {
 			sepNear += best;
 		}
 		sepNear /= probes;
-		sepRand /= probes * 200;
+		sepRand /= probes * Math.min(200, N);
 
 		const gtStart = performance.now();
 		groundTruth = queries.map((q) => bruteForceTopK(pool, N, DIMS, q, TOP_K));
