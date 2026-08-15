@@ -3,7 +3,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
-const { setTimeout: delay } = require('node:timers/promises');
+const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 // A table-reload marker is a whole-table signal (harper-pro#489): one LOCAL_ONLY audit entry of type
@@ -16,15 +16,6 @@ describe('table-reload marker (harper-pro#489)', () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
 	});
-
-	async function waitFor(predicate, message, timeout = 5000) {
-		const start = Date.now();
-		while (Date.now() - start < timeout) {
-			if (await predicate()) return;
-			await delay(20);
-		}
-		throw new Error('waitFor timed out: ' + message);
-	}
 
 	it('delivers a raw reload event to every subscriber on a system table', async function () {
 		// System-DB subscribers (knownNodes peer discovery, hdb_certificate CA install) consume the raw
@@ -46,8 +37,16 @@ describe('table-reload marker (harper-pro#489)', () => {
 
 		await ReloadTable.writeReloadMarker();
 
-		await waitFor(() => rootEvents.some((e) => e.type === 'reload'), 'root subscriber receives reload');
-		await waitFor(() => keyEvents.some((e) => e.type === 'reload'), 'keyed subscriber receives reload');
+		await waitFor(() => rootEvents.some((e) => e.type === 'reload'), {
+			timeout: 5000,
+			interval: 20,
+			message: 'root subscriber receives reload',
+		});
+		await waitFor(() => keyEvents.some((e) => e.type === 'reload'), {
+			timeout: 5000,
+			interval: 20,
+			message: 'keyed subscriber receives reload',
+		});
 
 		const reload = rootEvents.find((e) => e.type === 'reload');
 		assert.equal(reload.value, undefined, 'reload carries no record value');
@@ -72,10 +71,11 @@ describe('table-reload marker (harper-pro#489)', () => {
 
 		await ReloadTable.writeReloadMarker();
 
-		await waitFor(
-			() => events.some((e) => e.type === 'put' && e.id === 'r1'),
-			'subscriber receives the existing row as a put via the reload re-snapshot'
-		);
+		await waitFor(() => events.some((e) => e.type === 'put' && e.id === 'r1'), {
+			timeout: 5000,
+			interval: 20,
+			message: 'subscriber receives the existing row as a put via the reload re-snapshot',
+		});
 		assert.ok(
 			!events.some((e) => e.type === 'reload'),
 			'the bare reload marker is suppressed on a user table (re-snapshotted instead)'
@@ -93,14 +93,14 @@ describe('table-reload marker (harper-pro#489)', () => {
 
 		// The txn-log store's empty getRange positions at the tail (for live subscription), so scan from an
 		// explicit numeric start to read the existing entries.
-		let marker;
-		for (const entry of ReloadTable.auditStore.getRange({ start: 1 })) {
-			if (entry.type === 'reload') {
-				marker = entry;
-				break;
-			}
-		}
-		assert.ok(marker, 'a reload audit entry was written');
+		const marker = await waitFor(
+			() => {
+				for (const entry of ReloadTable.auditStore.getRange({ start: 1 })) {
+					if (entry.type === 'reload') return entry;
+				}
+			},
+			{ timeout: 5000, interval: 20, message: 'a reload audit entry was written' }
+		);
 		// LOCAL_ONLY makes the replication send path skip it by a bitmask test (no decode of an unknown
 		// type on a peer): the marker is a local signal only.
 		assert.ok(marker.extendedType & LOCAL_ONLY, 'reload marker is LOCAL_ONLY (never forwarded to peers)');
