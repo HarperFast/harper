@@ -631,16 +631,20 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 							if (entriesForKey) entriesForKey.push(entry);
 							else joined.set(key, (entriesForKey = [entry]));
 						};
+						const filters = (joined as any).filters;
 						//let i = 0;
 						// get all the ids of the related records
 						for (const entry of rightIterable) {
-							const filters = (joined as any).filters;
 							const storedEntry = filters
 								? entry?.value !== undefined
 									? entry
 									: store.getEntry(entry.key ?? entry)
 								: undefined;
-							const record = filters ? storedEntry?.value : (entry.value ?? store.getSync(entry.key ?? entry));
+							const record = filters
+								? storedEntry?.value
+								: entry?.value !== undefined
+									? entry.value
+									: store.getSync(entry.key ?? entry);
 							const leftKey = record?.[rightProperty];
 							if (leftKey == null) continue;
 							if (filters?.some((filter) => !filter(record, storedEntry))) continue;

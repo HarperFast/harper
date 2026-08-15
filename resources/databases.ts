@@ -1313,6 +1313,9 @@ async function dropDatabaseOnce(databaseName, dbTables, rootStore): Promise<void
 			);
 		}
 		forgetDatabaseEnvironment(rootStore);
+		for (const tableName in dbTables) {
+			forgetDatabaseEnvironment(dbTables[tableName].primaryStore.rootStore);
+		}
 
 		for (const tableName in dbTables) {
 			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
@@ -1325,7 +1328,6 @@ async function dropDatabaseOnce(databaseName, dbTables, rootStore): Promise<void
 			delete tables[DEFINED_TABLES];
 		}
 		delete databases[databaseName];
-		definedDatabases?.delete(databaseName);
 
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 
