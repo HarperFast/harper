@@ -1,9 +1,17 @@
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import test from 'node:test';
 
 import {
-	autoDraftBody, autoDraftSummary, evaluateReviewGate, gateMarker, gateReviewBody,
-	generatorFamily, hasGateMarker, isTrivialChange, reportedCrossModelReviews, reviewHasFindings,
+	autoDraftBody,
+	autoDraftSummary,
+	evaluateReviewGate,
+	gateMarker,
+	gateReviewBody,
+	generatorFamily,
+	hasGateMarker,
+	isTrivialChange,
+	reportedCrossModelReviews,
+	reviewHasFindings,
 } from './reviewGate.mjs';
 
 // ---- coverage parsing ----
@@ -18,65 +26,68 @@ test('a Review coverage section counts distinct families', () => {
 		'- unit tests',
 	].join('\n');
 	const r = reportedCrossModelReviews(body);
-	assert.equal(r.count, 2);
-	assert.deepEqual(r.families, ['google', 'openai']);
+	assert.strictEqual(r.count, 2);
+	assert.deepStrictEqual(r.families, ['google', 'openai']);
 });
 
 test('same family twice is one reviewer', () => {
 	const body = '## Review coverage\n- codex round 1\n- gpt-5 round 2 (delta)';
-	assert.equal(reportedCrossModelReviews(body).count, 1);
+	assert.strictEqual(reportedCrossModelReviews(body).count, 1);
 });
 
 test('a failed leg does not count', () => {
 	const body = '## Review coverage\n- Codex: 2 findings fixed\n- Gemini: FAILED — auth error';
 	const r = reportedCrossModelReviews(body);
-	assert.equal(r.count, 1);
-	assert.deepEqual(r.families, ['openai']);
+	assert.strictEqual(r.count, 1);
+	assert.deepStrictEqual(r.families, ['openai']);
 });
 
 test('a leg that ran with zero findings counts — "none found" is not a negation', () => {
 	const body = '## Review coverage\n- Codex: 2 findings, fixed\n- Gemini: none found.';
-	assert.equal(reportedCrossModelReviews(body).count, 2);
+	assert.strictEqual(reportedCrossModelReviews(body).count, 2);
 });
 
 test('negation is segment-scoped: a mixed line counts the leg that ran', () => {
 	const body = '## Review coverage\n- Codex: clean, Gemini: failed';
 	const r = reportedCrossModelReviews(body);
-	assert.equal(r.count, 1);
-	assert.deepEqual(r.families, ['openai']);
-	assert.equal(reportedCrossModelReviews('## Review coverage\n- Gemini: error').count, 0);
-	assert.equal(reportedCrossModelReviews('## Review coverage\n- Gemini: no errors found.').count, 1,
-		'"no errors found" is a leg that RAN clean');
+	assert.strictEqual(r.count, 1);
+	assert.deepStrictEqual(r.families, ['openai']);
+	assert.strictEqual(reportedCrossModelReviews('## Review coverage\n- Gemini: error').count, 0);
+	assert.strictEqual(
+		reportedCrossModelReviews('## Review coverage\n- Gemini: no errors found.').count,
+		1,
+		'"no errors found" is a leg that RAN clean'
+	);
 });
 
 test('an h1 Review coverage heading parses too', () => {
-	assert.equal(reportedCrossModelReviews('# Review coverage\n- Codex ran\n- Gemini ran').count, 2);
+	assert.strictEqual(reportedCrossModelReviews('# Review coverage\n- Codex ran\n- Gemini ran').count, 2);
 });
 
 test('the section ends at the next same-level heading', () => {
 	const body = '## Review coverage\n- Codex ran\n## Notes\nGemini is mentioned here but not as coverage';
-	assert.equal(reportedCrossModelReviews(body).count, 1);
+	assert.strictEqual(reportedCrossModelReviews(body).count, 1);
 });
 
 test('independent-review lines count outside a coverage section', () => {
 	const body = 'independent-review: codex — 4 findings, 4 fixed, 0 open';
 	const r = reportedCrossModelReviews(body);
-	assert.equal(r.count, 1);
-	assert.deepEqual(r.families, ['openai']);
+	assert.strictEqual(r.count, 1);
+	assert.deepStrictEqual(r.families, ['openai']);
 });
 
 test('a failed independent-review line does not count', () => {
-	assert.equal(reportedCrossModelReviews('independent-review: FAILED — prepush-review.mjs unavailable').count, 0);
+	assert.strictEqual(reportedCrossModelReviews('independent-review: FAILED — prepush-review.mjs unavailable').count, 0);
 });
 
 test('cross-model prose lines count, negated ones do not', () => {
-	assert.equal(reportedCrossModelReviews('Cross-model reviews: Codex and Gemini, both clean.').count, 2);
-	assert.equal(reportedCrossModelReviews('No cross-model review was run (codex, gemini unavailable).').count, 0);
+	assert.strictEqual(reportedCrossModelReviews('Cross-model reviews: Codex and Gemini, both clean.').count, 2);
+	assert.strictEqual(reportedCrossModelReviews('No cross-model review was run (codex, gemini unavailable).').count, 0);
 });
 
 test('model names in ordinary prose do not count', () => {
 	const body = 'This PR migrates our Gemini API client and adds Codex-style completions.';
-	assert.equal(reportedCrossModelReviews(body).count, 0);
+	assert.strictEqual(reportedCrossModelReviews(body).count, 0);
 });
 
 test('the generating model family is excluded from coverage', () => {
@@ -88,89 +99,100 @@ test('the generating model family is excluded from coverage', () => {
 		'🤖 Generated with [Claude Code](https://claude.com/claude-code)',
 	].join('\n');
 	const r = reportedCrossModelReviews(body);
-	assert.equal(r.generator, 'anthropic');
-	assert.equal(r.count, 1);
-	assert.deepEqual(r.families, ['openai']);
+	assert.strictEqual(r.generator, 'anthropic');
+	assert.strictEqual(r.count, 1);
+	assert.deepStrictEqual(r.families, ['openai']);
 });
 
 test('generatorFamily stays empty when a line names several models', () => {
-	assert.equal(generatorFamily('Generated with Claude and reviewed by Codex'), '');
-	assert.equal(generatorFamily('🤖 Generated with [Claude Code](x)'), 'anthropic');
-	assert.equal(generatorFamily('no marker here'), '');
+	assert.strictEqual(generatorFamily('Generated with Claude and reviewed by Codex'), '');
+	assert.strictEqual(generatorFamily('🤖 Generated with [Claude Code](x)'), 'anthropic');
+	assert.strictEqual(generatorFamily('no marker here'), '');
 });
 
 // ---- findings / triviality ----
 
 test('reviewHasFindings maps verdicts per policy', () => {
-	assert.equal(reviewHasFindings('LGTM', []), false);
-	assert.equal(reviewHasFindings('', [{}]), false); // unparseable verdict fails open
-	assert.equal(reviewHasFindings('CHANGES', []), true);
-	assert.equal(reviewHasFindings('BLOCK', []), true);
-	assert.equal(reviewHasFindings('COMMENTS', []), false); // comments verdict with nothing anchored
-	assert.equal(reviewHasFindings('COMMENTS', [{ path: 'a', body: 'b' }]), true);
+	assert.strictEqual(reviewHasFindings('LGTM', []), false);
+	assert.strictEqual(reviewHasFindings('', [{}]), false); // unparseable verdict fails open
+	assert.strictEqual(reviewHasFindings('CHANGES', []), true);
+	assert.strictEqual(reviewHasFindings('BLOCK', []), true);
+	assert.strictEqual(reviewHasFindings('COMMENTS', []), false); // comments verdict with nothing anchored
+	assert.strictEqual(reviewHasFindings('COMMENTS', [{ path: 'a', body: 'b' }]), true);
 });
 
 test('isTrivialChange is the one-line threshold', () => {
-	assert.equal(isTrivialChange(1, 1), true);
-	assert.equal(isTrivialChange(2, 0), true);
-	assert.equal(isTrivialChange(2, 1), false);
-	assert.equal(isTrivialChange(0, 0), true);
+	assert.strictEqual(isTrivialChange(1, 1), true);
+	assert.strictEqual(isTrivialChange(2, 0), true);
+	assert.strictEqual(isTrivialChange(2, 1), false);
+	assert.strictEqual(isTrivialChange(0, 0), true);
 });
 
 // ---- the whole decision ----
 
 const base = {
-	verdict: 'CHANGES', comments: [{ path: 'x', body: 'y' }], author: 'someone',
-	user: 'kriszyp', isDraft: false, isMember: true, prBody: 'plain description',
-	additions: 40, deletions: 12,
+	verdict: 'CHANGES',
+	comments: [{ path: 'x', body: 'y' }],
+	author: 'someone',
+	user: 'kriszyp',
+	isDraft: false,
+	isMember: true,
+	prBody: 'plain description',
+	additions: 40,
+	deletions: 12,
 };
 
 test('findings + member + no reported coverage → gate', () => {
 	const d = evaluateReviewGate(base);
-	assert.equal(d.gate, true);
-	assert.equal(d.coverage, 0);
+	assert.strictEqual(d.gate, true);
+	assert.strictEqual(d.coverage, 0);
 });
 
 test('clean review never gates, regardless of coverage', () => {
-	assert.equal(evaluateReviewGate({ ...base, verdict: 'LGTM' }).gate, false);
+	assert.strictEqual(evaluateReviewGate({ ...base, verdict: 'LGTM' }).gate, false);
 });
 
 test('non-member author never gates', () => {
-	assert.equal(evaluateReviewGate({ ...base, isMember: false }).gate, false);
+	assert.strictEqual(evaluateReviewGate({ ...base, isMember: false }).gate, false);
 });
 
 test('bot author never gates', () => {
-	assert.equal(evaluateReviewGate({ ...base, author: 'renovate[bot]' }).gate, false);
-	assert.equal(evaluateReviewGate({ ...base, author: 'app/dependabot' }).gate, false);
+	assert.strictEqual(evaluateReviewGate({ ...base, author: 'renovate[bot]' }).gate, false);
+	assert.strictEqual(evaluateReviewGate({ ...base, author: 'app/dependabot' }).gate, false);
 });
 
 test('own PR / self-review never gates', () => {
-	assert.equal(evaluateReviewGate({ ...base, author: 'KrisZyp' }).gate, false);
-	assert.equal(evaluateReviewGate({ ...base, isDraft: true }).gate, false);
+	assert.strictEqual(evaluateReviewGate({ ...base, author: 'KrisZyp' }).gate, false);
+	assert.strictEqual(evaluateReviewGate({ ...base, isDraft: true }).gate, false);
 });
 
 test('trivial change never gates', () => {
-	assert.equal(evaluateReviewGate({ ...base, additions: 1, deletions: 1 }).gate, false);
+	assert.strictEqual(evaluateReviewGate({ ...base, additions: 1, deletions: 1 }).gate, false);
 });
 
 test('two reported cross-model reviews lift the gate', () => {
 	const prBody = '## Review coverage\n- Codex: clean\n- Gemini: 1 finding, fixed';
 	const d = evaluateReviewGate({ ...base, prBody });
-	assert.equal(d.gate, false);
-	assert.equal(d.coverage, 2);
+	assert.strictEqual(d.gate, false);
+	assert.strictEqual(d.coverage, 2);
 });
 
 test('one reported review still gates', () => {
 	const prBody = '## Review coverage\n- Codex: clean';
 	const d = evaluateReviewGate({ ...base, prBody });
-	assert.equal(d.gate, true);
-	assert.equal(d.coverage, 1);
+	assert.strictEqual(d.gate, true);
+	assert.strictEqual(d.coverage, 1);
 });
 
 // ---- gate review body / marker ----
 
 test('gate body carries preamble, review, signature, and marker', () => {
-	const body = gateReviewBody({ reviewBody: 'verdict: CHANGES\nfindings...', agent: 'codex', headSha: 'abcdef1234567890', coverage: 1 });
+	const body = gateReviewBody({
+		reviewBody: 'verdict: CHANGES\nfindings...',
+		agent: 'codex',
+		headSha: 'abcdef1234567890',
+		coverage: 1,
+	});
 	assert.ok(body.startsWith('**Automated gate'));
 	assert.ok(body.includes('only one cross-model review'));
 	assert.ok(body.includes('verdict: CHANGES'));
@@ -180,15 +202,15 @@ test('gate body carries preamble, review, signature, and marker', () => {
 });
 
 test('marker detection ignores unrelated bodies and matches per-head when asked', () => {
-	assert.equal(hasGateMarker('a normal review body'), false);
+	assert.strictEqual(hasGateMarker('a normal review body'), false);
 	const body = `x\n${gateMarker('abcdef1234567890')}`;
-	assert.equal(hasGateMarker(body), true);
-	assert.equal(hasGateMarker(body, 'abcdef1234567890'), true);
-	assert.equal(hasGateMarker(body, '9999999999999999'), false);
+	assert.strictEqual(hasGateMarker(body), true);
+	assert.strictEqual(hasGateMarker(body, 'abcdef1234567890'), true);
+	assert.strictEqual(hasGateMarker(body, '9999999999999999'), false);
 });
 
 test('autoDraftBody mirrors the worker park body from TL;DR or the fallback', () => {
-	assert.equal(autoDraftSummary('## TL;DR: fixes the wedge\n\nrest', 'codex', 'CHANGES'), 'fixes the wedge');
-	assert.equal(autoDraftBody('no tldr here', 'codex', 'CHANGES'), '🤖 Dispatch codex review (verdict CHANGES).');
-	assert.equal(autoDraftBody('no tldr here', 'agy', ''), '🤖 Dispatch agy review (verdict ?).');
+	assert.strictEqual(autoDraftSummary('## TL;DR: fixes the wedge\n\nrest', 'codex', 'CHANGES'), 'fixes the wedge');
+	assert.strictEqual(autoDraftBody('no tldr here', 'codex', 'CHANGES'), '🤖 Dispatch codex review (verdict CHANGES).');
+	assert.strictEqual(autoDraftBody('no tldr here', 'agy', ''), '🤖 Dispatch agy review (verdict ?).');
 });

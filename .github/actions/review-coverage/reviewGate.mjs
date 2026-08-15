@@ -25,7 +25,8 @@ const familiesIn = (text) => FAMILIES.filter(([re]) => re.test(text)).map(([, fa
 // Scoped to comma/semicolon segments, not whole lines: "- Codex: clean, Gemini: failed"
 // must count codex. "none" is deliberately absent ("- Gemini: none found." RAN), and
 // "error(s)" negates only when not itself negated ("no errors found" also RAN).
-const NEGATED = /\bfail(?:ed|ure)?\b|\bdid n[o']t run\b|\bskipped\b|\bunavailable\b|\bno usable output\b|\btimed? ?out\b|(?<!\bno )(?<!\bzero )(?<!\bwithout )\berrors?\b|\berrored\b|\bnot run\b|\bpending\b/i;
+const NEGATED =
+	/\bfail(?:ed|ure)?\b|\bdid n[o']t run\b|\bskipped\b|\bunavailable\b|\bno usable output\b|\btimed? ?out\b|(?<!\bno )(?<!\bzero )(?<!\bwithout )\berrors?\b|\berrored\b|\bnot run\b|\bpending\b/i;
 
 /** The model family that authored the change itself, when the body declares it (agent PRs
  *  end with a generated-by marker; HEG's Review coverage names the generating model). A
@@ -72,7 +73,11 @@ export function reportedCrossModelReviews(body) {
 		const heading = line.match(/^(#{1,4})\s+(.*)/);
 		if (heading) {
 			if (inCoverage && heading[1].length <= coverageLevel) inCoverage = false;
-			if (/review coverage/i.test(heading[2])) { inCoverage = true; coverageLevel = heading[1].length; continue; }
+			if (/review coverage/i.test(heading[2])) {
+				inCoverage = true;
+				coverageLevel = heading[1].length;
+				continue;
+			}
 		}
 		if (inCoverage) harvest(line);
 		else if (/^\s*(?:[-*>]\s*)?independent-review\s*:/i.test(line)) harvest(line);
@@ -103,7 +108,17 @@ export const COVERAGE_REQUIRED = 2;
 /** The whole decision, given everything already fetched. Returns { gate, why, coverage }.
  *  Order mirrors the policy: clean review → no gate; non-member author → no gate (always
  *  human review); trivial → no gate; otherwise gate iff reported coverage < 2. */
-export function evaluateReviewGate({ verdict, comments, author, user, isDraft, isMember, prBody, additions, deletions }) {
+export function evaluateReviewGate({
+	verdict,
+	comments,
+	author,
+	user,
+	isDraft,
+	isMember,
+	prBody,
+	additions,
+	deletions,
+}) {
 	const a = String(author ?? '');
 	if (isDraft || !a || a.toLowerCase() === String(user ?? '').toLowerCase())
 		return { gate: false, why: 'self-review / own PR', coverage: -1 };
@@ -128,8 +143,10 @@ export const hasGateMarker = (body, sha = '') =>
  *  worker uses it to park, and the gate uses it to recognise an UNEDITED parked draft as
  *  its own before daring to submit it (any mismatch = a human touched it = decline). */
 export function autoDraftSummary(reviewBody, agent, verdict) {
-	return (String(reviewBody ?? '').match(/TL;DR[:\s]*([\s\S]{0,700}?)(?=\n\n|\n#)/i) || [])[1]?.trim()
-		|| `Dispatch ${agent} review (verdict ${verdict || '?'}).`;
+	return (
+		(String(reviewBody ?? '').match(/TL;DR[:\s]*([\s\S]{0,700}?)(?=\n\n|\n#)/i) || [])[1]?.trim() ||
+		`Dispatch ${agent} review (verdict ${verdict || '?'}).`
+	);
 }
 export const autoDraftBody = (reviewBody, agent, verdict) => `🤖 ${autoDraftSummary(reviewBody, agent, verdict)}`;
 
