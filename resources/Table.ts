@@ -2100,11 +2100,10 @@ export function makeTable(options) {
 				// removed the entry entirely, but first cleanup indices
 				let lmdbCompletion: MaybePromise<unknown>;
 				if (primaryStore.ifVersion) {
-					// lmdb: the index cleanup and the record removal are both version-guarded optimistic writes.
-					// Capture both promises so a real write failure on either resolves through evict()'s catch
-					// below rather than escaping as an unhandled rejection from the fire-and-forget callers.
+					// LMDB batches every write in this callback behind one version check, so the indices and
+					// primary record can not diverge on a conflict or partial commit.
 					const removalEntry = entry ?? primaryStore.getEntry(id);
-					const indexCleanup = primaryStore.ifVersion(id, existingVersion, () => {
+					lmdbCompletion = primaryStore.ifVersion(id, existingVersion, () => {
 						updateIndices(
 							id,
 							existingRecord,
@@ -2113,9 +2112,8 @@ export function makeTable(options) {
 							undefined,
 							existingExpiresAtIndexValue ?? removalEntry?.expiresAt
 						);
+						return removeEntry(primaryStore, removalEntry);
 					});
-					const removal = removeEntry(primaryStore, removalEntry, existingVersion);
-					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
 					const removalEntry = entry ?? currentEntry ?? primaryStore.getEntry(id);
 					if (!removalEntry || removalEntry.version !== existingVersion) return;
@@ -5488,8 +5486,9 @@ export function makeTable(options) {
 		return hasChanges;
 	}
 	function effectiveExpirationIndexValue(entry: Partial<Entry> | undefined, record = entry?.value): number | undefined {
+		if (!expiresAtProperty) return entry?.expiresAt;
 		return entry?.expiresAt === undefined
-			? expirationTimestamp(record?.[expiresAtProperty?.name])
+			? expirationTimestamp(record?.[expiresAtProperty.name])
 			: expirationTimestamp(entry.expiresAt);
 	}
 	function checkValidId(id) {
@@ -6677,6 +6676,7 @@ export function makeTable(options) {
 
 		async function sweepLmdb(index: any, cutoff: number) {
 			const operationTracker = createCleanupOperationTracker();
+			let entriesSinceYield = 0;
 			for (const key of index.getRange({ start: true, values: false, end: cutoff, snapshot: false })) {
 				if (cleanupClosed) break;
 				let afterId: any;
@@ -6712,9 +6712,11 @@ export function makeTable(options) {
 						}
 						const backpressure = operationTracker.add(operation);
 						if (backpressure) await backpressure;
+						if (++entriesSinceYield >= 10) {
+							entriesSinceYield = 0;
+							await rest();
+						}
 					}
-					await operationTracker.drain();
-					await rest();
 					if (ids.length < EVICTION_BATCH_SIZE) break;
 				}
 				await rest();

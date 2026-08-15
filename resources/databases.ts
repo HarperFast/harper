@@ -1243,7 +1243,11 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
  * Delete the database
  * @param databaseName
  */
-export async function dropDatabase(databaseName) {
+const droppingDatabases = new Map<string, Promise<void>>();
+
+export function dropDatabase(databaseName): Promise<void> {
+	const activeDrop = droppingDatabases.get(databaseName);
+	if (activeDrop) return activeDrop;
 	if (!databases[databaseName]) throw new Error('Database does not exist');
 	if (unavailableDatabases.has(databaseName)) throw new Error(`Database ${databaseName} is already closing`);
 	const dbTables = databases[databaseName];
@@ -1254,7 +1258,15 @@ export async function dropDatabase(databaseName) {
 	}
 	if (!rootStore) rootStore = database({ database: databaseName, table: null });
 	unavailableDatabases.add(databaseName);
+	const completion = dropDatabaseOnce(databaseName, dbTables, rootStore).finally(() => {
+		droppingDatabases.delete(databaseName);
+		unavailableDatabases.delete(databaseName);
+	});
+	droppingDatabases.set(databaseName, completion);
+	return completion;
+}
 
+async function dropDatabaseOnce(databaseName, dbTables, rootStore): Promise<void> {
 	// Hold the per-database restore lock across the entire drop so its file deletion can never
 	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
 	// restore's copy would gut a "successful" restore, and vice versa. Restore takes the same lock
@@ -1264,9 +1276,11 @@ export async function dropDatabase(databaseName) {
 	try {
 		for (const tableName in dbTables) {
 			const table = dbTables[tableName];
-			rootStore = table.primaryStore.rootStore;
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			const tableRootStore = table.primaryStore.rootStore;
+			if (tableRootStore instanceof RocksDatabase) lockDatabaseForDrop(tableRootStore.path, databaseName, restoreLocks);
 		}
+		if (restoreLocks.length === 0 && rootStore instanceof RocksDatabase)
+			lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 
 		const cleanupCompletions: Promise<void>[] = [];
 		for (const tableName in dbTables) {
@@ -1309,24 +1323,11 @@ export async function dropDatabase(databaseName) {
 
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 
-		if (rootStore) {
-			if (rootStore.status === 'open') {
-				if (rootStore instanceof RocksDatabase) {
-					rootStore.close();
-					rootStore.destroy();
-				} else {
-					await rootStore.close();
-					await unlink(rootStore.path);
-				}
-			}
-		} else {
-			// a tableless database resolves its root store here rather than in the loop above, so take
-			// the drop lock now (still before any destructive step)
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+		if (rootStore.status === 'open') {
 			if (rootStore instanceof RocksDatabase) {
 				rootStore.close();
 				rootStore.destroy();
-			} else if (rootStore.status === 'open') {
+			} else {
 				await rootStore.close();
 				await unlink(rootStore.path);
 			}
@@ -1335,7 +1336,6 @@ export async function dropDatabase(databaseName) {
 		await deleteRootBlobPathsForDB(rootStore);
 	} finally {
 		for (const lock of restoreLocks) releaseRestoreLock(lock);
-		unavailableDatabases.delete(databaseName);
 	}
 }
 
@@ -1351,6 +1351,8 @@ const closingDatabases = new Map<string, Promise<boolean>>();
 export function closeDatabase(databaseName: string): Promise<boolean> {
 	const activeClose = closingDatabases.get(databaseName);
 	if (activeClose) return activeClose;
+	const activeDrop = droppingDatabases.get(databaseName);
+	if (activeDrop) return activeDrop.then(() => true);
 	if (unavailableDatabases.has(databaseName)) {
 		return Promise.reject(new Error(`Database ${databaseName} is already closing`));
 	}

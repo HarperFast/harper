@@ -20,6 +20,7 @@ const {
 } = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
 const { createBlob } = require('#src/resources/blob');
+const { acquireRestoreLock, releaseRestoreLock } = require('#src/dataLayer/restoreMarker');
 const { waitFor } = require('../waitFor.js');
 
 describe('RocksDB handle release', function () {
@@ -199,8 +200,24 @@ describe('RocksDB handle release', function () {
 
 		const drop = dropDatabase(databaseName);
 		assert.throws(() => database({ database: databaseName }), /Database .* is closing/);
+		const close = closeDatabase(databaseName);
 		await drop;
+		assert.strictEqual(await close, true);
 		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
+	it('refuses to drop a tableless database while its restore lock is held', async function () {
+		const databaseName = 'droplockedtableless8';
+		const rootStore = database({ database: databaseName });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const restoreLock = acquireRestoreLock(rootStore.path);
+		try {
+			await assert.rejects(dropDatabase(databaseName));
+			assert.strictEqual(rootStore.status, 'open');
+		} finally {
+			releaseRestoreLock(restoreLock);
+		}
+		await dropDatabase(databaseName);
 	});
 
 	it('fails closed and resumes cleanup when drop times out', async function () {

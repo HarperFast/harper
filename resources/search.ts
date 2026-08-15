@@ -634,10 +634,11 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 						//let i = 0;
 						// get all the ids of the related records
 						for (const entry of rightIterable) {
-							const record = entry.value ?? store.getSync(entry.key ?? entry);
+							const storedEntry = entry?.value !== undefined ? entry : store.getEntry(entry.key ?? entry);
+							const record = storedEntry?.value;
 							const leftKey = record?.[rightProperty];
 							if (leftKey == null) continue;
-							if ((joined as any).filters?.some((filter) => !filter(record))) continue;
+							if ((joined as any).filters?.some((filter) => !filter(record, storedEntry))) continue;
 							if (isManyToMany) {
 								for (let i = 0; i < leftKey.length; i++) {
 									addEntry(leftKey[i], entry);
@@ -714,8 +715,8 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 						for (const id of rightIterable) {
 							if ((joined as any).filters) {
 								// if additional filters are defined, we need to check them
-								const record = store.getSync(id);
-								if ((joined as any).filters.some((filter) => !filter(record))) continue;
+								const entry = store.getEntry(id);
+								if ((joined as any).filters.some((filter) => !filter(entry?.value, entry))) continue;
 							}
 							ids.add(id);
 							// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
