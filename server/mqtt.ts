@@ -266,7 +266,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							}
 							emitEvent('auth-failed', packet, socket, error);
 							recordActionBinary(false, 'connection', 'mqtt', 'connect');
-							return sendPacket({
+							return generateAndSendPacket({
 								// Send a connection acknowledgment with indication of auth failure
 								cmd: 'connack',
 								reasonCode: 0x04, // bad username or password, v3.1.1
@@ -277,7 +277,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					if (!user && mqttSettings.requireAuthentication) {
 						emitEvent('auth-failed', packet, socket);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
-						return sendPacket({
+						return generateAndSendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
 							reasonCode: 0x04, // bad username or password, v3.1.1
@@ -313,7 +313,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						mqttLog.error?.(error);
 						emitEvent('auth-failed', packet, socket, error);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
-						return sendPacket({
+						return generateAndSendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
 							reasonCode: error.code || 0x05,
@@ -322,7 +322,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					}
 					emitEvent('connected', session, socket);
 					recordActionBinary(true, 'connection', 'mqtt', 'connect');
-					sendPacket({
+					generateAndSendPacket({
 						// Send a connection acknowledgment
 						cmd: 'connack',
 						sessionPresent: session.sessionWasPresent,
@@ -346,16 +346,14 @@ function onSocket(socket, send, request, user, mqttSettings) {
 									: (encoded as Buffer | string);
 							if (qos > 0) {
 								// mqtt-packet requires a numeric message identifier once qos is non-zero
-								sendPacket(
-									{
-										cmd: 'publish',
-										topic,
-										payload,
-										messageId: messageId || Math.floor(Math.random() * 100000000),
-										qos,
-									},
-									generalTopic
-								);
+								const packetData: any = {
+									cmd: 'publish',
+									topic,
+									payload,
+									messageId: messageId || Math.floor(Math.random() * 100000000),
+									qos,
+								};
+								sendPacket(generate(packetData, mqttOptions), packetMethodName(packetData), generalTopic);
 							} else {
 								// A QoS 0 PUBLISH carries no message identifier, so the whole packet depends only on
 								// the payload, the topic, and the protocol version (v5 emits a properties field that
@@ -371,7 +369,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 									// for a fan-out of one just pins a whole buffer nothing will read
 									if (encoding.hits > 0) setSharedFrame(encoding, protocolVersion, topic, packet);
 								}
-								sendEncodedPacket(packet, 'publish', generalTopic);
+								sendPacket(packet, 'publish', generalTopic);
 							}
 							// wait if there is back-pressure
 							const rawSocket = socket._socket ?? socket;
@@ -418,7 +416,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						granted.push(grantedQos);
 					}
 					await session.committed;
-					sendPacket({
+					generateAndSendPacket({
 						// Send a subscription acknowledgment
 						cmd: 'suback',
 						granted,
@@ -430,7 +428,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					for (const subscription of packet.unsubscriptions) {
 						granted.push(session.removeSubscription(subscription) ? 0 : 17);
 					}
-					sendPacket({
+					generateAndSendPacket({
 						// Send a subscription acknowledgment
 						cmd: 'unsuback',
 						granted,
@@ -439,7 +437,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					break;
 				}
 				case 'pubrel':
-					sendPacket({
+					generateAndSendPacket({
 						// Send a publish response
 						cmd: 'pubcomp',
 						messageId: packet.messageId,
@@ -461,7 +459,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						emitEvent('error', error, socket, packet, session);
 						mqttLog.warn?.(error);
 						if (packet.qos > 0) {
-							sendPacket(
+							generateAndSendPacket(
 								{
 									// Send a publish acknowledgment
 									cmd: responseCmd,
@@ -474,7 +472,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						break;
 					}
 					if (packet.qos > 0) {
-						sendPacket(
+						generateAndSendPacket(
 							{
 								// Send a publish acknowledgment
 								cmd: responseCmd,
@@ -489,7 +487,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					}
 					break;
 				case 'pubrec':
-					sendPacket({
+					generateAndSendPacket({
 						// Send a publish response
 						cmd: 'pubrel',
 						messageId: packet.messageId,
@@ -502,7 +500,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					emitEvent('acknowledged', session, packet);
 					break;
 				case 'pingreq':
-					sendPacket({ cmd: 'pingresp' });
+					generateAndSendPacket({ cmd: 'pingresp' });
 					break;
 				case 'disconnect':
 					disconnected = true;
@@ -518,18 +516,18 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		} catch (error) {
 			emitEvent('error', error, socket, packet, session);
 			mqttLog.error?.(error);
-			sendPacket({
+			generateAndSendPacket({
 				// Send a subscription acknowledgment
 				cmd: 'disconnect',
 			});
 		}
-		function sendPacket(packetData, path?) {
-			sendEncodedPacket(generate(packetData, mqttOptions), packetMethodName(packetData), path);
-		}
 		// analytics stay per subscriber even when the packet itself is shared across them
-		function sendEncodedPacket(packet, methodName, path?) {
+		function sendPacket(packet, methodName, path?) {
 			send(packet);
 			recordAction(packet.length, 'bytes-sent', path, methodName, 'mqtt');
+		}
+		function generateAndSendPacket(packetData, path?) {
+			sendPacket(generate(packetData, mqttOptions), packetMethodName(packetData), path);
 		}
 		function packetMethodName(packet) {
 			return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;

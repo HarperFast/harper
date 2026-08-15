@@ -1,5 +1,5 @@
-const assert = require('assert');
-const { setupTestDBPath } = require('../testUtils');
+const assert = require('node:assert');
+const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
