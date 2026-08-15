@@ -270,24 +270,8 @@ export class HierarchicalNavigableSmallWorld {
 		// that won't collide with the node ids, so we can't have a collision with internal
 		if (!nodeId) {
 			if (!vector) return; // didn't exist before, doesn't exist now, nothing to do
-			if (!this.idIncrementer) {
-				let largestNodeId = 0;
-				for (const key of this.indexStore.getKeys({
-					reverse: true,
-					limit: 1,
-					start: Infinity,
-					end: 0,
-					transaction: options.transaction,
-				})) {
-					if (typeof key === 'number') largestNodeId = key;
-				}
-
-				this.idIncrementer = new BigInt64Array([BigInt(largestNodeId) + 1n]);
-				this.idIncrementer = new BigInt64Array(
-					this.indexStore.getUserSharedBuffer('next-id', this.idIncrementer.buffer)
-				);
-			}
-			nodeId = Number(Atomics.add(this.idIncrementer, 0, 1n));
+			this.ensureIdIncrementer(options);
+			nodeId = Number(Atomics.add(this.idIncrementer!, 0, 1n));
 			this.indexStore.put(safeKey, nodeId, options);
 		}
 		const updatedNodes = new Map<number, Node>();
@@ -387,12 +371,15 @@ export class HierarchicalNavigableSmallWorld {
 				connections[i] = [];
 			}
 
-			// The id counter is always initialized on the write path (the node id was just allocated
-			// from it), so resolveNodeCount is a plain atomic read here — no memo, no TTL lag. It is a
+			// The counter is ensured here (not only at id allocation) because an update-only worker
+			// after a restart never allocates an id — without it, every update would pay the reverse
+			// seek. Ensured, resolveNodeCount is a plain atomic read — no memo, no TTL lag. It is a
 			// lifetime high-water mark, not a live count; see DESIGN.md for the churn-table caveat.
-			const efConstruction = this.efConstructionConfigured
-				? this.efConstruction
-				: autoScaleEfConstruction(this.efConstruction, this.resolveNodeCount());
+			let efConstruction = this.efConstruction;
+			if (!this.efConstructionConfigured) {
+				this.ensureIdIncrementer(options);
+				efConstruction = autoScaleEfConstruction(this.efConstruction, this.resolveNodeCount());
+			}
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
 				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, efConstruction, l, options);
 				neighbors = neighbors.slice(0, this.M << 1) as SearchResults;
@@ -740,6 +727,27 @@ export class HierarchicalNavigableSmallWorld {
 		this.nodeCount = this.resolveNodeCount();
 		this.nodeCountAt = now;
 		return this.nodeCount;
+	}
+
+	/**
+	 * Create-or-attach the shared id counter, seeded from a one-time reverse seek to the largest node
+	 * id. getUserSharedBuffer returns the existing shared buffer when another worker created it
+	 * first, so the seed only matters for whoever wins the race.
+	 */
+	private ensureIdIncrementer(options?: any): void {
+		if (this.idIncrementer) return;
+		let largestNodeId = 0;
+		for (const key of this.indexStore.getKeys({
+			reverse: true,
+			limit: 1,
+			start: Infinity,
+			end: 0,
+			transaction: options?.transaction,
+		})) {
+			if (typeof key === 'number') largestNodeId = key;
+		}
+		this.idIncrementer = new BigInt64Array([BigInt(largestNodeId) + 1n]);
+		this.idIncrementer = new BigInt64Array(this.indexStore.getUserSharedBuffer('next-id', this.idIncrementer.buffer));
 	}
 
 	/** O(1) node count — the shared id counter, else a single reverse seek to the largest node id. */
