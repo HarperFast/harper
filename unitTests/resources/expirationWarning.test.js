@@ -132,4 +132,32 @@ describe('Per-record expiresAt without scheduled cleanup (#1339)', () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.strictEqual(sourceWarningsFor(tableName).length, 1);
 	});
+
+	it('uses a table expiration without warning about a returned @expiresAt field', async function () {
+		const tableName = 'SourcedTableExpirationFallback';
+		const SourcedTable = table({
+			table: tableName,
+			database: 'test',
+			expiration: 60,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		SourcedTable.sourcedFrom(
+			class extends Resource {
+				get() {
+					return { id: this.getId(), expiresAt: Date.now() + 120000 };
+				}
+			}
+		);
+
+		const before = Date.now() + 60000;
+		await SourcedTable.get(1);
+		await waitFor(() => SourcedTable.primaryStore.getEntry(1)?.expiresAt !== undefined);
+		const storedExpiration = SourcedTable.primaryStore.getEntry(1).expiresAt;
+		assert.ok(storedExpiration >= before);
+		assert.deepStrictEqual([...SourcedTable.indices.expiresAt.getValues(storedExpiration)], [1]);
+		assert.strictEqual(sourceWarningsFor(tableName).length, 0);
+	});
 });

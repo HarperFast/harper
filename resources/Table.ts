@@ -2961,7 +2961,7 @@ export function makeTable(options) {
 						recordToStore,
 						transaction && { transaction },
 						expiresAt,
-						priorStaged?.expiresAt ?? existingEntry?.expiresAt
+						effectiveExpirationIndexValue(priorStaged ?? existingEntry, existingRecord)
 					);
 
 					writeCommit(true);
@@ -3150,7 +3150,7 @@ export function makeTable(options) {
 						null,
 						transaction && { transaction },
 						undefined,
-						priorStaged?.expiresAt ?? existingEntry?.expiresAt
+						effectiveExpirationIndexValue(priorStaged ?? existingEntry, existingRecord)
 					);
 					if (audit || trackDeletes) {
 						updateRecord(
@@ -5487,6 +5487,11 @@ export function makeTable(options) {
 		}
 		return hasChanges;
 	}
+	function effectiveExpirationIndexValue(entry: Partial<Entry> | undefined, record = entry?.value): number | undefined {
+		return entry?.expiresAt === undefined
+			? expirationTimestamp(record?.[expiresAtProperty?.name])
+			: expirationTimestamp(entry.expiresAt);
+	}
 	function checkValidId(id) {
 		switch (typeof id) {
 			case 'number':
@@ -6045,10 +6050,10 @@ export function makeTable(options) {
 						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 						if (
+							!missingSourceExpirationReported &&
 							sourceContext.expiresAt === undefined &&
 							expiresAtProperty &&
-							expirationTimestamp(updatedRecord[expiresAtProperty.name]) !== undefined &&
-							!missingSourceExpirationReported
+							expirationTimestamp(updatedRecord[expiresAtProperty.name]) !== undefined
 						) {
 							missingSourceExpirationReported = true;
 							logger.warn?.(
@@ -6131,7 +6136,7 @@ export function makeTable(options) {
 							updatedRecord,
 							transaction && { transaction },
 							sourceContext.expiresAt,
-							existingEntry?.expiresAt
+							effectiveExpirationIndexValue(existingEntry, existingRecord)
 						);
 						if (updatedRecord) {
 							if (existingEntry) {
@@ -6600,11 +6605,6 @@ export function makeTable(options) {
 	function runRecordExpirationEviction(testHooks?: ExpirationSweepTestHooks, schedule = true) {
 		if (getWorkerIndex() !== 0 || cleanupClosed) return;
 		const expiresAtName = expiresAtProperty.name;
-		const indexedExpiration = (entry: Entry): number | undefined =>
-			entry.expiresAt === undefined
-				? expirationTimestamp(entry.value?.[expiresAtName])
-				: expirationTimestamp(entry.expiresAt);
-
 		async function sweepRocks(index: any, cutoff: number) {
 			const batcher = createEvictionBatcher(() => cleanupClosed, testHooks);
 			let after: any[] | undefined;
@@ -6631,7 +6631,7 @@ export function makeTable(options) {
 								index,
 							});
 						} else {
-							const currentExpiration = indexedExpiration(recordEntry);
+							const currentExpiration = effectiveExpirationIndexValue(recordEntry);
 							if (currentExpiration !== undefined && currentExpiration < cutoff) {
 								if (recordEntry.metadataFlags & HAS_BLOBS) {
 									await testHooks?.beforeEvict?.();
@@ -6698,7 +6698,7 @@ export function makeTable(options) {
 						if (recordEntry?.value == null) {
 							operation = primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
 						} else {
-							const currentExpiration = indexedExpiration(recordEntry);
+							const currentExpiration = effectiveExpirationIndexValue(recordEntry);
 							if (currentExpiration !== undefined && currentExpiration < cutoff) {
 								await testHooks?.beforeEvict?.();
 								operation = TableResource.evict(id, recordEntry.value, recordEntry.version, currentExpiration);

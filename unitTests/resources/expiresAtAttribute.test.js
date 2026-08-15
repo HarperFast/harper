@@ -101,6 +101,14 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		}
 		assert.strictEqual(matchingOverride.length, 1);
 		assert.strictEqual(matchingOverride[0].expiresAt, fieldExpiresAt);
+		const fullScanMismatch = [];
+		for await (const record of Table.search({
+			allowFullScan: true,
+			conditions: [{ attribute: 'expiresAt', comparator: 'ne', value: optionExpiresAt }],
+		})) {
+			fullScanMismatch.push(record);
+		}
+		assert.deepStrictEqual(fullScanMismatch, []);
 	});
 
 	it('keeps the field value across a patch that does not touch it', async function () {
@@ -188,6 +196,20 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await runSweep();
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expiresAt)], []);
+		Table.cleanup();
+	});
+
+	it('removes a legacy field-derived index entry when the row is updated', async function () {
+		const Table = makeTable('ExpiresAtLegacyUpdate');
+		const oldExpiresAt = Date.now() + 3_600_000;
+		const newExpiresAt = oldExpiresAt + 3_600_000;
+		Table.primaryStore.putSync(1, { id: 1, expiresAt: new Date(oldExpiresAt).toISOString() });
+		Table.indices.expiresAt.put(oldExpiresAt, 1);
+
+		await Table.put(1, { id: 1, expiresAt: newExpiresAt });
+		await Table.primaryStore.committed;
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(oldExpiresAt)], []);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(newExpiresAt)], [1]);
 		Table.cleanup();
 	});
 

@@ -106,6 +106,35 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
+	it('rejects a lazy table open while the database is closing', async function () {
+		const databaseName = 'closeopening6';
+		const Table = table({
+			table: 'existing',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }],
+		});
+		const originalCleanup = Table.cleanup;
+		let releaseCleanup;
+		Table.cleanup = () => new Promise((resolve) => (releaseCleanup = resolve));
+
+		const close = closeDatabase(databaseName);
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: 'late',
+						database: databaseName,
+						attributes: [{ attribute: 'id', isPrimaryKey: true }],
+					}),
+				/Database .* is closing/
+			);
+		} finally {
+			Table.cleanup = originalCleanup;
+			releaseCleanup();
+		}
+		await close;
+	});
+
 	it('fails closed and resumes cleanup when close times out', async function () {
 		this.timeout(30000);
 		const Table = table({
@@ -161,6 +190,17 @@ describe('RocksDB handle release', function () {
 		await dropDatabase('droprelease6');
 
 		assert.strictEqual(Table.cleanupStateForTests().closed, true);
+	});
+
+	it('drops a tableless database while blocking a concurrent reopen', async function () {
+		const databaseName = 'droptableless7';
+		const rootStore = database({ database: databaseName });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		const drop = dropDatabase(databaseName);
+		assert.throws(() => database({ database: databaseName }), /Database .* is closing/);
+		await drop;
+		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
 	it('fails closed and resumes cleanup when drop times out', async function () {

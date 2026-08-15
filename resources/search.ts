@@ -483,14 +483,15 @@ export function searchByIndex(
 	if (isPrimaryKey) {
 		const results = index.getRange(rangeOptions).map(
 			filter
-				? function ({ key, value }) {
-						if (this?.isSync) return value && filter(value) ? key : SKIP;
+				? function (entry) {
+						const { key, value } = entry;
+						if (this?.isSync) return value && filter(value, entry) ? key : SKIP;
 						// for filter operations, we intentionally yield the event turn so that scanning queries
 						// do not hog resources
 						return new Promise((resolve, reject) =>
 							setImmediate(() => {
 								try {
-									resolve(value && filter(value) ? key : SKIP);
+									resolve(value && filter(value, entry) ? key : SKIP);
 								} catch (error) {
 									reject(error);
 								}
@@ -569,7 +570,7 @@ export function searchByIndex(
 				const { key, value } = entry;
 				if (this.isSync) {
 					recordRead(entry);
-					return value && filter(value) ? key : SKIP;
+					return value && filter(value, entry) ? key : SKIP;
 				}
 				// for filter operations, we intentionally yield the event turn so that scanning queries
 				// do not hog resources
@@ -577,7 +578,7 @@ export function searchByIndex(
 					setImmediate(() => {
 						try {
 							recordRead(entry);
-							resolve(value && filter(value) ? key : SKIP);
+							resolve(value && filter(value, entry) ? key : SKIP);
 						} catch (error) {
 							reject(error);
 						}

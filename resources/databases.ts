@@ -98,6 +98,7 @@ const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
 const DEFAULT_DATABASE_CLOSE_TIMEOUT = 10_000;
 let databaseCloseTimeout = DEFAULT_DATABASE_CLOSE_TIMEOUT;
+const unavailableDatabases = new Set<string>();
 
 export function setDatabaseCloseTimeoutForTests(timeout = DEFAULT_DATABASE_CLOSE_TIMEOUT): void {
 	databaseCloseTimeout = timeout;
@@ -1145,6 +1146,9 @@ export function resolveDatabasePath(databaseName: string): string {
  */
 export function database({ database: databaseName, table: tableName }) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
+	if (unavailableDatabases.has(databaseName)) {
+		throw new Error(`Database ${databaseName} is closing and cannot be opened`);
+	}
 	getDatabases();
 	ensureDB(databaseName);
 	const definedDatabase = definedDatabases.get(databaseName);
@@ -1241,8 +1245,15 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
  */
 export async function dropDatabase(databaseName) {
 	if (!databases[databaseName]) throw new Error('Database does not exist');
+	if (unavailableDatabases.has(databaseName)) throw new Error(`Database ${databaseName} is already closing`);
 	const dbTables = databases[databaseName];
 	let rootStore;
+	for (const tableName in dbTables) {
+		rootStore = dbTables[tableName]?.primaryStore?.rootStore;
+		if (rootStore) break;
+	}
+	if (!rootStore) rootStore = database({ database: databaseName, table: null });
+	unavailableDatabases.add(databaseName);
 
 	// Hold the per-database restore lock across the entire drop so its file deletion can never
 	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
@@ -1309,7 +1320,6 @@ export async function dropDatabase(databaseName) {
 				}
 			}
 		} else {
-			rootStore = database({ database: databaseName, table: null });
 			// a tableless database resolves its root store here rather than in the loop above, so take
 			// the drop lock now (still before any destructive step)
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
@@ -1325,6 +1335,7 @@ export async function dropDatabase(databaseName) {
 		await deleteRootBlobPathsForDB(rootStore);
 	} finally {
 		for (const lock of restoreLocks) releaseRestoreLock(lock);
+		unavailableDatabases.delete(databaseName);
 	}
 }
 
@@ -1340,7 +1351,14 @@ const closingDatabases = new Map<string, Promise<boolean>>();
 export function closeDatabase(databaseName: string): Promise<boolean> {
 	const activeClose = closingDatabases.get(databaseName);
 	if (activeClose) return activeClose;
-	const completion = closeDatabaseOnce(databaseName).finally(() => closingDatabases.delete(databaseName));
+	if (unavailableDatabases.has(databaseName)) {
+		return Promise.reject(new Error(`Database ${databaseName} is already closing`));
+	}
+	unavailableDatabases.add(databaseName);
+	const completion = closeDatabaseOnce(databaseName).finally(() => {
+		closingDatabases.delete(databaseName);
+		unavailableDatabases.delete(databaseName);
+	});
 	closingDatabases.set(databaseName, completion);
 	return completion;
 }
