@@ -1426,15 +1426,20 @@ export function makeTable(options) {
 			// next startup (or on a same-name create).
 			delete databases[databaseName][tableName];
 			const cleanupCompletion = TableResource.cleanup();
-			let cleanupTimer: NodeJS.Timeout;
+			let cleanupTimer: NodeJS.Timeout | undefined;
 			const cleanupTimedOut = Symbol('cleanupTimedOut');
-			const cleanupResult = await Promise.race([
-				cleanupCompletion,
-				new Promise<typeof cleanupTimedOut>((resolve) => {
-					cleanupTimer = setTimeout(() => resolve(cleanupTimedOut), LOCK_TIMEOUT);
-				}),
-			]);
-			clearTimeout(cleanupTimer!);
+			let cleanupResult: void | typeof cleanupTimedOut;
+			try {
+				cleanupResult = await Promise.race([
+					cleanupCompletion,
+					new Promise<typeof cleanupTimedOut>((resolve) => {
+						cleanupTimer = setTimeout(() => resolve(cleanupTimedOut), LOCK_TIMEOUT);
+						cleanupTimer.unref();
+					}),
+				]);
+			} finally {
+				if (cleanupTimer) clearTimeout(cleanupTimer);
+			}
 			if (cleanupResult === cleanupTimedOut) {
 				const message = `dropTable() timed out waiting for cleanup on ${tableName}; the table is unloaded and its drop will complete on restart or same-name create.`;
 				logger.warn?.(message);
@@ -2103,6 +2108,7 @@ export function makeTable(options) {
 					// LMDB batches every write in this callback behind one version check, so the indices and
 					// primary record can not diverge on a conflict or partial commit.
 					const removalEntry = entry ?? primaryStore.getEntry(id);
+					let removal: MaybePromise<unknown>;
 					lmdbCompletion = primaryStore.ifVersion(id, existingVersion, () => {
 						updateIndices(
 							id,
@@ -2112,8 +2118,9 @@ export function makeTable(options) {
 							undefined,
 							existingExpiresAtIndexValue ?? removalEntry?.expiresAt
 						);
-						return removeEntry(primaryStore, removalEntry);
+						removal = removeEntry(primaryStore, removalEntry);
 					});
+					lmdbCompletion = Promise.all([lmdbCompletion, removal]);
 				} else {
 					const removalEntry = entry ?? currentEntry ?? primaryStore.getEntry(id);
 					if (!removalEntry || removalEntry.version !== existingVersion) return;

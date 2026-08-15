@@ -634,11 +634,16 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 						//let i = 0;
 						// get all the ids of the related records
 						for (const entry of rightIterable) {
-							const storedEntry = entry?.value !== undefined ? entry : store.getEntry(entry.key ?? entry);
-							const record = storedEntry?.value;
+							const filters = (joined as any).filters;
+							const storedEntry = filters
+								? entry?.value !== undefined
+									? entry
+									: store.getEntry(entry.key ?? entry)
+								: undefined;
+							const record = filters ? storedEntry?.value : (entry.value ?? store.getSync(entry.key ?? entry));
 							const leftKey = record?.[rightProperty];
 							if (leftKey == null) continue;
-							if ((joined as any).filters?.some((filter) => !filter(record, storedEntry))) continue;
+							if (filters?.some((filter) => !filter(record, storedEntry))) continue;
 							if (isManyToMany) {
 								for (let i = 0; i < leftKey.length; i++) {
 									addEntry(leftKey[i], entry);
@@ -712,10 +717,11 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 						};
 						//let i = 0;
 						// get all the ids of the related records
-						for (const id of rightIterable) {
+						for (const idOrEntry of rightIterable) {
+							const id = idOrEntry?.key ?? idOrEntry;
 							if ((joined as any).filters) {
 								// if additional filters are defined, we need to check them
-								const entry = store.getEntry(id);
+								const entry = idOrEntry?.value !== undefined ? idOrEntry : store.getEntry(id);
 								if ((joined as any).filters.some((filter) => !filter(entry?.value, entry))) continue;
 							}
 							ids.add(id);

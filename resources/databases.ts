@@ -364,6 +364,15 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 
+function forgetDatabaseEnvironment(rootStore: any): void {
+	for (const [path, store] of lmdbDatabaseEnvs) {
+		if (store === rootStore || path === rootStore.path) lmdbDatabaseEnvs.delete(path);
+	}
+	for (const [path, store] of rocksdbDatabaseEnvs) {
+		if (store === rootStore || path === rootStore.path) rocksdbDatabaseEnvs.delete(path);
+	}
+}
+
 // set the following in both global and exports
 _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
@@ -1245,7 +1254,7 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
  */
 const droppingDatabases = new Map<string, Promise<void>>();
 
-export function dropDatabase(databaseName): Promise<void> {
+export async function dropDatabase(databaseName): Promise<void> {
 	const activeDrop = droppingDatabases.get(databaseName);
 	if (activeDrop) return activeDrop;
 	if (!databases[databaseName]) throw new Error('Database does not exist');
@@ -1303,11 +1312,7 @@ async function dropDatabaseOnce(databaseName, dbTables, rootStore): Promise<void
 				`Timed out after ${databaseCloseTimeout}ms waiting for cleanup; refusing to destroy database ${databaseName} while cleanup is active.`
 			);
 		}
-		for (const tableName in dbTables) {
-			const tableRootStore = dbTables[tableName].primaryStore.rootStore;
-			lmdbDatabaseEnvs.delete(tableRootStore.path);
-			rocksdbDatabaseEnvs.delete(tableRootStore.path);
-		}
+		forgetDatabaseEnvironment(rootStore);
 
 		for (const tableName in dbTables) {
 			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
@@ -1320,6 +1325,7 @@ async function dropDatabaseOnce(databaseName, dbTables, rootStore): Promise<void
 			delete tables[DEFINED_TABLES];
 		}
 		delete databases[databaseName];
+		definedDatabases?.delete(databaseName);
 
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 
@@ -1416,8 +1422,7 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 	for (const rootStore of rootStores) {
 		closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');
-		lmdbDatabaseEnvs.delete(rootStore.path);
-		rocksdbDatabaseEnvs.delete(rootStore.path);
+		forgetDatabaseEnvironment(rootStore);
 	}
 	const definedDatabase = definedDatabases?.get(databaseName);
 	if (definedDatabase) (definedDatabase as any).rootStore = undefined;
