@@ -1,0 +1,22 @@
+# Cross-model review-coverage check (report mode: informational, never blocks).
+# Parses the PR description with the dispatch human-review gate's own parser and reports
+# how many cross-model reviews it names, plus the Human-Review-Need footer state — so
+# coverage is visible at PR open/edit time, before the fleet's review runs. `edited` is a
+# trigger because reporting coverage is a description edit, which moves no commit sha.
+# Action + policy live in HarperFast/dispatch (skills/pr-shepherd/SKILL.md,
+# dispatch/lib/reviewGate.mjs). Flipping to `mode: enforce` is a team policy decision.
+name: review-coverage
+on:
+  pull_request:
+    types: [opened, edited, synchronize, ready_for_review]
+permissions:
+  contents: read
+concurrency:
+  group: review-coverage-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      # @main deliberately: the point is to track the gate's parser, not a frozen copy
+      - uses: HarperFast/dispatch/actions/review-coverage@main
