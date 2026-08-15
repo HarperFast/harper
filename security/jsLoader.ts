@@ -19,6 +19,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type {} from 'ses';
 import {
+	existsSync,
 	mkdirSync,
 	readFileSync,
 	writeFileSync,
@@ -229,8 +230,17 @@ function resolveESMPackageExports(
 			: walkExportsConditions(entry, ['import', 'node', 'default']);
 		if (!relative) return null;
 
+		let resolvedPath = join(pkgRoot, relative);
+		if (preferRequireConditions && !existsSync(resolvedPath)) {
+			// The runtime's preferred condition (Bun's `require`) named a target that isn't
+			// actually on disk -- fall back to the plain ESM `import` condition instead of
+			// failing resolution outright.
+			const importRelative = walkExportsConditions(entry, ['import', 'node', 'default']);
+			if (importRelative) resolvedPath = join(pkgRoot, importRelative);
+		}
+
 		return {
-			resolvedUrl: pathToFileURL(realpathSync(join(pkgRoot, relative))).toString(),
+			resolvedUrl: pathToFileURL(realpathSync(resolvedPath)).toString(),
 			packageJsonUrl: pathToFileURL(realpathSync(packageJsonPath)).toString(),
 			packageJsonSource,
 		};
