@@ -62,20 +62,32 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 		httpURL = ctx.harper.httpURL;
 		auth = client.headers.Authorization;
 
-		// Readiness poll — wait until CollabDoc endpoint responds (not 404)
-		const deadline = Date.now() + 30_000;
+		const readinessURL = `${httpURL}/CollabDoc/`;
+		const readinessDeadlineMs = 30_000;
+		const deadline = Date.now() + readinessDeadlineMs;
+		let ready = false;
+		let lastObserved = 'no response';
 		while (Date.now() < deadline) {
 			try {
-				const probe = await fetch(`${httpURL}/CollabDoc/`, {
+				const probe = await fetch(readinessURL, {
 					headers: { Authorization: auth },
 					signal: AbortSignal.timeout(3_000),
 				});
-				if (probe.status !== 404) break;
-			} catch {
-				/* not ready yet */
+				lastObserved = `HTTP ${probe.status}`;
+				await probe.body?.cancel();
+				if (probe.ok) {
+					ready = true;
+					break;
+				}
+			} catch (error) {
+				lastObserved = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 			}
 			await sleep(250);
 		}
+		if (!ready)
+			throw new Error(
+				`Harper did not become ready at ${readinessURL} within ${readinessDeadlineMs}ms; last observed ${lastObserved}`
+			);
 	});
 
 	after(async () => {
