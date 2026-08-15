@@ -21,6 +21,7 @@ describe('Caching', () => {
 	let observedSwrIds = []; // ids the SwrQueryTable SWR hook saw via this.getId(), for the per-row-identity test
 	let events = [];
 	let timer = 0;
+	let sourceExpiresAt;
 	let return_value = true;
 	let return_error;
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
@@ -48,7 +49,7 @@ describe('Caching', () => {
 		});
 		Source = class extends Resource {
 			get() {
-				let expiresAt = Date.now() + 2;
+				let expiresAt = sourceExpiresAt ?? Date.now() + 2;
 				this.getContext().expiresAt = expiresAt;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
@@ -511,38 +512,49 @@ describe('Caching', () => {
 		}
 	});
 	it('Can load cached indexed data', async function () {
-		sourceRequests = 0;
-		events = [];
-		IndexedCachingTable.setTTLExpiration(0.005);
-		let result = await IndexedCachingTable.get(23);
-		assert.equal(result.id, 23);
-		events = [];
-		assert.equal(result.name, 'name ' + 23);
-		assert.equal(sourceRequests, 1);
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		let results = [];
-		for await (let record of IndexedCachingTable.search({ conditions: [{ attribute: 'name', value: 'name 23' }] })) {
-			results.push(record);
+		try {
+			sourceRequests = 0;
+			events = [];
+			IndexedCachingTable.setTTLExpiration({ expiration: 50, eviction: 100 });
+			sourceExpiresAt = Date.now() + 1;
+			let result = await IndexedCachingTable.get(23);
+			assert.equal(result.id, 23);
+			await IndexedCachingTable.primaryStore.committed;
+			events = [];
+			assert.equal(result.name, 'name ' + 23);
+			assert.equal(sourceRequests, 1);
+			await waitFor(() => IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt < Date.now());
+			sourceExpiresAt = Date.now() + 1000;
+			let results = [];
+			for await (let record of IndexedCachingTable.search({ conditions: [{ attribute: 'name', value: 'name 23' }] })) {
+				results.push(record);
+			}
+			assert.equal(results.length, 1);
+			await waitFor(() => sourceRequests === 2);
+			assert.equal(sourceRequests, 2);
+			result = await IndexedCachingTable.get(23);
+			assert.equal(result.id, 23);
+			await IndexedCachingTable.invalidate(23);
+			sourceExpiresAt = Date.now() + 1;
+			await IndexedCachingTable.get(23);
+			await IndexedCachingTable.primaryStore.committed;
+			sourceRequests = 0;
+			await waitFor(() => IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt < Date.now());
+			sourceExpiresAt = Date.now() + 1000;
+			result = await IndexedCachingTable.get(23);
+			assert.equal(result.id, 23);
+			assert.equal(result.name, 'name ' + 23);
+			assert.equal(sourceRequests, 1);
+			assert.equal(events.length, 0);
+			assert(result.getExpiresAt());
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23));
+			const entry = IndexedCachingTable.primaryStore.getEntry(23);
+			await IndexedCachingTable.evict(23, entry.value, entry.version);
+			// evict should completely eliminate the record
+			await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined);
+		} finally {
+			sourceExpiresAt = undefined;
 		}
-		assert.equal(results.length, 1);
-		assert.equal(sourceRequests, 2);
-		result = await IndexedCachingTable.get(23);
-		assert.equal(result.id, 23);
-		sourceRequests = 0;
-		// let it expire
-		await delay(10);
-		result = await IndexedCachingTable.get(23);
-		assert.equal(result.id, 23);
-		assert.equal(result.name, 'name ' + 23);
-		assert.equal(sourceRequests, 1);
-		assert.equal(events.length, 0);
-		result = await IndexedCachingTable.get(23);
-		await delay(10); // give the lock a chance to be released
-		assert(result.getExpiresAt());
-		result = IndexedCachingTable.primaryStore.getEntry(23);
-		await IndexedCachingTable.evict(23, result, result.version);
-		// evict should completely eliminate the record
-		await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined);
 	});
 
 	it('Bigger stampede is handled', async function () {
