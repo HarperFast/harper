@@ -3,8 +3,8 @@
 # how many cross-model reviews it names, plus the Human-Review-Need footer state — so
 # coverage is visible at PR open/edit time, before the fleet's review runs. `edited` is a
 # trigger because reporting coverage is a description edit, which moves no commit sha.
-# Action + policy live in HarperFast/dispatch (skills/pr-shepherd/SKILL.md,
-# dispatch/lib/reviewGate.mjs). Flipping to `mode: enforce` is a team policy decision.
+# Policy: HarperFast/dispatch skills/pr-shepherd/SKILL.md. Flipping to `mode: enforce`
+# is a team policy decision.
 name: review-coverage
 on:
   pull_request:
@@ -18,6 +18,8 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      # org policy requires full-sha pinning; renovate bumps this, so it still tracks
-      # the gate's parser (dispatch@main) at dep-bot cadence
-      - uses: HarperFast/dispatch/actions/review-coverage@a3210e62d4ffce378898605fd6afb3d4e1d0bee1 # main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # the action is hosted in THIS repo (public home; GitHub bars public repos from
+      # using private-repo actions, so it cannot live in dispatch) — other public
+      # HarperFast repos pin it by sha
+      - uses: ./.github/actions/review-coverage
