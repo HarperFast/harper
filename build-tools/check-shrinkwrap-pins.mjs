@@ -24,13 +24,15 @@
 // "latest" dist-tag: if the range excludes a newer major, a broken install could never
 // reach it either, so comparing to absolute latest would flag a canary as fine when it
 // has actually gone vacuous within the range that matters.
+// Exact manifest specs remain in the installed-version check, but cannot discriminate a
+// shrinkwrap install from a fresh resolution, so the discrimination check skips them.
 //
 // Usage: node check-shrinkwrap-pins.mjs <package-root>
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
-const CHECKED_DEPS = ['@harperfast/rocksdb-js', 'fastify'];
+const CHECKED_DEPS = ['@harperfast/rocksdb-js', 'fastify', '@aws-sdk/client-s3'];
 
 const pkgRoot = process.argv[2];
 if (!pkgRoot) {
@@ -85,11 +87,12 @@ for (const dep of CHECKED_DEPS) {
 		continue;
 	}
 
-	console.log(`shrinkwrap honored: ${dep}@${installed} matches the packed pin`);
+	const status = isExactVersion(range) ? 'shrinkwrap pin matches (exact manifest spec)' : 'shrinkwrap honored';
+	console.log(`${status}: ${dep}@${installed} matches the packed pin`);
 }
 
 // A canary only proves the check works while its pin lags the registry -- if a lock bump
-// ever lands both canaries on registry-latest, the pin-match loop above would pass on a
+// ever lands every ranged canary on registry-latest, the pin-match loop above would pass on a
 // reverted, broken Dockerfile just as easily as on this one. Fail loudly rather than let
 // that happen silently.
 verifyCanariesDiscriminate(pins);
@@ -97,11 +100,21 @@ verifyCanariesDiscriminate(pins);
 process.exit(failed ? 1 : 0);
 
 function verifyCanariesDiscriminate(pins) {
+	const rangedPins = Object.fromEntries(Object.entries(pins).filter(([, { range }]) => !isExactVersion(range)));
+	if (Object.keys(rangedPins).length === 0) {
+		console.error(
+			'::error::every checked canary has an exact declared version -- exact dependencies cannot distinguish a shrinkwrap install from a fresh resolution. Add a canary with a ranged manifest spec.'
+		);
+		failed = true;
+		return;
+	}
+
 	// What a broken/reverted install would actually resolve to: the max version satisfying
 	// the declared range, not the registry's bare "latest" dist-tag (which could be a newer
 	// major the range excludes, and a broken install could never reach that either).
 	const rangeLatest = {};
-	for (const [dep, { range }] of Object.entries(pins)) {
+	let failedQueries = 0;
+	for (const [dep, { range }] of Object.entries(rangedPins)) {
 		try {
 			// `npm view <dep>@<range> version --json` returns every matching version, not
 			// just the max, and the order isn't a documented contract (it can track
@@ -114,6 +127,7 @@ function verifyCanariesDiscriminate(pins) {
 				? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max))
 				: versions;
 		} catch (e) {
+			failedQueries++;
 			console.log(
 				`::warning::could not check registry-latest-in-range for ${dep}@${range} (${e.message}) -- skipping discrimination check for it`
 			);
@@ -126,11 +140,21 @@ function verifyCanariesDiscriminate(pins) {
 	}
 	const stillDiscriminates = checkable.some((dep) => rangeLatest[dep] !== pins[dep].pinned);
 	if (!stillDiscriminates) {
+		if (failedQueries) {
+			console.log(
+				'::warning::could not verify every ranged canary still discriminates because one or more registry queries failed'
+			);
+			return;
+		}
 		console.error(
 			`::error::every checked canary (${checkable.join(', ')}) is now pinned at the latest version its declared range allows -- this check would pass even on a reverted, unpinned install. Pick a new canary whose shrinkwrap pin lags what its range allows.`
 		);
 		failed = true;
 	}
+}
+
+function isExactVersion(range) {
+	return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(range);
 }
 
 // Numeric major.minor.patch comparison, ignoring any prerelease/build suffix -- sufficient
