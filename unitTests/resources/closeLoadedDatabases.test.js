@@ -179,6 +179,29 @@ describe('RocksDB handle release', function () {
 		await closeDatabase('closetimeout6');
 	});
 
+	it('fails closed and resumes cleanup when table quiescence rejects', async function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'closefailure7',
+			attributes: [{ attribute: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const quiesceForDrop = Table.quiesceForDrop;
+		Table.quiesceForDrop = async function () {
+			await quiesceForDrop.call(this);
+			throw new Error('injected cleanup failure');
+		};
+		try {
+			await assert.rejects(closeDatabase('closefailure7'), /Could not quiesce database/);
+			assert.strictEqual(rootStore.status, 'open');
+			assert.strictEqual(Table.cleanupStateForTests().closed, false);
+		} finally {
+			Table.quiesceForDrop = quiesceForDrop;
+		}
+		await closeDatabase('closefailure7');
+	});
+
 	it('dropDatabase runs table cleanup before destroying its stores', async function () {
 		const Table = table({
 			table: 'expiring',
@@ -261,5 +284,53 @@ describe('RocksDB handle release', function () {
 		}
 		await sweep;
 		await dropDatabase('droptimeout7');
+	});
+
+	it('fails closed and resumes cleanup when drop quiescence rejects', async function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'dropfailure8',
+			attributes: [{ attribute: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const quiesceForDrop = Table.quiesceForDrop;
+		Table.quiesceForDrop = async function () {
+			await quiesceForDrop.call(this);
+			throw new Error('injected cleanup failure');
+		};
+		try {
+			await assert.rejects(dropDatabase('dropfailure8'), /Could not quiesce database/);
+			assert.strictEqual(rootStore.status, 'open');
+			assert.strictEqual(Table.cleanupStateForTests().closed, false);
+		} finally {
+			Table.quiesceForDrop = quiesceForDrop;
+		}
+		await dropDatabase('dropfailure8');
+	});
+
+	it('reconciles authoritative state when native database destruction fails', async function () {
+		const databaseName = 'dropdestroyfailure9';
+		const Table = table({
+			table: 'records',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const destroy = rootStore.destroy;
+		rootStore.destroy = () => {
+			throw new Error('injected destroy failure');
+		};
+		try {
+			await assert.rejects(dropDatabase(databaseName), /injected destroy failure/);
+		} finally {
+			rootStore.destroy = destroy;
+		}
+		const Recovered = getDatabases()[databaseName]?.records;
+		assert.ok(Recovered, 'authoritative reconciliation must reload a database that was not destroyed');
+		assert.notStrictEqual(Recovered, Table, 'the closed registration must not be restored');
+		assert.doesNotThrow(() => database({ database: databaseName }), 'the recovered database must be available');
+		await dropDatabase(databaseName);
 	});
 });

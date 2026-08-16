@@ -3,7 +3,20 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
-const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
+const {
+	table,
+	flushDatabases,
+	dropDatabase,
+	closeDatabase,
+	database,
+	getDatabases,
+	resetDatabases,
+	quiesceSchemaTarget,
+	abortSchemaQuiesce,
+	commitSchemaQuiesce,
+	finishSchemaQuiesce,
+	completeSchemaQuiesce,
+} = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { beginRestore, completeRestore, RESTORE_META_DIR } = require('#src/dataLayer/restoreMarker');
@@ -152,6 +165,33 @@ describe('dropDatabase restore serialization', () => {
 		await assert.doesNotReject(dropDatabase(MULTI));
 	});
 
+	it('rebuilds authoritative registrations after a native close failure', async () => {
+		const CLOSE_FAILURE_DB = 'close-failure-recovery-test';
+		const Original = table({
+			table: 'Records',
+			database: CLOSE_FAILURE_DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const originalClose = Original.primaryStore.close;
+		Original.primaryStore.close = () => {
+			throw new Error('injected close failure');
+		};
+		try {
+			await assert.rejects(
+				closeDatabase(CLOSE_FAILURE_DB),
+				(error) =>
+					error instanceof AggregateError &&
+					error.errors.some((closeError) => closeError.cause?.message === 'injected close failure')
+			);
+		} finally {
+			Original.primaryStore.close = originalClose;
+		}
+		const Recovered = getDatabases()[CLOSE_FAILURE_DB]?.Records;
+		assert.ok(Recovered, 'the authoritative catalog should be reloaded after close failure');
+		assert.notStrictEqual(Recovered, Original, 'the half-closed table registration must not remain public');
+		assert.strictEqual(Recovered.isDropQuiescing(), false, 'the recovered table must be writable again');
+	});
+
 	it('never loads the reserved restore-metadata directory as a database', function () {
 		// the API can't create a database with this name (schemaRegex rejects the backtick), but the
 		// scan opens any CURRENT+MANIFEST directory regardless of name, so it must skip the reserved dir
@@ -173,5 +213,165 @@ describe('dropDatabase restore serialization', () => {
 		const loaded = getDatabases();
 		assert.strictEqual(loaded[RESTORE_META_DIR], undefined, 'reserved dir must not be loaded as a database');
 		assert.ok(existsSync(reservedDir), 'the reserved dir itself is left in place (used for lifecycle metadata)');
+	});
+});
+
+describe('cross-worker schema quiescence', () => {
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('waits for in-flight table quiescence before authoritative abort recovery', async () => {
+		const DB = 'quiesce-abort-wait-test';
+		const Table = table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const originalQuiesce = Table.quiesceForDrop;
+		let releaseQuiesce;
+		Table.quiesceForDrop = () => new Promise((resolve) => (releaseQuiesce = resolve));
+		const message = {
+			operation: 'drop_table',
+			schema: DB,
+			table: 'Records',
+			quiesceId: 'q-abort-wait',
+			leaseUntil: Date.now() + 60_000,
+		};
+		try {
+			const quiesce = quiesceSchemaTarget(message);
+			await new Promise(setImmediate);
+			let abortSettled = false;
+			const abort = abortSchemaQuiesce(message).then(() => (abortSettled = true));
+			await new Promise(setImmediate);
+			assert.strictEqual(abortSettled, false, 'abort must not reset while quiescence is still closing');
+			releaseQuiesce();
+			const [result] = await Promise.all([quiesce, abort]);
+			assert.strictEqual(result.quiesced, false);
+			assert.ok(getDatabases()[DB]?.Records, 'authoritative reset must restore a table that was not dropped');
+		} finally {
+			Table.quiesceForDrop = originalQuiesce;
+		}
+	});
+
+	it('keeps a schema unavailable until terminal reset completes', async () => {
+		const DB = 'quiesce-final-gate-test';
+		table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const message = {
+			operation: 'drop_schema',
+			schema: DB,
+			quiesceId: 'q-final-gate',
+			leaseUntil: Date.now() + 60_000,
+		};
+		const result = await quiesceSchemaTarget(message);
+		assert.strictEqual(result.quiesced, true);
+		assert.strictEqual(finishSchemaQuiesce(message), true);
+		assert.throws(() => database({ database: DB, table: null }), /closing and cannot be opened/);
+		resetDatabases();
+		assert.throws(() => database({ database: DB, table: null }), /closing and cannot be opened/);
+		completeSchemaQuiesce(message);
+		assert.doesNotThrow(() => database({ database: DB, table: null }));
+		assert.strictEqual(finishSchemaQuiesce(message), false, 'completed IDs must not re-enter finalization');
+	});
+
+	it('rejects terminal messages for unknown and aborted quiescence IDs', async () => {
+		const DB = 'quiesce-stale-id-test';
+		table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const message = {
+			operation: 'drop_table',
+			schema: DB,
+			table: 'Records',
+			quiesceId: 'q-aborted-terminal',
+			leaseUntil: Date.now() + 60_000,
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		await abortSchemaQuiesce(message);
+		assert.strictEqual(finishSchemaQuiesce(message), false);
+		assert.strictEqual(
+			finishSchemaQuiesce({ ...message, quiesceId: 'q-never-quiesced' }),
+			false,
+			'unknown IDs must not authorize a metadata reset'
+		);
+	});
+
+	it('retains a missing-table quiescence until its terminal message', async () => {
+		const message = {
+			operation: 'drop_table',
+			schema: 'quiesce-missing-table-test',
+			table: 'Records',
+			quiesceId: 'q-missing-table',
+			leaseUntil: Date.now() + 60_000,
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual(finishSchemaQuiesce(message), true);
+		completeSchemaQuiesce(message);
+		assert.strictEqual(finishSchemaQuiesce(message), false);
+	});
+
+	it('serializes schema and table quiescence hierarchically', async () => {
+		const DB = 'quiesce-hierarchy-test';
+		const First = table({ table: 'First', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		table({ table: 'Second', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const originalQuiesce = First.quiesceForDrop;
+		let releaseFirst;
+		First.quiesceForDrop = () => new Promise((resolve) => (releaseFirst = resolve));
+		const firstMessage = {
+			operation: 'drop_table',
+			schema: DB,
+			table: 'First',
+			quiesceId: 'q-hierarchy-first',
+			originLocal: true,
+		};
+		try {
+			const first = quiesceSchemaTarget(firstMessage);
+			await new Promise(setImmediate);
+			const duplicate = await quiesceSchemaTarget({ ...firstMessage, quiesceId: 'q-hierarchy-duplicate' });
+			assert.strictEqual(duplicate.quiesced, false);
+			const schema = await quiesceSchemaTarget({
+				operation: 'drop_schema',
+				schema: DB,
+				quiesceId: 'q-hierarchy-schema',
+				originLocal: true,
+			});
+			assert.strictEqual(schema.quiesced, false);
+			releaseFirst();
+			assert.strictEqual((await first).quiesced, true);
+			await abortSchemaQuiesce(firstMessage);
+			First.quiesceForDrop = originalQuiesce;
+
+			const schemaMessage = {
+				operation: 'drop_schema',
+				schema: DB,
+				quiesceId: 'q-hierarchy-schema-owner',
+				originLocal: true,
+			};
+			assert.strictEqual((await quiesceSchemaTarget(schemaMessage)).quiesced, true);
+			const tableWhileSchema = await quiesceSchemaTarget({
+				operation: 'drop_table',
+				schema: DB,
+				table: 'Second',
+				quiesceId: 'q-hierarchy-table-loser',
+				originLocal: true,
+			});
+			assert.strictEqual(tableWhileSchema.quiesced, false);
+			await abortSchemaQuiesce(schemaMessage);
+		} finally {
+			First.quiesceForDrop = originalQuiesce;
+		}
+	});
+
+	it('stays fail-closed after the commit boundary until a terminal reconcile', async () => {
+		const DB = 'quiesce-committed-test';
+		table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const message = {
+			operation: 'drop_table',
+			schema: DB,
+			table: 'Records',
+			quiesceId: 'q-committed',
+			originLocal: true,
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual((await commitSchemaQuiesce(message)).committed, true);
+		await assert.rejects(() => abortSchemaQuiesce(message), /commit boundary/);
+		const terminal = { ...message, phase: 'reconcile-quiesce' };
+		assert.strictEqual(finishSchemaQuiesce(terminal), true);
+		completeSchemaQuiesce(terminal);
 	});
 });

@@ -2,7 +2,7 @@ import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
 import { SKIP } from '@harperfast/extended-iterable';
-import { expirationTimestamp, INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
+import { effectiveExpirationTimestamp, expirationTimestamp, INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata, type Entry } from './RecordEncoder.ts';
@@ -1094,12 +1094,11 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		function recordFilter(record: any, entry?: Entry) {
 			// `record` may be null/undefined when called via a nested-path filter
 			// where an intermediate property is missing.
-			let value =
-				normalizeRecordExpiration && entry?.expiresAt !== undefined
-					? entry.expiresAt
-					: record == null
-						? undefined
-						: record[attribute];
+			let value = normalizeRecordExpiration
+				? effectiveExpirationTimestamp(entry, record, attribute)
+				: record == null
+					? undefined
+					: record[attribute];
 			if (normalizeRecordExpiration) value = normalizeExpirationSearchValue(value);
 			let matches: boolean;
 			if (typeof value !== 'object' || !value || allowObjectMatching) matches = filter(value);

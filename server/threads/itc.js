@@ -3,6 +3,7 @@
 const hdbUtils = require('../../utility/common_utils.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const { ITC_ERRORS } = require('../../utility/errors/commonErrors.ts');
+const harperLogger = require('../../utility/logging/harper_logger.ts');
 const { threadId } = require('worker_threads');
 const { onMessageFromWorkers, broadcastWithAcknowledgement } = require('./manageThreads.js');
 
@@ -13,29 +14,45 @@ module.exports = {
 	UserEventMsg,
 };
 let serverItcHandlers;
-onMessageFromWorkers(async (event, sender) => {
+onMessageFromWorkers((event, sender) => {
+	handleItcEvent(event, sender).catch((error) => {
+		harperLogger.error(`ITC event handler failed for event type ${event?.type}`, error);
+		sendAcknowledgement(event, sender, { handled: false, reason: error?.message });
+	});
+});
+async function handleItcEvent(event, sender) {
 	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
 	validateEvent(event);
+	let result;
 	if (serverItcHandlers[event.type]) {
-		await serverItcHandlers[event.type](event);
+		result = await serverItcHandlers[event.type](event);
 	}
-	if (event.requestId && sender)
-		sender.postMessage({
+	sendAcknowledgement(event, sender, result);
+}
+function sendAcknowledgement(event, sender, result) {
+	if (!event?.requestId || !sender) return;
+	try {
+		const acknowledgement = {
 			type: 'ack',
 			id: event.requestId,
-		});
-});
+		};
+		if (event.includeAcknowledgementResult === true) acknowledgement.result = result;
+		sender.postMessage(acknowledgement);
+	} catch (error) {
+		harperLogger.error(`Unable to acknowledge ITC event type ${event?.type}`, error);
+	}
+}
 
 /**
  * Emits an ITC event to the ITC server.
  * @param event
  */
-function sendItcEvent(event) {
+function sendItcEvent(event, acknowledgementOptions = undefined) {
 	// Always stamp originator so handlers can send direct responses back.
 	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
 	if (event.message) event.message.originator = threadId;
-	return broadcastWithAcknowledgement(event);
+	return broadcastWithAcknowledgement(event, acknowledgementOptions);
 }
 
 /**

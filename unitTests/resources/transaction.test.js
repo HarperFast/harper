@@ -5,12 +5,43 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
+const {
+	DatabaseTransaction,
+	TABLE_COMMIT_ADMISSION,
+	withTableCommitAdmission,
+} = require('#src/resources/DatabaseTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { resetReplayedWritesWarning } = require('#src/resources/DatabaseTransaction');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
+describe('Table commit admission', () => {
+	it('admits every existing transaction link before committing and preserves dynamic admission', async () => {
+		const events = [];
+		const store = (name) => ({
+			[TABLE_COMMIT_ADMISSION]() {
+				events.push(`admit:${name}`);
+				return () => events.push(`release:${name}`);
+			},
+		});
+		const storeA = store('a');
+		const storeB = store('b');
+		const storeC = store('c');
+		const tail = { writes: [{ store: storeB }], next: undefined };
+		const head = { writes: [{ store: storeA }], next: tail };
+
+		await withTableCommitAdmission(head, {}, (options) => {
+			assert.deepStrictEqual(events, ['admit:a', 'admit:b']);
+			tail.writes.push({ store: storeC });
+			return withTableCommitAdmission(tail, options, async () => {
+				assert.deepStrictEqual(events, ['admit:a', 'admit:b', 'admit:c']);
+			});
+		});
+
+		assert.deepStrictEqual(events, ['admit:a', 'admit:b', 'admit:c', 'release:a', 'release:b', 'release:c']);
+	});
+});
 
 // The package blocks deep imports of its package.json, so walk up from the resolved entry point.
 function installedRocksdbVersion() {

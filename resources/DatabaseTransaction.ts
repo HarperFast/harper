@@ -239,6 +239,100 @@ export type CommitOptions = {
 	transaction?: RocksTransaction;
 };
 
+export const TABLE_COMMIT_ADMISSION = Symbol.for('harper.table-commit-admission');
+const ACTIVE_TABLE_COMMIT_ADMISSION = Symbol('active-table-commit-admission');
+
+type CommitAdmissionContext = {
+	stores: any[];
+	releases: Array<() => unknown>;
+	transactions: DatabaseTransaction[];
+};
+
+function admitTransactionStores(transaction: DatabaseTransaction, context: CommitAdmissionContext): void {
+	for (let link: DatabaseTransaction = transaction; link; link = link.next) {
+		if ((link as any)[ACTIVE_TABLE_COMMIT_ADMISSION] !== context) {
+			(link as any)[ACTIVE_TABLE_COMMIT_ADMISSION] = context;
+			context.transactions.push(link);
+		}
+		for (const write of link.writes) {
+			const store = write?.store;
+			if (!store || context.stores.includes(store)) continue;
+			const admit = store[TABLE_COMMIT_ADMISSION];
+			if (admit) {
+				context.stores.push(store);
+				context.releases.push(admit());
+			}
+		}
+	}
+}
+
+function releaseTransactionStores(context: CommitAdmissionContext): Promise<void> | void {
+	for (const transaction of context.transactions) {
+		if ((transaction as any)[ACTIVE_TABLE_COMMIT_ADMISSION] === context)
+			delete (transaction as any)[ACTIVE_TABLE_COMMIT_ADMISSION];
+	}
+	let completions: Promise<unknown>[] | undefined;
+	for (const release of context.releases) {
+		try {
+			const completion = release();
+			if ((completion as any)?.then) (completions ??= []).push(Promise.resolve(completion));
+		} catch (error) {
+			(completions ??= []).push(Promise.reject(error));
+		}
+	}
+	context.stores.length = 0;
+	context.releases.length = 0;
+	context.transactions.length = 0;
+	if (completions) return Promise.allSettled(completions).then(() => undefined);
+}
+
+/**
+ * Hold every table touched by a transaction chain in the submitted-commit set until the complete
+ * commit (including retries and chained stores) settles. Recursive commit rounds reuse the same
+ * context and admit any stores added while asynchronous pre-commit work was running.
+ */
+export function withTableCommitAdmission<T>(
+	transaction: DatabaseTransaction,
+	options: CommitOptions,
+	commit: (options: CommitOptions) => T
+): T {
+	let context = (transaction as any)[ACTIVE_TABLE_COMMIT_ADMISSION] as CommitAdmissionContext | undefined;
+	if (context) {
+		admitTransactionStores(transaction, context);
+		return commit(options);
+	}
+	context = { stores: [], releases: [], transactions: [] };
+	try {
+		admitTransactionStores(transaction, context);
+		const resolution: any = commit(options);
+		if (resolution?.then) {
+			return resolution.then(
+				(value) => {
+					const release = releaseTransactionStores(context);
+					return release ? release.then(() => value) : value;
+				},
+				(error) => {
+					const release = releaseTransactionStores(context);
+					if (release)
+						return release.then(() => {
+							throw error;
+						});
+					throw error;
+				}
+			) as T;
+		}
+		const release = releaseTransactionStores(context);
+		return (release ? release.then(() => resolution) : resolution) as T;
+	} catch (error) {
+		const release = releaseTransactionStores(context);
+		if (release)
+			return release.then(() => {
+				throw error;
+			}) as T;
+		throw error;
+	}
+}
+
 type ReadTransaction = (LMDBTransaction | RocksTransaction) & {
 	openTimer?: number;
 	retryRisk?: number;
@@ -663,6 +757,10 @@ export class DatabaseTransaction implements Transaction {
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
+		return withTableCommitAdmission(this, options, (admittedOptions) => this.commitRocksAdmitted(admittedOptions));
+	}
+
+	private commitRocksAdmitted(options: CommitOptions): MaybePromise<CommitResolution> {
 		if (this.timedOut) throw transactionOpenTooLongError();
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction

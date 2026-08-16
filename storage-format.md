@@ -86,15 +86,21 @@ Variable-length integer encoding the operation type and extended type flags.
 
 **Additional Flags (upper bits):**
 
-| Value         | Name                         | Description                         |
-| ------------- | ---------------------------- | ----------------------------------- |
-| 64 (0x40)     | HAS_PREVIOUS_VERSION         | Previous version timestamp included |
-| 128 (0x80)    | HAS_EXTENDED_TYPE            | Extended type information           |
-| 512 (0x200)   | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included       |
-| 1024 (0x400)  | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included      |
-| 2048 (0x800)  | HAS_ORIGINATING_OPERATION    | Originating operation type included |
-| 4096 (0x1000) | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included       |
-| 8192 (0x2000) | HAS_BLOBS                    | Binary blob data included           |
+| Value           | Name                         | Description                          |
+| --------------- | ---------------------------- | ------------------------------------ |
+| 64 (0x40)       | HAS_PREVIOUS_VERSION         | Previous version timestamp included  |
+| 128 (0x80)      | HAS_EXTENDED_TYPE            | Extended type information            |
+| 512 (0x200)     | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included        |
+| 1024 (0x400)    | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included       |
+| 2048 (0x800)    | HAS_ORIGINATING_OPERATION    | Originating operation type included  |
+| 4096 (0x1000)   | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included        |
+| 8192 (0x2000)   | HAS_BLOBS                    | Binary blob data included            |
+| 65536 (0x10000) | HAS_EXPIRATION_DECISION      | Expiration decision is authoritative |
+
+`HAS_EXPIRATION_DECISION` carries no payload. It is mirrored in the primary record metadata and audit
+entry so a missing `HAS_EXPIRATION_EXTENDED_TYPE` bit means an explicit no-expiration decision rather
+than missing legacy metadata. Records and audit events without the decision bit retain the legacy
+fallback to a public `@expiresAt` field during upgrades.
 
 ### Variable-Length Integer Encoding
 

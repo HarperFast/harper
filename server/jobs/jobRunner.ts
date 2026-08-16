@@ -143,6 +143,7 @@ async function runJob(runnerMessage: any, operation: any) {
 async function launchJobThread(job_id: any) {
 	log.trace('launching job thread:', job_id);
 	if (isMainThread) {
+		await threadsStart.waitForSchemaWorkerStarts();
 		threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
 			autoRestart: false,
 			name: 'job',
@@ -158,6 +159,7 @@ async function launchJobThread(job_id: any) {
 if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.START_JOB, async (message) => {
 		try {
+			await threadsStart.waitForSchemaWorkerStarts();
 			threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
 				autoRestart: false,
 				name: 'job',

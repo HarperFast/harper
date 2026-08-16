@@ -9,6 +9,9 @@ const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resou
 const { existsSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
+const { HAS_EXPIRATION_DECISION } = require('#src/resources/auditStore');
+const { TABLE_COMMIT_ADMISSION } = require('#src/resources/DatabaseTransaction');
+const { transaction } = require('#src/resources/transaction');
 
 const activeTables = new Set();
 const table = (options) => {
@@ -166,8 +169,10 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const tableName = 'ExpiresAtCanonicalRebuild';
 		const Table = makeTable(tableName);
 		const expiresAt = Date.now() + 3_600_000;
+		const noExpiryField = expiresAt + 60_000;
 		const isoExpiresAt = new Date(expiresAt).toISOString();
 		await Table.put(1, { id: 1, expiresAt: isoExpiresAt });
+		await Table.put(2, { id: 2, expiresAt: noExpiryField }, { expiresAt: -1 });
 		await Table.primaryStore.committed;
 
 		const attribute = Table.attributes.find((candidate) => candidate.name === 'expiresAt');
@@ -176,12 +181,15 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Table.dbisDB.put(attribute.key, descriptor);
 		await Table.indices.expiresAt.clear();
 		await Table.indices.expiresAt.put(isoExpiresAt, 1);
+		await Table.indices.expiresAt.put(noExpiryField, 2);
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(isoExpiresAt)], [1]);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(noExpiryField)], [2]);
 
 		const Reloaded = makeTable(tableName);
 		await Reloaded.indexingOperation;
 		assert.deepStrictEqual([...Reloaded.indices.expiresAt.getValues(isoExpiresAt)], []);
 		assert.deepStrictEqual([...Reloaded.indices.expiresAt.getValues(expiresAt)], [1]);
+		assert.deepStrictEqual([...Reloaded.indices.expiresAt.getValues(noExpiryField)], []);
 		Table.cleanup();
 	});
 
@@ -235,29 +243,129 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
 	});
 
+	it('does not reinterpret a source no-expiration decision as a legacy field expiration', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtSourceNoExpiration'));
+		const fieldExpiresAt = Date.now() - 1_000;
+		Table.sourcedFrom({
+			get(id) {
+				return { id, expiresAt: fieldExpiresAt, name: 'source' };
+			},
+		});
+
+		await Table.get(1);
+		await waitFor(() => Table.primaryStore.getEntry(1)?.value, { message: 'source fill should be stored' });
+		await Table.primaryStore.committed;
+		const sourceEntry = Table.primaryStore.getEntry(1);
+		assert.strictEqual(sourceEntry.expiresAt, undefined);
+		assert.ok(sourceEntry.metadataFlags & HAS_EXPIRATION_DECISION);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(fieldExpiresAt)], []);
+		const fullScanResults = [];
+		for await (const record of Table.search({
+			allowFullScan: true,
+			conditions: [
+				{ attribute: 'id', value: 1 },
+				{ attribute: 'expiresAt', value: fieldExpiresAt },
+			],
+		})) {
+			fullScanResults.push(record.id);
+		}
+		assert.deepStrictEqual(fullScanResults, []);
+
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value.name, 'source');
+
+		await Table.put(1, { id: 1, expiresAt: fieldExpiresAt, name: 'local' });
+		await Table.primaryStore.committed;
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(fieldExpiresAt)], [1]);
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+	});
+
+	it('propagates an explicit no-expiration decision through current and live subscriptions', async function () {
+		const Source = makeTable('ExpiresAtDecisionSource', undefined, { audit: true });
+		const fieldExpiresAt = Date.now() - 1_000;
+		await Source.put(1, { id: 1, expiresAt: fieldExpiresAt }, { expiresAt: -1 });
+		await Source.primaryStore.committed;
+
+		const currentSubscription = await Source.subscribe({ isCollection: true });
+		const currentEvents = [];
+		currentSubscription.on('data', (event) => currentEvents.push(event));
+		await waitFor(() => currentEvents.some((event) => event.id === 1), { message: 'current event should arrive' });
+		const currentEvent = currentEvents.find((event) => event.id === 1);
+		assert.strictEqual(currentEvent.expirationDecisionPresent, true);
+		assert.strictEqual(currentEvent.expiresAt, undefined);
+		await currentSubscription.return?.();
+
+		const Target = makeTable('ExpiresAtDecisionTarget');
+		Target.sourcedFrom(Source, { intermediateSource: true });
+		await Source.put(2, { id: 2, expiresAt: fieldExpiresAt }, { expiresAt: -1 });
+		await waitFor(() => Target.primaryStore.getEntry(2)?.value, { message: 'live event should be applied' });
+		await Target.primaryStore.committed;
+		const targetEntry = Target.primaryStore.getEntry(2);
+		assert.strictEqual(targetEntry.expiresAt, undefined);
+		assert.ok(targetEntry.metadataFlags & HAS_EXPIRATION_DECISION);
+		assert.deepStrictEqual([...Target.indices.expiresAt.getValues(fieldExpiresAt)], []);
+	});
+
+	it('preserves an explicit no-expiration decision across publish and invalidate', async function () {
+		const Table = makeTable('ExpiresAtDecisionLifecycle', undefined, { audit: true });
+		const fieldExpiresAt = Date.now() - 1_000;
+		await Table.put(1, { id: 1, expiresAt: fieldExpiresAt }, { expiresAt: -1 });
+		await Table.publish(1, { message: 'refresh' });
+		await Table.primaryStore.committed;
+
+		let entry = Table.primaryStore.getEntry(1);
+		assert.strictEqual(entry.expiresAt, undefined);
+		assert.ok(entry.metadataFlags & HAS_EXPIRATION_DECISION);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(fieldExpiresAt)], []);
+
+		await Table.invalidate(1);
+		await Table.primaryStore.committed;
+		entry = Table.primaryStore.getEntry(1);
+		assert.strictEqual(entry.expiresAt, undefined);
+		assert.ok(entry.metadataFlags & HAS_EXPIRATION_DECISION);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(fieldExpiresAt)], []);
+	});
+
+	it('invalidates a frozen replay record without mutating it', async function () {
+		const Table = makeTable('ExpiresAtFrozenInvalidate', undefined, { audit: true });
+		const fieldExpiresAt = Date.now() + 60_000;
+		await Table.put(1, { id: 1, expiresAt: fieldExpiresAt });
+		const context = {};
+		const resource = await Table.getResource(1, context, { ensureLoaded: true });
+		const replayRecord = Object.freeze({ id: 1, expiresAt: fieldExpiresAt });
+		await transaction(context, () => resource._writeInvalidate(1, replayRecord));
+		assert.strictEqual(Object.isFrozen(replayRecord), true);
+		assert.ok(Table.primaryStore.getEntry(1).metadataFlags);
+	});
+
 	it('re-arms both expiration sweeps after cleanup is resumed', async function () {
 		const Table = makeTable('ExpiresAtResumeCleanup', undefined, { scanInterval: 100 });
 		assert.deepStrictEqual(Table.cleanupStateForTests(), {
 			closed: false,
 			cleanupScheduled: true,
+			nextCleanupScheduled: Table.cleanupStateForTests().nextCleanupScheduled,
 			expirationScheduled: true,
 		});
 		await Table.cleanup();
 		assert.deepStrictEqual(Table.cleanupStateForTests(), {
 			closed: true,
 			cleanupScheduled: false,
+			nextCleanupScheduled: undefined,
 			expirationScheduled: false,
 		});
 		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000 });
 		assert.deepStrictEqual(Table.cleanupStateForTests(), {
 			closed: true,
 			cleanupScheduled: false,
+			nextCleanupScheduled: undefined,
 			expirationScheduled: false,
 		});
 		Table.resumeCleanup();
 		assert.deepStrictEqual(Table.cleanupStateForTests(), {
 			closed: false,
 			cleanupScheduled: true,
+			nextCleanupScheduled: Table.cleanupStateForTests().nextCleanupScheduled,
 			expirationScheduled: true,
 		});
 	});
@@ -464,10 +572,58 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		Table.cleanup();
 	});
 
+	it('removes both the encountered and canonical expiration keys when evicting a record', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() => makeTable('ExpiresAtExactKeyEviction'));
+		const canonical = Date.now() - 1_000;
+		const encountered = canonical - 1_000;
+		await Table.put(1, { id: 1, expiresAt: canonical });
+		await Table.primaryStore.committed;
+		Table.indices.expiresAt.put(encountered, 1);
+
+		await runSweep();
+		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(encountered)], []);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(canonical)], []);
+	});
+
+	it('removes both expiration keys when physically evicting a blob record', async function () {
+		const { Table, runSweep } = captureExpirationSweep(() =>
+			table({
+				table: 'ExpiresAtExactBlobKeyEviction',
+				database: 'expires-at-exact-blob-key-eviction',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+					{ name: 'payload', type: 'Blob' },
+				],
+			})
+		);
+		const canonical = Date.now() - 1_000;
+		const encountered = canonical - 1_000;
+		const blob = createBlob(Buffer.alloc(20_000, 12));
+		await Table.put(1, { id: 1, expiresAt: canonical, payload: blob });
+		await Table.primaryStore.committed;
+		Table.indices.expiresAt.put(encountered, 1);
+
+		setDeletionDelay(0);
+		try {
+			await runSweep();
+			assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
+			assert.deepStrictEqual([...Table.indices.expiresAt.getValues(encountered)], []);
+			assert.deepStrictEqual([...Table.indices.expiresAt.getValues(canonical)], []);
+			await waitFor(() => !existsSync(getFilePathForBlob(blob)), {
+				timeout: 5_000,
+				message: 'physical eviction should unlink the blob',
+			});
+		} finally {
+			setDeletionDelay(500);
+		}
+	});
+
 	it('keeps a blob when eviction lacks the record and unlinks it after a committed eviction', async function () {
 		const Table = table({
 			table: 'ExpiresAtBlobFailSafe',
-			database: 'test',
+			database: 'expires-at-blob-fail-safe',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'expiresAt', expiresAt: true, indexed: true },
@@ -488,7 +644,10 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		try {
 			await Table.evict(1, entry.value, entry.version);
 			assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
-			await waitFor(() => !existsSync(filePath), { message: 'committed eviction should unlink the blob' });
+			await waitFor(() => !existsSync(filePath), {
+				timeout: 5_000,
+				message: 'committed eviction should unlink the blob',
+			});
 		} finally {
 			setDeletionDelay(500);
 		}
@@ -670,6 +829,108 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			await Promise.all([scan, cleanup]);
 		} finally {
 			releaseEviction();
+		}
+	});
+
+	it('drains an in-flight batch when the primary scan exits with an error', async function () {
+		const Table = table({
+			table: 'PrimaryCleanupErrorDrain',
+			database: 'test',
+			expiration: 1,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const expiresAt = Date.now() - 1_000;
+		await Promise.all(Array.from({ length: 100 }, (_, id) => Table.put(id, { id }, { expiresAt })));
+		await Table.primaryStore.committed;
+
+		let releaseCommit;
+		let commitStarted = false;
+		const blockedCommit = new Promise((resolve) => (releaseCommit = resolve));
+		let scanResolved = false;
+		try {
+			const scan = Table.runPrimaryCleanupScanForTests({
+				beforeBatchCommit: async () => {
+					commitStarted = true;
+					await blockedCommit;
+				},
+				afterBatchQueued() {
+					throw new Error('injected scan failure');
+				},
+			}).then(() => (scanResolved = true));
+			await waitFor(() => commitStarted, { message: 'the eviction batch should start committing' });
+			await delay(10);
+			assert.strictEqual(scanResolved, false, 'the scan must drain its batch after the injected failure');
+			releaseCommit();
+			await scan;
+		} finally {
+			releaseCommit();
+		}
+	});
+
+	it('settles an immediate cleanup request when cleanup cancels its timer', async function () {
+		const Table = table({
+			table: 'CleanupTimerSettlement',
+			database: 'test',
+			expiration: 60,
+			scanInterval: 3_600,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const scheduled = Table.scheduleCleanupForTests(2);
+		assert(scheduled, 'an explicit reclamation request should return its queued scan');
+		const cleanup = Table.cleanup();
+		const settled = await Promise.race([scheduled.then(() => true), delay(100).then(() => false)]);
+		assert.strictEqual(settled, true, 'cleanup must not strand a promise owned by a cleared timer');
+		await cleanup;
+	});
+
+	it('keeps the recurring timer finite for full-disk reclamation priority', async function () {
+		const Table = table({
+			table: 'FullDiskCleanupSchedule',
+			database: 'test',
+			expiration: 60,
+			scanInterval: 3_600,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const scheduled = Table.scheduleCleanupForTests(Infinity);
+		assert(scheduled, 'a full-disk reclamation request should queue an immediate scan');
+		assert(
+			Number.isFinite(Table.cleanupStateForTests().nextCleanupScheduled),
+			'the recurring cleanup deadline must stay finite'
+		);
+		await scheduled;
+	});
+
+	it('waits for an admitted ordinary commit before closing a database', async function () {
+		const database = 'OrdinaryCommitCloseDrain';
+		const Table = table({
+			table: 'records',
+			database,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const originalAdmission = Table.primaryStore[TABLE_COMMIT_ADMISSION];
+		let admitted = false;
+		let releaseCommit;
+		const blockedRelease = new Promise((resolve) => (releaseCommit = resolve));
+		Table.primaryStore[TABLE_COMMIT_ADMISSION] = () => {
+			const release = originalAdmission();
+			admitted = true;
+			return async () => {
+				await blockedRelease;
+				release();
+			};
+		};
+		try {
+			const put = Table.put(1, { id: 1 });
+			await waitFor(() => admitted, { message: 'the ordinary write should enter the table commit barrier' });
+			let closeResolved = false;
+			const close = closeDatabase(database).then(() => (closeResolved = true));
+			await delay(10);
+			assert.strictEqual(closeResolved, false, 'close must wait for the admitted ordinary commit');
+			releaseCommit();
+			await Promise.all([put, close]);
+		} finally {
+			releaseCommit();
+			Table.primaryStore[TABLE_COMMIT_ADMISSION] = originalAdmission;
 		}
 	});
 
@@ -862,6 +1123,17 @@ describe('LMDB @expiresAt cleanup draining', function () {
 		};
 	};
 
+	it('persists an explicit no-expiration decision without indexing the public field', async function () {
+		const { Table } = captureExpirationSweep('LmdbExpirationDecision');
+		const fieldExpiresAt = Date.now() + 60_000;
+		await Table.put(1, { id: 1, expiresAt: fieldExpiresAt }, { expiresAt: -1 });
+		await Table.primaryStore.committed;
+		const entry = Table.primaryStore.getEntry(1);
+		assert.strictEqual(entry.expiresAt, undefined);
+		assert.ok(entry.metadataFlags & HAS_EXPIRATION_DECISION);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(fieldExpiresAt)], []);
+	});
+
 	it('evicts ISO expirations and repairs stale keys', async function () {
 		const { Table, runSweep } = captureExpirationSweep('LmdbExpirationCorrectness');
 		const expired = Date.now() - 1_000;
@@ -869,11 +1141,14 @@ describe('LMDB @expiresAt cleanup draining', function () {
 		await Table.put(1, { id: 1, expiresAt: new Date(expired).toISOString() });
 		await Table.put(2, { id: 2, expiresAt: current });
 		await Table.primaryStore.committed;
+		const encountered = expired - 1_000;
 		await Table.indices.expiresAt.put(expired, 2);
+		await Table.indices.expiresAt.put(encountered, 1);
 
 		await runSweep();
 		assert.strictEqual(Table.primaryStore.getEntry(1)?.value, undefined);
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(expired)], []);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(encountered)], []);
 		assert.strictEqual(Table.primaryStore.getEntry(2)?.value.expiresAt, current);
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(current)], [2]);
 		Table.cleanup();

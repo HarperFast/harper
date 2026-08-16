@@ -72,6 +72,13 @@ const UNREGISTER_PROCESS_GROUP = 'unregister-process-group';
 const AWAIT_PROCESS_GROUP_TERMINATION = 'await-process-group-termination';
 const PROCESS_GROUP_TERMINATION_CONFIRMED = 'process-group-termination-confirmed';
 const THREAD_INFO_REQUEST_TIMEOUT_MS = 1000;
+class ITCAcknowledgementError extends Error {
+	constructor(message, results) {
+		super(message);
+		this.code = 'ERR_ITC_ACKNOWLEDGEMENT';
+		this.results = results;
+	}
+}
 let getThreadInfo;
 let awaitProcessGroupTermination;
 // Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
@@ -130,6 +137,24 @@ function restoreShutdownDeadline() {
 
 const listenersByType = new Map();
 const messagesQueuedByType = new Map();
+const schemaWorkerStartBarriers = new Set();
+let schemaWorkerStartWaiters = [];
+
+function holdWorkerStartsForSchema(quiesceId) {
+	if (isMainThread) schemaWorkerStartBarriers.add(quiesceId);
+}
+
+function releaseWorkerStartsForSchema(quiesceId) {
+	if (!isMainThread || !schemaWorkerStartBarriers.delete(quiesceId) || schemaWorkerStartBarriers.size) return;
+	const waiters = schemaWorkerStartWaiters;
+	schemaWorkerStartWaiters = [];
+	for (const resolve of waiters) resolve();
+}
+
+function waitForSchemaWorkerStarts() {
+	if (!isMainThread || schemaWorkerStartBarriers.size === 0) return Promise.resolve();
+	return new Promise((resolve) => schemaWorkerStartWaiters.push(resolve));
+}
 
 module.exports = {
 	startWorker,
@@ -142,6 +167,7 @@ module.exports = {
 	onMessageByType,
 	broadcast,
 	broadcastWithAcknowledgement,
+	ITCAcknowledgementError,
 	getWorkerIndex,
 	getWorkerCount,
 	getTicketKeys,
@@ -149,6 +175,9 @@ module.exports = {
 	setTerminateTimeout,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
+	holdWorkerStartsForSchema,
+	releaseWorkerStartsForSchema,
+	waitForSchemaWorkerStarts,
 	registerWorkerDataProvider,
 	onThreadExit,
 	registerProcessGroup,
@@ -424,7 +453,7 @@ function startWorker(path, options = {}) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
-				startWorker(path, options);
+				waitForSchemaWorkerStarts().then(() => startWorker(path, options));
 			} else harperLogger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
 		}
 	});
@@ -503,6 +532,7 @@ async function restartWorkers(
 				// replacement, startWorker's unexpected-exit handler must not auto-restart it (that would
 				// leave a duplicate once the replacement is up). Restored below if the replacement fails.
 				worker.wasShutdown = true;
+				await waitForSchemaWorkerStarts();
 				let newWorker = worker.startCopy();
 				// Likewise suppress auto-restart on the replacement *while it boots*: if it fails to come up
 				// we leave the existing worker in place, and a background retry succeeding later would push the
@@ -575,7 +605,10 @@ async function restartWorkers(
 			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
 			// well before the replacement finishes booting and binds.
-			if (overlapping && startReplacementThreads && !canPreStartReplacement) worker.startCopy();
+			if (overlapping && startReplacementThreads && !canPreStartReplacement) {
+				await waitForSchemaWorkerStarts();
+				worker.startCopy();
+			}
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				const armTerminate = (delay) =>
@@ -612,7 +645,7 @@ async function restartWorkers(
 					const index = waitingToFinish.indexOf(whenDone);
 					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
-					if (!overlapping && startReplacementThreads) worker.startCopy();
+					if (!overlapping && startReplacementThreads) waitForSchemaWorkerStarts().then(() => worker.startCopy());
 					resolve();
 				});
 			});
@@ -690,14 +723,25 @@ async function broadcast(message, includeSelf) {
 const awaitingResponses = new Map();
 let nextId = 1;
 // Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
-// whose port hasn't closed) can't hang a mutating admin/DDL op forever. The durable write has
-// already succeeded by the time we broadcast, and the health monitor restarts a truly stuck
-// worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
+// whose port hasn't closed) can't hang a best-effort broadcast forever. Strict callers receive
+// the timeout as a failure instead of proceeding.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
-function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return new Promise((resolve) => {
+function broadcastWithAcknowledgement(message, timeoutOrOptions = DEFAULT_ACK_TIMEOUT_MS) {
+	const options =
+		typeof timeoutOrOptions === 'number' ? { timeout: timeoutOrOptions } : timeoutOrOptions || Object.create(null);
+	const timeout = options.timeout ?? DEFAULT_ACK_TIMEOUT_MS;
+	const acceptResult = options.acceptResult;
+	const includeJobWorkers = options.includeJobWorkers === true;
+	if (acceptResult !== undefined && typeof acceptResult !== 'function') {
+		throw new TypeError('acceptResult must be a function');
+	}
+	if (acceptResult) message.includeAcknowledgementResult = true;
+	else delete message.includeAcknowledgementResult;
+	return new Promise((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
+		let prepared = false;
+		const results = [];
 		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
 		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
 		// the close listener, or the timeout below.
@@ -707,20 +751,46 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 				clearTimeout(timer);
 				timer = undefined;
 			}
-			resolve();
+			if (!acceptResult) return resolve();
+			const failures = results.filter((result) => result.status !== 'accepted');
+			if (failures.length === 0) return resolve(results);
+			reject(
+				new ITCAcknowledgementError(
+					`ITC broadcast (type ${message.type}) failed acknowledgement from ${failures.length} worker thread(s)`,
+					results
+				)
+			);
 		};
 		for (let port of connectedPorts) {
 			// Job workers run a single isolated task and exit; they don't participate in
 			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
 			// the job worker's ACK while the job worker's event loop is busy waiting for the
 			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (port.isJobWorker) continue;
+			if (port.isJobWorker && !includeJobWorkers) continue;
 			try {
 				let requestId = nextId++;
-				const ackHandler = () => {
+				const ackHandler = (status, result, error) => {
 					if (!pending.delete(ackHandler)) return; // already settled for this port
 					awaitingResponses.delete(requestId);
-					if (--waitingCount === 0) {
+					if (acceptResult) {
+						if (status === 'acknowledged') {
+							let accepted = false;
+							try {
+								accepted = acceptResult(result) === true;
+							} catch (acceptError) {
+								error = acceptError;
+							}
+							results.push({
+								threadId: port.threadId,
+								status: accepted ? 'accepted' : 'rejected',
+								result,
+								...(error ? { error } : null),
+							});
+						} else {
+							results.push({ threadId: port.threadId, status, ...(error ? { error } : null) });
+						}
+					}
+					if (--waitingCount === 0 && prepared) {
 						finish();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
@@ -732,35 +802,39 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
 				awaitingResponses.set((message.requestId = requestId), ackHandler);
+				waitingCount++;
 				if (!port.hasAckCloseListener) {
 					// just set a single close listener that can clean up all the ack handlers for a port that is closed
 					port.hasAckCloseListener = true;
 					port.on(port.close ? 'close' : 'exit', () => {
 						for (let [, ackHandler] of awaitingResponses) {
 							if (ackHandler.port === port) {
-								ackHandler();
+								ackHandler('closed');
 							}
 						}
 					});
 				}
 				port.postMessage(message);
-				waitingCount++;
 			} catch (error) {
-				harperLogger.error(`Unable to send message to worker`, error);
+				const ackHandler = awaitingResponses.get(message.requestId);
+				if (ackHandler?.port === port) ackHandler('transport-error', undefined, error);
+				if (!acceptResult) harperLogger.error(`Unable to send message to worker`, error);
 			}
 		}
-		if (waitingCount === 0) return resolve();
+		prepared = true;
+		if (waitingCount === 0) return finish();
 		if (timeout > 0) {
 			timer = setTimeout(() => {
 				timer = undefined;
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port?.threadId);
-					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
+					ackHandler('timeout'); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
 				}
-				harperLogger.warn(
-					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; proceeding best-effort`
-				);
+				if (!acceptResult)
+					harperLogger.warn(
+						`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; proceeding best-effort`
+					);
 			}, timeout);
 			timer.unref?.();
 		}
@@ -1157,7 +1231,7 @@ function addPort(port, keepRef, isJobWorker) {
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {
-					completion();
+					completion('acknowledged', message.result);
 				}
 			} else if (message.type === REMOVE_PORT) {
 				const idx = connectedPorts.findIndex((p) => p.threadId === message.threadId);

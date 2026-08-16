@@ -1,6 +1,13 @@
 require('../testUtils');
 const assert = require('assert');
-const { RecordEncoder, RecordObject, isMissingStructureError } = require('#src/resources/RecordEncoder');
+const {
+	RecordEncoder,
+	RecordObject,
+	isMissingStructureError,
+	setNextEncoding,
+	clearNextEncoding,
+} = require('#src/resources/RecordEncoder');
+const { HAS_EXPIRATION_DECISION } = require('#src/resources/auditStore');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { Encoder } = require('msgpackr');
 
@@ -30,6 +37,19 @@ function makeEncoder(randomAccessStructure, store) {
 }
 
 const record = { name: 'price', type: 'Float', indexed: true };
+
+describe('RecordEncoder expiration decision metadata', () => {
+	afterEach(() => clearNextEncoding());
+
+	it('adds no bytes when the decision has no expiration payload', () => {
+		const encoder = makeEncoder(true, sharedStore());
+		setNextEncoding(1000, 0);
+		const withoutDecision = Buffer.from(encoder.encode(record));
+		setNextEncoding(1000, HAS_EXPIRATION_DECISION);
+		const withDecision = Buffer.from(encoder.encode(record));
+		assert.equal(withDecision.length, withoutDecision.length);
+	});
+});
 
 describe('RecordEncoder struct-mode gating', () => {
 	it('non-primary (randomAccessStructure off) writes records mode and bails the struct write hook', () => {

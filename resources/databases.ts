@@ -9,13 +9,14 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
-import { expirationTimestamp, makeTable, ignoreAlreadyDropped } from './Table.ts';
+import { effectiveExpirationTimestamp, makeTable, ignoreAlreadyDropped } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import {
 	CONFIG_PARAMS,
 	LEGACY_DATABASES_DIR_NAME,
 	DATABASES_DIR_NAME,
 	MIGRATING_DIR_SUFFIX,
+	OPERATIONS_ENUM,
 	RESERVED_DATABASE_NAMES,
 } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
@@ -99,23 +100,54 @@ const DEFINED_TABLES = Symbol('defined-tables');
 const DEFAULT_DATABASE_CLOSE_TIMEOUT = 10_000;
 let databaseCloseTimeout = DEFAULT_DATABASE_CLOSE_TIMEOUT;
 const unavailableDatabases = new Set<string>();
+const SCHEMA_QUIESCE_LEASE_MS = 120_000;
+type SchemaQuiesceMessage = {
+	originator?: number;
+	operation: string;
+	schema: string;
+	table?: string;
+	quiesceId: string;
+	leaseUntil?: number;
+	phase?: string;
+};
+type SchemaQuiesceState = {
+	message: SchemaQuiesceMessage;
+	table?: any;
+	tables?: any[];
+	lease?: NodeJS.Timeout;
+	wasLoaded?: boolean;
+	completion?: Promise<void>;
+	abortRequested?: boolean;
+	finalizing?: boolean;
+	committed?: boolean;
+	localOwner?: boolean;
+};
+const schemaQuiescence = new Map<string, SchemaQuiesceState>();
+type SchemaQuiesceOwners = { schema?: string; tables: Map<string, string> };
+const quiescedSchemas = new Map<string, SchemaQuiesceOwners>();
+const MAX_RETIRED_SCHEMA_QUIESCENCES = 1024;
+const retiredSchemaQuiescences = new Set<string>();
 
 export function setDatabaseCloseTimeoutForTests(timeout = DEFAULT_DATABASE_CLOSE_TIMEOUT): void {
 	databaseCloseTimeout = timeout;
 }
 
-async function waitForTableCleanup(completions: Promise<void>[]): Promise<boolean> {
+async function waitForTableCleanup(completions: Promise<void>[]): Promise<PromiseSettledResult<void>[] | false> {
 	let timeout: NodeJS.Timeout | undefined;
 	const timedOut = Symbol('timedOut');
 	const result = await Promise.race([
-		Promise.all(completions),
+		Promise.allSettled(completions),
 		new Promise<typeof timedOut>((resolve) => {
 			timeout = setTimeout(() => resolve(timedOut), databaseCloseTimeout);
 			timeout.unref();
 		}),
 	]);
 	if (timeout) clearTimeout(timeout);
-	return result !== timedOut;
+	return result === timedOut ? false : result;
+}
+
+function cleanupFailures(results: PromiseSettledResult<void>[]): unknown[] {
+	return results.filter((result) => result.status === 'rejected').map((result) => result.reason);
 }
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
@@ -1254,6 +1286,238 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
  */
 const droppingDatabases = new Map<string, Promise<void>>();
 
+function schemaQuiesceTarget(message: SchemaQuiesceMessage): string {
+	return message.operation === OPERATIONS_ENUM.DROP_TABLE
+		? `table:${message.schema}.${message.table}`
+		: `schema:${message.schema}`;
+}
+
+function claimSchemaQuiesce(message: SchemaQuiesceMessage): string | undefined {
+	let owners = quiescedSchemas.get(message.schema);
+	if (!owners) quiescedSchemas.set(message.schema, (owners = { tables: new Map() }));
+	if (message.operation === OPERATIONS_ENUM.DROP_SCHEMA) {
+		if (owners.schema && owners.schema !== message.quiesceId) return `schema:${message.schema} is already quiescing`;
+		for (const owner of owners.tables.values()) {
+			if (owner !== message.quiesceId) return `schema:${message.schema} has a table already quiescing`;
+		}
+		owners.schema = message.quiesceId;
+	} else {
+		if (owners.schema && owners.schema !== message.quiesceId) return `schema:${message.schema} is already quiescing`;
+		const owner = owners.tables.get(message.table!);
+		if (owner && owner !== message.quiesceId) return `table:${message.schema}.${message.table} is already quiescing`;
+		owners.tables.set(message.table!, message.quiesceId);
+	}
+}
+
+function releaseSchemaQuiesce(message: SchemaQuiesceMessage): void {
+	const owners = quiescedSchemas.get(message.schema);
+	if (!owners) return;
+	if (owners.schema === message.quiesceId) owners.schema = undefined;
+	if (message.table && owners.tables.get(message.table) === message.quiesceId) owners.tables.delete(message.table);
+	if (!owners.schema && owners.tables.size === 0) quiescedSchemas.delete(message.schema);
+}
+
+function schemaQuiesceOwner(message: SchemaQuiesceMessage): string | undefined {
+	const owners = quiescedSchemas.get(message.schema);
+	return message.operation === OPERATIONS_ENUM.DROP_SCHEMA ? owners?.schema : owners?.tables.get(message.table!);
+}
+
+function clearSchemaQuiesce(state: SchemaQuiesceState): void {
+	if (state.lease) clearTimeout(state.lease);
+	schemaQuiescence.delete(state.message.quiesceId);
+	releaseSchemaQuiesce(state.message);
+}
+
+function retireSchemaQuiesce(quiesceId: string): void {
+	retiredSchemaQuiescences.add(quiesceId);
+	while (retiredSchemaQuiescences.size > MAX_RETIRED_SCHEMA_QUIESCENCES) {
+		const oldestId = retiredSchemaQuiescences.values().next().value;
+		retiredSchemaQuiescences.delete(oldestId);
+	}
+}
+
+function armSchemaQuiesceLease(state: SchemaQuiesceState): void {
+	if (state.lease) clearTimeout(state.lease);
+	const leaseUntil = Math.max(state.message.leaseUntil ?? 0, Date.now() + SCHEMA_QUIESCE_LEASE_MS);
+	state.lease = setTimeout(() => {
+		if (state.committed) {
+			logger.warn(`Schema quiesce ${state.message.quiesceId} expired after its commit boundary; remaining fail-closed`);
+			armSchemaQuiesceLease(state);
+			return;
+		}
+		reconcileSchemaQuiesce(state).catch((error) => {
+			logger.warn('Could not reconcile expired schema quiesce:', error);
+			if (schemaQuiescence.get(state.message.quiesceId) === state) armSchemaQuiesceLease(state);
+		});
+	}, leaseUntil - Date.now());
+	state.lease.unref();
+}
+
+function resetQuiescedDatabase(databaseName: string): void {
+	delete databases[databaseName];
+	const definedDatabase = definedDatabases?.get(databaseName);
+	if (definedDatabase) (definedDatabase as any).rootStore = undefined;
+	resetDatabases();
+}
+
+async function reconcileSchemaQuiesce(state: SchemaQuiesceState): Promise<void> {
+	state.abortRequested = true;
+	// A peer may already be closing handles or may have removed the target from its registry. Do not
+	// reopen it until that attempt settles. Origin-owned quiescence only drains work and can abort
+	// immediately—the cleanup generation prevents its blocked scan from rearming.
+	if (!state.localOwner) await state.completion?.catch(() => undefined);
+	if (schemaQuiescence.get(state.message.quiesceId) !== state) return;
+	if (state.message.operation === OPERATIONS_ENUM.DROP_TABLE) {
+		const { schema, table } = state.message;
+		const dbTables = databases[schema];
+		if (!state.localOwner) {
+			if (state.table && dbTables && !dbTables[table]) dbTables[table] = state.table;
+			resetDatabases();
+		}
+		if (state.table && (state.localOwner || databases[schema]?.[table] === state.table)) state.table.abortDropQuiesce();
+	} else {
+		if (state.localOwner) {
+			for (const table of state.tables ?? []) table.abortDropQuiesce?.();
+		} else resetQuiescedDatabase(state.message.schema);
+	}
+	clearSchemaQuiesce(state);
+	retireSchemaQuiesce(state.message.quiesceId);
+	if (state.message.operation === OPERATIONS_ENUM.DROP_SCHEMA) unavailableDatabases.delete(state.message.schema);
+}
+
+export async function quiesceSchemaTarget(
+	message: SchemaQuiesceMessage & { originLocal?: boolean }
+): Promise<{ quiesced: boolean; reason?: string }> {
+	if (retiredSchemaQuiescences.has(message.quiesceId))
+		return { quiesced: false, reason: `Schema quiesce ${message.quiesceId} is no longer active` };
+	const target = schemaQuiesceTarget(message);
+	const existingById = schemaQuiescence.get(message.quiesceId);
+	if (existingById && schemaQuiesceTarget(existingById.message) !== target)
+		return { quiesced: false, reason: `Schema quiesce ${message.quiesceId} belongs to another target` };
+	const activeId = schemaQuiesceOwner(message);
+	if (activeId) {
+		if (activeId !== message.quiesceId) return { quiesced: false, reason: `${target} is already quiescing` };
+		const active = schemaQuiescence.get(activeId);
+		if (!active || active.abortRequested || active.finalizing)
+			return { quiesced: false, reason: `${target} quiescence is terminating` };
+		armSchemaQuiesceLease(active);
+		await active.completion;
+		return active.abortRequested ? { quiesced: false, reason: `${target} quiescence was aborted` } : { quiesced: true };
+	}
+	const conflict = claimSchemaQuiesce(message);
+	if (conflict) return { quiesced: false, reason: conflict };
+	const state: SchemaQuiesceState = { message, localOwner: message.originLocal === true };
+	schemaQuiescence.set(message.quiesceId, state);
+	armSchemaQuiesceLease(state);
+	state.completion = (async () => {
+		if (message.operation === OPERATIONS_ENUM.DROP_TABLE) {
+			const dbTables = databases[message.schema];
+			const Table = dbTables?.[message.table];
+			if (!Table) return;
+			state.table = Table;
+			if (!state.localOwner) delete dbTables[message.table];
+			await Table.quiesceForDrop();
+		} else if (message.operation === OPERATIONS_ENUM.DROP_SCHEMA) {
+			state.wasLoaded = Boolean(databases[message.schema]);
+			unavailableDatabases.add(message.schema);
+			if (state.wasLoaded && state.localOwner) {
+				state.tables = Object.values(databases[message.schema]);
+				await Promise.all(state.tables.map((table) => table.quiesceForDrop?.()));
+			} else if (state.wasLoaded) await closeDatabaseOnce(message.schema);
+		} else {
+			throw new Error(`Unsupported schema quiesce operation ${message.operation}`);
+		}
+	})();
+	try {
+		const completion = await waitForTableCleanup([state.completion]);
+		if (!completion) {
+			if (message.operation === OPERATIONS_ENUM.DROP_SCHEMA)
+				throw new Error(
+					`Timed out after ${databaseCloseTimeout}ms waiting for cleanup; refusing to destroy database ${message.schema} while cleanup is active.`
+				);
+			throw new Error(
+				`Timed out after ${databaseCloseTimeout}ms waiting for ${target} to quiesce; the target remains available.`
+			);
+		}
+		const failures = cleanupFailures(completion);
+		if (failures.length) {
+			if (message.operation === OPERATIONS_ENUM.DROP_SCHEMA)
+				throw new AggregateError(failures, `Could not quiesce database ${message.schema} for drop`);
+			throw failures[0];
+		}
+		if (state.abortRequested) return { quiesced: false, reason: `${target} quiescence was aborted` };
+		return { quiesced: true };
+	} catch (error) {
+		try {
+			await reconcileSchemaQuiesce(state);
+		} catch (abortError) {
+			logger.warn('Could not restore schema state after quiesce failure:', abortError);
+		}
+		return { quiesced: false, reason: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+export async function abortSchemaQuiesce(message: Pick<SchemaQuiesceMessage, 'quiesceId'>): Promise<void> {
+	const state = schemaQuiescence.get(message.quiesceId);
+	if (!state) return;
+	if (state.committed) throw new Error(`Schema quiesce ${message.quiesceId} crossed its commit boundary`);
+	await reconcileSchemaQuiesce(state);
+}
+
+export async function commitSchemaQuiesce(
+	message: SchemaQuiesceMessage
+): Promise<{ committed: boolean; reason?: string }> {
+	const state = schemaQuiescence.get(message.quiesceId);
+	if (!state || schemaQuiesceOwner(message) !== message.quiesceId || state.abortRequested || state.finalizing)
+		return { committed: false, reason: `Schema quiesce ${message.quiesceId} is not active` };
+	await state.completion;
+	if (state.abortRequested) return { committed: false, reason: `Schema quiesce ${message.quiesceId} was aborted` };
+	state.committed = true;
+	armSchemaQuiesceLease(state);
+	return { committed: true };
+}
+
+export function renewSchemaQuiesce(message: SchemaQuiesceMessage): { quiesced: boolean; reason?: string } {
+	const state = schemaQuiescence.get(message.quiesceId);
+	if (!state || state.abortRequested || state.finalizing)
+		return { quiesced: false, reason: `Schema quiesce ${message.quiesceId} is not active` };
+	state.message.leaseUntil = message.leaseUntil;
+	armSchemaQuiesceLease(state);
+	return { quiesced: true };
+}
+
+export function finishSchemaQuiesce(message: SchemaQuiesceMessage): boolean {
+	if (retiredSchemaQuiescences.has(message.quiesceId)) return false;
+	const activeId = schemaQuiesceOwner(message);
+	if (activeId === undefined) return message.originator === process.pid;
+	if (activeId !== message.quiesceId) return false;
+	const state = schemaQuiescence.get(message.quiesceId);
+	if (!state || state.abortRequested) return false;
+	if (message.phase === 'finalize-quiesce' && !state.committed) return false;
+	state.finalizing = true;
+	if (state.lease) {
+		clearTimeout(state.lease);
+		state.lease = undefined;
+	}
+	return true;
+}
+
+export function completeSchemaQuiesce(message: SchemaQuiesceMessage): void {
+	const state = schemaQuiescence.get(message.quiesceId);
+	if (state) {
+		clearSchemaQuiesce(state);
+		if (state.message.operation === OPERATIONS_ENUM.DROP_SCHEMA) unavailableDatabases.delete(state.message.schema);
+	}
+	retireSchemaQuiesce(message.quiesceId);
+}
+
+export function failSchemaQuiesceFinalization(message: Pick<SchemaQuiesceMessage, 'quiesceId'>): void {
+	const state = schemaQuiescence.get(message.quiesceId);
+	if (!state) return;
+	state.finalizing = false;
+	armSchemaQuiesceLease(state);
+}
+
 export async function dropDatabase(databaseName): Promise<void> {
 	const activeDrop = droppingDatabases.get(databaseName);
 	if (activeDrop) return activeDrop;
@@ -1267,15 +1531,33 @@ export async function dropDatabase(databaseName): Promise<void> {
 	}
 	if (!rootStore) rootStore = database({ database: databaseName, table: null });
 	unavailableDatabases.add(databaseName);
-	const completion = dropDatabaseOnce(databaseName, dbTables, rootStore).finally(() => {
-		droppingDatabases.delete(databaseName);
-		unavailableDatabases.delete(databaseName);
-	});
+	let quiesceMessage: any;
+	let dropSucceeded = false;
+	const completion = dropDatabaseOnce(databaseName, dbTables, rootStore, (message) => {
+		quiesceMessage = message;
+	})
+		.then(() => {
+			dropSucceeded = true;
+		})
+		.finally(async () => {
+			droppingDatabases.delete(databaseName);
+			if (!quiesceMessage) {
+				for (const tableName in dbTables) dbTables[tableName].abortDropQuiesce?.();
+				unavailableDatabases.delete(databaseName);
+			}
+			if (quiesceMessage) {
+				const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, databaseName);
+				message.quiesceId = quiesceMessage.quiesceId;
+				if (dropSucceeded) await signalling.finalizeSchemaChange(message);
+				else await signalling.reconcileSchemaChange(message);
+				unavailableDatabases.delete(databaseName);
+			}
+		});
 	droppingDatabases.set(databaseName, completion);
 	return completion;
 }
 
-async function dropDatabaseOnce(databaseName, dbTables, rootStore): Promise<void> {
+async function dropDatabaseOnce(databaseName, dbTables, rootStore, onQuiesced: (message: any) => void): Promise<void> {
 	// Hold the per-database restore lock across the entire drop so its file deletion can never
 	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
 	// restore's copy would gut a "successful" restore, and vice versa. Restore takes the same lock
@@ -1291,26 +1573,14 @@ async function dropDatabaseOnce(databaseName, dbTables, rootStore): Promise<void
 		if (restoreLocks.length === 0 && rootStore instanceof RocksDatabase)
 			lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 
-		const cleanupCompletions: Promise<void>[] = [];
-		for (const tableName in dbTables) {
-			try {
-				const completion = dbTables[tableName].cleanup?.();
-				if (typeof completion?.then === 'function') {
-					cleanupCompletions.push(
-						completion.catch((error) =>
-							logger.warn(`Error awaiting cleanup for table ${databaseName}.${tableName}:`, error)
-						)
-					);
-				}
-			} catch (error) {
-				logger.warn(`Error cleaning up table ${databaseName}.${tableName} while dropping database:`, error);
-			}
-		}
-		if (!(await waitForTableCleanup(cleanupCompletions))) {
-			for (const tableName in dbTables) dbTables[tableName].resumeCleanup?.();
-			throw new Error(
-				`Timed out after ${databaseCloseTimeout}ms waiting for cleanup; refusing to destroy database ${databaseName} while cleanup is active.`
+		try {
+			const quiesceMessage = await signalling.quiesceSchemaChange(
+				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, databaseName)
 			);
+			onQuiesced(quiesceMessage);
+			await signalling.commitSchemaChange(quiesceMessage);
+		} catch (error) {
+			throw error;
 		}
 		forgetDatabaseEnvironment(rootStore);
 		for (const tableName in dbTables) {
@@ -1365,10 +1635,19 @@ export function closeDatabase(databaseName: string): Promise<boolean> {
 		return Promise.reject(new Error(`Database ${databaseName} is already closing`));
 	}
 	unavailableDatabases.add(databaseName);
-	const completion = closeDatabaseOnce(databaseName).finally(() => {
-		closingDatabases.delete(databaseName);
-		unavailableDatabases.delete(databaseName);
-	});
+	const completion = closeDatabaseOnce(databaseName)
+		.catch((error) => {
+			try {
+				resetQuiescedDatabase(databaseName);
+			} catch (recoveryError) {
+				throw new AggregateError([error, recoveryError], `Could not close or recover database ${databaseName}`);
+			}
+			throw error;
+		})
+		.finally(() => {
+			closingDatabases.delete(databaseName);
+			unavailableDatabases.delete(databaseName);
+		});
 	closingDatabases.set(databaseName, completion);
 	return completion;
 }
@@ -1380,34 +1659,33 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 	for (const tableName in dbTables) tableEntries.push([tableName, dbTables[tableName]]);
 	const rootStores = new Set<any>();
 	const cleanupCompletions: Promise<void>[] = [];
+	const closeErrors: unknown[] = [];
 	const closeStore = (store: any, description: string) => {
 		try {
 			store?.close?.();
 		} catch (error) {
-			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
+			closeErrors.push(
+				new Error(`Error closing ${description} while closing database ${databaseName}`, { cause: error })
+			);
 		}
 	};
-	for (const [tableName, table] of tableEntries) {
+	for (const [, table] of tableEntries) {
 		if (!table?.primaryStore) continue;
-		try {
-			const completion = table.cleanup?.();
-			if (typeof completion?.then === 'function') {
-				cleanupCompletions.push(
-					completion.catch((error) =>
-						logger.warn(`Error awaiting cleanup for table ${databaseName}.${tableName}:`, error)
-					)
-				);
-			}
-		} catch (error) {
-			logger.warn(`Error cleaning up table ${databaseName}.${tableName} while closing database:`, error);
-		}
+		const completion = table.quiesceForDrop?.() ?? table.cleanup?.();
+		if (typeof completion?.then === 'function') cleanupCompletions.push(completion);
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
 	}
-	if (!(await waitForTableCleanup(cleanupCompletions))) {
-		for (const [, table] of tableEntries) table.resumeCleanup?.();
+	const cleanupResults = await waitForTableCleanup(cleanupCompletions);
+	if (!cleanupResults) {
+		for (const [, table] of tableEntries) table.abortDropQuiesce?.();
 		throw new Error(
 			`Timed out after ${databaseCloseTimeout}ms waiting for cleanup; refusing to close database ${databaseName} while cleanup is active.`
 		);
+	}
+	const failures = cleanupFailures(cleanupResults);
+	if (failures.length) {
+		for (const [, table] of tableEntries) table.abortDropQuiesce?.();
+		throw new AggregateError(failures, `Could not quiesce database ${databaseName} for close`);
 	}
 	for (const [tableName, table] of tableEntries) {
 		if (!table?.primaryStore) continue;
@@ -1426,6 +1704,7 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 		closeStore(rootStore, 'root store');
 		forgetDatabaseEnvironment(rootStore);
 	}
+	if (closeErrors.length) throw new AggregateError(closeErrors, `Could not close database ${databaseName}`);
 	const definedDatabase = definedDatabases?.get(databaseName);
 	if (definedDatabase) (definedDatabase as any).rootStore = undefined;
 	if (databaseName === 'data') {
@@ -2216,7 +2495,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			}
 			let outstanding = 0;
 			// this means that a new attribute has been introduced that needs to be indexed
-			for (const { key, value: record, expiresAt } of Table.primaryStore.getRange({
+			for (const { key, value: record, expiresAt, metadataFlags } of Table.primaryStore.getRange({
 				start,
 				lazy: attributesLength < 4,
 				versions: true,
@@ -2241,9 +2520,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					try {
 						const resolver = attribute.resolve;
 						const value = attribute.expiresAt
-							? expiresAt === undefined
-								? expirationTimestamp(record?.[property])
-								: expirationTimestamp(expiresAt)
+							? effectiveExpirationTimestamp({ expiresAt, metadataFlags }, record, property)
 							: record && (resolver ? resolver(record) : record[property]);
 						if (index.customIndex) {
 							index.customIndex.index(key, value);
