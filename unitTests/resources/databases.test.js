@@ -16,10 +16,17 @@ const {
 	commitSchemaQuiesce,
 	finishSchemaQuiesce,
 	completeSchemaQuiesce,
+	recoverCommittedSchemaQuiesceForTests,
 } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { beginRestore, completeRestore, RESTORE_META_DIR } = require('#src/dataLayer/restoreMarker');
+const {
+	acquireRestoreLock,
+	releaseRestoreLock,
+	beginRestore,
+	completeRestore,
+	RESTORE_META_DIR,
+} = require('#src/dataLayer/restoreMarker');
 
 describe('flushDatabases', () => {
 	before(async function () {
@@ -271,7 +278,7 @@ describe('cross-worker schema quiescence', () => {
 		assert.strictEqual(finishSchemaQuiesce(message), false, 'completed IDs must not re-enter finalization');
 	});
 
-	it('rejects terminal messages for unknown and aborted quiescence IDs', async () => {
+	it('accepts a terminal rescan with no local state while rejecting aborted IDs', async () => {
 		const DB = 'quiesce-stale-id-test';
 		table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
 		const message = {
@@ -285,10 +292,28 @@ describe('cross-worker schema quiescence', () => {
 		await abortSchemaQuiesce(message);
 		assert.strictEqual(finishSchemaQuiesce(message), false);
 		assert.strictEqual(
-			finishSchemaQuiesce({ ...message, quiesceId: 'q-never-quiesced' }),
-			false,
-			'unknown IDs must not authorize a metadata reset'
+			finishSchemaQuiesce({ ...message, quiesceId: 'q-never-quiesced', phase: 'finalize-quiesce' }),
+			true,
+			'a worker that joined after quiescence must accept the authoritative terminal rescan'
 		);
+	});
+
+	it('does not re-register a table while resetDatabases runs during quiescence', async () => {
+		const DB = 'quiesce-reset-registration-test';
+		table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const message = {
+			operation: 'drop_table',
+			schema: DB,
+			table: 'Records',
+			quiesceId: 'q-reset-registration',
+			leaseUntil: Date.now() + 60_000,
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual(getDatabases()[DB]?.Records, undefined);
+		resetDatabases();
+		assert.strictEqual(getDatabases()[DB]?.Records, undefined, 'catalog rescan must not resurrect a quiesced table');
+		await abortSchemaQuiesce(message);
+		assert.ok(getDatabases()[DB]?.Records, 'abort recovery should reload the authoritative live table');
 	});
 
 	it('retains a missing-table quiescence until its terminal message', async () => {
@@ -370,6 +395,57 @@ describe('cross-worker schema quiescence', () => {
 		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
 		assert.strictEqual((await commitSchemaQuiesce(message)).committed, true);
 		await assert.rejects(() => abortSchemaQuiesce(message), /commit boundary/);
+		const terminal = { ...message, phase: 'reconcile-quiesce' };
+		assert.strictEqual(finishSchemaQuiesce(terminal), true);
+		completeSchemaQuiesce(terminal);
+	});
+
+	it('recovers an expired committed quiescence from the durable live catalog', async () => {
+		const DB = 'quiesce-committed-recovery-test';
+		const Original = table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const message = {
+			operation: 'drop_table',
+			schema: DB,
+			table: 'Records',
+			quiesceId: 'q-committed-recovery',
+			originLocal: true,
+			leaseUntil: Date.now() + 60_000,
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual((await commitSchemaQuiesce(message)).committed, true);
+		assert.strictEqual(await recoverCommittedSchemaQuiesceForTests(message.quiesceId), true);
+		const Recovered = getDatabases()[DB]?.Records;
+		assert.ok(Recovered, 'the durable non-tombstoned catalog should be restored');
+		assert.notStrictEqual(Recovered, Original, 'recovery must not republish the quiesced table instance');
+		assert.strictEqual(Recovered.isDropQuiescing(), false);
+		assert.strictEqual(finishSchemaQuiesce({ ...message, phase: 'finalize-quiesce' }), false);
+	});
+
+	it('bounds committed recovery attempts while an active drop lock is still held', async () => {
+		const DB = 'quiesce-committed-recovery-bound-test';
+		const Table = table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const message = {
+			operation: 'drop_table',
+			schema: DB,
+			table: 'Records',
+			quiesceId: 'q-committed-recovery-bound',
+			originLocal: true,
+			leaseUntil: Date.now() + 60_000,
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual((await commitSchemaQuiesce(message)).committed, true);
+		const lock = acquireRestoreLock(Table.primaryStore.rootStore.path);
+		try {
+			for (let attempt = 0; attempt < 3; attempt++)
+				assert.strictEqual(await recoverCommittedSchemaQuiesceForTests(message.quiesceId), false);
+		} finally {
+			releaseRestoreLock(lock);
+		}
+		assert.strictEqual(
+			await recoverCommittedSchemaQuiesceForTests(message.quiesceId),
+			false,
+			'the recovery budget must not restart after it is exhausted'
+		);
 		const terminal = { ...message, phase: 'reconcile-quiesce' };
 		assert.strictEqual(finishSchemaQuiesce(terminal), true);
 		completeSchemaQuiesce(terminal);

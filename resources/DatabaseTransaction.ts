@@ -240,49 +240,46 @@ export type CommitOptions = {
 };
 
 export const TABLE_COMMIT_ADMISSION = Symbol.for('harper.table-commit-admission');
-const ACTIVE_TABLE_COMMIT_ADMISSION = Symbol('active-table-commit-admission');
+export const TABLE_COMMIT_RELEASE = Symbol.for('harper.table-commit-release');
 
-type CommitAdmissionContext = {
-	stores: any[];
-	releases: Array<() => unknown>;
-	transactions: DatabaseTransaction[];
-};
+function hasAdmittedStore(owner: DatabaseTransaction, store: any): boolean {
+	return owner.admittedTableStore === store || owner.additionalAdmittedTableStores?.includes(store) === true;
+}
 
-function admitTransactionStores(transaction: DatabaseTransaction, context: CommitAdmissionContext): void {
+function addAdmittedStore(owner: DatabaseTransaction, store: any): void {
+	if (owner.admittedTableStore === undefined) owner.admittedTableStore = store;
+	else (owner.additionalAdmittedTableStores ??= []).push(store);
+}
+
+function admitTransactionStores(transaction: DatabaseTransaction, owner: DatabaseTransaction): void {
 	for (let link: DatabaseTransaction = transaction; link; link = link.next) {
-		if ((link as any)[ACTIVE_TABLE_COMMIT_ADMISSION] !== context) {
-			(link as any)[ACTIVE_TABLE_COMMIT_ADMISSION] = context;
-			context.transactions.push(link);
-		}
+		link.tableCommitAdmissionOwner = owner;
 		for (const write of link.writes) {
 			const store = write?.store;
-			if (!store || context.stores.includes(store)) continue;
+			if (!store || hasAdmittedStore(owner, store)) continue;
 			const admit = store[TABLE_COMMIT_ADMISSION];
-			if (admit) {
-				context.stores.push(store);
-				context.releases.push(admit());
-			}
+			if (admit && admit() !== false) addAdmittedStore(owner, store);
 		}
 	}
 }
 
-function releaseTransactionStores(context: CommitAdmissionContext): Promise<void> | void {
-	for (const transaction of context.transactions) {
-		if ((transaction as any)[ACTIVE_TABLE_COMMIT_ADMISSION] === context)
-			delete (transaction as any)[ACTIVE_TABLE_COMMIT_ADMISSION];
-	}
+function releaseTransactionStores(owner: DatabaseTransaction): Promise<void> | void {
 	let completions: Promise<unknown>[] | undefined;
-	for (const release of context.releases) {
+	const releaseStore = (store: any) => {
 		try {
-			const completion = release();
+			const completion = store[TABLE_COMMIT_RELEASE]?.();
 			if ((completion as any)?.then) (completions ??= []).push(Promise.resolve(completion));
 		} catch (error) {
 			(completions ??= []).push(Promise.reject(error));
 		}
+	};
+	if (owner.admittedTableStore !== undefined) releaseStore(owner.admittedTableStore);
+	for (const store of owner.additionalAdmittedTableStores ?? []) releaseStore(store);
+	for (let link: DatabaseTransaction = owner; link; link = link.next) {
+		if (link.tableCommitAdmissionOwner === owner) link.tableCommitAdmissionOwner = undefined;
 	}
-	context.stores.length = 0;
-	context.releases.length = 0;
-	context.transactions.length = 0;
+	owner.admittedTableStore = undefined;
+	owner.additionalAdmittedTableStores = undefined;
 	if (completions) return Promise.allSettled(completions).then(() => undefined);
 }
 
@@ -296,23 +293,23 @@ export function withTableCommitAdmission<T>(
 	options: CommitOptions,
 	commit: (options: CommitOptions) => T
 ): T {
-	let context = (transaction as any)[ACTIVE_TABLE_COMMIT_ADMISSION] as CommitAdmissionContext | undefined;
-	if (context) {
-		admitTransactionStores(transaction, context);
+	const activeOwner = transaction.tableCommitAdmissionOwner;
+	if (activeOwner) {
+		admitTransactionStores(transaction, activeOwner);
 		return commit(options);
 	}
-	context = { stores: [], releases: [], transactions: [] };
+	transaction.tableCommitAdmissionOwner = transaction;
 	try {
-		admitTransactionStores(transaction, context);
+		admitTransactionStores(transaction, transaction);
 		const resolution: any = commit(options);
 		if (resolution?.then) {
 			return resolution.then(
 				(value) => {
-					const release = releaseTransactionStores(context);
+					const release = releaseTransactionStores(transaction);
 					return release ? release.then(() => value) : value;
 				},
 				(error) => {
-					const release = releaseTransactionStores(context);
+					const release = releaseTransactionStores(transaction);
 					if (release)
 						return release.then(() => {
 							throw error;
@@ -321,10 +318,10 @@ export function withTableCommitAdmission<T>(
 				}
 			) as T;
 		}
-		const release = releaseTransactionStores(context);
+		const release = releaseTransactionStores(transaction);
 		return (release ? release.then(() => resolution) : resolution) as T;
 	} catch (error) {
-		const release = releaseTransactionStores(context);
+		const release = releaseTransactionStores(transaction);
 		if (release)
 			return release.then(() => {
 				throw error;
@@ -434,6 +431,9 @@ export class DatabaseTransaction implements Transaction {
 	timestamp = 0;
 	retries = 0;
 	declare next: DatabaseTransaction;
+	declare tableCommitAdmissionOwner?: DatabaseTransaction;
+	declare admittedTableStore?: any;
+	declare additionalAdmittedTableStores?: any[];
 	declare stale: boolean;
 	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
 	// consumed by a commit round; iterator references are consumed only by doneReadTxn().

@@ -102,6 +102,23 @@ entry so a missing `HAS_EXPIRATION_EXTENDED_TYPE` bit means an explicit no-expir
 than missing legacy metadata. Records and audit events without the decision bit retain the legacy
 fallback to a public `@expiresAt` field during upgrades.
 
+#### `@expiresAt` migration and mixed-version compatibility
+
+Source-backed tables now treat the source request context as authoritative for cache expiration. A
+source that intends a returned record to expire must set `context.expiresAt`; an `@expiresAt` field in
+the returned record is application data and no longer schedules expiration by itself. Omitting
+`context.expiresAt` records an explicit no-expiration decision, even when the returned record contains
+an `@expiresAt` field. This is a breaking change for source adapters that previously relied on that
+returned field: update them to set `context.expiresAt` before upgrading.
+
+New readers remain compatible with records written before `HAS_EXPIRATION_DECISION`: when the decision
+bit is absent, they fall back to the public `@expiresAt` field. The reverse is not safe during a rolling
+mixed-version deployment. An older worker does not understand an explicit no-expiration decision and
+can reinterpret the public field as an expiration. Do not run mixed versions for source-backed tables
+that return an `@expiresAt` field while intentionally omitting `context.expiresAt`; upgrade those
+workers together, or remove/neutralize the returned field until every worker understands the decision
+bit.
+
 ### Variable-Length Integer Encoding
 
 Integers (Node ID, Table ID, lengths) use a variable-length encoding scheme:

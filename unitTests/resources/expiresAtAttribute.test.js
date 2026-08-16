@@ -10,7 +10,8 @@ const { existsSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
 const { HAS_EXPIRATION_DECISION } = require('#src/resources/auditStore');
-const { TABLE_COMMIT_ADMISSION } = require('#src/resources/DatabaseTransaction');
+const { TABLE_COMMIT_ADMISSION, TABLE_COMMIT_RELEASE } = require('#src/resources/DatabaseTransaction');
+const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { transaction } = require('#src/resources/transaction');
 
 const activeTables = new Set();
@@ -227,7 +228,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const fieldExpiresAt = contextExpiresAt + 3_600_000;
 		Table.sourcedFrom({
 			get(id, context) {
-				context.expiresAt = contextExpiresAt;
+				context.expiresAt = new Date(contextExpiresAt).toISOString();
 				return { id, expiresAt: new Date(fieldExpiresAt).toISOString() };
 			},
 		});
@@ -325,6 +326,27 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.strictEqual(entry.expiresAt, undefined);
 		assert.ok(entry.metadataFlags & HAS_EXPIRATION_DECISION);
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(fieldExpiresAt)], []);
+	});
+
+	it('normalizes publish expiration overrides and updates the expiration index', async function () {
+		const Table = makeTable('ExpiresAtPublishOverride', undefined, { audit: true });
+		const originalExpiresAt = Date.now() + 60_000;
+		const optionExpiresAt = originalExpiresAt + 60_000;
+		const contextExpiresAt = optionExpiresAt + 60_000;
+		await Table.put(1, { id: 1, expiresAt: originalExpiresAt });
+		await Table.publish(1, { message: 'option' }, { expiresAt: new Date(optionExpiresAt).toISOString() });
+		await Table.primaryStore.committed;
+		assert.strictEqual(Table.primaryStore.getEntry(1).expiresAt, optionExpiresAt);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(originalExpiresAt)], []);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(optionExpiresAt)], [1]);
+
+		const context = { expiresAt: new Date(contextExpiresAt) };
+		const resource = new Table(1, context);
+		await transaction(context, () => resource._writePublish(1, { message: 'context' }));
+		await Table.primaryStore.committed;
+		assert.strictEqual(Table.primaryStore.getEntry(1).expiresAt, contextExpiresAt);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(optionExpiresAt)], []);
+		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(contextExpiresAt)], [1]);
 	});
 
 	it('invalidates a frozen replay record without mutating it', async function () {
@@ -908,16 +930,18 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
 		const originalAdmission = Table.primaryStore[TABLE_COMMIT_ADMISSION];
+		const originalRelease = Table.primaryStore[TABLE_COMMIT_RELEASE];
 		let admitted = false;
 		let releaseCommit;
 		const blockedRelease = new Promise((resolve) => (releaseCommit = resolve));
 		Table.primaryStore[TABLE_COMMIT_ADMISSION] = () => {
-			const release = originalAdmission();
+			originalAdmission();
 			admitted = true;
-			return async () => {
-				await blockedRelease;
-				release();
-			};
+			return true;
+		};
+		Table.primaryStore[TABLE_COMMIT_RELEASE] = async () => {
+			await blockedRelease;
+			originalRelease();
 		};
 		try {
 			const put = Table.put(1, { id: 1 });
@@ -931,6 +955,46 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		} finally {
 			releaseCommit();
 			Table.primaryStore[TABLE_COMMIT_ADMISSION] = originalAdmission;
+			Table.primaryStore[TABLE_COMMIT_RELEASE] = originalRelease;
+		}
+	});
+
+	it('joins read-path eviction to drop quiescence and skips eviction after quiescence starts', async function () {
+		const Table = makeTable('ExpiresAtReadEvictionQuiesce');
+		const expiresAt = Date.now() - 1_000;
+		await Table.put(1, { id: 1, expiresAt });
+		await Table.primaryStore.committed;
+		const entry = Table.primaryStore.getEntry(1);
+		const originalAdmission = Table.primaryStore[TABLE_COMMIT_ADMISSION];
+		const originalRelease = Table.primaryStore[TABLE_COMMIT_RELEASE];
+		let admitted = false;
+		let releaseEviction;
+		const blockedRelease = new Promise((resolve) => (releaseEviction = resolve));
+		Table.primaryStore[TABLE_COMMIT_ADMISSION] = (...args) => {
+			const result = originalAdmission(...args);
+			if (result !== false) admitted = true;
+			return result;
+		};
+		Table.primaryStore[TABLE_COMMIT_RELEASE] = async () => {
+			await blockedRelease;
+			originalRelease();
+		};
+		try {
+			const eviction = Table.evict(1, entry.value, entry.version);
+			await waitFor(() => admitted, { message: 'read-path eviction should enter the commit barrier' });
+			let quiesced = false;
+			const quiesce = Table.quiesceForDrop().then(() => (quiesced = true));
+			await delay(10);
+			assert.strictEqual(quiesced, false, 'drop quiescence must wait for an admitted eviction');
+			releaseEviction();
+			await Promise.all([eviction, quiesce]);
+
+			await assert.doesNotReject(Table.evict(1, entry.value, entry.version));
+		} finally {
+			releaseEviction();
+			Table.primaryStore[TABLE_COMMIT_ADMISSION] = originalAdmission;
+			Table.primaryStore[TABLE_COMMIT_RELEASE] = originalRelease;
+			Table.abortDropQuiesce();
 		}
 	});
 
@@ -1132,6 +1196,48 @@ describe('LMDB @expiresAt cleanup draining', function () {
 		assert.strictEqual(entry.expiresAt, undefined);
 		assert.ok(entry.metadataFlags & HAS_EXPIRATION_DECISION);
 		assert.deepStrictEqual([...Table.indices.expiresAt.getValues(fieldExpiresAt)], []);
+	});
+
+	it('settles read-path eviction when admission throws', async function () {
+		const { Table } = captureExpirationSweep('LmdbExpirationAdmissionFailure');
+		const expiresAt = Date.now() - 1_000;
+		await Table.put(1, { id: 1, expiresAt });
+		await Table.primaryStore.committed;
+		const entry = Table.primaryStore.getEntry(1);
+		const originalAdmission = Table.primaryStore[TABLE_COMMIT_ADMISSION];
+		Table.primaryStore[TABLE_COMMIT_ADMISSION] = () => {
+			throw new Error('injected admission failure');
+		};
+		try {
+			await assert.doesNotReject(Table.evict(1, entry.value, entry.version));
+		} finally {
+			Table.primaryStore[TABLE_COMMIT_ADMISSION] = originalAdmission;
+		}
+	});
+
+	it('aborts and settles read-path eviction when LMDB commit throws synchronously', async function () {
+		const { Table } = captureExpirationSweep('LmdbExpirationCommitFailure');
+		const expiresAt = Date.now() - 1_000;
+		await Table.put(1, { id: 1, expiresAt });
+		await Table.primaryStore.committed;
+		const entry = Table.primaryStore.getEntry(1);
+		const originalCommit = LMDBTransaction.prototype.commit;
+		const originalAbort = LMDBTransaction.prototype.abort;
+		let aborted = false;
+		LMDBTransaction.prototype.commit = () => {
+			throw new Error('injected commit failure');
+		};
+		LMDBTransaction.prototype.abort = function () {
+			aborted = true;
+			return originalAbort.call(this);
+		};
+		try {
+			await assert.doesNotReject(Table.evict(1, entry.value, entry.version));
+			assert.strictEqual(aborted, true);
+		} finally {
+			LMDBTransaction.prototype.commit = originalCommit;
+			LMDBTransaction.prototype.abort = originalAbort;
+		}
 	});
 
 	it('evicts ISO expirations and repairs stale keys', async function () {

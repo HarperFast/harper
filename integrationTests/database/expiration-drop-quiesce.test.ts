@@ -1,6 +1,6 @@
 import { after, before, suite, test } from 'node:test';
 import { strictEqual } from 'node:assert';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -22,6 +22,7 @@ async function waitFor(predicate: () => boolean, message: string) {
 
 suite('cross-worker expiration cleanup quiesces destructive DDL', (ctx: ContextWithHarper) => {
 	let client: ReturnType<typeof createApiClient>;
+	let workerIds: number[];
 
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
@@ -48,6 +49,9 @@ suite('cross-worker expiration cleanup quiesces destructive DDL', (ctx: ContextW
 			await delay(250);
 		}
 		strictEqual(ready, true, 'QuiesceControl resource did not become ready');
+		const probe = await postControl({ action: 'probe' });
+		workerIds = probe.body.workerIds;
+		strictEqual(workerIds.length, 2, 'the fixture must expose both HTTP workers for deterministic pinning');
 	});
 
 	after(async () => {
@@ -58,36 +62,53 @@ suite('cross-worker expiration cleanup quiesces destructive DDL', (ctx: ContextW
 		return request(client.restURL).post('/QuiesceControl/').set(client.headers).timeout(120_000).send(body);
 	}
 
+	async function postControlOnWorker(body: Record<string, unknown>, targetThreadId: number) {
+		const response = await postControl({ ...body, targetThreadId });
+		strictEqual(response.body?.threadId, targetThreadId, `control action did not execute on worker ${targetThreadId}`);
+		return response;
+	}
+
 	async function proveDropWaitsForWorker(kind: 'indexed' | 'primary') {
 		const indexed = kind === 'indexed';
 		const database = indexed ? 'quiesce_indexed' : 'quiesce_primary';
 		const table = indexed ? 'IndexedExpiry' : 'PrimaryExpiry';
 		const runId = `${kind}-${Date.now()}`;
+		const [sweepWorkerId, ddlWorkerId] = workerIds;
 		await postControl({ action: 'seed', kind, database, table, id: runId }).then((response) =>
 			strictEqual(response.status, 200)
 		);
-		const started = join(CONTROL_DIRECTORY, `${runId}.started`);
+		const sweepRunId = `${runId}-sweep`;
+		const dropRunId = `${runId}-drop`;
+		const started = join(CONTROL_DIRECTORY, `${sweepRunId}.started`);
 		const release = join(CONTROL_DIRECTORY, `${runId}.release`);
-		const sweep = postControl({ action: 'sweep', kind, database, table, runId });
+		const sweep = postControlOnWorker(
+			{ action: 'sweep', kind, database, table, runId: sweepRunId, releaseRunId: runId },
+			sweepWorkerId
+		);
 		await waitFor(() => existsSync(started), `${kind} sweep did not reach its blocked commit`);
+		strictEqual(JSON.parse(readFileSync(started, 'utf8')).threadId, sweepWorkerId);
 
 		let dropSettled = false;
-		const drop = client
-			.req()
-			.timeout(120_000)
-			.send({ operation: 'drop_table', schema: database, table })
-			.then((response) => {
+		const dropStarted = join(CONTROL_DIRECTORY, `${dropRunId}.started`);
+		const drop = postControlOnWorker({ action: 'drop', database, table, runId: dropRunId }, ddlWorkerId).then(
+			(response) => {
 				dropSettled = true;
 				return response;
-			});
-		const described = await client.req().timeout(10_000).send({ operation: 'describe_table', schema: database, table });
-		strictEqual(described.status, 200, 'the table must remain visible before cross-worker quiescence completes');
-		strictEqual(dropSettled, false, 'physical drop must wait for the blocked cleanup worker');
-
-		writeFileSync(release, 'release');
-		const dropped = await drop;
+			}
+		);
+		let dropped;
+		try {
+			await waitFor(() => existsSync(dropStarted), `${kind} drop did not start on its pinned worker`);
+			strictEqual(JSON.parse(readFileSync(dropStarted, 'utf8')).threadId, ddlWorkerId);
+			strictEqual(sweepWorkerId === ddlWorkerId, false, 'DDL and cleanup must execute on different workers');
+			await delay(100);
+			strictEqual(dropSettled, false, 'physical drop must wait for the blocked cleanup worker');
+		} finally {
+			writeFileSync(release, 'release');
+			[dropped] = await Promise.all([drop, sweep]);
+		}
 		strictEqual(dropped.status, 200);
-		await sweep;
+		strictEqual(dropped.body.threadId, ddlWorkerId);
 	}
 
 	test('drop_table waits for a remote indexed expiration sweep', async () => {

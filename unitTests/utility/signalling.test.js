@@ -157,6 +157,39 @@ describe('Test signalling module', () => {
 		}
 	});
 
+	it('releases the worker-start barrier when terminal acknowledgements are exhausted', async () => {
+		const localSchemaHandler = sandbox.stub().callsFake(async (event) => {
+			if (event.message.phase === 'finalize-quiesce') return { finalized: true };
+			if (event.message.phase === 'release-worker-starts') return { released: true };
+		});
+		const restoreHandlers = signalling.__set__('serverItcHandlers', { schema: localSchemaHandler });
+		send_itc_event_stub.callsFake(async (event) => {
+			if (event.message.phase === 'finalize-quiesce') throw new Error('terminal acknowledgement lost');
+		});
+		try {
+			let terminalError;
+			try {
+				await signalling.finalizeSchemaChange({
+					operation: 'drop_schema',
+					schema: 'unit_test',
+					quiesceId: 'q-terminal-exhausted',
+				});
+			} catch (error) {
+				terminalError = error;
+			}
+			expect(terminalError?.message).to.include('Could not finalized schema quiesce');
+			expect(
+				localSchemaHandler.getCalls().some((call) => call.args[0].message.phase === 'release-worker-starts')
+			).to.equal(true);
+			const terminalAttempts = send_itc_event_stub
+				.getCalls()
+				.filter((call) => call.args[0].message.phase === 'finalize-quiesce');
+			expect(terminalAttempts).to.have.length(3);
+		} finally {
+			restoreHandlers();
+		}
+	});
+
 	it('reconciles and releases the worker barrier after a partial commit failure', async () => {
 		const localSchemaHandler = sandbox.stub().callsFake(async (event) => {
 			if (event.message.phase === 'commit-quiesce') return { committed: true };

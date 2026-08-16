@@ -121,12 +121,16 @@ type SchemaQuiesceState = {
 	finalizing?: boolean;
 	committed?: boolean;
 	localOwner?: boolean;
+	rootPaths?: string[];
+	recoveryAttempts?: number;
 };
 const schemaQuiescence = new Map<string, SchemaQuiesceState>();
 type SchemaQuiesceOwners = { schema?: string; tables: Map<string, string> };
 const quiescedSchemas = new Map<string, SchemaQuiesceOwners>();
 const MAX_RETIRED_SCHEMA_QUIESCENCES = 1024;
 const retiredSchemaQuiescences = new Set<string>();
+const recoveringSchemaQuiescences = new Set<string>();
+const MAX_COMMITTED_QUIESCE_RECOVERY_ATTEMPTS = 3;
 
 export function setDatabaseCloseTimeoutForTests(timeout = DEFAULT_DATABASE_CLOSE_TIMEOUT): void {
 	databaseCloseTimeout = timeout;
@@ -744,6 +748,8 @@ function initStores(
 	auditPath?: string,
 	isLegacy?: boolean
 ) {
+	const schemaOwner = quiescedSchemas.get(databaseName)?.schema;
+	if (schemaOwner && !recoveringSchemaQuiescences.has(schemaOwner)) return rootStore;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const internalDbiInit = createOpenDBIObject(false);
 	let attributesDbi = rootStore.dbisDb;
@@ -810,6 +816,12 @@ function initStores(
 		if (attribute_name == null || value.isPrimaryKey) tableDef.primary = value;
 		if (attribute_name != null) tableDef.attributes.push(value);
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
+	}
+	const tableOwners = quiescedSchemas.get(databaseName)?.tables;
+	if (tableOwners) {
+		for (const [tableName, owner] of tableOwners) {
+			if (!recoveringSchemaQuiescences.has(owner)) tablesToLoad.delete(tableName);
+		}
 	}
 
 	// Complete any drops that were interrupted mid-flight. dropTable persists a
@@ -1341,8 +1353,9 @@ function armSchemaQuiesceLease(state: SchemaQuiesceState): void {
 	const leaseUntil = Math.max(state.message.leaseUntil ?? 0, Date.now() + SCHEMA_QUIESCE_LEASE_MS);
 	state.lease = setTimeout(() => {
 		if (state.committed) {
-			logger.warn(`Schema quiesce ${state.message.quiesceId} expired after its commit boundary; remaining fail-closed`);
-			armSchemaQuiesceLease(state);
+			recoverCommittedSchemaQuiesce(state).catch((error) => {
+				logger.error(`Could not recover committed schema quiesce ${state.message.quiesceId}`, error);
+			});
 			return;
 		}
 		reconcileSchemaQuiesce(state).catch((error) => {
@@ -1351,6 +1364,67 @@ function armSchemaQuiesceLease(state: SchemaQuiesceState): void {
 		});
 	}, leaseUntil - Date.now());
 	state.lease.unref();
+}
+
+async function recoverCommittedSchemaQuiesce(state: SchemaQuiesceState): Promise<boolean> {
+	if (schemaQuiescence.get(state.message.quiesceId) !== state || !state.committed) return false;
+	if ((state.recoveryAttempts ?? 0) >= MAX_COMMITTED_QUIESCE_RECOVERY_ATTEMPTS) return false;
+	state.recoveryAttempts = (state.recoveryAttempts ?? 0) + 1;
+	const locks: RestoreLock[] = [];
+	try {
+		for (const path of state.rootPaths ?? []) locks.push(acquireRestoreLock(path));
+	} catch (error) {
+		for (const lock of locks) releaseRestoreLock(lock);
+		if (state.recoveryAttempts < MAX_COMMITTED_QUIESCE_RECOVERY_ATTEMPTS) {
+			logger.warn(
+				`Committed schema quiesce ${state.message.quiesceId} is still protected by an active drop; recovery attempt ${state.recoveryAttempts} deferred`
+			);
+			armSchemaQuiesceLease(state);
+		} else {
+			logger.error(
+				`Committed schema quiesce ${state.message.quiesceId} could not be recovered after ${state.recoveryAttempts} attempts; target remains fail-closed`,
+				error
+			);
+		}
+		return false;
+	}
+	for (const lock of locks) releaseRestoreLock(lock);
+
+	const { schema, table } = state.message;
+	recoveringSchemaQuiescences.add(state.message.quiesceId);
+	try {
+		if (state.message.operation === OPERATIONS_ENUM.DROP_TABLE) {
+			if (databases[schema] && table) delete databases[schema][table];
+			resetDatabases();
+			const descriptor = table && state.table?.dbisDB?.getSync?.(`${table}/`);
+			if (descriptor?.dropping)
+				throw new Error(`Durable drop tombstone for ${schema}.${table} could not be reconciled`);
+		} else {
+			resetQuiescedDatabase(schema);
+		}
+		clearSchemaQuiesce(state);
+		retireSchemaQuiesce(state.message.quiesceId);
+		if (state.message.operation === OPERATIONS_ENUM.DROP_SCHEMA) unavailableDatabases.delete(schema);
+		logger.warn(
+			`Recovered expired committed schema quiesce ${state.message.quiesceId} from authoritative storage state`
+		);
+		return true;
+	} catch (error) {
+		if (state.recoveryAttempts < MAX_COMMITTED_QUIESCE_RECOVERY_ATTEMPTS) armSchemaQuiesceLease(state);
+		else
+			logger.error(
+				`Committed schema quiesce ${state.message.quiesceId} exhausted authoritative recovery attempts; target remains fail-closed`,
+				error
+			);
+		throw error;
+	} finally {
+		recoveringSchemaQuiescences.delete(state.message.quiesceId);
+	}
+}
+
+export function recoverCommittedSchemaQuiesceForTests(quiesceId: string): Promise<boolean> {
+	const state = schemaQuiescence.get(quiesceId);
+	return state ? recoverCommittedSchemaQuiesce(state) : Promise.resolve(false);
 }
 
 function resetQuiescedDatabase(databaseName: string): void {
@@ -1415,11 +1489,23 @@ export async function quiesceSchemaTarget(
 			const Table = dbTables?.[message.table];
 			if (!Table) return;
 			state.table = Table;
+			if (Table.primaryStore?.rootStore?.path) state.rootPaths = [Table.primaryStore.rootStore.path];
 			if (!state.localOwner) delete dbTables[message.table];
 			await Table.quiesceForDrop();
 		} else if (message.operation === OPERATIONS_ENUM.DROP_SCHEMA) {
 			state.wasLoaded = Boolean(databases[message.schema]);
 			unavailableDatabases.add(message.schema);
+			if (state.wasLoaded) {
+				const definedRootPath = (definedDatabases?.get(message.schema) as any)?.rootStore?.path;
+				state.rootPaths = [
+					...new Set(
+						[
+							definedRootPath,
+							...Object.values(databases[message.schema]).map((table: any) => table?.primaryStore?.rootStore?.path),
+						].filter(Boolean)
+					),
+				];
+			}
 			if (state.wasLoaded && state.localOwner) {
 				state.tables = Object.values(databases[message.schema]);
 				await Promise.all(state.tables.map((table) => table.quiesceForDrop?.()));
@@ -1489,12 +1575,20 @@ export function renewSchemaQuiesce(message: SchemaQuiesceMessage): { quiesced: b
 export function finishSchemaQuiesce(message: SchemaQuiesceMessage): boolean {
 	if (retiredSchemaQuiescences.has(message.quiesceId)) return false;
 	const activeId = schemaQuiesceOwner(message);
-	if (activeId === undefined) return message.originator === process.pid;
+	// A worker started after quiescence (or one that never loaded this target) has no local state,
+	// but must still perform the authoritative terminal rescan. Retired IDs above remain rejected,
+	// preventing an aborted/completed operation from being replayed. `originator` is a worker thread
+	// id stamped by sendItcEvent, not an OS pid, so comparing it with process.pid incorrectly rejected
+	// every legitimate no-state worker.
+	if (activeId === undefined) return true;
 	if (activeId !== message.quiesceId) return false;
 	const state = schemaQuiescence.get(message.quiesceId);
 	if (!state || state.abortRequested) return false;
 	if (message.phase === 'finalize-quiesce' && !state.committed) return false;
 	state.finalizing = true;
+	// The terminal handler is the authoritative rescan for this operation. Let only this owner pass
+	// the catalog fence while it applies durable state; ordinary concurrent schema rescans remain blocked.
+	recoveringSchemaQuiescences.add(message.quiesceId);
 	if (state.lease) {
 		clearTimeout(state.lease);
 		state.lease = undefined;
@@ -1503,6 +1597,7 @@ export function finishSchemaQuiesce(message: SchemaQuiesceMessage): boolean {
 }
 
 export function completeSchemaQuiesce(message: SchemaQuiesceMessage): void {
+	recoveringSchemaQuiescences.delete(message.quiesceId);
 	const state = schemaQuiescence.get(message.quiesceId);
 	if (state) {
 		clearSchemaQuiesce(state);
@@ -1512,6 +1607,7 @@ export function completeSchemaQuiesce(message: SchemaQuiesceMessage): void {
 }
 
 export function failSchemaQuiesceFinalization(message: Pick<SchemaQuiesceMessage, 'quiesceId'>): void {
+	recoveringSchemaQuiescences.delete(message.quiesceId);
 	const state = schemaQuiescence.get(message.quiesceId);
 	if (!state) return;
 	state.finalizing = false;

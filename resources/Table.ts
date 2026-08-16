@@ -37,6 +37,7 @@ import {
 	ImmediateTransaction,
 	priorStagedWrite,
 	TABLE_COMMIT_ADMISSION,
+	TABLE_COMMIT_RELEASE,
 	TRANSACTION_STATE,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -160,6 +161,12 @@ export function expirationTimestamp(value: any): number | undefined {
 		timestamp = Number.isFinite(numeric) ? numeric : Date.parse(value);
 	}
 	return Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : undefined;
+}
+
+function expirationOverrideTimestamp(value: any): number | undefined {
+	const timestamp = expirationTimestamp(value);
+	if (timestamp !== undefined) return timestamp;
+	if ((typeof value === 'number' || typeof value === 'bigint') && Number(value) < 0) return -1;
 }
 
 export function effectiveExpirationTimestamp(
@@ -462,20 +469,21 @@ export function makeTable(options) {
 	let cleanupClosed = false;
 	let cleanupWasScheduled = false;
 	let dropQuiescing = false;
-	(primaryStore as any)[TABLE_COMMIT_ADMISSION] = () => {
-		assertTableWritable();
+	(primaryStore as any)[TABLE_COMMIT_ADMISSION] = (skipIfQuiescing = false) => {
+		if (dropQuiescing || droppingTable) {
+			if (skipIfQuiescing) return false;
+			assertTableWritable();
+		}
 		pendingTableCommitCount++;
-		let released = false;
-		return () => {
-			if (released) return;
-			released = true;
-			if (--pendingTableCommitCount === 0 && resolvePendingTableCommits) {
-				const resolve = resolvePendingTableCommits;
-				pendingTableCommitWaiter = undefined;
-				resolvePendingTableCommits = undefined;
-				resolve();
-			}
-		};
+		return true;
+	};
+	(primaryStore as any)[TABLE_COMMIT_RELEASE] = () => {
+		if (--pendingTableCommitCount === 0 && resolvePendingTableCommits) {
+			const resolve = resolvePendingTableCommits;
+			pendingTableCommitWaiter = undefined;
+			resolvePendingTableCommits = undefined;
+			resolve();
+		}
 	};
 	function waitForPendingTableCommits(): Promise<void> | undefined {
 		if (pendingTableCommitCount === 0) return;
@@ -738,7 +746,7 @@ export function makeTable(options) {
 						nodeId: event.nodeId,
 						viaNodeId: event.viaNodeId,
 						// use per-event expiresAt: batched txn context only holds the first event's expiration
-						expiresAt: event.expiresAt,
+						expiresAt: expirationOverrideTimestamp(event.expiresAt),
 						expirationDecisionPresent: event.expirationDecisionPresent,
 						// bulk base-copy snapshot frame: apply current-state directly, without an audit/transaction-log
 						// entry or out-of-order resequencing (harper-pro#480). Only set for copy frames (between
@@ -1954,6 +1962,7 @@ export function makeTable(options) {
 				entry: this.#entry,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					assertTableWritable();
+					const optionExpiresAt = expirationOverrideTimestamp(options?.expiresAt);
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
 						write.skipped = true;
@@ -1980,9 +1989,9 @@ export function makeTable(options) {
 							user: (context as any)?.user,
 							residencyId: options?.residencyId,
 							expiresAt:
-								options?.expirationDecisionPresent === true || options?.expiresAt !== undefined
-									? options.expiresAt
-									: existingEntry?.expiresAt,
+								options?.expirationDecisionPresent === true
+									? (optionExpiresAt ?? -1)
+									: (optionExpiresAt ?? existingEntry?.expiresAt),
 							expirationDecisionPresent:
 								options?.expirationDecisionPresent === true ||
 								Boolean(existingEntry?.metadataFlags & HAS_EXPIRATION_DECISION),
@@ -2044,7 +2053,10 @@ export function makeTable(options) {
 							residencyId: options.residencyId,
 							nodeId: options.nodeId,
 							viaNodeId: options?.viaNodeId,
-							expiresAt: options.expiresAt,
+							expiresAt:
+								options.expirationDecisionPresent === true
+									? (expirationOverrideTimestamp(options.expiresAt) ?? -1)
+									: expirationOverrideTimestamp(options.expiresAt),
 							expirationDecisionPresent: options.expirationDecisionPresent,
 							transaction,
 						},
@@ -2084,7 +2096,10 @@ export function makeTable(options) {
 				true,
 				{
 					residencyId,
-					expiresAt: entry.expiresAt,
+					expiresAt:
+						entry.expirationDecisionPresent === true || Boolean(entry.metadataFlags & HAS_EXPIRATION_DECISION)
+							? (expirationOverrideTimestamp(entry.expiresAt) ?? -1)
+							: expirationOverrideTimestamp(entry.expiresAt),
 					expirationDecisionPresent:
 						entry.expirationDecisionPresent === true || Boolean(entry.metadataFlags & HAS_EXPIRATION_DECISION),
 					transaction: txnForContext(context).transaction,
@@ -2099,34 +2114,52 @@ export function makeTable(options) {
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 		 */
 		static evict(id, existingRecord, existingVersion, encounteredExpirationIndexValue?: number) {
+			let admitted: unknown;
+			try {
+				admitted = (primaryStore as any)[TABLE_COMMIT_ADMISSION]?.(true);
+			} catch (error) {
+				logger.warn?.('Error admitting record eviction', id, error);
+				return Promise.resolve();
+			}
+			if (admitted === false) return Promise.resolve();
 			let entry;
 			let deleteBlobsAfterCommit: (() => void) | undefined;
 			let currentEntry;
-			const lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
-			let transaction = lmdbTransaction.getReadTxn();
-			let options = { transaction };
-			let committed = false;
+			let lmdbTransaction: any;
+			let transaction: any;
+			let options: any;
+			let completionOwnsAdmission = false;
+			let lmdbCompletion: MaybePromise<unknown>;
+			const releaseAdmission = () => (primaryStore as any)[TABLE_COMMIT_RELEASE]?.();
+			const abortEviction = () => {
+				try {
+					if (primaryStore.ifVersion) lmdbTransaction?.abort?.();
+					else transaction?.abort?.();
+				} catch {}
+			};
 			try {
+				lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
+				transaction = lmdbTransaction.getReadTxn();
+				options = { transaction };
 				// A raw Rocks read transaction can reuse an older snapshot. Reject an already-refreshed
 				// record before consulting it; commit-time conflict detection guards later races.
 				if (!primaryStore.ifVersion) {
 					currentEntry = primaryStore.getEntry(id, { lazy: true });
-					if (!currentEntry || currentEntry.version !== existingVersion) return;
+					if (!currentEntry || currentEntry.version !== existingVersion) return Promise.resolve();
 				}
 				if (hasSourceGet || audit) {
-					if (!existingRecord) return;
+					if (!existingRecord) return Promise.resolve();
 					entry = primaryStore.getEntry(id, options);
-					if (!entry || !existingRecord) return;
-					if (entry.version !== existingVersion) return;
+					if (!entry || !existingRecord) return Promise.resolve();
+					if (entry.version !== existingVersion) return Promise.resolve();
 				}
 				if (hasSourceGet) {
 					// if there is a resolution in-progress, abandon the eviction
-					if (primaryStore.hasLock(id, entry.version)) return;
+					if (primaryStore.hasLock(id, entry.version)) return Promise.resolve();
 				}
 				// evictions never go in the audit log, so we can not record a deletion entry for the eviction
 				// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
 				// removed the entry entirely, but first cleanup indices
-				let lmdbCompletion: MaybePromise<unknown>;
 				if (primaryStore.ifVersion) {
 					// LMDB batches every write in this callback behind one version check, so the indices and
 					// primary record can not diverge on a conflict or partial commit.
@@ -2146,7 +2179,7 @@ export function makeTable(options) {
 					lmdbCompletion = Promise.all([lmdbCompletion, removal, encounteredIndexRemoval]);
 				} else {
 					const removalEntry = entry ?? currentEntry ?? primaryStore.getEntry(id);
-					if (!removalEntry || removalEntry.version !== existingVersion) return;
+					if (!removalEntry || removalEntry.version !== existingVersion) return Promise.resolve();
 					const currentExpiration = effectiveExpirationIndexValue(removalEntry, existingRecord);
 					updateIndices(id, existingRecord, null, options, undefined, currentExpiration);
 					if (
@@ -2155,14 +2188,13 @@ export function makeTable(options) {
 					)
 						indices[expiresAtIndexName]?.remove(encounteredExpirationIndexValue, id, options);
 					if (removalEntry.metadataFlags & HAS_BLOBS) {
-						if (!existingRecord) return;
+						if (!existingRecord) return Promise.resolve();
 						primaryStore.remove(removalEntry.key, options);
 						deleteBlobsAfterCommit = prepareBlobDeletion(existingRecord);
 					} else {
 						removeEntry(primaryStore, removalEntry, options);
 					}
 				}
-				committed = true;
 				// Eviction is best-effort cleanup, run fire-and-forget from the record-expiration sweep and the
 				// read path as well as the concurrency-limited cleanup scan. A concurrent write to the same record
 				// makes the commit conflict — that is expected, not a failure: lazy-expiry-on-read keeps queries
@@ -2175,41 +2207,49 @@ export function makeTable(options) {
 					// a plain resolution object rather than a promise — return the store's write promises instead, so
 					// the caller gets a real thenable that resolves once the removal is durable.
 					(lmdbTransaction as any).commit();
-					return Promise.resolve(lmdbCompletion).catch((error) => {
-						logger.warn?.('Error evicting record', id, error);
-					});
+					completionOwnsAdmission = true;
+					return Promise.resolve(lmdbCompletion)
+						.catch((error) => logger.warn?.('Error evicting record', id, error))
+						.finally(releaseAdmission);
 				}
 				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly,
 				// as DatabaseTransaction.commit() would abort it (no tracked writes). The raw commit bypasses
 				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
 				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
-				return (transaction as any).commit().then(
-					() => {
-						try {
-							deleteBlobsAfterCommit?.();
-						} catch (error) {
-							logger.warn?.('Error deleting blobs for evicted record', id, error);
+				const commitCompletion = (transaction as any).commit();
+				completionOwnsAdmission = true;
+				return Promise.resolve(commitCompletion)
+					.then(
+						() => {
+							try {
+								deleteBlobsAfterCommit?.();
+							} catch (error) {
+								logger.warn?.('Error deleting blobs for evicted record', id, error);
+							}
+						},
+						(error) => {
+							abortEviction();
+							if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
+							else logger.warn?.('Error evicting record', id, error);
 						}
-					},
-					(error) => {
-						// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
-						// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
-						try {
-							(transaction as any).abort();
-						} catch {}
-						if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
-						else logger.warn?.('Error evicting record', id, error);
-					}
-				);
+					)
+					.finally(releaseAdmission);
+			} catch (error) {
+				abortEviction();
+				logger.warn?.('Error evicting record', id, error);
+				if (lmdbCompletion) {
+					completionOwnsAdmission = true;
+					return Promise.resolve(lmdbCompletion)
+						.catch((completionError) => logger.warn?.('Error evicting record', id, completionError))
+						.finally(releaseAdmission);
+				}
+				return Promise.resolve();
 			} finally {
-				if (!committed) {
+				if (!completionOwnsAdmission) {
 					// Skip path or thrown error: abort instead of committing so we don't apply
 					// partial work and the txn handle is released.
-					if (primaryStore.ifVersion) {
-						(lmdbTransaction as any).abort?.();
-					} else {
-						(transaction as any)?.abort?.();
-					}
+					abortEviction();
+					releaseAdmission();
 				}
 			}
 		}
@@ -2531,7 +2571,10 @@ export function makeTable(options) {
 					// options/context expiresAt are the most specific overrides; a record @expiresAt field
 					// (resolved below, once recordToStore is merged) overrides the table default in both
 					// directions; the table default is the final fallback. -1 means no expiration.
-					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
+					let expiresAt: number | undefined =
+						options?.expirationDecisionPresent === true
+							? expirationOverrideTimestamp(options?.expiresAt)
+							: (expirationOverrideTimestamp(options?.expiresAt) ?? expirationOverrideTimestamp(context?.expiresAt));
 					let expirationDecisionPresent = Boolean(
 						expiresAtProperty && (options?.expirationDecisionPresent === true || expiresAt !== undefined)
 					);
@@ -4637,12 +4680,36 @@ export function makeTable(options) {
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					assertTableWritable();
+					const optionExpiresAt = expirationOverrideTimestamp(options?.expiresAt);
+					const contextExpiresAt = expirationOverrideTimestamp((context as any)?.expiresAt);
+					const hasExpirationOverride =
+						options?.expirationDecisionPresent === true ||
+						optionExpiresAt !== undefined ||
+						contextExpiresAt !== undefined;
+					const expiresAt =
+						options?.expirationDecisionPresent === true
+							? (optionExpiresAt ?? -1)
+							: (optionExpiresAt ?? contextExpiresAt ?? existingEntry?.expiresAt);
+					const expirationDecisionPresent =
+						options?.expirationDecisionPresent === true ||
+						Boolean(existingEntry?.metadataFlags & HAS_EXPIRATION_DECISION) ||
+						Boolean(expiresAtProperty && hasExpirationOverride);
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to use getBinaryFast here and not have the record loaded
 
 					if (existingEntry === undefined && trackDeletes && !audit) {
 						scheduleCleanup();
+					}
+					if (expiresAtProperty && hasExpirationOverride && existingEntry) {
+						updateIndices(
+							id,
+							existingEntry.value,
+							existingEntry.value,
+							{ transaction },
+							expiresAt,
+							effectiveExpirationIndexValue(existingEntry)
+						);
 					}
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					// always audit this, but don't change existing version
@@ -4657,8 +4724,8 @@ export function makeTable(options) {
 						{
 							user: (context as any)?.user,
 							residencyId: options?.residencyId,
-							expiresAt: existingEntry?.expiresAt,
-							expirationDecisionPresent: Boolean(existingEntry?.metadataFlags & HAS_EXPIRATION_DECISION),
+							expiresAt,
+							expirationDecisionPresent,
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
@@ -6079,6 +6146,7 @@ export function makeTable(options) {
 				let hasChanges, invalidated;
 				try {
 					updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
+					sourceContext.expiresAt = expirationOverrideTimestamp(sourceContext.expiresAt);
 					invalidated = metadataFlags & INVALIDATED;
 					let version = sourceContext.lastModified || (invalidated && existingVersion);
 					hasChanges = invalidated || version > existingVersion || !existingRecord;
@@ -6138,16 +6206,18 @@ export function makeTable(options) {
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
 						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
-						if (
-							!missingSourceExpirationReported &&
+						const ignoredSourceExpiration =
 							sourceContext.expiresAt === undefined &&
 							expiresAtProperty &&
-							expirationTimestamp(updatedRecord[expiresAtProperty.name]) !== undefined
-						) {
-							missingSourceExpirationReported = true;
-							logger.warn?.(
-								`Source for table "${tableName}" returned an @expiresAt field without setting context.expiresAt; the field does not set cache expiration.`
-							);
+							expirationTimestamp(updatedRecord[expiresAtProperty.name]) !== undefined;
+						if (ignoredSourceExpiration) {
+							recordActionBinary(true, 'cache-source-expiration-ignored', tableName);
+							if (!missingSourceExpirationReported) {
+								missingSourceExpirationReported = true;
+								logger.warn?.(
+									`Source for table "${tableName}" returned an @expiresAt field without setting context.expiresAt; the field does not set cache expiration.`
+								);
+							}
 						}
 					}
 					if (expirationMs && sourceContext.expiresAt == undefined) sourceContext.expiresAt = Date.now() + expirationMs;

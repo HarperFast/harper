@@ -169,7 +169,6 @@ export async function commitSchemaChange(message: any) {
 }
 
 async function completeSchemaChange(message: any, phase: string, resultProperty: string) {
-	let completed = false;
 	try {
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
 		const finalMessage = { ...message, phase };
@@ -186,7 +185,6 @@ async function completeSchemaChange(message: any, phase: string, resultProperty:
 					acceptResult: (result) => result?.[resultProperty] === true,
 					includeJobWorkers: true,
 				});
-				completed = true;
 				return;
 			} catch (error) {
 				lastError = error;
@@ -197,7 +195,7 @@ async function completeSchemaChange(message: any, phase: string, resultProperty:
 		});
 	} finally {
 		stopSchemaQuiesceRenewal(message.quiesceId);
-		if (completed) await releaseSchemaWorkerBarrier(message);
+		await releaseSchemaWorkerBarrier(message);
 	}
 }
 

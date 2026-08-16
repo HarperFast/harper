@@ -8,6 +8,7 @@ const { transaction } = require('#src/resources/transaction');
 const {
 	DatabaseTransaction,
 	TABLE_COMMIT_ADMISSION,
+	TABLE_COMMIT_RELEASE,
 	withTableCommitAdmission,
 } = require('#src/resources/DatabaseTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
@@ -22,7 +23,10 @@ describe('Table commit admission', () => {
 		const store = (name) => ({
 			[TABLE_COMMIT_ADMISSION]() {
 				events.push(`admit:${name}`);
-				return () => events.push(`release:${name}`);
+				return true;
+			},
+			[TABLE_COMMIT_RELEASE]() {
+				events.push(`release:${name}`);
 			},
 		});
 		const storeA = store('a');
@@ -104,6 +108,29 @@ describe('Transactions', () => {
 		let answer = await TxnTest.get(42);
 		assert.equal(answer.name, 'the answer');
 		assert.equal(answer.computed, 'the answer computed');
+	});
+	it('aborts and releases the context when final commit admission is refused', async function () {
+		const context = {};
+		const id = 43;
+		const originalAdmission = TxnTest.primaryStore[TABLE_COMMIT_ADMISSION];
+		TxnTest.primaryStore[TABLE_COMMIT_ADMISSION] = () => {
+			const error = new Error('table is quiescing');
+			error.statusCode = 503;
+			throw error;
+		};
+		try {
+			assert.throws(
+				() =>
+					transaction(context, () => {
+						TxnTest.put(id, { name: 'must not commit' }, context);
+					}),
+				(error) => error?.statusCode === 503
+			);
+			assert.strictEqual(context.transaction, null);
+			assert.strictEqual(TxnTest.primaryStore.getEntry(id), undefined);
+		} finally {
+			TxnTest.primaryStore[TABLE_COMMIT_ADMISSION] = originalAdmission;
+		}
 	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
