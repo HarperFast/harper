@@ -1678,8 +1678,13 @@ export async function dropDatabase(databaseName): Promise<void> {
 						if (!schemaQuiescence.has(quiesceMessage.quiesceId)) unavailableDatabases.delete(databaseName);
 					}
 				} else {
-					await signalling.reconcileSchemaChange(message);
-					unavailableDatabases.delete(databaseName);
+					try {
+						await signalling.reconcileSchemaChange(message);
+					} finally {
+						// Reconciliation applies locally before waiting for peer acknowledgements. Once
+						// local state is resolved, a remote timeout must not keep intact storage fenced.
+						if (!schemaQuiescence.has(quiesceMessage.quiesceId)) unavailableDatabases.delete(databaseName);
+					}
 				}
 			}
 		});

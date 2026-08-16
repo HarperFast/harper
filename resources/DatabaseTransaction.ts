@@ -308,6 +308,7 @@ export function withTableCommitAdmission<T>(
 ): T {
 	const activeOwner = transaction.tableCommitAdmissionOwner;
 	if (activeOwner) {
+		// Retry and recursive commit rounds remain owned by the original head until its promise settles.
 		admitTransactionStores(transaction, activeOwner);
 		return commit(options);
 	}

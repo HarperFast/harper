@@ -516,6 +516,32 @@ describe('cross-worker schema quiescence', () => {
 		}
 	});
 
+	it('clears the origin unavailable fence when failed-drop reconciliation only loses remote acknowledgement', async function () {
+		this.timeout(30000);
+		const DB = 'drop-reconcile-broadcast-failure-test';
+		const Table = table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const originalDestroy = rootStore.destroy;
+		const originalReconcile = signalling.reconcileSchemaChange;
+		rootStore.destroy = () => {
+			throw new Error('injected destroy failure');
+		};
+		signalling.reconcileSchemaChange = async (message) => {
+			await originalReconcile(message);
+			throw new Error('injected remote reconciliation acknowledgement failure');
+		};
+		try {
+			await assert.rejects(dropDatabase(DB), /injected remote reconciliation acknowledgement failure/);
+			assert.doesNotThrow(() => database({ database: DB, table: null }));
+			assert.ok(getDatabases()[DB]?.Records, 'locally reconciled intact storage must be available');
+		} finally {
+			rootStore.destroy = originalDestroy;
+			signalling.reconcileSchemaChange = originalReconcile;
+			await dropDatabase(DB);
+		}
+	});
+
 	it('bounds committed recovery attempts while an active drop lock is still held', async () => {
 		const DB = 'quiesce-committed-recovery-bound-test';
 		const Table = table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
