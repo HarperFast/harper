@@ -439,6 +439,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Table.primaryStore.committed;
 		const staleEntry = Table.primaryStore.getEntry(2);
 		await Table.patch(2, { refreshed: true });
+		assert.strictEqual(Table.primaryStore.ifVersion, undefined, 'premise: this regression must exercise RocksDB');
 		await Table.evict(2, staleEntry.value, staleEntry.version);
 		assert.strictEqual(
 			trackedTransactionCountForTests(),
