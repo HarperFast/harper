@@ -13,7 +13,7 @@ const { HAS_EXPIRATION_DECISION } = require('#src/resources/auditStore');
 const {
 	TABLE_COMMIT_ADMISSION,
 	TABLE_COMMIT_RELEASE,
-	setTxnExpiration,
+	trackedTransactionCountForTests,
 } = require('#src/resources/DatabaseTransaction');
 const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { transaction } = require('#src/resources/transaction');
@@ -429,12 +429,22 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const Table = makeTable('ExpiresAtReadHide'); // no table-level expiration
 		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000 });
 		await Table.primaryStore.committed;
-		const trackedTransactions = setTxnExpiration(30_000);
-		const trackedBeforeRead = trackedTransactions.size;
+		const trackedBeforeRead = trackedTransactionCountForTests();
 		assert.strictEqual(await Table.get(1), null);
-		await waitFor(() => trackedTransactions.size === trackedBeforeRead, {
+		await waitFor(() => trackedTransactionCountForTests() === trackedBeforeRead, {
 			message: 'read-path eviction should release its internal Rocks transaction',
 		});
+
+		await Table.put(2, { id: 2, expiresAt: Date.now() + 60_000 });
+		await Table.primaryStore.committed;
+		const staleEntry = Table.primaryStore.getEntry(2);
+		await Table.patch(2, { refreshed: true });
+		await Table.evict(2, staleEntry.value, staleEntry.version);
+		assert.strictEqual(
+			trackedTransactionCountForTests(),
+			trackedBeforeRead,
+			'a version-mismatched eviction should release its internal Rocks transaction'
+		);
 	});
 
 	it('enumerates exact Rocks index values for the expiration sweep', async function () {

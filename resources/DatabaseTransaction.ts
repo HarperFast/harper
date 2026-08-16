@@ -555,13 +555,18 @@ export class DatabaseTransaction implements Transaction {
 	 * abort (an in-flight replay commit owns them), only the snapshot's lifetime is enforced.
 	 */
 	releaseReadTxn(): void {
-		trackedTxns.delete(this);
-		this.readTxnsUsed = 0; // doneReadTxn() no-ops for the remaining iterators (guarded on this.transaction)
 		try {
 			this.transaction?.abort();
 		} catch (error) {
 			harperLogger.debug?.('releasing timed-out read transaction', error);
 		}
+		this.detachReadTxn();
+	}
+
+	/** Release wrapper bookkeeping after its native transaction was committed directly. */
+	detachReadTxn(): void {
+		trackedTxns.delete(this);
+		this.readTxnsUsed = 0; // doneReadTxn() no-ops for the remaining iterators (guarded on this.transaction)
 		this.transaction = null;
 		this.completeDeferredContextRelease();
 	}
@@ -1365,6 +1370,10 @@ startMonitoringTxns();
  */
 export function resetReplayedWritesWarning() {
 	replayedWritesWarned = false;
+}
+
+export function trackedTransactionCountForTests(): number {
+	return trackedTxns.size;
 }
 
 export function setTxnExpiration(ms) {

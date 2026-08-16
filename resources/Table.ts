@@ -2134,9 +2134,8 @@ export function makeTable(options) {
 			const abortEviction = () => {
 				try {
 					if (primaryStore.ifVersion) lmdbTransaction?.abort?.();
-					else transaction?.abort?.();
+					else lmdbTransaction?.releaseReadTxn?.();
 				} catch {}
-				if (!primaryStore.ifVersion) lmdbTransaction?.releaseReadTxn?.();
 			};
 			try {
 				lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
@@ -2235,7 +2234,7 @@ export function makeTable(options) {
 						}
 					)
 					.finally(() => {
-						lmdbTransaction.releaseReadTxn();
+						lmdbTransaction.detachReadTxn();
 						releaseAdmission();
 					});
 			} catch (error) {
