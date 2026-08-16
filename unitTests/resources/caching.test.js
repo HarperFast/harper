@@ -516,30 +516,46 @@ describe('Caching', () => {
 			sourceRequests = 0;
 			events = [];
 			IndexedCachingTable.setTTLExpiration({ expiration: 50, eviction: 100 });
-			sourceExpiresAt = Date.now() + 1;
+			const firstExpiresAt = (sourceExpiresAt = Date.now() + 1);
 			let result = await IndexedCachingTable.get(23);
 			assert.equal(result.id, 23);
-			await IndexedCachingTable.primaryStore.committed;
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
+				message: 'initial source fill should finish committing',
+			});
 			events = [];
 			assert.equal(result.name, 'name ' + 23);
 			assert.equal(sourceRequests, 1);
-			await waitFor(() => IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt < Date.now());
+			await waitFor(
+				() =>
+					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === firstExpiresAt && firstExpiresAt < Date.now(),
+				{
+					message: 'initial source fill should expire',
+				}
+			);
 			sourceExpiresAt = Date.now() + 1000;
 			let results = [];
 			for await (let record of IndexedCachingTable.search({ conditions: [{ attribute: 'name', value: 'name 23' }] })) {
 				results.push(record);
 			}
 			assert.equal(results.length, 1);
-			await waitFor(() => sourceRequests === 2);
+			await waitFor(() => sourceRequests >= 2, { message: 'indexed query should revalidate the expired entry' });
 			assert.equal(sourceRequests, 2);
 			result = await IndexedCachingTable.get(23);
 			assert.equal(result.id, 23);
 			await IndexedCachingTable.invalidate(23);
-			sourceExpiresAt = Date.now() + 1;
+			const secondExpiresAt = (sourceExpiresAt = Date.now() + 1);
 			await IndexedCachingTable.get(23);
-			await IndexedCachingTable.primaryStore.committed;
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
+				message: 'second source fill should finish committing',
+			});
 			sourceRequests = 0;
-			await waitFor(() => IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt < Date.now());
+			await waitFor(
+				() =>
+					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === secondExpiresAt && secondExpiresAt < Date.now(),
+				{
+					message: 'second source fill should expire',
+				}
+			);
 			sourceExpiresAt = Date.now() + 1000;
 			result = await IndexedCachingTable.get(23);
 			assert.equal(result.id, 23);
@@ -547,13 +563,26 @@ describe('Caching', () => {
 			assert.equal(sourceRequests, 1);
 			assert.equal(events.length, 0);
 			assert(result.getExpiresAt());
-			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23));
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
+				message: 'source revalidation lock should be released',
+			});
 			const entry = IndexedCachingTable.primaryStore.getEntry(23);
+			assert(entry, 'source revalidation should leave a cache entry to evict');
 			await IndexedCachingTable.evict(23, entry.value, entry.version);
 			// evict should completely eliminate the record
-			await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined);
+			await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined, {
+				message: 'eviction should remove the primary record',
+			});
+			results = [];
+			for await (const record of IndexedCachingTable.search({
+				conditions: [{ attribute: 'name', value: 'name 23' }],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 0);
 		} finally {
 			sourceExpiresAt = undefined;
+			IndexedCachingTable.setTTLExpiration(0.005);
 		}
 	});
 
