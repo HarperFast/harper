@@ -2136,6 +2136,7 @@ export function makeTable(options) {
 					if (primaryStore.ifVersion) lmdbTransaction?.abort?.();
 					else transaction?.abort?.();
 				} catch {}
+				if (!primaryStore.ifVersion) lmdbTransaction?.releaseReadTxn?.();
 			};
 			try {
 				lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
@@ -2233,7 +2234,10 @@ export function makeTable(options) {
 							else logger.warn?.('Error evicting record', id, error);
 						}
 					)
-					.finally(releaseAdmission);
+					.finally(() => {
+						lmdbTransaction.releaseReadTxn();
+						releaseAdmission();
+					});
 			} catch (error) {
 				abortEviction();
 				logger.warn?.('Error evicting record', id, error);

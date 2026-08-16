@@ -1118,7 +1118,12 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 	abort(): void {
-		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		// A failed final commit has already closed this wrapper and may have replayed its writes on a
+		// separate native transaction while iterators retain the original read handle. Clean up the
+		// failed writes below, but leave that read handle to the iterators that still own it.
+		if (this.open !== TRANSACTION_STATE.CLOSED) {
+			while (this.readTxnsUsed > 0) this.doneReadTxn();
+		}
 		this.open = TRANSACTION_STATE.CLOSED;
 		for (const write of this.writes) {
 			if (write?.savedBlobs)

@@ -10,7 +10,11 @@ const { existsSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
 const { HAS_EXPIRATION_DECISION } = require('#src/resources/auditStore');
-const { TABLE_COMMIT_ADMISSION, TABLE_COMMIT_RELEASE } = require('#src/resources/DatabaseTransaction');
+const {
+	TABLE_COMMIT_ADMISSION,
+	TABLE_COMMIT_RELEASE,
+	setTxnExpiration,
+} = require('#src/resources/DatabaseTransaction');
 const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { transaction } = require('#src/resources/transaction');
 
@@ -425,7 +429,12 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const Table = makeTable('ExpiresAtReadHide'); // no table-level expiration
 		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000 });
 		await Table.primaryStore.committed;
+		const trackedTransactions = setTxnExpiration(30_000);
+		const trackedBeforeRead = trackedTransactions.size;
 		assert.strictEqual(await Table.get(1), null);
+		await waitFor(() => trackedTransactions.size === trackedBeforeRead, {
+			message: 'read-path eviction should release its internal Rocks transaction',
+		});
 	});
 
 	it('enumerates exact Rocks index values for the expiration sweep', async function () {

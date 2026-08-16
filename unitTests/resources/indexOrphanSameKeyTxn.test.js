@@ -204,7 +204,7 @@ describe('secondary index vs. two writes to the same key in one transaction', ()
 		setDeletionDelay(0);
 		const BlobTbl = table({
 			table: 'IndexOrphanBlob',
-			database: 'test',
+			database: 'index-orphan-blob',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'blob' }],
 			audit: false,
 		});
