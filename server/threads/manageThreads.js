@@ -22,25 +22,31 @@ const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
-let importModules;
-function getImportModules() {
-	if (importModules === undefined)
-		importModules = resolvePreloadModules(
-			envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_PRELOAD),
-			getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT),
-			'threads.preload'
+const importModuleCache = { modules: [] };
+const requireModuleCache = { modules: [] };
+function getPreloadModules(configParam, configKey, cache) {
+	try {
+		const configured = envMgr.get(configParam);
+		const componentsRoot = getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+		const key = JSON.stringify([configured, componentsRoot, process.env.RUN_HDB_APP]);
+		if (cache.key !== key) {
+			const modules = resolvePreloadModules(configured, componentsRoot, configKey);
+			cache.key = key;
+			cache.modules = modules;
+		}
+	} catch (error) {
+		harperLogger.error(
+			`Unable to resolve ${configKey} modules for worker startup; keeping the prior resolution`,
+			error
 		);
-	return importModules;
+	}
+	return cache.modules;
 }
-let requireModules;
+function getImportModules() {
+	return getPreloadModules(hdbTerms.CONFIG_PARAMS.THREADS_PRELOAD, 'threads.preload', importModuleCache);
+}
 function getRequireModules() {
-	if (requireModules === undefined)
-		requireModules = resolvePreloadModules(
-			envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_PRELOADREQUIRE),
-			getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT),
-			'threads.preloadRequire'
-		);
-	return requireModules;
+	return getPreloadModules(hdbTerms.CONFIG_PARAMS.THREADS_PRELOADREQUIRE, 'threads.preloadRequire', requireModuleCache);
 }
 const chokidar = require('chokidar');
 const isBun = typeof globalThis.Bun !== 'undefined';
@@ -385,8 +391,8 @@ function startWorker(path, options = {}) {
 	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
 		execArgv.push('--heapsnapshot-near-heap-limit=1');
 	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry
-	// script so they can instrument all subsequent Harper and app module loads. Resolved once
-	// (config and installed components are fixed for the process lifetime). `threads.preload`
+	// script so they can instrument all subsequent Harper and app module loads. Resolution is
+	// cached until its configuration or resolution roots change. `threads.preload`
 	// uses --import (ESM/loader-hook registration, e.g. dd-trace/register.js — the entry that
 	// instruments worker threads); `threads.preloadRequire` uses --require for CJS agents that
 	// document that path (e.g. dd-trace/init, Dynatrace OneAgent). --import is URL-based, so
