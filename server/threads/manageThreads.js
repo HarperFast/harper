@@ -31,12 +31,15 @@ function getPreloadModules(configParam, configKey, cache) {
 		const key = JSON.stringify([configured, componentsRoot, process.env.RUN_HDB_APP]);
 		if (cache.key !== key) {
 			const modules = resolvePreloadModules(configured, componentsRoot, configKey);
-			cache.key = key;
 			cache.modules = modules;
+			const specifierCount = (Array.isArray(configured) ? configured : [configured]).filter(
+				(specifier) => typeof specifier === 'string' && specifier.length > 0
+			).length;
+			if (modules.length === specifierCount) cache.key = key;
 		}
 	} catch (error) {
 		harperLogger.error(
-			`Unable to resolve ${configKey} modules for worker startup; keeping the prior resolution`,
+			`Unable to resolve ${configKey} modules for worker startup; keeping the last known resolution`,
 			error
 		);
 	}
