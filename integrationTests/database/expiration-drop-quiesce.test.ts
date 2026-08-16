@@ -10,6 +10,7 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'expiration-drop-quiesce');
 const CONTROL_DIRECTORY = mkdtempSync(join(tmpdir(), 'expiration-drop-quiesce-'));
+const skipSuite = process.platform === 'win32'; // Windows cannot expose two HTTP workers on one port.
 
 async function waitFor(predicate: () => boolean, message: string) {
 	const deadline = Date.now() + 30_000;
@@ -20,7 +21,7 @@ async function waitFor(predicate: () => boolean, message: string) {
 	throw new Error(message);
 }
 
-suite('cross-worker expiration cleanup quiesces destructive DDL', (ctx: ContextWithHarper) => {
+suite('cross-worker expiration cleanup quiesces destructive DDL', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let client: ReturnType<typeof createApiClient>;
 	let workerIds: number[];
 
