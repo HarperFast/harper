@@ -727,6 +727,32 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 		}
 	});
 
+	// A failed shared-buffer attach must not install a private counter (ids allocated from it would
+	// collide with other workers'). The write still succeeds (base efC fallback) and the next write
+	// retries the ensure against the healthy store.
+	it('does not install a private counter when the shared attach fails, and retries next write', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		customIndex.idIncrementer = undefined;
+		const store = customIndex.indexStore;
+		const originalGetUserSharedBuffer = store.getUserSharedBuffer;
+		store.getUserSharedBuffer = () => {
+			throw new Error('simulated shared-buffer attach failure');
+		};
+		try {
+			await T.put(0, { vector: [0.8, 0.2, 0.1] }); // update path; efC falls back, write succeeds
+			assert.strictEqual(customIndex.idIncrementer, undefined, 'a failed attach must not install a counter');
+		} finally {
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+		}
+		try {
+			await T.put(1, { vector: [0.7, 0.3, 0.1] });
+			assert(customIndex.idIncrementer, 'the ensure must retry once the store is healthy');
+		} finally {
+			if (!customIndex.idIncrementer) customIndex.idIncrementer = saved;
+		}
+	});
+
 	it('leaves an explicitly configured efConstruction authoritative at any graph size', async () => {
 		for (let i = 0; i < 5; i++) {
 			const a = (i / 5) * Math.PI * 2;

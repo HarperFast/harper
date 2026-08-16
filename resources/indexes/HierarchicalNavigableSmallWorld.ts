@@ -774,8 +774,11 @@ export class HierarchicalNavigableSmallWorld {
 		})) {
 			if (typeof key === 'number') largestNodeId = key;
 		}
-		this.idIncrementer = new BigInt64Array([BigInt(largestNodeId) + 1n]);
-		this.idIncrementer = new BigInt64Array(this.indexStore.getUserSharedBuffer('next-id', this.idIncrementer.buffer));
+		// Never install the counter until the shared attach succeeds: assigning the private seed
+		// array first would, on an attach failure, leave THIS process allocating ids nobody else can
+		// see — cross-worker id collisions. Left unset, the next write simply retries the ensure.
+		const seed = new BigInt64Array([BigInt(largestNodeId) + 1n]);
+		this.idIncrementer = new BigInt64Array(this.indexStore.getUserSharedBuffer('next-id', seed.buffer));
 	}
 
 	/** O(1) node count — the shared id counter, else a single reverse seek to the largest node id. */
