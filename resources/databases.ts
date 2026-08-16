@@ -1793,9 +1793,9 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 	const rootStores = new Set<any>();
 	const cleanupCompletions: Promise<void>[] = [];
 	const closeErrors: unknown[] = [];
-	const closeStore = (store: any, description: string) => {
+	const closeStore = async (store: any, description: string) => {
 		try {
-			store?.close?.();
+			await store?.close?.();
 		} catch (error) {
 			closeErrors.push(
 				new Error(`Error closing ${description} while closing database ${databaseName}`, { cause: error })
@@ -1823,9 +1823,9 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 	for (const [tableName, table] of tableEntries) {
 		if (!table?.primaryStore) continue;
 		for (const indexName in table.indices || {}) {
-			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+			await closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
 		}
-		closeStore(table.primaryStore, `table ${tableName}`);
+		await closeStore(table.primaryStore, `table ${tableName}`);
 	}
 	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
 	// an open root store, tracked only on the defined-database entry rather than any table — include
@@ -1833,8 +1833,8 @@ async function closeDatabaseOnce(databaseName: string): Promise<boolean> {
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
 	for (const rootStore of rootStores) {
-		closeStore(rootStore.dbisDb, 'attributes store');
-		closeStore(rootStore, 'root store');
+		await closeStore(rootStore.dbisDb, 'attributes store');
+		await closeStore(rootStore, 'root store');
 		forgetDatabaseEnvironment(rootStore);
 	}
 	if (closeErrors.length) throw new AggregateError(closeErrors, `Could not close database ${databaseName}`);
