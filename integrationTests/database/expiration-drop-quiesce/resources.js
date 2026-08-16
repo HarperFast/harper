@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { threadId } from 'node:worker_threads';
@@ -8,6 +8,12 @@ const CONTROL_REQUEST = 'expiration-quiesce-control-request';
 const CONTROL_RESPONSE = 'expiration-quiesce-control-response';
 const pendingRequests = new Map();
 let nextRequestId = 1;
+
+function publishWorkerMarker(path) {
+	const temporaryPath = `${path}.${threadId}.tmp`;
+	writeFileSync(temporaryPath, JSON.stringify({ threadId }));
+	renameSync(temporaryPath, path);
+}
 
 async function performControl(body) {
 	const Table = databases[body.database]?.[body.table];
@@ -21,13 +27,13 @@ async function performControl(body) {
 	const started = join(controlDirectory, `${body.runId}.started`);
 	const release = join(controlDirectory, `${body.releaseRunId ?? body.runId}.release`);
 	if (body.action === 'drop') {
-		writeFileSync(started, JSON.stringify({ threadId }));
+		publishWorkerMarker(started);
 		await Table.dropTable();
 		return { completed: true, threadId };
 	}
 	const hooks = {
 		beforeBatchCommit: async () => {
-			writeFileSync(started, JSON.stringify({ threadId }));
+			publishWorkerMarker(started);
 			while (!existsSync(release)) await delay(20);
 		},
 	};

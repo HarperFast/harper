@@ -20,6 +20,7 @@ const {
 } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const signalling = require('#src/utility/signalling');
 const {
 	acquireRestoreLock,
 	releaseRestoreLock,
@@ -316,6 +317,25 @@ describe('cross-worker schema quiescence', () => {
 		assert.ok(getDatabases()[DB]?.Records, 'abort recovery should reload the authoritative live table');
 	});
 
+	it('does not reopen a root store or replay logs while its schema is quiesced', async () => {
+		const DB = 'quiesce-reset-root-handle-test';
+		const Table = table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const rootStore = Table.primaryStore.rootStore;
+		const message = {
+			operation: 'drop_schema',
+			schema: DB,
+			quiesceId: 'q-reset-root-handle',
+			leaseUntil: Date.now() + 60_000,
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual(rootStore.status, 'closed');
+		resetDatabases();
+		assert.strictEqual(rootStore.status, 'closed', 'catalog scan must not reopen the quiesced root store');
+		assert.strictEqual(getDatabases()[DB], undefined, 'schema scan must remain fenced before replay/registration');
+		await abortSchemaQuiesce(message);
+		assert.ok(getDatabases()[DB]?.Records);
+	});
+
 	it('retains a missing-table quiescence until its terminal message', async () => {
 		const message = {
 			operation: 'drop_table',
@@ -413,12 +433,87 @@ describe('cross-worker schema quiescence', () => {
 		};
 		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
 		assert.strictEqual((await commitSchemaQuiesce(message)).committed, true);
-		assert.strictEqual(await recoverCommittedSchemaQuiesceForTests(message.quiesceId), true);
+		const registry = getDatabases();
+		const originalGetSync = Original.dbisDB.getSync;
+		let descriptorReadBeforeMutation = false;
+		Original.dbisDB.getSync = function (key) {
+			if (key === 'Records/' && !descriptorReadBeforeMutation)
+				descriptorReadBeforeMutation = registry[DB]?.Records === Original;
+			return originalGetSync.call(this, key);
+		};
+		try {
+			assert.strictEqual(await recoverCommittedSchemaQuiesceForTests(message.quiesceId), true);
+		} finally {
+			Original.dbisDB.getSync = originalGetSync;
+		}
+		assert.strictEqual(descriptorReadBeforeMutation, true, 'durable descriptor must be read before registry mutation');
 		const Recovered = getDatabases()[DB]?.Records;
 		assert.ok(Recovered, 'the durable non-tombstoned catalog should be restored');
 		assert.notStrictEqual(Recovered, Original, 'recovery must not republish the quiesced table instance');
 		assert.strictEqual(Recovered.isDropQuiescing(), false);
 		assert.strictEqual(finishSchemaQuiesce({ ...message, phase: 'finalize-quiesce' }), false);
+	});
+
+	it('recovers an expired committed schema and clears its unavailable fence', async () => {
+		const DB = 'quiesce-committed-schema-recovery-test';
+		table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const message = {
+			operation: 'drop_schema',
+			schema: DB,
+			quiesceId: 'q-committed-schema-recovery',
+			originLocal: true,
+			leaseUntil: Date.now() + 60_000,
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual((await commitSchemaQuiesce(message)).committed, true);
+		assert.throws(() => database({ database: DB, table: null }), /closing and cannot be opened/);
+		assert.strictEqual(await recoverCommittedSchemaQuiesceForTests(message.quiesceId), true);
+		assert.doesNotThrow(() => database({ database: DB, table: null }));
+		assert.ok(getDatabases()[DB]?.Records);
+	});
+
+	it('clears the origin unavailable fence when only terminal broadcast acknowledgement fails', async function () {
+		this.timeout(30000);
+		const DB = 'drop-terminal-broadcast-failure-test';
+		table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const originalFinalize = signalling.finalizeSchemaChange;
+		signalling.finalizeSchemaChange = async (message) => {
+			completeSchemaQuiesce({ ...message, phase: 'finalize-quiesce' });
+			throw new Error('injected remote terminal acknowledgement failure');
+		};
+		try {
+			await assert.rejects(dropDatabase(DB), /injected remote terminal acknowledgement failure/);
+			assert.doesNotThrow(() => database({ database: DB, table: null }));
+			assert.ok(
+				table({ table: 'Recreated', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] }),
+				'physically destroyed schema name must be reusable after local terminal completion'
+			);
+		} finally {
+			signalling.finalizeSchemaChange = originalFinalize;
+		}
+	});
+
+	it('retains the origin unavailable fence when local terminal state is unresolved', async function () {
+		this.timeout(30000);
+		const DB = 'drop-terminal-local-failure-test';
+		table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const originalFinalize = signalling.finalizeSchemaChange;
+		let terminalMessage;
+		signalling.finalizeSchemaChange = async (message) => {
+			terminalMessage = message;
+			throw new Error('injected local terminal failure');
+		};
+		try {
+			await assert.rejects(dropDatabase(DB), /injected local terminal failure/);
+			assert.throws(
+				() => database({ database: DB, table: null }),
+				/closing and cannot be opened/,
+				'uncertain local terminal state must remain fail-closed'
+			);
+		} finally {
+			signalling.finalizeSchemaChange = originalFinalize;
+			if (terminalMessage) completeSchemaQuiesce({ ...terminalMessage, phase: 'reconcile-quiesce' });
+		}
 	});
 
 	it('bounds committed recovery attempts while an active drop lock is still held', async () => {

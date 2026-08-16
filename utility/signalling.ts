@@ -130,7 +130,11 @@ async function releaseSchemaWorkerBarrier(message: any) {
 		...message,
 		phase: 'release-worker-starts',
 	});
-	await serverItcHandlers.schema(event);
+	try {
+		await serverItcHandlers.schema(event);
+	} catch (error) {
+		hdbLogger.warn('Could not release the local worker-start barrier:', error);
+	}
 	try {
 		await sendItcEvent(event, {
 			timeout: SCHEMA_QUIESCE_TIMEOUT_MS,

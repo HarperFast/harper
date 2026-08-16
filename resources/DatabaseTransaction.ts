@@ -251,9 +251,17 @@ function addAdmittedStore(owner: DatabaseTransaction, store: any): void {
 	else (owner.additionalAdmittedTableStores ??= []).push(store);
 }
 
+function stampTransactionLink(owner: DatabaseTransaction, link: DatabaseTransaction): void {
+	if (link.tableCommitAdmissionOwner === owner) return;
+	link.tableCommitAdmissionOwner = owner;
+	if (link === owner) return;
+	if (owner.admittedTransactionLink === undefined) owner.admittedTransactionLink = link;
+	else (owner.additionalAdmittedTransactionLinks ??= []).push(link);
+}
+
 function admitTransactionStores(transaction: DatabaseTransaction, owner: DatabaseTransaction): void {
 	for (let link: DatabaseTransaction = transaction; link; link = link.next) {
-		link.tableCommitAdmissionOwner = owner;
+		stampTransactionLink(owner, link);
 		for (const write of link.writes) {
 			const store = write?.store;
 			if (!store || hasAdmittedStore(owner, store)) continue;
@@ -275,11 +283,16 @@ function releaseTransactionStores(owner: DatabaseTransaction): Promise<void> | v
 	};
 	if (owner.admittedTableStore !== undefined) releaseStore(owner.admittedTableStore);
 	for (const store of owner.additionalAdmittedTableStores ?? []) releaseStore(store);
-	for (let link: DatabaseTransaction = owner; link; link = link.next) {
+	const clearAdmissionOwner = (link: DatabaseTransaction) => {
 		if (link.tableCommitAdmissionOwner === owner) link.tableCommitAdmissionOwner = undefined;
-	}
+	};
+	clearAdmissionOwner(owner);
+	if (owner.admittedTransactionLink) clearAdmissionOwner(owner.admittedTransactionLink);
+	for (const link of owner.additionalAdmittedTransactionLinks ?? []) clearAdmissionOwner(link);
 	owner.admittedTableStore = undefined;
 	owner.additionalAdmittedTableStores = undefined;
+	owner.admittedTransactionLink = undefined;
+	owner.additionalAdmittedTransactionLinks = undefined;
 	if (completions) return Promise.allSettled(completions).then(() => undefined);
 }
 
@@ -434,6 +447,8 @@ export class DatabaseTransaction implements Transaction {
 	declare tableCommitAdmissionOwner?: DatabaseTransaction;
 	declare admittedTableStore?: any;
 	declare additionalAdmittedTableStores?: any[];
+	declare admittedTransactionLink?: DatabaseTransaction;
+	declare additionalAdmittedTransactionLinks?: DatabaseTransaction[];
 	declare stale: boolean;
 	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
 	// consumed by a commit round; iterator references are consumed only by doneReadTxn().

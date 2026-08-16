@@ -693,6 +693,12 @@ export function readMetaDb(
 	auditPath?: string,
 	isLegacy?: boolean
 ) {
+	const schemaOwner = quiescedSchemas.get(databaseName)?.schema;
+	if (schemaOwner && !recoveringSchemaQuiescences.has(schemaOwner)) {
+		const existing = lmdbDatabaseEnvs.get(path);
+		if (existing) existing.needsDeletion = false;
+		return existing;
+	}
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	try {
 		let rootStore = lmdbDatabaseEnvs.get(path);
@@ -711,6 +717,8 @@ export function readMetaDb(
 }
 
 function readRocksMetaDb(path: string, defaultTable?: string, databaseName: string = DEFAULT_DATABASE_NAME) {
+	const schemaOwner = quiescedSchemas.get(databaseName)?.schema;
+	if (schemaOwner && !recoveringSchemaQuiescences.has(schemaOwner)) return rocksdbDatabaseEnvs.get(path);
 	try {
 		logger.trace(`loading rocksdb database: ${path}`);
 
@@ -1391,13 +1399,21 @@ async function recoverCommittedSchemaQuiesce(state: SchemaQuiesceState): Promise
 	for (const lock of locks) releaseRestoreLock(lock);
 
 	const { schema, table } = state.message;
-	recoveringSchemaQuiescences.add(state.message.quiesceId);
 	try {
+		// Inspect the durable decision before changing public registrations or bypassing the
+		// quiescence catalog fence. This distinguishes a live catalog row (destruction never
+		// started), a drop tombstone (finish interrupted destruction), and an absent row
+		// (destruction completed) without letting resetDatabases manufacture the answer.
+		const durableDescriptor =
+			state.message.operation === OPERATIONS_ENUM.DROP_TABLE && table
+				? state.table?.dbisDB?.getSync?.(`${table}/`)
+				: undefined;
+		recoveringSchemaQuiescences.add(state.message.quiesceId);
 		if (state.message.operation === OPERATIONS_ENUM.DROP_TABLE) {
 			if (databases[schema] && table) delete databases[schema][table];
 			resetDatabases();
-			const descriptor = table && state.table?.dbisDB?.getSync?.(`${table}/`);
-			if (descriptor?.dropping)
+			const reconciledDescriptor = table && state.table?.dbisDB?.getSync?.(`${table}/`);
+			if (durableDescriptor?.dropping && reconciledDescriptor?.dropping)
 				throw new Error(`Durable drop tombstone for ${schema}.${table} could not be reconciled`);
 		} else {
 			resetQuiescedDatabase(schema);
@@ -1452,7 +1468,14 @@ async function reconcileSchemaQuiesce(state: SchemaQuiesceState): Promise<void> 
 	} else {
 		if (state.localOwner) {
 			for (const table of state.tables ?? []) table.abortDropQuiesce?.();
-		} else resetQuiescedDatabase(state.message.schema);
+		} else {
+			recoveringSchemaQuiescences.add(state.message.quiesceId);
+			try {
+				resetQuiescedDatabase(state.message.schema);
+			} finally {
+				recoveringSchemaQuiescences.delete(state.message.quiesceId);
+			}
+		}
 	}
 	clearSchemaQuiesce(state);
 	retireSchemaQuiesce(state.message.quiesceId);
@@ -1644,9 +1667,20 @@ export async function dropDatabase(databaseName): Promise<void> {
 			if (quiesceMessage) {
 				const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, databaseName);
 				message.quiesceId = quiesceMessage.quiesceId;
-				if (dropSucceeded) await signalling.finalizeSchemaChange(message);
-				else await signalling.reconcileSchemaChange(message);
-				unavailableDatabases.delete(databaseName);
+				if (dropSucceeded) {
+					try {
+						await signalling.finalizeSchemaChange(message);
+					} finally {
+						// finalizeSchemaChange applies the local terminal rescan before broadcasting it.
+						// A later remote acknowledgement failure must not permanently poison this
+						// physically-destroyed name on the origin. If local terminal work failed, its
+						// quiescence state remains and the unavailable fence must stay fail-closed.
+						if (!schemaQuiescence.has(quiesceMessage.quiesceId)) unavailableDatabases.delete(databaseName);
+					}
+				} else {
+					await signalling.reconcileSchemaChange(message);
+					unavailableDatabases.delete(databaseName);
+				}
 			}
 		});
 	droppingDatabases.set(databaseName, completion);
@@ -1669,15 +1703,11 @@ async function dropDatabaseOnce(databaseName, dbTables, rootStore, onQuiesced: (
 		if (restoreLocks.length === 0 && rootStore instanceof RocksDatabase)
 			lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 
-		try {
-			const quiesceMessage = await signalling.quiesceSchemaChange(
-				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, databaseName)
-			);
-			onQuiesced(quiesceMessage);
-			await signalling.commitSchemaChange(quiesceMessage);
-		} catch (error) {
-			throw error;
-		}
+		const quiesceMessage = await signalling.quiesceSchemaChange(
+			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, databaseName)
+		);
+		onQuiesced(quiesceMessage);
+		await signalling.commitSchemaChange(quiesceMessage);
 		forgetDatabaseEnvironment(rootStore);
 		for (const tableName in dbTables) {
 			forgetDatabaseEnvironment(dbTables[tableName].primaryStore.rootStore);
@@ -1694,6 +1724,8 @@ async function dropDatabaseOnce(databaseName, dbTables, rootStore, onQuiesced: (
 			delete tables[DEFINED_TABLES];
 		}
 		delete databases[databaseName];
+		const definedDatabase = definedDatabases?.get(databaseName);
+		if (definedDatabase) (definedDatabase as any).rootStore = undefined;
 
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 

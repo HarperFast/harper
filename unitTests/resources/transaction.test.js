@@ -45,6 +45,31 @@ describe('Table commit admission', () => {
 
 		assert.deepStrictEqual(events, ['admit:a', 'admit:b', 'admit:c', 'release:a', 'release:b', 'release:c']);
 	});
+
+	it('releases a stamped transaction link after it is detached from the chain', async () => {
+		let pendingCommits = 0;
+		const store = {
+			[TABLE_COMMIT_ADMISSION]() {
+				pendingCommits++;
+				return true;
+			},
+			[TABLE_COMMIT_RELEASE]() {
+				pendingCommits--;
+			},
+		};
+		const tail = { writes: [{ store }], next: undefined };
+		const head = { writes: [], next: tail };
+
+		await withTableCommitAdmission(head, {}, () => {
+			head.next = undefined;
+		});
+		assert.strictEqual(tail.tableCommitAdmissionOwner, undefined);
+		assert.strictEqual(pendingCommits, 0);
+
+		await withTableCommitAdmission(tail, {}, () => undefined);
+		assert.strictEqual(tail.tableCommitAdmissionOwner, undefined);
+		assert.strictEqual(pendingCommits, 0, 'the detached link must release admission on its next commit');
+	});
 });
 
 // The package blocks deep imports of its package.json, so walk up from the resolved entry point.

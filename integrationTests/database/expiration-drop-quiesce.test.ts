@@ -85,28 +85,41 @@ suite('cross-worker expiration cleanup quiesces destructive DDL', (ctx: ContextW
 			{ action: 'sweep', kind, database, table, runId: sweepRunId, releaseRunId: runId },
 			sweepWorkerId
 		);
-		await waitFor(() => existsSync(started), `${kind} sweep did not reach its blocked commit`);
-		strictEqual(JSON.parse(readFileSync(started, 'utf8')).threadId, sweepWorkerId);
-
 		let dropSettled = false;
 		const dropStarted = join(CONTROL_DIRECTORY, `${dropRunId}.started`);
-		const drop = postControlOnWorker({ action: 'drop', database, table, runId: dropRunId }, ddlWorkerId).then(
-			(response) => {
-				dropSettled = true;
-				return response;
-			}
-		);
+		let drop: ReturnType<typeof postControlOnWorker> | undefined;
 		let dropped;
+		let primaryError: unknown;
+		const cleanupErrors: unknown[] = [];
 		try {
+			await waitFor(() => existsSync(started), `${kind} sweep did not reach its blocked commit`);
+			strictEqual(JSON.parse(readFileSync(started, 'utf8')).threadId, sweepWorkerId);
+			drop = postControlOnWorker({ action: 'drop', database, table, runId: dropRunId }, ddlWorkerId).then(
+				(response) => {
+					dropSettled = true;
+					return response;
+				}
+			);
 			await waitFor(() => existsSync(dropStarted), `${kind} drop did not start on its pinned worker`);
 			strictEqual(JSON.parse(readFileSync(dropStarted, 'utf8')).threadId, ddlWorkerId);
 			strictEqual(sweepWorkerId === ddlWorkerId, false, 'DDL and cleanup must execute on different workers');
 			await delay(100);
 			strictEqual(dropSettled, false, 'physical drop must wait for the blocked cleanup worker');
+		} catch (error) {
+			primaryError = error;
 		} finally {
-			writeFileSync(release, 'release');
-			[dropped] = await Promise.all([drop, sweep]);
+			try {
+				writeFileSync(release, 'release');
+			} catch (error) {
+				cleanupErrors.push(error);
+			}
+			const completions = drop ? [drop, sweep] : [sweep];
+			const results = await Promise.allSettled(completions);
+			if (drop && results[0].status === 'fulfilled') dropped = results[0].value;
+			for (const result of results) if (result.status === 'rejected') cleanupErrors.push(result.reason);
 		}
+		if (primaryError) throw primaryError;
+		if (cleanupErrors.length) throw new AggregateError(cleanupErrors, `${kind} quiescence test cleanup failed`);
 		strictEqual(dropped.status, 200);
 		strictEqual(dropped.body.threadId, ddlWorkerId);
 	}

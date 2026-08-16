@@ -157,10 +157,10 @@ describe('Test signalling module', () => {
 		}
 	});
 
-	it('releases the worker-start barrier when terminal acknowledgements are exhausted', async () => {
+	it('preserves terminal failure while attempting barrier release on every worker', async () => {
 		const localSchemaHandler = sandbox.stub().callsFake(async (event) => {
 			if (event.message.phase === 'finalize-quiesce') return { finalized: true };
-			if (event.message.phase === 'release-worker-starts') return { released: true };
+			if (event.message.phase === 'release-worker-starts') throw new Error('local barrier release failed');
 		});
 		const restoreHandlers = signalling.__set__('serverItcHandlers', { schema: localSchemaHandler });
 		send_itc_event_stub.callsFake(async (event) => {
@@ -178,8 +178,12 @@ describe('Test signalling module', () => {
 				terminalError = error;
 			}
 			expect(terminalError?.message).to.include('Could not finalized schema quiesce');
+			expect(terminalError?.message).not.to.include('local barrier release failed');
 			expect(
 				localSchemaHandler.getCalls().some((call) => call.args[0].message.phase === 'release-worker-starts')
+			).to.equal(true);
+			expect(
+				send_itc_event_stub.getCalls().some((call) => call.args[0].message.phase === 'release-worker-starts')
 			).to.equal(true);
 			const terminalAttempts = send_itc_event_stub
 				.getCalls()
