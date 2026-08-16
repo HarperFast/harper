@@ -573,16 +573,9 @@ describe('Caching', () => {
 			await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined, {
 				message: 'eviction should remove the primary record',
 			});
-			results = [];
-			for await (const record of IndexedCachingTable.search({
-				conditions: [{ attribute: 'name', value: 'name 23' }],
-			})) {
-				results.push(record);
-			}
-			assert.equal(results.length, 0);
+			assert.equal(IndexedCachingTable.indices.name.getValuesCount('name 23'), 0);
 		} finally {
 			sourceExpiresAt = undefined;
-			IndexedCachingTable.setTTLExpiration(0.005);
 		}
 	});
 
