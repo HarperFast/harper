@@ -701,6 +701,32 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 		});
 	}
 
+	// The refactor's stated mechanism, not just the formula: an update-only worker (counter absent,
+	// as after a restart with no new inserts) must ensure the shared counter with ONE seek, then read
+	// it atomically — never a reverse seek per write, and never a failed write if the seek throws.
+	it('an update-only path ensures the shared counter once instead of seeking per write', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		customIndex.idIncrementer = undefined;
+		const store = customIndex.indexStore;
+		const originalGetKeys = store.getKeys;
+		let seeks = 0;
+		store.getKeys = function (opts, ...rest) {
+			if (opts?.reverse) seeks++;
+			return originalGetKeys.call(this, opts, ...rest);
+		};
+		try {
+			// ids 0 and 1 already exist in T, so both puts take the update path and never allocate an id
+			await T.put(0, { vector: [1, 0, 0.2] });
+			await T.put(1, { vector: [0.9, 0.1, 0.2] });
+			assert(customIndex.idIncrementer, 'the update path must ensure the shared counter');
+			assert.strictEqual(seeks, 1, `the counter seed should be the only reverse seek, got ${seeks}`);
+		} finally {
+			store.getKeys = originalGetKeys;
+			if (!customIndex.idIncrementer) customIndex.idIncrementer = saved;
+		}
+	});
+
 	it('leaves an explicitly configured efConstruction authoritative at any graph size', async () => {
 		for (let i = 0; i < 5; i++) {
 			const a = (i / 5) * Math.PI * 2;

@@ -89,7 +89,7 @@ const LIMIT_EF_MAX = 2 * AUTO_EF_CEILING;
 // Auto-scaled construction ef, used only when an index does not explicitly configure efConstruction.
 // At a constant efConstruction, edge quality erodes as the graph grows until true neighbours become
 // unreachable at ANY search ef; the cap bounds per-insert cost. Measurements and policy in
-// DESIGN.md ("efConstruction auto-scales with the graph") and #2180.
+// DESIGN.md ("efConstruction and the search-ef ceiling both auto-scale with the graph") and #2180.
 const AUTO_EFC_REF = 250_000;
 // Validated to 447 (the 5M point, where the resulting graph held 0.985 set-recall at ef 1024); the
 // headroom to 1024 is the same sqrt curve extrapolated, binding at ~26M nodes. Build cost grows
@@ -226,6 +226,7 @@ export class HierarchicalNavigableSmallWorld {
 	int8 = true; // store vectors as int8-quantized bins by default; opt out with `quantization: "none"`
 	efSearchConfigured = false; // whether the schema set an explicit search ef; if not, search ef auto-scales with N
 	efConstructionConfigured = false; // whether the schema set an explicit efConstruction; if not, it auto-scales with N
+	private lastLoggedEfConstruction = 0;
 	// Caches the Int8Array-converted clone of a frozen (decoded-from-disk) int8 node, keyed by the
 	// frozen node the object store hands back. WeakMap so entries are collected when the store evicts
 	// the frozen node — without it, every cache hit on a frozen node would re-slice and re-clone.
@@ -388,14 +389,24 @@ export class HierarchicalNavigableSmallWorld {
 				connections[i] = [];
 			}
 
-			// The counter is ensured here (not only at id allocation) because an update-only worker
-			// after a restart never allocates an id — without it, every update would pay the reverse
-			// seek. Ensured, resolveNodeCount is a plain atomic read — no memo, no TTL lag. It is a
-			// lifetime high-water mark, not a live count; see DESIGN.md for the churn-table caveat.
+			// Ensured here (not only at id allocation) so an update-only worker reads the count with an
+			// atomic load instead of a per-write seek. The count is a lifetime high-water mark, not a
+			// live count; see DESIGN.md for the churn-table caveat. Guarded because the count is an ef
+			// heuristic with a safe fallback — a write must never fail on it.
 			let efConstruction = this.efConstruction;
 			if (!this.efConstructionConfigured) {
-				this.ensureIdIncrementer(options);
-				efConstruction = autoScaleEfConstruction(this.efConstruction, this.resolveNodeCount());
+				try {
+					this.ensureIdIncrementer(options);
+					efConstruction = autoScaleEfConstruction(this.efConstruction, this.resolveNodeCount());
+				} catch (error) {
+					logger.debug?.('could not resolve the node count for the construction ef', error);
+				}
+				if (efConstruction > this.efConstruction && this.lastLoggedEfConstruction !== efConstruction) {
+					// once per resolved value per process: makes replica-divergent build quality and the
+					// build-cost ramp diagnosable (the resolved value is otherwise surfaced nowhere)
+					this.lastLoggedEfConstruction = efConstruction;
+					logger.debug?.(`HNSW construction ef auto-scaled to ${efConstruction}`);
+				}
 			}
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
 				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, efConstruction, l, options);
@@ -1094,10 +1105,17 @@ export class HierarchicalNavigableSmallWorld {
 		// filter, so bound layer-0 work at ef * filterExpansion nodes. Only built when a filter is active.
 		// Deliberately `resolvedEf`, not the limit-widened ef: this budget is what stops a selective
 		// filter crawling the whole graph, and multiplying it by a caller's limit would turn a filtered
-		// vector query into a record-loading scan.
+		// vector query into a record-loading scan. When the ef came from the auto-scale (neither a
+		// per-query ef nor a schema-configured one), its budget contribution is additionally capped at
+		// AUTO_EF_MAX: every budgeted visit is a synchronous record load + predicate evaluation, so the
+		// second-regime search ef (up to AUTO_EF_CEILING) must not silently quadruple the filtered
+		// worst case — the recall decision and the filtered-scan budget are separate decisions. Callers
+		// wanting a deeper filtered search set an explicit ef or filterExpansion, and own the cost.
 		const filterState: FilterState | undefined = filter
 			? {
-					maxVisits: resolvedEf * (filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion),
+					maxVisits:
+						(explicitEf || this.efSearchConfigured ? resolvedEf : Math.min(resolvedEf, AUTO_EF_MAX)) *
+						(filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion),
 					nodesVisited: 0,
 					filterEvaluations: 0,
 				}

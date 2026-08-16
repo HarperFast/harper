@@ -823,7 +823,12 @@ pinned 512 on well-built graphs decays 0.997 → 0.955 → 0.935 across 1M/2M/5M
 plateau — `512 * sqrt(nodes / 1M)` — up to `AUTO_EF_CEILING` (2048, binding at ~16M). The 5M point
 resolves 1,145, bracketed by the measured ef-1024 sweep there (0.985 set). The default's query
 latency therefore grows as sqrt(N) on large tables; that is the recall-first trade chosen here, and
-apps preferring latency pin `efConstructionSearch` or a per-query `ef`. Both ceilings are finite on
+apps preferring latency pin `efConstructionSearch` or a per-query `ef`. The filtered-traversal
+budget (`maxVisits`, #1241) deliberately does not follow the second regime: each budgeted visit is
+a synchronous record load plus predicate evaluation, so an auto-scaled ef's budget contribution
+stays capped at `AUTO_EF_MAX` — the recall decision and the filtered-scan bound are separate
+decisions, and an explicit ef (per-query or schema) still raises the budget for callers who own
+the cost. Both ceilings are finite on
 purpose: total build work grows as N^1.5 under sqrt scaling, and past roughly tens of millions of
 nodes per graph, sharded medium graphs beat one huge graph on build and query cost alike — scaling
 the constants further is the wrong tool there.
@@ -831,8 +836,9 @@ the constants further is the wrong tool there.
 Two caveats are accepted deliberately, both inherited from the count being a lifetime high-water
 mark of allocated node ids rather than a live count. First, churn: a table that deletes heavily
 (TTL eviction, delete-and-reinsert ingest) reads high forever, so its build-side efC can sit at the
-cap while the live graph is small — bounded at `AUTO_EFC_MAX` (5.12x base build cost), it wastes
-build CPU but never hurts recall. The search side accepted the same over-count as "slightly
+cap while the live graph is small — bounded at `AUTO_EFC_MAX` (10.24x the base ef; by the measured
+1.77x-wall-time-per-2x-ef relation, roughly 6–7x build time), it wastes build CPU but never hurts
+recall. The search side accepted the same over-count as "slightly
 generous ef" on an opt-in read path; the write path inherits it as a known cost until a live count
 exists (tracked follow-up). Second, ramp history: nodes indexed before the graph crossed a scale
 threshold keep their original edges — the scale applies to inserts from that point on. A reindex in
