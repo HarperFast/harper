@@ -43,11 +43,16 @@ function dequantizeInt8(q: Int8Array, scale: number): number[] {
 
 // Auto-scaled search ef, used only when an index does not explicitly configure efConstructionSearch
 // and a query does not pass its own ef. A fixed ef makes recall decay as the graph grows (it explores
-// a shrinking fraction of the graph), so ef grows with sqrt(node count), capped to bound search cost.
-// Constants from a recall/latency-vs-N sweep (768-dim cosine, int8): ef≈400 holds ~0.8 recall@10 from
-// 5K–30K, and the recall/latency tradeoff is steep (ef 800 at 30K ≈ 0.92 recall but ~2s p50), so the
-// cap deliberately favors latency — apps wanting higher recall set efConstructionSearch or a per-query
-// ef. Tune as graph build quality / larger-N data improves.
+// a shrinking fraction of the graph), so ef grows with sqrt(node count) in two regimes, with a
+// ceiling to bound search cost. The first regime's constants come from the original recall/latency
+// sweep (5K-30K, 768-dim cosine, int8) and plateau at AUTO_EF_MAX from ~13K nodes; that plateau was
+// calibrated when layers above 0 were searched at the full ef, which made large efs cost seconds.
+// After the greedy-descent fix (#2125) ef 1024 at 5M nodes costs ~45ms, and the measured decay at a
+// pinned 512 (set-recall 0.997 -> 0.955 -> 0.935 across 1M/2M/5M on well-built graphs, #2181) is
+// recall left on the table, so past AUTO_EF_LARGE_REF nodes the scale resumes from that plateau and
+// runs to AUTO_EF_CEILING. Validated against the same sweeps: the second regime resolves 1,145 at
+// 5M, and the measured ef-1024 point there holds 0.985. Apps preferring latency pin
+// efConstructionSearch or a per-query ef; graphs past ~tens of millions of nodes should shard.
 const AUTO_EF_BASE = 100;
 // The index store holds a graph node plus a primary-key mapping per record, so a key count is twice
 // the node count. Sizes here are in nodes; this converts back for the one consumer still calibrated
@@ -58,7 +63,15 @@ const INDEX_KEYS_PER_NODE = 2;
 // a live count, so the resolved ef can differ from that formula by one at a rounding boundary.
 const AUTO_EF_REF = 500;
 const AUTO_EF_MAX = 512;
+// Nodes at which the second regime starts: 512 was measured sufficient through 1M (set-recall
+// 0.997) and short from 2M up, so the resumed curve is anchored to pass through (1M, 512).
+const AUTO_EF_LARGE_REF = 1_000_000;
+const AUTO_EF_CEILING = 2048;
 function autoScaleEf(nodeCount: number): number {
+	if (nodeCount > AUTO_EF_LARGE_REF) {
+		const scaled = Math.round(AUTO_EF_MAX * Math.sqrt(nodeCount / AUTO_EF_LARGE_REF));
+		return Math.min(AUTO_EF_CEILING, scaled);
+	}
 	const scaled = Math.round(AUTO_EF_BASE * Math.sqrt(Math.max(1, nodeCount / AUTO_EF_REF)));
 	return Math.min(AUTO_EF_MAX, Math.max(AUTO_EF_BASE, scaled));
 }
@@ -69,16 +82,20 @@ function autoScaleEf(nodeCount: number): number {
 const ROUTING_EF = 1;
 // Ceiling on the ef a query's own `offset + limit` can ask for. `limit` is unprivileged and set on
 // every request, so this bounds what a caller can make one thread do synchronously: layer 0 holds
-// `ef` candidates in a sorted array with an O(len) insert. Kept within a small multiple of
-// AUTO_EF_MAX so the worst case stays the same order as the index's own auto-scaled ceiling; a
-// caller who genuinely wants more sets an explicit `ef` and owns the cost.
-const LIMIT_EF_MAX = 4 * AUTO_EF_MAX;
+// `ef` candidates in a sorted array with an O(len) insert. Kept within a small multiple of the
+// index's own auto-scaled ceiling so the worst case stays the same order; a caller who genuinely
+// wants more sets an explicit `ef` and owns the cost.
+const LIMIT_EF_MAX = 2 * AUTO_EF_CEILING;
 // Auto-scaled construction ef, used only when an index does not explicitly configure efConstruction.
 // At a constant efConstruction, edge quality erodes as the graph grows until true neighbours become
 // unreachable at ANY search ef; the cap bounds per-insert cost. Measurements and policy in
 // DESIGN.md ("efConstruction auto-scales with the graph") and #2180.
 const AUTO_EFC_REF = 250_000;
-const AUTO_EFC_MAX = 512;
+// Validated to 447 (the 5M point, where the resulting graph held 0.985 set-recall at ef 1024); the
+// headroom to 1024 is the same sqrt curve extrapolated, binding at ~26M nodes. Build cost grows
+// with the curve (N^1.5 total under sqrt scaling), which is why the cap stays finite: past ~tens of
+// millions of nodes, sharded medium graphs beat one huge graph on both build and query cost.
+const AUTO_EFC_MAX = 1024;
 function autoScaleEfConstruction(base: number, nodeCount: number): number {
 	const scaled = Math.round(base * Math.sqrt(Math.max(1, nodeCount / AUTO_EFC_REF)));
 	return Math.min(AUTO_EFC_MAX, Math.max(base, scaled));

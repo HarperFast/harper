@@ -791,7 +791,7 @@ graphs being identical, though equal metrics do not prove it. It is the expected
 the upper layers are sparse enough that a greedy walk reaches the same entry point, which is why
 standard HNSW descends this way.
 
-## `efConstruction` auto-scales with the graph, for the same reason search `ef` does
+## `efConstruction` and the search-`ef` ceiling both auto-scale with the graph
 
 The connection-building pass selects each node's stored edges from a candidate list of
 `efConstruction` entries. Held at a constant (100) while the corpus grows, edge quality erodes in a
@@ -813,6 +813,20 @@ is build time (1.77x at 1M for efC 200), paid only by tables that actually grow 
 returned as cheaper queries. An explicit `efConstruction` stays authoritative: it is a per-index
 decision about build cost — though note it also seeds the search `ef`, so pinning it to cut build
 cost also pins query-time `ef`; there is currently no "pinned build, auto search" combination.
+
+The search side scales past its old plateau for the same reason. `AUTO_EF_MAX` (512, pinned from
+~13K nodes) was calibrated when layers above 0 were searched at the full `ef`, which made large efs
+cost seconds; after the greedy-descent fix the same headroom costs tens of milliseconds (ef 1024 at
+5M nodes: ~45ms p50), and holding the pin leaves measured recall on the table — set-recall at a
+pinned 512 on well-built graphs decays 0.997 → 0.955 → 0.935 across 1M/2M/5M. So past
+`AUTO_EF_LARGE_REF` (1M nodes, where 512 was last measured sufficient) the scale resumes from the
+plateau — `512 * sqrt(nodes / 1M)` — up to `AUTO_EF_CEILING` (2048, binding at ~16M). The 5M point
+resolves 1,145, bracketed by the measured ef-1024 sweep there (0.985 set). The default's query
+latency therefore grows as sqrt(N) on large tables; that is the recall-first trade chosen here, and
+apps preferring latency pin `efConstructionSearch` or a per-query `ef`. Both ceilings are finite on
+purpose: total build work grows as N^1.5 under sqrt scaling, and past roughly tens of millions of
+nodes per graph, sharded medium graphs beat one huge graph on build and query cost alike — scaling
+the constants further is the wrong tool there.
 
 Two caveats are accepted deliberately, both inherited from the count being a lifetime high-water
 mark of allocated node ids rather than a live count. First, churn: a table that deletes heavily

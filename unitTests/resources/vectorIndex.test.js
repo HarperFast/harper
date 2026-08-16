@@ -675,9 +675,31 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 	});
 
 	it('caps the auto-scale at AUTO_EFC_MAX', async () => {
+		// 100 * sqrt(100M / 250K) = 2000, capped at 1024
 		const efs = await withNodeCount(T, 100_000_000, () => connectionEfsDuringPut(T, 22));
-		assert.deepStrictEqual([...efs], [512], `expected the capped efConstruction, got ${[...efs]}`);
+		assert.deepStrictEqual([...efs], [1024], `expected the capped efConstruction, got ${[...efs]}`);
 	});
+
+	// The search-side scale resumes past AUTO_EF_LARGE_REF (the 512 plateau was measured sufficient
+	// through 1M nodes and short from 2M up — set-recall 0.997 -> 0.955 -> 0.935 across 1M/2M/5M).
+	// The second regime is anchored to pass through (1M, 512); the 5M point resolves 1,145, bracketed
+	// by the measured ef-1024 sweep there (0.985 set-recall).
+	for (const [nodes, expected] of [
+		[1_000_000, 512],
+		[2_000_000, 724],
+		[5_000_000, 1145],
+		[100_000_000, 2048],
+	]) {
+		it(`resolves search ef ${expected} at ${nodes.toLocaleString('en-US')} nodes`, async () => {
+			const efs = await withNodeCount(T, nodes, async () => {
+				const customIndex = T.indices.vector.customIndex;
+				customIndex.nodeCountAt = 0; // expire the memo so the search re-resolves through the shadow
+				const layer0Ef = await captureLayer0Ef(T, { limit: 10 });
+				return layer0Ef;
+			});
+			assert.strictEqual(efs, expected, `expected the auto-scaled search ef at ${nodes} nodes, got ${efs}`);
+		});
+	}
 
 	it('leaves an explicitly configured efConstruction authoritative at any graph size', async () => {
 		for (let i = 0; i < 5; i++) {
@@ -850,7 +872,7 @@ describe('HNSW limit above the resolved search ef', () => {
 	]) {
 		it(`bounds the limit-derived ef at LIMIT_EF_MAX under ${label}`, async () => {
 			const layer0Ef = await captureLayer0Ef(T, query);
-			assert.strictEqual(layer0Ef, 4 * 512, `layer-0 ef should be LIMIT_EF_MAX (${4 * 512}), got ${layer0Ef}`);
+			assert.strictEqual(layer0Ef, 2 * 2048, `layer-0 ef should be LIMIT_EF_MAX (${2 * 2048}), got ${layer0Ef}`);
 		});
 	}
 
