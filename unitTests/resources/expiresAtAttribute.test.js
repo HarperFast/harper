@@ -879,6 +879,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			table: 'PrimaryCleanupErrorDrain',
 			database: 'test',
 			expiration: 1,
+			scanInterval: 3_600,
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
 		const expiresAt = Date.now() - 1_000;
