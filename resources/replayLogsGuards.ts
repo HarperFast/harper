@@ -137,10 +137,10 @@ export function shouldAbortSlowReplay(totalElapsedMs: number, timeLimitMs = REPL
  * rocksdb-js predating the resync support reports.
  */
 export type CorruptFrameError = RangeError & {
-	logId?: number;
-	position?: number;
-	resyncPosition?: number;
-	unreadableBytes?: number;
+	logId?: number | null;
+	position?: number | null;
+	resyncPosition?: number | null;
+	unreadableBytes?: number | null;
 };
 
 /**
@@ -178,7 +178,7 @@ export function endIteratorOnCorruptFrame<T>(
 					// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
 					if (!(error instanceof RangeError)) throw error;
 					const { resyncPosition } = error as CorruptFrameError;
-					if (resyncPosition === undefined || ++resyncs > MAX_RESYNCS_PER_ITERATION) stopped = true;
+					if (resyncPosition == null || ++resyncs > MAX_RESYNCS_PER_ITERATION) stopped = true;
 					onCorruptFrame(error as CorruptFrameError, stopped);
 				}
 			}
@@ -256,7 +256,7 @@ export function clearCorruptFrameReports() {
 // them when the fields can't.
 function corruptFrameKey(logName: string, error: CorruptFrameError): string {
 	const { logId, position } = error;
-	return logId !== undefined && position !== undefined
+	return logId != null && position != null
 		? `${logName}\u0000${logId}:${position}`
 		: `${logName}\u0000${error.message}`;
 }
@@ -275,7 +275,7 @@ export function createCorruptFrameReporter(logger: {
 	error: (message: string, error?: unknown) => void;
 }) {
 	return (logName: string) => (error: CorruptFrameError, stoppedIteration: boolean) => {
-		const midLog = error.resyncPosition !== undefined;
+		const midLog = error.resyncPosition != null;
 		const unreadableBytes = error.unreadableBytes ?? 0;
 		const now = Date.now();
 		const key = corruptFrameKey(logName, error);
@@ -295,8 +295,8 @@ export function createCorruptFrameReporter(logger: {
 			}
 			corruptFrameReports.set(key, {
 				log: logName,
-				logId: error.logId,
-				position: error.position,
+				logId: error.logId ?? undefined,
+				position: error.position ?? undefined,
 				midLog,
 				unreadableBytes,
 				stoppedIteration,

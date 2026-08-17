@@ -213,6 +213,48 @@ describe('endIteratorOnCorruptFrame', () => {
 		assert.strictEqual(calls, 2);
 	});
 
+	it('treats a null resync position from the native addon as end-of-log', () => {
+		const error = new RangeError('truncated entry header');
+		error.resyncPosition = null;
+		let calls = 0;
+		const wrapped = endIteratorOnCorruptFrame(
+			{
+				next() {
+					calls++;
+					throw error;
+				},
+			},
+			(reportedError, stopped) => {
+				assert.strictEqual(reportedError, error);
+				assert.strictEqual(stopped, true);
+			}
+		);
+
+		assert.deepStrictEqual(wrapped.next(), { done: true, value: undefined });
+		assert.strictEqual(calls, 1);
+	});
+
+	it('keeps zero as a valid resync position', () => {
+		const error = new RangeError('corrupt frame at offset 0');
+		error.resyncPosition = 0;
+		let calls = 0;
+		const wrapped = endIteratorOnCorruptFrame(
+			{
+				next() {
+					if (calls++ === 0) throw error;
+					return { done: true, value: undefined };
+				},
+			},
+			(reportedError, stopped) => {
+				assert.strictEqual(reportedError, error);
+				assert.strictEqual(stopped, false);
+			}
+		);
+
+		assert.deepStrictEqual(wrapped.next(), { done: true, value: undefined });
+		assert.strictEqual(calls, 2);
+	});
+
 	it('reports the cap-hit break as having stopped iteration, not as a clean resync', () => {
 		// The reporter keys severity off the error's own shape, so a mid-log break that merely hit
 		// the cap must still be distinguishable from a torn tail.
@@ -225,7 +267,7 @@ describe('endIteratorOnCorruptFrame', () => {
 		};
 		const reported = [];
 		const wrapped = endIteratorOnCorruptFrame(source, (error, stopped) =>
-			reported.push({ stopped, midLog: error.resyncPosition !== undefined })
+			reported.push({ stopped, midLog: error.resyncPosition != null })
 		);
 		wrapped.next();
 		assert.deepStrictEqual(reported.at(-1), { stopped: true, midLog: true });
@@ -402,6 +444,34 @@ describe('createCorruptFrameReporter', () => {
 
 		assert.strictEqual(getCorruptFrameReports().length, 2);
 		assert.strictEqual(logs.warn.length, 2);
+	});
+
+	it('treats null native position fields as absent when keying and classifying breaks', () => {
+		const { logs, report } = setup();
+		for (const message of ['corrupt frame at offset 1', 'corrupt frame at offset 2']) {
+			const error = new RangeError(message);
+			error.logId = null;
+			error.position = null;
+			error.resyncPosition = null;
+			report(error, true);
+		}
+
+		assert.strictEqual(getCorruptFrameReports().length, 2);
+		assert.strictEqual(logs.warn.length, 2);
+		assert.strictEqual(logs.error.length, 0);
+	});
+
+	it('keeps zero native position fields as valid report metadata', () => {
+		const { logs, report } = setup();
+		const error = midLogError(0, 0);
+		error.logId = 0;
+		report(error, false);
+
+		assert.strictEqual(logs.error.length, 1);
+		assert.deepStrictEqual(
+			{ logId: getCorruptFrameReports()[0].logId, position: getCorruptFrameReports()[0].position },
+			{ logId: 0, position: 0 }
+		);
 	});
 
 	it('bounds retained break sites by evicting the oldest', () => {
