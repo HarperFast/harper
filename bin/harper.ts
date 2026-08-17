@@ -183,7 +183,12 @@ async function harper() {
 			// no use for. Refuse rather than deploy: the token is redacted and never sent either way, but
 			// silently ignoring it would leave the user believing a credential was provisioned.
 			if (cliApiOp.operation === 'deploy_component' && cliApiOp.token !== undefined) {
-				throw new Error('`token=` is only valid with `setup=true` — did you mean `harper deploy setup=true`?');
+				// statusCode so formatCliError prints this as a one-line hint rather than a stack trace —
+				// it's a typo, not a crash.
+				throw Object.assign(
+					new Error('`token=` is only valid with `setup=true` — did you mean `harper deploy setup=true`?'),
+					{ statusCode: 400 }
+				);
 			}
 			logger.trace('calling cli operations with:', cliOperations.redactCredentials(cliApiOp));
 			await cliOperations.cliOperations(cliApiOp);

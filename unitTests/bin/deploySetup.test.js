@@ -7,7 +7,7 @@
 // resolves its inputs.
 const assert = require('node:assert');
 const path = require('node:path');
-const { resolveComponentName, resolveGitHost, resolveGrants } = require('#src/bin/deploySetup');
+const { resolveComponentName, resolveGitHost, storeSealedSecret } = require('#src/bin/deploySetup');
 const { directoryProjectName } = require('#src/utility/componentNames');
 const cliOperationsModule = require('#src/bin/cliOperations');
 
@@ -95,70 +95,85 @@ describe('deploySetup', () => {
 		});
 	});
 
-	// `set_secret` replaces grants rather than merging, so sending only this component on a rotation
+	// `set_secret` REPLACES grants rather than merging, so sending `grants: [component]` on a rotation
 	// would silently revoke a grant an operator added with `grant_secret` — invisible until the other
-	// component's next deploy fails. Both branches are pinned: the union, and the lookup-failure
-	// fallback that still replaces (which is why it warns).
-	describe('resolveGrants', () => {
+	// component's next deploy fails. Omitting the field keeps the stored list under the server's own
+	// lock, and idempotent `grant_secret` adds this component. The protocol IS the fix, so it's what
+	// these cases pin.
+	describe('storeSealedSecret', () => {
 		const SECRET = 'deploy.web.git.github.com';
+		const ENVELOPE = 'enc:v1:abc';
 		let originalCliOperations;
-		let originalLog;
-		let logged;
+		let calls;
 
 		beforeEach(() => {
 			originalCliOperations = cliOperationsModule.cliOperations;
-			originalLog = console.log;
-			logged = [];
-			console.log = (...args) => logged.push(args.join(' '));
+			calls = [];
 		});
 
 		afterEach(() => {
 			cliOperationsModule.cliOperations = originalCliOperations;
-			console.log = originalLog;
 		});
 
-		it("unions this component with the row's existing grants, so a rotation keeps them", async () => {
+		function stub(grantResult) {
 			cliOperationsModule.cliOperations = async (req) => {
-				assert.strictEqual(req.operation, 'list_secrets');
-				return {
-					secrets: [
-						{ name: SECRET, grants: ['other-app'] },
-						{ name: 'unrelated', grants: ['nope'] },
-					],
-				};
+				calls.push(req);
+				return req.operation === 'grant_secret' ? grantResult : {};
 			};
+		}
 
-			const grants = await resolveGrants({ target: 'example.com' }, SECRET, 'web');
+		it('stores the envelope WITHOUT grants, so the server keeps any it already has', async () => {
+			stub({ name: SECRET, grants: ['web'], changed: true });
 
-			assert.deepStrictEqual([...grants].sort(), ['other-app', 'web']);
-			assert.ok(
-				logged.some((line) => line.includes('other-app')),
-				`should report the grant it preserved, got: ${JSON.stringify(logged)}`
+			await storeSealedSecret({ target: 'example.com' }, SECRET, ENVELOPE, 'web');
+
+			const setSecret = calls.find((c) => c.operation === 'set_secret');
+			assert.ok(setSecret, 'set_secret was called');
+			assert.strictEqual(setSecret.envelope, ENVELOPE);
+			assert.strictEqual(
+				'grants' in setSecret,
+				false,
+				'sending grants here would replace the stored list and revoke other components'
 			);
 		});
 
-		it('does not duplicate the component when the row already grants it', async () => {
-			cliOperationsModule.cliOperations = async () => ({ secrets: [{ name: SECRET, grants: ['web'] }] });
-			assert.deepStrictEqual(await resolveGrants({}, SECRET, 'web'), ['web']);
-		});
+		it('grants this component in a second, idempotent call after the row exists', async () => {
+			stub({ name: SECRET, grants: ['web'], changed: true });
 
-		it('sends only this component when the row does not exist yet', async () => {
-			cliOperationsModule.cliOperations = async () => ({ secrets: [] });
-			assert.deepStrictEqual(await resolveGrants({}, SECRET, 'web'), ['web']);
-		});
+			await storeSealedSecret({}, SECRET, ENVELOPE, 'web');
 
-		it('falls back to this component alone on a lookup failure, and says so', async () => {
-			cliOperationsModule.cliOperations = async () => {
-				throw new Error('list_secrets is not available');
-			};
-
-			const grants = await resolveGrants({}, SECRET, 'web');
-
-			assert.deepStrictEqual(grants, ['web']);
-			assert.ok(
-				logged.some((line) => line.includes(SECRET) && /couldn't read existing grants/i.test(line)),
-				`the replace is only acceptable if it's visible, got: ${JSON.stringify(logged)}`
+			assert.deepStrictEqual(
+				calls.map((c) => c.operation),
+				['set_secret', 'grant_secret'],
+				'grant_secret 404s if it runs before the row exists, so order matters'
 			);
+			const grant = calls[1];
+			assert.strictEqual(grant.name, SECRET);
+			assert.strictEqual(grant.component, 'web');
+		});
+
+		it("reports the server's full grant list, so a preserved grant is visible", async () => {
+			stub({ name: SECRET, grants: ['other-app', 'web'], changed: true });
+			assert.deepStrictEqual(await storeSealedSecret({}, SECRET, ENVELOPE, 'web'), ['other-app', 'web']);
+		});
+
+		it('falls back to this component for the summary when the response carries no grants', async () => {
+			stub({});
+			assert.deepStrictEqual(await storeSealedSecret({}, SECRET, ENVELOPE, 'web'), ['web']);
+		});
+
+		it('carries the caller transport context into both calls', async () => {
+			stub({ grants: ['web'] });
+			await storeSealedSecret(
+				{ target: 'https://example.com:9925', rejectUnauthorized: false },
+				SECRET,
+				ENVELOPE,
+				'web'
+			);
+			for (const call of calls) {
+				assert.strictEqual(call.target, 'https://example.com:9925', call.operation);
+				assert.strictEqual(call.rejectUnauthorized, false, call.operation);
+			}
 		});
 	});
 });

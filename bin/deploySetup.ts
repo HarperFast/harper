@@ -38,6 +38,14 @@ import {
 	PROJECT_NAME_PATTERN,
 } from '../utility/componentNames.ts';
 
+// `formatCliError` (bin/harper.ts) prints message-only for an error carrying a numeric `statusCode`
+// and keeps the stack for anything else, on the assumption that a stack means a bug. Everything this
+// flow throws is a usage or cluster-capability problem the operator can act on, so it gets a code —
+// the value only selects the clean formatting.
+function cliError(message: string): Error {
+	return Object.assign(new Error(message), { statusCode: 400 });
+}
+
 function tryCommand(command: string, args: string[]): string {
 	try {
 		return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -79,38 +87,40 @@ export function resolveComponentName(req: any): string | undefined {
 export function resolveGitHost(host: unknown): string {
 	const normalized = typeof host === 'string' ? normalizeGitHost(host) : '';
 	if (!GIT_HOST_PATTERN.test(normalized)) {
-		throw new Error(`Invalid git host ${JSON.stringify(host)} — expected a bare host, e.g. 'github.com'.`);
+		throw cliError(`Invalid git host ${JSON.stringify(host)} — expected a bare host, e.g. 'github.com'.`);
 	}
 	return normalized;
 }
 
 /**
- * The grants to send with the seal: this component, plus whatever the row already grants.
+ * Store the sealed envelope and make sure the component can use it, as two server-side atomic steps.
+ * Returns the row's full grant list, as the server reports it.
  *
- * `set_secret` replaces rather than merges (`grants = dedupeGrants(req.grants ?? existing?.grants)`),
- * so rotating a token here while sending only this component would revoke any grant an operator added
- * separately with `grant_secret` — the realistic case being a monorepo whose second component deploys
- * from the same repo. That revocation is invisible until the other component's next deploy fails, so
- * the union is read first. A lookup failure falls back to this component alone (the pre-existing
- * behavior) and says so, rather than aborting a rotation the operator asked for.
+ * `grants` is deliberately omitted from `set_secret`: it *replaces* rather than merges
+ * (`grants = dedupeGrants(req.grants ?? existing?.grants)`, secretOperations.ts), so sending only this
+ * component would silently revoke a grant an operator had added with `grant_secret` — a monorepo's
+ * second component being the realistic case, and invisible until its next deploy fails. Omitting the
+ * field keeps the stored list untouched under the server's `withSecretLock`, and the idempotent
+ * `grant_secret` then adds this component in a second locked step. Doing the merge on the client
+ * instead would cost the same two round trips while reintroducing a race: a `revoke_secret` landing
+ * between the read and the write would be silently undone.
+ *
+ * A brand-new row is briefly ungranted between the calls, which is harmless — it can't be resolved by
+ * any deploy until the grant lands. Nothing is printed until both steps succeed, so a failure part-way
+ * doesn't claim a credential is ready to use.
  */
-export async function resolveGrants(transport: any, secretName: string, component: string): Promise<string[]> {
-	try {
-		const listed: any = await cliOperations({ ...transport, operation: 'list_secrets' }, true);
-		const row = listed?.secrets?.find((secret: any) => secret?.name === secretName);
-		const existing: string[] = Array.isArray(row?.grants) ? row.grants : [];
-		if (existing.length && !existing.includes(component)) {
-			console.log(chalk.gray(`  Keeping existing grant(s) on "${secretName}": ${existing.join(', ')}`));
-		}
-		return [...new Set([component, ...existing])];
-	} catch {
-		console.log(
-			chalk.yellow(
-				`Note: couldn't read existing grants for "${secretName}"; storing it granted to "${component}" only.`
-			)
-		);
-		return [component];
-	}
+export async function storeSealedSecret(
+	transport: any,
+	secretName: string,
+	envelope: string,
+	component: string
+): Promise<string[]> {
+	await cliOperations({ ...transport, operation: 'set_secret', name: secretName, envelope }, true);
+	const granted: any = await cliOperations(
+		{ ...transport, operation: 'grant_secret', name: secretName, component },
+		true
+	);
+	return Array.isArray(granted?.grants) ? granted.grants : [component];
 }
 
 export async function deploySetup(req: any): Promise<void> {
@@ -120,19 +130,14 @@ export async function deploySetup(req: any): Promise<void> {
 	// deploy args that brought us here (`setup`, `token`, `package`) never reach either body.
 	const transport = transportContext(req);
 
-	// 1. Fetch the cluster's public secrets key.
-	let keyResponse: any;
-	try {
-		keyResponse = await cliOperations({ ...transport, operation: 'get_secrets_public_key' }, true);
-	} catch (error) {
-		throw new Error(
-			`Could not fetch the cluster's secrets public key: ${error instanceof Error ? error.message : String(error)}`
-		);
-	}
+	// 1. Fetch the cluster's public secrets key. Not wrapped in a try/catch: `cliOperations` reports
+	// the failure and exits rather than throwing, so a catch here would be dead code promising a
+	// friendlier message that never runs.
+	const keyResponse: any = await cliOperations({ ...transport, operation: 'get_secrets_public_key' }, true);
 	const publicKey: string | undefined = keyResponse?.public_key;
 	const fingerprint: string | undefined = keyResponse?.fingerprint;
 	if (!publicKey || !fingerprint) {
-		throw new Error(
+		throw cliError(
 			"This cluster didn't return a secrets public key — secrets custody isn't initialized on it " +
 				'(available on Harper Pro / Fabric). Without it, a credential cannot be sealed client-side.'
 		);
@@ -154,7 +159,7 @@ export async function deploySetup(req: any): Promise<void> {
 		).provider;
 
 	if (provider !== 'github' && provider !== 'npm') {
-		throw new Error(`Unsupported provider "${provider}" — supported providers are "github" and "npm".`);
+		throw cliError(`Unsupported provider "${provider}" — supported providers are "github" and "npm".`);
 	}
 
 	// 3. Which component is the credential for? (the grant is scoped to it)
@@ -171,7 +176,7 @@ export async function deploySetup(req: any): Promise<void> {
 			).project ?? ''
 		);
 	if (!PROJECT_NAME_PATTERN.test(component)) {
-		throw new Error(
+		throw cliError(
 			`"${component}" is not a usable component name — a deploy accepts letters, numbers, dashes and underscores.`
 		);
 	}
@@ -245,7 +250,7 @@ export async function deploySetup(req: any): Promise<void> {
 	}
 
 	token = typeof token === 'string' ? token.trim() : undefined;
-	if (!token) throw new Error('No token was provided; nothing to store.');
+	if (!token) throw cliError('No token was provided; nothing to store.');
 
 	// 4. Seal the token locally. Only ciphertext leaves this machine.
 	const envelope = ENV_ENCRYPTED_PREFIX + encryptEnvelope(token, publicKey, fingerprint);
@@ -257,8 +262,7 @@ export async function deploySetup(req: any): Promise<void> {
 		provider === 'github'
 			? deriveGitSecretName(component, credentialKey)
 			: deriveRegistrySecretName(component, credentialKey);
-	const grants = await resolveGrants(transport, secretName, component);
-	await cliOperations({ ...transport, operation: 'set_secret', name: secretName, envelope, grants }, true);
+	const grants = await storeSealedSecret(transport, secretName, envelope, component);
 
 	// 6. Print the credentials reference the deploy should use.
 	credentialEntry.secret = secretName;
