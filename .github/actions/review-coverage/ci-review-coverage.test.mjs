@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import test from 'node:test';
 
-import { evaluateCiCoverage } from './ci-review-coverage.mjs';
+import { evaluateCiCoverage } from './evaluateCiCoverage.mjs';
 
 const HEAD = 'abcdef1234567890abcdef1234567890abcdef12';
 const pr = (over = {}) => ({
@@ -136,6 +136,10 @@ test('the CLI runs through a symlinked entrypoint', () => {
 	const link = path.join(dir, 'ci-review-coverage.mjs');
 	const file = path.join(dir, 'event.json');
 	symlinkSync(SCRIPT, link);
+	symlinkSync(
+		fileURLToPath(new URL('./evaluateCiCoverage.mjs', import.meta.url)),
+		path.join(dir, 'evaluateCiCoverage.mjs')
+	);
 	symlinkSync(fileURLToPath(new URL('./reviewGate.mjs', import.meta.url)), path.join(dir, 'reviewGate.mjs'));
 	writeFileSync(file, JSON.stringify({ pull_request: pr() }));
 	try {
