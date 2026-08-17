@@ -220,14 +220,15 @@ that specific failure.
   distinguish them, so use it as a concurrency signal; a duration-based metric would be needed to
   identify a single transaction held open long enough to hold back compaction.
 
-Both metrics are gauges tracked only on the RocksDB write/read path, sampled per worker thread. On an
-LMDB-backed database (`storage.engine: lmdb`), `depth` and `maxDepth` for both metrics always read `0`
-— indistinguishable from a healthy, empty queue — regardless of actual read/write load. All per-thread
-analytics reporting, including these gauges, piggybacks on the thread having recorded some other
-analytics-eligible activity in the period — a thread with no recordable activity in a given second
-emits no row at all rather than an explicit `depth: 0`. Absence of a sample is not the same as a
-healthy reading, particularly for `read-transaction-queue-depth` on an otherwise-quiet thread holding a
-single long-lived read.
+Both metrics are gauges tracked only on the RocksDB write/read path, sampled per worker thread. They
+carry no `database` dimension, so activity against LMDB-backed databases is not counted at all: on a
+mixed install they report RocksDB traffic only and silently under-count, and on an install with no
+RocksDB databases (`storage.engine: lmdb`) both always read `0` — indistinguishable from a healthy,
+empty queue — regardless of actual read/write load. All per-thread analytics reporting, including
+these gauges, piggybacks on the thread having recorded some other analytics-eligible activity in the
+period — a thread with no recordable activity in a given second emits no row at all rather than an
+explicit `depth: 0`. Absence of a sample is not the same as a healthy reading, particularly for
+`read-transaction-queue-depth` on an otherwise-quiet thread holding a single long-lived read.
 
 The raw per-thread entries in `hdb_raw_analytics` retain each thread's true instantaneous `depth` and
 per-period `maxDepth`; treat those as the reliable source for spike detection. The aggregate
