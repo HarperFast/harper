@@ -8,6 +8,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { resolveComponentName, resolveGitHost } = require('#src/bin/deploySetup');
+const { directoryProjectName } = require('#src/utility/componentNames');
 
 describe('deploySetup', () => {
 	describe('resolveComponentName', () => {
@@ -30,7 +31,6 @@ describe('deploySetup', () => {
 		});
 
 		it('matches the directory name a bare `harper deploy` from the same cwd would send', () => {
-			const { directoryProjectName } = require('#src/utility/componentNames');
 			assert.strictEqual(directoryProjectName(), path.basename(process.cwd()));
 		});
 
@@ -41,26 +41,40 @@ describe('deploySetup', () => {
 		it("agrees with prepareDeployByRef's project default, including when package.json disagrees", () => {
 			const fs = require('fs-extra');
 			const os = require('node:os');
+			const { execFileSync } = require('node:child_process');
 			const { prepareDeployByRef } = require('#src/bin/cliOperations');
-			const dir = path.join(os.tmpdir(), `harper-project-default-${process.pid}`, 'my-app-repo');
+			// A real repo, so prepareDeployByRef runs its own resolution rather than us substituting a
+			// fallback — otherwise a regression back to the package.json name would still pass here.
+			const root = path.join(os.tmpdir(), `harper-project-default-${process.pid}`);
+			const dir = path.join(root, 'my-app-repo');
 			fs.ensureDirSync(dir);
 			fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@acme/my-app' }));
+			const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+			git('init', '-q');
+			git('config', 'user.email', 'test@example.com');
+			git('config', 'user.name', 'Test');
+			git('config', 'commit.gpgsign', 'false');
+			git('remote', 'add', 'origin', 'https://github.com/acme/my-app-repo.git');
+			git('add', 'package.json');
+			git('commit', '-qm', 'init');
+
 			const cwd = process.cwd();
+			const savedSha = process.env.GITHUB_SHA;
 			try {
+				delete process.env.GITHUB_SHA; // else the committish comes from the CI env, not this repo
 				process.chdir(dir);
-				const req = { operation: 'deploy_component', by_ref: true, ref: 'HEAD' };
-				try {
-					prepareDeployByRef(req);
-				} catch {
-					// Not a git repo — resolveGitTarget throws before setting `project`; resolve the default
-					// the same way it does instead, which is the agreement under test.
-					req.project = require('#src/utility/componentNames').directoryProjectName();
-				}
+				const req = { operation: 'deploy_component', by_ref: true };
+				prepareDeployByRef(req);
 				assert.strictEqual(req.project, 'my-app-repo', 'by_ref must not prefer the package.json name');
+				// The name setup would grant, for the same cwd, must be the name by_ref deploys under —
+				// otherwise resolveCredentials rejects the sealed secret as not granted.
+				assert.strictEqual(req.project, directoryProjectName());
 				assert.strictEqual(req.project, resolveComponentName({ project: req.project }));
 			} finally {
 				process.chdir(cwd);
-				fs.removeSync(path.dirname(dir));
+				if (savedSha === undefined) delete process.env.GITHUB_SHA;
+				else process.env.GITHUB_SHA = savedSha;
+				fs.removeSync(root);
 			}
 		});
 	});

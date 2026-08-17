@@ -264,7 +264,8 @@ export async function deploySetup(req: any): Promise<void> {
 	credentialEntry.secret = secretName;
 	console.log(chalk.green(`\n✓ Sealed "${credentialKey}" credential and stored it as secret "${secretName}".`));
 	console.log(chalk.gray("  It was encrypted here with the cluster's public key — only ciphertext was sent."));
-	const grantSummary = grants.length > 1 ? `components ${grants.map((g) => `"${g}"`).join(', ')}` : `component "${component}"`;
+	const grantSummary =
+		grants.length > 1 ? `components ${grants.map((g) => `"${g}"`).join(', ')}` : `component "${component}"`;
 	console.log(chalk.gray(`  Granted to ${grantSummary}; the cluster decrypts it only at deploy/rollback time.`));
 	console.log('\nUse it in your deploy:');
 	console.log(chalk.cyan(`  credentials='${JSON.stringify([credentialEntry])}'`));

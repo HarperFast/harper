@@ -507,7 +507,6 @@ function warnIfCommitNotPushed(committish: string): void {
 	}
 }
 
-
 // The credential only helps if it's for the host the package is cloned from: a `credential=gitlab.com`
 // against a github.com package builds a valid-looking reference the clone never asks for, and the
 // private deploy then fails as if nothing were configured. So the host comes from the package rather
