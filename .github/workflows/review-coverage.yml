@@ -20,7 +20,4 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # the action is hosted in THIS repo (public home; GitHub bars public repos from
-      # using private-repo actions, so it cannot live in dispatch) — other public
-      # HarperFast repos pin it by sha
       - uses: ./.github/actions/review-coverage
