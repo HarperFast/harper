@@ -1,7 +1,7 @@
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, setMaxListeners } from 'node:events';
 import { Readable, PassThrough } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
 import type { ConnectionInfo } from './proxyProtocol.ts';
@@ -64,6 +64,7 @@ export class Request {
 	public lastRefreshed?: number;
 
 	constructor(nodeRequest: IncomingMessage, nodeResponse?: NodeServerResponse) {
+		setMaxListeners(0, this.#abortController.signal);
 		this.method = nodeRequest.method;
 		const url = nodeRequest.url;
 		this._nodeRequest = nodeRequest;

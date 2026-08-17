@@ -133,13 +133,19 @@ export function transaction<T>(
 		} catch (cleanupError) {
 			harperLogger.debug?.('closing results after a failed commit', cleanupError);
 		}
-		transaction.abort(transaction.timedOut || transaction.disconnected);
-		throw error;
+		abortAndThrow(error);
 	}
 	// if the transaction function throws an error, we abort
 	function onError(error) {
 		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
-		transaction.abort(transaction.timedOut || transaction.disconnected);
+		abortAndThrow(error);
+	}
+	function abortAndThrow(error): never {
+		try {
+			transaction.abort(transaction.timedOut || transaction.disconnected);
+		} catch (abortError) {
+			harperLogger.debug?.('aborting transaction after an error', abortError);
+		}
 		throw error;
 	}
 }
