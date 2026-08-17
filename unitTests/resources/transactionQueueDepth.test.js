@@ -69,6 +69,7 @@ describe('Transaction queue depth metrics', () => {
 		try {
 			txn.getReadTxn();
 			const depths = getTransactionQueueDepths();
+			assert.ok(depths.readDepth >= 1, `the write-created transaction should be tracked, got ${depths.readDepth}`);
 			assert.ok(
 				depths.readMaxDepth >= depths.readDepth,
 				`readMaxDepth ${depths.readMaxDepth} should include current depth ${depths.readDepth}`
