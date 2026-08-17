@@ -99,6 +99,7 @@ suite(
 				try {
 					const probe = await fetch(`${httpURL}/ReadyProbe/`, {
 						headers: { Authorization: client.headers.Authorization },
+						signal: AbortSignal.timeout(3_000),
 					});
 					if (probe.status === 200) {
 						ready = true;

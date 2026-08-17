@@ -238,6 +238,7 @@ suite(
 							await r.text().catch(() => {});
 						} catch {
 							/* transient errors don't stop the sustained-load probe */
+							await sleep(25);
 						}
 					}
 				}

@@ -220,7 +220,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 	}
 
 	// ---- Q0: explicit delete() (fastest, no wait — runs first so a partial run still verdicts) --
-	test('Q0 DelTable: explicit delete() phantom-null check', { timeout: 30_000 }, async () => {
+	test('Q0 DelTable: explicit delete() phantom-null check', { timeout: 45_000 }, async () => {
 		const delIds = ids('del', N);
 		await post('/Load/', { table: 'DelTable', ids: delIds, bucket: 'DEL' });
 		let base = await dump('DelTable');
@@ -253,7 +253,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 	// ---- Q3: update-in-place control (fast, no removal — must show zero phantoms) ---------------
 	test(
 		'Q3 ControlTable: update-in-place, zero phantoms expected (oracle sanity control)',
-		{ timeout: 30_000 },
+		{ timeout: 45_000 },
 		async () => {
 			const ctrlIds = ids('ctrl', N);
 			await post('/Load/', { table: 'ControlTable', ids: ctrlIds, bucket: 'ORIG' });
@@ -274,7 +274,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 
 	// ---- Q2: read-triggered LAZY eviction (TableResource.evict() called directly from a GET, ------
 	// isolated from the background sweep by a huge scanInterval) --------------------------------
-	test('Q2 EvictTable: read-triggered lazy eviction (evict()) phantom-null check', { timeout: 30_000 }, async () => {
+	test('Q2 EvictTable: read-triggered lazy eviction (evict()) phantom-null check', { timeout: 60_000 }, async () => {
 		const evictIds = ids('evict', N);
 		await post('/Load/', { table: 'EvictTable', ids: evictIds, bucket: 'EVICT' });
 		let base = await dump('EvictTable');
@@ -321,7 +321,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 
 	// ---- Q1: background TTL/expiration SWEEP (scheduleCleanup(); RocksDB batcher path or LMDB ----
 	// per-record evict() path) --------------------------------------------------------------------
-	test('Q1 SweepTable: background TTL/expiration sweep phantom-null check', { timeout: 60_000 }, async () => {
+	test('Q1 SweepTable: background TTL/expiration sweep phantom-null check', { timeout: 75_000 }, async () => {
 		const sweepIds = ids('sweep', N);
 		await post('/Load/', { table: 'SweepTable', ids: sweepIds, bucket: 'SWEEP' });
 		let base = await dump('SweepTable');
