@@ -8,14 +8,69 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const script = join(root, 'build-tools/check-shrinkwrap-pins.mjs');
 const dependencies = ['@harperfast/rocksdb-js', 'fastify', '@aws-sdk/client-s3'];
+const alignedDependencies = {
+	'@harperfast/extended-iterable': '1.0.3',
+	'msgpackr': '2.0.5',
+};
 
 describe('shrinkwrap pin canaries', function () {
-	it('keeps the checked canaries viable in the real manifest', async function () {
+	it('keeps the checked canaries present and ranged in the real manifest', async function () {
 		const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 		const fixture = await createFixture(manifest.dependencies);
 		try {
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 0, result.stderr);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('fails when a root encoder pin diverges from rocksdb-js', async function () {
+		const fixture = await createFixture({
+			'@harperfast/rocksdb-js': '2.7.1',
+			'fastify': '^5.8.2',
+			'@aws-sdk/client-s3': '^3.1012.0',
+		});
+		try {
+			await writeFile(
+				join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js/package.json'),
+				JSON.stringify({
+					version: '1.0.0',
+					dependencies: { ...alignedDependencies, msgpackr: '2.0.6' },
+				})
+			);
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /msgpackr must be exact and match rocksdb-js/);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('fails when rocksdb-js installs a nested encoder instance', async function () {
+		const fixture = await createFixture({
+			'@harperfast/rocksdb-js': '2.7.1',
+			'fastify': '^5.8.2',
+			'@aws-sdk/client-s3': '^3.1012.0',
+		});
+		try {
+			const nestedDir = join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js/node_modules/msgpackr');
+			await mkdir(nestedDir, { recursive: true });
+			await writeFile(join(nestedDir, 'package.json'), JSON.stringify({ version: '2.0.5' }));
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /rocksdb-js loaded a nested msgpackr@2\.0\.5/);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('does not misdiagnose an empty checked set as all-exact', async function () {
+		const fixture = await createFixture({});
+		try {
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.doesNotMatch(result.stderr, /every checked canary has an exact declared version/);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -200,7 +255,8 @@ async function createFixture(
 	await mkdir(packageRoot, { recursive: true });
 	await mkdir(binDir, { recursive: true });
 	await writeFile(queryLog, '');
-	await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ dependencies: manifestDependencies }));
+	const packageDependencies = { ...alignedDependencies, ...manifestDependencies };
+	await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ dependencies: packageDependencies }));
 	await writeFile(
 		join(packageRoot, 'npm-shrinkwrap.packed.json'),
 		JSON.stringify({
@@ -210,13 +266,14 @@ async function createFixture(
 			),
 		})
 	);
-	for (const dependency of dependencies) {
+	for (const dependency of [...dependencies, ...Object.keys(alignedDependencies)]) {
 		const dependencyDir = join(packageRoot, 'node_modules', dependency);
 		await mkdir(dependencyDir, { recursive: true });
-		await writeFile(
-			join(dependencyDir, 'package.json'),
-			JSON.stringify({ version: installedVersions[dependency] ?? '1.0.0' })
-		);
+		const dependencyManifest = {
+			version: installedVersions[dependency] ?? alignedDependencies[dependency] ?? '1.0.0',
+		};
+		if (dependency === '@harperfast/rocksdb-js') dependencyManifest.dependencies = alignedDependencies;
+		await writeFile(join(dependencyDir, 'package.json'), JSON.stringify(dependencyManifest));
 	}
 	await writeFile(
 		join(binDir, 'npm'),
@@ -237,7 +294,7 @@ fi
 case "$2" in
   fastify@*) printf '["1.0.0"]\\n' ;;
   @aws-sdk/client-s3@*) printf '["1.0.0", "1.0.1"]\\n' ;;
-  *) exit 1 ;;
+  *) printf 'stub npm: unmodelled query %s\n' "$2" >&2; exit 1 ;;
 esac
 `
 	);

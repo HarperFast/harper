@@ -30,9 +30,10 @@
 // Usage: node check-shrinkwrap-pins.mjs <package-root>
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const CHECKED_DEPS = ['@harperfast/rocksdb-js', 'fastify', '@aws-sdk/client-s3'];
+const ROCKSDB_SINGLE_INSTANCE_DEPS = ['@harperfast/extended-iterable', 'msgpackr'];
 const REGISTRY_QUERY_ATTEMPTS = 3;
 const retryWait = new Int32Array(new SharedArrayBuffer(4));
 
@@ -93,6 +94,8 @@ for (const dep of CHECKED_DEPS) {
 	console.log(`${status}: ${dep}@${installed} matches the packed pin`);
 }
 
+verifyRocksDbDependencyAlignment();
+
 // A canary only proves the check works while its pin lags the registry -- if a lock bump
 // ever lands every ranged canary on registry-latest, the pin-match loop above would pass on a
 // reverted, broken Dockerfile just as easily as on this one. Fail loudly rather than let
@@ -103,6 +106,7 @@ process.exit(failed ? 1 : 0);
 
 function verifyCanariesDiscriminate(pins) {
 	const rangedPins = Object.fromEntries(Object.entries(pins).filter(([, { range }]) => !isExactVersion(range)));
+	if (Object.keys(pins).length === 0) return;
 	if (Object.keys(rangedPins).length === 0) {
 		console.error(
 			'::error::every checked canary has an exact declared version -- exact dependencies cannot distinguish a shrinkwrap install from a fresh resolution. Add a canary with a ranged manifest spec.'
@@ -160,6 +164,52 @@ function verifyCanariesDiscriminate(pins) {
 		`::error::every checked canary (${checkable.join(', ')}) is now pinned at the latest version its declared range allows -- this check would pass even on a reverted, unpinned install. Pick a new canary whose shrinkwrap pin lags what its range allows.`
 	);
 	failed = true;
+}
+
+function verifyRocksDbDependencyAlignment() {
+	let rocksdbManifest;
+	try {
+		rocksdbManifest = JSON.parse(readFileSync(`${pkgRoot}/node_modules/@harperfast/rocksdb-js/package.json`, 'utf8'));
+	} catch (e) {
+		console.error(`::error::could not inspect rocksdb-js dependency alignment: ${e.message}`);
+		failed = true;
+		return;
+	}
+
+	for (const dep of ROCKSDB_SINGLE_INSTANCE_DEPS) {
+		const rootSpec = manifest.dependencies?.[dep];
+		const rocksdbSpec = rocksdbManifest.dependencies?.[dep];
+		if (!isExactVersion(rootSpec) || rootSpec !== rocksdbSpec) {
+			console.error(
+				`::error::${dep} must be exact and match rocksdb-js (${rootSpec ?? 'missing'} !== ${rocksdbSpec ?? 'missing'}) -- update these pins together to preserve one module instance`
+			);
+			failed = true;
+			continue;
+		}
+
+		try {
+			const installed = JSON.parse(readFileSync(`${pkgRoot}/node_modules/${dep}/package.json`, 'utf8')).version;
+			if (installed !== rootSpec) {
+				console.error(`::error::${dep} resolved to ${installed}, expected the aligned exact pin ${rootSpec}`);
+				failed = true;
+			}
+		} catch (e) {
+			console.error(`::error::could not inspect the root ${dep} instance: ${e.message}`);
+			failed = true;
+		}
+
+		const nestedManifest = `${pkgRoot}/node_modules/@harperfast/rocksdb-js/node_modules/${dep}/package.json`;
+		if (existsSync(nestedManifest)) {
+			let nestedVersion = 'unknown';
+			try {
+				nestedVersion = JSON.parse(readFileSync(nestedManifest, 'utf8')).version;
+			} catch {}
+			console.error(
+				`::error::rocksdb-js loaded a nested ${dep}@${nestedVersion} -- root and rocksdb-js must share one module instance`
+			);
+			failed = true;
+		}
+	}
 }
 
 function isExactVersion(range) {
