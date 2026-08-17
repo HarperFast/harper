@@ -152,6 +152,11 @@ Extraction renames an existing component aside before writing the replacement an
 dependency installation and metadata verification complete. Any preparation failure atomically
 renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
 wedge rollback with `ENOTEMPTY`; cleanup completes while the same-component lock is still held.
+On non-root POSIX systems, rollback uses a mode-`000` placeholder to keep that writer out between
+retries. Before moving or removing it, rollback verifies the placeholder's device/inode identity and
+restores owner permissions because a cross-parent directory move updates `..` and requires write
+permission on the moved directory. Recovery also recognizes an owner-owned mode-`000` directory as
+an orphaned placeholder so a crash during rollback cannot leave the component wedged.
 The aside name is itself the recovery record: `.in-progress-*` is recoverable after an interrupted
 deploy unless a sibling `.retired-*` marker records that the replacement committed. Cleanup removes
 the aside before its marker, so an interrupted cleanup cannot make an obsolete tree recoverable.

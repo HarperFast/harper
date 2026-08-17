@@ -1100,8 +1100,30 @@ async function rollbackExtractedDirectory(
 		let restoreRetryDeadline: number | undefined;
 		let fallbackDisplacedPath: string | undefined;
 		let placeholderIdentity: { dev: bigint; ino: bigint } | undefined;
+		const makeRollbackPlaceholderMovable = async (): Promise<void> => {
+			try {
+				const current = await lstat(application.dirPath, { bigint: true });
+				const processUid = process.getuid?.();
+				const isTrackedPlaceholder =
+					placeholderIdentity && current.dev === placeholderIdentity.dev && current.ino === placeholderIdentity.ino;
+				const isOrphanedPlaceholder =
+					!placeholderIdentity &&
+					process.platform !== 'win32' &&
+					processUid !== undefined &&
+					processUid !== 0 &&
+					current.isDirectory() &&
+					current.uid === BigInt(processUid) &&
+					(current.mode & 0o777n) === 0n;
+				if (isTrackedPlaceholder || isOrphanedPlaceholder) {
+					await chmod(application.dirPath, 0o700);
+				}
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+			}
+		};
 		const failRestore = async (error: unknown): Promise<never> => {
 			try {
+				await makeRollbackPlaceholderMovable();
 				if (retainReplacement && fallbackDisplacedPath) {
 					await rm(application.dirPath, {
 						recursive: true,
@@ -1145,6 +1167,7 @@ async function rollbackExtractedDirectory(
 		};
 		do {
 			try {
+				await makeRollbackPlaceholderMovable();
 				await rename(asidePath, application.dirPath);
 				transactionPaths.delete(asidePath);
 				await cleanupExtractionPaths(application, asideStagingDir, transactionPaths);
@@ -1157,6 +1180,7 @@ async function rollbackExtractedDirectory(
 				let displacedPath: string | undefined;
 				const displacedPlaceholderIdentity = placeholderIdentity;
 				try {
+					await makeRollbackPlaceholderMovable();
 					displacedPath = await displaceCurrentDirectory();
 					placeholderIdentity = undefined;
 					if (displacedPath && displacedPlaceholderIdentity) {

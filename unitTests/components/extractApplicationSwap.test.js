@@ -484,6 +484,31 @@ describe('extractApplication directory swap', () => {
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
 
+	it('recovers after a crash leaves an occupied rollback placeholder', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		this.timeout(20000);
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-placeholder-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'occupied'), 'writer raced rollback\n');
+		await fs.chmod(dirPath, 0o000);
+		const stagingDir = path.join(componentsRoot, '.deploy-aside', 'web');
+		const asidePath = path.join(stagingDir, `.in-progress-${Date.now()}-crashed`);
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.deepStrictEqual([...failures], []);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			await assert.rejects(fs.access(path.join(dirPath, 'occupied')));
+			await assert.rejects(fs.access(stagingDir));
+		} finally {
+			await fs.chmod(dirPath, 0o700).catch(() => {});
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	it('reclaims a stale aside copy left by an earlier deploy', async function () {
 		this.timeout(20000);
 
