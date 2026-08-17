@@ -19,7 +19,7 @@ test('report mode is always green, but says what is missing', () => {
 	const r = evaluateCiCoverage(pr());
 	assert.strictEqual(r.pass, true);
 	assert.strictEqual(r.compliant, false);
-	assert.match(r.summary, /no cross-model reviews reported/);
+	assert.match(r.summary, /0 cross-model reviews reported/);
 });
 
 test('enforce mode fails a member non-trivial PR reporting under the threshold', () => {
@@ -70,29 +70,43 @@ test('the footer note distinguishes current, stale, and absent', () => {
 	assert.match(evaluateCiCoverage(at(HEAD.slice(0, 12).toUpperCase())).detail, /Human-Review-Need: 2 @ head/);
 	assert.match(evaluateCiCoverage(at(HEAD.slice(0, 12), 12)).detail, /Need: 12 @ head/);
 	assert.match(evaluateCiCoverage(at('999999999999')).detail, /STALE/);
+	assert.match(evaluateCiCoverage(pr({ body: 'Human-Review-Need: 3' })).detail, /Need: 3 @ unpinned sha/);
+	assert.match(
+		evaluateCiCoverage(pr({ body: `Human-Review-Need: 2 @ 999999999999\nHuman-Review-Need: 4 @ ${HEAD.slice(0, 12)}` }))
+			.detail,
+		/Need: 4 @ head/
+	);
 	assert.match(evaluateCiCoverage(pr()).detail, /no Human-Review-Need footer/);
 });
 
 test('required is tunable', () => {
 	const one = pr({ body: '## Review coverage\n- Codex: clean' });
 	assert.strictEqual(evaluateCiCoverage(one, { mode: 'enforce', required: 1 }).pass, true);
+	const two = pr({ body: '## Review coverage\n- Codex: clean\n- Gemini: clean' });
+	const result = evaluateCiCoverage(two, { mode: 'enforce', required: 3 });
+	assert.strictEqual(result.pass, false);
+	assert.match(result.summary, /^2 cross-model reviews reported .*policy asks for 3$/);
 });
 
 // ---- exit codes, through the real CLI entry ----
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const SCRIPT = fileURLToPath(new URL('./ci-review-coverage.mjs', import.meta.url));
+const CLEAN_ENV = { ...process.env };
+delete CLEAN_ENV.GITHUB_ENV;
+delete CLEAN_ENV.GITHUB_OUTPUT;
+delete CLEAN_ENV.GITHUB_STEP_SUMMARY;
 const runResult = (payload, ...args) => {
 	const dir = mkdtempSync(path.join(tmpdir(), 'rc-'));
 	const file = path.join(dir, 'event.json');
 	if (payload !== null) writeFileSync(file, JSON.stringify(payload));
 	try {
-		return spawnSync(process.execPath, [SCRIPT, '--event', file, ...args], { encoding: 'utf8' });
+		return spawnSync(process.execPath, [SCRIPT, '--event', file, ...args], { encoding: 'utf8', env: CLEAN_ENV });
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -127,8 +141,35 @@ test('the CLI runs through a symlinked entrypoint', () => {
 	try {
 		const output = execFileSync(process.execPath, ['--preserve-symlinks-main', link, '--event', file], {
 			encoding: 'utf8',
+			env: CLEAN_ENV,
 		});
 		assert.match(output, /review-coverage \[report\]/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('the JavaScript action uses a pinned runtime and receives action inputs', () => {
+	const manifest = readFileSync(fileURLToPath(new URL('./action.yml', import.meta.url)), 'utf8');
+	assert.match(manifest, /runs:\n\s+using: node24\n\s+main: ci-review-coverage\.mjs/);
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-action-'));
+	const file = path.join(dir, 'event.json');
+	writeFileSync(
+		file,
+		JSON.stringify({ pull_request: pr({ body: '## Review coverage\n- Codex: clean\n- Gemini: clean' }) })
+	);
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: file,
+				INPUT_MODE: 'enforce',
+				INPUT_REQUIRED: '3',
+			},
+		});
+		assert.strictEqual(result.status, 1);
+		assert.match(result.stderr, /2 cross-model reviews reported .*policy asks for 3/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -141,17 +182,17 @@ test('a step-summary write failure does not change the coverage verdict', () => 
 	try {
 		const report = spawnSync(process.execPath, [SCRIPT, '--event', file], {
 			encoding: 'utf8',
-			env: { ...process.env, GITHUB_STEP_SUMMARY: dir },
+			env: { ...CLEAN_ENV, GITHUB_STEP_SUMMARY: dir },
 		});
 		assert.strictEqual(report.status, 0);
 		assert.match(report.stderr, /could not write the step summary/);
-		assert.match(report.stderr, /::warning::no cross-model reviews reported/);
+		assert.match(report.stderr, /::warning::0 cross-model reviews reported/);
 
 		const compliant = { pull_request: pr({ body: '## Review coverage\n- Codex: ran\n- Gemini: ran' }) };
 		writeFileSync(file, JSON.stringify(compliant));
 		const enforce = spawnSync(process.execPath, [SCRIPT, '--event', file, '--mode', 'enforce'], {
 			encoding: 'utf8',
-			env: { ...process.env, GITHUB_STEP_SUMMARY: dir },
+			env: { ...CLEAN_ENV, GITHUB_STEP_SUMMARY: dir },
 		});
 		assert.strictEqual(enforce.status, 0);
 		assert.match(enforce.stderr, /could not write the step summary/);
