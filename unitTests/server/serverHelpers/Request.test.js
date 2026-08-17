@@ -318,8 +318,8 @@ describe('Request class', function () {
 			assert.strictEqual(request.isAborted, false);
 		});
 
-		it('allows concurrent transactions to listen without warnings', function () {
-			const request = new Request(makeNodeRequest(), makeNodeResponse());
+		it('allows concurrent WebSocket transactions to listen without warnings', function () {
+			const request = new Request(makeNodeRequest());
 			assert.strictEqual(getMaxListeners(request.signal), 0);
 		});
 

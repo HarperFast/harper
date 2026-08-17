@@ -182,8 +182,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 							}
 						} catch (error) {
 							this.setCommitPhase(false);
-							this.abort(this.timedOut || this.disconnected);
-							throw error;
+							this.abortAfterCommitError(error);
 						}
 						this.setCommitPhase(false);
 						// aborted underneath us while parked above — see DatabaseTransaction's twin guard
@@ -194,8 +193,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					})();
 				}
 			} catch (error) {
-				this.abort(this.timedOut || this.disconnected);
-				throw error;
+				this.abortAfterCommitError(error);
 			}
 		}
 		// release the read snapshot so we don't keep it open longer than necessary
