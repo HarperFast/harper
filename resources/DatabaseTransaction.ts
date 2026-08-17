@@ -1144,6 +1144,16 @@ export class DatabaseTransaction implements Transaction {
 		// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
 		this.releaseContext(!this.timedOut);
 	}
+	private abortNativeTransaction(nativeTransaction: RocksTransaction | undefined, logMessage: string): void {
+		this.transaction = null;
+		this.readTxnsUsed = 0;
+		trackedTxns.delete(this);
+		try {
+			nativeTransaction?.abort();
+		} catch (abortError) {
+			harperLogger.debug?.(logMessage, abortError);
+		}
+	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
 	 * first, then abort each link's native transaction and release its DatabaseTransaction-level
@@ -1159,17 +1169,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			const nativeTxn = txn === this ? headTransaction : txn.transaction;
-			// Clear the native handle and read-snapshot bookkeeping so the abort() below only performs
-			// non-native cleanup (blobs, writes) and can't double-abort (RocksTransaction.abort() throws
-			// on an already-aborted handle) or spin abort()'s doneReadTxn loop on a nulled handle.
-			txn.transaction = null;
-			txn.readTxnsUsed = 0;
-			trackedTxns.delete(txn);
-			try {
-				nativeTxn?.abort();
-			} catch (abortError) {
-				harperLogger.debug?.('aborting conflicted transaction in chain after exhausting retries', abortError);
-			}
+			txn.abortNativeTransaction(nativeTxn, 'aborting conflicted transaction in chain after exhausting retries');
 			try {
 				// abort() synchronously walks savedBlobs and can call write.store.getEntry(), which can throw
 				// (closed store, decode error). Catch and continue so one link's wrapper-cleanup failure can't
@@ -1209,6 +1209,7 @@ export class DatabaseTransaction implements Transaction {
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			txn.abortNativeTransaction(txn.transaction, 'aborting timed-out transaction in chain');
 			try {
 				txn.abort();
 			} catch (error) {

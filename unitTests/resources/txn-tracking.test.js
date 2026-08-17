@@ -172,6 +172,36 @@ describe('Write txn timeout', () => {
 		}
 	});
 
+	it('immediately releases every native read handle when timeout poisoning a transaction chain', function () {
+		if (isLMDB) this.skip();
+		const trackedTxns = setTxnExpiration(30_000);
+		const head = new DatabaseTransaction();
+		const next = new DatabaseTransaction();
+		head.next = next;
+		let abortedHandles = 0;
+		for (const [index, txn] of [head, next].entries()) {
+			txn.transaction = {
+				abort() {
+					abortedHandles++;
+					if (index === 0) throw new Error('expected abort failure');
+				},
+			};
+			txn.readTxnsUsed = 2;
+			trackedTxns.add(txn);
+		}
+
+		head.abortDueToTimeout();
+
+		assert.equal(abortedHandles, 2);
+		for (const txn of [head, next]) {
+			assert.strictEqual(txn.transaction, null);
+			assert.equal(txn.readTxnsUsed, 0);
+			assert.ok(!trackedTxns.has(txn));
+			assert.strictEqual(txn.timedOut, true);
+			assert.equal(txn.open, TRANSACTION_STATE.CLOSED);
+		}
+	});
+
 	// A handler that keeps reading must not extend the limit once it is holding uncommitted writes:
 	// those hold write intents other writers' commits park on (harper#2001). The read-only arm below
 	// pins the other half — reads alone still re-arm. RocksDB-only: LMDBTransaction.getReadTxn()
