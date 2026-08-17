@@ -130,18 +130,18 @@ function verifyCanariesDiscriminate(pins) {
 				// the last array entry.
 				const out = execFileSync('npm', ['view', `${dep}@${range}`, 'version', '--json'], { encoding: 'utf8' });
 				const versions = JSON.parse(out);
-				if (Array.isArray(versions) && versions.length === 0) {
+				rangeLatest[dep] = Array.isArray(versions)
+					? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max))
+					: versions;
+				break;
+			} catch (e) {
+				if (isNpmNotFoundError(e)) {
 					console.error(
 						`::error::${dep}@${range} matches no published version -- correct the declared range in package.json`
 					);
 					failed = true;
 					return;
 				}
-				rangeLatest[dep] = Array.isArray(versions)
-					? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max))
-					: versions;
-				break;
-			} catch (e) {
 				console.log(
 					`::warning::registry query attempt ${attempt}/${REGISTRY_QUERY_ATTEMPTS} failed for ${dep}@${range} (${e.message})`
 				);
@@ -224,6 +224,14 @@ function isExactVersion(range) {
 		typeof range === 'string' &&
 		/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(range)
 	);
+}
+
+function isNpmNotFoundError(error) {
+	try {
+		return JSON.parse(error.stdout).error?.code === 'E404';
+	} catch {
+		return false;
+	}
 }
 
 // Numeric major.minor.patch comparison, ignoring any prerelease/build suffix -- sufficient

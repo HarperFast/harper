@@ -231,7 +231,7 @@ describe('shrinkwrap pin canaries', function () {
 		}
 	});
 
-	it('fails without retries when a registry query matches no published version', async function () {
+	it('fails without retries when npm reports no matching published version', async function () {
 		const fixture = await createFixture(
 			{
 				'@harperfast/rocksdb-js': '2.7.1',
@@ -262,7 +262,7 @@ async function createFixture(
 	allRangeVersionsCurrent = false,
 	failedRange = '',
 	failedAttempts = 3,
-	emptyRange = ''
+	missingRange = ''
 ) {
 	const tempDir = await mkdtemp(join(tmpdir(), 'harper-shrinkwrap-canary-'));
 	const packageRoot = join(tempDir, 'package');
@@ -305,9 +305,9 @@ attempt=$(grep -Fxc "$2" "$QUERY_LOG")
 if [ "$FAILED_RANGE" = "$2" ] && [ "$attempt" -le "$FAILED_ATTEMPTS" ]; then
   exit 1
 fi
-if [ "$EMPTY_RANGE" = "$2" ]; then
-  printf '[]\\n'
-  exit
+if [ "$MISSING_RANGE" = "$2" ]; then
+  printf '{"error":{"code":"E404","summary":"No match found for version"}}\\n'
+  exit 1
 fi
 if [ "$ALL_RANGE_VERSIONS_CURRENT" = 1 ]; then
   printf '["1.0.0"]\\n'
@@ -328,7 +328,7 @@ esac
 		allRangeVersionsCurrent,
 		failedRange,
 		failedAttempts,
-		emptyRange,
+		missingRange,
 		cleanup: () => rm(tempDir, { recursive: true, force: true }),
 	};
 }
@@ -343,7 +343,7 @@ function runCheck(fixture) {
 			ALL_RANGE_VERSIONS_CURRENT: fixture.allRangeVersionsCurrent ? '1' : '0',
 			FAILED_RANGE: fixture.failedRange,
 			FAILED_ATTEMPTS: String(fixture.failedAttempts),
-			EMPTY_RANGE: fixture.emptyRange,
+			MISSING_RANGE: fixture.missingRange,
 		},
 	});
 }
