@@ -144,8 +144,8 @@ export type CorruptFrameError = RangeError & {
 };
 
 /**
- * A log with more breaks than this in one pass is damaged beyond one interrupted append, so
- * iteration ends rather than walking a long chain of them on every drain.
+ * A log with more consecutive breaks than this without yielding an entry is damaged beyond one
+ * interrupted append, so iteration ends rather than walking that chain on every drain.
  */
 export const MAX_RESYNCS_PER_ITERATION = 32;
 
