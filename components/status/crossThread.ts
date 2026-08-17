@@ -122,15 +122,6 @@ export class CrossThreadStatusCollector {
 			const responses: Array<WorkerComponentStatuses> = [];
 			this.awaitingResponses.set(requestId, responses);
 
-			// Calculate expected number of responses: the exact count of other live threads this
-			// broadcast will reach. getEligibleBroadcastRecipientCount() mirrors
-			// broadcastWithAcknowledgement()'s own port filter (which sendItcEvent uses below), so
-			// it is accurate from ANY calling thread -- unlike getWorkerCount(), which only reports
-			// the CALLING thread's own same-type pool and falls back to a hardcoded 1 for the main
-			// thread regardless of how many worker threads actually exist. A genuine zero (no
-			// eligible recipients -- e.g. threads.count: 0, or a job-worker-only process) is
-			// preserved as 0 rather than coerced to 1, so the collector returns immediately instead
-			// of waiting out the full timeout for a response that will never arrive.
 			const expectedResponses = getEligibleBroadcastRecipientCount();
 
 			// Set up response collection with timeout

@@ -4,6 +4,7 @@ const { CrossThreadStatusCollector, StatusAggregator } = require('#src/component
 const { ComponentStatusRegistry } = require('#src/components/status/ComponentStatusRegistry');
 const itcModule = require('#js/server/threads/itc');
 const manageThreadsModule = require('#js/server/threads/manageThreads');
+const connectedPorts = global.threads;
 
 describe('CrossThread Module', function () {
 	let sendItcEventStub;
@@ -27,8 +28,8 @@ describe('CrossThread Module', function () {
 		let originalConnectedPorts;
 
 		beforeEach(function () {
-			originalConnectedPorts = [...manageThreadsModule.connectedPorts];
-			manageThreadsModule.connectedPorts.length = 0;
+			originalConnectedPorts = [...connectedPorts];
+			connectedPorts.length = 0;
 			collector = new CrossThreadStatusCollector(1000); // 1 second timeout
 			registry = new ComponentStatusRegistry();
 		});
@@ -36,15 +37,14 @@ describe('CrossThread Module', function () {
 		afterEach(function () {
 			collector.cleanup();
 			registry.reset();
-			manageThreadsModule.connectedPorts.length = 0;
-			manageThreadsModule.connectedPorts.push(...originalConnectedPorts);
+			connectedPorts.length = 0;
+			connectedPorts.push(...originalConnectedPorts);
 		});
 
 		it('should collect status from local thread only when no responses', async function () {
 			registry.setStatus('localComp', 'healthy', 'All good');
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
-			// connectedPorts left empty, so there are no eligible responders to wait on.
 
 			// Simulate no responses from other threads
 			onMessageByTypeStub.callsFake(() => {});
@@ -62,8 +62,7 @@ describe('CrossThread Module', function () {
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
 
-			// Two connected (non-job-worker) ports -- the collector expects one response each.
-			manageThreadsModule.connectedPorts.push({}, {});
+			connectedPorts.push({}, {});
 
 			// Simulate responses from other threads
 			onMessageByTypeStub.callsFake((eventType, handler) => {
@@ -140,9 +139,7 @@ describe('CrossThread Module', function () {
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
 
-			// One connected port that never responds, so the collector genuinely has to wait
-			// out the timeout instead of resolving immediately with zero expected responses.
-			manageThreadsModule.connectedPorts.push({});
+			connectedPorts.push({});
 
 			// Never send responses
 			onMessageByTypeStub.callsFake(() => {});
@@ -161,8 +158,7 @@ describe('CrossThread Module', function () {
 			registry.setStatus('fastComp', 'healthy', 'Main thread');
 			getWorkerIndexStub.returns(0);
 
-			// Two connected (non-job-worker) ports -- the collector expects one response each.
-			manageThreadsModule.connectedPorts.push({}, {});
+			connectedPorts.push({}, {});
 
 			// Track when collection completes
 			const startTime = Date.now();
@@ -202,25 +198,16 @@ describe('CrossThread Module', function () {
 			assert.equal(collected.size, 3); // local + 2 workers
 		});
 
-		// These three cases exercise getEligibleBroadcastRecipientCount() (the exact count of
-		// other live threads a broadcast will reach, mirrored from broadcastWithAcknowledgement's
-		// own port filter) without stubbing anything new: `connectedPorts` is the real, exported
-		// module array (same pattern already used for `workers` elsewhere in this file), and
-		// completion is proven deterministically by capturing the response handler and resolving
-		// it synchronously, then asserting collect() settled before a setImmediate sentinel fires
-		// -- so this can't flake under a loaded CI runner the way a wall-clock deadline would.
 		describe('expectedResponses sizing (connectedPorts-based)', function () {
 			it('sizes expectedResponses from the exact eligible broadcast-recipient count, excluding job workers', async function () {
 				registry.setStatus('poolComp', 'healthy', 'Main thread');
 				getWorkerIndexStub.returns(0);
 
-				// 2 HTTP-worker ports + 1 job-worker port. Job workers never receive the
-				// broadcast (broadcastWithAcknowledgement skips isJobWorker ports), so
-				// expectedResponses must be 2 (the HTTP ports only), not 3.
 				const httpPortA = {};
 				const httpPortB = {};
 				const jobPort = { isJobWorker: true };
-				manageThreadsModule.connectedPorts.push(httpPortA, httpPortB, jobPort);
+				connectedPorts.push(httpPortA, httpPortB, jobPort);
+				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientCount(), 2);
 
 				let handler;
 				onMessageByTypeStub.callsFake((eventType, h) => {
@@ -236,8 +223,6 @@ describe('CrossThread Module', function () {
 				);
 
 				const collectPromise = collector.collect(registry);
-				// Deliver both HTTP responses synchronously through the real handler seam --
-				// no timers involved, so there is nothing for CI load to delay.
 				handler({
 					message: {
 						requestId: 1,
@@ -254,13 +239,7 @@ describe('CrossThread Module', function () {
 						statuses: [['poolComp', { status: 'healthy' }]],
 					},
 				});
-				// No third response -- the (excluded) job worker is never asked.
-
 				const collected = await collectPromise;
-				// Resolution happened via the response handlers (microtask-ordered before any
-				// macrotask), not via a fallback timer -- if expectedResponses were wrongly 3
-				// (job worker included), collect() would still be waiting on the 1s collector
-				// timeout at this point.
 				assert.equal(sentinelFired, false, 'collect() should resolve before the setImmediate sentinel');
 				await sentinel;
 
@@ -272,7 +251,7 @@ describe('CrossThread Module', function () {
 			it('resolves immediately with zero eligible responders instead of waiting out the timeout', async function () {
 				registry.setStatus('soloComp', 'healthy', 'Main thread');
 				getWorkerIndexStub.returns(undefined); // main thread
-				// connectedPorts left empty: a genuinely zero-worker process.
+				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientCount(), 0);
 
 				let sentinelFired = false;
 				const sentinel = new Promise((resolve) =>
@@ -283,8 +262,6 @@ describe('CrossThread Module', function () {
 				);
 
 				const collected = await collector.collect(registry);
-				// If zero were coerced back to 1, the collector would still be waiting for a
-				// response that will never arrive, and this assertion would fail.
 				assert.equal(sentinelFired, false, 'collect() should resolve immediately, not wait for a phantom responder');
 				await sentinel;
 
@@ -295,7 +272,8 @@ describe('CrossThread Module', function () {
 			it('resolves immediately when the only connected ports are job workers', async function () {
 				registry.setStatus('jobOnlyComp', 'healthy', 'Main thread');
 				getWorkerIndexStub.returns(undefined); // main thread
-				manageThreadsModule.connectedPorts.push({ isJobWorker: true }, { isJobWorker: true });
+				connectedPorts.push({ isJobWorker: true }, { isJobWorker: true });
+				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientCount(), 0);
 
 				let sentinelFired = false;
 				const sentinel = new Promise((resolve) =>

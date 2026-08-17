@@ -137,7 +137,6 @@ module.exports = {
 	shutdownWorkers,
 	shutdownWorkersNow,
 	workers,
-	connectedPorts,
 	setMonitorListener,
 	onMessageFromWorkers,
 	onMessageByType,
@@ -194,17 +193,14 @@ function getWorkerIndex() {
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
 }
-// The exact number of other live threads a broadcastWithAcknowledgement() call from THIS
-// thread will reach: `connectedPorts` is a full mesh (every thread holds a direct port to
-// every other live thread, wired up in startWorker()/ADDED_PORT), and job workers are
-// excluded because broadcastWithAcknowledgement() skips isJobWorker ports entirely. Unlike
-// getWorkerCount() (which only knows the calling thread's own same-type pool, or 1 for the
-// non-worker main thread), this is accurate from any thread and correctly returns 0 when
-// there are no eligible recipients.
+function isEligibleBroadcastRecipient(port) {
+	return !port.isJobWorker;
+}
+// connectedPorts is a full mesh, and acknowledged broadcasts exclude job workers.
 function getEligibleBroadcastRecipientCount() {
 	let count = 0;
 	for (const port of connectedPorts) {
-		if (!port.isJobWorker) count++;
+		if (isEligibleBroadcastRecipient(port)) count++;
 	}
 	return count;
 }
@@ -730,7 +726,7 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
 			// the job worker's ACK while the job worker's event loop is busy waiting for the
 			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (port.isJobWorker) continue;
+			if (!isEligibleBroadcastRecipient(port)) continue;
 			try {
 				let requestId = nextId++;
 				const ackHandler = () => {
