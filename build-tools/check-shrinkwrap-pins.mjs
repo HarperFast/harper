@@ -33,6 +33,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 const CHECKED_DEPS = ['@harperfast/rocksdb-js', 'fastify', '@aws-sdk/client-s3'];
+const REGISTRY_QUERY_ATTEMPTS = 3;
 
 const pkgRoot = process.argv[2];
 if (!pkgRoot) {
@@ -113,44 +114,43 @@ function verifyCanariesDiscriminate(pins) {
 	// the declared range, not the registry's bare "latest" dist-tag (which could be a newer
 	// major the range excludes, and a broken install could never reach that either).
 	const rangeLatest = {};
-	let failedQueries = 0;
+	const failedQueries = [];
 	for (const [dep, { range }] of Object.entries(rangedPins)) {
-		try {
-			// `npm view <dep>@<range> version --json` returns every matching version, not
-			// just the max, and the order isn't a documented contract (it can track
-			// publish/insertion order rather than semver order, e.g. a backported patch
-			// published after a newer minor) -- compare them ourselves rather than trust
-			// the last array entry.
-			const out = execFileSync('npm', ['view', `${dep}@${range}`, 'version', '--json'], { encoding: 'utf8' });
-			const versions = JSON.parse(out);
-			rangeLatest[dep] = Array.isArray(versions)
-				? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max))
-				: versions;
-		} catch (e) {
-			failedQueries++;
-			console.log(
-				`::warning::could not check registry-latest-in-range for ${dep}@${range} (${e.message}) -- skipping discrimination check for it`
-			);
+		for (let attempt = 1; attempt <= REGISTRY_QUERY_ATTEMPTS; attempt++) {
+			try {
+				// `npm view <dep>@<range> version --json` returns every matching version, not
+				// just the max, and the order isn't a documented contract (it can track
+				// publish/insertion order rather than semver order, e.g. a backported patch
+				// published after a newer minor) -- compare them ourselves rather than trust
+				// the last array entry.
+				const out = execFileSync('npm', ['view', `${dep}@${range}`, 'version', '--json'], { encoding: 'utf8' });
+				const versions = JSON.parse(out);
+				rangeLatest[dep] = Array.isArray(versions)
+					? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max))
+					: versions;
+				break;
+			} catch (e) {
+				console.log(
+					`::warning::registry query attempt ${attempt}/${REGISTRY_QUERY_ATTEMPTS} failed for ${dep}@${range} (${e.message})`
+				);
+				if (attempt === REGISTRY_QUERY_ATTEMPTS) failedQueries.push(`${dep}@${range}`);
+			}
 		}
 	}
 	const checkable = Object.keys(rangeLatest);
-	if (checkable.length === 0) {
-		console.log('::warning::registry unreachable -- could not verify the canary set still discriminates');
-		return;
-	}
 	const stillDiscriminates = checkable.some((dep) => rangeLatest[dep] !== pins[dep].pinned);
-	if (!stillDiscriminates) {
-		if (failedQueries) {
-			console.log(
-				'::warning::could not verify every ranged canary still discriminates because one or more registry queries failed'
-			);
-			return;
-		}
+	if (stillDiscriminates) return;
+	if (failedQueries.length > 0) {
 		console.error(
-			`::error::every checked canary (${checkable.join(', ')}) is now pinned at the latest version its declared range allows -- this check would pass even on a reverted, unpinned install. Pick a new canary whose shrinkwrap pin lags what its range allows.`
+			`::error title=Retry dependency canary check::Could not verify that the shrinkwrap canaries still discriminate after ${REGISTRY_QUERY_ATTEMPTS} registry query attempts for ${failedQueries.join(', ')}. Retry this job; if the error persists, check npm registry availability.`
 		);
 		failed = true;
+		return;
 	}
+	console.error(
+		`::error::every checked canary (${checkable.join(', ')}) is now pinned at the latest version its declared range allows -- this check would pass even on a reverted, unpinned install. Pick a new canary whose shrinkwrap pin lags what its range allows.`
+	);
+	failed = true;
 }
 
 function isExactVersion(range) {

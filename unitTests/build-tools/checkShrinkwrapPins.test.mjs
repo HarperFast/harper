@@ -80,7 +80,51 @@ describe('shrinkwrap pin canaries', function () {
 		}
 	});
 
-	it('warns when a registry failure leaves no discriminating ranged canary to verify', async function () {
+	it('retries a transient registry failure before evaluating the canary set', async function () {
+		const fixture = await createFixture(
+			{
+				'@harperfast/rocksdb-js': '2.7.1',
+				'fastify': '^5.8.2',
+				'@aws-sdk/client-s3': '^3.1012.0',
+			},
+			{},
+			false,
+			'@aws-sdk/client-s3@^3.1012.0',
+			1
+		);
+		try {
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 0, result.stderr);
+			assert.match(result.stdout, /registry query attempt 1\/3 failed/);
+			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
+			assert.strictEqual(queries.filter((query) => query === '@aws-sdk/client-s3@^3.1012.0').length, 2);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('accepts a proven canary after another registry query exhausts its retries', async function () {
+		const fixture = await createFixture(
+			{
+				'@harperfast/rocksdb-js': '2.7.1',
+				'fastify': '^5.8.2',
+				'@aws-sdk/client-s3': '^3.1012.0',
+			},
+			{},
+			false,
+			'fastify@^5.8.2'
+		);
+		try {
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 0, result.stderr);
+			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
+			assert.strictEqual(queries.filter((query) => query === 'fastify@^5.8.2').length, 3);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('fails with a retry-specific error when registry failures leave no proven canary', async function () {
 		const fixture = await createFixture(
 			{
 				'@harperfast/rocksdb-js': '2.7.1',
@@ -93,8 +137,12 @@ describe('shrinkwrap pin canaries', function () {
 		);
 		try {
 			const result = runCheck(fixture);
-			assert.strictEqual(result.status, 0, result.stderr);
-			assert.match(result.stdout, /could not verify every ranged canary still discriminates/);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /::error title=Retry dependency canary check::/);
+			assert.match(result.stderr, /after 3 registry query attempts/);
+			assert.match(result.stderr, /Retry this job/);
+			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
+			assert.strictEqual(queries.filter((query) => query === '@aws-sdk/client-s3@^3.1012.0').length, 3);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -105,7 +153,8 @@ async function createFixture(
 	manifestDependencies,
 	installedVersions = {},
 	allRangeVersionsCurrent = false,
-	failedRange = ''
+	failedRange = '',
+	failedAttempts = 3
 ) {
 	const tempDir = await mkdtemp(join(tmpdir(), 'harper-shrinkwrap-canary-'));
 	const packageRoot = join(tempDir, 'package');
@@ -136,7 +185,8 @@ async function createFixture(
 		join(binDir, 'npm'),
 		`#!/bin/sh
 printf '%s\\n' "$2" >> "$QUERY_LOG"
-if [ "$FAILED_RANGE" = "$2" ]; then
+attempt=$(grep -Fxc "$2" "$QUERY_LOG")
+if [ "$FAILED_RANGE" = "$2" ] && [ "$attempt" -le "$FAILED_ATTEMPTS" ]; then
   exit 1
 fi
 if [ "$ALL_RANGE_VERSIONS_CURRENT" = 1 ]; then
@@ -157,6 +207,7 @@ esac
 		queryLog,
 		allRangeVersionsCurrent,
 		failedRange,
+		failedAttempts,
 		cleanup: () => rm(tempDir, { recursive: true, force: true }),
 	};
 }
@@ -170,6 +221,7 @@ function runCheck(fixture) {
 			QUERY_LOG: fixture.queryLog,
 			ALL_RANGE_VERSIONS_CURRENT: fixture.allRangeVersionsCurrent ? '1' : '0',
 			FAILED_RANGE: fixture.failedRange,
+			FAILED_ATTEMPTS: String(fixture.failedAttempts),
 		},
 	});
 }
