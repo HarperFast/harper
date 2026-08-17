@@ -441,6 +441,35 @@ describe('test createTokens', () => {
 		rw_get_tokens();
 	});
 
+	// #2174: create_authentication_tokens is NO_AUTH, so verifyPerms — and the token-scope gate
+	// inside it — never runs here. A caller authenticated with a scoped operation token must not be
+	// able to mint UNSCOPED credentials; the minted operation and refresh tokens inherit the scope.
+	it('carries an inherited token scope into the minted operation and refresh tokens', async () => {
+		let rw = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
+		// No username/password: the caller is the already-authenticated bearer, whose hdb_user carries
+		// the scope — exactly the shape a scoped OIDC token presents to create_authentication_tokens.
+		let result = await token_auth.createTokens({
+			hdb_user: { username: 'HDB_USER', tokenOperations: ['deploy_component'] },
+		});
+		assert.deepStrictEqual(jwt.decode(result.operation_token).operations, ['deploy_component']);
+		assert.deepStrictEqual(jwt.decode(result.refresh_token).operations, ['deploy_component']);
+		rw();
+	});
+
+	it('mints unscoped credentials when the caller is unscoped', async () => {
+		let rw = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
+		let result = await token_auth.createTokens({ username: 'HDB_USER', password: 'pass' });
+		assert.strictEqual(jwt.decode(result.operation_token).operations, undefined);
+		assert.strictEqual(jwt.decode(result.refresh_token).operations, undefined);
+		rw();
+	});
+
 	it('test update failed', async () => {
 		update_stub.callsFake(async (_update_object) => {
 			throw Error('update failed');

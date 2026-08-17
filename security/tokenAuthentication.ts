@@ -162,8 +162,17 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		username: string;
 		super_user: boolean;
 		role?: any;
+		operations?: string[];
 	} = { username: authObj.username, super_user: superUser };
 	if (authObj.role) payload.role = authObj.role;
+
+	// A scoped credential can only mint an equally-scoped one (#2174). create_authentication_tokens is
+	// NO_AUTH, so verifyPerms — and the token-scope gate inside it — never runs here; if the caller
+	// authenticated with a scoped operation token, the operation AND refresh tokens it mints inherit
+	// that scope. Without this, a token scoped to e.g. deploy_component escalates to unscoped, full-role
+	// credentials simply by calling create_authentication_tokens with no username/password.
+	const inheritedScope = (authObj.hdb_user as any)?.tokenOperations;
+	if (Array.isArray(inheritedScope)) payload.operations = inheritedScope;
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 
@@ -233,8 +242,15 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const decodedJWT = jwt.decode(refresh_token, { json: true });
+	const refreshedPayload: { username: string; super_user: boolean; operations?: string[] } = {
+		username: decodedJWT.username,
+		super_user: decodedJWT.super_user,
+	};
+	// Carry the scope forward, same invariant as createTokens: once a scoped credential can produce a
+	// scoped refresh token, refreshing it must not widen back to the full role.
+	if (Array.isArray(decodedJWT.operations)) refreshedPayload.operations = decodedJWT.operations;
 	const operationToken = jwt.sign(
-		{ username: decodedJWT.username, super_user: decodedJWT.super_user },
+		refreshedPayload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
 			expiresIn: OPERATION_TOKEN_TIMEOUT as StringValue,
