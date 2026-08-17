@@ -224,18 +224,16 @@ export interface CorruptFrameReport {
 /** Distinct break sites retained. One physical corruption yields one site, so this is generous. */
 export const MAX_CORRUPT_FRAME_REPORTS = 256;
 
-// Insertion-ordered, so the first key is the oldest site. Full means evicting that one rather than
-// refusing the new site: a site absent from the map cannot be deduplicated, so it would re-log on
-// every drain.
+// Re-encounters move a site to the end, so the first key is the least recently seen. Full means
+// evicting that one rather than refusing a new site, which could not then be deduplicated.
 const corruptFrameReports = new Map<string, CorruptFrameReport>();
 let evictedCorruptFrameReports = 0;
 
 /**
- * Every corrupt frame seen by this worker, for cluster/health status: a stream that has lost
- * entries must be distinguishable from a healthy one without grepping logs — the field incident
- * behind harper#2063 ran 11 days with `connected: true` throughout.
+ * Every corrupt frame seen by this worker. This is not yet consumed by cluster/health status;
+ * callers must aggregate it across worker threads before exposing a node-wide signal.
  *
- * Per-isolate, so a node-wide signal has to aggregate across worker threads.
+ * Mid-log breaks are immediately logged at error level even without that consumer.
  */
 export function getCorruptFrameReports(): CorruptFrameReport[] {
 	return [...corruptFrameReports.values()];
@@ -246,7 +244,6 @@ export function getEvictedCorruptFrameReportCount(): number {
 	return evictedCorruptFrameReports;
 }
 
-// Test seam.
 export function clearCorruptFrameReports() {
 	corruptFrameReports.clear();
 	evictedCorruptFrameReports = 0;
@@ -289,7 +286,6 @@ export function createCorruptFrameReporter(logger: {
 			existing.lastSeen = now;
 			existing.stoppedIteration = stoppedIteration;
 			if (!midLog || existing.midLog) return;
-			// first time this break has been seen to have entries behind it
 			existing.midLog = true;
 			existing.unreadableBytes = unreadableBytes;
 		} else {
