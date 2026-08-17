@@ -175,7 +175,7 @@ Harper automatically tracks the following metrics for all services. Applications
 | ------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
 | `database-size`                 | `size`, `used`, `free`, `audit`                                                                  | `database`          | bytes   | Database file size breakdown                                                                                          |
 | `main-thread-utilization`       | `idle`, `active`, `taskQueueLatency`, `rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers` | `time`              | various | Main thread resource usage: idle/active time, queue latency, and memory breakdown                                     |
-| `read-transaction-queue-depth`  | `depth`, `maxDepth`                                                                              |                     | count   | Open tracked read transactions (see [transaction queue depth](#transaction-queue-depth-metrics))                      |
+| `read-transaction-queue-depth`  | `depth`, `maxDepth`                                                                              |                     | count   | Open tracked transactions holding a read handle (see [transaction queue depth](#transaction-queue-depth-metrics))     |
 | `resource-usage`                | (see below)                                                                                      |                     | various | Node.js process resource usage (see [resource-usage](#resource-usage-metric))                                         |
 | `storage-volume`                | `available`, `free`, `size`                                                                      | `database`          | bytes   | Storage volume size breakdown                                                                                         |
 | `table-size`                    | `size`                                                                                           | `database`, `table` | bytes   | Table file size                                                                                                       |
@@ -211,13 +211,13 @@ the authoritative signal for that specific failure.
 
 - **`write-transaction-queue-depth`** counts write commits handed to the storage engine whose commit
   promises have not yet settled — how many commits this thread is juggling concurrently. This is
-  in-flight, not durability: under `storage.writeAsync: true` a settled commit promise does not
-  guarantee the write has been synced to disk.
-- **`read-transaction-queue-depth`** counts concurrently open tracked read transactions, including
-  ones opened with snapshot disabled. A high count can mean either many short-lived reads or a few
-  long-lived ones — the count alone can't distinguish them, so use it as a concurrency signal; a
-  duration-based metric would be needed to identify a single transaction held open long enough to
-  hold back compaction.
+  in-flight, not durability: a settled commit promise means the storage engine accepted the write,
+  not that it has been synced to disk.
+- **`read-transaction-queue-depth`** counts concurrently open tracked transactions holding a read
+  handle, including write transactions and transactions opened with snapshot disabled. A high count
+  can mean either many short-lived transactions or a few long-lived ones — the count alone can't
+  distinguish them, so use it as a concurrency signal; a duration-based metric would be needed to
+  identify a single transaction held open long enough to hold back compaction.
 
 Both metrics are gauges tracked only on the RocksDB write/read path, sampled per worker thread. On an
 LMDB-backed database (`storage.engine: lmdb`), `depth` and `maxDepth` for both metrics always read `0`
