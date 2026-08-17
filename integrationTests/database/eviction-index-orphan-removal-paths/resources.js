@@ -104,10 +104,11 @@ export class StorageEngineInfo extends Resource {
 		const indexObserved = index != null;
 		const indexHasPrefetch = !!index?.prefetch;
 		const looksLikeLmdbPath = typeof primaryPath === 'string' && primaryPath.endsWith('.mdb');
+		const hasPurgeLogs = typeof t.primaryStore?.rootStore?.purgeLogs === 'function';
 		let engineGuess = 'unknown';
 		if (looksLikeLmdbPath || indexHasPrefetch) engineGuess = 'lmdb';
-		else if (primaryPath || indexObserved) engineGuess = 'rocksdb';
-		return { primaryPath, indexObserved, indexHasPrefetch, looksLikeLmdbPath, engineGuess };
+		else if (hasPurgeLogs) engineGuess = 'rocksdb';
+		return { primaryPath, indexObserved, indexHasPrefetch, looksLikeLmdbPath, hasPurgeLogs, engineGuess };
 	}
 }
 
@@ -143,10 +144,11 @@ export class PrimaryDump extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
 		const t = getTable(qget(query, 'table'));
-		const rows = [...t.primaryStore.getRange({ snapshot: false })].map(({ key, value }) => ({
-			id: key,
-			...value,
-		}));
+		const rows = [];
+		for (const { key, value } of t.primaryStore.getRange({ snapshot: false })) {
+			if (value == null || typeof key === 'symbol') continue;
+			rows.push({ id: key, ...value });
+		}
 		return { rows };
 	}
 }

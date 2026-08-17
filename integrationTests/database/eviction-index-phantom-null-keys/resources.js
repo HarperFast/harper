@@ -102,10 +102,11 @@ export class StorageEngineInfo extends Resource {
 		const indexObserved = index != null;
 		const indexHasPrefetch = !!index?.prefetch;
 		const looksLikeLmdbPath = typeof primaryPath === 'string' && primaryPath.endsWith('.mdb');
+		const hasPurgeLogs = typeof t.primaryStore?.rootStore?.purgeLogs === 'function';
 		let engineGuess = 'unknown';
 		if (looksLikeLmdbPath || indexHasPrefetch) engineGuess = 'lmdb';
-		else if (primaryPath || indexObserved) engineGuess = 'rocksdb';
-		return { primaryPath, indexObserved, indexHasPrefetch, looksLikeLmdbPath, engineGuess };
+		else if (hasPurgeLogs) engineGuess = 'rocksdb';
+		return { primaryPath, indexObserved, indexHasPrefetch, looksLikeLmdbPath, hasPurgeLogs, engineGuess };
 	}
 }
 

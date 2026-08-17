@@ -80,7 +80,7 @@ const HARPER_CONFIG = {
 	threads: { count: 1 }, // single worker: satisfies both getWorkerIndex()===0 (per-record TTL
 	// sweep) and ===getWorkerCount()-1 deterministically
 	storage: { engine: 'lmdb' as const }, // F-174: per-record @expiresAt is dead on RocksDB
-	logging: { root: 'log', level: 'error' as const },
+	logging: { root: 'log', level: 'warn' as const },
 };
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
@@ -124,7 +124,7 @@ suite(
 		let client: ReturnType<typeof createApiClient>;
 		let rootPath: string;
 		let blobRootDir: string;
-		let logFilePath: string;
+		const logFilePaths = new Set<string>();
 		const findings: string[] = [];
 
 		function op(body: Record<string, unknown>) {
@@ -155,12 +155,25 @@ suite(
 			throw new Error(`PageCache672 route never became ready within ${timeoutMs}ms`);
 		}
 
+		async function registerLogPath() {
+			const logDir = ctx.harper.logDir;
+			ok(logDir, 'integration harness must expose its Harper log directory');
+			ok((await stat(logDir)).isDirectory(), `Harper log path must be a directory: ${logDir}`);
+			logFilePaths.add(join(logDir, 'hdb.log'));
+		}
+
 		async function readLog(): Promise<string> {
-			try {
-				return await readFile(logFilePath, 'utf8');
-			} catch {
-				return '';
-			}
+			const contents = await Promise.all(
+				[...logFilePaths].map(async (path) => {
+					try {
+						return await readFile(path, 'utf8');
+					} catch (error: any) {
+						if (error?.code === 'ENOENT') return '';
+						throw error;
+					}
+				})
+			);
+			return contents.join('\n');
 		}
 
 		async function checkAnomalyLog(): Promise<string[]> {
@@ -189,7 +202,7 @@ suite(
 			rootPath = cfg.body.rootPath;
 			ok(rootPath, 'get_configuration must return rootPath');
 			blobRootDir = join(rootPath, 'blobs', 'data');
-			logFilePath = join(rootPath, 'log', 'hdb.log');
+			await registerLogPath();
 			findings.push(`Harper SHA: 7863b7468 (working tree at task start)`);
 			findings.push(`rootPath=${rootPath}`);
 			findings.push(`blobRootDir=${blobRootDir}`);
@@ -328,6 +341,7 @@ suite(
 
 			const restartT0 = Date.now();
 			await startHarper(ctx, { config: HARPER_CONFIG, env: { HARPER_STORAGE_ENGINE: 'lmdb' } });
+			await registerLogPath();
 			client = createApiClient(ctx.harper);
 			await waitRouteReady(120_000);
 			findings.push(`phase2: restart + route-ready completed in ${Date.now() - restartT0}ms`);

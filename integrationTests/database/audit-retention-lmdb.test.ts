@@ -143,23 +143,27 @@ suite(
 			ok(guess === 'lmdb', `PRECONDITION: engine in effect must be lmdb, got ${guess}`);
 		});
 
-		test(
-			'0.5. let the initial one-shot cleanup delay elapse before seeding the measured cohort',
-			{ timeout: 20_000 },
-			async () => {
-				// scheduleAuditCleanup() is armed once at store-open with DEFAULT_AUDIT_CLEANUP_DELAY
-				// (10s, auditStore.ts:113/225) before any self-re-arm has happened. If the measured
-				// cohort below were inserted before that first callback fires, a single one-shot
-				// invocation — with NO working recursive re-arm at all (auditStore.ts:216) — could
-				// still sweep it once it ages past auditRetention, and this suite would stay green
-				// while the self-re-arming loop is entirely broken. Wait out that initial delay (with
-				// margin) first, so the cohort can only be inserted after at least one re-arm has
-				// already had to occur, and its later disappearance can only be explained by the loop
-				// continuing to re-arm itself.
-				await sleep(11_000);
-				lmdbFindings.push('0.5. waited out the initial one-shot cleanup delay window (11s)');
+		test('0.5. observe the initial cleanup before seeding the measured cohort', { timeout: 75_000 }, async () => {
+			const before = await readAuditCount(ctx);
+			const response = await rawOp(ctx, {
+				operation: 'insert',
+				schema: SCHEMA,
+				table: TABLE,
+				records: [{ id: 'initial-cleanup-marker', seq: -1, payload: 'initial-cleanup-marker' }],
+			});
+			ok(response.status === 200, `arming insert should succeed, got ${response.status}: ${response.text}`);
+			const armed = await readAuditCount(ctx);
+			ok(armed > before, `arming audit count must grow on insert (${before} -> ${armed})`);
+
+			const deadline = Date.now() + 60_000;
+			let after = armed;
+			while (Date.now() < deadline && after > before) {
+				await sleep(500);
+				after = await readAuditCount(ctx);
 			}
-		);
+			ok(after <= before, `initial cleanup did not purge the arming entry: ${before} -> ${armed} -> ${after}`);
+			lmdbFindings.push(`0.5. observed initial cleanup: ${before} -> ${armed} -> ${after}`);
+		});
 
 		test('1. positive control: read_audit_log count actually grows on insert', async () => {
 			const before = await readAuditCount(ctx);

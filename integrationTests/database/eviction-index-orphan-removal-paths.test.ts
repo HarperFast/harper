@@ -221,16 +221,19 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				let heartbeatRound = 0;
 				let heartbeatStop = false;
 				let heartbeatFailure: { error: unknown } | undefined;
+				async function writeHeartbeat() {
+					const bucket = HEARTBEAT_BUCKETS[heartbeatRound % HEARTBEAT_BUCKETS.length];
+					const tags = [`${bucket}-tag${heartbeatRound % 3}`, `${bucket}-tagX`];
+					const res = await postJSON('/Heartbeat/', { table: 'Expiring', ids: HEARTBEAT_IDS, bucket, tags });
+					const text = await res.text();
+					if (res.status !== 200) {
+						throw new Error(`Heartbeat round ${heartbeatRound} failed: ${res.status} ${text}`);
+					}
+					heartbeatRound++;
+				}
 				const heartbeatLoop = (async () => {
 					while (!heartbeatStop) {
-						const bucket = HEARTBEAT_BUCKETS[heartbeatRound % HEARTBEAT_BUCKETS.length];
-						const tags = [`${bucket}-tag${heartbeatRound % 3}`, `${bucket}-tagX`];
-						const res = await postJSON('/Heartbeat/', { table: 'Expiring', ids: HEARTBEAT_IDS, bucket, tags });
-						const text = await res.text();
-						if (res.status !== 200) {
-							throw new Error(`Heartbeat round ${heartbeatRound} failed: ${res.status} ${text}`);
-						}
-						heartbeatRound++;
+						await writeHeartbeat();
 						await sleep(400);
 					}
 				})().catch((error: unknown) => {
@@ -255,6 +258,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					await heartbeatLoop;
 				}
 				if (heartbeatFailure) throw heartbeatFailure.error;
+				await writeHeartbeat();
 				await sleep(500); // let the last heartbeat write's index update land
 
 				const bucketConsistency = await checkConsistency('Expiring', 'bucket');
