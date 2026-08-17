@@ -280,7 +280,12 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 				operation_json.hdb_user = json.hdb_user;
 			}
 
-			const verifyPermsResult = opAuth.verifyPerms(operation_json, functionToCheck);
+			// Pass the top-level operation for the token-scope check: for an export job, operation_json
+			// is the nested search_operation, so json.operation (export_local/export_to_s3) is the op the
+			// scope must gate — not the inner search.
+			const verifyPermsResult = opAuth.verifyPerms(operation_json, functionToCheck, {
+				apiOperation: json.operation,
+			});
 
 			if (verifyPermsResult) {
 				operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);

@@ -120,6 +120,25 @@ describe('token scope gates on the API operation, not the handler name', () => {
 		const denied = opAuth.verifyPerms(requestFor('search_by_value', ['search_by_id']), 'searchByHash');
 		assert.ok(!isAllowed(denied), 'search_by_value is not in scope even though it shares a handler');
 	});
+
+	// A job (export_local/export_to_s3) is dispatched with its nested search_operation as requestJson,
+	// so the scope must gate the top-level op passed via options.apiOperation, not the inner search —
+	// otherwise a read-scoped token could exfiltrate data through an export.
+	it('gates a non-SQL export job on the export operation, not the nested search', () => {
+		const jobRequest = (tokenOperations) => ({
+			operation: 'search_by_conditions', // the nested op the dispatcher hands verifyPerms
+			hdb_user: { username: 'ci-deploy', role: { role: 'r', permission: { super_user: true } }, tokenOperations },
+		});
+		const denied = opAuth.verifyPerms(jobRequest(['search_by_conditions']), 'searchByConditions', {
+			apiOperation: 'export_local',
+		});
+		assert.ok(!isAllowed(denied), 'a search-scoped token must not be able to run export_local');
+
+		const allowed = opAuth.verifyPerms(jobRequest(['export_local']), 'searchByConditions', {
+			apiOperation: 'export_local',
+		});
+		assert.ok(isAllowed(allowed), 'an export_local-scoped token may run the export');
+	});
 });
 
 describe('token-scoped narrowing on the SQL path', () => {

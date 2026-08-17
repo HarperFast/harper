@@ -605,7 +605,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
  * @param operation - The name of the operation specified in the request.
  * @returns { null | PermissionResponseObject } - null if permissions match, errors are consolidated into PermissionResponseObj.
  */
-export function verifyPerms(requestJson: any, operation: any, _options?: any) {
+export function verifyPerms(requestJson: any, operation: any, options?: { apiOperation?: string }) {
 	if (
 		requestJson === null ||
 		operation === null ||
@@ -636,9 +636,12 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 
 	const permsResponse = new PermissionResponseObject();
 
-	// The actual API operation the caller invoked — the namespace the policy scope is written in —
-	// not `op` (the handler function name), which would deny deploy_component and conflate aliases.
-	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, requestJson.operation);
+	// The top-level API operation the caller invoked — the namespace the policy scope is written in.
+	// For a job (export_local/export_to_s3), the dispatcher passes the nested search_operation as
+	// requestJson, so requestJson.operation is the *inner* op (e.g. search_by_conditions); the caller
+	// threads the real top-level op through `options.apiOperation` so a read-scoped token cannot ride
+	// an export. Never `op` (the handler name), which would deny deploy_component and conflate aliases.
+	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, options?.apiOperation ?? requestJson.operation);
 	if (scopeDenial) return scopeDenial;
 
 	if (
