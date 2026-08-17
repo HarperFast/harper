@@ -194,6 +194,30 @@ describe('endIteratorOnCorruptFrame', () => {
 		assert.strictEqual(calls, MAX_RESYNCS_PER_ITERATION + 1);
 	});
 
+	it('resets the resync cap after the source makes progress', () => {
+		let frames = 0;
+		let corrupt = true;
+		const source = {
+			next() {
+				if (frames > MAX_RESYNCS_PER_ITERATION) return { done: true, value: undefined };
+				if (corrupt) {
+					corrupt = false;
+					const error = new RangeError('corrupt');
+					error.resyncPosition = frames;
+					throw error;
+				}
+				corrupt = true;
+				return { done: false, value: frames++ };
+			},
+		};
+		const reported = [];
+		const wrapped = endIteratorOnCorruptFrame(source, (error, stopped) => reported.push(stopped));
+
+		assert.strictEqual([...wrapped].length, MAX_RESYNCS_PER_ITERATION + 1);
+		assert.strictEqual(reported.length, MAX_RESYNCS_PER_ITERATION + 1);
+		assert.ok(reported.every((stopped) => stopped === false));
+	});
+
 	it('treats a RangeError with no resync position as end-of-log (older rocksdb-js)', () => {
 		let calls = 0;
 		const source = {
@@ -501,6 +525,22 @@ describe('createCorruptFrameReporter', () => {
 
 		assert.strictEqual(logs.error.length, logsAfterFill);
 		assert.strictEqual(getEvictedCorruptFrameReportCount(), 5);
+	});
+
+	it('retains recently encountered sites when evicting old reports', () => {
+		const { logs, report } = setup();
+		for (let i = 0; i < MAX_CORRUPT_FRAME_REPORTS; i++) {
+			report(midLogError(0x1000 + i * 0x100), false);
+		}
+		const firstPosition = 0x1000;
+		const secondPosition = 0x1100;
+		report(midLogError(firstPosition), false);
+		report(midLogError(0x1000 + MAX_CORRUPT_FRAME_REPORTS * 0x100), false);
+
+		const positions = getCorruptFrameReports().map((entry) => entry.position);
+		assert.ok(positions.includes(firstPosition));
+		assert.ok(!positions.includes(secondPosition));
+		assert.strictEqual(logs.error.length, MAX_CORRUPT_FRAME_REPORTS + 1);
 	});
 });
 

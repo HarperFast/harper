@@ -172,7 +172,9 @@ export function endIteratorOnCorruptFrame<T>(
 		next(): IteratorResult<T> {
 			while (!stopped) {
 				try {
-					return iterator.next();
+					const result = iterator.next();
+					resyncs = 0;
+					return result;
 				} catch (error) {
 					// Key on the class, not the message: the framing RangeError's wording is
 					// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
@@ -281,6 +283,8 @@ export function createCorruptFrameReporter(logger: {
 		const key = corruptFrameKey(logName, error);
 		const existing = corruptFrameReports.get(key);
 		if (existing) {
+			corruptFrameReports.delete(key);
+			corruptFrameReports.set(key, existing);
 			existing.occurrences++;
 			existing.lastSeen = now;
 			existing.stoppedIteration = stoppedIteration;
