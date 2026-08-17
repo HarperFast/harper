@@ -34,6 +34,7 @@ import { readFileSync } from 'node:fs';
 
 const CHECKED_DEPS = ['@harperfast/rocksdb-js', 'fastify', '@aws-sdk/client-s3'];
 const REGISTRY_QUERY_ATTEMPTS = 3;
+const retryWait = new Int32Array(new SharedArrayBuffer(4));
 
 const pkgRoot = process.argv[2];
 if (!pkgRoot) {
@@ -125,6 +126,13 @@ function verifyCanariesDiscriminate(pins) {
 				// the last array entry.
 				const out = execFileSync('npm', ['view', `${dep}@${range}`, 'version', '--json'], { encoding: 'utf8' });
 				const versions = JSON.parse(out);
+				if (Array.isArray(versions) && versions.length === 0) {
+					console.error(
+						`::error::${dep}@${range} matches no published version -- correct the declared range in package.json`
+					);
+					failed = true;
+					return;
+				}
 				rangeLatest[dep] = Array.isArray(versions)
 					? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max))
 					: versions;
@@ -134,6 +142,7 @@ function verifyCanariesDiscriminate(pins) {
 					`::warning::registry query attempt ${attempt}/${REGISTRY_QUERY_ATTEMPTS} failed for ${dep}@${range} (${e.message})`
 				);
 				if (attempt === REGISTRY_QUERY_ATTEMPTS) failedQueries.push(`${dep}@${range}`);
+				else Atomics.wait(retryWait, 0, 0, 1000 * attempt);
 			}
 		}
 	}
@@ -142,7 +151,7 @@ function verifyCanariesDiscriminate(pins) {
 	if (stillDiscriminates) return;
 	if (failedQueries.length > 0) {
 		console.error(
-			`::error title=Retry dependency canary check::Could not verify that the shrinkwrap canaries still discriminate after ${REGISTRY_QUERY_ATTEMPTS} registry query attempts for ${failedQueries.join(', ')}. Retry this job; if the error persists, check npm registry availability.`
+			`::error title=Retry dependency canary check::Could not verify that the shrinkwrap canaries still discriminate after ${REGISTRY_QUERY_ATTEMPTS} registry query attempts for ${failedQueries.join(', ')}. Retry this job; if the error persists, check npm registry availability and confirm the listed package ranges match published versions.`
 		);
 		failed = true;
 		return;

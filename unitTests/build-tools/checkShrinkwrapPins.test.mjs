@@ -10,6 +10,17 @@ const script = join(root, 'build-tools/check-shrinkwrap-pins.mjs');
 const dependencies = ['@harperfast/rocksdb-js', 'fastify', '@aws-sdk/client-s3'];
 
 describe('shrinkwrap pin canaries', function () {
+	it('keeps the checked canaries viable in the real manifest', async function () {
+		const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+		const fixture = await createFixture(manifest.dependencies);
+		try {
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 0, result.stderr);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
 	it('does not query exact versions while a ranged canary still discriminates', async function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
@@ -141,8 +152,33 @@ describe('shrinkwrap pin canaries', function () {
 			assert.match(result.stderr, /::error title=Retry dependency canary check::/);
 			assert.match(result.stderr, /after 3 registry query attempts/);
 			assert.match(result.stderr, /Retry this job/);
+			assert.match(result.stderr, /confirm the listed package ranges match published versions/);
 			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
 			assert.strictEqual(queries.filter((query) => query === '@aws-sdk/client-s3@^3.1012.0').length, 3);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('fails without retries when a registry query matches no published version', async function () {
+		const fixture = await createFixture(
+			{
+				'@harperfast/rocksdb-js': '2.7.1',
+				'fastify': '^5.8.2',
+				'@aws-sdk/client-s3': '^3.1012.0',
+			},
+			{},
+			false,
+			'',
+			3,
+			'@aws-sdk/client-s3@^3.1012.0'
+		);
+		try {
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /matches no published version/);
+			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
+			assert.strictEqual(queries.filter((query) => query === '@aws-sdk/client-s3@^3.1012.0').length, 1);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -154,7 +190,8 @@ async function createFixture(
 	installedVersions = {},
 	allRangeVersionsCurrent = false,
 	failedRange = '',
-	failedAttempts = 3
+	failedAttempts = 3,
+	emptyRange = ''
 ) {
 	const tempDir = await mkdtemp(join(tmpdir(), 'harper-shrinkwrap-canary-'));
 	const packageRoot = join(tempDir, 'package');
@@ -189,13 +226,17 @@ attempt=$(grep -Fxc "$2" "$QUERY_LOG")
 if [ "$FAILED_RANGE" = "$2" ] && [ "$attempt" -le "$FAILED_ATTEMPTS" ]; then
   exit 1
 fi
+if [ "$EMPTY_RANGE" = "$2" ]; then
+  printf '[]\\n'
+  exit
+fi
 if [ "$ALL_RANGE_VERSIONS_CURRENT" = 1 ]; then
   printf '["1.0.0"]\\n'
   exit
 fi
 case "$2" in
-  fastify@\^5.8.2) printf '["1.0.0"]\\n' ;;
-  @aws-sdk/client-s3@\^3.1012.0) printf '["1.0.0", "1.0.1"]\\n' ;;
+  fastify@*) printf '["1.0.0"]\\n' ;;
+  @aws-sdk/client-s3@*) printf '["1.0.0", "1.0.1"]\\n' ;;
   *) exit 1 ;;
 esac
 `
@@ -208,6 +249,7 @@ esac
 		allRangeVersionsCurrent,
 		failedRange,
 		failedAttempts,
+		emptyRange,
 		cleanup: () => rm(tempDir, { recursive: true, force: true }),
 	};
 }
@@ -222,6 +264,7 @@ function runCheck(fixture) {
 			ALL_RANGE_VERSIONS_CURRENT: fixture.allRangeVersionsCurrent ? '1' : '0',
 			FAILED_RANGE: fixture.failedRange,
 			FAILED_ATTEMPTS: String(fixture.failedAttempts),
+			EMPTY_RANGE: fixture.emptyRange,
 		},
 	});
 }
