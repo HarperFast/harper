@@ -701,6 +701,32 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 		});
 	}
 
+	it('caps the filtered visit budget when the auto-scaled search ef exceeds AUTO_EF_MAX', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const originalSearchLayer = Object.getPrototypeOf(customIndex).searchLayer;
+		let layer0Ef = 0;
+		const budgets = [];
+		customIndex.searchLayer = function (v, epId, ep, ef, level, options, distanceFn, filter, filterState) {
+			if (level === 0) layer0Ef = ef;
+			if (filterState) budgets.push(filterState.maxVisits);
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, options, distanceFn, filter, filterState);
+		};
+		try {
+			await withNodeCount(T, 5_000_000, () => {
+				customIndex.nodeCountAt = 0;
+				customIndex.search({ target: [1, 0, 0], comparator: 'sort' }, { transaction: undefined }, () => true);
+			});
+		} finally {
+			delete customIndex.searchLayer;
+		}
+		assert.strictEqual(layer0Ef, 1145, 'the test must reach the second search-ef regime');
+		assert.deepStrictEqual(
+			[...new Set(budgets)],
+			[512 * customIndex.filterExpansion],
+			'the automatic filtered budget must stay capped at AUTO_EF_MAX'
+		);
+	});
+
 	// The refactor's stated mechanism, not just the formula: an update-only worker (counter absent,
 	// as after a restart with no new inserts) must ensure the shared counter with ONE seek, then read
 	// it atomically — never a reverse seek per write, and never a failed write if the seek throws.
@@ -727,29 +753,44 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 		}
 	});
 
-	// A failed shared-buffer attach must not install a private counter (ids allocated from it would
-	// collide with other workers'). The write still succeeds (base efC fallback) and the next write
-	// retries the ensure against the healthy store.
-	it('does not install a private counter when the shared attach fails, and retries next write', async () => {
+	it('falls back to a memoized count and backs off after a shared-counter attach failure', async () => {
 		const customIndex = T.indices.vector.customIndex;
 		const saved = customIndex.idIncrementer;
+		const savedNodeCount = customIndex.nodeCount;
+		const savedNodeCountAt = customIndex.nodeCountAt;
+		const savedRetryAt = customIndex.idIncrementerRetryAt;
+		const savedFailureLogged = customIndex.idIncrementerFailureLogged;
 		customIndex.idIncrementer = undefined;
+		customIndex.nodeCountAt = 0;
 		const store = customIndex.indexStore;
 		const originalGetUserSharedBuffer = store.getUserSharedBuffer;
+		let attachAttempts = 0;
 		store.getUserSharedBuffer = () => {
+			attachAttempts++;
 			throw new Error('simulated shared-buffer attach failure');
 		};
+		customIndex.resolveNodeCount = () => 1_000_000;
 		try {
-			await T.put(0, { vector: [0.8, 0.2, 0.1] }); // update path; efC falls back, write succeeds
+			const firstEfs = await connectionEfsDuringPut(T, 0);
+			const secondEfs = await connectionEfsDuringPut(T, 1);
 			assert.strictEqual(customIndex.idIncrementer, undefined, 'a failed attach must not install a counter');
+			assert.deepStrictEqual([...firstEfs], [200], 'the fallback count must preserve the construction scale');
+			assert.deepStrictEqual([...secondEfs], [200], 'the memoized fallback must preserve the scale');
+			assert.strictEqual(attachAttempts, 1, 'the attach must not be retried on every update');
 		} finally {
 			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			delete customIndex.resolveNodeCount;
+			customIndex.idIncrementerRetryAt = 0;
 		}
 		try {
 			await T.put(1, { vector: [0.7, 0.3, 0.1] });
-			assert(customIndex.idIncrementer, 'the ensure must retry once the store is healthy');
+			assert(customIndex.idIncrementer, 'the attach must be retryable once the backoff expires');
 		} finally {
-			if (!customIndex.idIncrementer) customIndex.idIncrementer = saved;
+			customIndex.idIncrementer = saved;
+			customIndex.nodeCount = savedNodeCount;
+			customIndex.nodeCountAt = savedNodeCountAt;
+			customIndex.idIncrementerRetryAt = savedRetryAt;
+			customIndex.idIncrementerFailureLogged = savedFailureLogged;
 		}
 	});
 

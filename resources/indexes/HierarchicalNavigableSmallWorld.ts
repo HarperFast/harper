@@ -96,9 +96,9 @@ const AUTO_EFC_REF = 250_000;
 // with the curve (N^1.5 total under sqrt scaling), which is why the cap stays finite: past ~tens of
 // millions of nodes, sharded medium graphs beat one huge graph on both build and query cost.
 const AUTO_EFC_MAX = 1024;
-function autoScaleEfConstruction(base: number, nodeCount: number): number {
-	const scaled = Math.round(base * Math.sqrt(Math.max(1, nodeCount / AUTO_EFC_REF)));
-	return Math.min(AUTO_EFC_MAX, Math.max(base, scaled));
+function autoScaleEfConstruction(nodeCount: number): number {
+	const scaled = Math.round(AUTO_EF_BASE * Math.sqrt(Math.max(1, nodeCount / AUTO_EFC_REF)));
+	return Math.min(AUTO_EFC_MAX, Math.max(AUTO_EF_BASE, scaled));
 }
 // How long a resolved graph size is reused before it is looked up again (see approximateNodeCount).
 // ef moves with the square root of the count and is capped, so a slightly stale size is immaterial;
@@ -227,6 +227,8 @@ export class HierarchicalNavigableSmallWorld {
 	efSearchConfigured = false; // whether the schema set an explicit search ef; if not, search ef auto-scales with N
 	efConstructionConfigured = false; // whether the schema set an explicit efConstruction; if not, it auto-scales with N
 	private lastLoggedEfConstruction = 0;
+	private idIncrementerRetryAt = 0;
+	private idIncrementerFailureLogged = false;
 	// Caches the Int8Array-converted clone of a frozen (decoded-from-disk) int8 node, keyed by the
 	// frozen node the object store hands back. WeakMap so entries are collected when the store evicts
 	// the frozen node — without it, every cache hit on a frozen node would re-slice and re-clone.
@@ -389,18 +391,11 @@ export class HierarchicalNavigableSmallWorld {
 				connections[i] = [];
 			}
 
-			// Ensured here (not only at id allocation) so an update-only worker reads the count with an
-			// atomic load instead of a per-write seek. The count is a lifetime high-water mark, not a
-			// live count; see DESIGN.md for the churn-table caveat. Guarded because the count is an ef
-			// heuristic with a safe fallback — a write must never fail on it.
+			// An update-only worker may not have attached the id counter yet. The healthy path is one
+			// atomic load; a failed attach falls back to the memoized seek and retries after its TTL.
 			let efConstruction = this.efConstruction;
 			if (!this.efConstructionConfigured) {
-				try {
-					this.ensureIdIncrementer(options);
-					efConstruction = autoScaleEfConstruction(this.efConstruction, this.resolveNodeCount());
-				} catch (error) {
-					logger.debug?.('could not resolve the node count for the construction ef', error);
-				}
+				efConstruction = autoScaleEfConstruction(this.resolveConstructionNodeCount(options));
 				if (efConstruction > this.efConstruction && this.lastLoggedEfConstruction !== efConstruction) {
 					// once per resolved value per process: makes replica-divergent build quality and the
 					// build-cost ramp diagnosable (the resolved value is otherwise surfaced nowhere)
@@ -755,6 +750,24 @@ export class HierarchicalNavigableSmallWorld {
 		this.nodeCount = this.resolveNodeCount();
 		this.nodeCountAt = now;
 		return this.nodeCount;
+	}
+
+	private resolveConstructionNodeCount(options?: any): number {
+		const now = Date.now();
+		if (this.idIncrementer || now >= this.idIncrementerRetryAt) {
+			try {
+				this.ensureIdIncrementer(options);
+				this.idIncrementerRetryAt = 0;
+				return this.resolveNodeCount();
+			} catch (error) {
+				this.idIncrementerRetryAt = now + NODE_COUNT_TTL;
+				if (!this.idIncrementerFailureLogged) {
+					this.idIncrementerFailureLogged = true;
+					logger.warn?.('could not attach the shared HNSW id counter; using a memoized node count', error);
+				}
+			}
+		}
+		return this.approximateNodeCount();
 	}
 
 	/**

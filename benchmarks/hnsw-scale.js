@@ -10,10 +10,14 @@
  * Run (after npm run build):
  *   node benchmarks/hnsw-scale.js [--n=5000,10000,25000] [--dims=768] [--queries=50]
  *                                 [--clusters=N] [--ef=auto] [--quantization=int8|none]
+ *                                 [--ef-construction=N] [--ef-sweep=auto,N,...]
+ *                                 [--intra-cos=X] [--seed=N]
  *                                 [--upper-ef=N]   (override ef used above layer 0)
  *                                 [--stream]       (two-pass generation; no float pool held — for N
  *                                                   where the pool alone would not fit in memory)
  *                                 [--json=path]
+ * `--ef-construction` also seeds the default search ef. Use the same explicit `--ef-sweep`
+ * across construction A/B runs to compare both graphs at a common search ef.
  */
 
 const { performance } = require('node:perf_hooks');
@@ -377,6 +381,7 @@ function pct(sorted, p) {
 
 let inSearch = false;
 let currentEf = 0;
+let currentEfConstruction = 0;
 const layerStats = { visitsByLevel: new Map(), timeByLevel: new Map(), callsByLevel: new Map() };
 function resetLayerStats() {
 	layerStats.visitsByLevel.clear();
@@ -405,6 +410,7 @@ function instrument(hnsw) {
 		// query — the same value, and read from the index rather than recomputed here, so this cannot
 		// drift when the auto-scale formula changes.
 		if (inSearch && level === 0) currentEf = ef;
+		else if (!inSearch && level === 0) currentEfConstruction = ef;
 		if (inSearch && UPPER_EF !== undefined && level > 0 && currentEf) ef = UPPER_EF === 'match' ? currentEf : UPPER_EF;
 		else if (inSearch && UPPER_EF !== undefined && UPPER_EF !== 'match' && level > 0) ef = UPPER_EF;
 		else if (!inSearch && BUILD_UPPER_EF !== undefined && level > 0) ef = BUILD_UPPER_EF;
@@ -438,6 +444,7 @@ function graphShape(store) {
 const rows = [];
 console.log(
 	`\nHNSW scaling sweep — dims=${DIMS}, queries=${N_QUERIES}, k=${TOP_K}, quantization=${QUANTIZATION}, ef=${EF_OPT}` +
+		`, efC=${EF_CONSTRUCTION ?? 'auto'}, efSweep=${EF_SWEEP.join(',')}` +
 		(UPPER_EF !== undefined ? `, upper-ef=${UPPER_EF}` : '') +
 		(BUILD_UPPER_EF !== undefined ? `, build-upper-ef=${BUILD_UPPER_EF}` : '') +
 		`, intraCos=${INTRA_COS}, sigma=${NOISE.toFixed(4)}\n`
@@ -462,6 +469,7 @@ for (const N of SIZES) {
 	if (EF_CONSTRUCTION !== undefined) options.efConstruction = EF_CONSTRUCTION;
 	const hnsw = new HierarchicalNavigableSmallWorld(store, options);
 	instrument(hnsw);
+	currentEfConstruction = 0;
 
 	let buildMs;
 	let queries = [];
@@ -478,6 +486,7 @@ for (const N of SIZES) {
 	}
 
 	const shape = graphShape(store);
+	const effectiveEfConstruction = currentEfConstruction || hnsw.efConstruction;
 
 	// queries drawn from the same distribution (perturbed corpus rows); --stream built its own above
 	if (!STREAM)
@@ -563,6 +572,7 @@ for (const N of SIZES) {
 			clusters: nClusters,
 			buildMs: Math.round(buildMs),
 			msPerInsert: +(buildMs / N).toFixed(2),
+			efConstruction: effectiveEfConstruction,
 			efSpec: String(efSpec),
 			ef: effectiveEf,
 			p50: +pct(latencies, 50).toFixed(2),
@@ -586,7 +596,7 @@ for (const N of SIZES) {
 		rows.push(row);
 		console.log(
 			`N=${String(N).padStart(7)}  build ${String(row.buildMs).padStart(7)}ms (${row.msPerInsert} ms/ins)  ` +
-				`ef=${String(row.ef).padStart(4)}${efSpec === 'auto' ? '*' : ' '}  p50 ${String(row.p50).padStart(8)}ms  p95 ${String(row.p95).padStart(8)}ms  ` +
+				`efC=${String(row.efConstruction).padStart(4)}  ef=${String(row.ef).padStart(4)}${efSpec === 'auto' ? '*' : ' '}  p50 ${String(row.p50).padStart(8)}ms  p95 ${String(row.p95).padStart(8)}ms  ` +
 				`µs/vec ${String(row.usPerVector).padStart(6)}  visited ${String(row.visited).padStart(7)} (${String(row.visitedPctOfGraph).padStart(5)}% of graph; L0 ${row.l0Visited}, upper ${row.upperVisited}, upper ${row.upperTimePct}% of time)  ` +
 				`d(nn)/d(rand) ${row.dNear}/${row.dRand}  recall@${TOP_K} raw ${row.recall} set ${row.recallSet}  returned ${row.returned}  deg0 ${row.avgDegree0}  levels ${row.levels}`
 		);
@@ -610,7 +620,17 @@ if (argv.json) {
 	fs.writeFileSync(
 		argv.json,
 		JSON.stringify(
-			{ dims: DIMS, queries: N_QUERIES, k: TOP_K, quantization: QUANTIZATION, ef: EF_OPT, upperEf: UPPER_EF, rows },
+			{
+				dims: DIMS,
+				queries: N_QUERIES,
+				k: TOP_K,
+				quantization: QUANTIZATION,
+				ef: EF_OPT,
+				efConstruction: EF_CONSTRUCTION ?? 'auto',
+				efSweep: EF_SWEEP,
+				upperEf: UPPER_EF,
+				rows,
+			},
 			null,
 			2
 		)

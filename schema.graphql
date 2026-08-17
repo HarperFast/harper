@@ -189,7 +189,8 @@ directive @indexed(
 	"""
 	Construction effort/recall parameter (HNSW). Higher values improve recall at
 	the cost of build time and memory. When omitted, it auto-scales with graph
-	size; setting it pins both the build-side value and the search-side default.
+	size. Setting it pins both the build-side value and the search-side default;
+	changing it rebuilds the index.
 	"""
 	efConstruction: Int
 	"""
@@ -208,7 +209,9 @@ directive @indexed(
 	"""
 	Search-time effort/recall parameter (HNSW): the candidate-list size used when
 	querying. Larger values typically yield better accuracy at the cost of query
-	latency. When omitted, it auto-scales with graph size.
+	latency. When both this and efConstruction are omitted, it auto-scales with
+	graph size, continuing past one million nodes up to 2048. Pin it when query
+	latency matters more than recall on large tables.
 	"""
 	efConstructionSearch: Int
 ) on FIELD_DEFINITION
