@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { getTransactionQueueDepths } = require('#src/resources/DatabaseTransaction');
+const { DatabaseTransaction, getTransactionQueueDepths } = require('#src/resources/DatabaseTransaction');
 // The queue-depth accounting lives on the base DatabaseTransaction (RocksDB path). LMDB writes/reads
 // route through the separate LMDBTransaction overrides (resources/LMDBTransaction.ts), which maintain
 // their own unrelated trackedTxns set and do not feed this accounting — matching the existing
@@ -59,5 +59,22 @@ describe('Transaction queue depth metrics', () => {
 			observedReadDepth = getTransactionQueueDepths().readDepth;
 		});
 		assert.ok(observedReadDepth >= 1, `an open read transaction should be counted, got ${observedReadDepth}`);
+	});
+
+	it('updates the read high-water mark when a write-created transaction starts reading', function () {
+		if (isLMDB) return;
+		getTransactionQueueDepths();
+		const txn = new DatabaseTransaction();
+		txn.transaction = { abort() {} };
+		try {
+			txn.getReadTxn();
+			const depths = getTransactionQueueDepths();
+			assert.ok(
+				depths.readMaxDepth >= depths.readDepth,
+				`readMaxDepth ${depths.readMaxDepth} should include current depth ${depths.readDepth}`
+			);
+		} finally {
+			txn.abort();
+		}
 	});
 });

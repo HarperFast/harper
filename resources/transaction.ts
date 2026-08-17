@@ -128,7 +128,11 @@ export function transaction<T>(
 		}
 	}
 	function onCommitError(error, result) {
-		result?.onDone?.();
+		try {
+			if (typeof result?.onDone === 'function') result.onDone();
+		} catch (cleanupError) {
+			harperLogger.debug?.('closing results after a failed commit', cleanupError);
+		}
 		transaction.abort(transaction.timedOut || transaction.disconnected);
 		throw error;
 	}
