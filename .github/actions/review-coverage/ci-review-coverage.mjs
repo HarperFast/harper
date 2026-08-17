@@ -7,7 +7,7 @@
 //   report  (default) — always green; the check text and job summary carry the count
 //   enforce — red when a member-authored, non-trivial, non-draft PR reports <2
 // Run from the composite action in this directory, or locally:
-//   node scripts/ci-review-coverage.mjs --event <payload.json> [--mode enforce]
+//   node .github/actions/review-coverage/ci-review-coverage.mjs --event <payload.json> [--mode enforce]
 
 import { readFileSync, appendFileSync } from 'node:fs';
 import { realpathSync } from 'node:fs';
@@ -39,7 +39,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	// The Human-Review-Need footer is evidence a prepush review RAN; staleness means
 	// commits landed after the last reviewed head (HEG step 14's most-skipped step).
 	const footer = body.match(/Human-Review-Need:\s*(\d+)(?:[^@\n]*)@\s*([0-9a-f]{6,40})/i);
-	const head = String(pr?.head?.sha ?? '');
+	const head = String(pr?.head?.sha ?? '').toLowerCase();
 	const footerNote = !footer
 		? 'no Human-Review-Need footer'
 		: head.startsWith(footer[2].toLowerCase())
@@ -91,7 +91,13 @@ function main(mode) {
 				? ''
 				: `Per team policy, a substantive PR is queued for human review only after ${required} cross-model reviews are run and reported in the description (\`## Review coverage\` naming each model — see harper-engineering-guidelines). The dispatch review gate enforces this when the fleet's review finds issues; this check just makes the reporting visible early.`,
 	].filter(Boolean);
-	if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+	if (process.env.GITHUB_STEP_SUMMARY) {
+		try {
+			appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+		} catch (error) {
+			console.error(`::warning::review-coverage could not write the step summary (${error.message})`);
+		}
+	}
 	console.log(`review-coverage [${mode}]: ${r.exempt ? r.summary : r.detail}`);
 	// report mode stays green, but an under-reported PR still gets the count on the PR
 	// surface as a warning annotation rather than only in the job summary
