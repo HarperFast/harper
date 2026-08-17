@@ -94,7 +94,7 @@ export function resolveGitHost(host: unknown): string {
  * the union is read first. A lookup failure falls back to this component alone (the pre-existing
  * behavior) and says so, rather than aborting a rotation the operator asked for.
  */
-async function resolveGrants(transport: any, secretName: string, component: string): Promise<string[]> {
+export async function resolveGrants(transport: any, secretName: string, component: string): Promise<string[]> {
 	try {
 		const listed: any = await cliOperations({ ...transport, operation: 'list_secrets' }, true);
 		const row = listed?.secrets?.find((secret: any) => secret?.name === secretName);

@@ -56,9 +56,10 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 	'ref',
 	'credential',
 	// `deploy setup=true`'s token, read off the parsed request by deploySetup and sealed locally. No
-	// operation takes a top-level `token` (the one in `credentials[]` is nested and stripped with it),
-	// so keeping it out of every body costs nothing and means a mistyped `setup` — which parses as a
-	// bare word and falls through to a real deploy — can't carry a PAT to the server.
+	// operation takes a *top-level* `token`, so keeping it out of every body costs nothing and means a
+	// mistyped `setup` — which parses as a bare word and falls through to a real deploy — can't carry a
+	// PAT to the server. Distinct from `credentials[].token`, which is nested inside a field that IS
+	// sent (ingestCredentials seals it server-side) and is only kept out of the operations log.
 	'token',
 ]);
 

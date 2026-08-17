@@ -7,8 +7,9 @@
 // resolves its inputs.
 const assert = require('node:assert');
 const path = require('node:path');
-const { resolveComponentName, resolveGitHost } = require('#src/bin/deploySetup');
+const { resolveComponentName, resolveGitHost, resolveGrants } = require('#src/bin/deploySetup');
 const { directoryProjectName } = require('#src/utility/componentNames');
+const cliOperationsModule = require('#src/bin/cliOperations');
 
 describe('deploySetup', () => {
 	describe('resolveComponentName', () => {
@@ -91,6 +92,73 @@ describe('deploySetup', () => {
 			for (const host of ['', '   ', 'git hub.com', 'a@b@c.com', undefined, 5]) {
 				assert.throws(() => resolveGitHost(host), /Invalid git host/, String(host));
 			}
+		});
+	});
+
+	// `set_secret` replaces grants rather than merging, so sending only this component on a rotation
+	// would silently revoke a grant an operator added with `grant_secret` — invisible until the other
+	// component's next deploy fails. Both branches are pinned: the union, and the lookup-failure
+	// fallback that still replaces (which is why it warns).
+	describe('resolveGrants', () => {
+		const SECRET = 'deploy.web.git.github.com';
+		let originalCliOperations;
+		let originalLog;
+		let logged;
+
+		beforeEach(() => {
+			originalCliOperations = cliOperationsModule.cliOperations;
+			originalLog = console.log;
+			logged = [];
+			console.log = (...args) => logged.push(args.join(' '));
+		});
+
+		afterEach(() => {
+			cliOperationsModule.cliOperations = originalCliOperations;
+			console.log = originalLog;
+		});
+
+		it("unions this component with the row's existing grants, so a rotation keeps them", async () => {
+			cliOperationsModule.cliOperations = async (req) => {
+				assert.strictEqual(req.operation, 'list_secrets');
+				return {
+					secrets: [
+						{ name: SECRET, grants: ['other-app'] },
+						{ name: 'unrelated', grants: ['nope'] },
+					],
+				};
+			};
+
+			const grants = await resolveGrants({ target: 'example.com' }, SECRET, 'web');
+
+			assert.deepStrictEqual([...grants].sort(), ['other-app', 'web']);
+			assert.ok(
+				logged.some((line) => line.includes('other-app')),
+				`should report the grant it preserved, got: ${JSON.stringify(logged)}`
+			);
+		});
+
+		it('does not duplicate the component when the row already grants it', async () => {
+			cliOperationsModule.cliOperations = async () => ({ secrets: [{ name: SECRET, grants: ['web'] }] });
+			assert.deepStrictEqual(await resolveGrants({}, SECRET, 'web'), ['web']);
+		});
+
+		it('sends only this component when the row does not exist yet', async () => {
+			cliOperationsModule.cliOperations = async () => ({ secrets: [] });
+			assert.deepStrictEqual(await resolveGrants({}, SECRET, 'web'), ['web']);
+		});
+
+		it('falls back to this component alone on a lookup failure, and says so', async () => {
+			cliOperationsModule.cliOperations = async () => {
+				throw new Error('list_secrets is not available');
+			};
+
+			const grants = await resolveGrants({}, SECRET, 'web');
+
+			assert.deepStrictEqual(grants, ['web']);
+			assert.ok(
+				logged.some((line) => line.includes(SECRET) && /couldn't read existing grants/i.test(line)),
+				`the replace is only acceptable if it's visible, got: ${JSON.stringify(logged)}`
+			);
 		});
 	});
 });
