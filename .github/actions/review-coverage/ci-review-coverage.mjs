@@ -14,6 +14,14 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { COVERAGE_REQUIRED, isTrivialChange, reportedCrossModelReviews } from './reviewGate.mjs';
 
+const NON_MEMBER_ASSOCIATIONS = new Set([
+	'COLLABORATOR',
+	'CONTRIBUTOR',
+	'FIRST_TIME_CONTRIBUTOR',
+	'FIRST_TIMER',
+	'NONE',
+]);
+
 /** The whole decision, pure. `pr` is the pull_request object from the Actions event
  *  payload. Returns { pass, exempt, summary, detail } — `pass` already accounts for mode. */
 export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_REQUIRED } = {}) {
@@ -30,7 +38,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 
 	// The Human-Review-Need footer is evidence a prepush review RAN; staleness means
 	// commits landed after the last reviewed head (HEG step 14's most-skipped step).
-	const footer = body.match(/Human-Review-Need:\s*(\d)(?:[^@\n]*)@\s*([0-9a-f]{6,40})/i);
+	const footer = body.match(/Human-Review-Need:\s*(\d+)(?:[^@\n]*)@\s*([0-9a-f]{6,40})/i);
 	const head = String(pr?.head?.sha ?? '');
 	const footerNote = !footer
 		? 'no Human-Review-Need footer'
@@ -40,15 +48,11 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 
 	// The triviality exemption requires the size fields to actually be present: a payload
 	// missing additions/deletions would otherwise read as 0+0 and silently exempt everything.
-	const sized =
-		Number.isFinite(Number(pr?.additions)) &&
-		Number.isFinite(Number(pr?.deletions)) &&
-		pr?.additions !== undefined &&
-		pr?.deletions !== undefined;
+	const sized = Number.isFinite(pr?.additions) && Number.isFinite(pr?.deletions);
 	const exempt =
-		/\[bot\]$/.test(login) || pr?.user?.type === 'Bot'
+		login.endsWith('[bot]') || pr?.user?.type === 'Bot'
 			? 'bot author'
-			: !(assoc === 'MEMBER' || assoc === 'OWNER')
+			: NON_MEMBER_ASSOCIATIONS.has(assoc)
 				? `author is not an org member (${assoc || 'unknown'}) — always human review`
 				: sized && isTrivialChange(pr?.additions, pr?.deletions)
 					? 'trivial change (≤2 lines)'
@@ -71,7 +75,9 @@ function main(mode) {
 	if (!eventPath) throw new Error('no event payload (--event or GITHUB_EVENT_PATH)');
 	const pr = JSON.parse(readFileSync(eventPath, 'utf8')).pull_request;
 	if (!pr) throw new Error('event payload has no pull_request');
-	const required = Number(arg('required', process.env.REVIEW_COVERAGE_REQUIRED ?? '')) || COVERAGE_REQUIRED;
+	const rawRequired = arg('required', process.env.REVIEW_COVERAGE_REQUIRED ?? '');
+	const required = rawRequired === '' ? COVERAGE_REQUIRED : Number(rawRequired);
+	if (!Number.isInteger(required) || required < 0) throw new Error(`invalid required '${rawRequired}'`);
 	const r = evaluateCiCoverage(pr, { mode, required });
 
 	const lines = [
@@ -103,7 +109,7 @@ function main(mode) {
 
 function invokedDirectly() {
 	try {
-		return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+		return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 	} catch {
 		return false;
 	}
