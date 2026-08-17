@@ -37,6 +37,7 @@ test('enforce mode exempts exactly what the gate exempts, plus drafts', () => {
 		['bot', { user: { login: 'renovate[bot]', type: 'Bot' } }],
 		['non-member', { author_association: 'CONTRIBUTOR' }],
 		['collaborator', { author_association: 'COLLABORATOR' }],
+		['mannequin', { author_association: 'MANNEQUIN' }],
 		['trivial', { additions: 1, deletions: 1 }],
 		['draft', { draft: true }],
 	]) {
@@ -86,19 +87,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const SCRIPT = fileURLToPath(new URL('./ci-review-coverage.mjs', import.meta.url));
-const run = (payload, ...args) => {
+const runResult = (payload, ...args) => {
 	const dir = mkdtempSync(path.join(tmpdir(), 'rc-'));
 	const file = path.join(dir, 'event.json');
 	if (payload !== null) writeFileSync(file, JSON.stringify(payload));
 	try {
-		execFileSync(process.execPath, [SCRIPT, '--event', file, ...args], { stdio: 'pipe' });
-		return 0;
-	} catch (e) {
-		return e.status ?? 1;
+		return spawnSync(process.execPath, [SCRIPT, '--event', file, ...args], { encoding: 'utf8' });
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
 };
+const run = (payload, ...args) => runResult(payload, ...args).status ?? 1;
 
 test('exit codes: report never reds, enforce reds on policy AND on plumbing', () => {
 	const compliant = { pull_request: pr({ body: '## Review coverage\n- Codex: ran\n- Gemini: ran' }) };
@@ -110,8 +109,12 @@ test('exit codes: report never reds, enforce reds on policy AND on plumbing', ()
 	assert.strictEqual(run({ nope: true }, '--mode', 'enforce'), 1, 'enforce mode fails closed on plumbing');
 	assert.strictEqual(run(bare, '--mode', 'enfroce'), 1, "a typo'd mode is loud, not silently report");
 	assert.strictEqual(run(bare, '--mode', 'enforce', '--required', '0'), 0, 'zero is a valid threshold');
-	assert.strictEqual(run(bare, '--mode', 'report', '--required', 'tow'), 0, 'report mode stays green on bad input');
-	assert.strictEqual(run(bare, '--mode', 'enforce', '--required', 'tow'), 1, 'enforce mode fails closed on bad input');
+	const invalidReport = runResult(bare, '--mode', 'report', '--required', 'tow');
+	assert.strictEqual(invalidReport.status, 0, 'report mode stays green on bad input');
+	assert.match(invalidReport.stderr, /invalid required 'tow'/);
+	const invalidEnforce = runResult(bare, '--mode', 'enforce', '--required', 'tow');
+	assert.strictEqual(invalidEnforce.status, 1, 'enforce mode fails closed on bad input');
+	assert.match(invalidEnforce.stderr, /invalid required 'tow'/);
 });
 
 test('the CLI runs through a symlinked entrypoint', () => {

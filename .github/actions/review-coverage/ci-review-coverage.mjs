@@ -19,6 +19,7 @@ const NON_MEMBER_ASSOCIATIONS = new Set([
 	'CONTRIBUTOR',
 	'FIRST_TIME_CONTRIBUTOR',
 	'FIRST_TIMER',
+	'MANNEQUIN',
 	'NONE',
 ]);
 
@@ -53,7 +54,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		login.endsWith('[bot]') || pr?.user?.type === 'Bot'
 			? 'bot author'
 			: NON_MEMBER_ASSOCIATIONS.has(assoc)
-				? `author is not an org member (${assoc || 'unknown'}) — always human review`
+				? `author is not an org member (${assoc}) — always human review`
 				: sized && isTrivialChange(pr?.additions, pr?.deletions)
 					? 'trivial change (≤2 lines)'
 					: pr?.draft
