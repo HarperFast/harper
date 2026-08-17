@@ -48,7 +48,7 @@
  *
  * Harper SHA: 3dbcf7b9e
  * Reproduction:
- *   npm run test:integration -- "integrationTests/qa-scratch/qa601-longtxn-index.test.ts"
+ *   npm run test:integration -- "integrationTests/database/longtxn-index-orphan.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -94,17 +94,22 @@ suite(
 
 			// Readiness poll — workers register routes async (see integrationTests/database/ttl.test.ts pattern).
 			const deadline = Date.now() + 30_000;
+			let ready = false;
 			while (Date.now() < deadline) {
 				try {
 					const probe = await fetch(`${httpURL}/ReadyProbe/`, {
 						headers: { Authorization: client.headers.Authorization },
 					});
-					if (probe.status === 200) break;
+					if (probe.status === 200) {
+						ready = true;
+						break;
+					}
 				} catch {
 					/* not ready */
 				}
 				await sleep(250);
 			}
+			ok(ready, 'ReadyProbe route did not become ready within 30 seconds');
 		});
 
 		after(async () => {
@@ -119,8 +124,8 @@ suite(
 			});
 		}
 
-		/** Hard precondition: the long-transaction monitor must have actually fired on a SINGLE txn. */
-		function sawOverTime(): boolean {
+		/** Count monitor firings so each trial must produce a new over-time event. */
+		function countOverTimeOccurrences(): number {
 			let logText = '';
 			const logDir = (ctx.harper as any).logDir as string | undefined;
 			if (logDir) {
@@ -135,7 +140,10 @@ suite(
 					}
 				}
 			}
-			return /Transaction was open too long/i.test(logText) || /Transaction was open too long/i.test(procOutput);
+			return (
+				(logText.match(/Transaction was open too long/gi)?.length ?? 0) +
+				(procOutput.match(/Transaction was open too long/gi)?.length ?? 0)
+			);
 		}
 
 		async function dumpA(): Promise<Array<{ id: string; tag: string }>> {
@@ -196,16 +204,18 @@ suite(
 		});
 
 		async function runCrossOvertimeTrial(tag: string) {
+			const overTimeBaseline = countOverTimeOccurrences();
 			const t0 = Date.now();
 			const res = await postJSON('/CrossOvertime/', { tag, holdMs: HOLD_MS });
 			const elapsed = Date.now() - t0;
 			const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-			let fired = sawOverTime();
+			let overTimeCount = countOverTimeOccurrences();
 			const deadline = Date.now() + 5_000;
-			while (!fired && Date.now() < deadline) {
+			while (overTimeCount <= overTimeBaseline && Date.now() < deadline) {
 				await sleep(100);
-				fired = sawOverTime();
+				overTimeCount = countOverTimeOccurrences();
 			}
+			const fired = overTimeCount > overTimeBaseline;
 			const [a, b] = await Promise.all([dumpA(), dumpB()]);
 			const rA = await checkConsistency('TableA', tag, a);
 			const rB = await checkConsistency('TableB', tag, b);

@@ -18,27 +18,22 @@
  *     OWN-ROW:           lowuser can get and update its OWN row.
  *     REST ANCHOR:       REST GET/PUT/DELETE as lowuser on admin's row → 403.
  *
- * Fixture: integrationTests/qa-scratch/qa408-mcp-rbac-fixed/ (copied from
- *   integrationTests/fixtures/mcp-row-authz — same guards, already validated by
- *   the PR's regression suite).
+ * Fixture: integrationTests/fixtures/mcp-row-authz — the same guards used by the
+ *   focused MCP regression suite.
  *
  * Harper SHA: 1b45db9ea (v5.1.15 + 2e3620c6e merged).
- * Run: npm run test:integration -- "integrationTests/qa-scratch/qa408-mcp-rbac-fixed.test.ts"
+ * Run: npm run test:integration -- "integrationTests/security/mcp-record-scoped-rbac.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
-import { writeFileSync, appendFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
-const FIXTURE_PATH = resolve(import.meta.dirname, 'mcp-record-scoped-rbac');
-const RESULTS_FILE = join(tmpdir(), `qa408-results-${process.pid}.txt`);
+const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/mcp-row-authz');
 const HARPER_SHA = '1b45db9ea';
 
 const LOWUSER = { username: 'qa408_lowuser', password: 'LowPw-408!' };
@@ -61,18 +56,14 @@ interface Finding {
 	note?: string;
 }
 
-const findings: Finding[] = [];
-
 function recordFinding(f: Finding): void {
-	findings.push(f);
 	const line = `  ${f.op.padEnd(30)} | ${f.principal.padEnd(20)} | allowed=${String(f.allowed).padEnd(5)} | persisted=${String(f.persisted ?? 'n/a').padEnd(5)} | ${f.verdict}${f.note ? ' — ' + f.note : ''}`;
-	appendFileSync(RESULTS_FILE, line + '\n');
+	console.log(line);
 }
 
 function log(msg: string): void {
 	const line = `[QA-408] ${msg}`;
 	console.log(line);
-	appendFileSync(RESULTS_FILE, line + '\n');
 }
 
 // ─── MCP client helpers ───────────────────────────────────────────────────────
@@ -143,16 +134,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 	let appURL: string;
 
 	before(async () => {
-		writeFileSync(
-			RESULTS_FILE,
-			`========== QA-408: MCP RBAC fix regression (harper#1522) ==========\n` +
-				`Harper SHA: ${HARPER_SHA}\n` +
-				`Fixture: ${FIXTURE_PATH}\n` +
-				`Started: ${new Date().toISOString()}\n\n` +
-				`Checking all MCP ops × principals:\n`
-		);
-
-		log('Starting Harper with mcp.application config...');
+		log(`Starting Harper with mcp.application config (Harper ${HARPER_SHA})...`);
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: { mcp: { application: { mountPath: '/mcp' } } },
 			env: {},
@@ -181,6 +163,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 			}),
 		});
 		log(`add_role: ${roleRes.status}`);
+		strictEqual(roleRes.status, 200, 'add_role should succeed');
 
 		const userRes = await fetch(new URL('', ctx.harper.operationsAPIURL), {
 			method: 'POST',
@@ -194,6 +177,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 			}),
 		});
 		log(`add_user: ${userRes.status}`);
+		strictEqual(userRes.status, 200, 'add_user should succeed');
 
 		// Seed rows.
 		const insertRes = await fetch(new URL('', ctx.harper.operationsAPIURL), {
@@ -210,9 +194,11 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 			}),
 		});
 		log(`insert rows: ${insertRes.status}`);
+		strictEqual(insertRes.status, 200, 'seed insert should succeed');
 
 		// Poll until Doc route is ready.
 		const deadline = Date.now() + 30_000;
+		let ready = false;
 		while (Date.now() < deadline) {
 			try {
 				const probe = await fetch(new URL('/Doc/', appURL), {
@@ -220,6 +206,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 				});
 				if (probe.status !== 404) {
 					await probe.body?.cancel();
+					ready = true;
 					break;
 				}
 				await probe.body?.cancel();
@@ -228,6 +215,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 			}
 			await sleep(250);
 		}
+		ok(ready, 'Doc route did not become ready within 30 seconds');
 
 		// Open authenticated MCP sessions. MUST pass real Authorization header —
 		// loopback-without-auth is auto-promoted to super_user and would mask the fix.
@@ -244,7 +232,6 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 				await low?.transport.close();
 			} finally {
 				await teardownHarper(ctx);
-				appendFileSync(RESULTS_FILE, `\nFinished: ${new Date().toISOString()}\n`);
 				log('Teardown complete.');
 			}
 		}
@@ -263,13 +250,10 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 			principal: 'lowuser',
 			allowed: false,
 			persisted: 'n/a',
-			verdict: res.status === 403 || res.status === 404 || res.status === 401 ? 'ENFORCED' : 'BYPASS',
+			verdict: res.status === 403 || res.status === 404 ? 'ENFORCED' : 'BYPASS',
 			note: `HTTP ${res.status}`,
 		});
-		ok(
-			res.status === 403 || res.status === 404 || res.status === 401,
-			`REST GET should deny lowuser on admin's row, got ${res.status}`
-		);
+		ok(res.status === 403 || res.status === 404, `REST GET should deny lowuser on admin's row, got ${res.status}`);
 	});
 
 	test('REST anchor: lowuser PUT admin row → 403 (cross-surface reference)', async () => {
@@ -288,10 +272,10 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 			principal: 'lowuser',
 			allowed: false,
 			persisted: 'n/a',
-			verdict: res.status === 403 || res.status === 401 ? 'ENFORCED' : 'BYPASS',
+			verdict: res.status === 403 ? 'ENFORCED' : 'BYPASS',
 			note: `HTTP ${res.status}`,
 		});
-		ok(res.status === 403 || res.status === 401, `REST PUT should deny lowuser, got ${res.status}`);
+		strictEqual(res.status, 403, `REST PUT should deny lowuser with 403, got ${res.status}`);
 	});
 
 	test('REST anchor: lowuser DELETE admin row → 403 (cross-surface reference)', async () => {
@@ -306,10 +290,10 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 			principal: 'lowuser',
 			allowed: false,
 			persisted: 'n/a',
-			verdict: res.status === 403 || res.status === 401 ? 'ENFORCED' : 'BYPASS',
+			verdict: res.status === 403 ? 'ENFORCED' : 'BYPASS',
 			note: `HTTP ${res.status}`,
 		});
-		ok(res.status === 403 || res.status === 401, `REST DELETE should deny lowuser, got ${res.status}`);
+		strictEqual(res.status, 403, `REST DELETE should deny lowuser with 403, got ${res.status}`);
 	});
 
 	// ── POSITIVE CONTROL: admin can do everything ─────────────────────────────
@@ -407,7 +391,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 		const result = await call(low.client, 'get_Doc', { id: ADMIN_ROW });
 		const text = resultText(result);
 		log(`F-092 get_Doc admin row: isError=${result.isError} text=${text.slice(0, 120)}`);
-		const leaked = text.includes('admin-original');
+		const leaked = text.includes(ADMIN_ROW) || text.includes('admin-original');
 		recordFinding({
 			op: 'MCP get_Doc (admin row)',
 			principal: 'lowuser',
@@ -423,7 +407,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 		const result = await call(low.client, 'search_Doc', {});
 		const text = resultText(result);
 		log(`F-092 search_Doc: isError=${result.isError} text=${text.slice(0, 200)}`);
-		const leaked = text.includes('admin-original');
+		const leaked = text.includes(ADMIN_ROW) || text.includes('admin-original');
 		recordFinding({
 			op: 'MCP search_Doc',
 			principal: 'lowuser',
@@ -432,9 +416,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 			verdict: leaked ? 'BYPASS' : 'ENFORCED',
 			note: leaked ? 'admin-original in search results — F-092 still open on search' : 'no leak',
 		});
-		// Note per Flair memory: search_Doc per-row allowRead filtering depends on #1422/#1489;
-		// until that lands, search may error (isError=true) rather than filter. Either is
-		// acceptable — the key requirement is that admin-original NOT appear in the response.
+		// Search may either filter denied rows or reject the call; it must not return the admin row.
 		ok(!leaked, `F-092 BYPASS: search_Doc returned admin row. isError=${result.isError} text=${text}`);
 	});
 

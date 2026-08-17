@@ -42,8 +42,7 @@
  *     and `size >= NaN` is always false — silent, permanent disablement of size-based rotation).
  *
  * Reproduction:
- *   cd /home/kzyp/dev/harper
- *   timeout 900 npm run test:integration -- "integrationTests/qa-scratch/qa686-log-rotation.test.ts"
+ *   npm run test:integration -- "integrationTests/server/log-rotation-fd-reuse.test.ts"
  * Harper SHA: 2615b092b89636c0656beb3816db2e5f4edc0e72 (already built — do NOT rebuild)
  */
 import { suite, test, after } from 'node:test';
@@ -110,10 +109,10 @@ suite(
 					config: { logging: { rotation: { enabled: true, maxSize: 65536 } } },
 					env: {},
 				});
-				// If it somehow started, that itself is the finding worth surfacing — tear down cleanly.
-				await teardownHarper(ctx as any);
 			} catch (err) {
 				startupErr = err;
+			} finally {
+				await teardownHarper(ctx as any).catch(() => {});
 			}
 			const text = `${startupErr?.stdout ?? ''}\n${startupErr?.stderr ?? ''}`;
 			console.log(
@@ -135,9 +134,10 @@ suite(
 						config: { logging: { rotation: { enabled: true, maxSize: bad } } },
 						env: {},
 					});
-					await teardownHarper(ctx as any);
 				} catch (err) {
 					startupErr = err;
+				} finally {
+					await teardownHarper(ctx as any).catch(() => {});
 				}
 				const text = `${startupErr?.stdout ?? ''}\n${startupErr?.stderr ?? ''}`;
 				console.log(
@@ -182,6 +182,7 @@ suite(
 				// pre-installed by setupHarperWithFixture; no restart needed).
 				{
 					const deadline = Date.now() + 120_000;
+					let ready = false;
 					while (Date.now() < deadline) {
 						try {
 							const r = await fetch(`${httpURL}/Bump/`, {
@@ -192,6 +193,7 @@ suite(
 							});
 							if (r.status !== 404) {
 								await r.text().catch(() => {});
+								ready = true;
 								break;
 							}
 						} catch {
@@ -199,6 +201,7 @@ suite(
 						}
 						await sleep(250);
 					}
+					ok(ready, 'Bump route did not become ready within 120 seconds');
 				}
 
 				// ASSERT the config was actually accepted (not a false positive from a bad key name).
@@ -239,13 +242,11 @@ suite(
 					}
 				}
 
-				const samples: number[] = [];
 				let peakActiveSize = 0;
 				async function sampler() {
 					while (!stop) {
 						const size = fileSize(mainLogPath);
 						if (size > peakActiveSize) peakActiveSize = size;
-						samples.push(size);
 						await sleep(POLL_INTERVAL_MS);
 					}
 				}

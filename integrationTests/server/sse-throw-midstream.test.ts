@@ -40,7 +40,7 @@
  * `git merge-base --is-ancestor 8930b1ef2 182971ad1`).
  *
  * Reproduction:
- *   npm run test:integration -- "integrationTests/qa-scratch/qa559-sse-throw-midstream.test.ts"
+ *   npm run test:integration -- "integrationTests/server/sse-throw-midstream.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -233,15 +233,21 @@ suite(
 				: join((ctx.harper as any).dataRootDir, 'log', 'hdb.log');
 
 			const deadline = Date.now() + 30_000;
+			let ready = false;
 			while (Date.now() < deadline) {
 				try {
 					const p = await getProbe(restBase, authHeaders);
-					if (p?.ok !== undefined) break;
+					if (p?.ok !== undefined) {
+						ready = true;
+						break;
+					}
 				} catch {
 					/* not ready */
 				}
 				await sleep(250);
 			}
+			ok(ready, 'Probe route did not become ready within 30 seconds');
+			readFileSync(logPath, 'utf8');
 		});
 
 		after(async () => {

@@ -48,9 +48,8 @@
  *
  * Harper SHA (this branch, PR #1896 head): e54365be75e696994bca2785a7cdaa6bbebe50d1
  * Reproduction:
- *   cd /home/kzyp/dev/harper/.claude/worktrees/qa-pr-1896
- *   timeout 420 npm run test:integration -- "integrationTests/qa-scratch/qa670-1896-phantom-null.test.ts"
- *   HARPER_STORAGE_ENGINE=lmdb timeout 420 npm run test:integration -- "integrationTests/qa-scratch/qa670-1896-phantom-null.test.ts"
+ *   npm run test:integration -- "integrationTests/database/eviction-phantom-null.test.ts"
+ *   HARPER_STORAGE_ENGINE=lmdb npm run test:integration -- "integrationTests/database/eviction-phantom-null.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -101,21 +100,27 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 
 		// Readiness poll: hit the fixture's own probe route directly for non-404 (no restartHttpWorkers()).
 		const deadline = Date.now() + 120_000;
+		let ready = false;
 		while (Date.now() < deadline) {
 			try {
 				const probe = await fetch(`${httpURL}/Dump/?table=DelTable`, {
 					headers: { Authorization: auth },
 					signal: AbortSignal.timeout(3_000),
 				});
-				if (probe.status !== 404) break;
+				if (probe.status !== 404) {
+					ready = true;
+					break;
+				}
 			} catch {
 				/* not ready yet */
 			}
 			await sleep(250);
 		}
+		ok(ready, 'fixture routes did not become ready within 120 seconds');
 	});
 
 	after(async () => {
+		console.log(`\n[QA-670 MATRIX ${ENGINE}]\n${JSON.stringify(matrix, null, 2)}`);
 		await teardownHarper(ctx);
 	});
 
@@ -148,6 +153,29 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 	}
 	async function indexDump(table: string, attr = 'bucket'): Promise<IndexRow[]> {
 		return getJSON(`/IndexDump/?table=${table}&attr=${attr}`);
+	}
+	async function waitForState(description: string, read: () => Promise<boolean>, timeoutMs = 15_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (await read()) return;
+			await sleep(100);
+		}
+		throw new Error(`Timed out waiting for ${description}`);
+	}
+	async function waitForStableIndex(table: string, timeoutMs = 15_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		let previous = '';
+		let stableReads = 0;
+		while (Date.now() < deadline) {
+			const current = JSON.stringify(
+				(await indexDump(table)).sort((a, b) => String(a.primaryKey).localeCompare(String(b.primaryKey)))
+			);
+			stableReads = current === previous ? stableReads + 1 : 0;
+			if (stableReads >= 2) return;
+			previous = current;
+			await sleep(100);
+		}
+		throw new Error(`Timed out waiting for ${table} index to stabilize`);
 	}
 
 	/**
@@ -199,7 +227,8 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		strictEqual(base.length, N, 'all rows present pre-delete');
 
 		await post('/Delete/', { table: 'DelTable', ids: delIds });
-		await sleep(300);
+		await waitForState('all DelTable rows to be removed', async () => (await dump('DelTable')).length === 0);
+		await waitForStableIndex('DelTable');
 
 		const m = await measure('DelTable', new Set(delIds));
 		report('Q0 explicit-delete', m, true);
@@ -229,11 +258,15 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 			const ctrlIds = ids('ctrl', N);
 			await post('/Load/', { table: 'ControlTable', ids: ctrlIds, bucket: 'ORIG' });
 			await post('/UpdateInPlace/', { table: 'ControlTable', ids: ctrlIds, bucket: 'UPDATED' });
-			await sleep(300);
+			await waitForState('all ControlTable index entries to reflect the update', async () => {
+				const indexRows = await indexDump('ControlTable');
+				return indexRows.length === N && indexRows.every((row) => row.indexedValue === 'UPDATED');
+			});
 
 			const m = await measure('ControlTable', new Set()); // nothing removed
 			report('Q3 update-in-place-control', m, false);
 			strictEqual(m.baseCount, N, 'all control rows still present (never deleted)');
+			strictEqual(m.indexCount, N, 'oracle control must see every control row in the raw index');
 			strictEqual(m.nullKeyedCount, 0, 'update-in-place must NOT produce any null-keyed index entry');
 			strictEqual(m.danglingNonNullCount, 0, 'update-in-place must NOT produce any dangling index entry');
 		}
@@ -264,6 +297,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 			if (baseLen === 0) break;
 			await sleep(300);
 		}
+		await waitForStableIndex('EvictTable');
 
 		const m = await measure('EvictTable', new Set(evictIds));
 		report('Q2 lazy-evict()', m, true);
@@ -302,6 +336,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 			if (baseLen === 0) break;
 			await sleep(500);
 		}
+		await waitForStableIndex('SweepTable');
 
 		const m = await measure('SweepTable', new Set(sweepIds));
 		report('Q1 background-sweep', m, true);
@@ -321,10 +356,5 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 			0,
 			`no swept id may retain a phantom index entry, got ${m.phantomForRemovedCount}/${N}`
 		);
-	});
-
-	test('ZZ print matrix', { timeout: 5_000 }, async () => {
-		console.log(`\n[QA-670 MATRIX ${ENGINE}]\n${JSON.stringify(matrix, null, 2)}`);
-		ok(true);
 	});
 });

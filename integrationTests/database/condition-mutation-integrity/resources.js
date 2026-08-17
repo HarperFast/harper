@@ -44,6 +44,19 @@ function qget(query, key) {
 	return query.get ? query.get(key) : query[key];
 }
 
+function typeFingerprint(value) {
+	if (value instanceof Date) return 'Date';
+	if (Array.isArray(value)) return value.map(typeFingerprint);
+	if (value && typeof value === 'object') {
+		return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, typeFingerprint(entry)]));
+	}
+	return value === null ? 'null' : typeof value;
+}
+
+function snapshotState(conditions) {
+	return { conditions, types: typeFingerprint(conditions) };
+}
+
 // POST /Reset/ -> rebuild all three held objects fresh. Lets test sections isolate.
 export class Reset extends Resource {
 	static loadAsInstance = false;
@@ -84,9 +97,9 @@ export class Snapshot extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
 		const which = qget(query, 'which') || 'live';
-		if (which === 'concurrent') return concurrentConditions;
-		if (which === 'arrayForm') return arrayFormConditions;
-		return liveConditions;
+		if (which === 'concurrent') return snapshotState(concurrentConditions);
+		if (which === 'arrayForm') return snapshotState(arrayFormConditions);
+		return snapshotState(liveConditions);
 	}
 }
 
@@ -106,7 +119,7 @@ export class RunOnce extends Resource {
 		if (select) options.select = select.split(',');
 		const ids = [];
 		for await (const r of tables.Product.search(options)) ids.push(r.id);
-		return { ids, count: ids.length, conditionsAfter: liveConditions };
+		return { ids, count: ids.length, conditionsAfter: snapshotState(liveConditions) };
 	}
 }
 
@@ -124,7 +137,7 @@ export class RunArrayForm extends Resource {
 		} else {
 			for await (const r of tables.Product.search(arrayFormConditions)) ids.push(r.id);
 		}
-		return { ids, count: ids.length, conditionsAfter: arrayFormConditions };
+		return { ids, count: ids.length, conditionsAfter: snapshotState(arrayFormConditions) };
 	}
 }
 
@@ -144,7 +157,7 @@ export class RunConcurrent extends Resource {
 			return ids;
 		};
 		const runs = await Promise.all(Array.from({ length: n }, runOne));
-		return { runs, conditionsAfter: concurrentConditions };
+		return { runs, conditionsAfter: snapshotState(concurrentConditions) };
 	}
 }
 
@@ -155,6 +168,6 @@ export class Count extends Resource {
 	async get() {
 		let count = 0;
 		for await (const _r of tables.Product.search({ conditions: liveConditions })) count++;
-		return { count, conditionsAfter: liveConditions };
+		return { count, conditionsAfter: snapshotState(liveConditions) };
 	}
 }

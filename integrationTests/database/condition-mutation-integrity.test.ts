@@ -9,9 +9,10 @@
  *
  * Core question: a caller-owned query object (its `conditions` array AND any nested
  * `operator:'and'|'or'` sub-arrays) must come back from a query byte-identical to what the
- * caller passed in, and remain safely reusable for a 2nd/3rd/concurrent query.
+ * caller passed in (including recursive server-side value types), and remain safely reusable
+ * for a 2nd/3rd/concurrent query.
  *
- * App under test (integrationTests/qa-scratch/qa714-condition-mutation/): a product-catalog
+ * App under test (integrationTests/database/condition-mutation-integrity/): a product-catalog
  * service (`resources.js`) that builds ONE `conditions` array once at module scope --
  * `[{category='electronics'}, {or: [{price<500}, {createdAt>2024-01-01}]}]` -- and reuses it
  * across a paginated sweep, a count, a live-refresh loop, and a burst of concurrent queries.
@@ -27,7 +28,7 @@
  * concurrency probe in particular) untestable.
  *
  * Reproduction:
- *   cd /home/kzyp/dev/harper && timeout 900 npm run test:integration -- "integrationTests/qa-scratch/qa714-condition-mutation.test.ts"
+ *   npm run test:integration -- "integrationTests/database/condition-mutation-integrity.test.ts"
  * Harper SHA: b8c843a24 (main, includes PR #1911)
  */
 import { suite, test, before, after } from 'node:test';
@@ -93,15 +94,20 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		// Poll the probe route directly until it stops returning 404 (component is
 		// pre-installed; no restartHttpWorkers() -- that races and flakes on CI here).
 		const deadline = Date.now() + 120_000;
+		let ready = false;
 		while (Date.now() < deadline) {
 			try {
 				const res = await fetch(`${httpURL}/Product/`, { headers: { Authorization: AUTH } });
-				if (res.status !== 404) break;
+				if (res.status !== 404) {
+					ready = true;
+					break;
+				}
 			} catch {
 				/* not ready yet */
 			}
 			await sleep(250);
 		}
+		ok(ready, 'Product route did not become ready within 120 seconds');
 	});
 
 	after(async () => {
@@ -145,11 +151,20 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		pristineArrayForm = await snapshot('arrayForm');
 
 		// Shape sanity: top-level array of 2, entry[1] is the nested `or` group of 2.
-		strictEqual(pristineLive.length, 2, 'pristine live conditions should have 2 top-level entries');
-		strictEqual(pristineLive[1].operator, 'or', 'entry[1] should be the nested or-group');
-		strictEqual(pristineLive[1].conditions.length, 2, 'nested or-group should have 2 sub-conditions');
-		strictEqual(pristineArrayForm.length, 1, 'pristine array-form conditions should have 1 tuple entry');
-		deepStrictEqual(pristineArrayForm[0], ['category', 'electronics'], 'array-form tuple should be [attr, value]');
+		strictEqual(pristineLive.conditions.length, 2, 'pristine live conditions should have 2 top-level entries');
+		strictEqual(pristineLive.conditions[1].operator, 'or', 'entry[1] should be the nested or-group');
+		strictEqual(pristineLive.conditions[1].conditions.length, 2, 'nested or-group should have 2 sub-conditions');
+		strictEqual(pristineArrayForm.conditions.length, 1, 'pristine array-form conditions should have 1 tuple entry');
+		deepStrictEqual(
+			pristineArrayForm.conditions[0],
+			['category', 'electronics'],
+			'array-form tuple should be [attr, value]'
+		);
+		strictEqual(
+			pristineLive.types[1].conditions[1].value,
+			'string',
+			'createdAt condition must begin as a server-side string'
+		);
 	});
 
 	test('Q0b ORACLE SELF-CHECK: deepStrictEqual must actually fire on a real mutation', () => {
@@ -158,7 +173,7 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		// bug produced (a leaked top-level sort pseudo-condition, and a coerced/annotated
 		// value inside the NESTED or-group), and confirm deepStrictEqual throws on each.
 		const leakedPseudoCondition = structuredClone(pristineLive);
-		leakedPseudoCondition.push({ attribute: 'category', comparator: 'sort', descending: true });
+		leakedPseudoCondition.conditions.push({ attribute: 'category', comparator: 'sort', descending: true });
 		throws(
 			() => deepStrictEqual(leakedPseudoCondition, pristineLive),
 			/Expected values to be strictly deep-equal/,
@@ -166,7 +181,7 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		);
 
 		const mutatedNested = structuredClone(pristineLive);
-		mutatedNested[1].conditions[0].estimated_count = 42; // simulates a leaked cache annotation
+		mutatedNested.conditions[1].conditions[0].estimated_count = 42; // simulates a leaked cache annotation
 		throws(
 			() => deepStrictEqual(mutatedNested, pristineLive),
 			/Expected values to be strictly deep-equal/,
@@ -174,11 +189,19 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		);
 
 		const mutatedNestedValue = structuredClone(pristineLive);
-		mutatedNestedValue[1].conditions[1].value = '1999-01-01T00:00:00.000Z'; // simulates in-place coercion
+		mutatedNestedValue.conditions[1].conditions[1].value = '1999-01-01T00:00:00.000Z'; // simulates in-place coercion
 		throws(
 			() => deepStrictEqual(mutatedNestedValue, pristineLive),
 			/Expected values to be strictly deep-equal/,
 			'oracle failed to detect a coerced value inside the NESTED or-group'
+		);
+
+		const mutatedNestedType = structuredClone(pristineLive);
+		mutatedNestedType.types[1].conditions[1].value = 'Date';
+		throws(
+			() => deepStrictEqual(mutatedNestedType, pristineLive),
+			/Expected values to be strictly deep-equal/,
+			'oracle failed to detect a server-side string-to-Date coercion'
 		);
 
 		// And confirm it does NOT fire on a genuinely identical (but distinct-object) copy.
@@ -235,7 +258,11 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		for (let i = 1; i <= 2; i++) {
 			const r = await getJSON('/RunOnce/?sortAttr=price');
 			deepStrictEqual(idsSorted(r.ids), idsSorted([...EXPECTED_IDS]), `run ${i}: wrong result set`);
-			strictEqual(r.conditionsAfter.length, 2, `run ${i}: top-level conditions array grew (leaked pseudo-condition)`);
+			strictEqual(
+				r.conditionsAfter.conditions.length,
+				2,
+				`run ${i}: top-level conditions array grew (leaked pseudo-condition)`
+			);
 			deepStrictEqual(r.conditionsAfter, pristineLive, `run ${i}: liveConditions mutated (nested-only indexed sort)`);
 		}
 	});
@@ -244,12 +271,16 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		for (let i = 1; i <= 2; i++) {
 			const r = await getJSON('/RunOnce/?sortAttr=createdAt&desc=true');
 			deepStrictEqual(idsSorted(r.ids), idsSorted([...EXPECTED_IDS]), `run ${i}: wrong result set`);
-			strictEqual(r.conditionsAfter.length, 2, `run ${i}: top-level conditions array grew (leaked pseudo-condition)`);
+			strictEqual(
+				r.conditionsAfter.conditions.length,
+				2,
+				`run ${i}: top-level conditions array grew (leaked pseudo-condition)`
+			);
 			// The nested Date condition's value must still be the ORIGINAL ISO string, not
 			// coerced to a Date in place (harper#1572's exact failure mode, relocated to a
 			// nested sub-array where the shipped unit test never looked).
 			strictEqual(
-				r.conditionsAfter[1].conditions[1].value,
+				r.conditionsAfter.conditions[1].conditions[1].value,
 				'2024-01-01T00:00:00.000Z',
 				`run ${i}: nested Date condition value was coerced in place`
 			);
@@ -322,8 +353,8 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 				`arrayForm '${qs}': wrong result set`
 			);
 			deepStrictEqual(r.conditionsAfter, pristineArrayForm, `arrayForm '${qs}': arrayFormConditions mutated`);
-			strictEqual(r.conditionsAfter.length, 1, `arrayForm '${qs}': tuple array grew`);
-			ok(Array.isArray(r.conditionsAfter[0]), `arrayForm '${qs}': tuple entry lost its array-ness`);
+			strictEqual(r.conditionsAfter.conditions.length, 1, `arrayForm '${qs}': tuple array grew`);
+			ok(Array.isArray(r.conditionsAfter.conditions[0]), `arrayForm '${qs}': tuple entry lost its array-ness`);
 		}
 	});
 
@@ -359,15 +390,14 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		const res = await fetch(`${httpURL}/Product/?category=electronics&sort(+price)&limit(5)`, {
 			headers: { Authorization: AUTH },
 		});
-		ok(res.status === 200 || res.status === 404, `unexpected REST status ${res.status}`);
-		if (res.status === 200) {
-			const rows = (await res.json()) as any[];
-			ok(Array.isArray(rows), 'REST sort+limit should return an array');
-			ok(
-				rows.every((r) => r.category === 'electronics'),
-				'REST sort+limit returned a non-electronics row'
-			);
-		}
+		strictEqual(res.status, 200, `REST sort+limit should return 200, got ${res.status}`);
+		const rows = (await res.json()) as any[];
+		ok(Array.isArray(rows), 'REST sort+limit should return an array');
+		strictEqual(rows.length, 5, 'REST sort+limit should return exactly five rows');
+		ok(
+			rows.every((r) => r.category === 'electronics'),
+			'REST sort+limit returned a non-electronics row'
+		);
 	});
 
 	test('Q9b ops API search_by_conditions with nested or-group, run twice', async () => {
