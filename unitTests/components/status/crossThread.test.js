@@ -24,8 +24,11 @@ describe('CrossThread Module', function () {
 	describe('CrossThreadStatusCollector', function () {
 		let collector;
 		let registry;
+		let originalConnectedPorts;
 
 		beforeEach(function () {
+			originalConnectedPorts = [...manageThreadsModule.connectedPorts];
+			manageThreadsModule.connectedPorts.length = 0;
 			collector = new CrossThreadStatusCollector(1000); // 1 second timeout
 			registry = new ComponentStatusRegistry();
 		});
@@ -33,7 +36,8 @@ describe('CrossThread Module', function () {
 		afterEach(function () {
 			collector.cleanup();
 			registry.reset();
-			manageThreadsModule.connectedPorts.length = 0; // restore the shared array for other tests
+			manageThreadsModule.connectedPorts.length = 0;
+			manageThreadsModule.connectedPorts.push(...originalConnectedPorts);
 		});
 
 		it('should collect status from local thread only when no responses', async function () {
