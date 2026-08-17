@@ -232,10 +232,11 @@ The raw per-thread entries in `hdb_raw_analytics` retain each thread's true inst
 per-period `maxDepth`; treat those as the reliable source for spike detection. The aggregate
 `hdb_analytics` table is not a sum of per-thread peaks — each thread's `maxDepth` is first averaged
 across its raw samples for the period, then those per-thread averages are summed — so a brief
-single-thread spike is diluted rather than preserved. Always alert on `hdb_raw_analytics.maxDepth` (or
-lower the sampling/aggregation period) rather than relying on the aggregate table to catch short
-spikes. Tune the concrete alert threshold against a baseline for your workload, since absolute depth
-scales with worker-thread count and per-transaction size.
+single-thread spike is diluted rather than preserved. Always alert on the `maxDepth` field of each
+queue-depth entry in an `hdb_raw_analytics` record's `metrics` array (or lower the
+sampling/aggregation period) rather than relying on the aggregate table to catch short spikes. Tune
+the concrete alert threshold against a baseline for your workload, since absolute depth scales with
+worker-thread count and per-transaction size.
 
 #### `resource-usage` Metric
 
