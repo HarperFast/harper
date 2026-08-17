@@ -46,7 +46,7 @@
  *   timeout 900 npm run test:integration -- "integrationTests/qa-scratch/qa686-log-rotation.test.ts"
  * Harper SHA: 2615b092b89636c0656beb3816db2e5f4edc0e72 (already built — do NOT rebuild)
  */
-import { suite, test } from 'node:test';
+import { suite, test, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { statSync, readdirSync } from 'node:fs';
@@ -98,6 +98,10 @@ suite(
 	'QA-686 log rotation maxSize unit parsing + enforcement [gh#1877]',
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
+		after(async () => {
+			await teardownHarper(ctx as any);
+		});
+
 		// ---- Q3a: a raw numeric byte value (no unit) ------------------------------------------
 		test('Q3a: numeric maxSize (byte value, no unit) is rejected at boot, not silently coerced', async () => {
 			let startupErr: any;
@@ -284,8 +288,6 @@ suite(
 				// With a 64KB ceiling and >75s of continuous multi-worker writes, at least one
 				// rotation must have occurred (rotation is enabled and maxSize is correctly parsed).
 				ok(rotated.length >= 1, `expected at least one rotation to have occurred; rotatedCount=${rotated.length}`);
-
-				await teardownHarper(ctx as any);
 			}
 		);
 	}

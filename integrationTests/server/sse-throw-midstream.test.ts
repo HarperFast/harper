@@ -91,6 +91,22 @@ async function getProbe(restBase: string, authHeaders: Record<string, string>): 
 	});
 }
 
+async function waitForProbe(
+	restBase: string,
+	authHeaders: Record<string, string>,
+	predicate: (probe: ProbeSnap) => boolean,
+	timeoutMs = 5_000
+): Promise<ProbeSnap | null> {
+	const deadline = Date.now() + timeoutMs;
+	let probe: ProbeSnap | null = null;
+	while (Date.now() < deadline) {
+		probe = await getProbe(restBase, authHeaders).catch(() => null);
+		if (probe && predicate(probe)) return probe;
+		await sleep(50);
+	}
+	return probe;
+}
+
 // ── AbortController-bounded SSE stream consumer ──────────────────────────────────────────
 // Wraps the request in an AbortController with a generous but bounded timeout, so a genuine
 // regression (hung response) shows up as a caught timeout/abort in the test, never a hung
@@ -236,7 +252,7 @@ suite(
 
 		test(
 			'1: ThrowFirst -- throws before any yield; response terminates in bounded time, no uncaughtException',
-			{ timeout: 20_000 },
+			{ timeout: 25_000 },
 			async () => {
 				const logBefore = readLogSafe(logPath);
 				const uncaughtBefore = countUncaught(logBefore);
@@ -257,7 +273,8 @@ suite(
 					`expected 0 events (throw before any yield), got ${r.events.length}. raw:\n${r.raw}`
 				);
 
-				await sleep(300); // let any async uncaughtException surface in the log
+				const probe = await waitForProbe(restBase, authHeaders, (snapshot) => snapshot.throwFirst.closed >= 1);
+				ok(probe && probe.throwFirst.closed >= 1, 'ThrowFirst generator should have completed cleanup');
 				const uncaughtAfter = countUncaught(readLogSafe(logPath));
 				strictEqual(
 					uncaughtAfter - uncaughtBefore,
@@ -271,7 +288,7 @@ suite(
 
 		test(
 			'2: ThrowMid -- yields 3 of 6 then throws; pre-error events delivered, response terminates cleanly, no uncaughtException',
-			{ timeout: 20_000 },
+			{ timeout: 25_000 },
 			async () => {
 				const logBefore = readLogSafe(logPath);
 				const uncaughtBefore = countUncaught(logBefore);
@@ -295,7 +312,8 @@ suite(
 					ok(r.events[i].includes(`"n":${i}`), `expected event ${i} to contain n=${i}, got: ${r.events[i]}`);
 				}
 
-				await sleep(300);
+				const probe = await waitForProbe(restBase, authHeaders, (snapshot) => snapshot.throwMid.closed >= 1);
+				ok(probe && probe.throwMid.closed >= 1, 'ThrowMid generator should have completed cleanup');
 				const uncaughtAfter = countUncaught(readLogSafe(logPath));
 				strictEqual(
 					uncaughtAfter - uncaughtBefore,
@@ -333,7 +351,11 @@ suite(
 			{ timeout: 30_000 },
 			async () => {
 				const logBefore = readLogSafe(logPath);
-				const p = await getProbe(restBase, authHeaders).catch(() => null);
+				const p = await waitForProbe(
+					restBase,
+					authHeaders,
+					(snapshot) => snapshot.throwFirst.closed >= 1 && snapshot.throwMid.closed >= 1 && snapshot.clean.closed >= 1
+				);
 				console.log(`[QA-559][Z] liveness probe: ${p ? 'alive' : 'DEAD'} ${p ? JSON.stringify(p) : ''}`);
 				ok(
 					p !== null,
@@ -349,7 +371,6 @@ suite(
 				);
 				ok(p!.clean.opened >= 1 && p!.clean.closed >= 1, 'CleanGen should show a matched open/close pair');
 
-				await sleep(300);
 				const logAfter = readLogSafe(logPath);
 				const newLines = logAfter.slice(logBefore.length);
 				const newUncaught = newLines.split('\n').filter((l) => l.includes('uncaughtException')).length;

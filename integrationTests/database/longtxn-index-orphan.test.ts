@@ -200,9 +200,12 @@ suite(
 			const res = await postJSON('/CrossOvertime/', { tag, holdMs: HOLD_MS });
 			const elapsed = Date.now() - t0;
 			const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-			await sleep(500); // let any async settle (immediate-commit path, onCommit hooks)
-
-			const fired = sawOverTime();
+			let fired = sawOverTime();
+			const deadline = Date.now() + 5_000;
+			while (!fired && Date.now() < deadline) {
+				await sleep(100);
+				fired = sawOverTime();
+			}
 			const [a, b] = await Promise.all([dumpA(), dumpB()]);
 			const rA = await checkConsistency('TableA', tag, a);
 			const rB = await checkConsistency('TableB', tag, b);

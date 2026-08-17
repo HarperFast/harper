@@ -38,7 +38,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'mcp-record-scoped-rbac');
-const RESULTS_FILE = join(tmpdir(), 'qa408-results.txt');
+const RESULTS_FILE = join(tmpdir(), `qa408-results-${process.pid}.txt`);
 const HARPER_SHA = '1b45db9ea';
 
 const LOWUSER = { username: 'qa408_lowuser', password: 'LowPw-408!' };
@@ -237,11 +237,17 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 	});
 
 	after(async () => {
-		await admin?.transport.close();
-		await low?.transport.close();
-		await teardownHarper(ctx);
-		appendFileSync(RESULTS_FILE, `\nFinished: ${new Date().toISOString()}\n`);
-		log('Teardown complete.');
+		try {
+			await admin?.transport.close();
+		} finally {
+			try {
+				await low?.transport.close();
+			} finally {
+				await teardownHarper(ctx);
+				appendFileSync(RESULTS_FILE, `\nFinished: ${new Date().toISOString()}\n`);
+				log('Teardown complete.');
+			}
+		}
 	});
 
 	// ── REST ANCHORS ─────────────────────────────────────────────────────────────
