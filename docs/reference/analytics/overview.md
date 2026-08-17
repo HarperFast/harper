@@ -201,8 +201,9 @@ aren't present on `hdb_raw_analytics`) is a leading indicator of _gradual_ slowd
 limit. It doesn't help with a single commit that hangs indefinitely, though: the metric only records
 once a commit settles, so a genuinely wedged commit contributes no sample at all, while
 `write-transaction-queue-depth`'s `depth` stays elevated on that thread for as long as the commit
-remains outstanding. Harper also logs once per stuck commit when the 503 check itself fires, which is
-the authoritative signal for that specific failure.
+remains outstanding. Harper also logs `Rejecting writes on this thread: a commit has been outstanding
+for ...` once per stuck commit when the 503 check itself fires, which is the authoritative signal for
+that specific failure.
 
 | Field      | Unit  | Description                                             |
 | ---------- | ----- | ------------------------------------------------------- |
