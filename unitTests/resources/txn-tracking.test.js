@@ -556,7 +556,7 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(501)) == null, 'the orphaned write must not have been committed');
 	});
 
-	it('lets an open read iterator finish after disconnecting a write-bearing transaction', async function () {
+	it('lets an open read iterator finish without retaining the disconnected write intents', async function () {
 		await DisconnectResource.put(507, { name: 'iterator seed' }, {});
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
@@ -568,6 +568,14 @@ describe('Disconnect abort', () => {
 				await iterator.next();
 				await DisconnectResource.put(508, { name: 'must be discarded' }, context);
 				const { txn: iteratorTransaction, nativeTransaction } = getReadTransaction(context.transaction);
+				let abandonCalls = 0;
+				if (!isLMDB) {
+					const originalAbandonWrites = nativeTransaction.abandonWrites.bind(nativeTransaction);
+					nativeTransaction.abandonWrites = () => {
+						abandonCalls++;
+						return originalAbandonWrites();
+					};
+				}
 				ac.abort();
 				assert.equal(iteratorTransaction.disconnected, true, 'disconnect must still poison the staged write');
 				assert.equal(
@@ -575,7 +583,25 @@ describe('Disconnect abort', () => {
 					nativeTransaction,
 					'the open iterator must retain its native transaction until it finishes'
 				);
-				while (!(await iterator.next()).done);
+				if (!isLMDB) {
+					let competingWriteSettled = false;
+					const competingWrite = transaction({}, () => DisconnectResource.put(508, { name: 'competing write' })).then(
+						() => {
+							competingWriteSettled = true;
+						}
+					);
+					try {
+						await waitFor(() => competingWriteSettled, {
+							message: 'a competing write should not wait for the retained read iterator',
+						});
+					} finally {
+						while (!(await iterator.next()).done);
+						await competingWrite;
+					}
+				} else {
+					while (!(await iterator.next()).done);
+				}
+				if (!isLMDB) assert.equal(abandonCalls, 1, 'disconnect must release the retained handle write intents');
 				assert.equal(
 					iteratorTransaction.transaction ?? iteratorTransaction.readTxn,
 					null,
@@ -584,7 +610,9 @@ describe('Disconnect abort', () => {
 			}),
 			/disconnected/
 		);
-		assert.ok((await DisconnectResource.get(508)) == null, 'the disconnected write must not commit');
+		const record = await DisconnectResource.get(508);
+		if (isLMDB) assert.ok(record == null, 'the disconnected write must not commit');
+		else assert.equal(record?.name, 'competing write', 'only the competing write should commit');
 	});
 
 	it('keeps a write-first iterator safe when the poisoned callback rejects', async function () {
@@ -665,6 +693,52 @@ describe('Disconnect abort', () => {
 			'the returned iterator must be closed when commit rejects'
 		);
 		assert.ok((await DisconnectResource.get(515)) == null, 'the disconnected write must not commit');
+	});
+
+	it('preserves the commit error when returned result cleanup is unusable', async function () {
+		for (const [id, onDone] of [
+			[516, true],
+			[
+				517,
+				() => {
+					throw new Error('cleanup failed');
+				},
+			],
+		]) {
+			const ac = new AbortController();
+			const context = { signal: ac.signal };
+			await assert.rejects(
+				transaction(context, async () => {
+					await DisconnectResource.put(id, { name: 'must be discarded' }, context);
+					ac.abort();
+					return { onDone };
+				}),
+				/disconnected/
+			);
+			assertChainReleased(context.transaction);
+		}
+	});
+
+	it('does not double-consume an LMDB iterator reference across explicit and wrapper commits', async function () {
+		if (!isLMDB) this.skip();
+		await DisconnectResource.put(518, { name: 'LMDB iterator seed' }, {});
+		const context = {};
+		let iterator;
+		let iteratorTransaction;
+		try {
+			await transaction(context, async () => {
+				const results = await DisconnectResource.search({}, context);
+				iterator = results[Symbol.asyncIterator]();
+				await iterator.next();
+				({ txn: iteratorTransaction } = getReadTransaction(context.transaction));
+				await context.transaction.commit();
+				assert.ok(iteratorTransaction.readTxn, 'the explicit commit must retain the iterator read transaction');
+			});
+			assert.ok(iteratorTransaction.readTxn, 'the wrapper commit must not consume the iterator reference');
+		} finally {
+			if (iteratorTransaction?.readTxn) await iterator?.return?.();
+		}
+		assert.equal(iteratorTransaction.readTxn, null, 'closing the iterator must release its read transaction');
 	});
 
 	// Table.ts's txnForContext only chains a separate `next` link when the second store's `.path` differs

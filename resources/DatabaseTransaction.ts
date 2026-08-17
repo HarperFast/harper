@@ -459,7 +459,9 @@ export class DatabaseTransaction implements Transaction {
 			if (this.readTxnsUsed == null) {
 				this.readTxnsUsed = 1;
 				this.baseReadRefConsumed = false;
+				if (DEBUG_LONG_TXNS) this.stackTraces = [new StartedTransaction()];
 				trackedTxns.add(this);
+				if (trackedTxns.size > readTxnQueueDepthHighWater) readTxnQueueDepthHighWater = trackedTxns.size;
 			}
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
@@ -571,6 +573,16 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.warn?.('Failed to release a transaction’s native handle', error);
 			}
 			this.completeDeferredContextRelease();
+		}
+	}
+
+	private releaseRetainedWriteIntents(): void {
+		if (this.writesAbandoned) return;
+		this.writesAbandoned = true;
+		try {
+			(this.transaction as { abandonWrites?: () => void } | null)?.abandonWrites?.();
+		} catch (error) {
+			harperLogger.warn?.('Failed to release write intents on a retained read transaction', error);
 		}
 	}
 
@@ -1012,14 +1024,7 @@ export class DatabaseTransaction implements Transaction {
 					// post-submit steps here: the replay commit is already in flight, so a throw must
 					// not skip onCommit/the chain-store commit below. Optional: rocksdb-js < 2.7
 					// lacks the method.
-					if (!this.writesAbandoned) {
-						this.writesAbandoned = true;
-						try {
-							(this.transaction as { abandonWrites?: () => void } | null)?.abandonWrites?.();
-						} catch (error) {
-							harperLogger.warn?.('Failed to release write intents on a retained read transaction', error);
-						}
-					}
+					this.releaseRetainedWriteIntents();
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
 					this.detachOwnedTransaction(); // any further operations operate immediately
@@ -1340,6 +1345,7 @@ export class DatabaseTransaction implements Transaction {
 			this.transaction &&
 			(this.readTxnsUsed > 1 || (this.baseReadRefConsumed && this.readTxnsUsed > 0));
 		if (hasOpenReadIterator) {
+			this.releaseRetainedWriteIntents();
 			if (!this.baseReadRefConsumed) {
 				this.doneReadTxn();
 				this.baseReadRefConsumed = true;

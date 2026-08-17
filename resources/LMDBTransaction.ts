@@ -188,7 +188,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			}
 		}
 		// release the read snapshot so we don't keep it open longer than necessary
-		if (!retries) {
+		if (!retries && !this.baseReadRefConsumed) {
 			this.baseReadRefConsumed = true;
 			this.doneReadTxn();
 		}
