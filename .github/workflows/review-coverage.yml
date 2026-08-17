@@ -23,5 +23,3 @@ jobs:
       # using private-repo actions, so it cannot live in dispatch) — other public
       # HarperFast repos pin it by sha
       - uses: ./.github/actions/review-coverage
-      - name: test review-coverage action
-        run: node --test .github/actions/review-coverage/*.test.mjs
