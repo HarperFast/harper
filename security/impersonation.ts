@@ -38,6 +38,12 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 	// Enforce downgrade: never allow escalation
 	enforceDowngrade(impersonatedUser);
 
+	// A token's operation scope (#2174) constrains the credential regardless of which principal it
+	// acts as, so it survives impersonation. enforceDowngrade only bounds the impersonated role's
+	// permissions; without carrying the scope, a scoped super_user token would shed it by impersonating.
+	const inheritedScope = (authenticatedUser as any).tokenOperations;
+	if (Array.isArray(inheritedScope)) (impersonatedUser as any).tokenOperations = inheritedScope;
+
 	// Tag for audit trail
 	impersonatedUser._impersonated = true;
 	impersonatedUser._impersonatedBy = authenticatedUser.username;

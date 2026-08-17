@@ -448,8 +448,8 @@ module.exports = {
  * uses this to scope a single workflow). Returns a denial, or undefined when the scope permits — or
  * when there is no scope, which is every token minted before this existed.
  *
- * Shared by verifyPerms AND verifyPermsAST, and called first in both. Three ways this gets bypassed
- * if it moves:
+ * Shared by verifyPerms AND verifyPermsAST, and called first in both. Four ways this gets bypassed
+ * if it moves or is incomplete:
  *
  * 1. `sql` dispatches to verifyPermsAST, in a branch mutually exclusive with the verifyPerms call
  *    (server/serverHelpers/serverUtilities.ts). A gate in only one of them means a token scoped to
@@ -457,11 +457,19 @@ module.exports = {
  * 2. Both functions `return null` early for a super_user — the identity that most needs constraining.
  * 3. verifyPerms' `operations` gate 2 also returns null, treating an explicit listing of an SU-only
  *    operation as a deliberate grant.
+ * 4. Operations that never reach verifyPerms at all: create_authentication_tokens (NO_AUTH),
+ *    refresh_operation_token, and impersonation each PRODUCE a new credential or principal, so the
+ *    scope has to be carried forward there too or a scoped token mints an unscoped one. That carry-
+ *    forward lives in tokenAuthentication.ts and impersonation.ts, not here.
  *
  * It can only subtract. The scope is deliberately NOT merged into `permission.operations`, because
  * that field is not purely narrowing (see gate 2) — merging into it could widen instead.
+ *
+ * `op` is the raw operation (a handler function name, or the literal `sql`); its snake_case api_name
+ * is resolved here rather than by the caller, so the unscoped default path — every request that is
+ * not a scoped token — does no registry lookup and no allocation before the `== null` return.
  */
-function tokenScopeDenial(userObject: any, opApiName: string) {
+function tokenScopeDenial(userObject: any, op: string) {
 	// `!= null`, not `!== undefined`: an unscoped policy stores `operations: null`, and expanding a
 	// null would throw rather than fall through to the role.
 	const tokenOperations = userObject?.tokenOperations;
@@ -470,6 +478,7 @@ function tokenScopeDenial(userObject: any, opApiName: string) {
 	const scopedOps =
 		userObject._expandedTokenOperations ??
 		(userObject._expandedTokenOperations = expandOperationsPerms(tokenOperations));
+	const opApiName = requiredPermissions.get(op)?.api_name ?? op;
 	if (scopedOps.has(opApiName)) return undefined;
 
 	harperLogger.info(`Operation '${opApiName}' is outside the scope of the presented token`);
@@ -623,7 +632,7 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 
 	const permsResponse = new PermissionResponseObject();
 
-	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, requiredPermissions.get(op)?.api_name ?? op);
+	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, op);
 	if (scopeDenial) return scopeDenial;
 
 	if (
