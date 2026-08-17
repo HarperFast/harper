@@ -42,10 +42,13 @@ For remote Operations API commands, the CLI uses the first complete authenticati
 2. Credentials embedded in the `target` URL
 3. `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD` environment variables
 4. Legacy `CLI_TARGET_USERNAME` and `CLI_TARGET_PASSWORD` environment variables
-5. A token saved by `harper login`
-6. `username=` and `password=` operation parameters (legacy fallback)
+5. `HARPER_CLI_OPERATION_TOKEN` and `HARPER_CLI_REFRESH_TOKEN` environment variables, or their legacy `CLI_TARGET_` equivalents — see [Token credentials for CI/CD](#token-credentials-for-cicd)
+6. A token saved by `harper login`
+7. `username=` and `password=` operation parameters (legacy fallback)
 
 Credentials are resolved as a pair and are never combined across sources. An incomplete pair supplied with dedicated authentication parameters or in the target URL causes the command to fail. An incomplete environment-variable pair is skipped with a warning so that a saved login token can still be used.
+
+Entries 5 and 6 authenticate with a bearer token and apply to **remote targets only**. A local operation goes over the domain socket, which the server already trusts, so token environment variables are deliberately ignored there — a token minted for one instance would otherwise be attached to every local `harper` command in that shell and rejected.
 
 Before v5.2.0, `username=` and `password=` operation parameters took precedence over environment variables and saved login tokens. This could authenticate an operation as the wrong user when those fields were part of the operation payload, such as the user being created by `add_user`.
 
@@ -94,8 +97,14 @@ Starting in v5.2.0, a complete environment-variable credential pair takes preced
 - `HARPER_CLI_TARGET` - Sets the default `target` for CLI commands. `CLI_TARGET` is the legacy equivalent.
 - `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD` - Preferred credential pair for the target.
 - `CLI_TARGET_USERNAME` and `CLI_TARGET_PASSWORD` - Lower-priority legacy credential pair.
+- `HARPER_CLI_REFRESH_TOKEN` - Long-lived token the CLI exchanges for a fresh operation token on each run. `CLI_TARGET_REFRESH_TOKEN` is the legacy equivalent.
+- `HARPER_CLI_OPERATION_TOKEN` - A short-lived operation token supplied directly, for callers that mint their own.
 
 Each credential namespace is independent. For example, the CLI never combines `HARPER_CLI_USERNAME` with `CLI_TARGET_PASSWORD`. If either namespace supplies only a username or only a password, that incomplete pair is skipped with a warning.
+
+The same rule holds for tokens, and for the same reason: whichever namespace supplies a token owns both halves of it. If `HARPER_CLI_OPERATION_TOKEN` were allowed to pair with `CLI_TARGET_REFRESH_TOKEN`, commands would run as the first identity until its operation token expired and then silently continue as the second.
+
+For a pipeline, prefer a token over `HARPER_CLI_PASSWORD`: it is scoped to authentication, it can be revoked without changing the account password, and it cannot be used to log in interactively. See [Token credentials for CI/CD](#token-credentials-for-cicd).
 
 **Example `.env` file**:
 
@@ -161,6 +170,53 @@ harper add_user \
   password="$NEW_USER_PASSWORD" \
   target=https://prod-server.com:9925
 ```
+
+##### Token credentials for CI/CD
+
+<VersionBadge version="v5.2.0" />
+
+Rather than storing an admin password in your CI provider, log in once locally and hand CI a **refresh token**. The CLI mints a fresh, short-lived operation token from it on every run, so the only durable secret the pipeline holds is a revocable token.
+
+`harper login --for-ci` writes the variables CI needs to **stdout** in `.env` format — and nothing else, so the output pipes cleanly. Everything a human reads (banner, prompts, status, warnings) goes to stderr:
+
+```bash
+# Set both GitHub Actions secrets in one command — the token is never displayed
+harper login --for-ci | gh secret set --env-file -
+
+# Or copy them to the clipboard to paste in by hand
+harper login --for-ci | pbcopy
+```
+
+The block it emits:
+
+```bash
+HARPER_CLI_TARGET=https://example.com:9925/
+HARPER_CLI_REFRESH_TOKEN=eyJhbGciOi...
+```
+
+Because stdout carries only these two lines, the token never appears on screen or in your shell history — which is not true of copying it out of terminal output by hand. If the cluster returns no refresh token, the command fails rather than emitting a half-block that would "succeed" at storing nothing.
+
+Expose the two values to the deploy step and no other credentials are needed:
+
+```yaml
+- name: Deploy
+  run: harper deploy project=my-app restart=true replicated=true
+  env:
+    HARPER_CLI_TARGET: ${{ secrets.HARPER_CLI_TARGET }}
+    HARPER_CLI_REFRESH_TOKEN: ${{ secrets.HARPER_CLI_REFRESH_TOKEN }}
+```
+
+**Refresh behavior.** The CLI mints an operation token from the refresh token when none is supplied, and again whenever the supplied one has expired. A token refreshed from an environment variable is held in memory for that invocation only — nothing is written to `~/.harperdb/credentials.json`, because there is no file entry for an environment-supplied credential. If the refresh token itself is rejected, the command reports that and exits non-zero rather than falling back to another identity.
+
+**A blank token variable is an error, not a fallback.** If a namespace is set but empty — the usual shape of a misconfigured CI secret — the CLI says so and falls back to saved login credentials. It does not silently run as whoever last logged in on that machine.
+
+**Lifetimes.** Operation tokens expire after `authentication.operationTokenTimeout` (default `1d`) and refresh tokens after `authentication.refreshTokenTimeout` (default `30d`). The pipeline needs a new refresh token when that window closes.
+
+:::warning
+**Each user holds only one valid refresh token at a time.** Harper stores a single refresh-token hash per user, so minting a new one revokes that user's previous token. A routine local `harper login` as the same account will break a pipeline holding the older token, and the failure only surfaces on the pipeline's next refresh.
+
+Create a **dedicated CI user** and run `harper login --for-ci` as that user. That scopes the pipeline's permissions to what it actually needs, and lets you revoke its access without disturbing anyone else.
+:::
 
 #### Method 3: Dedicated Authentication Parameters
 
