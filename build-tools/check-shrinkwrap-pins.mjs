@@ -155,7 +155,7 @@ function verifyCanariesDiscriminate(pins) {
 	if (stillDiscriminates) return;
 	if (failedQueries.length > 0) {
 		console.error(
-			`::error title=Retry dependency canary check::Could not verify that the shrinkwrap canaries still discriminate after ${REGISTRY_QUERY_ATTEMPTS} registry query attempts for ${failedQueries.join(', ')}. Retry this job; if the error persists, check npm registry availability and confirm the listed package ranges match published versions.`
+			`::error title=Retry dependency canary check::Could not verify that the shrinkwrap canaries still discriminate after ${REGISTRY_QUERY_ATTEMPTS} registry query attempts for ${failedQueries.join(', ')}. Retry this job; if the error persists, check npm/registry/runner configuration and confirm the listed package ranges match published versions.`
 		);
 		failed = true;
 		return;
@@ -220,7 +220,10 @@ function verifyRocksDbDependencyAlignment() {
 }
 
 function isExactVersion(range) {
-	return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(range);
+	return (
+		typeof range === 'string' &&
+		/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(range)
+	);
 }
 
 // Numeric major.minor.patch comparison, ignoring any prerelease/build suffix -- sufficient

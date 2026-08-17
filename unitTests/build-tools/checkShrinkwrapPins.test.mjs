@@ -47,6 +47,22 @@ describe('shrinkwrap pin canaries', function () {
 		}
 	});
 
+	it('fails when a root encoder spec is not exact', async function () {
+		const fixture = await createFixture({
+			'@harperfast/rocksdb-js': '2.7.1',
+			'fastify': '^5.8.2',
+			'@aws-sdk/client-s3': '^3.1012.0',
+			'msgpackr': '^2.0.5',
+		});
+		try {
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /root msgpackr spec must be exact, received \^2\.0\.5/);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
 	it('fails when rocksdb-js installs a nested encoder instance', async function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
