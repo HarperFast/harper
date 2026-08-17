@@ -179,9 +179,16 @@ function verifyRocksDbDependencyAlignment() {
 	for (const dep of ROCKSDB_SINGLE_INSTANCE_DEPS) {
 		const rootSpec = manifest.dependencies?.[dep];
 		const rocksdbSpec = rocksdbManifest.dependencies?.[dep];
-		if (!isExactVersion(rootSpec) || rootSpec !== rocksdbSpec) {
+		if (!isExactVersion(rootSpec)) {
 			console.error(
-				`::error::${dep} must be exact and match rocksdb-js (${rootSpec ?? 'missing'} !== ${rocksdbSpec ?? 'missing'}) -- update these pins together to preserve one module instance`
+				`::error::the root ${dep} spec must be exact, received ${rootSpec ?? 'missing'} -- update it with rocksdb-js to preserve one module instance`
+			);
+			failed = true;
+			continue;
+		}
+		if (rootSpec !== rocksdbSpec) {
+			console.error(
+				`::error::the root ${dep} pin ${rootSpec} does not match rocksdb-js ${rocksdbSpec ?? 'missing'} -- update these pins together to preserve one module instance`
 			);
 			failed = true;
 			continue;

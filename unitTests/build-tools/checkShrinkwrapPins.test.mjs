@@ -41,7 +41,7 @@ describe('shrinkwrap pin canaries', function () {
 			);
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 1);
-			assert.match(result.stderr, /msgpackr must be exact and match rocksdb-js/);
+			assert.match(result.stderr, /root msgpackr pin 2\.0\.5 does not match rocksdb-js 2\.0\.6/);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -270,9 +270,15 @@ async function createFixture(
 		const dependencyDir = join(packageRoot, 'node_modules', dependency);
 		await mkdir(dependencyDir, { recursive: true });
 		const dependencyManifest = {
-			version: installedVersions[dependency] ?? alignedDependencies[dependency] ?? '1.0.0',
+			version:
+				installedVersions[dependency] ??
+				(dependency in alignedDependencies ? packageDependencies[dependency] : '1.0.0'),
 		};
-		if (dependency === '@harperfast/rocksdb-js') dependencyManifest.dependencies = alignedDependencies;
+		if (dependency === '@harperfast/rocksdb-js') {
+			dependencyManifest.dependencies = Object.fromEntries(
+				Object.keys(alignedDependencies).map((dep) => [dep, packageDependencies[dep]])
+			);
+		}
 		await writeFile(join(dependencyDir, 'package.json'), JSON.stringify(dependencyManifest));
 	}
 	await writeFile(
@@ -294,7 +300,7 @@ fi
 case "$2" in
   fastify@*) printf '["1.0.0"]\\n' ;;
   @aws-sdk/client-s3@*) printf '["1.0.0", "1.0.1"]\\n' ;;
-  *) printf 'stub npm: unmodelled query %s\n' "$2" >&2; exit 1 ;;
+  *) printf 'stub npm: unmodelled query %s\\n' "$2" >&2; exit 1 ;;
 esac
 `
 	);
