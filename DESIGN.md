@@ -155,8 +155,7 @@ wedge rollback with `ENOTEMPTY`; cleanup completes while the same-component lock
 On non-root POSIX systems, rollback uses a mode-`000` placeholder to keep that writer out between
 retries. Before moving or removing it, rollback verifies the placeholder's device/inode identity and
 restores owner permissions because a cross-parent directory move updates `..` and requires write
-permission on the moved directory. Recovery also recognizes an owner-owned mode-`000` directory as
-an orphaned placeholder so a crash during rollback cannot leave the component wedged.
+permission on the moved directory.
 The aside name is itself the recovery record: `.in-progress-*` is recoverable after an interrupted
 deploy unless a sibling `.retired-*` marker records that the replacement committed. Cleanup removes
 the aside before its marker, so an interrupted cleanup cannot make an obsolete tree recoverable.
