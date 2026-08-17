@@ -884,10 +884,11 @@ puts a store lookup back on every query whose `limit` exceeds the table — the 
 whole change removed, reintroduced in miniature. An `ef` above the node count is free anyway: the
 traversal is bounded by the nodes it can reach, so it ends at the graph, not at `ef`.
 
-The filter budget deliberately does not follow a limit-derived `ef`. `maxVisits = ef * filterExpansion`
-(#1241) is what stops a selective filter crawling the graph and loading a record per visit, so it is
-computed from the `ef` the index resolved for itself. Multiplying it by a caller's `limit` would turn
-a filtered vector query into a record-loading scan wearing an index's clothes.
+The filter budget deliberately does not follow a limit-derived `ef`. It is computed from the `ef`
+the index resolved for itself, with an automatically scaled `ef` capped at `AUTO_EF_MAX` before it is
+multiplied by `filterExpansion`; explicit schema or per-query `ef` values remain authoritative.
+Multiplying the budget by a caller's `limit` would turn a filtered vector query into a record-loading
+scan wearing an index's clothes.
 
 Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
 search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
@@ -897,8 +898,10 @@ empty" defect; it does not make offsets a cursor. Callers who need stability sho
 large enough for the whole result set, or pin an explicit `ef`.
 
 One consumer is still calibrated in index-store keys rather than nodes: `estimateCountAsSort`, the
-planner's cost estimate for a vector sort. It is scaled by `INDEX_KEYS_PER_NODE` so the unit switch
-does not silently shift which condition the planner chooses to lead with.
+planner's cost estimate for a vector sort. It is scaled by `INDEX_KEYS_PER_NODE` so the count-source
+unit switch does not shift the estimate on its own. The ef term remains the configured search value,
+not the runtime auto-scaled value, so the planner increasingly underestimates vector traversal cost
+as an automatically scaled graph grows.
 
 ## Env-config empty objects mean three different things (`config/harperConfigEnvVars.ts`)
 

@@ -209,22 +209,17 @@ export class HierarchicalNavigableSmallWorld {
 	// a value of 1 is extremely aggressive.
 	optimizeRouting = 0.5;
 	nodesVisitedCount = 0;
-	// Visit-budget multiplier for predicate-aware traversal (#1241). When a filter is selective enough
-	// that layer-0 results never fill `ef`, the "closest candidate worse than worst result" stop rule
-	// never triggers, so maxVisits = ef * filterExpansion caps how many nodes an under-filled filtered
-	// search visits before returning what it has (approximate, like all ANN). It does NOT bound a filter
-	// that fills `ef` — that terminates naturally. Default 24 (not the 8 the design sketch assumed):
-	// this HNSW visits a large fraction of the graph per query, so filling `ef` at selectivity `s` needs
-	// ~ef/s visits; a multiplier of 24 fills down to ~4% selectivity before the budget bites, keeping
-	// recall at or above post-filtering across the range the query planner routes to traversal. Raising
-	// it is nearly free for condition-derived filters (they fill and self-terminate); it mainly trades
-	// latency for recall on selective *function* predicates. Per-query override via the search options.
+	// Visit-budget multiplier for predicate-aware traversal (#1241). Under-filled filtered searches
+	// stop after the resolved budget ef * filterExpansion visits; automatic search ef contributes at
+	// most AUTO_EF_MAX, while explicit schema/query ef remains authoritative. A filter that fills its
+	// candidate list terminates naturally before this bound. Raising the multiplier mainly trades
+	// latency for recall on selective function predicates. Per-query override via the search options.
 	filterExpansion = 24;
 
 	idIncrementer: BigInt64Array | undefined;
 	distance: (a: number[], b: number[]) => number;
 	int8 = true; // store vectors as int8-quantized bins by default; opt out with `quantization: "none"`
-	efSearchConfigured = false; // whether the schema set an explicit search ef; if not, search ef auto-scales with N
+	efSearchConfigured = false; // whether the schema pins search ef directly or through efConstruction
 	efConstructionConfigured = false; // whether the schema set an explicit efConstruction; if not, it auto-scales with N
 	private lastLoggedEfConstruction = 0;
 	private idIncrementerRetryAt = 0;
@@ -558,8 +553,7 @@ export class HierarchicalNavigableSmallWorld {
 				}
 			}
 			this.indexStore.remove(nodeId, options);
-			// Remove the safeKey→nodeId mapping so the key count used by autoScaleEf stays accurate
-			// and a re-insert of this primary key gets a fresh node rather than the deleted node's id.
+			// A re-insert of this primary key must get a fresh node rather than the deleted node's id.
 			this.indexStore.remove(safeKey, options);
 		}
 		const needsReindexing = new Map();
@@ -744,20 +738,22 @@ export class HierarchicalNavigableSmallWorld {
 	 * measurements behind both. The memo is the only gate on how often the size is resolved; nothing on
 	 * the query path may bypass it, or the O(1) lookup becomes per-query work again.
 	 */
-	private approximateNodeCount(): number {
+	private approximateNodeCount(options?: any): number {
 		const now = Date.now();
 		if (this.nodeCountAt > 0 && now - this.nodeCountAt < NODE_COUNT_TTL) return this.nodeCount;
-		this.nodeCount = this.resolveNodeCount();
+		this.nodeCount = this.resolveNodeCount(options);
 		this.nodeCountAt = now;
 		return this.nodeCount;
 	}
 
 	private resolveConstructionNodeCount(options?: any): number {
+		if (this.idIncrementer) return this.resolveNodeCount();
 		const now = Date.now();
-		if (this.idIncrementer || now >= this.idIncrementerRetryAt) {
+		if (now >= this.idIncrementerRetryAt) {
 			try {
 				this.ensureIdIncrementer(options);
 				this.idIncrementerRetryAt = 0;
+				this.idIncrementerFailureLogged = false;
 				return this.resolveNodeCount();
 			} catch (error) {
 				this.idIncrementerRetryAt = now + NODE_COUNT_TTL;
@@ -767,7 +763,7 @@ export class HierarchicalNavigableSmallWorld {
 				}
 			}
 		}
-		return this.approximateNodeCount();
+		return this.approximateNodeCount(options);
 	}
 
 	/**
@@ -791,14 +787,28 @@ export class HierarchicalNavigableSmallWorld {
 		// array first would, on an attach failure, leave THIS process allocating ids nobody else can
 		// see — cross-worker id collisions. Left unset, the next write simply retries the ensure.
 		const seed = new BigInt64Array([BigInt(largestNodeId) + 1n]);
-		this.idIncrementer = new BigInt64Array(this.indexStore.getUserSharedBuffer('next-id', seed.buffer));
+		const sharedBuffer = this.indexStore.getUserSharedBuffer('next-id', seed.buffer);
+		if (
+			!sharedBuffer ||
+			sharedBuffer.byteLength < BigInt64Array.BYTES_PER_ELEMENT ||
+			sharedBuffer.byteLength % BigInt64Array.BYTES_PER_ELEMENT !== 0
+		) {
+			throw new Error('Shared HNSW id counter buffer is unusable');
+		}
+		this.idIncrementer = new BigInt64Array(sharedBuffer);
 	}
 
 	/** O(1) node count — the shared id counter, else a single reverse seek to the largest node id. */
-	private resolveNodeCount(): number {
+	private resolveNodeCount(options?: any): number {
 		if (this.idIncrementer) return Number(Atomics.load(this.idIncrementer, 0));
 		try {
-			for (const key of this.indexStore.getKeys({ reverse: true, limit: 1, start: Infinity, end: 0 })) {
+			for (const key of this.indexStore.getKeys({
+				reverse: true,
+				limit: 1,
+				start: Infinity,
+				end: 0,
+				transaction: options?.transaction,
+			})) {
 				if (typeof key === 'number') return key + 1;
 			}
 		} catch (error) {
@@ -1095,8 +1105,8 @@ export class HierarchicalNavigableSmallWorld {
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
 
 		const options = context.transaction; // should have a nested RocksDB transaction
-		// Resolve search ef: per-query ef wins; else an explicitly-configured efConstructionSearch;
-		// else auto-scale with the graph size so recall holds as the table grows.
+		// Resolve search ef: per-query ef wins; else use the schema-pinned value (from either ef option);
+		// otherwise auto-scale with the graph size so recall holds as the table grows.
 		let effectiveEf = this.efConstructionSearch;
 		const explicitEf = ef !== undefined && ef > 0;
 		if (explicitEf) effectiveEf = ef;
