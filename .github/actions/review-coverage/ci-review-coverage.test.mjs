@@ -66,6 +66,7 @@ test('a missing or unknown author association does not exempt the PR', () => {
 test('the footer note distinguishes current, stale, and absent', () => {
 	const at = (sha, score = 2) => pr({ body: `x\n<sub>Human-Review-Need: ${score} @ ${sha}</sub>` });
 	assert.match(evaluateCiCoverage(at(HEAD.slice(0, 12))).detail, /Human-Review-Need: 2 @ head/);
+	assert.match(evaluateCiCoverage(at(HEAD.slice(0, 12).toUpperCase())).detail, /Human-Review-Need: 2 @ head/);
 	assert.match(evaluateCiCoverage(at(HEAD.slice(0, 12), 12)).detail, /Need: 12 @ head/);
 	assert.match(evaluateCiCoverage(at('999999999999')).detail, /STALE/);
 	assert.match(evaluateCiCoverage(pr()).detail, /no Human-Review-Need footer/);
@@ -78,7 +79,7 @@ test('required is tunable', () => {
 
 // ---- exit codes, through the real CLI entry ----
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { writeFileSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -125,6 +126,32 @@ test('the CLI runs through a symlinked entrypoint', () => {
 			encoding: 'utf8',
 		});
 		assert.match(output, /review-coverage \[report\]/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('a step-summary write failure does not change the coverage verdict', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-summary-'));
+	const file = path.join(dir, 'event.json');
+	writeFileSync(file, JSON.stringify({ pull_request: pr() }));
+	try {
+		const report = spawnSync(process.execPath, [SCRIPT, '--event', file], {
+			encoding: 'utf8',
+			env: { ...process.env, GITHUB_STEP_SUMMARY: dir },
+		});
+		assert.strictEqual(report.status, 0);
+		assert.match(report.stderr, /could not write the step summary/);
+		assert.match(report.stderr, /::warning::no cross-model reviews reported/);
+
+		const compliant = { pull_request: pr({ body: '## Review coverage\n- Codex: ran\n- Gemini: ran' }) };
+		writeFileSync(file, JSON.stringify(compliant));
+		const enforce = spawnSync(process.execPath, [SCRIPT, '--event', file, '--mode', 'enforce'], {
+			encoding: 'utf8',
+			env: { ...process.env, GITHUB_STEP_SUMMARY: dir },
+		});
+		assert.strictEqual(enforce.status, 0);
+		assert.match(enforce.stderr, /could not write the step summary/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
