@@ -1374,3 +1374,317 @@ describe('cliOperations', () => {
 		});
 	});
 });
+
+describe('deploy by reference (by_ref)', () => {
+	const { prepareDeployByRef, resolveGitTarget, resolveCredentialHost, deriveGitSecretName } = cliOperationsModule;
+	const GITHUB_ENV = ['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_EVENT_PATH'];
+	let savedEnv, savedStderrWrite;
+
+	beforeEach(() => {
+		savedEnv = new Map(GITHUB_ENV.map((name) => [name, process.env[name]]));
+		// The default target resolves from env, so tests that aren't about git resolution get a fixed
+		// repo/SHA. The nested repo describe below overrides this to exercise git itself.
+		process.env.GITHUB_REPOSITORY = 'acme/demo';
+		process.env.GITHUB_SHA = 'abc123def456';
+		delete process.env.GITHUB_REF;
+		delete process.env.GITHUB_EVENT_PATH;
+		// Silence the "Deploying … by reference" line prepareDeployByRef writes to stderr.
+		savedStderrWrite = process.stderr.write;
+		process.stderr.write = () => true;
+	});
+
+	afterEach(() => {
+		for (const [name, value] of savedEnv) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		process.stderr.write = savedStderrWrite;
+	});
+
+	// Collects everything written to stderr while fn runs, so warnings/notes can be asserted on.
+	function captureStderr(fn) {
+		const written = [];
+		process.stderr.write = (chunk) => {
+			written.push(String(chunk));
+			return true;
+		};
+		try {
+			fn();
+		} finally {
+			process.stderr.write = () => true;
+		}
+		return written.join('');
+	}
+
+	it('builds a git+https package pinned to the resolved SHA', () => {
+		const req = { by_ref: true, project: 'demo' };
+		prepareDeployByRef(req);
+		assert.strictEqual(req.package, 'git+https://github.com/acme/demo.git#abc123def456');
+		assert.strictEqual(req.credentials, undefined); // no credential requested
+	});
+
+	// Every other CLI value is JSON-parsed, which rewrites a ref that happens to look numeric: `1.0`
+	// parses to the number 1, and no amount of coercion downstream can turn that back into the tag
+	// the user typed. Refs are opaque strings, so they skip the parse entirely.
+	describe('ref parsing', () => {
+		const { buildRequest } = cliOperationsModule;
+		let savedArgv;
+
+		beforeEach(() => {
+			savedArgv = process.argv;
+		});
+
+		afterEach(() => {
+			process.argv = savedArgv;
+		});
+
+		function refFromArgv(arg) {
+			process.argv = ['node', 'harper', 'deploy', arg];
+			return buildRequest().ref;
+		}
+
+		it('keeps a ref that looks numeric exactly as typed', () => {
+			assert.strictEqual(refFromArgv('ref=1.0'), '1.0'); // not the number 1
+			assert.strictEqual(refFromArgv('ref=1.10'), '1.10'); // not 1.1
+			assert.strictEqual(refFromArgv('ref=1e3'), '1e3'); // not 1000
+			assert.strictEqual(refFromArgv('ref=1234567'), '1234567');
+		});
+
+		it('leaves ordinary refs and other fields alone', () => {
+			assert.strictEqual(refFromArgv('ref=v1.2.3'), 'v1.2.3');
+			process.argv = ['node', 'harper', 'deploy', 'by_ref=true'];
+			assert.strictEqual(buildRequest().by_ref, true); // still JSON-parsed
+		});
+	});
+
+	// A real repo with known refs — plus a local bare repo standing in for `origin` — so ref
+	// resolution is asserted against actual git behavior rather than whatever happens to exist in the
+	// checkout running the tests, and without reaching the network.
+	describe('ref resolution against a real repository', () => {
+		const { execFileSync } = require('node:child_process');
+		let rootDir, repoDir, priorCwd, headSha, remoteOnlySha, tagObjectSha;
+
+		before(() => {
+			rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-by-ref-'));
+			repoDir = path.join(rootDir, 'work');
+			const remoteDir = path.join(rootDir, 'remote.git');
+			fs.mkdirSync(repoDir);
+			const runIn = (cwd, ...args) =>
+				execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+			const git = (...args) => runIn(repoDir, ...args);
+			runIn(rootDir, 'init', '-q', '--bare', remoteDir);
+			git('init', '-q');
+			git('config', 'user.email', 'test@example.com');
+			git('config', 'user.name', 'Test');
+			git('commit', '-q', '--allow-empty', '-m', 'first');
+			git('tag', 'v1.2.3');
+			git('branch', '1234567'); // a branch name that JSON.parse turns into a number
+			headSha = git('rev-parse', 'HEAD');
+			git('remote', 'add', 'origin', remoteDir);
+			// A commit + annotated tag that exist only on the remote: pushed from a detached HEAD, then
+			// every local trace removed. This is the shallow/never-fetched case, where local resolution
+			// must fail and `ls-remote` has to supply the SHA.
+			git('checkout', '-q', '--detach');
+			git('commit', '-q', '--allow-empty', '-m', 'second');
+			remoteOnlySha = git('rev-parse', 'HEAD');
+			git('tag', '-a', 'v2.0.0', '-m', 'annotated');
+			tagObjectSha = git('rev-parse', 'v2.0.0'); // the tag object, not the commit it points at
+			git('push', '-q', 'origin', 'HEAD:refs/heads/remote-only', 'v2.0.0');
+			git('tag', '-d', 'v2.0.0');
+			// A pull ref that exists both on the remote and locally, so the namespace rejection is
+			// tested against a ref that would otherwise resolve on either path.
+			git('push', '-q', 'origin', 'HEAD:refs/pull/42/head');
+			git('update-ref', 'refs/pull/42/head', remoteOnlySha);
+			git('checkout', '-q', headSha);
+			// Drop the remote-tracking refs push just created, so nothing resolves locally by accident
+			// (and so the "commit isn't on a remote branch" check has nothing to find).
+			for (const ref of git('for-each-ref', '--format=%(refname)', 'refs/remotes').split('\n').filter(Boolean)) {
+				git('update-ref', '-d', ref);
+			}
+			// runGit shells out against the real process cwd, so mocking process.cwd isn't enough.
+			priorCwd = process.cwd();
+			process.chdir(repoDir);
+		});
+
+		after(() => {
+			process.chdir(priorCwd);
+			fs.rmSync(rootDir, { recursive: true, force: true });
+		});
+
+		// Peers resolve the package independently, so a name that can move (a branch, or a tag
+		// repointed between one peer fetching and another re-fetching after a restart) would let
+		// nodes in the same cluster run different commits.
+		it('resolves a local tag to its commit SHA rather than passing the name through', () => {
+			assert.strictEqual(resolveGitTarget('v1.2.3').committish, headSha);
+		});
+
+		it('resolves a local branch name to its commit SHA', () => {
+			assert.strictEqual(resolveGitTarget('HEAD').committish, headSha);
+		});
+
+		// prepareDeployByRef is exported and callable with a hand-built req, so a number still resolves
+		// rather than being ignored — buildRequest itself no longer produces one (see below).
+		it('coerces a numeric ref to a string', () => {
+			assert.strictEqual(resolveGitTarget(1234567).committish, headSha);
+		});
+
+		it('an explicit ref= wins over GITHUB_SHA', () => {
+			const req = { by_ref: true, ref: 'v1.2.3', project: 'demo' };
+			prepareDeployByRef(req);
+			assert.strictEqual(req.package, `git+https://github.com/acme/demo.git#${headSha}`);
+		});
+
+		it('resolves a ref that exists only on the remote via ls-remote', () => {
+			assert.strictEqual(resolveGitTarget('remote-only').committish, remoteOnlySha);
+		});
+
+		// An annotated tag's own object ID is not a commit, so a checkout of it would fail server-side.
+		it('peels a remote annotated tag to its commit, not the tag object', () => {
+			assert.strictEqual(resolveGitTarget('v2.0.0').committish, remoteOnlySha);
+			assert.notStrictEqual(resolveGitTarget('v2.0.0').committish, tagObjectSha);
+		});
+
+		// Failing closed is the point: passing an unresolvable name through preserved exactly the
+		// divergence the SHA pin exists to prevent.
+		it('fails closed when a ref resolves neither locally nor on the remote', () => {
+			assert.throws(() => resolveGitTarget('no-such-ref-anywhere'), /could not resolve ref=no-such-ref-anywhere/);
+		});
+
+		// The one ref that needs no resolution — it can't move — so an unfetched full SHA still deploys.
+		it('passes a full commit SHA through unresolved', () => {
+			const sha = 'f'.repeat(40);
+			assert.strictEqual(resolveGitTarget(sha).committish, sha);
+		});
+
+		// git parses options anywhere in its argv, so `ref=--upload-pack=<cmd>` would otherwise reach
+		// `git ls-remote` as an option and run that command.
+		it('rejects a ref that would be parsed as a git option', () => {
+			assert.throws(() => resolveGitTarget('--upload-pack=touch /tmp/pwned'), /cannot start with "-"/);
+		});
+
+		// A plain clone fetches refs/heads/* and refs/tags/* only. A commit named through any other
+		// namespace pins to an immutable SHA the cluster still can't check out — the same reachability
+		// failure as the pull_request merge commit, just reached by typing it explicitly.
+		describe('refs outside the cloneable namespaces', () => {
+			it('rejects refs/pull/<n>/head even though it resolves both locally and on the remote', () => {
+				// Guards the ordering: the namespace check runs before local resolution, so a checkout
+				// that has fetched the pull ref can't quietly pin an unreachable commit.
+				assert.throws(
+					() => resolveGitTarget('refs/pull/42/head'),
+					/outside refs\/heads\/ and refs\/tags\/[\s\S]*never check it out/
+				);
+			});
+
+			it('accepts a fully-qualified branch ref', () => {
+				assert.strictEqual(resolveGitTarget('refs/heads/remote-only').committish, remoteOnlySha);
+			});
+
+			it('accepts a fully-qualified tag ref, peeled to its commit', () => {
+				assert.strictEqual(resolveGitTarget('refs/tags/v2.0.0').committish, remoteOnlySha);
+				assert.notStrictEqual(resolveGitTarget('refs/tags/v2.0.0').committish, tagObjectSha);
+			});
+		});
+
+		// The cluster clones from the remote, so an unpushed commit fails server-side with an error far
+		// from the CLI. This repo's remote-tracking refs were dropped above, so nothing looks pushed.
+		it('warns when the commit to deploy is on no remote branch', () => {
+			delete process.env.GITHUB_SHA; // take the local-resolution path, where the check applies
+			const written = captureStderr(() => prepareDeployByRef({ by_ref: true, project: 'demo' }));
+			assert.match(written, /isn't on any remote branch/);
+			assert.match(written, new RegExp(headSha.slice(0, 7))); // abbreviated to git's 7 characters
+		});
+
+		it('skips the push check under GITHUB_SHA, where CI is already on a pushed commit', () => {
+			const written = captureStderr(() => prepareDeployByRef({ by_ref: true, project: 'demo' }));
+			assert.doesNotMatch(written, /isn't on any remote branch/);
+		});
+	});
+
+	// GITHUB_SHA on a pull_request run is the synthetic refs/pull/<n>/merge commit, which a plain clone
+	// never fetches — deploying it fails server-side at clone time.
+	describe('GitHub Actions pull_request runs', () => {
+		let eventDir;
+
+		beforeEach(() => {
+			eventDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-by-ref-event-'));
+			process.env.GITHUB_REF = 'refs/pull/42/merge';
+		});
+
+		afterEach(() => {
+			fs.rmSync(eventDir, { recursive: true, force: true });
+		});
+
+		function writeEvent(payload) {
+			const eventPath = path.join(eventDir, 'event.json');
+			fs.writeFileSync(eventPath, JSON.stringify(payload));
+			process.env.GITHUB_EVENT_PATH = eventPath;
+		}
+
+		it('deploys the pull request head commit instead of the merge commit', () => {
+			writeEvent({ pull_request: { head: { sha: 'deadbeef'.repeat(5), repo: { full_name: 'acme/demo' } } } });
+			const req = { by_ref: true, project: 'demo' };
+			prepareDeployByRef(req);
+			assert.strictEqual(req.package, `git+https://github.com/acme/demo.git#${'deadbeef'.repeat(5)}`);
+		});
+
+		// For a fork PR the head commit lives in the fork, not GITHUB_REPOSITORY — pairing the head SHA
+		// with the base repo would name a commit that repo doesn't have.
+		it('uses the head repository, and says so, when the pull request comes from a fork', () => {
+			writeEvent({ pull_request: { head: { sha: 'abc'.repeat(13) + 'd', repo: { full_name: 'forker/demo' } } } });
+			const req = { by_ref: true, project: 'demo' };
+			const written = captureStderr(() => prepareDeployByRef(req));
+			assert.match(req.package, /^git\+https:\/\/github\.com\/forker\/demo\.git#/);
+			assert.match(written, /pull request head from forker\/demo/);
+		});
+
+		it('fails early with actionable guidance when the head cannot be read', () => {
+			writeEvent({ pull_request: {} });
+			assert.throws(
+				() => prepareDeployByRef({ by_ref: true, project: 'demo' }),
+				/synthetic merge commit[\s\S]*github\.event\.pull_request\.head\.sha/
+			);
+		});
+
+		it('still honors an explicit ref= on a pull_request run', () => {
+			writeEvent({ pull_request: {} }); // unreadable head, but ref= means it is never consulted
+			const sha = 'a'.repeat(40);
+			const req = { by_ref: true, ref: sha, project: 'demo' };
+			prepareDeployByRef(req);
+			assert.strictEqual(req.package, `git+https://github.com/acme/demo.git#${sha}`);
+		});
+	});
+
+	describe('credential reference', () => {
+		it('credential=true attaches a github.com credential reference', () => {
+			const req = { by_ref: true, credential: true, project: 'demo' };
+			prepareDeployByRef(req);
+			assert.deepStrictEqual(req.credentials, [{ host: 'github.com', secret: 'deploy.demo.git.github.com' }]);
+		});
+
+		it('credential=github.com agrees with the package host and is accepted', () => {
+			const req = { by_ref: true, credential: 'github.com', project: 'my-app' };
+			prepareDeployByRef(req);
+			assert.deepStrictEqual(req.credentials, [{ host: 'github.com', secret: 'deploy.my-app.git.github.com' }]);
+		});
+
+		// A credential for another host builds a reference the clone never asks for, so the private
+		// deploy fails as if none were configured — reject it instead of shipping the mismatch.
+		it('rejects a credential host that is not the host the package clones from', () => {
+			assert.throws(
+				() => prepareDeployByRef({ by_ref: true, credential: 'gitlab.com', project: 'demo' }),
+				/credential=gitlab\.com doesn't match the package host github\.com/
+			);
+		});
+
+		it('normalizes an explicit host before comparing it', () => {
+			assert.strictEqual(resolveCredentialHost('https://GitHub.com/acme/demo', 'github.com'), 'github.com');
+			assert.strictEqual(resolveCredentialHost(true, 'github.com'), 'github.com');
+			assert.strictEqual(resolveCredentialHost(undefined, 'github.com'), undefined);
+			assert.strictEqual(resolveCredentialHost('', 'github.com'), undefined);
+		});
+
+		it('deriveGitSecretName matches the server convention (deploy.<component>.git.<host>)', () => {
+			assert.strictEqual(deriveGitSecretName('my-app', 'github.com'), 'deploy.my-app.git.github.com');
+		});
+	});
+});

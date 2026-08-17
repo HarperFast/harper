@@ -470,6 +470,16 @@
 					],
 					"description": "Enable/Configure compression (LZ4). Default: true"
 				},
+				"rocks": {
+					"type": "object",
+					"additionalProperties": true,
+					"properties": {
+						"compression": {
+							"type": ["string", "null"],
+							"description": "RocksDB block and blob compression codec for every column family. Default: null (derive from storage.compression)."
+						}
+					}
+				},
 				"compactOnStart": { "type": "boolean", "description": "Compact non-system databases on start. Default: false" },
 				"compactOnStartKeepBackup": {
 					"type": "boolean",
@@ -497,6 +507,10 @@
 				"blobReadTimeout": {
 					"type": "number",
 					"description": "Max time (ms) a blob read will wait for an in-progress write to finish before failing with a 503, rather than holding the connection. Default: 20000"
+				},
+				"blobRetention": {
+					"type": "number",
+					"description": "How long (ms) a superseded blob file is kept on disk, so a reader that resolved a record just before it was overwritten can still read the bytes. 0 reclaims as soon as the queue drains. Default: 2000"
 				},
 				"pageSize": { "type": "number", "description": "Database page size (bytes). Default: OS default" },
 				"reclamation": {

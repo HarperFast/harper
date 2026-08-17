@@ -464,6 +464,25 @@ describe('mcp/tools/operations — handler dispatch', () => {
 		assert.equal(captured.operation, 'describe_table');
 	});
 
+	it('strips caller-supplied bypass_auth/bypassAuth before dispatch (GHSA-7h8h-wq7f-qx65)', async () => {
+		let captured;
+		_setChooseOperationForTest((body) => {
+			captured = body;
+			return async () => null;
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_table', null]]));
+		registerOperationsTools();
+
+		await getTool('describe_table').handler(
+			{ database: 'data', table: 'product', bypass_auth: true, bypassAuth: true },
+			{ user: SUPER, profile: 'operations', sessionId: 's' }
+		);
+
+		assert.equal(Object.hasOwn(captured, 'bypass_auth'), false);
+		assert.equal(Object.hasOwn(captured, 'bypassAuth'), false);
+	});
+
 	it('maps permission-denied exceptions to isError=true with kind=harper_error', async () => {
 		_setChooseOperationForTest(() => {
 			const err = new Error('User is not permitted to describe_all');

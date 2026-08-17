@@ -24,6 +24,14 @@ To match v4: `OpenDBIObject` sets `randomAccessStructure = isPrimary`, and `Reco
 - The struct **read** hook is left intact, so records a prior v5 already wrote in struct mode still decode (read-compat); only new writes switch to records mode.
 - Companion change in `structon`: `prepareStructures` saves the shared structures in the legacy plain-array form when there are no typed structs (instead of the `{named, typed}` Map), so the `Symbol.for('structures')` buffer for a records-mode `__dbis__` is also v4-decodable.
 
+## Version gate at startup: downgrades prompt, and only the minor direction is confirmable
+
+`getVersionUpdateInfo()` (`dataLayer/hdbInfoController.ts`) compares the store's `data_version_num` (latest `system.hdb_info` record) against the binary's `packageJson.version` on every start. Data newer than binary by a **major** version → hard refusal. Newer by a **minor** version → `forceDowngradePrompt()` asks for confirmation; answering yes records the data version back down to the binary's version and boots (upgrade directives are deliberately additive/downgrade-compatible — see the struct-mode section above and `patchHdbSecretIsHashAttribute` in `upgrade/directives/5-2-0.ts`).
+
+- The prompt's answer can be supplied non-interactively via `CONFIRM_DOWNGRADE` — env var or `--CONFIRM_DOWNGRADE` CLI arg; argv wins (`assignCMDENVVariables`). With no override and no TTY on stdin, the prompt throws instead of blocking on stdin forever (#2046 — services/CI hung with nothing in the log; the mismatch is also logged to hdb.log now).
+- Upgrades never prompt (see the rationale comment in `bin/upgrade.js`); only the downgrade direction confirms. `upgradeCertsPrompt()` on the 4.x upgrade path still has the block-on-stdin hazard.
+- Test-suite gotcha: a suite that supplies the override via `process.argv` affects every later test file in the same mocha process — save and restore `process.argv` in `before`/`after` (see `unitTests/dataLayer/hdbInfoController.test.js`).
+
 ## getFromSource() timing: promise resolves before commit runs
 
 In `getFromSource()` (`Table.ts`), the promise that callers await resolves with the entry **before** the `dbTxn.addWrite` commit callback runs. The commit callback mutates `updatedRecord` in-place to set fields like `createdAt` and `updatedAt`. Since the resolved entry's `.value` is the same reference as `updatedRecord`, those mutations are visible to the caller after resolution.
@@ -57,6 +65,8 @@ When adding a new commit-handler early-return path: reset `write.skipped = false
 
 Known minor: if the monitor aborts a write transaction whose async `commit()` is already in flight (awaiting `before` hooks), the resumed continuation double-decrements `readTxnsUsed` and double-`abort()`s the underlying transaction (swallowed by the existing try/catch). Data is still correctly rolled back and the request errors; the only artifact is an inert negative counter on a dead transaction object.
 
+**Extending the budget for one known-long write:** `DatabaseTransaction.timeoutBudget` is a per-transaction RocksDB floor applied whenever the transaction is re-armed (initial reads, writes, and active multi-store-chain propagation); the effective timeout is `Math.max(txnExpiration, timeoutBudget)`. This makes the budget sticky across a write's pre-commit existing-entry read and later writes, while never shortening a larger global `STORAGE_MAXTRANSACTIONOPENTIME`; RocksDB links added for another store inherit the same floor. Reads after a pending write do not re-arm the transaction: that preserves the idle-limit invariant for orphaned write-holding requests. Also, `resources/transaction.ts`'s `transaction(callback)` (no explicit context) joins whatever transaction is already open on the ambient AsyncLocalStorage context rather than guaranteeing a fresh one. `components/deploymentRecorder.ts`'s `withIsolatedTransaction` builds a new context from only the ambient audit/session/cancellation fields, so every recorder write commits independently without inheriting transaction controls. It uses the sticky budget to give `ingestPayload`'s blob-gated writes a size-appropriate limit instead of the generic default, while coalesced progress flushes are drained and suppressed until ingest settles to avoid same-row transaction conflicts. The ingest helper deliberately floors the shared `deployment_timeout` at ten minutes because `0` means “poll once” for peer waits; consequently an ingest can pin its system-database snapshot for that minimum. Known gap (harper#2057): the extension only reaches RocksDB transactions — on `HARPER_STORAGE_ENGINE=lmdb`, `Table.txnForContext()` chains a separate `LMDBTransaction` (`txn.next`) with its own independently-reset timeout that the LMDB engine's monitor tracks instead.
+
 ## Repeat writes to the same key in one transaction carry their state forward (`DatabaseTransaction`/`Table`)
 
 A transaction can hold more than one write to the same record key — two `patch()` calls inside one `transaction()`, or a replicated transaction carrying two updates to a record. Each write captures `operation.entry` (its idea of the current record) when it is staged, and **neither engine can refresh that from a read**: LMDB queues staged puts and applies them only in the commit batch, so a `getEntry` inside that loop still returns the pre-transaction record (the exclusive `store.transaction()` fallback is no better), and RocksDB read-your-writes only sees writes already staged into the native transaction — which the source-apply path, staging its whole batch before `commit()`, hasn't done yet.
@@ -77,9 +87,23 @@ When `migrateOnStart` opens a source LMDB primary store to read records out for 
 
 Harper's normal `databases.ts` path already does this (search for `dbiInit.compression = primaryKeyAttribute.compression`); the migration path in `bin/copyDb.ts` has to match.
 
-The persisted `compression` value itself is LMDB-era and loosely shaped: `getDefaultCompression()` historically stored whatever falsy value the config resolved to (`''`, `false`, `null`) when `storage.compression` was disabled, and `{ startingOffset, threshold, dictionary? }` when enabled. lmdb-js interprets falsy as "no compression", but rocksdb-js >= 2.6 validates the option strictly (`''`/booleans throw `Unsupported compression algorithm`) and treats UNSET as "use the build default (lz4)" — the inverse default of lmdb. Every RocksDB open must therefore route through `toRocksCompression()` in `resources/databases.ts` (applied inside `openRocksDatabase`, the single chokepoint), which maps defined-falsy → `'none'` and `true` → unset. Don't pass persisted attribute compression to a RocksDB open directly.
+The persisted `compression` value itself is LMDB-era and loosely shaped: `getDefaultCompression()` historically stored whatever falsy value the config resolved to (`''`, `false`, `null`) when `storage.compression` was disabled, and `{ startingOffset, threshold, dictionary? }` when enabled. lmdb-js interprets falsy as "no compression", but rocksdb-js >= 2.6 validates the option strictly (`''`/booleans throw `Unsupported compression algorithm`) and treats UNSET as "use the build default (lz4)" — the inverse default of lmdb. Every RocksDB open must therefore route through `toRocksCompression()` in `resources/databases.ts` (applied inside `openRocksDatabase`, the single chokepoint), which maps defined-falsy → `'none'` and enabled-without-an-algorithm → an explicit lz4 request when available. Don't pass persisted attribute compression to a RocksDB open directly.
 
-The same source-dbi open has a second non-obvious requirement: assign `sourceDbi.encoder.rootStore = sourceRootStore` for the primary store. The primary dbi decodes through a `RecordEncoder`, and decoding a record that holds a file-backed blob reference resolves that reference against `rootStore` (it locates the blob file). With `rootStore` unset, the `Blob` msgpackr extension throws `No store specified, cannot load blob from storage`; `RecordEncoder.decode` swallows the error and yields `null`, and `copyDbToRocks` then skips the `null` value — so every record with a file-backed blob is silently dropped from the migration. The runtime path gets `rootStore` from `handleLocalTimeForGets`; the migration path opens the source dbi raw and must set it explicitly (issue #857).
+`bin/copyDb.ts`'s `openRocksDb` is part of that chokepoint, not an exception to it. This is about the bytes migration writes, not about a later failure: `copyDbToRocks()` closes every target handle before the staging directory is renamed, and rocksdb-js permits an explicit codec change across a close/reopen, so the runtime would open the migrated database fine either way. But a migration that ignores the configured codec writes the entire dataset uncompressed, and those SST/blob files then keep their original codec until write traffic rewrites them — a full LMDB→RocksDB migration is the one moment the whole dataset is written at once, so it is exactly when the deployment's codec should apply.
+
+## The RocksDB codec is a deployment setting, resolved once per process
+
+`getRocksCompression()` in `resources/databases.ts` resolves one codec for everything this process opens: `storage.rocks.compression` if it names one, otherwise `storage.compression` (default `true`) decides enabled-or-not and the build default supplies the algorithm. It is resolved on first use and frozen.
+
+It has to be one codec, decided before the first open, because RocksDB opens **every** column family of a database in a single `DB::Open` and a family's compression cannot change while it is open. Harper cannot consult per-table metadata first: that catalog (`__dbis__`) is itself one of the families that call opens. So per-table `compression` metadata still records the LMDB-era boolean but no longer selects — a table persisted as disabled inside a deployment that enables compression would need its own codec, and there is nowhere to apply it.
+
+Opens pass `compressionForAllColumnFamilies` (rocksdb-js) alongside the codec. Without it the binding gives every family the caller did not name its _persisted_ algorithm and applies the request only to the target, so families this process never names individually would keep their original codec forever — which is why a database created before the prebuild carried any codecs (every 5.1 instance) stayed uncompressed no matter how new the binary was, and why reconciling a table afterwards failed with `already open with compression ...; cannot reopen it with ...`.
+
+The ordering that still has to hold is a fresh install: `install()` calls `mountHdb()` — which creates the system families — several steps before `createConfigFile()` writes the config file, so `installer.ts` stages the value into the in-memory config (`stageRocksCompression()`, mirroring the `STORAGE_ENGINE` line beside it) before `mountHdb()` runs. Measured without it, same pid: `thread=0 resolved=undefined`, `thread=1/2 resolved=zstd`, and the boot dies with "The system database failed to load".
+
+Changing the codec governs newly written files. Existing SST/blob files keep theirs until rewritten; ordinary compaction will not do it (RocksDB skips the bottommost level without a compaction filter), so converting an existing database in place needs `compact({ bottommost: true })`.
+
+Harper's normal RocksDB open path disables RocksDB's native WAL for primary and index column families; durable recovery for runtime transactions comes from rocksdb-js transaction logs. The root handle that owns those logs and the `__dbis__` metadata column family deliberately keep native WAL enabled. `copyDbToRocks` writes directly and does not create rocksdb-js transaction-log entries, so it can use the same no-native-WAL bulk path only when called by `migrateOnStart` for a `<database>.migrating` staging directory. The LMDB source remains authoritative until the copy and verification finish; an interruption deletes that staging directory and restarts the copy. The root and `__dbis__` handles retain native WAL, while every primary and index handle receives `disableWAL: true` (rocksdb-js stores the option per handle). Their metadata-sized WAL traffic is negligible beside the bulk copy. When the last handle closes, rocksdb-js flushes every column family and waits for background work before the verified staging directory is atomically renamed. A direct `copyDbToRocks` call to a non-staging path keeps native WAL enabled because it has neither transaction-log recovery nor the wrapper's discard-and-retry guarantee.
 
 ## Schema migration and `runIndexing` internals (`databases.ts`)
 
@@ -602,9 +626,28 @@ Three consequences worth knowing before touching packaging:
   post-processes it (dev prune #1783, react-native prune #1937) to enforce that it describes only the
   production tree a consumer installs. Anything added there must keep it internally consistent; a
   pruned entry that something still requires would ship a broken tree to every consumer.
-- The Dockerfile installs the local tarball, so it gets **none** of this: its dependency tree is
-  resolved fresh at image-build time against whatever is newest within our semver ranges, meaning the
-  image is not reproducible and does not match what npm consumers receive (#1960).
+- The Dockerfile extracts the local tarball into a project directory and runs `npm install` there
+  (rather than `npm install --global <tarball>`), so it reads `npm-shrinkwrap.json` off disk like any
+  checked-out project and gets version pinning (#1960). It does **not** get the omission half: `npm
+install` (unlike a registry install of harper as _someone else's_ dependency) reconciles the local
+  project's own `package.json` against the lockfile, and the packed `package.json` prunes nothing —
+  only the shrinkwrap does. `alasql`'s packed manifest still declares the react-native-fs optional
+  edge, so plain `npm install` silently re-adds that whole pruned subtree to satisfy it. Closing that
+  gap needs `npm ci` against a package.json where `alasql`'s own packed manifest has also had the edge
+  removed — a bigger change to the published tarball than this dance, and not yet done. The Dockerfile
+  does strip `devDependencies` from its _own extracted copy_ of `package.json` before installing (not
+  the published tarball — registry consumers never see this) — not for `npm ci`'s sake, but because
+  without it `npm install` still resolves dev edges to compute the ideal tree even under `--omit=dev`,
+  which could silently lift a _production_ package that a devDependency also happens to want above its
+  shrinkwrap pin. Confirmed empirically before landing: a hoisted production package's installed
+  version tracked a devDependency's looser range instead of the shrinkwrap pin without this strip.
+- Pinning inverts the old incident-remediation path, worth knowing before reaching for it: before
+  #1960, rebuilding the image picked up any newer in-range dependency automatically, which is how a
+  bad pin got fixed in production by "refresh/rebuild the image" alone. After #1960, the _pinned_ part
+  of the tree is frozen to the shrinkwrap, so a remediation of that shape now needs a lock bump and a
+  re-release — a rebuild alone reproduces the same tree, bug included. This does **not** apply to the
+  react-native residual two bullets up: that subtree is still re-resolved fresh on every build, so a
+  bug specific to it (not that anyone should want one there) actually would clear on a rebuild.
 
 ## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
 
@@ -700,3 +743,98 @@ not restart a fully observed runtime, but a changed or missing imported helper, 
 input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
 remain consumer-directed: the static plugin applies asset changes incrementally, while executable
 consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
+
+## Graph size on the HNSW query path must come from node ids (`resources/indexes/HierarchicalNavigableSmallWorld.ts`)
+
+The ef auto-scale needs to know how big the graph is, on every query. Two sources that look right
+are not.
+
+`getKeysCount()` on a RocksDB store is an exact key scan, so it is O(N): measured at 13 ms per call
+at 10K keys, 128 ms at 100K, ~1 s at 500K. Calling it per query puts a linear-in-corpus-size term in
+front of every vector search — 34% of query latency at 20K vectors on the real table stack.
+
+RocksDB's `rocksdb.estimate-num-keys` property is O(1) and looks like the obvious replacement, but it
+counts entries across memtable and SST files without reconciling overwrites. Building an HNSW graph
+rewrites each node many times as its neighbours change, so on a real index it reads far high: 37,775
+for a 2,000-record table whose exact key count is 4,001, and worse after deletes. It reads exact on a
+fresh store with simple puts, so it validates clean in isolation and only misleads on a real index.
+
+Node ids are the sound source. They are allocated monotonically from a `getUserSharedBuffer` counter,
+so the counter (or one reverse seek to the largest id) gives the node count in O(1), unaffected by
+how many times a node has been rewritten. Deletes leave it reading high until a rebuild, which only
+makes ef slightly generous.
+
+Note the unit: the index store holds two keys per record — the graph node and the primary-key
+mapping — so a key count is twice the node count. `AUTO_EF_REF` is expressed in nodes for that
+reason, and any change between the two units has to move it to keep the resolved ef the same.
+
+## HNSW layers above 0 are for routing only, and must be searched greedily
+
+Each layer above 0 exists to hand the next layer down an entry point: `search()` and `index()` both
+take `results[0]` and discard the rest. Searching them at the full `ef` therefore buys nothing and
+costs work proportional to the layer's population rather than to ef — layer 1 holds ~N/M nodes, and
+at ef 512 a query visited ~95% of it. That is a second linear-in-N term: upper-layer visits per query
+grew 342 → 2,421 across 5K → 41K vectors on real embeddings, and reached 75% of query time at 100K. Greedy descent
+(`ROUTING_EF`) is what standard HNSW does. Measured against the same graphs searched at the full `ef`
+on every layer, across 16 (size, `ef`) points on a held-out real-embedding corpus, the worst
+recall@10 change was -0.002 — one displaced neighbour at a single point — and 0.000 everywhere else.
+
+The connection-building pass in `index()` is not routing — it selects the edges that get stored — so
+it keeps `efConstruction`.
+
+The insert-side change is the one that alters stored graphs, recoverable only by a reindex, so it was
+measured separately (`benchmarks/hnsw-scale.js --build-upper-ef=100` restores the previous
+index-time descent). At 20,000 real 768-dim embeddings with identical corpus and level assignments,
+the two builds were indistinguishable on every metric measured — same recall at each `ef`, same visit
+counts, same mean layer-0 degree — and the greedy build was 1.28x faster. That is consistent with the
+graphs being identical, though equal metrics do not prove it. It is the expected result either way:
+the upper layers are sparse enough that a greedy walk reaches the same entry point, which is why
+standard HNSW descends this way.
+
+## An approximate index returns at most `ef` rows, so `limit` has to reach it
+
+Layer 0 keeps at most `ef` candidates, and ef resolves from the auto-scale, not from the query. A
+`limit` above it came back short with no error: with the 512 cap no vector query could return more
+than 512 rows however large the limit, and `{offset: 250, limit: 200}` returned zero rows, so
+paginating a vector search past the first page returned nothing. `searchByIndex` threads the query's
+`offset + limit` to the custom index as `minResults`, which widens the candidate list to cover the
+request. Any future approximate index needs the same plumbing.
+
+Two bounds keep that from becoming a new problem. `ef` drives a synchronous traversal that holds
+every admitted candidate in a sorted array with an O(len) insert, so a limit-derived `ef` is capped
+at `LIMIT_EF_MAX`; without it, ordinary deep pagination (`offset` in the millions) would walk the
+whole graph on the event loop, which is worse than the truncation being fixed. And a per-query `ef`
+stays authoritative: it is an explicit cost ceiling, so it bounds the result set rather than being
+raised by the limit. A schema-level `efConstructionSearch` is a default rather than a per-request
+decision, so it does not block the floor.
+
+`LIMIT_EF_MAX` is the _only_ bound on the widening — deliberately not also the graph size. Clamping
+there is tempting and costs more than it saves: the memoized size reads low while a table grows, so
+it truncates the limit it was supposed to honour, and resolving a size exact enough to clamp against
+puts a store lookup back on every query whose `limit` exceeds the table — the linear-in-N term this
+whole change removed, reintroduced in miniature. An `ef` above the node count is free anyway: the
+traversal is bounded by the nodes it can reach, so it ends at the graph, not at `ef`.
+
+The filter budget deliberately does not follow a limit-derived `ef`. `maxVisits = ef * filterExpansion`
+(#1241) is what stops a selective filter crawling the graph and loading a record per visit, so it is
+computed from the `ef` the index resolved for itself. Multiplying it by a caller's `limit` would turn
+a filtered vector query into a record-loading scan wearing an index's clothes.
+
+Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
+search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
+and an HNSW candidate set at a larger `ef` is not guaranteed to be an ordered superset of the smaller
+one, so a record can repeat across pages or be skipped. Honoring `limit` fixes the "second page is
+empty" defect; it does not make offsets a cursor. Callers who need stability should fetch one page
+large enough for the whole result set, or pin an explicit `ef`.
+
+One consumer is still calibrated in index-store keys rather than nodes: `estimateCountAsSort`, the
+planner's cost estimate for a vector sort. It is scaled by `INDEX_KEYS_PER_NODE` so the unit switch
+does not silently shift which condition the planner chooses to lead with.
+
+## Env-config empty objects mean three different things (`config/harperConfigEnvVars.ts`)
+
+An `{}` in the config system is context-dependent, and conflating the contexts is the root of #2067. In an **env layer** (`HARPER_SET_CONFIG` et al.), an empty object contributes no leaves — `http: {}` means "no overrides under http" (load-bearing removal semantics in `flattenObject`). In the **base config file**, a bare `componentName: {}` is user content — a real empty scope declaration that composition must preserve (`restoreBaseEmptyObjects`, #1618/#1726). An `{}` that is _neither_ — the residue of removing an env-sourced entry leaf-by-leaf — is invalid config that validation may reject forever, because the file is written before validation runs and the residue then reads as user content on every later boot.
+
+Removal therefore prunes: `deleteNestedValue` removes ancestors the deletion emptied, only when it actually deleted an existing leaf, and reports what it pruned. The overlap case — a file-declared empty scope an env layer temporarily populated — is tracked in the state file's `emptyScopeOriginals` (separate from `originalValues` so a marker can never mask or be consumed as a real leaf original at the same path; older state files lacking the field are defaulted). Restore consumes a marker only for a path the prune actually removed, so a scalar overwrite or an absent-leaf no-op can never resurrect a scope over live env-layer content. Note there are two coexisting mechanisms for "file `{}` is user content": `restoreBaseEmptyObjects` on the stateless compose path and the marker pair on the stateful removal path — if you touch one, check the other.
+
+Two durable limitations of the marker mechanism, both with user config-file content as the blast radius: markers can only be recorded at populate time, so a scope an env layer populated _before_ `emptyScopeOriginals` existed (any pre-upgrade boot) has no marker and prunes away on its first post-upgrade vacate; and a corrupt config-state file resets to fresh state — dropping `originalValues` and `emptyScopeOriginals` for every tracked path — after which the next removal prunes those scopes for good; `saveConfigState` writes via temp+rename precisely so a torn write cannot be the trigger, leaving genuine corruption (disk faults, hand edits) as the remaining path.

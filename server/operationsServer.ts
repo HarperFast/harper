@@ -137,10 +137,8 @@ export interface ImpersonatePayload {
 
 interface BaseOperationRequestBody {
 	operation: OperationFunctionName;
-	bypassAuth: boolean;
 	hdb_user?: userSchema.User;
 	hdbAuthHeader?: unknown;
-	bypass_auth?: boolean;
 	impersonate?: ImpersonatePayload;
 	password?: string;
 	payload?: string;

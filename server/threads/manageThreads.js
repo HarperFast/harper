@@ -232,6 +232,14 @@ function registerWorkerDataProvider(name, provider) {
 		if (workerDataProviders.get(name) === provider) workerDataProviders.delete(name);
 	};
 }
+// Propagate this thread's in-process config overrides (env.setProperty — installer bootstrap or
+// the unit-test harness's per-run isolation) to every worker spawned from here, so a worker's
+// effective config is never silently whatever happens to be installed on disk. Worker-side replay
+// is environmentManager.ts's applyInheritedConfigOverrides(), invoked from initSync(). Registered
+// on every thread (not just main) so a nested worker-of-a-worker also inherits the full chain.
+// setProperty() clones each value as it records it, so this provider cannot hit the log-and-skip
+// path below — which for this one would mean spawning the worker on the on-disk config.
+registerWorkerDataProvider('configOverrides', () => envMgr.getConfigOverrides());
 function collectProvidedWorkerData(options) {
 	if (workerDataProviders.size === 0) return undefined;
 	let provided;

@@ -33,7 +33,7 @@ import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
-import { RocksDatabase, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
 import { totalmem } from 'node:os';
@@ -98,6 +98,80 @@ const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
+/**
+ * The RocksDB block/blob codec for every column family this process opens (`storage.rocks.compression`),
+ * or `undefined` to leave rocksdb-js on its own default (lz4 wherever the native build has it).
+ *
+ * Resolved on the first open and then frozen, deliberately. RocksDB fixes a column family's codec
+ * for as long as it is open and rejects a reopen that disagrees, and Harper's worker threads share
+ * one process-wide column-family registry — so every open, in every thread, has to resolve the same
+ * value. Re-reading config per open does not guarantee that: on a fresh install the system families
+ * are created by `mountHdb()` before the config file exists, so the main thread would resolve
+ * nothing and the workers would resolve the configured codec, after which `__dbis__` cannot be
+ * reopened and Harper fails with "The system database failed to load". The installer stages this
+ * value before `mountHdb()` (see utility/install/installer.ts) so that first open already sees it.
+ *
+ * Unset is NOT "use the build default" for a family that already exists — see toRocksCompression.
+ */
+let resolvedRocksCompression: string | undefined;
+let rocksCompressionResolved = false;
+
+export function getRocksCompression(): string | undefined {
+	if (!rocksCompressionResolved) {
+		resolvedRocksCompression = readDatabaseCodec();
+		rocksCompressionResolved = true;
+	}
+	return resolvedRocksCompression;
+}
+
+/**
+ * Test-only: un-freezes the resolved codec. Production code never calls this — the freeze is the
+ * invariant (see getRocksCompression above) — but a test process runs many unrelated test files in
+ * one process, so whichever file happens to open a RocksDatabase first freezes this for everyone
+ * after it. Tests that need to exercise config changes call this to get back to the unresolved state.
+ */
+export function resetRocksCompression(): void {
+	resolvedRocksCompression = undefined;
+	rocksCompressionResolved = false;
+}
+
+/**
+ * The codec every column family in this process opens under.
+ *
+ * Compression is a deployment setting, not a per-table one. RocksDB opens all of a database's
+ * column families in one call, so the codec has to be decided before the first open — which is
+ * before Harper has read any table's metadata (that catalog is itself one of the families being
+ * opened). Resolving one codec from configuration and applying it to every family is what makes
+ * that possible; it is passed with `compressionForAllColumnFamilies` so families this process
+ * never names individually adopt it too, which is what lets a database created before the codec
+ * existed start compressing.
+ *
+ * `storage.rocks.compression` names a codec outright. Otherwise `storage.compression` (default
+ * true) decides enabled-or-not and the build default fills in the algorithm. Per-table metadata
+ * still records the LMDB-era boolean, but no longer selects: a table persisted as disabled inside
+ * a deployment that enables compression would need its own codec, and it cannot have one.
+ */
+function readDatabaseCodec(): string | undefined {
+	const explicit = readRocksCompressionConfig();
+	if (explicit) return explicit;
+	return toRocksCompression(getDefaultCompression()) as string | undefined;
+}
+
+function readRocksCompressionConfig(): string | undefined {
+	const configured = envGet(CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION);
+	if (configured === undefined || configured === null || configured === '') return undefined;
+	const requested = String(configured).trim().toLowerCase();
+	if (!requested) return undefined;
+	// Rejected here rather than at the open: an unsupported name throws inside RocksDatabase.open,
+	// which surfaces as the system database failing to load partway through startup.
+	if (!supportedCompression.includes(requested)) {
+		throw new Error(
+			`storage.rocks.compression="${requested}" is not available in this build of @harperfast/rocksdb-js. Supported: ${supportedCompression.join(', ')}`
+		);
+	}
+	return requested;
+}
+
 // I don't know if this is the best place for this, but somewhere we need to specify which tables
 // replicate by default:
 export const NON_REPLICATING_SYSTEM_TABLES = [
@@ -177,22 +251,51 @@ export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 
 /**
- * Map a persisted (LMDB-era) compression value to what rocksdb-js accepts. Table metadata
- * carries values where a defined falsy value (false, '') means compression was explicitly
- * disabled and true/{ threshold, ... } mean enabled with defaults. rocksdb-js >= 2.6
- * validates `compression` strictly and treats UNSET as "use the build default (lz4)", so
- * disabled must be mapped to 'none' explicitly, and true to unset.
+ * Codec used to honor an "enabled, unspecified" compression setting, or `undefined` where the
+ * native build cannot provide it (in which case the request degrades to the build default rather
+ * than throwing).
+ */
+const DEFAULT_ENABLED_CODEC = supportedCompression.includes('lz4') ? 'lz4' : undefined;
+
+/**
+ * Map a persisted (LMDB-era) compression value to what rocksdb-js accepts. Table metadata carries
+ * values where a defined falsy value (false, '') means compression was explicitly disabled, and
+ * `true` / `{ threshold, ... }` mean enabled with defaults — `storage.compression` defaults to
+ * `true` (defaultConfig.yaml), so essentially every pre-existing table asked for compression.
+ *
+ * "Enabled" resolves to an explicit codec rather than to unset. Unset is not equivalent: RocksDB
+ * persists the codec per column family and a reopen that requests nothing inherits what the family
+ * already has, applying the build default only when the family does not yet exist. Leaving these
+ * unset therefore silently ignores the operator's request on every database created before the
+ * native build carried codecs — it keeps writing uncompressed forever, while a brand-new database
+ * gets lz4. Naming the codec makes the setting mean the same thing in both cases.
+ *
+ * This governs newly written files; existing SSTs keep their codec until write traffic rewrites
+ * them (`db.compact()` will not — see getRocksCompression above).
  */
 export function toRocksCompression(compression: unknown): unknown {
-	if (compression === true) return undefined;
-	if (compression !== undefined && !compression) return 'none';
+	if (compression === undefined) return undefined;
+	if (!compression) return 'none';
+	// An object carrying an explicit `algorithm` is already a rocksdb-js request; anything else
+	// (`true`, or an LMDB descriptor like { startingOffset, threshold }) is "enabled, unspecified".
+	if (compression === true || (typeof compression === 'object' && !(compression as { algorithm?: unknown }).algorithm))
+		return DEFAULT_ENABLED_CODEC;
 	return compression;
 }
 
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
 	const legacyOptions = options as { compression?: unknown };
-	legacyOptions.compression = toRocksCompression(legacyOptions.compression);
+	// A configured codec applies to every column family, overriding whatever per-table metadata
+	// carries — that metadata records the LMDB-era boolean, so without this there is no way to
+	// select a RocksDB codec for a deployment.
+	// One codec for every column family, and applied to every family this open touches — not just
+	// the one being named. RocksDB opens them all at once and a family's codec cannot change while
+	// it is open, so a family this process never names individually would otherwise stay on
+	// whatever it was created with, forever.
+	const databaseCodec = getRocksCompression();
+	legacyOptions.compression = databaseCodec;
+	if (databaseCodec) (options as { compressionForAllColumnFamilies?: boolean }).compressionForAllColumnFamilies = true;
 	// Apply read-only mode if enabled
 	if (isReadOnlyMode()) {
 		options.readOnly = true;
@@ -588,7 +691,7 @@ function initStores(
 				...internalDbiInit,
 				disableWAL: false,
 				name: INTERNAL_DBIS_NAME,
-			} as any) as RocksDatabaseEx;
+			} as any);
 		} else {
 			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
@@ -1350,7 +1453,11 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
 		// available before resolveIndexFormat decides the format. Versioned stores need the VT
 		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
-		dbi = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiKey, cache: isCustomObjectIndex } as any) as any;
+		dbi = openRocksDatabase(rootStore.path, {
+			...dbiInit,
+			name: dbiKey,
+			cache: isCustomObjectIndex,
+		} as any) as any;
 		(dbi as any).rootStore = rootStore;
 		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
 		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
@@ -1573,6 +1680,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
+				// Usually a genuinely new column family (existingTableMeta above found no catalog
+				// entry), but an interrupted drop just completed above can leave the physical CF
+				// behind under its old codec even though the catalog entry is gone — same fallback
+				// as the reconcile paths covers that remnant case too.
 				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
@@ -2183,7 +2294,7 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 	if (rootStore instanceof RocksDatabase) {
 		for (const columnName of (rootStore as any).columns) {
 			if (columnName.startsWith(tableName + '/')) {
-				const columnStore = openRocksDatabase(rootStore.path, { name: columnName } as any);
+				const columnStore = openRocksDatabase(rootStore.path, { name: columnName });
 				try {
 					columnStore.dropSync();
 				} catch (error) {

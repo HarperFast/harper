@@ -19,6 +19,7 @@ import * as hdbTerms from '../hdbTerms.ts';
 const { CONFIG_PARAMS } = hdbTerms;
 import installValidator from '../../validation/installValidator.ts';
 import mountHdb from '../mount_hdb.ts';
+import { composeConfigFromEnv } from '../../config/harperConfigEnvVars.ts';
 import * as configUtils from '../../config/configUtils.ts';
 import * as userOps from '../../security/user.ts';
 import * as roleOps from '../../security/role.ts';
@@ -197,6 +198,7 @@ async function install() {
 	}
 	envManager.setHdbBasePath(hdbRoot);
 	envManager.setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_ENGINE, installParams.STORAGE_ENGINE);
+	stageRocksCompression();
 
 	// Creates the Harper project folder structure and the LMDB environments/dbis.
 	await mountHdb(hdbRoot);
@@ -575,6 +577,41 @@ export function applyInstallModeDefaults(args, defaultsMode) {
  * @param installParams
  * @returns {Promise<void>}
  */
+/**
+ * Make the deployment codec readable before `mountHdb()` creates the system column families.
+ *
+ * The config file is not written until `createConfigFile()`, several steps after `mountHdb()`, but
+ * RocksDB fixes a column family's codec when the family is created and refuses a later reopen that
+ * asks for a different one — and worker threads share one process-wide family registry. Left
+ * unstaged, the main thread creates `__dbis__` at the build default while every worker resolves the
+ * configured codec, and Harper dies with "The system database failed to load". Staging it in the
+ * in-memory config here is the same trick the STORAGE_ENGINE line above uses.
+ *
+ * Checked in the same precedence `createConfigFile()` itself later resolves the value with, so
+ * `storage.compression` also participates when no explicit RocksDB codec is set: its default is
+ * true, which resolves to lz4. Stage both values from every source `createConfigFile()` honors so
+ * the first open cannot create `__dbis__` with `none` and later workers reopen it with lz4.
+ */
+function stageRocksCompression() {
+	const rocksCompression = hdbTerms.CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION;
+	const compression = hdbTerms.CONFIG_PARAMS.STORAGE_COMPRESSION;
+	const envConfig = composeConfigFromEnv();
+	const commandLineConfig = assignCMDENVVariables([rocksCompression, compression], true);
+	const fileConfig = cfgEnv[hdbTerms.INSTALL_PROMPTS.HDB_CONFIG] ? getConfigFromFile() : {};
+	const configuredRocksCompression =
+		envConfig?.storage?.rocks?.compression ?? commandLineConfig[rocksCompression] ?? fileConfig[rocksCompression];
+	const configuredCompression =
+		envConfig?.storage?.compression ?? commandLineConfig[compression] ?? fileConfig[compression] ?? true;
+	if (
+		configuredRocksCompression !== undefined &&
+		configuredRocksCompression !== null &&
+		configuredRocksCompression !== ''
+	) {
+		envManager.setProperty(rocksCompression, configuredRocksCompression);
+	}
+	envManager.setProperty(compression, configuredCompression);
+}
+
 async function createConfigFile(installParams) {
 	hdbLogger.trace('Creating Harper config file');
 	const args = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);

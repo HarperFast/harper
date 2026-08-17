@@ -10,6 +10,8 @@ const { transaction } = require('#src/resources/transaction');
 const {
 	getFilePathForBlob,
 	setDeletionDelay,
+	holdBlobFile,
+	getBlobHoldStateForTesting,
 	encodeBlobsAsBuffers,
 	findBlobsInObject,
 	isSaving,
@@ -339,6 +341,232 @@ describe('Blob test', () => {
 		await waitFor(() => !existsSync(filePath), {
 			message: 'blob file should be unlinked when the new record no longer references it',
 		});
+		setDeletionDelay(500); // restore the default
+	});
+	it('a reader that resolved a record before it was superseded can still read the blob (#2134)', async () => {
+		// The file is opened lazily, by path, when the consumer calls stream()/bytes() — not when the
+		// record is decoded. A concurrent write that supersedes the record unlinks the prior blob, so
+		// without a retention window the reader's late open fails with ENOENT, typically after the
+		// response headers have already been committed.
+		setAuditRetention(10);
+		setDeletionDelay(undefined); // exercise the shipped default, not a test-compressed delay
+		const ReaderTest = table({
+			table: 'BlobReaderRetentionTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+		const payload = randomBytes(20000); // > FILE_STORAGE_THRESHOLD → file-backed
+		await ReaderTest.put({ id: 300, blob: await createBlob(payload) });
+
+		// A reader resolves the record and holds the decoded blob, but has not opened the file yet.
+		const reader = await ReaderTest.get(300);
+		const filePath = getFilePathForBlob(reader.blob);
+		assert(filePath, 'expected file-backed blob');
+
+		// A concurrent write supersedes it, which schedules the prior blob for reclamation.
+		await ReaderTest.put({ id: 300, blob: await createBlob(randomBytes(20000)) });
+		await delay(800); // past the old fixed 500ms unlink, inside the configured window
+		assert(existsSync(filePath), 'superseded blob must be retained while a reader still references it');
+		assert(payload.equals(await reader.blob.bytes()), "the reader's late read must return the original bytes");
+
+		// The window is a deferral, not a leak: once it lapses the file goes.
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 6000,
+			message: 'superseded blob must be reclaimed once the retention window lapses',
+		});
+
+		await ReaderTest.delete(300);
+		setDeletionDelay(500); // restore the default
+	});
+	it('an explicit retention hold defers reclamation until it is released (#2134)', async () => {
+		// The hook replication needs: a peer that has not yet fetched a superseded blob otherwise gets
+		// a clean 404 from the sender, classifies it as unrecoverable at source, and advances its
+		// resume cursor past a record whose bytes it will never have (harper-pro#403/#388).
+		setAuditRetention(10);
+		setDeletionDelay(0); // isolate the hold from the time-based delay
+		const payload = randomBytes(20000);
+		const blob = await createBlob(payload);
+		await BlobTest.put({ id: 301, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath && existsSync(filePath), 'expected file-backed blob on disk');
+
+		const release = holdBlobFile(blob);
+		await BlobTest.put({ id: 301, blob: await createBlob(randomBytes(20000)) });
+		await delay(50);
+		assert(existsSync(filePath), 'a held blob must not be reclaimed');
+
+		release();
+		// Generous: a deadline queued by an earlier test clamps this entry's (see enqueue()).
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 8000,
+			message: 'blob should be reclaimed once the hold is released',
+		});
+
+		await BlobTest.delete(301);
+		setDeletionDelay(500); // restore the default
+	});
+	it('a hold taken on another worker defers reclamation (#2134)', async () => {
+		// The consumer and the write that supersedes it routinely run on different workers, so the
+		// hold count lives in the store's shared buffer — a thread-local version of this passed its
+		// unit test while protecting nothing in production.
+		setAuditRetention(10);
+		setDeletionDelay(0);
+		const blob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 302, blob });
+		const filePath = getFilePathForBlob(blob);
+		const fileId = getFileId(blob);
+		assert(filePath && existsSync(filePath), 'expected file-backed blob on disk');
+
+		// Increment the shared counter directly, the way another worker's holdBlobFile() would.
+		const store = BlobTest.primaryStore.rootStore;
+		const { table, slot } = getBlobHoldStateForTesting(store, fileId);
+		assert.equal(Atomics.add(table, slot, 1), 0, 'expected no existing holders');
+
+		await BlobTest.put({ id: 302, blob: await createBlob(randomBytes(20000)) });
+		await delay(100);
+		assert(existsSync(filePath), "a blob held by another worker's hold must not be reclaimed");
+
+		Atomics.sub(table, slot, 1);
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'blob should be reclaimed once the cross-worker hold is released',
+		});
+
+		await BlobTest.delete(302);
+		setDeletionDelay(500); // restore the default
+	});
+	it('two concurrent holders each keep the blob alive (#2134)', async () => {
+		// The case a binary lock cannot express: with one shared lock, the first release frees it while
+		// the second holder is still running.
+		setAuditRetention(10);
+		setDeletionDelay(0);
+		const blob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 303, blob });
+		const filePath = getFilePathForBlob(blob);
+		const fileId = getFileId(blob);
+		const store = BlobTest.primaryStore.rootStore;
+		const { table, slot } = getBlobHoldStateForTesting(store, fileId);
+
+		const releaseA = holdBlobFile(blob); // this worker
+		Atomics.add(table, slot, 1); // another worker
+
+		await BlobTest.put({ id: 303, blob: await createBlob(randomBytes(20000)) });
+		releaseA();
+		await delay(100);
+		assert(existsSync(filePath), 'the remaining holder must still keep the blob alive');
+
+		Atomics.sub(table, slot, 1);
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'blob should be reclaimed once the last holder releases',
+		});
+
+		await BlobTest.delete(303);
+		setDeletionDelay(500); // restore the default
+	});
+	it('a re-reference on another worker cancels a queued reclamation (#2134)', async () => {
+		// The queue is per worker, so the worker that re-references a file is not necessarily the one
+		// that queued its reclamation; the signal has to be shared.
+		setAuditRetention(10);
+		setDeletionDelay(300);
+		const blob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 304, blob });
+		const filePath = getFilePathForBlob(blob);
+		const fileId = getFileId(blob);
+		const store = BlobTest.primaryStore.rootStore;
+
+		await BlobTest.put({ id: 304, blob: await createBlob(randomBytes(20000)) }); // queues reclamation
+		// Another worker writes a record referencing the original file again.
+		const { table, slot } = getBlobHoldStateForTesting(store, fileId);
+		Atomics.store(table, slot + 1, 1);
+
+		// Wait for the reclaimer to consume the signal rather than sleeping a fixed span: an entry's
+		// deadline is clamped to the queue tail, so work queued by earlier tests can push this one out.
+		await waitFor(() => Atomics.load(table, slot + 1) === 0, {
+			timeout: 10000,
+			message: 'the re-reference signal should be consumed',
+		});
+		assert(existsSync(filePath), 'a re-referenced blob must not be reclaimed');
+
+		await BlobTest.delete(304);
+		// The signal was simulated, so no record actually references the retained file — it would be a
+		// real orphan for the later cleanupOrphans assertion. Remove it here rather than leaving the
+		// suite to find it.
+		unlinkSync(filePath);
+		setDeletionDelay(500); // restore the default
+	});
+	it('an in-progress stream keeps its blob alive past the retention window (#2134)', async () => {
+		// stream() takes a hold for the life of the read, so a read that outlives the window — a slow
+		// or backpressured consumer — still gets its bytes. The payload has to be large enough that the
+		// stream parks on backpressure after its first chunk: a small blob is pulled into the stream's
+		// internal queue immediately, completing (and correctly releasing) before anything can race it.
+		setAuditRetention(10);
+		setDeletionDelay(200); // shorter than the parked read below, so only the hold can save it
+		const payload = randomBytes(4_000_000);
+		await BlobTest.put({ id: 305, blob: await createBlob(payload) });
+		const reader = await BlobTest.get(305);
+		const filePath = getFilePathForBlob(reader.blob);
+		const fileId = getFileId(reader.blob);
+		const { table, slot } = getBlobHoldStateForTesting(BlobTest.primaryStore.rootStore, fileId);
+
+		const streamReader = reader.blob.stream().getReader();
+		await streamReader.read(); // first chunk; the rest waits on this consumer
+		assert.equal(Atomics.load(table, slot), 1, 'the in-progress read should hold the file');
+
+		await BlobTest.put({ id: 305, blob: await createBlob(randomBytes(20000)) }); // supersedes
+		await delay(600); // well past the retention window
+		assert(existsSync(filePath), 'an in-progress read must keep its blob alive');
+
+		let total = (await streamReader.read()).value?.length ?? 0;
+		for (let chunk = await streamReader.read(); !chunk.done; chunk = await streamReader.read()) {
+			total += chunk.value.length;
+		}
+		assert(total > 0, 'the parked read must be able to continue');
+
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'blob should be reclaimed once the read releases its hold',
+		});
+
+		await BlobTest.delete(305);
+		setDeletionDelay(500); // restore the default
+	});
+	it('an open read snapshot keeps a superseded blob alive (#2134)', async function () {
+		// A blob reference is fixed when the reader's snapshot is taken, not when the record is
+		// decoded, so a reader inside a transaction is entitled to the bytes for as long as its
+		// snapshot lives — regardless of the retention window. LMDB exposes no snapshot watermark.
+		const store = BlobTest.primaryStore.rootStore;
+		if (typeof store.getOldestSnapshotTimestamp !== 'function') return this.skip();
+		setAuditRetention(10);
+		setDeletionDelay(200); // far shorter than the snapshot is held open
+		const blob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 306, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath && existsSync(filePath), 'expected file-backed blob on disk');
+
+		let releaseSnapshot;
+		const snapshotHeld = new Promise((resolve) => (releaseSnapshot = resolve));
+		const snapshotDone = store.transaction(async (txn) => {
+			await txn.get(306); // transactional read → SetSnapshot()
+			await snapshotHeld;
+		});
+		await waitFor(() => store.getOldestSnapshotTimestamp() > 0, { message: 'expected an open snapshot' });
+
+		await BlobTest.put({ id: 306, blob: await createBlob(randomBytes(20000)) }); // supersedes
+		await delay(1500); // many times the retention window
+		assert(existsSync(filePath), 'a blob visible to an open snapshot must not be reclaimed');
+
+		releaseSnapshot();
+		await snapshotDone;
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 8000,
+			message: 'blob should be reclaimed once the snapshot is released',
+		});
+
+		await BlobTest.delete(306);
 		setDeletionDelay(500); // restore the default
 	});
 	it('blob unlink is gated on the removal committing (#1364)', async () => {

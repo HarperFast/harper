@@ -12,6 +12,7 @@ import * as envMngr from '../utility/environment/environmentManager.ts';
 envMngr.initSync();
 import { getDatabases } from '../resources/databases.ts';
 import * as fs from 'fs-extra';
+import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 
 /**
  * This method is exposed to the API and internally for system operations.  If the op is being made internally, the `opObj`
@@ -22,7 +23,7 @@ import * as fs from 'fs-extra';
 export async function describeAll(opObj: any = {}) {
 	try {
 		const sysCall = hdbUtils.isEmptyOrZeroLength(opObj);
-		const bypassAuth = !!opObj.bypass_auth;
+		const bypassAuth = isOperationAuthorizationBypassed();
 		let rolePerms;
 		let isSu;
 		if (!sysCall && !bypassAuth) {
