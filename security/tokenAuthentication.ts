@@ -15,6 +15,7 @@ const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.ts';
 import * as password from '../utility/password.ts';
 import { findAndValidateUser, type User } from './user.ts';
+import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
 import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -166,23 +167,21 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	} = { username: authObj.username, super_user: superUser };
 	if (authObj.role) payload.role = authObj.role;
 
-	// A scoped credential can only mint an equally-scoped one (#2174). create_authentication_tokens is
-	// NO_AUTH, so verifyPerms — and the token-scope gate inside it — never runs here; if the caller
-	// authenticated with a scoped operation token, the operation AND refresh tokens it mints inherit
-	// that scope. Without this, a token scoped to e.g. deploy_component escalates to unscoped, full-role
-	// credentials simply by calling create_authentication_tokens with no username/password.
+	// create_authentication_tokens is NO_AUTH, so verifyPerms — and the scope gate inside it — never
+	// runs here. If the caller authenticated with a scoped token, the operation and refresh tokens it
+	// mints inherit that scope; otherwise it escalates to unscoped, full-role credentials with no
+	// password. (See operationScope.ts for the carry-forward invariant.)
 	const inheritedScope = (authObj.hdb_user as any)?.tokenOperations;
-	if (Array.isArray(inheritedScope)) payload.operations = inheritedScope;
+	attachScopeToToken(payload, inheritedScope);
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 
 	if (authObj.purpose === 'login') {
-		// A cookie session is username-only: session-restore reloads the FULL user via getUser, so a
-		// session cannot carry an operation scope (#2174). A scoped credential must therefore not be
-		// able to trade a login token for a session — that would silently drop the scope and escalate
-		// to the full role. create_authentication_tokens is NO_AUTH, so the scope gate in verifyPerms
-		// never runs here; and a CI/OIDC scoped credential has no use for a browser session anyway.
-		if (Array.isArray(inheritedScope)) {
+		// A cookie session is username-only (session-restore reloads the full user via getUser), so it
+		// cannot carry a scope. A scoped credential must therefore not trade a login token for a
+		// session — that would silently drop the scope and escalate to the full role — and a CI/OIDC
+		// scoped credential has no use for a browser session anyway.
+		if (hasOperationScope(inheritedScope)) {
 			throw new ClientError('a scoped token cannot mint a login token', HTTP_STATUS_CODES.FORBIDDEN);
 		}
 		// Login-scoped exchange token: no refresh token, no user record update — it's a one-shot
@@ -254,9 +253,8 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 		username: decodedJWT.username,
 		super_user: decodedJWT.super_user,
 	};
-	// Carry the scope forward, same invariant as createTokens: once a scoped credential can produce a
-	// scoped refresh token, refreshing it must not widen back to the full role.
-	if (Array.isArray(decodedJWT.operations)) refreshedPayload.operations = decodedJWT.operations;
+	// Refreshing a scoped refresh token must not widen back to the full role.
+	attachScopeToToken(refreshedPayload, decodedJWT.operations);
 	const operationToken = jwt.sign(
 		refreshedPayload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
@@ -289,14 +287,10 @@ export async function createOperationToken(
 		username: user.username,
 		super_user: user.super_user,
 	};
-	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. Absent means
-	// the role governs alone, which is every token minted before this existed.
-	//
-	// `!= null` rather than a truthiness check on purpose: an EMPTY scope means "no operations", and
-	// a length check would drop it from the payload, leaving the token unscoped — a security control
-	// failing open. add_oidc_trust rejects an empty array, but a row can reach the table by
-	// replication from a peer, so this must not depend on that.
-	if (user.operations != null) payload.operations = user.operations;
+	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. An empty scope
+	// (deny-all) is preserved rather than dropped — attachScopeToToken carries any array, which is
+	// what keeps this from failing open.
+	attachScopeToToken(payload, user.operations);
 
 	return jwt.sign(
 		payload,
@@ -345,11 +339,11 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 			throw new Error('Invalid token');
 		}
 
-		// Surfaced on the user rather than merged into role.permission.operations: that field is not
-		// purely narrowing (verifyPerms gate 2 treats an explicit SU-only listing as a grant), so
-		// merging a token scope into it could widen rather than narrow. verifyPerms intersects this
-		// separately, ahead of every bypass.
-		if (Array.isArray(tokenVerified.operations)) user.tokenOperations = tokenVerified.operations;
+		// Surfaced as `tokenOperations` rather than merged into role.permission.operations: that field
+		// is not purely narrowing (verifyPerms gate 2 treats an explicit SU-only listing as a grant),
+		// so merging a token scope into it could widen. verifyPerms intersects this separately, ahead
+		// of every bypass.
+		attachScopeToUser(user, tokenVerified.operations);
 
 		return user;
 	} catch (err) {

@@ -5,6 +5,7 @@ import { validateOperations } from '../utility/operationPermissions.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { getRoleByName } from './role.ts';
+import { attachScopeToUser } from './operationScope.ts';
 
 /**
  * Applies impersonation to a request. The authenticated user must be a super_user.
@@ -41,8 +42,7 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 	// A token's operation scope (#2174) constrains the credential regardless of which principal it
 	// acts as, so it survives impersonation. enforceDowngrade only bounds the impersonated role's
 	// permissions; without carrying the scope, a scoped super_user token would shed it by impersonating.
-	const inheritedScope = (authenticatedUser as any).tokenOperations;
-	if (Array.isArray(inheritedScope)) (impersonatedUser as any).tokenOperations = inheritedScope;
+	attachScopeToUser(impersonatedUser, (authenticatedUser as any).tokenOperations);
 
 	// Tag for audit trail
 	impersonatedUser._impersonated = true;
