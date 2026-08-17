@@ -137,6 +137,24 @@ describe('deploySetup', () => {
 			);
 		});
 
+		// If the derived row already exists as a processEnv (global) secret, set_secret inherits that
+		// tier — so without this the pasted token lands in the tier every component and child process
+		// reads, and only then does grant_secret reject the row, reporting a failure it already
+		// committed. Sending `grants` used to mask it (the server rejects processEnv+grants before
+		// writing); omitting them for the merge removed that accident.
+		it('pins the credential to the scoped tier, so it cannot be written as a global secret', async () => {
+			stub({ grants: ['web'] });
+
+			await storeSealedSecret({}, SECRET, ENVELOPE, 'web');
+
+			const setSecret = calls.find((c) => c.operation === 'set_secret');
+			assert.strictEqual(
+				setSecret.processEnv,
+				false,
+				'inheriting a stored processEnv tier would publish this token globally'
+			);
+		});
+
 		it('grants this component in a second, idempotent call after the row exists', async () => {
 			stub({ name: SECRET, grants: ['web'], changed: true });
 

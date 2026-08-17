@@ -13,8 +13,9 @@
 //   1. get_secrets_public_key  → the cluster's RSA public key + fingerprint
 //   2. source a token          → `gh auth token`, or paste a fine-grained PAT / npm token
 //   3. encryptEnvelope(...)     → seal it locally into an `enc:v1:` envelope (pure client-side crypto)
-//   4. set_secret {envelope}    → store ciphertext, granted to the component
-//   5. print the `credentials` reference the deploy should use
+//   4. set_secret {envelope}    → store ciphertext, in the component-scoped tier
+//   5. grant_secret            → let this component resolve it (see storeSealedSecret for why it's two calls)
+//   6. print the `credentials` reference the deploy should use
 //
 // Every name this flow derives — the component it grants to, the host it labels the credential with,
 // the hdb_secret row it writes — has to match what the deploy will derive from its own request, or it
@@ -105,6 +106,15 @@ export function resolveGitHost(host: unknown): string {
  * instead would cost the same two round trips while reintroducing a race: a `revoke_secret` landing
  * between the read and the write would be silently undone.
  *
+ * `processEnv: false` is explicit, and load-bearing rather than decorative. `set_secret` otherwise
+ * inherits the stored tier, so if the derived row already existed as a processEnv (global) secret the
+ * pasted token would be written into the tier every component and child process reads — and only then
+ * would `grant_secret` reject the row for being global, leaving the CLI reporting a failure it had
+ * already committed. (Sending `grants` used to mask this: the server rejects processEnv+grants before
+ * writing. Omitting them for the merge above removed that accident, so the intent is now stated.) This
+ * converts such a row to the scoped tier, which is what this flow promises — and the name is
+ * component-derived, so a global secret at it was never serving anything the scoped one doesn't.
+ *
  * A brand-new row is briefly ungranted between the calls, which is harmless — it can't be resolved by
  * any deploy until the grant lands. Nothing is printed until both steps succeed, so a failure part-way
  * doesn't claim a credential is ready to use.
@@ -115,7 +125,7 @@ export async function storeSealedSecret(
 	envelope: string,
 	component: string
 ): Promise<string[]> {
-	await cliOperations({ ...transport, operation: 'set_secret', name: secretName, envelope }, true);
+	await cliOperations({ ...transport, operation: 'set_secret', name: secretName, envelope, processEnv: false }, true);
 	const granted: any = await cliOperations(
 		{ ...transport, operation: 'grant_secret', name: secretName, component },
 		true
