@@ -810,6 +810,42 @@ describe('cliOperations', () => {
 		});
 	});
 
+	// `deploy setup=true` introduced `token=` as an arg carrying a durable PAT. A mistyped invocation
+	// (`harper deploy setup token=…` — bare `setup` is dropped by buildRequest) falls through to an
+	// ordinary deploy, so the token must not be loggable or serializable on ANY path, not just the
+	// setup one.
+	describe('token= is never logged or sent', () => {
+		it('redacts token in the parsed-request trace log', () => {
+			const redacted = cliOperationsModule.redactCredentials({
+				operation: 'deploy_component',
+				project: 'web',
+				token: 'github_pat_11ABCDE_secret',
+			});
+			assert.strictEqual(redacted.token, '***');
+			assert.strictEqual(redacted.project, 'web', 'non-secret fields still readable in the log');
+		});
+
+		it('strips token from the operation body sent to the server', async () => {
+			saveCredentials('https://example.com:9925/', { operation_token: 'valid-token', refresh_token: 'r' });
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let sentBody;
+			commonUtilsModule.httpRequest = async (_options, body) => {
+				sentBody = body;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'set_secret', name: 'deploy.web.git.github.com', token: 'github_pat_11ABCDE_secret' },
+				true
+			);
+
+			assert.ok(sentBody, 'request body was captured');
+			assert.strictEqual(sentBody.token, undefined, 'token must not reach the wire as an operation field');
+			assert.strictEqual(sentBody.name, 'deploy.web.git.github.com', 'real operation fields still sent');
+		});
+	});
+
 	describe('transportContext', () => {
 		// `harper deploy setup=true` issues get_secrets_public_key + set_secret on the caller's behalf.
 		// Dropping the explicit credentials would silently perform (and audit) those mutations as

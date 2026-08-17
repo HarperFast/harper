@@ -84,6 +84,35 @@ export function resolveGitHost(host: unknown): string {
 	return normalized;
 }
 
+/**
+ * The grants to send with the seal: this component, plus whatever the row already grants.
+ *
+ * `set_secret` replaces rather than merges (`grants = dedupeGrants(req.grants ?? existing?.grants)`),
+ * so rotating a token here while sending only this component would revoke any grant an operator added
+ * separately with `grant_secret` — the realistic case being a monorepo whose second component deploys
+ * from the same repo. That revocation is invisible until the other component's next deploy fails, so
+ * the union is read first. A lookup failure falls back to this component alone (the pre-existing
+ * behavior) and says so, rather than aborting a rotation the operator asked for.
+ */
+async function resolveGrants(transport: any, secretName: string, component: string): Promise<string[]> {
+	try {
+		const listed: any = await cliOperations({ ...transport, operation: 'list_secrets' }, true);
+		const row = listed?.secrets?.find((secret: any) => secret?.name === secretName);
+		const existing: string[] = Array.isArray(row?.grants) ? row.grants : [];
+		if (existing.length && !existing.includes(component)) {
+			console.log(chalk.gray(`  Keeping existing grant(s) on "${secretName}": ${existing.join(', ')}`));
+		}
+		return [...new Set([component, ...existing])];
+	} catch {
+		console.log(
+			chalk.yellow(
+				`Note: couldn't read existing grants for "${secretName}"; storing it granted to "${component}" only.`
+			)
+		);
+		return [component];
+	}
+}
+
 export async function deploySetup(req: any): Promise<void> {
 	// Every operation this flow issues rides the caller's connection context — the target, the
 	// explicitly passed credentials, the TLS strictness — so the seal is stored on the instance the
@@ -228,15 +257,15 @@ export async function deploySetup(req: any): Promise<void> {
 		provider === 'github'
 			? deriveGitSecretName(component, credentialKey)
 			: deriveRegistrySecretName(component, credentialKey);
-	await cliOperations({ ...transport, operation: 'set_secret', name: secretName, envelope, grants: [component] }, true);
+	const grants = await resolveGrants(transport, secretName, component);
+	await cliOperations({ ...transport, operation: 'set_secret', name: secretName, envelope, grants }, true);
 
 	// 6. Print the credentials reference the deploy should use.
 	credentialEntry.secret = secretName;
 	console.log(chalk.green(`\n✓ Sealed "${credentialKey}" credential and stored it as secret "${secretName}".`));
 	console.log(chalk.gray("  It was encrypted here with the cluster's public key — only ciphertext was sent."));
-	console.log(
-		chalk.gray(`  Granted to component "${component}"; the cluster decrypts it only at deploy/rollback time.`)
-	);
+	const grantSummary = grants.length > 1 ? `components ${grants.map((g) => `"${g}"`).join(', ')}` : `component "${component}"`;
+	console.log(chalk.gray(`  Granted to ${grantSummary}; the cluster decrypts it only at deploy/rollback time.`));
 	console.log('\nUse it in your deploy:');
 	console.log(chalk.cyan(`  credentials='${JSON.stringify([credentialEntry])}'`));
 	if (provider === 'github') {

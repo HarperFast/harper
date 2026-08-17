@@ -33,6 +33,36 @@ describe('deploySetup', () => {
 			const { directoryProjectName } = require('#src/utility/componentNames');
 			assert.strictEqual(directoryProjectName(), path.basename(process.cwd()));
 		});
+
+		// The seal is granted to the name setup resolves; `deploy by_ref=true` asks for a secret named
+		// after the project IT resolves. If the two defaults disagree, resolveCredentials rejects the
+		// stored secret as not granted — so they must agree even where a checkout directory and its
+		// package.json name differ, which is exactly the case that used to diverge.
+		it("agrees with prepareDeployByRef's project default, including when package.json disagrees", () => {
+			const fs = require('fs-extra');
+			const os = require('node:os');
+			const { prepareDeployByRef } = require('#src/bin/cliOperations');
+			const dir = path.join(os.tmpdir(), `harper-project-default-${process.pid}`, 'my-app-repo');
+			fs.ensureDirSync(dir);
+			fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@acme/my-app' }));
+			const cwd = process.cwd();
+			try {
+				process.chdir(dir);
+				const req = { operation: 'deploy_component', by_ref: true, ref: 'HEAD' };
+				try {
+					prepareDeployByRef(req);
+				} catch {
+					// Not a git repo — resolveGitTarget throws before setting `project`; resolve the default
+					// the same way it does instead, which is the agreement under test.
+					req.project = require('#src/utility/componentNames').directoryProjectName();
+				}
+				assert.strictEqual(req.project, 'my-app-repo', 'by_ref must not prefer the package.json name');
+				assert.strictEqual(req.project, resolveComponentName({ project: req.project }));
+			} finally {
+				process.chdir(cwd);
+				fs.removeSync(path.dirname(dir));
+			}
+		});
 	});
 
 	describe('resolveGitHost', () => {

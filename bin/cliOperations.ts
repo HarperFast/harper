@@ -7,7 +7,6 @@ envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import * as fs from 'fs-extra';
-import * as path from 'node:path';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
@@ -56,6 +55,11 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 	'by_ref',
 	'ref',
 	'credential',
+	// `deploy setup=true`'s token, read off the parsed request by deploySetup and sealed locally. No
+	// operation takes a top-level `token` (the one in `credentials[]` is nested and stripped with it),
+	// so keeping it out of every body costs nothing and means a mistyped `setup` — which parses as a
+	// bare word and falls through to a real deploy — can't carry a PAT to the server.
+	'token',
 ]);
 
 /**
@@ -253,7 +257,7 @@ function resolveTransportCredentials(req: any, urlCredentials: { username: strin
 // file — the command line already exposes it to shell history and process listings; the log
 // shouldn't be a third copy. This list is by field name, not exhaustive — any future secret-bearing
 // arg (a token, a key) needs to be added here explicitly, or it will reach logger.trace unredacted.
-const SECRET_FIELDS = new Set(['auth_password', 'password']);
+const SECRET_FIELDS = new Set(['auth_password', 'password', 'token']);
 
 // `target=https://admin:secret@host` carries a password too, so masking the userinfo is part of
 // making a target printable — the same string is echoed by the "Connecting to ..." line.
@@ -503,15 +507,6 @@ function warnIfCommitNotPushed(committish: string): void {
 	}
 }
 
-function defaultProjectName(projectPath: string): string {
-	try {
-		const pkg = JSON.parse(fs.readFileSync(path.join(projectPath, 'package.json'), 'utf8'));
-		if (typeof pkg.name === 'string' && pkg.name.length > 0) return pkg.name.replace(/^@[^/]+\//, '');
-	} catch {
-		// No/invalid package.json — fall back to the directory name.
-	}
-	return path.basename(projectPath);
-}
 
 // The credential only helps if it's for the host the package is cloned from: a `credential=gitlab.com`
 // against a github.com package builds a valid-looking reference the clone never asks for, and the
@@ -543,7 +538,11 @@ export function prepareDeployByRef(req: any): void {
 	// left is pushed by construction — and a shallow/detached runner checkout has no remote-tracking
 	// branches to check it against anyway.
 	if (!process.env.GITHUB_SHA) warnIfCommitNotPushed(committish);
-	if (!req.project) req.project = defaultProjectName(process.cwd());
+	// The same default the payload deploy and `deploy setup=true` use. A by-reference deploy is the
+	// flow the sealed credential feeds, and `set_secret`'s grant is keyed by project name, so a
+	// package.json-derived name here would ask for a secret granted to a different name whenever a
+	// checkout directory and its package name disagree.
+	if (!req.project) req.project = directoryProjectName();
 	// git+https (not ssh): a private clone is authenticated by a git-host token credential (#1799),
 	// which rides over HTTPS. A public repo needs no credential at all.
 	req.package = `git+https://${GIT_PACKAGE_HOST}/${repo}.git#${committish}`;
