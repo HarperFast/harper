@@ -122,9 +122,8 @@ async function fileSet(dir: string): Promise<Set<string>> {
 }
 
 /**
- * Bounded poll: settle on `dir`'s blob file set once it reaches `expectedCount` (pass Infinity
- * when there is no known target — e.g. a leak-bounds check — to rely purely on stability), or
- * once the count plateaus for at least `minStableMs` (well past blob.ts's deletionDelay). A fixed
+ * Bounded poll: settle on `dir`'s blob file set once it reaches `expectedCount`, or once the
+ * count plateaus for at least `minStableMs` (well past blob.ts's deletionDelay). A fixed
  * sleep before a single sample can land right on the async-unlink/GC boundary and read a stale
  * pre-reclaim count under a loaded runner; polling toward the known target (or a real plateau)
  * avoids that race.
