@@ -135,7 +135,7 @@ async function waitForFileSetSettle(
 	{
 		timeoutMs = 10_000,
 		intervalMs = 250,
-		minStableMs = 1_500,
+		minStableMs = 5_000,
 	}: { timeoutMs?: number; intervalMs?: number; minStableMs?: number } = {}
 ): Promise<Set<string>> {
 	const start = Date.now();

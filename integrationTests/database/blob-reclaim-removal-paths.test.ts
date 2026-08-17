@@ -135,7 +135,7 @@ async function waitForSettle(
 	{
 		timeoutMs = 20_000,
 		intervalMs = 250,
-		minStableMs = 1_500,
+		minStableMs = 5_000,
 	}: { timeoutMs?: number; intervalMs?: number; minStableMs?: number } = {}
 ): Promise<{ files: number; bytes: number; timedOut: boolean; waitedMs: number }> {
 	const start = Date.now();

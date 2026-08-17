@@ -93,9 +93,8 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				config: {
 					threads: { count: 1 },
 					logging: { console: true, level: 'error' },
-					storage: { engine },
 				},
-				env: {},
+				env: { HARPER_STORAGE_ENGINE: engine },
 			});
 			client = createApiClient(ctx.harper);
 			httpURL = ctx.harper.httpURL;

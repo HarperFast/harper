@@ -178,7 +178,10 @@ suite(
 		}
 
 		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: HARPER_CONFIG, env: {} });
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+				config: HARPER_CONFIG,
+				env: { HARPER_STORAGE_ENGINE: 'lmdb' },
+			});
 			client = createApiClient(ctx.harper);
 			await waitRouteReady(120_000);
 
@@ -324,7 +327,7 @@ suite(
 			findings.push(`phase2: killHarper (graceful SIGTERM/SIGKILL-escalation) completed in ${Date.now() - t0}ms`);
 
 			const restartT0 = Date.now();
-			await startHarper(ctx, { config: HARPER_CONFIG, env: {} });
+			await startHarper(ctx, { config: HARPER_CONFIG, env: { HARPER_STORAGE_ENGINE: 'lmdb' } });
 			client = createApiClient(ctx.harper);
 			await waitRouteReady(120_000);
 			findings.push(`phase2: restart + route-ready completed in ${Date.now() - restartT0}ms`);

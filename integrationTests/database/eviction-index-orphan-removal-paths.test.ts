@@ -220,6 +220,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				// sets, WHILE the TTL sweep is actively evicting the other 150 rows concurrently.
 				let heartbeatRound = 0;
 				let heartbeatStop = false;
+				let heartbeatFailure: { error: unknown } | undefined;
 				const heartbeatLoop = (async () => {
 					while (!heartbeatStop) {
 						const bucket = HEARTBEAT_BUCKETS[heartbeatRound % HEARTBEAT_BUCKETS.length];
@@ -232,7 +233,9 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						heartbeatRound++;
 						await sleep(400);
 					}
-				})();
+				})().catch((error: unknown) => {
+					heartbeatFailure = { error };
+				});
 
 				// try/finally: if primaryDump() or an assertion below throws, the loop must still be
 				// stopped and awaited here -- otherwise it keeps firing past teardown and can reject as
@@ -251,6 +254,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					heartbeatStop = true;
 					await heartbeatLoop;
 				}
+				if (heartbeatFailure) throw heartbeatFailure.error;
 				await sleep(500); // let the last heartbeat write's index update land
 
 				const bucketConsistency = await checkConsistency('Expiring', 'bucket');

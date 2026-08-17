@@ -100,10 +100,14 @@ export class StorageEngineInfo extends Resource {
 	async get(query) {
 		const t = getTable(qget(query, 'table') || 'Expiring');
 		const primaryPath = t.primaryStore?.path || t.primaryStore?.rootStore?.path || null;
-		const indexHasPrefetch = !!t.indices?.bucket?.prefetch;
+		const index = t.indices?.bucket;
+		const indexObserved = index != null;
+		const indexHasPrefetch = !!index?.prefetch;
 		const looksLikeLmdbPath = typeof primaryPath === 'string' && primaryPath.endsWith('.mdb');
-		const isLmdb = looksLikeLmdbPath || indexHasPrefetch;
-		return { primaryPath, indexHasPrefetch, looksLikeLmdbPath, engineGuess: isLmdb ? 'lmdb' : 'rocksdb' };
+		let engineGuess = 'unknown';
+		if (looksLikeLmdbPath || indexHasPrefetch) engineGuess = 'lmdb';
+		else if (primaryPath || indexObserved) engineGuess = 'rocksdb';
+		return { primaryPath, indexObserved, indexHasPrefetch, looksLikeLmdbPath, engineGuess };
 	}
 }
 
