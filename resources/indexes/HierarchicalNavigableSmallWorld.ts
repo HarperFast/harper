@@ -961,12 +961,17 @@ export class HierarchicalNavigableSmallWorld {
 	 * This the main entry from Harper's query functionality, where we actually search for an ordered list of nearest
 	 * neighbors, using the provided sort/order definition object and performing the multi-layer skip-list search.
 	 * This returns an iterable of the nearest neighbors to the provided target vector, with nearest ordered first.
+	 *
+	 * This is also the contract an index implemented outside this repo has to satisfy, so everything
+	 * optional is named: a future capability (a paging cursor, a deadline, a recall target) is a new
+	 * field on `options` rather than a positional argument that breaks every existing implementation.
 	 * @param target
 	 * @param value
 	 * @param descending
 	 * @param distance
 	 * @param comparator
 	 * @param context
+	 * @param options
 	 */
 	search(
 		{
@@ -987,16 +992,21 @@ export class HierarchicalNavigableSmallWorld {
 			filterExpansion?: number;
 		},
 		context: any,
-		// Predicate-aware traversal (#1241). When provided, only nodes for which `filter(primaryKey)`
-		// returns true are admitted to the result list at layer 0; routing is unaffected. Composed by
-		// search.ts from companion AND conditions and caller-supplied vector/row filters. Must be
-		// synchronous and side-effect free. JS-API only (never from a REST query string).
-		filter?: (primaryKey: Id) => boolean,
-		// offset + limit for a bounded query. A layer-0 search returns at most `ef` candidates, so a
-		// query asking for more rows than that used to come back short with no error — capped at 512
-		// (AUTO_EF_MAX) however large the limit was. Raising ef to cover the request keeps `limit`
-		// meaningful; the caller pays for what it asked for.
-		minResults?: number
+		{
+			filter,
+			minResults,
+		}: {
+			// Predicate-aware traversal (#1241). When provided, only nodes for which `filter(primaryKey)`
+			// returns true are admitted to the result list at layer 0; routing is unaffected. Composed by
+			// search.ts from companion AND conditions and caller-supplied vector/row filters. Must be
+			// synchronous and side-effect free. JS-API only (never from a REST query string).
+			filter?: (primaryKey: Id) => boolean;
+			// offset + limit for a bounded query. A layer-0 search returns at most `ef` candidates, so a
+			// query asking for more rows than that used to come back short with no error — capped at 512
+			// (AUTO_EF_MAX) however large the limit was. Raising ef to cover the request keeps `limit`
+			// meaningful; the caller pays for what it asked for.
+			minResults?: number;
+		} = {}
 	) {
 		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
 		let limitInclusive = false; // true for `le`, false for `lt`
