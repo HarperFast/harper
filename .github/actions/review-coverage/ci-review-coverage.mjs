@@ -6,11 +6,10 @@
 // (the gate waives coverage for clean reviews). Hence two modes:
 //   report  (default) — always green; the check text and job summary carry the count
 //   enforce — red when a member-authored, non-trivial, non-draft PR reports <2
-// Run from the composite action in this directory, or locally:
+// Run from the JavaScript action in this directory, or locally:
 //   node .github/actions/review-coverage/ci-review-coverage.mjs --event <payload.json> [--mode enforce]
 
-import { readFileSync, appendFileSync } from 'node:fs';
-import { realpathSync } from 'node:fs';
+import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { COVERAGE_REQUIRED, isTrivialChange, reportedCrossModelReviews } from './reviewGate.mjs';
 
@@ -30,22 +29,21 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const assoc = String(pr?.author_association ?? '');
 	const body = String(pr?.body ?? '');
 	const { count, families } = reportedCrossModelReviews(body);
-	const coverage =
-		count >= required
-			? `${count} cross-model reviews reported (${families.join(', ')})`
-			: count === 1
-				? `1 cross-model review reported (${families.join(', ')}) — policy asks for ${required}`
-				: `no cross-model reviews reported — policy asks for ${required}`;
+	const plural = count === 1 ? 'review' : 'reviews';
+	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
+	const coverage = count >= required ? reported : `${reported} — policy asks for ${required}`;
 
 	// The Human-Review-Need footer is evidence a prepush review RAN; staleness means
 	// commits landed after the last reviewed head (HEG step 14's most-skipped step).
-	const footer = body.match(/Human-Review-Need:\s*(\d+)(?:[^@\n]*)@\s*([0-9a-f]{6,40})/i);
+	const footer = [...body.matchAll(/Human-Review-Need:\s*(\d+)(?:[^@\n]*@\s*([0-9a-f]{6,40}))?/gi)].at(-1);
 	const head = String(pr?.head?.sha ?? '').toLowerCase();
 	const footerNote = !footer
 		? 'no Human-Review-Need footer'
-		: head.startsWith(footer[2].toLowerCase())
-			? `Human-Review-Need: ${footer[1]} @ head`
-			: `Human-Review-Need footer is STALE (reviewed @ ${footer[2].slice(0, 7)}, head is ${head.slice(0, 7)})`;
+		: !footer[2]
+			? `Human-Review-Need: ${footer[1]} @ unpinned sha`
+			: head.startsWith(footer[2].toLowerCase())
+				? `Human-Review-Need: ${footer[1]} @ head`
+				: `Human-Review-Need footer is STALE (reviewed @ ${footer[2].slice(0, 7)}, head is ${head.slice(0, 7)})`;
 
 	// The triviality exemption requires the size fields to actually be present: a payload
 	// missing additions/deletions would otherwise read as 0+0 and silently exempt everything.
@@ -76,7 +74,7 @@ function main(mode) {
 	if (!eventPath) throw new Error('no event payload (--event or GITHUB_EVENT_PATH)');
 	const pr = JSON.parse(readFileSync(eventPath, 'utf8')).pull_request;
 	if (!pr) throw new Error('event payload has no pull_request');
-	const rawRequired = arg('required', process.env.REVIEW_COVERAGE_REQUIRED ?? '');
+	const rawRequired = arg('required', process.env.INPUT_REQUIRED || process.env.REVIEW_COVERAGE_REQUIRED || '');
 	const required = rawRequired === '' ? COVERAGE_REQUIRED : Number(rawRequired);
 	if (!Number.isInteger(required) || required < 0) throw new Error(`invalid required '${rawRequired}'`);
 	const r = evaluateCiCoverage(pr, { mode, required });
@@ -122,7 +120,7 @@ function invokedDirectly() {
 	}
 }
 if (invokedDirectly()) {
-	const mode = arg('mode', process.env.REVIEW_COVERAGE_MODE ?? 'report').toLowerCase();
+	const mode = arg('mode', process.env.INPUT_MODE || process.env.REVIEW_COVERAGE_MODE || 'report').toLowerCase();
 	if (mode !== 'report' && mode !== 'enforce') {
 		// a typo'd mode must be loud — 'enfroce' silently meaning report is the bad direction
 		console.error(`::error::review-coverage: unknown mode '${mode}' (report|enforce)`);

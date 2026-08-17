@@ -16,11 +16,5 @@ inputs:
     description: how many distinct cross-model review families the description must name
     default: '2'
 runs:
-  using: composite
-  steps:
-    - name: evaluate coverage
-      shell: bash
-      env:
-        REVIEW_COVERAGE_MODE: ${{ inputs.mode }}
-        REVIEW_COVERAGE_REQUIRED: ${{ inputs.required }}
-      run: node "${{ github.action_path }}/ci-review-coverage.mjs"
+  using: node24
+  main: ci-review-coverage.mjs
