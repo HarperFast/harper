@@ -92,6 +92,36 @@ describe('token-scoped operation narrowing', () => {
 // `sql` dispatches to verifyPermsAST, in a branch mutually exclusive with the verifyPerms call in
 // chooseOperation. A gate in only one of them lets a token scoped to e.g. get_status run arbitrary
 // SQL against whatever its role can reach — which would falsify the whole "can only subtract" claim.
+// The scope is written in API-operation names (`deploy_component`), which is what the caller sends as
+// `operation`. verifyPerms must gate on that, not on the handler function name — deployComponent has
+// no api_name mapping, so gating on the handler denied the feature's own headline operation.
+describe('token scope gates on the API operation, not the handler name', () => {
+	function requestFor(operation, tokenOperations) {
+		const hdb_user = { username: 'ci-deploy', role: { role: 'r', permission: { super_user: true } } };
+		if (tokenOperations !== undefined) hdb_user.tokenOperations = tokenOperations;
+		return { operation, hdb_user };
+	}
+
+	it('allows deploy_component when the scope names it', () => {
+		// deployComponent (the handler) has no api_name; the scope names the API op `deploy_component`.
+		const result = opAuth.verifyPerms(requestFor('deploy_component', ['deploy_component']), 'deployComponent');
+		assert.ok(isAllowed(result), 'a token scoped to deploy_component must be able to deploy_component');
+	});
+
+	it('denies deploy_component when the scope does not name it', () => {
+		const result = opAuth.verifyPerms(requestFor('deploy_component', ['get_status']), 'deployComponent');
+		assert.ok(!isAllowed(result));
+	});
+
+	// Shared-handler aliases must be distinguished by the API op, not conflated by handler name.
+	it('distinguishes shared-handler aliases (search_by_id vs search_by_value)', () => {
+		const allowed = opAuth.verifyPerms(requestFor('search_by_id', ['search_by_id']), 'searchByHash');
+		assert.ok(isAllowed(allowed), 'search_by_id is in scope');
+		const denied = opAuth.verifyPerms(requestFor('search_by_value', ['search_by_id']), 'searchByHash');
+		assert.ok(!isAllowed(denied), 'search_by_value is not in scope even though it shares a handler');
+	});
+});
+
 describe('token-scoped narrowing on the SQL path', () => {
 	function userWithScope(permission, tokenOperations) {
 		const user = { username: 'ci-deploy', role: { role: 'r', permission } };
@@ -99,9 +129,9 @@ describe('token-scoped narrowing on the SQL path', () => {
 		return user;
 	}
 
-	function checkSql(statement, user) {
+	function checkSql(statement, user, operation = 'sql') {
 		const parsed = sql.convertSQLToAST(statement);
-		return sql.checkASTPermissions({ operation: 'sql', sql: statement, hdb_user: user }, parsed);
+		return sql.checkASTPermissions({ operation, sql: statement, hdb_user: user }, parsed);
 	}
 
 	it('denies SQL when the scope does not include it', () => {
@@ -128,5 +158,17 @@ describe('token-scoped narrowing on the SQL path', () => {
 	it('is inert for a token with no scope', () => {
 		const denial = checkSql('SELECT * FROM data.dog', userWithScope({ super_user: true }));
 		assert.strictEqual(denial, null);
+	});
+
+	it('gates a nested-SQL export job on the export operation, not on `sql`', () => {
+		// export_local carries its query as SQL, but the scope names the job, not `sql`. A token scoped
+		// only to `sql` must not be able to start an export it was never granted.
+		const deniedUser = userWithScope({ super_user: true }, ['sql']);
+		const denied = checkSql('SELECT * FROM data.dog', deniedUser, 'export_local');
+		assert.ok(denied, 'export_local is outside a `sql`-only scope');
+
+		const allowedUser = userWithScope({ super_user: true }, ['export_local']);
+		const allowed = checkSql('SELECT * FROM data.dog', allowedUser, 'export_local');
+		assert.strictEqual(allowed, null, 'an export_local-scoped token may run the export');
 	});
 });

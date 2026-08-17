@@ -465,11 +465,14 @@ module.exports = {
  * It can only subtract. The scope is deliberately NOT merged into `permission.operations`, because
  * that field is not purely narrowing (see gate 2) — merging into it could widen instead.
  *
- * `op` is the raw operation (a handler function name, or the literal `sql`); its snake_case api_name
- * is resolved here rather than by the caller, so the unscoped default path — every request that is
- * not a scoped token — does no registry lookup and no allocation before the `== null` return.
+ * `apiOperation` MUST be the snake_case API operation the caller actually invoked (`deploy_component`,
+ * `sql`, `export_local`, ...) — i.e. `requestJson.operation`, the same namespace the policy's scope is
+ * written in. It is emphatically NOT the handler function name: many handlers have no `api_name`
+ * mapping (deploy_component → `deployComponent`) and some are shared across operations
+ * (`search_by_id`/`search_by_hash`), so resolving the scope name from the handler both denies the
+ * feature's own headline op and conflates aliases. Callers pass the real operation.
  */
-function tokenScopeDenial(userObject: any, op: string) {
+function tokenScopeDenial(userObject: any, apiOperation: string) {
 	// `!= null`, not `!== undefined`: an unscoped policy stores `operations: null`, and expanding a
 	// null would throw rather than fall through to the role.
 	const tokenOperations = userObject?.tokenOperations;
@@ -478,14 +481,13 @@ function tokenScopeDenial(userObject: any, op: string) {
 	const scopedOps =
 		userObject._expandedTokenOperations ??
 		(userObject._expandedTokenOperations = expandOperationsPerms(tokenOperations));
-	const opApiName = requiredPermissions.get(op)?.api_name ?? op;
-	if (scopedOps.has(opApiName)) return undefined;
+	if (scopedOps.has(apiOperation)) return undefined;
 
-	harperLogger.info(`Operation '${opApiName}' is outside the scope of the presented token`);
-	return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
+	harperLogger.info(`Operation '${apiOperation}' is outside the scope of the presented token`);
+	return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(apiOperation));
 }
 
-export function verifyPermsAST(ast, userObject, operation) {
+export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.OPERATIONS_ENUM.SQL) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
 		harperLogger.info('verify_perms_ast has an empty user parameter');
@@ -500,10 +502,12 @@ export function verifyPermsAST(ast, userObject, operation) {
 		throw handleHDBError(new Error());
 	}
 
-	// `operation` here is the SQL statement variant (select/insert/...), not the API operation, so the
-	// scope is checked against `sql` — the operation the caller actually invoked. Ahead of the AST
-	// parsing below as well as the super_user bypass: a denied scope should not parse attacker SQL.
-	const scopeDenial = tokenScopeDenial(userObject, terms.OPERATIONS_ENUM.SQL);
+	// `operation` here is the SQL statement variant (select/insert/...), not the API operation. The
+	// scope is checked against `apiOperation` — the top-level operation the caller invoked, which is
+	// `sql` for a direct SQL call but `export_local`/`export_to_s3` for a job whose inner
+	// search_operation is SQL. Checking a hardcoded `sql` would let a token scoped only to `sql` start
+	// an export that its scope excludes. Ahead of the super_user bypass, as on the NoSQL path.
+	const scopeDenial = tokenScopeDenial(userObject, apiOperation);
 	if (scopeDenial) return scopeDenial;
 
 	try {
@@ -632,7 +636,9 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 
 	const permsResponse = new PermissionResponseObject();
 
-	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, op);
+	// The actual API operation the caller invoked — the namespace the policy scope is written in —
+	// not `op` (the handler function name), which would deny deploy_component and conflate aliases.
+	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, requestJson.operation);
 	if (scopeDenial) return scopeDenial;
 
 	if (

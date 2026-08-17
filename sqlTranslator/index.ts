@@ -79,7 +79,10 @@ export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any) {
 		verifyResult = opAuth.verifyPermsAST(
 			parsedSqlObject.ast.statements[0],
 			jsonMessage.hdb_user,
-			parsedSqlObject.variant
+			parsedSqlObject.variant,
+			// The top-level API operation for the token-scope check: `sql` for a direct SQL call, but
+			// `export_local`/`export_to_s3` when the SQL rides inside a job's search_operation.
+			jsonMessage.operation
 		);
 		parsedSqlObject.permissions_checked = true;
 	} catch (e) {
