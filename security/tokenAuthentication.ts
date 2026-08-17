@@ -177,6 +177,14 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 
 	if (authObj.purpose === 'login') {
+		// A cookie session is username-only: session-restore reloads the FULL user via getUser, so a
+		// session cannot carry an operation scope (#2174). A scoped credential must therefore not be
+		// able to trade a login token for a session — that would silently drop the scope and escalate
+		// to the full role. create_authentication_tokens is NO_AUTH, so the scope gate in verifyPerms
+		// never runs here; and a CI/OIDC scoped credential has no use for a browser session anyway.
+		if (Array.isArray(inheritedScope)) {
+			throw new ClientError('a scoped token cannot mint a login token', HTTP_STATUS_CODES.FORBIDDEN);
+		}
 		// Login-scoped exchange token: no refresh token, no user record update — it's a one-shot
 		// ticket for the `login` operation to trade for a session cookie, not a standing credential.
 		const loginToken = jwt.sign(

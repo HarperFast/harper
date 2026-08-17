@@ -459,6 +459,38 @@ describe('test createTokens', () => {
 		rw();
 	});
 
+	it('refuses to mint a login token for a scoped caller (#2174)', async () => {
+		let rw = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
+		// A cookie session is username-only, so a scoped credential trading a login token for a session
+		// would drop the scope — deny it. Otherwise: scoped token -> login -> session -> full role.
+		await assert.rejects(
+			() =>
+				token_auth.createTokens({
+					purpose: 'login',
+					hdb_user: { username: 'HDB_USER', tokenOperations: ['deploy_component'] },
+				}),
+			(e) => {
+				assert.strictEqual(e.statusCode, 403);
+				return true;
+			}
+		);
+		rw();
+	});
+
+	it('still mints a login token for an unscoped caller', async () => {
+		let rw = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
+		let result = await token_auth.createTokens({ purpose: 'login', username: 'HDB_USER', password: 'pass' });
+		assert.notDeepStrictEqual(result.operation_token, undefined);
+		assert.strictEqual(result.refresh_token, undefined); // login purpose mints no refresh token
+		rw();
+	});
+
 	it('mints unscoped credentials when the caller is unscoped', async () => {
 		let rw = token_auth.__set__(
 			'getJWTRSAKeys',
