@@ -64,7 +64,6 @@ export class Request {
 	public lastRefreshed?: number;
 
 	constructor(nodeRequest: IncomingMessage, nodeResponse?: NodeServerResponse) {
-		setMaxListeners(0, this.#abortController.signal);
 		this.method = nodeRequest.method;
 		const url = nodeRequest.url;
 		this._nodeRequest = nodeRequest;
@@ -79,6 +78,7 @@ export class Request {
 				if (!nodeResponse.writableFinished) this.#abortController.abort();
 			});
 		} else if (typeof nodeRequest.socket?.once === 'function') {
+			setMaxListeners(0, this.#abortController.signal);
 			// No response on this Request — typically the WebSocket-upgrade path
 			// (http.ts creates the Request before the ws library takes over). The TCP
 			// socket close is the fallback abort trigger; REST.ts's ws.on('close') hook

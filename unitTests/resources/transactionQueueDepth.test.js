@@ -63,13 +63,13 @@ describe('Transaction queue depth metrics', () => {
 
 	it('updates the read high-water mark when a write-created transaction starts reading', function () {
 		if (isLMDB) return;
-		getTransactionQueueDepths();
+		const before = getTransactionQueueDepths();
 		const txn = new DatabaseTransaction();
 		txn.transaction = { abort() {} };
 		try {
 			txn.getReadTxn();
 			const depths = getTransactionQueueDepths();
-			assert.ok(depths.readDepth >= 1, `the write-created transaction should be tracked, got ${depths.readDepth}`);
+			assert.equal(depths.readDepth, before.readDepth + 1, 'the write-created transaction should be tracked');
 			assert.ok(
 				depths.readMaxDepth >= depths.readDepth,
 				`readMaxDepth ${depths.readMaxDepth} should include current depth ${depths.readDepth}`

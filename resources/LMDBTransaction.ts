@@ -176,15 +176,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 								if (completion) await (completion.push ? Promise.all(completion) : completion);
 							}
 						} catch (error) {
-							this.abort(this.timedOut || this.disconnected);
-							throw error;
+							this.abortAfterCommitError(error);
 						}
 						return this.commit(options);
 					})();
 				}
 			} catch (error) {
-				this.abort(this.timedOut || this.disconnected);
-				throw error;
+				this.abortAfterCommitError(error);
 			}
 		}
 		// release the read snapshot so we don't keep it open longer than necessary

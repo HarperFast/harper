@@ -1296,8 +1296,7 @@ export class DatabaseTransaction implements Transaction {
 				return txnResolution;
 			},
 			(error) => {
-				this.abort(this.timedOut || this.disconnected);
-				throw error;
+				this.abortAfterCommitError(error);
 			}
 		);
 	}
@@ -1339,6 +1338,14 @@ export class DatabaseTransaction implements Transaction {
 		this.writesAbandoned = false;
 	}
 
+	protected abortAfterCommitError(error): never {
+		try {
+			this.abort(true);
+		} catch (abortError) {
+			harperLogger.debug?.('aborting transaction after a failed commit', abortError);
+		}
+		throw error;
+	}
 	abort(retainReadTransaction = false): void {
 		const hasOpenReadIterator =
 			retainReadTransaction &&
