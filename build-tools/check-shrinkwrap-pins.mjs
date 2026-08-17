@@ -130,16 +130,23 @@ function verifyCanariesDiscriminate(pins) {
 				// the last array entry.
 				const out = execFileSync('npm', ['view', `${dep}@${range}`, 'version', '--json'], { encoding: 'utf8' });
 				const versions = JSON.parse(out);
+				if (Array.isArray(versions) && versions.length === 0) {
+					reportMissingRange(dep, range);
+					return;
+				}
+				if (
+					(Array.isArray(versions) && versions.some((version) => !isExactVersion(version))) ||
+					(!Array.isArray(versions) && !isExactVersion(versions))
+				) {
+					throw new Error('npm returned an invalid version payload');
+				}
 				rangeLatest[dep] = Array.isArray(versions)
 					? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max))
 					: versions;
 				break;
 			} catch (e) {
 				if (isNpmNotFoundError(e)) {
-					console.error(
-						`::error::${dep}@${range} matches no published version -- correct the declared range in package.json`
-					);
-					failed = true;
+					reportMissingRange(dep, range);
 					return;
 				}
 				console.log(
@@ -232,6 +239,13 @@ function isNpmNotFoundError(error) {
 	} catch {
 		return false;
 	}
+}
+
+function reportMissingRange(dep, range) {
+	console.error(
+		`::error::${dep}@${range} matches no published version in the configured registry -- correct the declared range in package.json or confirm the configured registry carries this package`
+	);
+	failed = true;
 }
 
 // Numeric major.minor.patch comparison, ignoring any prerelease/build suffix -- sufficient

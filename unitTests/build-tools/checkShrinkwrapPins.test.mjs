@@ -242,7 +242,7 @@ describe('shrinkwrap pin canaries', function () {
 			false,
 			'',
 			3,
-			'@aws-sdk/client-s3@^3.1012.0'
+			{ missingRange: '@aws-sdk/client-s3@^3.1012.0' }
 		);
 		try {
 			const result = runCheck(fixture);
@@ -250,6 +250,54 @@ describe('shrinkwrap pin canaries', function () {
 			assert.match(result.stderr, /matches no published version/);
 			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
 			assert.strictEqual(queries.filter((query) => query === '@aws-sdk/client-s3@^3.1012.0').length, 1);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('fails without retries when a registry returns an empty version list', async function () {
+		const fixture = await createFixture(
+			{
+				'@harperfast/rocksdb-js': '2.7.1',
+				'fastify': '^5.8.2',
+				'@aws-sdk/client-s3': '^3.1012.0',
+			},
+			{},
+			false,
+			'',
+			3,
+			{ emptyRange: '@aws-sdk/client-s3@^3.1012.0' }
+		);
+		try {
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /matches no published version in the configured registry/);
+			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
+			assert.strictEqual(queries.filter((query) => query === '@aws-sdk/client-s3@^3.1012.0').length, 1);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('retries an invalid successful registry payload instead of treating it as proof', async function () {
+		const fixture = await createFixture(
+			{
+				'@harperfast/rocksdb-js': '2.7.1',
+				'fastify': '^5.8.2',
+				'@aws-sdk/client-s3': '^3.1012.0',
+			},
+			{},
+			true,
+			'',
+			3,
+			{ invalidRange: '@aws-sdk/client-s3@^3.1012.0' }
+		);
+		try {
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /::error title=Retry dependency canary check::/);
+			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
+			assert.strictEqual(queries.filter((query) => query === '@aws-sdk/client-s3@^3.1012.0').length, 3);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -262,7 +310,7 @@ async function createFixture(
 	allRangeVersionsCurrent = false,
 	failedRange = '',
 	failedAttempts = 3,
-	missingRange = ''
+	registryResponses = {}
 ) {
 	const tempDir = await mkdtemp(join(tmpdir(), 'harper-shrinkwrap-canary-'));
 	const packageRoot = join(tempDir, 'package');
@@ -309,6 +357,14 @@ if [ "$MISSING_RANGE" = "$2" ]; then
   printf '{"error":{"code":"E404","summary":"No match found for version"}}\\n'
   exit 1
 fi
+if [ "$EMPTY_RANGE" = "$2" ]; then
+  printf '[]\\n'
+  exit
+fi
+if [ "$INVALID_RANGE" = "$2" ]; then
+  printf 'null\\n'
+  exit
+fi
 if [ "$ALL_RANGE_VERSIONS_CURRENT" = 1 ]; then
   printf '["1.0.0"]\\n'
   exit
@@ -328,7 +384,7 @@ esac
 		allRangeVersionsCurrent,
 		failedRange,
 		failedAttempts,
-		missingRange,
+		...registryResponses,
 		cleanup: () => rm(tempDir, { recursive: true, force: true }),
 	};
 }
@@ -343,7 +399,9 @@ function runCheck(fixture) {
 			ALL_RANGE_VERSIONS_CURRENT: fixture.allRangeVersionsCurrent ? '1' : '0',
 			FAILED_RANGE: fixture.failedRange,
 			FAILED_ATTEMPTS: String(fixture.failedAttempts),
-			MISSING_RANGE: fixture.missingRange,
+			MISSING_RANGE: fixture.missingRange ?? '',
+			EMPTY_RANGE: fixture.emptyRange ?? '',
+			INVALID_RANGE: fixture.invalidRange ?? '',
 		},
 	});
 }
