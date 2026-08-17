@@ -341,7 +341,7 @@ suite(
 
 			for (let i = 1; i <= N; i++) {
 				await op({ action: 'write', table: db, id, seed: `LEAK-V${i}`, size: 20 * 1024 }).expect(200);
-				const files = await waitForFileSetSettle(dir, Infinity);
+				const files = await waitForFileSetSettle(dir, 1);
 				counts.push(files.size);
 				log(`[leak-check] after write v${i}: live blob files=${files.size}`);
 			}
