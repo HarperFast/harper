@@ -213,7 +213,8 @@ export class HierarchicalNavigableSmallWorld {
 	// stop after the resolved budget ef * filterExpansion visits; automatic search ef contributes at
 	// most AUTO_EF_MAX, while explicit schema/query ef remains authoritative. A filter that fills its
 	// candidate list terminates naturally before this bound. Raising the multiplier mainly trades
-	// latency for recall on selective function predicates. Per-query override via the search options.
+	// latency for recall on selective function predicates; 24 fills to roughly 4% selectivity before
+	// the budget binds. Per-query override via the search options.
 	filterExpansion = 24;
 
 	idIncrementer: BigInt64Array | undefined;
