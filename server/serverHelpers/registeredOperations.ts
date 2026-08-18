@@ -29,9 +29,8 @@ import { ServerError } from '../../utility/errors/hdbError.ts';
 import { sendItcEvent } from '../threads/itc.js';
 import { onMessageByType, onThreadExit } from '../threads/manageThreads.js';
 import {
-	registerGrantableOperation,
-	unregisterGrantableOperation,
-	validateOperations,
+	registerWorkerGrantableOperation,
+	unregisterWorkerGrantableOperation,
 } from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 
@@ -65,9 +64,6 @@ export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
 
 /** name -> threadIds of workers that registered it (main thread only) */
 const registeredByWorker = new Map<string, Set<number>>();
-// Only names this thread newly marked grantable for a worker, so cleanup below cannot revoke a mark
-// that was already admissible for another reason (an enum op, a group, a main-thread registration).
-const grantableFromWorkers = new Set<string>();
 const pendingExecutions = new Map<
 	number,
 	{ targetThreadId: number; resolve: (result: any) => void; reject: (error: Error) => void }
@@ -104,11 +100,8 @@ export function operationRegisteredHandler(event: {
 	if (!workerIds) registeredByWorker.set(name, (workerIds = new Set()));
 	workerIds.add(originator);
 	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's own
-	// chooseOperation. Claim the name for cleanup only when this mirror is what made it admissible.
-	if (grantable && validateOperations([name]) !== null) {
-		grantableFromWorkers.add(name);
-		registerGrantableOperation(name);
-	}
+	// chooseOperation.
+	if (grantable) registerWorkerGrantableOperation(name);
 	operationLog.debug(`Registered operation '${name}' announced by worker thread ${originator}`);
 }
 
@@ -119,7 +112,7 @@ export function operationRegisteredHandler(event: {
  */
 function dropRegistration(name: string) {
 	registeredByWorker.delete(name);
-	if (grantableFromWorkers.delete(name)) unregisterGrantableOperation(name);
+	unregisterWorkerGrantableOperation(name);
 }
 
 let rotation = 0;

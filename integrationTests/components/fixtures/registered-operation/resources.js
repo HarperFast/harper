@@ -38,8 +38,6 @@ server.registerOperation({
 	},
 });
 
-// requiresSuperUser makes this one both enforced and grantable, which is what puts its name in
-// front of the main thread's validateOperations.
 server.registerOperation({
 	name: 'component_registered_grantable',
 	requiresSuperUser: true,

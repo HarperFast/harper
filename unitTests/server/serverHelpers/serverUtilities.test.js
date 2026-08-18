@@ -224,14 +224,22 @@ describe('Test serverUtilities.js module ', () => {
 	// Only the receiving half is reachable here — announceRegisteredOperation returns early on the
 	// main thread, so integrationTests/components/registered-operation.test.ts owns the real hop.
 	describe('cross-thread grantable operation mirroring', function () {
-		const { validateOperations, unregisterGrantableOperation } = require('#src/utility/operationPermissions');
+		const {
+			validateOperations,
+			registerGrantableOperation,
+			unregisterGrantableOperation,
+			unregisterWorkerGrantableOperation,
+		} = require('#src/utility/operationPermissions');
 		const GRANTABLE = 'test_cross_thread_grantable_op';
 		const PLAIN = 'test_cross_thread_plain_op';
+		const SHARED = 'test_cross_thread_shared_op';
 
 		after(function () {
-			// Don't leak either name into the process-global grantable set for later suites.
-			unregisterGrantableOperation(GRANTABLE);
-			unregisterGrantableOperation(PLAIN);
+			// Don't leak these names into the process-global registries for later suites.
+			for (const op of [GRANTABLE, PLAIN, SHARED]) {
+				unregisterWorkerGrantableOperation(op);
+				unregisterGrantableOperation(op);
+			}
 		});
 
 		it('makes a worker-announced declared op grantable on the main thread', function () {
@@ -254,6 +262,22 @@ describe('Test serverUtilities.js module ', () => {
 			assert.notEqual(validateOperations([PLAIN]), null);
 			// A forward is still set up for it, so the routing half is unaffected.
 			assert.equal(typeof registeredOperations.getRemoteOperationFunction(PLAIN), 'function');
+		});
+
+		it('keeps a main-thread registration of the same name independent of the worker mirror', function () {
+			// A hot deploy can load a startOnMainThread component that registers an op a retiring
+			// worker also offers (manageThreads restartWorkers loads root components before draining
+			// the old workers), so the two marks have to survive each other.
+			registeredOperations.operationRegisteredHandler({
+				message: { name: SHARED, grantable: true, originator: 41 },
+			});
+			registerGrantableOperation(SHARED);
+
+			unregisterWorkerGrantableOperation(SHARED);
+			assert.equal(validateOperations([SHARED]), null, 'main-thread registration should survive worker revocation');
+
+			unregisterGrantableOperation(SHARED);
+			assert.notEqual(validateOperations([SHARED]), null, 'both marks gone should make it ungrantable again');
 		});
 	});
 

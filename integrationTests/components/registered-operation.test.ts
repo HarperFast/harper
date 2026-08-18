@@ -20,7 +20,6 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/registered-operation');
 
-// The one op the fixture declares a permission for, and so the only grantable one.
 const GRANTABLE_OP = 'component_registered_grantable';
 const GRANTED_ROLE = 'component_op_granted_role';
 const GRANTED_USER = 'component_op_granted_user';
@@ -175,7 +174,6 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 			strictEqual(status, 200, JSON.stringify(body));
 			strictEqual(body.granted, true);
 			strictEqual(body.username, GRANTED_USER);
-			// Still executed on the worker — main only had to accept the name, not enforce it.
 			strictEqual(body.executedOnMainThread, false);
 		});
 
