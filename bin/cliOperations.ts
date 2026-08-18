@@ -56,11 +56,11 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 	'by_ref',
 	'ref',
 	'credential',
-	// `deploy setup=true`'s token, read off the parsed request by deploySetup and sealed locally. No
-	// operation takes a *top-level* `token`, so keeping it out of every body costs nothing and means a
-	// mistyped `setup` — which parses as a bare word and falls through to a real deploy — can't carry a
-	// PAT to the server. Distinct from `credentials[].token`, which is nested inside a field that IS
-	// sent (ingestCredentials seals it server-side) and is only kept out of the operations log.
+	// `deploy setup=true`'s token, read off the parsed request by deploySetup and sealed locally.
+	// Stripping it means a mistyped `setup` — which parses as a bare word and falls through to a real
+	// deploy — can't carry a PAT to the server. Distinct from `credentials[].token`, which is nested
+	// inside a field that IS sent (ingestCredentials seals it server-side) and is only kept out of the
+	// operations log. See OPERATIONS_TAKING_A_TOKEN for the one operation this must not apply to.
 	'token',
 ]);
 
@@ -180,10 +180,24 @@ async function* wrapPackagingStream(stream: Readable, projectPath: string): Asyn
 // Build the JSON operation-field set from `req`, dropping the CLI's internal (`_`-prefixed)
 // and transport-only fields so neither the CLI internals nor credentials leak into the
 // request body. Shared by the multipart and legacy-JSON deploy body builders.
+/**
+ * Operations whose own request body has a top-level `token`, which must therefore survive the
+ * transport-only stripping above.
+ *
+ * `exchange_oidc_token` (#2171) is one: the identity token IS the request. The blanket strip was
+ * written when no operation took a top-level `token`, and left this one reaching the server without
+ * the field it requires — so the issuer-agnostic path was unusable through the generic CLI even
+ * though direct HTTP worked. Keyed on the operation rather than dropping the strip, because the
+ * mistyped-`setup` case it guards against is real.
+ */
+const OPERATIONS_TAKING_A_TOKEN = new Set(['exchange_oidc_token']);
+
 function operationFields(req: any): any {
+	const keepsToken = OPERATIONS_TAKING_A_TOKEN.has(req?.operation);
 	const fields: any = {};
 	for (const [key, value] of Object.entries(req)) {
-		if (key.startsWith('_') || TRANSPORT_ONLY_FIELDS.has(key)) continue;
+		if (key.startsWith('_')) continue;
+		if (TRANSPORT_ONLY_FIELDS.has(key) && !(key === 'token' && keepsToken)) continue;
 		fields[key] = value;
 	}
 	return fields;

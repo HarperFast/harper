@@ -52,6 +52,42 @@ describe('cliOperations', () => {
 		fs.ensureDirSync(testDir);
 	});
 
+	// `token` is stripped from every request body as transport-only, so that a mistyped `deploy
+	// setup=...` cannot carry a PAT to the server. exchange_oidc_token is the one operation whose body
+	// legitimately has a top-level `token` — the identity token IS the request — so the strip must not
+	// apply to it, or the issuer-agnostic path is unusable through the generic CLI (#2171).
+	it('sends the token for exchange_oidc_token instead of stripping it', async () => {
+		let sentBody;
+		commonUtilsModule.httpRequest = async (_options, body) => {
+			sentBody = body;
+			return { statusCode: 200, body: JSON.stringify({ operation_token: 'minted' }) };
+		};
+
+		await cliOperationsModule.cliOperations(
+			{ operation: 'exchange_oidc_token', token: 'the-identity-token', target: 'example.com' },
+			true
+		);
+
+		assert.strictEqual(sentBody.operation, 'exchange_oidc_token');
+		assert.strictEqual(sentBody.token, 'the-identity-token', 'the identity token must reach the server');
+	});
+
+	// The other direction: the strip still protects every other operation.
+	it('still strips a top-level token from other operations', async () => {
+		let sentBody;
+		commonUtilsModule.httpRequest = async (_options, body) => {
+			sentBody = body;
+			return { statusCode: 200, body: JSON.stringify({}) };
+		};
+
+		await cliOperationsModule.cliOperations(
+			{ operation: 'test', token: 'a-pat-that-must-not-leave', target: 'example.com' },
+			true
+		);
+
+		assert.strictEqual(sentBody.token, undefined, 'a PAT must not reach the server on other operations');
+	});
+
 	it('Leg 1: should use non-expired token directly', async () => {
 		const target = 'https://example.com:9925/';
 		saveCredentials(target, {

@@ -216,6 +216,55 @@ describe('exchangeOidcToken', () => {
 	// A stored row that add_oidc_trust would reject (repository pinned, but no workflow/ref gate) — as
 	// could arrive via replication from an older node or a restored backup — must be ignored at
 	// exchange, not honored. Seeded directly into the store to bypass add_oidc_trust's validation.
+	// A row can reach the table without passing add_oidc_trust — replication from a node predating a
+	// check, a restored backup, a direct system-table write. These two shapes fail OPEN if the exchange
+	// merely normalizes them instead of refusing the row, which is why validation is shared rather than
+	// duplicated. Written straight to the store, deliberately bypassing the add handler.
+	function storePolicyDirectly(overrides) {
+		trustTable.mock.rows.set('my-app-prod', {
+			id: 'my-app-prod',
+			issuer: ISSUER,
+			audience: AUDIENCE,
+			claims: { repository_id: '67890', workflow_ref: WORKFLOW_REF },
+			user: 'ci-deploy',
+			enabled: true,
+			...overrides,
+		});
+	}
+
+	// operations as a scalar: hasOperationScope tests Array.isArray, so the scope would be dropped and
+	// the token minted UNSCOPED with the policy user's whole role. A malformed narrowing must never
+	// widen — so the row is refused rather than honored without its scope.
+	it('refuses a stored policy whose operations is a scalar rather than an array', async () => {
+		storePolicyDirectly({ operations: 'deploy_component' });
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
+	});
+
+	it('refuses a stored policy naming an operation that does not exist', async () => {
+		storePolicyDirectly({ operations: ['not_a_harper_operation'] });
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
+	});
+
+	// enabled as the string 'false': `row.enabled !== false` is true for it, so a policy an operator
+	// meant to disable would keep minting tokens.
+	it('refuses a stored policy whose enabled is a string rather than a boolean', async () => {
+		storePolicyDirectly({ enabled: 'false' });
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
+	});
+
+	it('refuses a stored policy whose claims are not a usable constraint shape', async () => {
+		storePolicyDirectly({ claims: { repository_id: { nested: 'object' } } });
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
+	});
+
+	// The control: the same direct-store path with a well-formed row still authenticates, so the four
+	// refusals above are the validator working rather than the helper failing to store anything.
+	it('still exchanges a well-formed directly-stored policy', async () => {
+		storePolicyDirectly({ operations: ['deploy_component'] });
+		const result = await exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() });
+		assert.strictEqual(result.username, 'ci-deploy');
+	});
+
 	it('ignores an under-specified stored policy that bypassed write-time validation', async () => {
 		trustTable.mock.rows.set('smuggled', {
 			id: 'smuggled',

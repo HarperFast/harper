@@ -15,6 +15,7 @@ import { databases } from '../../../resources/databases.ts';
 import * as terms from '../../../utility/hdbTerms.ts';
 import { ClientError, hdbErrors } from '../../../utility/errors/hdbError.ts';
 import { validateBySchema } from '../../../validation/validationWrapper.ts';
+import { loggerWithTag } from '../../../utility/logging/logger.ts';
 import { getUsersWithRolesCache } from '../../user.ts';
 import { validateClaimConstraintShape } from './claims.ts';
 import { normalizeIssuer } from './jwks.ts';
@@ -24,6 +25,8 @@ import type { OidcTrustPolicy } from './types.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const OIDC_TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
+// Same tag as tokenExchange: an ignored row and the exchange that ignored it belong in one stream.
+const logger = loggerWithTag('oidc-trust');
 
 const POLICY_ID = Joi.string()
 	.min(1)
@@ -143,15 +146,62 @@ function toRecord(row: any): OidcTrustPolicy & Record<string, unknown> {
  * sorting by id keeps both the listing and the exchange's match order deterministic rather than
  * dependent on an index's iteration order.
  */
-async function readPolicies(includeDisabled: boolean, issuer?: string): Promise<OidcTrustPolicy[]> {
+async function readPolicies(
+	includeDisabled: boolean,
+	issuer?: string,
+	forExchange = false
+): Promise<OidcTrustPolicy[]> {
 	const table = trustTable();
 	const policies: OidcTrustPolicy[] = [];
 	for await (const row of table.search([])) {
 		if (!includeDisabled && row.enabled === false) continue;
 		if (issuer !== undefined && row.issuer !== issuer) continue;
+		if (forExchange) {
+			// Validate the RAW row, before toRecord normalizes it — normalizing is precisely what would
+			// hide the two shapes that fail open (see storedPolicyProblem).
+			const problem = storedPolicyProblem(row);
+			if (problem) {
+				logger.warn?.(`Ignoring trust policy '${row.id}': ${problem}`);
+				continue;
+			}
+		}
 		policies.push(toRecord(row));
 	}
 	return policies.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+}
+
+/**
+ * Why a stored row must not be honored, or undefined if it is usable.
+ *
+ * add_oidc_trust enforces all of this at write time, but a row can reach the table another way —
+ * replication from a node predating a check, a restored backup, a direct write to the system table —
+ * so the exchange re-runs the same validators rather than trusting that every row was validated when
+ * written. Two shapes in particular fail OPEN if merely normalized instead of rejected:
+ *
+ *   operations: 'deploy_component'  — a scalar rather than an array. hasOperationScope tests
+ *     Array.isArray, so the scope is silently dropped and the token is minted UNSCOPED, carrying the
+ *     policy user's entire role. A malformed narrowing must never widen.
+ *   enabled: 'false'                — a string. `row.enabled !== false` is true for it, so a policy
+ *     an operator meant to disable keeps minting tokens.
+ *
+ * Shares validateOperations and validateClaimConstraintShape with the add path deliberately: two
+ * implementations of "is this row valid" is how the write path and the read path drift apart.
+ */
+export function storedPolicyProblem(row: any): string | undefined {
+	if (row.enabled !== undefined && typeof row.enabled !== 'boolean') {
+		return `'enabled' is a ${typeof row.enabled}, not a boolean`;
+	}
+	if (row.operations != null) {
+		if (!Array.isArray(row.operations)) return `'operations' is a ${typeof row.operations}, not an array`;
+		const invalidOperation = validateOperations(row.operations);
+		if (invalidOperation != null) return `operations contains '${invalidOperation}', which is not a Harper operation`;
+	}
+	try {
+		validateClaimConstraintShape(row.claims);
+	} catch (error) {
+		return (error as Error).message;
+	}
+	return undefined;
 }
 
 /**
@@ -171,7 +221,7 @@ async function readPolicies(includeDisabled: boolean, issuer?: string): Promise<
  */
 export function loadEnabledPolicies(issuer: string): Promise<OidcTrustPolicy[]> {
 	if (!(databases as any).system?.[OIDC_TRUST_TABLE]) return Promise.resolve([]);
-	return readPolicies(false, issuer);
+	return readPolicies(false, issuer, true);
 }
 
 /**
