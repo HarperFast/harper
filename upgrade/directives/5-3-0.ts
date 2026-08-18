@@ -30,6 +30,7 @@ const OIDC_TOKEN_USE_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TOKEN_USE_TABLE_NAME;
 async function createHdbOidcTokenUseIfMissing() {
 	if (databases.system?.[OIDC_TOKEN_USE_TABLE]) {
 		hdbLogger.info(`system.${OIDC_TOKEN_USE_TABLE} already exists; skipping create.`);
+		await patchIsHashAttribute(OIDC_TOKEN_USE_TABLE);
 		return;
 	}
 
@@ -56,12 +57,13 @@ async function createHdbOidcTokenUseIfMissing() {
 	createTable.audit = true;
 
 	await bridge.createTable(OIDC_TOKEN_USE_TABLE, createTable);
+	await patchIsHashAttribute(OIDC_TOKEN_USE_TABLE);
 }
 
 async function createHdbOidcTrustIfMissing() {
 	if (databases.system?.[OIDC_TRUST_TABLE]) {
 		hdbLogger.info(`system.${OIDC_TRUST_TABLE} already exists; skipping create.`);
-		await patchHdbOidcTrustIsHashAttribute();
+		await patchIsHashAttribute(OIDC_TRUST_TABLE);
 		return;
 	}
 
@@ -83,29 +85,30 @@ async function createHdbOidcTrustIfMissing() {
 	createTable.audit = true;
 
 	await bridge.createTable(OIDC_TRUST_TABLE, createTable);
-	await patchHdbOidcTrustIsHashAttribute();
+	await patchIsHashAttribute(OIDC_TRUST_TABLE);
 }
 
 /**
- * Ensure the hdb_oidc_trust __dbis__ primary-key entry carries is_hash_attribute: true.
+ * Ensure a table's __dbis__ primary-key entry carries is_hash_attribute: true.
  *
  * harperdb@4.x reads is_hash_attribute from __dbis__ to derive the LMDB DBI open flags; without it
  * the DBI is opened with the opposite flags (DUPSORT set) and LMDB throws MDB_INCOMPATIBLE, breaking
- * downgrade — the same guard 5-1-0.ts and 5-2-0.ts apply to their tables. Idempotent: no-op when the
- * field is already set.
+ * downgrade — the same guard 5-1-0.ts and 5-2-0.ts apply to their tables. Both tables created here
+ * go through the identical CreateTableObject + bridge.createTable path, so both need it; exempting
+ * one would be a silent asymmetry rather than a decision. Idempotent: no-op when already set.
  */
-async function patchHdbOidcTrustIsHashAttribute() {
-	const systemTable = (databases as any).system?.[OIDC_TRUST_TABLE];
+async function patchIsHashAttribute(tableName: string) {
+	const systemTable = (databases as any).system?.[tableName];
 	if (!systemTable?.dbisDB) return;
 
-	const dbiName = `${OIDC_TRUST_TABLE}/`;
+	const dbiName = `${tableName}/`;
 	const primaryAttr = systemTable.dbisDB.getSync(dbiName);
 	if (!primaryAttr || primaryAttr.is_hash_attribute) return; // already correct
 
 	primaryAttr.is_hash_attribute = true;
 	await systemTable.dbisDB.put(dbiName, primaryAttr);
 	hdbLogger.info(
-		`Patched system.${OIDC_TRUST_TABLE} __dbis__ entry with is_hash_attribute=true for harperdb@4.x downgrade compatibility.`
+		`Patched system.${tableName} __dbis__ entry with is_hash_attribute=true for harperdb@4.x downgrade compatibility.`
 	);
 }
 

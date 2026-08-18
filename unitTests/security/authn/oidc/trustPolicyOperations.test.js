@@ -158,6 +158,25 @@ describe('oidc trustPolicyOperations', () => {
 		// and the CLI requests normalizeTarget(target) — port and trailing slash included. A policy
 		// written the natural way would therefore never match, and the exchange says only "rejected",
 		// so the operator learns nothing. It has to fail here, at write time, instead.
+		// `enabled` is a revocation control, so it has to fail closed. Joi coerces by default and
+		// validateBySchema keeps only `result.error`, discarding the converted value — so without
+		// `.strict()` the string "false" validated cleanly, survived as a string, and `!== false` read
+		// it as enabled. An operator disabling a policy this way would get no error and a policy that
+		// kept minting tokens.
+		it('rejects a non-boolean enabled rather than coercing it', async () => {
+			for (const enabled of ['false', 'true', 0, 1]) {
+				await assert.rejects(
+					() => addOidcTrust(su('add_oidc_trust', validPolicy({ id: 'coerce-me', enabled }))),
+					`expected ${JSON.stringify(enabled)} to be refused rather than coerced`
+				);
+			}
+		});
+
+		it('stores a genuinely disabled policy as disabled', async () => {
+			await addOidcTrust(su('add_oidc_trust', validPolicy({ id: 'off', enabled: false })));
+			assert.strictEqual(installed.mock.rows.get('off').enabled, false);
+		});
+
 		it('rejects an audience missing the port or the trailing slash', async () => {
 			for (const audience of [
 				'https://my-instance.harperdb.io',
