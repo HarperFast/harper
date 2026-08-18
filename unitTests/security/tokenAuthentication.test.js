@@ -441,31 +441,52 @@ describe('test createTokens', () => {
 		rw_get_tokens();
 	});
 
-	// #2174: create_authentication_tokens is NO_AUTH, so verifyPerms — and the token-scope gate
-	// inside it — never runs here. A caller authenticated with a scoped operation token must not be
-	// able to mint UNSCOPED credentials; the minted operation and refresh tokens inherit the scope.
-	it('carries an inherited token scope into the minted operation and refresh tokens', async () => {
+	// #2174: create_authentication_tokens is NO_AUTH, so verifyPerms — and the token-scope gate inside
+	// it — never runs here. A scoped caller must not mint a STANDING credential: it would carry the
+	// scope forward but honor expires_in verbatim (a minutes-long leak becomes decade-long) and write
+	// a refresh_token to the user record. So a scoped caller is denied outright.
+	it('denies a scoped caller from minting standing operation/refresh tokens, and writes nothing', async () => {
 		let rw = token_auth.__set__(
 			'getJWTRSAKeys',
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
-		// No username/password: the caller is the already-authenticated bearer, whose hdb_user carries
-		// the scope — exactly the shape a scoped OIDC token presents to create_authentication_tokens.
-		let result = await token_auth.createTokens({
-			hdb_user: { username: 'HDB_USER', tokenOperations: ['deploy_component'] },
-		});
-		assert.deepStrictEqual(jwt.decode(result.operation_token).operations, ['deploy_component']);
-		assert.deepStrictEqual(jwt.decode(result.refresh_token).operations, ['deploy_component']);
+		update_stub.resetHistory();
+		await assert.rejects(
+			() =>
+				token_auth.createTokens({
+					expires_in: '3650d', // the lifetime-extension the denial exists to prevent
+					hdb_user: { username: 'HDB_USER', tokenOperations: ['deploy_component'] },
+				}),
+			(e) => {
+				assert.strictEqual(e.statusCode, 403);
+				return true;
+			}
+		);
+		assert.strictEqual(update_stub.callCount, 0, 'a denied scoped caller must not write a refresh_token to the user');
 		rw();
 	});
 
-	it('refuses to mint a login token for a scoped caller (#2174)', async () => {
+	// A deny-all ([]) scope is still a scope — it must be refused too (and must not touch the user record).
+	it('denies even a deny-all ([]) scoped caller', async () => {
 		let rw = token_auth.__set__(
 			'getJWTRSAKeys',
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
-		// A cookie session is username-only, so a scoped credential trading a login token for a session
-		// would drop the scope — deny it. Otherwise: scoped token -> login -> session -> full role.
+		await assert.rejects(
+			() => token_auth.createTokens({ hdb_user: { username: 'HDB_USER', tokenOperations: [] } }),
+			(e) => {
+				assert.strictEqual(e.statusCode, 403);
+				return true;
+			}
+		);
+		rw();
+	});
+
+	it('denies a scoped caller on the login path too', async () => {
+		let rw = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
 		await assert.rejects(
 			() =>
 				token_auth.createTokens({

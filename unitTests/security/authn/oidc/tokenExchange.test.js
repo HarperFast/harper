@@ -196,6 +196,21 @@ describe('exchangeOidcToken', () => {
 		assert.strictEqual(user.username, 'ci-deploy');
 	});
 
+	// A stored row that add_oidc_trust would reject (repository pinned, but no workflow/ref gate) — as
+	// could arrive via replication from an older node or a restored backup — must be ignored at
+	// exchange, not honored. Seeded directly into the store to bypass add_oidc_trust's validation.
+	it('ignores an under-specified stored policy that bypassed write-time validation', async () => {
+		trustTable.mock.rows.set('smuggled', {
+			id: 'smuggled',
+			issuer: ISSUER,
+			audience: AUDIENCE,
+			claims: { repository_id: '67890' }, // no workflow pin, no ref gate — add_oidc_trust rejects this
+			user: 'ci-deploy',
+			enabled: true,
+		});
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
+	});
+
 	// The whole point of trusted publishing: CI ends up holding nothing durable, and the user's
 	// existing refresh credential is not rotated out from under whoever holds it (#2018).
 	it('mints no refresh token', async () => {

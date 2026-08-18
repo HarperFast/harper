@@ -61,6 +61,14 @@ function getTokenUseTable(): any {
 		table<Table>({
 			table: TOKEN_USE_TABLE,
 			database: 'system',
+			// `audit: true` explicitly, NOT the default (which follows logging.auditLog). Auditing is the
+			// replication change feed (databases.ts: "auditing must be enabled for replication"), and
+			// replay records MUST replicate so a token spent on one node cannot be re-spent on another
+			// inside its window. Without this, an operator with logging.auditLog:false would silently lose
+			// cross-node replay protection. Its sibling hdb_oidc_trust is audited for the same reason.
+			// (Lazy table() rather than the systemSchema+directive bootstrap because the expiresAt TTL
+			// below is not expressible through CreateTableObject; this matches hdb_certificate_cache.)
+			audit: true,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'policy_id' },
@@ -107,6 +115,19 @@ async function findMatchingPolicy(
 	const claimsByAudience = new Map<string, TokenClaims | undefined>();
 
 	for (const policy of policies) {
+		// Re-validate specificity at exchange time. add_oidc_trust enforces these, but a stored row can
+		// arrive another way — replication from an older node that predates a check, or a restored/older
+		// system-DB backup — and the exchange must not trust that every row was validated when written.
+		// Skip (don't honor) any row that would be rejected for writing, so an under-specified policy
+		// (e.g. a repository pinned but no workflow/ref gate) can't mint a token. Fail closed.
+		try {
+			profile.assertAudienceIsSpecific(policy.audience);
+			profile.assertPolicyIsSpecific(policy.claims);
+		} catch (error) {
+			logger.warn?.(`Ignoring trust policy '${policy.id}': ${(error as Error).message}`);
+			continue;
+		}
+
 		if (!claimsByAudience.has(policy.audience)) {
 			// verifyIdentityToken logs its own reason for refusing.
 			const verified = await verifyIdentityToken(token, { issuer, audience: policy.audience }).catch(() => undefined);

@@ -163,27 +163,24 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		username: string;
 		super_user: boolean;
 		role?: any;
-		operations?: string[];
 	} = { username: authObj.username, super_user: superUser };
 	if (authObj.role) payload.role = authObj.role;
 
-	// create_authentication_tokens is NO_AUTH, so verifyPerms — and the scope gate inside it — never
-	// runs here. If the caller authenticated with a scoped token, the operation and refresh tokens it
-	// mints inherit that scope; otherwise it escalates to unscoped, full-role credentials with no
-	// password. (See operationScope.ts for the carry-forward invariant.)
-	const inheritedScope = (authObj.hdb_user as any)?.tokenOperations;
-	attachScopeToToken(payload, inheritedScope);
+	// create_authentication_tokens is NO_AUTH, so verifyPerms — and the token-scope gate inside it —
+	// never runs here. A scoped caller (an OIDC-exchanged operation token, #2174) must not mint any
+	// standing credential through it: the scope would carry forward, but honoring expires_in verbatim
+	// turns a minutes-long leak into an arbitrarily long-lived one, and the refresh_token write below
+	// hands out a 30-day credential — both defeating the exchange's ephemerality guarantee, and both
+	// reachable even by a deny-all `[]` scope. A CI token needs none of this; it holds the operation
+	// token the exchange already gave it. Deny outright — this covers the login and standing paths
+	// alike, so a session (username-only, and therefore unscopeable) can't be minted from a scope either.
+	if (hasOperationScope((authObj.hdb_user as any)?.tokenOperations)) {
+		throw new ClientError('a scoped token cannot mint authentication tokens', HTTP_STATUS_CODES.FORBIDDEN);
+	}
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 
 	if (authObj.purpose === 'login') {
-		// A cookie session is username-only (session-restore reloads the full user via getUser), so it
-		// cannot carry a scope. A scoped credential must therefore not trade a login token for a
-		// session — that would silently drop the scope and escalate to the full role — and a CI/OIDC
-		// scoped credential has no use for a browser session anyway.
-		if (hasOperationScope(inheritedScope)) {
-			throw new ClientError('a scoped token cannot mint a login token', HTTP_STATUS_CODES.FORBIDDEN);
-		}
 		// Login-scoped exchange token: no refresh token, no user record update — it's a one-shot
 		// ticket for the `login` operation to trade for a session cookie, not a standing credential.
 		const loginToken = jwt.sign(

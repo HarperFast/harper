@@ -20,8 +20,15 @@ export interface OidcTrustPolicy {
 	/** The exchanged token authenticates as this user, whose role is the least-privilege boundary. */
 	user: string;
 	/**
-	 * Optional narrowing of that boundary: the minted token may perform only these operations, even
+	 * Optional narrowing of that boundary, enforced on the **operations API and SQL** paths (the
+	 * verifyPerms / verifyPermsAST gate): the minted token may invoke only these operations, even
 	 * where the role allows more. Never widens — an operation the role forbids stays forbidden.
+	 *
+	 * NOT enforced on the application REST/GraphQL resource path, which authorizes through the
+	 * table-level checkPermission and does not consult this scope — so a scoped operation token still
+	 * carries the role's full CRUD there. Extending the scope to the resource path is a follow-up on
+	 * the same surface as the GraphQL-bypasses-ops-allowlist gap (CORE-3061); until then, scope a
+	 * policy's `user` to a role that is itself least-privilege for the data the token can reach.
 	 */
 	operations?: string[];
 	/** Defaults to true; false keeps the policy for reference without honoring it. */
