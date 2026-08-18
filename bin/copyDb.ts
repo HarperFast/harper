@@ -3,11 +3,12 @@ import { open, asBinary } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
 import { existsSync, mkdirSync } from 'node:fs';
+import { rename } from 'node:fs/promises';
 import { get } from '../utility/environment/environmentManager.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
-import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, DATABASES_DIR_NAME, MIGRATING_DIR_SUFFIX } from '../utility/hdbTerms.ts';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
 import { describeSchema } from '../dataLayer/schemaDescribe.ts';
 import { updateConfigValue } from '../config/configUtils.ts';
@@ -20,7 +21,13 @@ import {
 	encodeBlobsWithFilePath,
 	endPendingMigrationBlobSaves,
 } from '../resources/blob.ts';
-import { RecordEncoder, setNextEncoding, lastMetadata, METADATA } from '../resources/RecordEncoder.ts';
+import {
+	RecordEncoder,
+	setNextEncoding,
+	clearNextEncoding,
+	lastMetadata,
+	METADATA,
+} from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
 	hdbLogger.notify('Running compact on start');
@@ -330,7 +337,7 @@ function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: b
 		db = new (RocksIndexStore as any)(path, options).open();
 	} else {
 		db = RocksDatabase.open(path, options);
-		db.encoder.name = options.name;
+		if (db.encoder) db.encoder.name = options.name;
 	}
 	return db;
 }
@@ -379,7 +386,7 @@ export async function migrateOnStart() {
 
 			console.log('Migrating', databaseName, 'from LMDB to RocksDB at', targetPath);
 
-			await copyDbToRocks(rootStore, databaseName, targetPath);
+			await migrateDatabaseToRocks(rootStore, databaseName, targetPath);
 
 			// Back up the original LMDB file
 			console.log('Backing up LMDB', databaseName, 'to', backupDest);
@@ -412,11 +419,116 @@ export async function migrateOnStart() {
 	}
 }
 
+/**
+ * Count records in a raw (encoding: false) store whose value lacks the 8-byte version prefix
+ * (0x42 = first byte of a ms-epoch float64). Symbol keys are internal and skipped. First-byte
+ * classification is a heuristic: a prefix-less classic record can also lead with 0x42 (structure
+ * ref id 2) and would be undercounted — fine for the whole-table detection this report serves.
+ */
+function countRecords(rawDbi): { records: number; unversioned: number } {
+	let records = 0;
+	let unversioned = 0;
+	for (const { key, value } of rawDbi.getRange({})) {
+		if (typeof key === 'symbol') continue;
+		records++;
+		if (!value || value.length < 8 || value[0] !== 0x42) unversioned++;
+	}
+	return { records, unversioned };
+}
+
+/**
+ * Verification sweep for an already-migrated RocksDB database (harper#2012): reports, per
+ * primary-key dbi, how many records lack the version/metadata prefix. Such records decode
+ * without their record prototype on point reads and carry no version; a nonzero count beyond a
+ * table's known version-less records means it needs the no-op rewrite pass. Read-only, but takes
+ * the RocksDB lock — run in-process (inspector) on a live instance, or offline.
+ */
+export function verifyMigratedDatabase(databasePath: string): Record<string, { records: number; unversioned: number }> {
+	// Every open handle, so a failure at any point (e.g. the second open throwing on lock
+	// contention) cannot leak an earlier handle that would hold the RocksDB lock on the very
+	// diagnostic path operators use after a broken migration.
+	const handles: RocksDatabase[] = [];
+	const report: Record<string, { records: number; unversioned: number }> = {};
+	try {
+		handles.push(RocksDatabase.open(databasePath, {}));
+		const dbisDb = RocksDatabase.open(databasePath, {
+			name: INTERNAL_DBIS_NAME,
+			sharedStructuresKey: Symbol.for('structures'),
+		});
+		handles.push(dbisDb);
+		for (const { key, value: attribute } of dbisDb.getRange({})) {
+			if (typeof key === 'symbol' || !attribute?.isPrimaryKey) continue;
+			// per-table handles close per-iteration so a many-table sweep does not hold every CF
+			// handle open at once; only the two pre-loop opens need the leak-safety array
+			const rawDbi = RocksDatabase.open(databasePath, { name: key, encoding: false });
+			try {
+				report[key] = countRecords(rawDbi);
+			} finally {
+				rawDbi.close();
+			}
+		}
+	} finally {
+		for (const handle of handles.reverse()) {
+			try {
+				handle.close();
+			} catch (error) {
+				console.error('Error closing verification store', error);
+			}
+		}
+	}
+	return report;
+}
+
+/**
+ * Migrate one database LMDB→RocksDB with restart-safe promotion: copy into a staging directory
+ * (excluded from database discovery) and atomically rename it to targetPath only after the copy
+ * fully verifies. A failure part-way must never leave a partial RocksDB at targetPath — on the
+ * next boot both <db>.mdb and <db>/ would be discovered, and whichever binds last wins; if the
+ * partial RocksDB won, migrateOnStart would see "already RocksDB", clear the flag, and abandon
+ * the intact LMDB. Any stale staging dir is removed before retrying, so an interrupted migration
+ * (throw or SIGKILL) always recovers by re-migrating from the untouched LMDB source.
+ */
+export async function migrateDatabaseToRocks(sourceRootStore, databaseName: string, targetPath: string) {
+	const stagingPath = targetPath + MIGRATING_DIR_SUFFIX;
+	await remove(stagingPath);
+	try {
+		await copyDbToRocks(sourceRootStore, databaseName, stagingPath);
+	} catch (error) {
+		try {
+			await remove(stagingPath);
+		} catch {
+			// discovery ignores the staging dir and the next attempt removes it
+		}
+		throw error;
+	}
+	// A directory already at targetPath can only be a stale partial from a pre-staging build's
+	// failed attempt (or a complete copy from a crash after rename but before the flag cleared) —
+	// discovery bound the LMDB source this boot, and we just produced a fresh verified copy from
+	// it, so replace.
+	await remove(targetPath);
+	// On Windows a directory rename can transiently fail while RocksDB background threads release
+	// their last file handles after close(); retry briefly before giving up.
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await rename(stagingPath, targetPath);
+			break;
+		} catch (error: any) {
+			if (attempt >= 4 || !(error.code === 'EPERM' || error.code === 'EBUSY' || error.code === 'EACCES')) throw error;
+			await new Promise((resolve) => setTimeout(resolve, 250));
+		}
+	}
+}
+
 export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
 	console.log(`Migrating database ${sourceDatabase} to RocksDB at ${targetPath}`);
 	const sourceDbisDb = sourceRootStore.dbisDb;
 
 	const targetRootStore = openRocksDb(targetPath, { disableWAL: false });
+	// Every handle opened on targetPath. All must be closed before returning so the caller can
+	// atomically rename a staging directory into place — rocksdb-js registers descriptors by
+	// path string, so a handle left open on the staging path would hold the DB lock against the
+	// runtime's open of the renamed directory (harper#2012 restart-safety).
+	const targetHandles: RocksDatabase[] = [targetRootStore];
 	// sharedStructuresKey wires the rocksdb-js getStructures/saveStructures closures
 	// so that the plain msgpackr.Encoder used here persists structures within the
 	// __dbis__ CF at Symbol.for('structures'). The runtime attributesDbi RecordEncoder
@@ -430,6 +542,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		name: INTERNAL_DBIS_NAME,
 		sharedStructuresKey: Symbol.for('structures'),
 	});
+	targetHandles.push(targetDbisDb);
 
 	const STRUCTURES_KEY = Symbol.for('structures');
 	const copyStructures = (sourceDbi, storeName: string, extraTarget?: RocksDatabase) => {
@@ -454,8 +567,11 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	// referencing fileIds whose files were never durably written — exactly the missing-blob-file
 	// state that triggers the base-copy resync wedge in harper#1337.
 	const pendingBlobSaves = beginPendingMigrationBlobSaves();
-	const transaction = sourceDbisDb.useReadTransaction();
+	// Acquired inside the try: if it throws, the finally must still close the target handles so a
+	// staging directory can be removed and its path reopened cleanly (harper#2012).
+	let transaction;
 	try {
+		transaction = sourceDbisDb.useReadTransaction();
 		for (const { key, value: attribute } of sourceDbisDb.getRange({ transaction })) {
 			const isPrimary = attribute.isPrimaryKey;
 			targetDbisDb.put(key, attribute);
@@ -484,8 +600,10 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			let canonicalStructures: any;
 			if (!isPrimary) {
 				targetDbi = openRocksDb(targetPath, { dupSort: true, name: key });
+				targetHandles.push(targetDbi);
 			} else {
 				targetDbi = openRocksDb(targetPath, { name: key });
+				targetHandles.push(targetDbi);
 				// Patch the existing encoder (encoder is a getter-only property on RocksDatabase, cannot be replaced)
 				// to install RecordEncoder's encode method so metadata headers (timestamps, HAS_BLOBS flag) are written
 				const existingEncoder = targetDbi.encoder as any;
@@ -527,7 +645,49 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			copyStructures(sourceDbi, key);
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
-			await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder);
+			const copied = await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder);
+			if (copied?.firstVersioned !== undefined) {
+				const { firstVersioned, versionlessKeys } = copied;
+				// Invariant tripwire (#2012): a versioned record must round-trip with its 8-byte
+				// version prefix. The full big-endian float64 is compared to the source version —
+				// a first-byte check alone is ambiguous, since a prefix-less classic record can
+				// also lead with 0x42 (structure ref id 2). Failing here keeps the migration
+				// incomplete (LMDB source intact, migrateOnStart flag retained) instead of
+				// shipping a database whose records silently lost versions and record prototypes.
+				await firstVersioned.written;
+				await written;
+				const roundTrip = targetDbi.getBinarySync(firstVersioned.key);
+				const roundTripVersion = roundTrip && roundTrip.length >= 8 ? roundTrip.readDoubleBE(0) : undefined;
+				if (roundTripVersion !== firstVersioned.version) {
+					throw new Error(
+						`Migration of ${sourceDatabase} wrote record ${JSON.stringify(firstVersioned.key)} without its ` +
+							`version/metadata prefix (expected version ${firstVersioned.version}, read back ${roundTripVersion}) — ` +
+							`records would lose versions and prototypes`
+					);
+				}
+				// Full verification sweep (harper#2012 ask #3): every migrated record that had a source
+				// version must carry the prefix. Version-less source records are exempted by KEY, not
+				// by byte inspection — a plain classic body can also lead with 0x42 (structure ref
+				// id 2), so byte sniffing could misclassify them and throw spuriously. For versioned
+				// records the first-byte check suffices: a systemic prefix regression trips on the
+				// very first record (and the exact-header tripwire above already validated one).
+				const rawDbi = openRocksDb(targetPath, { name: key, encoding: false });
+				targetHandles.push(rawDbi);
+				let unprefixed = 0;
+				let scanned = 0;
+				for (const { key: recordKey, value } of rawDbi.getRange({})) {
+					if (typeof recordKey === 'symbol') continue;
+					if (versionlessKeys.has(typeof recordKey === 'object' ? JSON.stringify(recordKey) : recordKey)) continue;
+					scanned++;
+					if (!value || value.length < 8 || value[0] !== 0x42) unprefixed++;
+				}
+				if (unprefixed > 0) {
+					throw new Error(
+						`Migration of ${sourceDatabase}/${key} left ${unprefixed} of ${scanned} versioned record(s) without ` +
+							`the version/metadata prefix — records would lose versions and prototypes`
+					);
+				}
+			}
 
 			// Persist the canonical v5 classic structures the observer built, so every v5 runtime worker
 			// adopts one agreed dictionary on startup instead of minting its own from an empty durable and
@@ -591,13 +751,25 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		// later background failure is silently observed instead of crashing the process via
 		// Node's unhandledRejection.
 		for (const saving of pendingBlobSaves) saving.catch(() => {});
-		transaction.done();
-		targetRootStore.close();
+		transaction?.done();
+		// Close every target handle (dbi CFs before the root) so no descriptor holds the DB lock
+		// on this path — required for the caller's staging-directory rename (harper#2012).
+		for (const handle of targetHandles.reverse()) {
+			try {
+				handle.close();
+			} catch (error) {
+				console.error('Error closing migration target store', error);
+			}
+		}
 	}
 
 	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder?) {
 		let recordsCopied = 0;
 		let skippedRecord = 0;
+		let firstVersioned;
+		// keys (normalized for compound keys) of source records with no version, deliberately
+		// encoded plain — the verification sweep exempts them by key, never by byte sniffing
+		const versionlessKeys = new Set();
 		const MAX_RETRIES = 1000;
 		let retries = MAX_RETRIES;
 		let start = null;
@@ -626,18 +798,31 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 							// lastMetadata is set by RecordEncoder.decode for unpatched stores;
 							// entry fields are set by handleLocalTimeForGets for patched stores
 							const sourceMeta = lastMetadata;
-							setNextEncoding(
-								version,
-								entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
-								entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
-								entryNodeId ?? sourceMeta?.nodeId ?? -1,
-								entryResidencyId ?? sourceMeta?.residencyId ?? 0
-							);
+							if (version) {
+								setNextEncoding(
+									version,
+									entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
+									entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
+									entryNodeId ?? sourceMeta?.nodeId ?? -1,
+									entryResidencyId ?? sourceMeta?.residencyId ?? 0
+								);
+							} else {
+								// A flags-word-only prefix (no leading timestamp) is misparsed by the RocksDB
+								// decode heuristic (8 bytes consumed as a timestamp), so a version-less source
+								// record must be encoded plain; the read path repairs its prototype (#2012).
+								// Cleared even though the plain-encode hook would not consume stale globals:
+								// they may have leaked from a prior record whose encode was skipped or threw.
+								clearNextEncoding();
+								versionlessKeys.add(typeof key === 'object' ? JSON.stringify(key) : key);
+							}
 							written = encodeBlobsWithFilePath(
 								() => targetDbi.put(key, value, version),
 								typeof key === 'number' ? key : recordsCopied,
 								sourceRootStore
 							);
+							// Capture the put promise so the tripwire awaits THIS record's write, not
+							// an ordering assumption about later puts in the batch.
+							if (version) firstVersioned ??= { key, version, written };
 							// Feed only the record's SHAPE to the observer so it accumulates the canonical
 							// classic structure (key list) for this shape; the encoded output is discarded.
 							// A classic/named structure depends only on the keys, so we stub every leaf value
@@ -694,7 +879,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 					}
 				}
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
-				return;
+				return { firstVersioned, versionlessKeys };
 			} catch (err) {
 				console.error(
 					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retries} retries left):`,
@@ -702,11 +887,15 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				);
 				if (typeof start === 'string') {
 					if (start === 'z') {
-						return console.error('Reached end of dbi', start, 'for', sourceDatabase);
+						console.error('Reached end of dbi', start, 'for', sourceDatabase);
+						return;
 					}
 					start = start.slice(0, -2) + 'z';
 				} else if (typeof start === 'number') start++;
-				else return console.error('Unknown key type', start, 'for', sourceDatabase);
+				else {
+					console.error('Unknown key type', start, 'for', sourceDatabase);
+					return;
+				}
 			}
 		}
 		// Fail loudly so migrateOnStart's try/catch preserves the migrateOnStart flag and

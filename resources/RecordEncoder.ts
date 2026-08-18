@@ -158,7 +158,11 @@ export class RecordEncoder extends StructonEncoder {
 		if (!options.randomAccessStructure) this._writeStruct = () => 0;
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
-			if (!this.useVersions) {
+			// Explicit opt-out only: `this` may be a foreign encoder this hook was grafted onto
+			// (copyDb patches the migration target's plain msgpackr encoder with it), where
+			// useVersions is undefined. Treating undefined as non-versioned silently stripped the
+			// metadata prefix from every LMDB→RocksDB migrated record (harper#2012).
+			if (this.useVersions === false) {
 				// harper#1307: this store does not carry version metadata, so it never prefixes its records.
 				// Encode plainly and LEAVE any in-flight *NextEncoding globals untouched for their real owner:
 				// they belong to a versioned write (recordUpdater staged the primary's metadata and a nested
