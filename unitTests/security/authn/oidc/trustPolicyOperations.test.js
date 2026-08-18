@@ -337,6 +337,25 @@ describe('oidc trustPolicyOperations', () => {
 			assert.match(listed.invalid_reason, /inactive/);
 		});
 
+		// Precedence: when a row is both malformed AND names a missing user, the shape problem is the
+		// one reported. It is the more fundamental complaint — the row would be refused even if the
+		// user were restored — and without this case the `continue` implementing it can be mutated to
+		// a no-op with every test still green.
+		it('reports the shape problem, not the user, when a row has both', async () => {
+			installed.mock.rows.set('both', {
+				id: 'both',
+				issuer: ISSUER,
+				audience: AUDIENCE,
+				claims: { ...VALID_CLAIMS },
+				user: 'ghost-user',
+				operations: 'deploy_component',
+			});
+
+			const listed = (await listOidcTrust(su('list_oidc_trust'))).policies.find((p) => p.id === 'both');
+			assert.match(listed.invalid_reason, /operations/, 'the shape problem is the more fundamental one');
+			assert.doesNotMatch(listed.invalid_reason, /ghost-user/);
+		});
+
 		it('leaves a well-formed policy unannotated', async () => {
 			await addOidcTrust(su('add_oidc_trust', validPolicy()));
 			const listed = (await listOidcTrust(su('list_oidc_trust'))).policies.find(
