@@ -20,6 +20,7 @@ module.exports = {
 	UserEventMsg,
 };
 let serverItcHandlers;
+const STRICT_COORDINATOR_ACK_TIMEOUT_MS = 60000;
 onMessageFromWorkers(async (event, sender) => {
 	const requestId = event?.requestId;
 	let handlerError;
@@ -68,7 +69,9 @@ function sendItcEventStrict(event) {
 	stampOriginator(event);
 	if (isMainThread) return broadcastWithStrictAcknowledgement(event);
 	event.relayStrictToWorkers = true;
-	return sendToThreadWithStrictAcknowledgement(0, event);
+	// The main thread first prepares itself and then runs its own 30-second worker broadcast.
+	// The worker-to-main deadline must cover both phases rather than racing the nested deadline.
+	return sendToThreadWithStrictAcknowledgement(0, event, STRICT_COORDINATOR_ACK_TIMEOUT_MS);
 }
 
 function stampOriginator(event) {

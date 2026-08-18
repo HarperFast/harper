@@ -6,6 +6,7 @@ const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const { table, database, databases, getDatabases, resetDatabases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
+const { THREAD_TYPES } = require('#src/utility/hdbTerms');
 const {
 	startWorker,
 	onMessageByType,
@@ -23,7 +24,7 @@ function defineTable(name, withEmbed = false) {
 	return table({ table: name, database: 'test', attributes });
 }
 
-function startDropWorker(workerIndex, threadCount) {
+function startDropWorker(workerIndex, threadCount, name = 'drop-table-quiescence-test') {
 	const queued = new Map();
 	const waiting = new Map();
 	const errors = [];
@@ -46,7 +47,12 @@ function startDropWorker(workerIndex, threadCount) {
 	};
 	const receive = (message) => {
 		if (message.type !== MESSAGE_TYPE) return;
-		if (message.event === 'command-error' || message.event === 'unhandled-rejection') {
+		if (
+			message.event === 'command-error' ||
+			message.event === 'unhandled-rejection' ||
+			message.event === 'read-rejected' ||
+			message.event === 'transaction-rejected'
+		) {
 			errors.push(message);
 			fail(new Error(message.error));
 			return;
@@ -61,7 +67,7 @@ function startDropWorker(workerIndex, threadCount) {
 	};
 	const booted = nextEvent('booted');
 	const worker = startWorker(WORKER_FIXTURE, {
-		name: 'drop-table-quiescence-test',
+		name,
 		workerIndex,
 		threadCount,
 		autoRestart: false,
@@ -126,6 +132,7 @@ describe('dropTable worker quiescence', function () {
 			return originalDropSync.apply(this, args);
 		};
 		const dropPromise = Table.dropTable();
+		for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
 		let earlyError;
 		try {
 			assert.strictEqual(
@@ -180,6 +187,34 @@ describe('dropTable worker quiescence', function () {
 		);
 	});
 
+	it('retries preparation on a class already removed from the live schema', async function () {
+		const tableName = `DropPreparationRetry_${process.pid}_${Date.now()}`;
+		const Table = defineTable(tableName);
+		const rootStore = Table.primaryStore.rootStore;
+		const originalPrepareDrop = Table._prepareDrop;
+		let firstPreparation = true;
+		Table._prepareDrop = async function (options) {
+			await originalPrepareDrop.call(this, options);
+			if (firstPreparation) {
+				firstPreparation = false;
+				throw new Error('injected local preparation failure');
+			}
+		};
+
+		await assert.rejects(() => Table.dropTable(), /injected local preparation failure/);
+		assert.strictEqual(databases.test?.[tableName], undefined);
+		assert.ok(rootStore.columns.some((column) => column.startsWith(`${tableName}/`)));
+		assert.throws(
+			() => Table._readTxnForContext({}),
+			(error) => error?.code === 'ERR_TABLE_DROPPING',
+			'a stale table-class reference must not admit a new read after preparation starts'
+		);
+
+		Table._prepareDrop = originalPrepareDrop;
+		await Table.dropTable();
+		assert.ok(!rootStore.columns.some((column) => column.startsWith(`${tableName}/`)));
+	});
+
 	it('fails closed when a worker cannot quiesce', async function () {
 		this.timeout(30000);
 		const tableName = `DropQuiescenceFailure_${process.pid}_${Date.now()}`;
@@ -222,6 +257,82 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
+	it('drains a remote staged transaction before a worker-originated drop', async function () {
+		this.timeout(30000);
+		const tableName = `DropRemoteTransaction_${process.pid}_${Date.now()}`;
+		defineTable(tableName);
+		let origin;
+		let remote;
+		try {
+			remote = startDropWorker(1, 3);
+			origin = startDropWorker(2, 3, THREAD_TYPES.JOB);
+			await Promise.all([remote.booted, origin.booted]);
+			remote.send('initialize', { table: tableName });
+			origin.send('initialize', { table: tableName });
+			await Promise.all([remote.nextEvent('ready'), origin.nextEvent('ready')]);
+
+			remote.send('begin-transaction', { id: 'remote-staged' });
+			await remote.nextEvent('transaction-staged');
+			const dropResultPromise = origin.nextEvent('drop-result');
+			let dropSettled = false;
+			dropResultPromise.then(() => {
+				dropSettled = true;
+			});
+			origin.send('drop-table');
+			await remote.nextEvent('prepare-entered');
+			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+			assert.strictEqual(dropSettled, false, 'the drop must wait for the remote transaction');
+
+			remote.send('release-transaction');
+			await remote.nextEvent('transaction-resolved');
+			const prepared = await remote.nextEvent('prepare-finished');
+			assert.strictEqual(prepared.handlesClosed, true);
+			const dropResult = await dropResultPromise;
+			assert.strictEqual(dropResult.outcome, 'resolved');
+			assert.deepStrictEqual([...origin.errors, ...remote.errors], []);
+		} finally {
+			await Promise.all([origin?.shutdown(), remote?.shutdown()]);
+		}
+	});
+
+	it('drains a remote read iterator before closing its handles', async function () {
+		this.timeout(30000);
+		const tableName = `DropRemoteRead_${process.pid}_${Date.now()}`;
+		defineTable(tableName);
+		let origin;
+		let remote;
+		try {
+			remote = startDropWorker(1, 3);
+			origin = startDropWorker(2, 3, THREAD_TYPES.JOB);
+			await Promise.all([remote.booted, origin.booted]);
+			remote.send('initialize', { table: tableName });
+			origin.send('initialize', { table: tableName });
+			await Promise.all([remote.nextEvent('ready'), origin.nextEvent('ready')]);
+
+			remote.send('begin-read');
+			await remote.nextEvent('read-open');
+			const dropResultPromise = origin.nextEvent('drop-result');
+			let dropSettled = false;
+			dropResultPromise.then(() => {
+				dropSettled = true;
+			});
+			origin.send('drop-table');
+			await remote.nextEvent('prepare-entered');
+			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+			assert.strictEqual(dropSettled, false, 'the drop must wait for the remote iterator');
+
+			remote.send('release-read');
+			await remote.nextEvent('read-resolved');
+			const prepared = await remote.nextEvent('prepare-finished');
+			assert.strictEqual(prepared.handlesClosed, true);
+			const dropResult = await dropResultPromise;
+			assert.strictEqual(dropResult.outcome, 'resolved');
+			assert.deepStrictEqual([...origin.errors, ...remote.errors], []);
+		} finally {
+			await Promise.all([origin?.shutdown(), remote?.shutdown()]);
+		}
+	});
+
 	it('quiesces a remote source-cache write and recovers after the column family is already gone', async function () {
 		this.timeout(30000);
 		const tableName = `DropWorkerRace_${process.pid}_${Date.now()}`;
@@ -233,10 +344,10 @@ describe('dropTable worker quiescence', function () {
 
 		try {
 			remote = startDropWorker(1, 3);
-			origin = startDropWorker(2, 3);
+			origin = startDropWorker(2, 3, THREAD_TYPES.JOB);
 			await Promise.all([remote.booted, origin.booted]);
-			remote.send('initialize', { table: tableName });
-			origin.send('initialize', { table: tableName });
+			remote.send('initialize', { table: tableName, withEmbed: true });
+			origin.send('initialize', { table: tableName, withEmbed: true });
 			const readyWorkers = await Promise.all([remote.nextEvent('ready'), origin.nextEvent('ready')]);
 			assert.deepStrictEqual(
 				readyWorkers.map((message) => message.processInstanceId),

@@ -268,7 +268,7 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 		assert.strictEqual(dropResolved, true, 'dropTable() should resolve once the pending write has landed');
 	});
 
-	it('does not start a new cache write once dropTable() has begun (late admission during the drain)', async function () {
+	it('does not admit a new cache read once dropTable() has begun', async function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
 
@@ -306,23 +306,13 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 
 		const dropPromise = TestTable.dropTable();
 
-		// A get() admitted while the drop is draining must still return fresh source data...
-		const lateResult = await TestTable.get('late', {});
-		assert.ok(lateSourceCalled, 'the source should still be consulted for a late-admitted read');
-		assert.strictEqual(lateResult.name, 'value');
-		// ...but must not have started a new cache write into a table that's being dropped. The
-		// get() call itself resolves before its own cache write would land (that's the whole
-		// bug this file covers), so a correctly-blocked write and one that merely hasn't landed
-		// YET look identical immediately after the await above. Give a generous, bounded window
-		// for an (incorrectly) unblocked local write to land - the drop itself is still parked on
-		// the gated first write, so this checks storage well before any column family is
-		// touched, not a race against the drop.
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		assert.strictEqual(
-			TestTable.primaryStore.getSync('late'),
-			undefined,
-			'a get() admitted after dropTable() started must not cache its result'
+		assert.throws(
+			() => TestTable.get('late', {}),
+			(error) => error?.code === 'ERR_TABLE_DROPPING',
+			'a read arriving after the drain boundary must fail before opening a transaction'
 		);
+		assert.strictEqual(lateSourceCalled, false, 'the source must not be consulted after drop preparation begins');
+		assert.strictEqual(TestTable.primaryStore.getSync('late'), undefined, 'a rejected read must not cache a result');
 
 		releaseFirst();
 		await firstGetPromise;

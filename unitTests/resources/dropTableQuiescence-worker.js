@@ -4,12 +4,15 @@ require('../testUtils');
 const { parentPort } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table, closeLoadedDatabases } = require('#src/resources/databases');
+const { transaction } = require('#src/resources/transaction');
 const { onMessageByType, getProcessInstanceId } = require('#js/server/threads/manageThreads');
 
 const MESSAGE_TYPE = 'drop-table-quiescence-test';
 const CONTROL_TYPE = 'drop-table-quiescence-control';
 let TestTable;
 let releaseEmbed;
+let releaseRead;
+let releaseTransaction;
 
 function report(event, details = {}) {
 	parentPort.postMessage({ type: MESSAGE_TYPE, event, ...details });
@@ -29,27 +32,29 @@ function runWorkerFixture() {
 			try {
 				switch (message.command) {
 					case 'initialize': {
+						const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'name' }];
+						if (message.withEmbed) {
+							attributes.push({ name: 'vector', type: 'Array', embed: { source: 'name', model: 'unused' } });
+						}
 						TestTable = table({
 							table: message.table,
 							database: 'test',
-							attributes: [
-								{ name: 'id', isPrimaryKey: true },
-								{ name: 'name' },
-								{ name: 'vector', type: 'Array', embed: { source: 'name', model: 'unused' } },
-							],
+							attributes,
 						});
-						const embedGate = new Promise((resolve) => {
-							releaseEmbed = resolve;
-						});
-						TestTable.setEmbedAttribute('vector', async () => {
-							report('embed-entered');
-							await embedGate;
-							return [1, 2, 3];
-						});
-						TestTable.sourcedFrom({
-							get: async (id) => ({ id, name: 'gated' }),
-							available: () => true,
-						});
+						if (message.withEmbed) {
+							const embedGate = new Promise((resolve) => {
+								releaseEmbed = resolve;
+							});
+							TestTable.setEmbedAttribute('vector', async () => {
+								report('embed-entered');
+								await embedGate;
+								return [1, 2, 3];
+							});
+							TestTable.sourcedFrom({
+								get: async (id) => ({ id, name: 'gated' }),
+								available: () => true,
+							});
+						}
 
 						if (typeof TestTable._prepareDrop === 'function') {
 							const prepareDrop = TestTable._prepareDrop;
@@ -76,6 +81,53 @@ function runWorkerFixture() {
 						break;
 					case 'release-embed':
 						releaseEmbed();
+						break;
+					case 'begin-transaction': {
+						const context = {};
+						const transactionGate = new Promise((resolve) => {
+							releaseTransaction = resolve;
+						});
+						transaction(context, async () => {
+							await TestTable.put({ id: message.id, name: 'pending' }, context);
+							report('transaction-staged');
+							await transactionGate;
+						}).then(
+							() => report('transaction-resolved'),
+							(error) => report('transaction-rejected', { error: error?.stack ?? String(error) })
+						);
+						break;
+					}
+					case 'release-transaction':
+						releaseTransaction();
+						break;
+					case 'begin-read': {
+						const context = {};
+						const readGate = new Promise((resolve) => {
+							releaseRead = resolve;
+						});
+						transaction(context, async (dbTransaction) => {
+							TestTable._readTxnForContext(context);
+							const readTransaction = dbTransaction.useReadTxn();
+							const iterator = TestTable.primaryStore
+								.getRange({ start: false, transaction: readTransaction })
+								[Symbol.iterator]();
+							iterator.next();
+							report('read-open');
+							await readGate;
+							try {
+								iterator.next();
+							} finally {
+								iterator.return?.();
+								dbTransaction.doneReadTxn();
+							}
+						}).then(
+							() => report('read-resolved'),
+							(error) => report('read-rejected', { error: error?.stack ?? String(error) })
+						);
+						break;
+					}
+					case 'release-read':
+						releaseRead();
 						break;
 					case 'reject-prepare':
 						TestTable._prepareDrop = async () => {

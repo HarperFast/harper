@@ -379,6 +379,7 @@ const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
 // resolved, so a resolution can only ever identify the outer path+table key,
 // never the specific spent generation to target.
 const interruptedDropAttempts = new Map<string, Map<string, number>>();
+const incompleteTableDropPreparations = new Map<string, Set<any>>();
 const interruptedDropTableKey = (storePath: string, tableName: string) => `${storePath}\0${tableName}`;
 function getInterruptedDropAttempts(storePath: string, tableName: string, generation?: string): number {
 	return interruptedDropAttempts.get(interruptedDropTableKey(storePath, tableName))?.get(generation ?? 'legacy') ?? 0;
@@ -2398,27 +2399,36 @@ function canCompleteInterruptedDrop(primaryMeta): boolean {
 	);
 }
 
-/**
- * Mark and drain every worker-local class backed by this physical table. The drop origin keeps
- * its own handles so it can perform the destructive phase; remote workers close theirs after the
- * drain so no stale handle can later contaminate RocksDB's shared write path.
- */
 export async function prepareTableDrop(
 	storePath: string,
 	tableName: string,
 	dropGeneration: string | undefined,
 	preserveTable?: any
 ): Promise<void> {
-	const matchingTables = new Set<any>();
+	const preparationKey = `${storePath}\0${tableName}\0${dropGeneration ?? 'legacy'}`;
+	let matchingTables = incompleteTableDropPreparations.get(preparationKey);
+	if (!matchingTables) incompleteTableDropPreparations.set(preparationKey, (matchingTables = new Set()));
+	if (preserveTable) matchingTables.add(preserveTable);
 	for (const databaseName of Object.getOwnPropertyNames(databases)) {
 		const databaseTables = databases[databaseName];
 		const Table = databaseTables?.[tableName];
 		if (!Table || Table.primaryStore?.rootStore?.path !== storePath) continue;
 		const primaryMeta = Table.dbisDB?.getSync?.(`${tableName}/`);
-		if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) continue;
+		if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) {
+			throw new ClientError(
+				`Drop generation does not match on this worker for ${databaseName}.${tableName}; refusing to acknowledge preparation`,
+				409
+			);
+		}
 		matchingTables.add(Table);
 	}
-	await Promise.all([...matchingTables].map((Table) => Table._prepareDrop({ closeStores: Table !== preserveTable })));
+	await Promise.all(
+		[...matchingTables].map(async (Table) => {
+			await Table._prepareDrop({ closeStores: Table !== preserveTable });
+			matchingTables.delete(Table);
+		})
+	);
+	if (!matchingTables.size) incompleteTableDropPreparations.delete(preparationKey);
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {

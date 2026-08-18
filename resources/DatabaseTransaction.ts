@@ -162,6 +162,16 @@ export function getPendingWriteResolutions(stores: Iterable<any>): Promise<void>
 	}
 	return resolutions;
 }
+
+export function getPendingReadResolutions(rootStore: any): Promise<void>[] {
+	const resolutions: Promise<void>[] = [];
+	for (const transaction of trackedTxns) {
+		if ((transaction.db as any)?.rootStore !== rootStore) continue;
+		const resolution = transaction.getPendingReadResolution();
+		if (resolution) resolutions.push(resolution);
+	}
+	return resolutions;
+}
 // Once per process: committing under open read iterators forces a write replay, so the warning is
 // about the caller's pattern, not the individual commit.
 let replayedWritesWarned = false;
@@ -350,6 +360,9 @@ export class DatabaseTransaction implements Transaction {
 	#context: Context;
 	#pendingWriteResolution?: Promise<void>;
 	#resolvePendingWrites?: () => void;
+	#pendingReadResolution?: Promise<void>;
+	#resolvePendingReads?: () => void;
+	#trackedForDropDrain = false;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
@@ -513,6 +526,7 @@ export class DatabaseTransaction implements Transaction {
 			// discards nothing — the replay re-staged the writes AND their audit/txn-log entries
 			// into its own transaction; this handle's never-committed log batch dies with it.
 			const transaction = this.detachOwnedTransaction();
+			this.finishPendingReads();
 			try {
 				transaction?.abort();
 			} catch (error) {
@@ -539,6 +553,7 @@ export class DatabaseTransaction implements Transaction {
 		} catch (error) {
 			harperLogger.debug?.('releasing timed-out read transaction', error);
 		}
+		this.finishPendingReads();
 		this.completeDeferredContextRelease();
 	}
 
@@ -581,7 +596,10 @@ export class DatabaseTransaction implements Transaction {
 			error.code = 'ERR_TABLE_DROPPING';
 			throw error;
 		}
-		if (operation.store?.rootStore instanceof RocksDatabase) activeWriteTransactions.add(this);
+		if (!this.#trackedForDropDrain && operation.store?.rootStore instanceof RocksDatabase) {
+			this.#trackedForDropDrain = true;
+			activeWriteTransactions.add(this);
+		}
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
 		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
@@ -609,11 +627,26 @@ export class DatabaseTransaction implements Transaction {
 		return this.#pendingWriteResolution;
 	}
 
+	getPendingReadResolution(): Promise<void> | undefined {
+		if (!this.transaction || !(this.readTxnsUsed > 0)) return;
+		this.#pendingReadResolution ??= new Promise((resolve) => {
+			this.#resolvePendingReads = resolve;
+		});
+		return this.#pendingReadResolution;
+	}
+
 	private finishPendingWrites(): void {
 		activeWriteTransactions.delete(this);
+		this.#trackedForDropDrain = false;
 		this.#resolvePendingWrites?.();
 		this.#pendingWriteResolution = undefined;
 		this.#resolvePendingWrites = undefined;
+	}
+
+	private finishPendingReads(): void {
+		this.#resolvePendingReads?.();
+		this.#pendingReadResolution = undefined;
+		this.#resolvePendingReads = undefined;
 	}
 
 	/**
@@ -938,6 +971,7 @@ export class DatabaseTransaction implements Transaction {
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
 					this.detachOwnedTransaction(); // any further operations operate immediately
+					this.finishPendingReads();
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
@@ -1223,6 +1257,7 @@ export class DatabaseTransaction implements Transaction {
 			// loop cannot spin on a nulled handle. Not to avoid a double abort: rocksdb-js tolerates
 			// abort-after-abort, and it is abort-after-COMMIT that throws.
 			const detached = txn.detachOwnedTransaction();
+			txn.finishPendingReads();
 			const committingTransaction = txn === this ? headTransaction : detached;
 			try {
 				committingTransaction?.abort();
@@ -1305,6 +1340,7 @@ export class DatabaseTransaction implements Transaction {
 			}
 			throw error;
 		} finally {
+			this.finishPendingReads();
 			this.finishPendingWrites();
 		}
 		this.detachOwnedTransaction();

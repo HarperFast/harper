@@ -758,10 +758,9 @@ function broadcastAwaitingAcknowledgements(message, timeout, strict, includeJobW
 			} else resolve();
 		};
 		for (let port of ports) {
-			// Job workers run a single isolated task and exit; they don't participate in
-			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
-			// the job worker's ACK while the job worker's event loop is busy waiting for the
-			// same broadcast to complete (re-entrant schema change triggered by the job op).
+			// Ordinary post-change gossip excludes transient job workers. Strict pre-change barriers
+			// include them because a job can hold the same native handles; the main-thread relay keeps
+			// a job-originated async schema operation re-entrant while it awaits its own ACK.
 			if (port.isJobWorker && !includeJobWorkers) continue;
 			let referenced = false;
 			let requestId = nextId++;

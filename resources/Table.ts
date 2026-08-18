@@ -39,6 +39,7 @@ import {
 	priorStagedWrite,
 	isReleasedTransaction,
 	TRANSACTION_STATE,
+	getPendingReadResolutions,
 	getPendingWriteResolutions,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -412,11 +413,17 @@ export function makeTable(options) {
 	const tableStores = () => [...Object.values(indices), primaryStore].filter(Boolean);
 	const markTableDropping = () => {
 		droppingTable = true;
-		for (const store of tableStores()) (store as any).dropping = true;
+		if (isRocksDB) {
+			for (const store of tableStores()) (store as any).dropping = true;
+		}
 		delete databases[databaseName]?.[tableName];
 	};
-	const drainTableWrites = async () => {
-		const pending = new Set<Promise<any>>([...pendingSourceCommits, ...getPendingWriteResolutions(tableStores())]);
+	const drainTableOperations = async () => {
+		const pending = new Set<Promise<any>>([
+			...pendingSourceCommits,
+			...getPendingWriteResolutions(tableStores()),
+			...getPendingReadResolutions(primaryStore.rootStore),
+		]);
 		if (!pending.size) return;
 		let timer: NodeJS.Timeout;
 		const timedOut = Symbol('timedOut');
@@ -429,7 +436,7 @@ export function makeTable(options) {
 		clearTimeout(timer);
 		if (result === timedOut) {
 			throw new Error(
-				`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.size} in-flight write(s) on ${tableName} to settle; refusing to drop the column families. The drop tombstone is durable, so recovery can retry after a clean restart.`
+				`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.size} in-flight operation(s) on ${tableName} to settle; refusing to drop the column families. The drop tombstone is durable, so recovery can retry after a clean restart.`
 			);
 		}
 	};
@@ -1395,12 +1402,21 @@ export function makeTable(options) {
 
 		static async _prepareDrop({ closeStores = true } = {}) {
 			markTableDropping();
-			dropPreparation ??= drainTableWrites();
+			dropPreparation ??= drainTableOperations().catch((error) => {
+				dropPreparation = undefined;
+				throw error;
+			});
 			await dropPreparation;
 			if (closeStores && !coordinatingDrop) closeTableStores();
 		}
 
 		static async dropTable() {
+			if (storesClosed) {
+				throw new ServerError(
+					`Cannot retry dropping ${databaseName}.${tableName} through closed handles; restart Harper to resume the durable drop`,
+					503
+				);
+			}
 			const rootStore = primaryStore.rootStore;
 			const sharedRocksStore = databaseName === databasePath && rootStore instanceof RocksDatabase;
 			let dropGeneration: string | undefined;
@@ -1425,14 +1441,24 @@ export function makeTable(options) {
 				if (sharedRocksStore) {
 					await prepareTableDrop(rootStore.path, tableName, dropGeneration, TableResource);
 					locallyQuiesced = true;
-					await signalling.signalTableDropPreparation({
-						originator: process.pid,
-						operation: TABLE_DROP_PREPARE_OPERATION,
-						schema: databaseName,
-						table: tableName,
-						path: rootStore.path,
-						dropGeneration,
-					});
+					try {
+						await signalling.signalTableDropPreparation({
+							originator: process.pid,
+							operation: TABLE_DROP_PREPARE_OPERATION,
+							schema: databaseName,
+							table: tableName,
+							path: rootStore.path,
+							dropGeneration,
+						});
+					} catch (error) {
+						const quiescenceError: any = new ServerError(
+							`Unable to quiesce every worker before dropping ${databaseName}.${tableName}; the table remains unavailable but its storage was not dropped. Restart Harper before retrying. ${error.message}`,
+							503
+						);
+						quiescenceError.code = error.code;
+						quiescenceError.cause = error;
+						throw quiescenceError;
+					}
 				} else {
 					await TableResource._prepareDrop({ closeStores: false });
 					locallyQuiesced = true;
@@ -1443,6 +1469,8 @@ export function makeTable(options) {
 				}
 
 				if (databaseName === databasePath) {
+					// Keep the tombstone until every column family is gone; reversing this order can orphan
+					// an undiscoverable "ghost" family when a drop fails partway through.
 					const removeTombstonedCatalog = () => {
 						const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
 						if (!currentPrimary?.dropping || currentPrimary.dropGeneration !== dropGeneration) return false;
@@ -1453,6 +1481,8 @@ export function makeTable(options) {
 						return true;
 					};
 					if (rootStore instanceof RocksDatabase) {
+						// Concurrent creates take this synchronous spin lock too. Nothing in the locked section
+						// may await, or this worker can deadlock the process while the lock owner needs its event loop.
 						while (!rootStore.tryLock('update-attributes')) {}
 						let removed = false;
 						try {
@@ -5590,6 +5620,11 @@ export function makeTable(options) {
 		}
 	}
 	function txnForContext(context: Context) {
+		if (isRocksDB && droppingTable) {
+			const error: any = new ServerError(`Table ${databaseName}.${tableName} is being dropped`, 409);
+			error.code = 'ERR_TABLE_DROPPING';
+			throw error;
+		}
 		let transaction = context?.transaction;
 		if (isReleasedTransaction(transaction)) transaction = undefined;
 		if (transaction) {
