@@ -718,8 +718,9 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 }
 
 // Destructive work uses the strict variant: every connected thread, including jobs, must finish
-// its handler successfully. A timeout, disconnect, handler error, or post failure rejects so the
-// caller can leave its durable recovery marker in place without touching storage.
+// its handler successfully or exit completely. A timeout, ambiguous MessagePort disconnect,
+// handler error, or post failure rejects so the caller can leave its durable recovery marker in
+// place without touching storage.
 function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
 	return broadcastAwaitingAcknowledgements(message, timeout, true, true, connectedPorts, true);
 }
@@ -779,20 +780,21 @@ function broadcastAwaitingAcknowledgements(
 			// include them because a job can hold the same native handles; the main-thread relay keeps
 			// a job-originated async schema operation re-entrant while it awaits its own ACK.
 			if (port.isJobWorker && !includeJobWorkers) continue;
+			const targetThreadId = port.threadId;
 			let referenced = false;
 			let requestId = nextId++;
-			const ackHandler = (acknowledgement) => {
+			const ackHandler = (acknowledgement, threadExited = false) => {
 				if (!pending.delete(ackHandler)) return; // already settled for this port
 				awaitingResponses.delete(requestId);
 				if (strict) {
 					const ackError = acknowledgement?.error;
 					if (ackError) {
 						failures.push({
-							threadId: port.threadId,
+							threadId: targetThreadId,
 							message: ackError.message ?? String(ackError),
 						});
-					} else if (!acknowledgement) {
-						failures.push({ threadId: port.threadId, message: 'worker disconnected before acknowledging' });
+					} else if (!acknowledgement && !threadExited) {
+						failures.push({ threadId: targetThreadId, message: 'worker disconnected before acknowledging' });
 					}
 				}
 				waitingCount--;
@@ -800,6 +802,7 @@ function broadcastAwaitingAcknowledgements(
 				finish();
 			};
 			ackHandler.port = port;
+			ackHandler.threadId = targetThreadId;
 			pending.add(ackHandler);
 			waitingCount++;
 			awaitingResponses.set((message.requestId = requestId), ackHandler);
@@ -810,10 +813,13 @@ function broadcastAwaitingAcknowledgements(
 				if (!port.hasAckCloseListener) {
 					// just set a single close listener that can clean up all the ack handlers for a port that is closed
 					port.hasAckCloseListener = true;
-					port.on(port.close ? 'close' : 'exit', () => {
+					const disconnectEvent = port.close ? 'close' : 'exit';
+					port.on(disconnectEvent, () => {
 						for (let [, ackHandler] of awaitingResponses) {
 							if (ackHandler.port === port) {
-								ackHandler();
+								// A Worker exit means the thread can no longer use its stale handles. A sibling
+								// MessagePort can close while its owning thread remains alive, so that stays a NACK.
+								ackHandler(undefined, disconnectEvent === 'exit');
 							}
 						}
 					});
@@ -831,7 +837,7 @@ function broadcastAwaitingAcknowledgements(
 				timer = undefined;
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
-					stuck.push(ackHandler.port?.threadId);
+					stuck.push(ackHandler.threadId);
 					ackHandler({ error: { message: `no acknowledgement within ${timeout}ms` } });
 				}
 				harperLogger.warn(

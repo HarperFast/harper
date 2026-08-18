@@ -473,6 +473,44 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
+	it('continues after a worker fully exits during preparation', async function () {
+		this.timeout(30000);
+		const tableName = `DropWorkerExit_${process.pid}_${Date.now()}`;
+		const Table = defineTable(tableName);
+		const rootStore = Table.primaryStore.rootStore;
+		const dbisDb = database({ database: 'test', table: null }).dbisDb;
+		let remote;
+		try {
+			remote = startDropWorker(1, 2);
+			await remote.booted;
+			remote.send('initialize', { table: tableName });
+			await remote.nextEvent('ready');
+			remote.send('begin-transaction', { id: 'exiting-worker-staged' });
+			await remote.nextEvent('transaction-staged');
+
+			const dropPromise = Table.dropTable();
+			await remote.nextEvent('prepare-entered');
+			remote.worker.wasShutdown = true;
+			await remote.worker.terminate();
+			remote = undefined;
+			await dropPromise;
+
+			assert.ok(
+				!rootStore.columns.some((column) => column.startsWith(`${tableName}/`)),
+				'a fully exited worker can no longer issue writes through its stale handles'
+			);
+		} finally {
+			await shutdownWorkers(remote);
+			const tombstone = dbisDb.getSync(`${tableName}/`);
+			if (tombstone?.dropping) {
+				tombstone.dropProcessInstance = `${getProcessInstanceId()}-prior`;
+				dbisDb.putSync(`${tableName}/`, tombstone);
+				resetDatabases();
+				getDatabases();
+			}
+		}
+	});
+
 	it('drains a remote staged transaction before a worker-originated drop', async function () {
 		this.timeout(30000);
 		const tableName = `DropRemoteTransaction_${process.pid}_${Date.now()}`;
