@@ -487,6 +487,26 @@ function tokenScopeDenial(userObject: any, apiOperation: string) {
 	return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(apiOperation));
 }
 
+/**
+ * A scope naming `sql` grants the SQL interface, not unrestricted DML through it.
+ *
+ * `read_only` expands to include `sql` — the group defers DML enforcement to table CRUD permissions
+ * (see its note in operationPermissions.ts) — but verifyPermsAST returns null outright for a
+ * super_user before any table check runs. Without this, a token scoped to `read_only` could DELETE,
+ * which is the one thing that name promises it cannot do.
+ *
+ * So a write statement additionally requires its matching data operation in scope. That is exactly
+ * what separates `read_only` (no insert/update/delete) from `standard_user` (all three), with no
+ * need to track which group admitted `sql`. A bare `['sql']` therefore admits SELECT only; name the
+ * write operations alongside it to allow more. Anything that is not a recognized SELECT falls
+ * through to the same check and is denied unless named, so an unfamiliar statement type fails closed.
+ */
+function sqlWriteScopeDenial(userObject: any, sqlVariant: string) {
+	if (userObject?.tokenOperations == null) return undefined;
+	if (sqlVariant === terms.VALID_SQL_OPS_ENUM.SELECT) return undefined;
+	return tokenScopeDenial(userObject, sqlVariant);
+}
+
 export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.OPERATIONS_ENUM.SQL) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
@@ -507,7 +527,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 	// `sql` for a direct SQL call but `export_local`/`export_to_s3` for a job whose inner
 	// search_operation is SQL. Checking a hardcoded `sql` would let a token scoped only to `sql` start
 	// an export that its scope excludes. Ahead of the super_user bypass, as on the NoSQL path.
-	const scopeDenial = tokenScopeDenial(userObject, apiOperation);
+	const scopeDenial = tokenScopeDenial(userObject, apiOperation) ?? sqlWriteScopeDenial(userObject, operation);
 	if (scopeDenial) return scopeDenial;
 
 	try {

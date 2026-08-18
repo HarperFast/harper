@@ -133,6 +133,32 @@ describe('githubActions provider profile', () => {
 			);
 		});
 
+		// job_workflow_ref names the reusable workflow that RAN, not the caller that invoked it. Its
+		// @ref suffix is the reusable workflow's own branch and is constant however it is called, so
+		// accepting it as a ref gate would admit any branch of any caller repository that references
+		// that reusable workflow — exactly the hole the ref gate exists to close.
+		it('does not accept job_workflow_ref as a ref gate', () => {
+			assert.throws(
+				() =>
+					githubActionsProfile.assertPolicyIsSpecific({
+						repository_id: '67890',
+						job_workflow_ref: 'HarperFast/shared/.github/workflows/deploy.yml@refs/heads/main',
+					}),
+				/gate the ref/
+			);
+		});
+
+		// It remains a valid workflow pin — only the ref row rejects it.
+		it('accepts job_workflow_ref as a workflow pin alongside a real ref gate', () => {
+			assert.doesNotThrow(() =>
+				githubActionsProfile.assertPolicyIsSpecific({
+					repository_id: '67890',
+					job_workflow_ref: 'HarperFast/shared/.github/workflows/deploy.yml@refs/heads/main',
+					environment: 'production',
+				})
+			);
+		});
+
 		it('does not accept ref_type alone as a ref gate', () => {
 			assert.throws(
 				() =>

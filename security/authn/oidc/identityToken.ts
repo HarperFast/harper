@@ -98,8 +98,23 @@ export async function verifyIdentityToken(
 
 	// jsonwebtoken only enforces `exp` when present, so a token without one never expires.
 	if (typeof payload.exp !== 'number') rejectToken('token has no exp claim');
-	if (typeof payload.iat === 'number' && payload.exp - payload.iat > MAX_TOKEN_LIFETIME_SECONDS) {
+	// `iat` is REQUIRED by OIDC, and required here rather than treated as optional: skipping the
+	// ceiling when it is absent means a token carrying a distant `exp` and no `iat` is unbounded —
+	// the ceiling would silently not apply to exactly the token that most needs it.
+	if (typeof payload.iat !== 'number') rejectToken('token has no iat claim');
+
+	// Bounded against the verification clock, not only as `exp - iat`. jsonwebtoken validates `exp`
+	// and `nbf` but never rejects a future `iat`, so an issuer that shifts the whole pair forward
+	// keeps a small delta and still hands out a token valid far longer than the ceiling. Both the
+	// delta and the absolute distance to `exp` are checked; the tolerance mirrors the one given to
+	// jwt.verify so genuine clock skew is not treated as an attack.
+	const now = options.clockTimestamp ?? Math.floor(Date.now() / 1000);
+	if (payload.iat > now + CLOCK_TOLERANCE_SECONDS) rejectToken('token iat is in the future');
+	if (payload.exp - payload.iat > MAX_TOKEN_LIFETIME_SECONDS) {
 		rejectToken(`token lifetime exceeds ${MAX_TOKEN_LIFETIME_SECONDS}s`);
+	}
+	if (payload.exp - now > MAX_TOKEN_LIFETIME_SECONDS + CLOCK_TOLERANCE_SECONDS) {
+		rejectToken(`token expires more than ${MAX_TOKEN_LIFETIME_SECONDS}s from now`);
 	}
 	// No `jti` requirement: not every issuer emits one (Azure uses `uti`, others omit it), and the
 	// exchange keys replay on a hash of the token itself, which is universal.

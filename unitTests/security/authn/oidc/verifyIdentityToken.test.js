@@ -139,6 +139,28 @@ describe('verifyIdentityToken', () => {
 		await assertRejected(sign(claimsFor({ exp: NOW_SECONDS + 86_400 })));
 	});
 
+	// The ceiling is measured from `iat`, so treating `iat` as optional means a token that omits it
+	// is not bounded at all — the check would skip exactly the token that most needs it. OIDC
+	// requires the claim, so demanding it costs nothing.
+	it('rejects a token with no iat claim', async () => {
+		const { iat: _iat, ...withoutIat } = claimsFor({ exp: NOW_SECONDS + 86_400 });
+		await assertRejected(sign(withoutIat));
+	});
+
+	// jsonwebtoken validates exp and nbf but never rejects a future iat. Shifting the whole pair
+	// forward keeps `exp - iat` under the ceiling while leaving the token usable for a day, so the
+	// distance from the verification clock to `exp` has to be bounded independently.
+	it('rejects a token whose iat and exp are both shifted into the future', async () => {
+		const shifted = claimsFor({ iat: NOW_SECONDS + 86_400, exp: NOW_SECONDS + 86_700 });
+		await assertRejected(sign(shifted));
+	});
+
+	// Genuine clock skew is not an attack: an iat inside the tolerance still verifies.
+	it('accepts an iat slightly ahead of the verification clock', async () => {
+		const claims = await verify(sign(claimsFor({ iat: NOW_SECONDS + 30, exp: NOW_SECONDS + 300 })));
+		assert.strictEqual(claims.repository, 'HarperFast/my-app');
+	});
+
 	// Replay is keyed on a hash of the token itself, so `jti` is not required — which is what lets
 	// issuers that use `uti` (Azure) or omit it entirely work with no provider code.
 	it('accepts a token with no jti claim', async () => {

@@ -6,6 +6,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { getRoleByName } from './role.ts';
 import { attachScopeToUser } from './operationScope.ts';
+import { attachWorkloadIdentityToUser } from './credentialProvenance.ts';
 
 /**
  * Applies impersonation to a request. The authenticated user must be a super_user.
@@ -43,6 +44,10 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 	// acts as, so it survives impersonation. enforceDowngrade only bounds the impersonated role's
 	// permissions; without carrying the scope, a scoped super_user token would shed it by impersonating.
 	attachScopeToUser(impersonatedUser, (authenticatedUser as any).tokenOperations);
+	// Same reasoning for provenance (#2171), and the omission would be worse: impersonation returns a
+	// NEW principal, so dropping the marker here would let a workload token impersonate — even down to
+	// a lesser role — and then mint a 30-day credential that createTokens would no longer refuse.
+	attachWorkloadIdentityToUser(impersonatedUser, (authenticatedUser as any).fromWorkloadIdentity);
 
 	// Tag for audit trail
 	impersonatedUser._impersonated = true;

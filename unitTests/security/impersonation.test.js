@@ -617,6 +617,21 @@ describe('security/impersonation.ts', () => {
 			assert.deepStrictEqual(impersonated.tokenOperations, ['deploy_component']);
 		});
 
+		// Impersonation returns a NEW principal, so dropping the provenance marker would let a
+		// workload token launder it — impersonate, then mint the 30-day credential that
+		// createTokens would otherwise refuse. Carried for the same reason the scope is (#2171).
+		it('carries workload identity provenance onto the impersonated user', async () => {
+			const su = makeSuperUser();
+			su.fromWorkloadIdentity = true;
+			const impersonated = await applyImpersonation(su, INLINE_ROLE);
+			assert.strictEqual(impersonated.fromWorkloadIdentity, true);
+		});
+
+		it('marks no provenance when the authenticating token was password-minted', async () => {
+			const impersonated = await applyImpersonation(makeSuperUser(), INLINE_ROLE);
+			assert.strictEqual(impersonated.fromWorkloadIdentity, undefined);
+		});
+
 		it('adds no scope when the authenticating token was unscoped', async () => {
 			const impersonated = await applyImpersonation(makeSuperUser(), INLINE_ROLE);
 			assert.strictEqual(impersonated.tokenOperations, undefined);

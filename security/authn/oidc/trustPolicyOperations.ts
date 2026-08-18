@@ -48,8 +48,17 @@ function validate(validation: any): void {
 /**
  * A typo would otherwise fail closed at request time, in CI, with nothing to point at — so it is
  * caught here, where the reader is the administrator who wrote it. Delegates to the same helper
- * add_role/alter_role use, which accepts group names and operations registered at runtime via
- * server.registerOperation; a local OPERATIONS_ENUM check would reject those.
+ * add_role/alter_role use, so group names resolve identically rather than through a second
+ * definition that could drift.
+ *
+ * Known limitation, inherited rather than introduced: that helper's registry of runtime-registered
+ * operations is process-local, and the OPERATION_REGISTERED bridge propagates only name→thread
+ * routing, never grantability (server/serverHelpers/registeredOperations.ts). A component's
+ * `server.registerOperation` runs in a worker while this operation runs on the main thread, so an
+ * operation registered that way is NOT recognized here and a policy naming one is rejected. It
+ * fails closed — a rejected policy, never a widened one — and `add_role`, `alter_role`, and
+ * impersonation validation all share the gap, which is why the fix belongs to that bridge rather
+ * than to a local workaround here.
  */
 function assertOperationsAreKnown(operations: string[]): void {
 	const invalidOperation = validateOperations(operations);

@@ -174,6 +174,53 @@ describe('token-scoped narrowing on the SQL path', () => {
 		assert.strictEqual(denial, null);
 	});
 
+	// `read_only` expands to include `sql` — the group defers DML enforcement to table CRUD perms —
+	// but verifyPermsAST returns null outright for a super_user before any table check runs. Without
+	// a variant check, a token scoped to `read_only` could DELETE: the one thing that name promises
+	// it cannot do. A write statement must additionally name its matching data operation.
+	for (const statement of [
+		'DELETE FROM data.dog',
+		"UPDATE data.dog SET name = 'x'",
+		'INSERT INTO data.dog (id) VALUES (1)',
+	]) {
+		const variant = statement.split(' ')[0].toLowerCase();
+
+		it(`denies ${variant} SQL for a read_only scope, even for a super_user`, () => {
+			const denial = checkSql(statement, userWithScope({ super_user: true }, ['read_only']));
+			assert.ok(denial, `read_only must not admit ${variant} through SQL`);
+		});
+
+		// The same statement is admitted once the scope names the data operation — this is what
+		// separates read_only from standard_user without tracking which group admitted `sql`.
+		it(`allows ${variant} SQL when the scope names the data operation`, () => {
+			const denial = checkSql(statement, userWithScope({ super_user: true }, ['sql', variant]));
+			assert.strictEqual(denial, null, `a scope naming ${variant} may run it`);
+		});
+
+		// A write-capable non-SU role is bound by the scope too: the role permitting the write is
+		// not the question, the credential's scope is.
+		it(`denies ${variant} SQL for a write-capable non-super-user outside the scope`, () => {
+			const permission = { super_user: false, operations: ['sql', variant] };
+			assert.ok(checkSql(statement, userWithScope(permission, ['read_only'])));
+		});
+	}
+
+	it('allows write SQL through standard_user, which names the data operations', () => {
+		const denial = checkSql('DELETE FROM data.dog', userWithScope({ super_user: true }, ['standard_user']));
+		assert.strictEqual(denial, null);
+	});
+
+	// A bare ['sql'] grants the SQL interface, not unrestricted DML through it.
+	it('admits SELECT but not DELETE for a bare sql scope', () => {
+		assert.strictEqual(checkSql('SELECT * FROM data.dog', userWithScope({ super_user: true }, ['sql'])), null);
+		assert.ok(checkSql('DELETE FROM data.dog', userWithScope({ super_user: true }, ['sql'])));
+	});
+
+	// An unscoped token is unaffected: the variant gate only ever narrows a scope that exists.
+	it('is inert for write SQL when the token carries no scope', () => {
+		assert.strictEqual(checkSql('DELETE FROM data.dog', userWithScope({ super_user: true })), null);
+	});
+
 	it('is inert for a token with no scope', () => {
 		const denial = checkSql('SELECT * FROM data.dog', userWithScope({ super_user: true }));
 		assert.strictEqual(denial, null);

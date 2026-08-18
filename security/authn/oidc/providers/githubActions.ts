@@ -34,6 +34,13 @@ const SHARED_DEFAULT_AUDIENCE = /^https:\/\/github\.com\/[^/]+\/?$/i;
  * same shape of reason: `ref_type: tag` still admits any tag, and anyone with push access can create
  * one. A tag-triggered release pins `environment` and leans on GitHub's environment protection.
  *
+ * `job_workflow_ref` pins the workflow (second row) but deliberately does NOT gate the ref (third).
+ * For a reusable workflow it names the workflow that RAN, not the caller that invoked it — the
+ * caller's ref lives in `workflow_ref`/`ref`. Its `@ref` suffix therefore describes the reusable
+ * workflow's own branch, which is constant however it is called, so accepting it as a ref gate would
+ * admit any branch of any caller repository that references that reusable workflow: precisely the
+ * hole the third row exists to close.
+ *
  * `sub` is deliberately not accepted as a pin: it varies by trigger, and its format changed for
  * repositories created after 2026-07-15 (immutable subjects embed owner and repo ids).
  */
@@ -50,7 +57,7 @@ const STRUCTURAL_REQUIREMENTS = [
 	},
 	{
 		requirement: 'gate the ref',
-		claims: ['workflow_ref', 'job_workflow_ref', 'ref', 'environment'],
+		claims: ['workflow_ref', 'ref', 'environment'],
 		because: ' — otherwise any branch that can be pushed to the repository can run the workflow and mint a token',
 	},
 ];
