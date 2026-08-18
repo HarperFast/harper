@@ -76,6 +76,10 @@ test('the footer note distinguishes current, stale, and absent', () => {
 			.detail,
 		/Need: 4 @ head/
 	);
+	assert.match(
+		evaluateCiCoverage(pr({ body: `Human-Review-Need: 1 Human-Review-Need: 2 @ ${HEAD.slice(0, 12)}` })).detail,
+		/Need: 2 @ head/
+	);
 	assert.match(evaluateCiCoverage(pr()).detail, /no Human-Review-Need footer/);
 });
 

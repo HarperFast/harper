@@ -79,8 +79,9 @@ export function reportedCrossModelReviews(body) {
 				continue;
 			}
 		}
-		if (inCoverage) harvest(line);
-		else if (/^\s*(?:[-*>]\s*)?independent-review\s*:/i.test(line)) harvest(line);
+		if (inCoverage) {
+			if (/^\s*(?:[-*]|\d+\.)\s/.test(line)) harvest(line);
+		} else if (/^\s*(?:[-*>]\s*)?independent-review\s*:/i.test(line)) harvest(line);
 		else if (/cross[- ]model/i.test(line)) harvest(line);
 	}
 	return { count: families.size, families: [...families].sort(), generator: own };
