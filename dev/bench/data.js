@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787038324891,
+  "lastUpdate": 1787053371961,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -12551,6 +12551,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 2624,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c2cae054c4c317af1e7a1e2d1aea4e8095a39df5",
+          "message": "refactor(integrationTests): extract waitForRouteReady from restartHttpWorkers (#1904)\n\n* refactor(integrationTests): extract waitForRouteReady from restartHttpWorkers\n\nThe HTTP-route-readiness polling loop was duplicated: restartHttpWorkers()\nin lifecycle.mjs has it inline, and eviction-secondary-index.test.ts\nre-implements the same ~15-line block verbatim for the no-restart-needed\ncase (component pre-installed). Extract the polling loop into a standalone\nexported waitForRouteReady(client, probePath, timeoutMs), used both by\nrestartHttpWorkers() internally and directly by tests that only need to\nawait route registration without triggering a worker restart.\n\nRefs #1886\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Apply suggestion from @gemini-code-assist[bot]\n\nCo-authored-by: gemini-code-assist[bot] <176961590+gemini-code-assist[bot]@users.noreply.github.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>\nCo-authored-by: gemini-code-assist[bot] <176961590+gemini-code-assist[bot]@users.noreply.github.com>",
+          "timestamp": "2026-08-18T11:34:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/c2cae054c4c317af1e7a1e2d1aea4e8095a39df5"
+        },
+        "date": 1787053370243,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 21714,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 14723,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 13269,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 31157056,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 2938,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 497947,
             "unit": "ops"
           }
         ]
