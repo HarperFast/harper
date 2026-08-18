@@ -44,7 +44,10 @@ const {
 	truncateSync,
 	writeFileSync,
 	readdirSync,
+	renameSync,
+	rmSync,
 } = require('fs');
+const { dirname } = require('path');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
@@ -1649,14 +1652,14 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 			],
 		});
 	});
-	// Create a saved, file-backed blob and return { blob, filePath }.
-	async function savedBlob(id) {
-		const blob = await createBlob(Readable.from(randomBytes(25000)));
+	// Create a saved, file-backed blob and return { blob, filePath, store }.
+	async function savedBlob(id, source = Readable.from(randomBytes(25000))) {
+		const blob = await createBlob(source);
 		await BlobRepairTest.put({ id, blob });
 		const record = await BlobRepairTest.get(id);
 		const filePath = getFilePathForBlob(record.blob);
 		assert.ok(filePath && existsSync(filePath));
-		return { blob: record.blob, filePath };
+		return { blob: record.blob, filePath, store: BlobRepairTest.primaryStore.rootStore };
 	}
 	function stampHeaderType(filePath, type) {
 		const fd = openSync(filePath, 'r+');
@@ -1712,6 +1715,18 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
 	});
 
+	it('reports an uncompressed file longer than its header claims', async () => {
+		const { blob, filePath } = await savedBlob('long');
+		writeFileSync(filePath, Buffer.concat([readFileSync(filePath), Buffer.from([0])]));
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports an unknown header type', async () => {
+		const { blob, filePath } = await savedBlob('unknown-type');
+		stampHeaderType(filePath, 2);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
 	it('reports a save that never completed (pre-completion size sentinel)', async () => {
 		const { blob, filePath } = await savedBlob('sentinel');
 		const fd = openSync(filePath, 'r+');
@@ -1739,6 +1754,103 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		assert.strictEqual(getFilePathForBlob(blob), filePath); // same fileId — record needs no rewrite
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 		assert.deepStrictEqual(readFileSync(filePath).subarray(8), original.subarray(8));
+	});
+
+	it('repairBlobFile recreates a missing bucket directory', async () => {
+		const { blob, filePath } = await savedBlob('repair-missing-directory');
+		const original = readFileSync(filePath);
+		const fileDir = dirname(filePath);
+		const backupDir = fileDir + '-repair-backup';
+		renameSync(fileDir, backupDir);
+		try {
+			const saving = repairBlobFile(blob, Readable.from(original.subarray(8)));
+			assert.ok(saving, 'repair should start when the bucket directory is missing');
+			await saving;
+			assert.deepStrictEqual(readFileSync(filePath).subarray(8), original.subarray(8));
+		} finally {
+			rmSync(fileDir, { recursive: true, force: true });
+			renameSync(backupDir, fileDir);
+		}
+	});
+
+	it('repairBlobFile rejects a wrong-size source without finalizing the file', async () => {
+		const { blob, filePath } = await savedBlob('repair-size-mismatch', randomBytes(25000));
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, Readable.from(randomBytes(100)));
+		assert.ok(saving, 'repair should start on a damaged blob');
+		await assert.rejects(saving, /Blob repair size mismatch/);
+		await waitFor(() => readFileSync(filePath)[1] === 0xfe, {
+			message: 'failed repair should leave a PENDING marker',
+		});
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('repairBlobFile releases its lock when stream setup throws', async () => {
+		const { blob, filePath, store } = await savedBlob('repair-stream-setup-error');
+		const lockKey = getFileId(blob) + ':blob';
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, {});
+		assert.ok(saving, 'repair should return its rejected settle promise');
+		await assert.rejects(saving);
+		await waitFor(
+			() => {
+				if (!store.tryLock(lockKey)) return false;
+				store.unlock(lockKey);
+				return true;
+			},
+			{ message: 'failed stream setup should release the blob lock' }
+		);
+	});
+
+	it('repairBlobFile accepts uncompressed replacement bytes for a compressed stored blob', async () => {
+		const payload = Buffer.from('repair compressed blob '.repeat(2000));
+		const created = createBlob(payload, { compress: true });
+		await BlobRepairTest.put({ id: 'repair-compressed', blob: created });
+		const { blob } = await BlobRepairTest.get('repair-compressed');
+		const filePath = getFilePathForBlob(blob);
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, Readable.from(payload));
+		assert.ok(saving, 'repair should start on a damaged compressed blob');
+		await saving;
+		assert.deepStrictEqual(await blob.bytes(), payload);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+	});
+
+	it('repairBlobFile does not re-stamp over a writer that acquired the lock after a failed repair', async () => {
+		const { blob, filePath, store } = await savedBlob('repair-restamp-race');
+		const original = readFileSync(filePath);
+		const lockKey = getFileId(blob) + ':blob';
+		stampHeaderType(filePath, 0xfe);
+		const originalUnlock = store.unlock;
+		let armCompetingWriter = false;
+		let competingWriterHeld = false;
+		let competingWriterAcquired = false;
+		store.unlock = function (key, ...args) {
+			const result = originalUnlock.call(this, key, ...args);
+			if (armCompetingWriter && key === lockKey && !competingWriterHeld) {
+				competingWriterAcquired = store.tryLock(lockKey);
+				if (competingWriterAcquired) {
+					competingWriterHeld = true;
+					writeFileSync(filePath, original);
+				}
+			}
+			return result;
+		};
+		try {
+			const source = new PassThrough();
+			const saving = repairBlobFile(blob, source);
+			assert.ok(saving, 'repair should start on a damaged blob');
+			armCompetingWriter = true;
+			source.destroy(new Error('repair failed'));
+			await assert.rejects(saving, /repair failed/);
+			await delay(50);
+			assert.ok(competingWriterAcquired, 'competing writer should acquire the released repair lock');
+			assert.ok(competingWriterHeld);
+			assert.deepStrictEqual(readFileSync(filePath), original);
+		} finally {
+			store.unlock = originalUnlock;
+			if (competingWriterHeld) originalUnlock.call(store, lockKey);
+		}
 	});
 
 	it('repairBlobFile declines on a healthy blob', async () => {
