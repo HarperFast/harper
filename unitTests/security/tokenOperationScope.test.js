@@ -241,6 +241,44 @@ describe('token-scoped narrowing on the SQL path', () => {
 		assert.strictEqual(denial, null);
 	});
 
+	// TRIPWIRE for the #2202 split — this test exists to go red, not to describe desired behavior.
+	//
+	// An export job runs by re-parsing its nested search_operation, so the check inside job execution
+	// sees `operation: 'sql'` rather than `export_local`. Carrying the real operation on the request
+	// was reverted here because that object is client-supplied on the direct-SQL path, making any
+	// property it consults forgeable. That costs nothing TODAY only because the branch in processAST
+	// that would act on the denial is dead (its guard tests `.length` on an object that has none).
+	//
+	// #2202 makes that branch live. The moment it does, this admits-an-in-scope-export assertion
+	// fails, because the job's own SQL would be judged as `sql` against a scope naming only
+	// `export_local`. The two PRs can merge in either order, so whichever lands second turns CI red
+	// here instead of silently shipping an export-scoped token that 403s on its own export.
+	//
+	// If you are reading this because it just went red: the fix is not to relax the scope check. It is
+	// to give the job's real operation a carrier a client cannot set, then assert it here.
+	it('admits an in-scope export job through the path export.ts actually dispatches', async () => {
+		const outcome = await new Promise((resolve) => {
+			sql.evaluateSQL(
+				{
+					// Exactly what export.ts hands the SQL handler: the nested search_operation, with
+					// hdb_user attached and no parsed_sql_object, so it re-parses and re-checks.
+					operation: 'sql',
+					sql: 'SELECT * FROM data.dog',
+					hdb_user: userWithScope({ super_user: true }, ['export_local']),
+				},
+				(error) => resolve({ error })
+			);
+		});
+
+		// Not "no error" — the table does not exist in this unit context, so it may fail downstream.
+		// The assertion is specifically that it was not refused by the permission gate.
+		assert.notStrictEqual(
+			outcome.error,
+			403,
+			'an export_local-scoped token must not be denied by its own export job (see #2202)'
+		);
+	});
+
 	it('gates a nested-SQL export job on the export operation, not on `sql`', () => {
 		// export_local carries its query as SQL, but the scope names the job, not `sql`. A token scoped
 		// only to `sql` must not be able to start an export it was never granted.
