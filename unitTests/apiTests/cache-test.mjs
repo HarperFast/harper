@@ -3,6 +3,7 @@
 import { assert } from 'chai';
 import axios from 'axios';
 import { setupTestApp, baseUrl } from './setupTestApp.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { waitFor } from '../waitFor.js';
 
 describe('test REST calls with cache table', () => {
@@ -34,13 +35,8 @@ describe('test REST calls with cache table', () => {
 		delete data.ageInMonths; // harper#1484: computed scalars now also surface on default reads
 		response = await axios.put(`${baseUrl}/FourProp/3`, data);
 		assert.equal(response.status, 204);
-		response = await waitFor(
-			async () => {
-				const cacheResponse = await axios(`${baseUrl}/SimpleCache/3`, { validateStatus: () => true });
-				return cacheResponse.status === 200 && cacheResponse.data.name === 'name change' ? cacheResponse : false;
-			},
-			{ timeout: 5000, interval: 20, message: 'source update did not reach SimpleCache' }
-		);
+		await delay(20);
+		response = await axios(`${baseUrl}/SimpleCache/3`);
 		assert.equal(response.status, 200);
 		assert.equal(response.data.id, 3);
 		assert.equal(response.data.name, 'name change');
