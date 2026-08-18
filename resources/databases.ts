@@ -1359,19 +1359,27 @@ function retireSchemaQuiesce(quiesceId: string): void {
 function armSchemaQuiesceLease(state: SchemaQuiesceState): void {
 	if (state.lease) clearTimeout(state.lease);
 	const leaseUntil = Math.max(state.message.leaseUntil ?? 0, Date.now() + SCHEMA_QUIESCE_LEASE_MS);
-	state.lease = setTimeout(() => {
-		if (state.committed) {
-			recoverCommittedSchemaQuiesce(state).catch((error) => {
-				logger.error(`Could not recover committed schema quiesce ${state.message.quiesceId}`, error);
-			});
+	state.lease = setTimeout(() => expireSchemaQuiesceLease(state), leaseUntil - Date.now());
+	state.lease.unref();
+}
+
+function expireSchemaQuiesceLease(state: SchemaQuiesceState): void {
+	if (state.committed) {
+		// A synchronous RocksDB drop can outlive the timer that its blocked origin would renew.
+		// A connected owner may still be destructing storage, so peers must remain fail-closed.
+		if (!state.localOwner && manageThreads.isThreadConnected(state.message.originator)) {
+			armSchemaQuiesceLease(state);
 			return;
 		}
-		reconcileSchemaQuiesce(state).catch((error) => {
-			logger.warn('Could not reconcile expired schema quiesce:', error);
-			if (schemaQuiescence.get(state.message.quiesceId) === state) armSchemaQuiesceLease(state);
+		recoverCommittedSchemaQuiesce(state).catch((error) => {
+			logger.error(`Could not recover committed schema quiesce ${state.message.quiesceId}`, error);
 		});
-	}, leaseUntil - Date.now());
-	state.lease.unref();
+		return;
+	}
+	reconcileSchemaQuiesce(state).catch((error) => {
+		logger.warn('Could not reconcile expired schema quiesce:', error);
+		if (schemaQuiescence.get(state.message.quiesceId) === state) armSchemaQuiesceLease(state);
+	});
 }
 
 async function recoverCommittedSchemaQuiesce(state: SchemaQuiesceState): Promise<boolean> {
@@ -1441,6 +1449,11 @@ async function recoverCommittedSchemaQuiesce(state: SchemaQuiesceState): Promise
 export function recoverCommittedSchemaQuiesceForTests(quiesceId: string): Promise<boolean> {
 	const state = schemaQuiescence.get(quiesceId);
 	return state ? recoverCommittedSchemaQuiesce(state) : Promise.resolve(false);
+}
+
+export function expireSchemaQuiesceLeaseForTests(quiesceId: string): void {
+	const state = schemaQuiescence.get(quiesceId);
+	if (state) expireSchemaQuiesceLease(state);
 }
 
 function resetQuiescedDatabase(databaseName: string): void {

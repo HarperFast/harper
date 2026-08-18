@@ -3,6 +3,7 @@
 const chai = require('chai');
 const sinon = require('sinon');
 const rewire = require('rewire');
+const { threadId } = require('node:worker_threads');
 const { expect } = chai;
 const sinon_chai = require('sinon-chai').default;
 chai.use(sinon_chai);
@@ -93,6 +94,7 @@ describe('Test signalling module', () => {
 				table: 'records',
 			});
 			const quiesceCall = send_itc_event_stub.getCalls().find((call) => call.args[0].message.phase === 'quiesce');
+			expect(message.originator).to.equal(threadId);
 			expect(quiesceCall.args[1].includeJobWorkers).to.equal(true);
 			expect(quiesceCall.args[1].acceptResult({ quiesced: true })).to.equal(true);
 			await signalling.abortSchemaQuiesce(message);

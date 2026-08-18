@@ -13,6 +13,8 @@ const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default
 // for testing validation logic, not for replacing dependencies with mocks
 const server_itc_handlers = rewire('#js/server/itc/serverHandlers');
 const { resetResources } = require('#src/resources/Resources');
+const { threadId } = require('node:worker_threads');
+const { waitForSchemaWorkerStarts } = require('#js/server/threads/manageThreads');
 
 describe('Test hdbChildIpcHandler module', () => {
 	const TEST_ERR = 'The roof is on fire';
@@ -178,6 +180,43 @@ describe('Test hdbChildIpcHandler module', () => {
 			} finally {
 				releaseBarrier(message);
 			}
+		});
+
+		it('retains the worker-start barrier while the committed origin is connected', async () => {
+			const message = {
+				originator: threadId,
+				operation: 'drop_table',
+				phase: 'hold-worker-starts',
+				schema: 'test',
+				table: 'records',
+				quiesceId: 'q-live-origin-barrier',
+				leaseUntil: Date.now(),
+			};
+			await schema_handler({ type: 'schema', message });
+			let released = false;
+			const waiting = waitForSchemaWorkerStarts().then(() => (released = true));
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				expect(released).to.equal(false);
+			} finally {
+				await schema_handler({ type: 'schema', message: { ...message, phase: 'release-worker-starts' } });
+			}
+			await waiting;
+			expect(released).to.equal(true);
+		});
+
+		it('releases an expired worker-start barrier after its origin disconnects', async () => {
+			const message = {
+				originator: Number.MAX_SAFE_INTEGER,
+				operation: 'drop_table',
+				phase: 'hold-worker-starts',
+				schema: 'test',
+				table: 'records',
+				quiesceId: 'q-disconnected-origin-barrier',
+				leaseUntil: Date.now(),
+			};
+			await schema_handler({ type: 'schema', message });
+			await waitForSchemaWorkerStarts();
 		});
 
 		it('aborts quiescence without resetting databases', async () => {

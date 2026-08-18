@@ -23,7 +23,11 @@ const {
 	completeSchemaQuiesce,
 	failSchemaQuiesceFinalization,
 } = require('../../resources/databases.ts');
-const { holdWorkerStartsForSchema, releaseWorkerStartsForSchema } = require('../threads/manageThreads.js');
+const {
+	holdWorkerStartsForSchema,
+	releaseWorkerStartsForSchema,
+	isThreadConnected,
+} = require('../threads/manageThreads.js');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -53,16 +57,27 @@ const MAX_SCHEMA_TERMINAL_OUTCOMES = 1024;
 const schemaTerminalCompletions = new Map();
 const schemaTerminalOutcomes = new Map();
 const schemaWorkerBarrierLeases = new Map();
+const SCHEMA_WORKER_BARRIER_RECHECK_MS = 1_000;
+
+function expireSchemaWorkerBarrierLease(message) {
+	// The origin can legitimately block its event loop during synchronous RocksDB destruction.
+	// Keep replacement workers fenced until that owner disconnects or sends a terminal message.
+	if (isThreadConnected(message.originator)) {
+		const timer = setTimeout(() => expireSchemaWorkerBarrierLease(message), SCHEMA_WORKER_BARRIER_RECHECK_MS);
+		timer.unref();
+		schemaWorkerBarrierLeases.set(message.quiesceId, timer);
+		return;
+	}
+	schemaWorkerBarrierLeases.delete(message.quiesceId);
+	releaseWorkerStartsForSchema(message.quiesceId);
+}
 
 function armSchemaWorkerBarrierLease(message) {
 	if (!isMainThread) return;
 	const existing = schemaWorkerBarrierLeases.get(message.quiesceId);
 	if (existing) clearTimeout(existing);
 	const delay = Math.max(0, (message.leaseUntil ?? Date.now()) - Date.now());
-	const timer = setTimeout(() => {
-		schemaWorkerBarrierLeases.delete(message.quiesceId);
-		releaseWorkerStartsForSchema(message.quiesceId);
-	}, delay);
+	const timer = setTimeout(() => expireSchemaWorkerBarrierLease(message), delay);
 	timer.unref();
 	schemaWorkerBarrierLeases.set(message.quiesceId, timer);
 }

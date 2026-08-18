@@ -4,6 +4,7 @@ import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
 import { randomUUID } from 'node:crypto';
+import { threadId } from 'node:worker_threads';
 let serverItcHandlers;
 import { sendItcEvent } from '../server/threads/itc.js';
 
@@ -64,6 +65,7 @@ function startSchemaQuiesceRenewal(message: any) {
 export async function quiesceSchemaChange(message: any) {
 	const quiesceMessage = {
 		...message,
+		originator: threadId,
 		phase: 'quiesce',
 		quiesceId: randomUUID(),
 		leaseUntil: Date.now() + SCHEMA_QUIESCE_LEASE_MS,

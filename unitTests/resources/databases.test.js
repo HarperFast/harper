@@ -14,8 +14,10 @@ const {
 	quiesceSchemaTarget,
 	abortSchemaQuiesce,
 	commitSchemaQuiesce,
+	renewSchemaQuiesce,
 	finishSchemaQuiesce,
 	completeSchemaQuiesce,
+	expireSchemaQuiesceLeaseForTests,
 	recoverCommittedSchemaQuiesceForTests,
 } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -419,6 +421,45 @@ describe('cross-worker schema quiescence', () => {
 		assert.strictEqual(finishSchemaQuiesce(terminal), true);
 		await completeSchemaQuiesce(terminal);
 		assert.strictEqual(Table.isDropQuiescing(), false);
+	});
+
+	it('does not recover a committed peer quiescence while its origin is connected', async () => {
+		const message = {
+			originator: require('node:worker_threads').threadId,
+			operation: 'drop_table',
+			schema: 'quiesce-live-origin-test',
+			table: 'Missing',
+			quiesceId: 'q-live-origin',
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual((await commitSchemaQuiesce(message)).committed, true);
+		expireSchemaQuiesceLeaseForTests(message.quiesceId);
+		assert.strictEqual(
+			renewSchemaQuiesce({ ...message, leaseUntil: Date.now() + 60_000 }).quiesced,
+			true,
+			'a connected origin must keep the committed peer fence active'
+		);
+		const terminal = { ...message, phase: 'reconcile-quiesce' };
+		assert.strictEqual(finishSchemaQuiesce(terminal), true);
+		await completeSchemaQuiesce(terminal);
+	});
+
+	it('recovers a committed peer quiescence after its origin disconnects', async () => {
+		const message = {
+			originator: Number.MAX_SAFE_INTEGER,
+			operation: 'drop_table',
+			schema: 'quiesce-disconnected-origin-test',
+			table: 'Missing',
+			quiesceId: 'q-disconnected-origin',
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual((await commitSchemaQuiesce(message)).committed, true);
+		expireSchemaQuiesceLeaseForTests(message.quiesceId);
+		assert.strictEqual(
+			renewSchemaQuiesce({ ...message, leaseUntil: Date.now() + 60_000 }).quiesced,
+			false,
+			'a disconnected origin must allow authoritative recovery'
+		);
 	});
 
 	it('recovers an expired committed quiescence from the durable live catalog', async () => {

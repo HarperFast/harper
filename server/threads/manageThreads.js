@@ -165,6 +165,11 @@ function waitForSchemaWorkerStarts() {
 	return new Promise((resolve) => schemaWorkerStartWaiters.push(resolve));
 }
 
+function isThreadConnected(ownerThreadId) {
+	if (ownerThreadId === threadId || ownerThreadId === 0) return true;
+	return connectedPorts.some((port) => port.threadId === ownerThreadId);
+}
+
 function startAfterSchemaWorkerBarrier(start, description) {
 	waitForSchemaWorkerStarts()
 		.then(start)
@@ -193,6 +198,7 @@ module.exports = {
 	holdWorkerStartsForSchema,
 	releaseWorkerStartsForSchema,
 	waitForSchemaWorkerStarts,
+	isThreadConnected,
 	registerWorkerDataProvider,
 	onThreadExit,
 	registerProcessGroup,
