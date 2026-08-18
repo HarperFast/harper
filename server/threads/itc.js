@@ -56,8 +56,8 @@ onMessageFromWorkers(async (event, sender) => {
 		}
 	}
 });
-if (!isMainThread) {
-	if (workerData?.itcReadyBuffer) Atomics.store(new Int32Array(workerData.itcReadyBuffer), 0, 1);
+if (!isMainThread && workerData?.itcReadyBuffer) {
+	Atomics.store(new Int32Array(workerData.itcReadyBuffer), 0, 1);
 	parentPort?.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.ITC_READY });
 }
 
