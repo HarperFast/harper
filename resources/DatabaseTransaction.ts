@@ -661,6 +661,13 @@ export class DatabaseTransaction implements Transaction {
 		return false;
 	}
 
+	hasOpenReadsForAnyStore(stores: Set<any>): boolean {
+		for (let transaction: DatabaseTransaction = this; transaction; transaction = transaction.next) {
+			if (transaction.transaction && transaction.readTxnsUsed > 0 && transaction.usesAnyStore(stores)) return true;
+		}
+		return false;
+	}
+
 	private finishPendingWrites(): void {
 		activeWriteTransactions.delete(this);
 		this.#trackedForDropDrain = false;

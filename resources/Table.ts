@@ -1476,13 +1476,15 @@ export function makeTable(options) {
 			const rootStore = primaryStore.rootStore;
 			const sharedRocksStore = databaseName === databasePath && rootStore instanceof RocksDatabase;
 			const activeTransaction = contextStorage.getStore()?.transaction;
+			const currentTableStores = new Set(tableStores());
 			if (
 				sharedRocksStore &&
 				activeTransaction instanceof DatabaseTransaction &&
-				activeTransaction.hasWritesForAnyStore(new Set(tableStores()))
+				(activeTransaction.hasWritesForAnyStore(currentTableStores) ||
+					activeTransaction.hasOpenReadsForAnyStore(currentTableStores))
 			) {
 				const error: any = new ClientError(
-					`Cannot drop ${databaseName}.${tableName} from a transaction with staged writes to that table; commit or abort the transaction first`,
+					`Cannot drop ${databaseName}.${tableName} from a transaction with active reads or staged writes to that table; complete the transaction first`,
 					409
 				);
 				error.code = 'ERR_TABLE_DROP_IN_TRANSACTION';
