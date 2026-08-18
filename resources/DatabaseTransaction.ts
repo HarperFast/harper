@@ -163,10 +163,11 @@ export function getPendingWriteResolutions(stores: Iterable<any>): Promise<void>
 	return resolutions;
 }
 
-export function getPendingReadResolutions(rootStore: any): Promise<void>[] {
+export function getPendingReadResolutions(stores: Iterable<any>): Promise<void>[] {
+	const targetStores = new Set(stores);
 	const resolutions: Promise<void>[] = [];
 	for (const transaction of trackedTxns) {
-		if ((transaction.db as any)?.rootStore !== rootStore) continue;
+		if (!transaction.usesAnyStore(targetStores)) continue;
 		const resolution = transaction.getPendingReadResolution();
 		if (resolution) resolutions.push(resolution);
 	}
@@ -362,6 +363,8 @@ export class DatabaseTransaction implements Transaction {
 	#resolvePendingWrites?: () => void;
 	#pendingReadResolution?: Promise<void>;
 	#resolvePendingReads?: () => void;
+	// `db` identifies the first table; allocate only when one native transaction spans more tables.
+	#additionalStores?: Set<any>;
 	#trackedForDropDrain = false;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
@@ -635,6 +638,18 @@ export class DatabaseTransaction implements Transaction {
 		return this.#pendingReadResolution;
 	}
 
+	trackStore(store: any): void {
+		if (this.db !== store) (this.#additionalStores ??= new Set()).add(store);
+	}
+
+	usesAnyStore(stores: Set<any>): boolean {
+		if (stores.has(this.db)) return true;
+		for (const store of this.#additionalStores ?? []) {
+			if (stores.has(store)) return true;
+		}
+		return false;
+	}
+
 	private finishPendingWrites(): void {
 		activeWriteTransactions.delete(this);
 		this.#trackedForDropDrain = false;
@@ -647,6 +662,7 @@ export class DatabaseTransaction implements Transaction {
 		this.#resolvePendingReads?.();
 		this.#pendingReadResolution = undefined;
 		this.#resolvePendingReads = undefined;
+		this.#additionalStores = undefined;
 	}
 
 	/**

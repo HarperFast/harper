@@ -422,7 +422,7 @@ export function makeTable(options) {
 		const pending = new Set<Promise<any>>([
 			...pendingSourceCommits,
 			...getPendingWriteResolutions(tableStores()),
-			...getPendingReadResolutions(primaryStore.rootStore),
+			...getPendingReadResolutions(tableStores()),
 		]);
 		if (!pending.size) return;
 		let timer: NodeJS.Timeout;
@@ -5636,7 +5636,11 @@ export function makeTable(options) {
 			}
 			do {
 				// See if this is a transaction for our database and if so, use it
-				if (transaction.db?.path === primaryStore.path) return transaction;
+				if (transaction.db?.path === primaryStore.path) {
+					// Tracked reads must join here so the drop drain records every table store they borrow.
+					transaction.trackStore(primaryStore);
+					return transaction;
+				}
 				// try the next one:
 				const nextTxn = transaction.next;
 				if (!nextTxn) {

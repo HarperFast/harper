@@ -4,6 +4,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 const { table, database, databases, getDatabases, resetDatabases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { THREAD_TYPES } = require('#src/utility/hdbTerms');
@@ -153,6 +154,62 @@ describe('dropTable worker quiescence', function () {
 		assert.strictEqual(destructivePhaseStarted, true, 'dropTable() should continue after the transaction settles');
 	});
 
+	it('does not wait for a read iterator on another table in the same database', async function () {
+		const droppedTable = defineTable(`DropReadScope_${process.pid}_${Date.now()}`);
+		const otherTable = defineTable(`DropReadScopeOther_${process.pid}_${Date.now()}`);
+		const context = {};
+		let readOpened;
+		const readOpenedPromise = new Promise((resolve) => {
+			readOpened = resolve;
+		});
+		let releaseRead;
+		const readGate = new Promise((resolve) => {
+			releaseRead = resolve;
+		});
+		let readFinished = false;
+		const readPromise = transaction(context, async (dbTransaction) => {
+			otherTable._readTxnForContext(context);
+			const readTransaction = dbTransaction.useReadTxn();
+			const iterator = otherTable.primaryStore
+				.getRange({ start: false, transaction: readTransaction })
+				[Symbol.iterator]();
+			iterator.next();
+			readOpened();
+			await readGate;
+			try {
+				iterator.next();
+			} finally {
+				iterator.return?.();
+				dbTransaction.doneReadTxn();
+				readFinished = true;
+			}
+		});
+		await readOpenedPromise;
+
+		const originalDropSync = droppedTable.primaryStore.dropSync;
+		let destructivePhaseStarted = false;
+		droppedTable.primaryStore.dropSync = function (...args) {
+			destructivePhaseStarted = true;
+			return originalDropSync.apply(this, args);
+		};
+		const dropPromise = droppedTable.dropTable();
+		let earlyError;
+		try {
+			await waitFor(() => destructivePhaseStarted, {
+				message: 'an unrelated table reader must not widen the drop drain to the whole database',
+			});
+			assert.strictEqual(readFinished, false, 'the unrelated iterator must still be open when the drop proceeds');
+		} catch (error) {
+			earlyError = error;
+		} finally {
+			releaseRead();
+		}
+		const [readResult, dropResult] = await Promise.allSettled([readPromise, dropPromise]);
+		if (earlyError) throw earlyError;
+		if (readResult.status === 'rejected') throw readResult.reason;
+		if (dropResult.status === 'rejected') throw dropResult.reason;
+	});
+
 	it('defers an unquiesced tombstone until the process that could hold stale handles is gone', function () {
 		const tableName = `DropUnquiesced_${process.pid}_${Date.now()}`;
 		const Table = defineTable(tableName);
@@ -187,21 +244,28 @@ describe('dropTable worker quiescence', function () {
 		);
 	});
 
-	it('retries preparation on a class already removed from the live schema', async function () {
+	it('retries a timed-out preparation on a class already removed from the live schema', async function () {
+		this.timeout(25000);
 		const tableName = `DropPreparationRetry_${process.pid}_${Date.now()}`;
 		const Table = defineTable(tableName);
 		const rootStore = Table.primaryStore.rootStore;
-		const originalPrepareDrop = Table._prepareDrop;
-		let firstPreparation = true;
-		Table._prepareDrop = async function (options) {
-			await originalPrepareDrop.call(this, options);
-			if (firstPreparation) {
-				firstPreparation = false;
-				throw new Error('injected local preparation failure');
-			}
-		};
+		const context = {};
+		let staged;
+		const stagedPromise = new Promise((resolve) => {
+			staged = resolve;
+		});
+		let releaseTransaction;
+		const transactionGate = new Promise((resolve) => {
+			releaseTransaction = resolve;
+		});
+		const transactionPromise = transaction(context, async () => {
+			await Table.put({ id: 'held-for-retry', name: 'pending' }, context);
+			staged();
+			await transactionGate;
+		});
+		await stagedPromise;
 
-		await assert.rejects(() => Table.dropTable(), /injected local preparation failure/);
+		await assert.rejects(() => Table.dropTable(), /timed out after 10000ms/);
 		assert.strictEqual(databases.test?.[tableName], undefined);
 		assert.ok(rootStore.columns.some((column) => column.startsWith(`${tableName}/`)));
 		assert.throws(
@@ -210,8 +274,26 @@ describe('dropTable worker quiescence', function () {
 			'a stale table-class reference must not admit a new read after preparation starts'
 		);
 
-		Table._prepareDrop = originalPrepareDrop;
-		await Table.dropTable();
+		const originalDropSync = Table.primaryStore.dropSync;
+		let destructivePhaseStarted = false;
+		Table.primaryStore.dropSync = function (...args) {
+			destructivePhaseStarted = true;
+			return originalDropSync.apply(this, args);
+		};
+		const retryPromise = Table.dropTable();
+		for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+		let earlyError;
+		try {
+			assert.strictEqual(destructivePhaseStarted, false, 'the retry must start a fresh drain');
+		} catch (error) {
+			earlyError = error;
+		} finally {
+			releaseTransaction();
+		}
+		const [transactionResult, retryResult] = await Promise.allSettled([transactionPromise, retryPromise]);
+		if (earlyError) throw earlyError;
+		if (transactionResult.status === 'rejected') throw transactionResult.reason;
+		if (retryResult.status === 'rejected') throw retryResult.reason;
 		assert.ok(!rootStore.columns.some((column) => column.startsWith(`${tableName}/`)));
 	});
 
