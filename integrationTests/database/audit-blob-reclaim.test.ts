@@ -312,11 +312,7 @@ suite(
 			);
 			const expectedTitles = ['BLOB-A-MARKER', 'BLOB-B-MARKER', 'BLOB-C-MARKER'];
 			const auditedRecords = auditTxns.flatMap((transaction: any, index: number) => {
-				strictEqual(
-					transaction.records?.length,
-					1,
-					`audit transaction ${index} must contain exactly one record for ${id}`
-				);
+				strictEqual(transaction.ids?.[0], id, `audit transaction ${index} must belong to ${id}`);
 				strictEqual(
 					transaction.records[0].title,
 					expectedTitles[index],

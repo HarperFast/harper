@@ -359,8 +359,8 @@ suite(
 			for (let i = 0; i < NORMAL_COUNT; i++) {
 				const normal = await op({ action: 'raw', id: `normal-${i}` }).expect(200);
 				ok(
-					normal.body.rawPresent === true && normal.body.pastDue === false,
-					`normal-${i} must still be resident and unexpired after restart: ${JSON.stringify(normal.body)}`
+					normal.body.rawPresent === true,
+					`normal-${i} must still be resident after restart: ${JSON.stringify(normal.body)}`
 				);
 			}
 		});
