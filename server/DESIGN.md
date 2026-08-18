@@ -148,6 +148,16 @@ must run on a worker, `registeredOperations.ts` carries that state in the same-p
 separately from the structured-cloned body. Never attach trusted dispatch state to an operation
 payload.
 
+`server.registerOperation()` runs per-worker, so anything the **main** thread must later know about a
+registered op has to ride the OPERATION_REGISTERED announcement — a module-local registry populated
+during registration exists only in the worker that registered. The bridge carries two such facts
+today: name→thread routing (for execution forwarding) and `grantable` (so `validateOperations` on
+main will accept the name in a role's `operations` allowlist, for add_role/alter_role, impersonation,
+and OIDC trust policies). Adding a third main-thread consumer of a worker-registered fact means
+extending that message, not reading a registry that main never populated. Grantability is safe to
+mirror because it only widens what an allowlist may _name_; enforcement stays on the worker's
+`chooseOperation`.
+
 ## Resource ↔ HTTP boundary
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.

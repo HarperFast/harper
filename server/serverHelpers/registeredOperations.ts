@@ -11,7 +11,9 @@
  * so a request is sent to exactly ONE registering worker (never broadcast-first-wins).
  *
  *  - Worker: `registerOperation()` announces the name (OPERATION_REGISTERED) to all threads;
- *    only the main thread records it, as name -> Set<threadId>.
+ *    only the main thread records it, as name -> Set<threadId>. An op that declared a permission
+ *    also announces `grantable`: validateOperations runs on main (add_role/alter_role,
+ *    impersonation, OIDC trust policies) but the mark was made in the worker's own module scope.
  *  - Main: on an OPERATION_FUNCTION_MAP miss, `getRemoteOperationFunction()` supplies a forwarding
  *    function that sends the request body (OPERATION_EXECUTE_REQUEST) to one live registering
  *    worker and awaits the correlated OPERATION_EXECUTE_RESPONSE.
@@ -27,6 +29,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { sendItcEvent } from '../threads/itc.js';
 import { onMessageByType, onThreadExit } from '../threads/manageThreads.js';
+import { registerGrantableOperation, unregisterGrantableOperation } from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
@@ -59,6 +62,8 @@ export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
 
 /** name -> threadIds of workers that registered it (main thread only) */
 const registeredByWorker = new Map<string, Set<number>>();
+// Marks made on a worker's behalf, so thread-exit cleanup never revokes one this thread owns.
+const grantableFromWorkers = new Set<string>();
 const pendingExecutions = new Map<
 	number,
 	{ targetThreadId: number; resolve: (result: any) => void; reject: (error: Error) => void }
@@ -71,24 +76,35 @@ let mainListenersAttached = false;
  * a lost announcement just means the op stays unreachable (the pre-#1736 status quo), and the
  * broadcast has its own ack timeout.
  */
-export function announceRegisteredOperation(name: string) {
+export function announceRegisteredOperation(name: string, grantable = false) {
 	if (isMainThread) return;
 	sendItcEvent({
 		type: terms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
-		message: { name },
+		message: { name, grantable },
 	}).catch((error) => operationLog.error(`Failed to announce registered operation '${name}'`, error));
 }
 
 /**
  * ITC handler (all threads receive the broadcast; only main records it).
  */
-export function operationRegisteredHandler(event: { message: { name: string; originator: number } }) {
+export function operationRegisteredHandler(event: {
+	message: { name: string; grantable?: boolean; originator: number };
+}) {
 	if (!isMainThread) return;
-	const { name, originator } = event.message;
+	const { name, grantable, originator } = event.message;
 	if (typeof name !== 'string' || typeof originator !== 'number') return;
+	// Arm thread-exit cleanup when the registry gains its first entry, not on the first forward:
+	// a worker that exits before any call would otherwise leave its entries here forever.
+	attachMainListeners();
 	let workerIds = registeredByWorker.get(name);
 	if (!workerIds) registeredByWorker.set(name, (workerIds = new Set()));
 	workerIds.add(originator);
+	// Mirroring the worker's grantable mark only widens what an allowlist may name; it grants
+	// nothing. Enforcement stays on the worker's own chooseOperation (see getRemoteOperationFunction).
+	if (grantable) {
+		grantableFromWorkers.add(name);
+		registerGrantableOperation(name);
+	}
 	operationLog.debug(`Registered operation '${name}' announced by worker thread ${originator}`);
 }
 
@@ -128,7 +144,10 @@ function attachMainListeners() {
 	onThreadExit((deadThreadId: number) => {
 		for (const [name, workerIds] of registeredByWorker) {
 			workerIds.delete(deadThreadId);
-			if (workerIds.size === 0) registeredByWorker.delete(name);
+			if (workerIds.size === 0) {
+				registeredByWorker.delete(name);
+				if (grantableFromWorkers.delete(name)) unregisterGrantableOperation(name);
+			}
 		}
 		for (const [requestId, pending] of pendingExecutions) {
 			if (pending.targetThreadId === deadThreadId) {

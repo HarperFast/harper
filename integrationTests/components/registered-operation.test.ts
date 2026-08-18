@@ -6,6 +6,11 @@
  * OPERATION_FUNCTION_MAP instances; the ops-API dispatcher runs on the main thread with its
  * own instance. The cross-thread bridge (server/serverHelpers/registeredOperations.ts)
  * forwards an unrecognized operation to one registering worker and relays the result.
+ *
+ * The same split governs the role `operations` allowlist: registerOperationPermission marks a
+ * declared op grantable on the worker, but validateOperations is consulted on the main thread.
+ * Only an integration test crosses that boundary — unit tests register and validate on one
+ * thread, so the topology, and therefore the gap, is invisible to them.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
@@ -15,6 +20,14 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/registered-operation');
 
+// The one op the fixture declares a permission for, and so the only grantable one.
+const GRANTABLE_OP = 'component_registered_grantable';
+const GRANTED_ROLE = 'component_op_granted_role';
+const GRANTED_USER = 'component_op_granted_user';
+const UNGRANTED_ROLE = 'component_op_ungranted_role';
+const UNGRANTED_USER = 'component_op_ungranted_user';
+const USER_PASS = 'Abc1234!';
+
 suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 	async function op(body: any): Promise<{ status: number; body: any }> {
 		const { username, password } = ctx.harper.admin;
@@ -23,6 +36,18 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 			headers: {
 				'Content-Type': 'application/json',
 				'Authorization': `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+			},
+			body: JSON.stringify(body),
+		});
+		return { status: response.status, body: await response.json() };
+	}
+
+	async function asUser(username: string, body: any): Promise<{ status: number; body: any }> {
+		const response = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Basic ${Buffer.from(`${username}:${USER_PASS}`).toString('base64')}`,
 			},
 			body: JSON.stringify(body),
 		});
@@ -87,5 +112,101 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		const { status, body } = await op({ operation: 'definitely_not_registered_anywhere' });
 		strictEqual(status, 400, JSON.stringify(body));
 		ok(JSON.stringify(body).includes('not found'), `expected operation-not-found error, got: ${JSON.stringify(body)}`);
+	});
+
+	suite('grantable in a role `operations` allowlist across the worker/main boundary', () => {
+		before(async () => {
+			// The announcement is fire-and-forget ITC. A successful forward proves the handler ran, and
+			// it carries the grantable flag in the same message — so this gates on the exact state
+			// these tests depend on, rather than on elapsed time.
+			const deadline = Date.now() + 15_000;
+			for (;;) {
+				const { status } = await op({ operation: GRANTABLE_OP });
+				if (status === 200) break;
+				if (Date.now() > deadline) throw new Error(`main thread never registered '${GRANTABLE_OP}'`);
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+		});
+
+		test('add_role accepts the worker-registered op name in `operations`', async () => {
+			const { status, body } = await op({
+				operation: 'add_role',
+				role: GRANTED_ROLE,
+				permission: { operations: [GRANTABLE_OP] },
+			});
+			strictEqual(status, 200, JSON.stringify(body));
+		});
+
+		test('add_role still rejects an op name no component registered', async () => {
+			// Negative control: proves the assertion above is not passing because validateOperations
+			// was skipped for this payload shape.
+			const { status, body } = await op({
+				operation: 'add_role',
+				role: 'component_op_bogus_role',
+				permission: { operations: ['component_registered_never_declared'] },
+			});
+			strictEqual(status, 400, JSON.stringify(body));
+			ok(
+				JSON.stringify(body).includes('component_registered_never_declared'),
+				`expected the offending op name in the error, got: ${JSON.stringify(body)}`
+			);
+		});
+
+		test('alter_role accepts it too', async () => {
+			const { status, body } = await op({
+				operation: 'alter_role',
+				id: GRANTED_ROLE,
+				permission: { operations: [GRANTABLE_OP, 'user_info'] },
+			});
+			strictEqual(status, 200, JSON.stringify(body));
+		});
+
+		test('a non-super_user granted the op can actually call it', async () => {
+			const added = await op({
+				operation: 'add_user',
+				role: GRANTED_ROLE,
+				username: GRANTED_USER,
+				password: USER_PASS,
+				active: true,
+			});
+			strictEqual(added.status, 200, JSON.stringify(added.body));
+
+			const { status, body } = await asUser(GRANTED_USER, { operation: GRANTABLE_OP });
+			strictEqual(status, 200, JSON.stringify(body));
+			strictEqual(body.granted, true);
+			strictEqual(body.username, GRANTED_USER);
+			// Still executed on the worker — main only had to accept the name, not enforce it.
+			strictEqual(body.executedOnMainThread, false);
+		});
+
+		test('a non-super_user without the grant is still denied (enforcement unchanged)', async () => {
+			const role = await op({
+				operation: 'add_role',
+				role: UNGRANTED_ROLE,
+				permission: { operations: ['user_info'] },
+			});
+			strictEqual(role.status, 200, JSON.stringify(role.body));
+			const added = await op({
+				operation: 'add_user',
+				role: UNGRANTED_ROLE,
+				username: UNGRANTED_USER,
+				password: USER_PASS,
+				active: true,
+			});
+			strictEqual(added.status, 200, JSON.stringify(added.body));
+
+			const { status, body } = await asUser(UNGRANTED_USER, { operation: GRANTABLE_OP });
+			strictEqual(status, 403, JSON.stringify(body));
+		});
+
+		test('impersonation accepts an inline role naming the op', async () => {
+			// applyImpersonation runs validateOperations on the main thread too.
+			const { status, body } = await op({
+				operation: GRANTABLE_OP,
+				impersonate: { role: { permission: { operations: [GRANTABLE_OP] } } },
+			});
+			strictEqual(status, 200, JSON.stringify(body));
+			strictEqual(body.granted, true);
+		});
 	});
 });

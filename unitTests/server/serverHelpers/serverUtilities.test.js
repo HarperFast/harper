@@ -221,6 +221,42 @@ describe('Test serverUtilities.js module ', () => {
 		});
 	});
 
+	// Only the receiving half is reachable here — announceRegisteredOperation returns early on the
+	// main thread, so integrationTests/components/registered-operation.test.ts owns the real hop.
+	describe('cross-thread grantable operation mirroring', function () {
+		const { validateOperations, unregisterGrantableOperation } = require('#src/utility/operationPermissions');
+		const GRANTABLE = 'test_cross_thread_grantable_op';
+		const PLAIN = 'test_cross_thread_plain_op';
+
+		after(function () {
+			// Don't leak either name into the process-global grantable set for later suites.
+			unregisterGrantableOperation(GRANTABLE);
+			unregisterGrantableOperation(PLAIN);
+		});
+
+		it('makes a worker-announced declared op grantable on the main thread', function () {
+			assert.notEqual(validateOperations([GRANTABLE]), null, 'name should be unknown before the announcement');
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: GRANTABLE, grantable: true, originator: 31 },
+			});
+
+			assert.equal(validateOperations([GRANTABLE]), null, 'name should be grantable after the announcement');
+		});
+
+		it('leaves an op that declared no permission ungrantable', function () {
+			// requiresSuperUser omitted means no verifyPerms entry and nothing to grant — the routing
+			// entry must not smuggle the name into the allowlist.
+			registeredOperations.operationRegisteredHandler({
+				message: { name: PLAIN, grantable: false, originator: 31 },
+			});
+
+			assert.notEqual(validateOperations([PLAIN]), null);
+			// A forward is still set up for it, so the routing half is unaffected.
+			assert.equal(typeof registeredOperations.getRemoteOperationFunction(PLAIN), 'function');
+		});
+	});
+
 	describe('operation authorization state', function () {
 		it('is scoped across awaits and restores nested authorization', async function () {
 			assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
