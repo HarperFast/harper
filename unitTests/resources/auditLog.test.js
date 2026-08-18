@@ -228,6 +228,78 @@ describe('Audit log', () => {
 			await AuditedTable.deleteHistory(Date.now() + 60_000);
 		}
 	});
+	it('deleteHistory waits for the table-registered tombstone removal callback', async function () {
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
+		await AuditedTable.deleteHistory(Date.now() + 60_000);
+
+		const recordId = 60;
+		await AuditedTable.put(recordId, { name: 'joined-tombstone-removal' });
+		await AuditedTable.delete(recordId);
+		const registeredPrimaryStore = AuditedTable.auditStore.tableStores[AuditedTable.tableId];
+		const tombstone = registeredPrimaryStore.getEntry(recordId);
+		assert.equal(tombstone?.value, null);
+		const deleteAuditRecords = [];
+		for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
+			if (record.tableId === AuditedTable.tableId && record.recordId === recordId && record.type === 'delete') {
+				deleteAuditRecords.push(record);
+			}
+		}
+		assert.equal(deleteAuditRecords.length, 1);
+		assert.equal(tombstone.version, deleteAuditRecords[0].version);
+		assert.equal(typeof AuditedTable.auditStore.deleteCallbacks?.[AuditedTable.tableId], 'function');
+
+		const originalRemove = registeredPrimaryStore.remove;
+		let releaseTombstoneRemoval;
+		let markTombstoneRemovalStarted;
+		const tombstoneRemovalStarted = new Promise((resolve) => {
+			markTombstoneRemovalStarted = resolve;
+		});
+		const tombstoneRemovalGate = new Promise((resolve) => {
+			releaseTombstoneRemoval = resolve;
+		});
+		const heldRemove = async function (id, version) {
+			markTombstoneRemovalStarted({ id, version });
+			if (id !== recordId) return originalRemove.call(this, id, version);
+			await tombstoneRemovalGate;
+			return originalRemove.call(this, id, version);
+		};
+		registeredPrimaryStore.remove = heldRemove;
+		assert.equal(registeredPrimaryStore.remove, heldRemove);
+
+		let deletion;
+		try {
+			deletion = AuditedTable.deleteHistory(Date.now() + 60_000);
+			const callback = await Promise.race([
+				tombstoneRemovalStarted,
+				deletion.then((entriesDeleted) => {
+					throw new Error(
+						`deleteHistory resolved before invoking the registered callback: ${entriesDeleted} entries, tombstone=${String(
+							AuditedTable.primaryStore.getEntry(recordId)?.value
+						)}`
+					);
+				}),
+				delay(2000).then(() => {
+					throw new Error('table-registered tombstone removal callback did not start');
+				}),
+			]);
+			assert.equal(callback.id, recordId);
+			const state = await Promise.race([deletion.then(() => 'resolved'), delay(50, 'pending')]);
+			assert.equal(state, 'pending', 'deleteHistory must join the registered tombstone removal callback');
+
+			releaseTombstoneRemoval();
+			assert.equal(await deletion, 2);
+			assert.equal(
+				AuditedTable.primaryStore.getEntry(recordId),
+				undefined,
+				'the tombstone must be gone when deleteHistory resolves'
+			);
+		} finally {
+			releaseTombstoneRemoval();
+			await deletion?.catch(() => {});
+			registeredPrimaryStore.remove = originalRemove;
+			await AuditedTable.deleteHistory(Date.now() + 60_000);
+		}
+	});
 	for (const [label, failingCallback] of [
 		['rejects', () => Promise.reject(new Error('simulated primary-store tombstone removal failure'))],
 		[

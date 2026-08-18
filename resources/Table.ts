@@ -5051,22 +5051,20 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
-			const inFlightRemovals = new Set<Promise<void>>();
+			const removalSlots = new Array<Promise<void>>(MAX_CONCURRENT_HISTORY_REMOVALS);
+			let nextRemovalSlot = 0;
 			async function queueRemoval(
 				remove: () => MaybePromise<void>,
 				errorMessage: string,
 				onSuccess?: () => void
 			): Promise<void> {
-				const removal = new Promise<void>((resolve) => resolve(remove()))
+				const slot = nextRemovalSlot++ % MAX_CONCURRENT_HISTORY_REMOVALS;
+				await removalSlots[slot];
+				removalSlots[slot] = new Promise<void>((resolve) => resolve(remove()))
 					.then(onSuccess, (error) => harperLogger.warn(errorMessage, error))
-					.catch(() => undefined)
-					.finally(() => inFlightRemovals.delete(removal));
-				inFlightRemovals.add(removal);
-				if (inFlightRemovals.size >= MAX_CONCURRENT_HISTORY_REMOVALS) {
-					await Promise.race(inFlightRemovals);
-				}
+					.catch(() => undefined);
 			}
-			const drainRemovals = () => Promise.all(inFlightRemovals);
+			const drainRemovals = () => Promise.all(removalSlots);
 			let entriesDeleted = 0;
 			for (const auditRecord of auditStore.getRange({
 				start: 0,
