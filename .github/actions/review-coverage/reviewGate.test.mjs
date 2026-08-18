@@ -12,6 +12,8 @@ import {
 	isTrivialChange,
 	reportedCrossModelReviews,
 	reviewHasFindings,
+	COVERAGE_REQUIRED,
+	structuredCoverage,
 } from './reviewGate.mjs';
 
 // ---- coverage parsing ----
@@ -220,4 +222,60 @@ test('autoDraftBody mirrors the worker park body from TL;DR or the fallback', ()
 	assert.strictEqual(autoDraftSummary('## TL;DR: fixes the wedge\n\nrest', 'codex', 'CHANGES'), 'fixes the wedge');
 	assert.strictEqual(autoDraftBody('no tldr here', 'codex', 'CHANGES'), '🤖 Dispatch codex review (verdict CHANGES).');
 	assert.strictEqual(autoDraftBody('no tldr here', 'agy', ''), '🤖 Dispatch agy review (verdict ?).');
+});
+
+const FIELD = (segments) => `<sub>Review-Coverage: ${segments}</sub>`;
+
+test('the structured Review-Coverage field is preferred over prose, and counts only ran=', () => {
+	const body = ['## Summary', 'A fix.', '', 'Complexity: medium', '',
+		FIELD('authored=claude; ran=codex,gemini; adjudicated=domain; blocked=cursor-grok(auth); declined=cursor-composer; rounds=2 @ abcdef123456'),
+		'', '<sub>Human-Review-Need: 3 @ abcdef123456</sub>', '',
+		'🤖 Generated with [Claude Code](https://claude.com/claude-code)'].join('\n');
+	const r = reportedCrossModelReviews(body);
+	assert.strictEqual(r.count, 2);
+	assert.deepStrictEqual(r.families, ['google', 'openai']);
+	assert.strictEqual(r.rounds, 2);
+	assert.strictEqual(r.structured, true);
+	// This is the regression that made the field necessary to teach here at all: with only the
+	// prose reader, a description carrying the new footer and NO `## Review coverage` section
+	// counted 0 and warned as under-reported on every compliant PR.
+	assert.ok(r.count >= COVERAGE_REQUIRED);
+});
+
+test('a blocked or declined lens is never counted as coverage', () => {
+	assert.strictEqual(reportedCrossModelReviews(FIELD('authored=claude; ran=none; blocked=codex(auth),gemini(not-installed); rounds=1')).count, 0);
+	assert.strictEqual(reportedCrossModelReviews(FIELD('authored=claude; ran=none; declined=cursor-grok,cursor-composer; rounds=1')).count, 0);
+	// ran=none is an explicit report of zero outside coverage, not a missing field.
+	assert.strictEqual(structuredCoverage(FIELD('authored=claude; ran=none; rounds=1')).count, 0);
+	assert.strictEqual(structuredCoverage('## Summary\nno field here'), null);
+});
+
+test('one Cursor leg is one family, not two', () => {
+	// familiesIn('cursor-grok') matches BOTH /grok|xai/ -> xai and /composer|cursor/ -> cursor, so
+	// reusing the prose matcher would report 2 families for a single leg and inflate the count the
+	// gate acts on. The structured path maps leg names through a table for exactly this reason.
+	const r = structuredCoverage(FIELD('authored=claude; ran=cursor-grok; rounds=1'));
+	assert.deepStrictEqual(r.families, ['xai']);
+	assert.strictEqual(r.count, 1);
+	assert.deepStrictEqual(structuredCoverage(FIELD('authored=claude; ran=cursor-grok,cursor-composer; rounds=1')).families, ['cursor', 'xai']);
+});
+
+test('the authoring family never counts, and the adjudicator is excluded by the producer', () => {
+	// domain is the Harper adjudicator and is Claude by construction; it is reported under
+	// adjudicated=, never ran=, so a Claude-authored PR cannot reach 2 on its own legs.
+	const r = structuredCoverage(FIELD('authored=claude; ran=codex; adjudicated=domain; rounds=1'));
+	assert.deepStrictEqual(r.families, ['openai']);
+	// Defense in depth: an anthropic leg wrongly placed in ran= by a future producer is dropped.
+	assert.deepStrictEqual(structuredCoverage(FIELD('authored=claude; ran=codex,claude; rounds=1')).families, ['openai']);
+	// A codex-authored change gets its Claude leg back as genuine outside coverage.
+	assert.deepStrictEqual(structuredCoverage(FIELD('authored=codex; ran=claude,gemini; rounds=1')).families, ['anthropic', 'google']);
+});
+
+test('a fenced example of the field cannot satisfy the gate', () => {
+	const body = ['## Summary', 'Documents the field:', '```',
+		'Review-Coverage: authored=claude; ran=codex,gemini; rounds=9', '```', '',
+		'🤖 Generated with [Claude Code](https://claude.com/claude-code)'].join('\n');
+	assert.strictEqual(structuredCoverage(body), null);
+	// Falls through to the prose reader, which finds no coverage section either.
+	assert.strictEqual(reportedCrossModelReviews(body).count, 0);
 });
