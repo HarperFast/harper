@@ -176,14 +176,23 @@ describe('Audit log', () => {
 		if (AuditedTable.auditStore.reusableIterable) return this.skip();
 		await AuditedTable.deleteHistory(Date.now() + 60_000);
 
-		for (let id = 40; id < 51; id++) await AuditedTable.put(id, { name: `concurrent-${id}` });
+		const firstId = 40;
+		const concurrentRemovalLimit = 1000;
+		const recordCount = concurrentRemovalLimit + 1;
+		for (let id = firstId; id < firstId + recordCount; id++) {
+			await AuditedTable.put(id, { name: `concurrent-${id}` });
+		}
 		const targetKeys = new Set();
 		for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
-			if (record.tableId === AuditedTable.tableId && record.recordId >= 40 && record.recordId < 51) {
+			if (
+				record.tableId === AuditedTable.tableId &&
+				record.recordId >= firstId &&
+				record.recordId < firstId + recordCount
+			) {
 				targetKeys.add(record.key);
 			}
 		}
-		assert.equal(targetKeys.size, 11, 'test setup: expected one audit entry per inserted record');
+		assert.equal(targetKeys.size, recordCount, 'test setup: expected one audit entry per inserted record');
 
 		const originalRemove = AuditedTable.auditStore.remove.bind(AuditedTable.auditStore);
 		const releaseRemovals = [];
@@ -211,24 +220,34 @@ describe('Audit log', () => {
 		let deletion;
 		try {
 			deletion = AuditedTable.deleteHistory(Date.now() + 60_000);
-			await waitFor(() => removalCalls >= 10, { timeout: 5000, message: 'expected ten removals to start' });
-			assert.equal(removalCalls, 10, 'the eleventh removal must wait for an in-flight removal');
-
-			releaseRemovals.splice(4, 1)[0]();
-			await waitFor(() => removalCalls === 11, {
+			await waitFor(() => removalCalls >= concurrentRemovalLimit, {
 				timeout: 5000,
-				message: 'expected the eleventh removal to start after any active removal completed',
+				message: `expected ${concurrentRemovalLimit} removals to start`,
+			});
+			assert.equal(
+				removalCalls,
+				concurrentRemovalLimit,
+				'the next removal must wait while the concurrency limit is occupied'
+			);
+
+			releaseRemovals.splice(Math.floor(concurrentRemovalLimit / 2), 1)[0]();
+			await waitFor(() => removalCalls === recordCount, {
+				timeout: 5000,
+				message: 'expected the final removal to start after any active removal completed',
 			});
 			while (releaseRemovals.length > 0) releaseRemovals.shift()();
 
-			assert.equal(await deletion, 11);
-			assert.equal(maximumActiveRemovals, 10);
+			assert.equal(await deletion, recordCount);
+			assert.equal(maximumActiveRemovals, concurrentRemovalLimit);
 		} finally {
 			releaseImmediately = true;
 			while (releaseRemovals.length > 0) releaseRemovals.shift()();
 			await deletion?.catch(() => {});
 			AuditedTable.auditStore.remove = originalRemove;
 			await AuditedTable.deleteHistory(Date.now() + 60_000);
+			await AuditedTable.primaryStore.batch(() => {
+				for (let id = firstId; id < firstId + recordCount; id++) AuditedTable.primaryStore.remove(id);
+			});
 		}
 	});
 	async function createOrphanedTombstone(recordId) {

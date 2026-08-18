@@ -123,12 +123,13 @@ discarded — the promise reference was overwritten before it could be awaited o
 later as an unhandled rejection instead, with no logging to explain it. Any loop that removes
 audit/primary-store entries in a batch must attach a rejection handler to every removal immediately
 and drain all tracked promises before returning — never stash a per-iteration promise in an outer
-variable to await only the last one. `Table.deleteHistory` allows up to ten removals in flight so
-storage writes overlap without growing an unbounded pending set. Live removals are tracked in a `Set`,
-and each one removes itself and wakes at most one parked producer when it settles, so any completion
-releases the loop. Do not repeatedly race the live set: each race attaches another reaction to every
-long-pending removal. Both phases drain their tracked removals before settling, including when iteration
-throws. `scheduleAuditCleanup` remains sequential because it is an automatic background loop.
+variable to await only the last one. `Table.deleteHistory` allows up to 1,000 LMDB removals in flight
+(ten for a non-versioned fallback store) so storage writes batch without growing an unbounded pending
+set. Live removals are tracked in a `Set`, and each one removes itself and wakes at most one parked
+producer when it settles, so any completion releases the loop. In these removal loops, do not repeatedly
+race the live set: each race attaches another reaction to every long-pending removal. Both phases drain
+their tracked removals before settling, including when iteration throws. `scheduleAuditCleanup` remains
+sequential because it is an automatic background loop.
 
 `removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
 also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding

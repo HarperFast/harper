@@ -121,6 +121,7 @@ NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
+const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
 // RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
@@ -5051,6 +5052,9 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
+			const maxConcurrentRemovals = primaryStore.useVersions
+				? MAX_CONCURRENT_LMDB_HISTORY_REMOVALS
+				: MAX_CONCURRENT_HISTORY_REMOVALS;
 			const inFlightRemovals = new Set<Promise<void>>();
 			const removalSlotWaiters: Array<() => void> = [];
 			function startRemoval(remove: () => MaybePromise<void>, errorMessage: string, onSuccess?: () => void): void {
@@ -5068,7 +5072,7 @@ export function makeTable(options) {
 				errorMessage: string,
 				onSuccess?: () => void
 			): Promise<void> | undefined {
-				if (inFlightRemovals.size >= MAX_CONCURRENT_HISTORY_REMOVALS) {
+				if (inFlightRemovals.size >= maxConcurrentRemovals) {
 					return new Promise<void>((resolve) => {
 						removalSlotWaiters.push(resolve);
 					}).then(() => startRemoval(remove, errorMessage, onSuccess));
