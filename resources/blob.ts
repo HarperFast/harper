@@ -1640,9 +1640,10 @@ export function getFilePathForBlob(blob: FileBackedBlob): string {
 /**
  * Repairs a damaged file-backed blob under its existing fileId. The damage check and atomic file
  * replacement share the blob lock, so a failed repair never modifies the referenced file. Callers
- * must establish source identity before calling. The received byte count must match the reported
- * source size and, when present, the stored descriptor. On a synchronous `undefined`, no repair
- * started and `source` remains owned by the caller.
+ * must establish an exact record identity tie (same version and source node) and positional blob
+ * pairing before calling. The received byte count must match the reported source size and, when
+ * present, the stored descriptor. On a synchronous `undefined`, no repair started and `source`
+ * remains owned by the caller.
  */
 export function repairBlobFile(
 	blob: Blob,
@@ -1740,9 +1741,9 @@ export function blobHeaderIndicatesIncomplete(header: Buffer, fileSize: number):
 
 /**
  * Whether a file-backed blob's backing file is missing or incomplete on disk — the gate for the
- * copy-delivery repair. This performs blocking filesystem I/O and is intended only after the caller
- * identifies an exact duplicate delivery. Compressed bodies require the asynchronous repair sweep
- * for verification. Returns undefined for blobs the question does not apply to.
+ * copy-delivery repair. This blocking probe is the locked final recheck after the caller's async
+ * exact-duplicate prefilter. Compressed bodies require the asynchronous repair sweep for
+ * verification. Returns undefined for blobs the question does not apply to.
  */
 export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
 	try {
