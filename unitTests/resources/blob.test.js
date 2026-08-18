@@ -1748,8 +1748,12 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		const original = readFileSync(filePath);
 		stampHeaderType(filePath, 0xfe); // PENDING stub: the dangling state harper-pro#699 heals
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
-		const saving = repairBlobFile(blob, Readable.from(original.subarray(8)));
+		const source = new PassThrough();
+		let sourceSize;
+		const saving = repairBlobFile(blob, source, () => sourceSize);
 		assert.ok(saving, 'repair should start on a damaged blob');
+		sourceSize = original.length - 8;
+		source.end(original.subarray(8));
 		await saving;
 		assert.strictEqual(getFilePathForBlob(blob), filePath); // same fileId — record needs no rewrite
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
@@ -1763,7 +1767,7 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		const backupDir = fileDir + '-repair-backup';
 		renameSync(fileDir, backupDir);
 		try {
-			const saving = repairBlobFile(blob, Readable.from(original.subarray(8)));
+			const saving = repairBlobFile(blob, Readable.from(original.subarray(8)), original.length - 8);
 			assert.ok(saving, 'repair should start when the bucket directory is missing');
 			await saving;
 			assert.deepStrictEqual(readFileSync(filePath).subarray(8), original.subarray(8));
@@ -1776,7 +1780,7 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 	it('repairBlobFile rejects a wrong-size source without finalizing the file', async () => {
 		const { blob, filePath } = await savedBlob('repair-size-mismatch', randomBytes(25000));
 		stampHeaderType(filePath, 0xfe);
-		const saving = repairBlobFile(blob, Readable.from(randomBytes(100)));
+		const saving = repairBlobFile(blob, Readable.from(randomBytes(100)), 25000);
 		assert.ok(saving, 'repair should start on a damaged blob');
 		await assert.rejects(saving, /Blob repair size mismatch/);
 		await waitFor(() => readFileSync(filePath)[1] === 0xfe, {
@@ -1785,13 +1789,21 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
 	});
 
+	it('repairBlobFile declines when the stored descriptor has no verification size', async () => {
+		const { blob, filePath } = await savedBlob('repair-unknown-size');
+		stampHeaderType(filePath, 0xfe);
+		blob.size = undefined;
+		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(100))), undefined);
+	});
+
 	it('repairBlobFile releases its lock when stream setup throws', async () => {
 		const { blob, filePath, store } = await savedBlob('repair-stream-setup-error');
 		const lockKey = getFileId(blob) + ':blob';
 		stampHeaderType(filePath, 0xfe);
-		const saving = repairBlobFile(blob, {});
+		const saving = repairBlobFile(blob, {}, statSync(filePath).size - 8);
 		assert.ok(saving, 'repair should return its rejected settle promise');
 		await assert.rejects(saving);
+		assert.strictEqual(isSaving(blob), undefined, 'failed repair should not poison later writes with a stale rejection');
 		await waitFor(
 			() => {
 				if (!store.tryLock(lockKey)) return false;
@@ -1809,7 +1821,7 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		const { blob } = await BlobRepairTest.get('repair-compressed');
 		const filePath = getFilePathForBlob(blob);
 		stampHeaderType(filePath, 0xfe);
-		const saving = repairBlobFile(blob, Readable.from(payload));
+		const saving = repairBlobFile(blob, Readable.from(payload), payload.length);
 		assert.ok(saving, 'repair should start on a damaged compressed blob');
 		await saving;
 		assert.deepStrictEqual(await blob.bytes(), payload);
@@ -1826,6 +1838,8 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		let competingWriterHeld = false;
 		let competingWriterAcquired = false;
 		store.unlock = function (key, ...args) {
+			if (armCompetingWriter && key === lockKey)
+				assert.strictEqual(readFileSync(filePath)[1], 0xfe, 'repair must stamp PENDING before releasing its lock');
 			const result = originalUnlock.call(this, key, ...args);
 			if (armCompetingWriter && key === lockKey && !competingWriterHeld) {
 				competingWriterAcquired = store.tryLock(lockKey);
@@ -1838,7 +1852,7 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		};
 		try {
 			const source = new PassThrough();
-			const saving = repairBlobFile(blob, source);
+			const saving = repairBlobFile(blob, source, original.length - 8);
 			assert.ok(saving, 'repair should start on a damaged blob');
 			armCompetingWriter = true;
 			source.destroy(new Error('repair failed'));
