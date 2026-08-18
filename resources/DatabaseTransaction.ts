@@ -654,6 +654,13 @@ export class DatabaseTransaction implements Transaction {
 		return false;
 	}
 
+	hasWritesForAnyStore(stores: Set<any>): boolean {
+		for (let transaction: DatabaseTransaction = this; transaction; transaction = transaction.next) {
+			if (transaction.writes.some((write) => write && stores.has(write.store))) return true;
+		}
+		return false;
+	}
+
 	private finishPendingWrites(): void {
 		activeWriteTransactions.delete(this);
 		this.#trackedForDropDrain = false;

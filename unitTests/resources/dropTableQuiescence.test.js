@@ -160,6 +160,24 @@ describe('dropTable worker quiescence', function () {
 		assert.strictEqual(destructivePhaseStarted, true, 'dropTable() should continue after the transaction settles');
 	});
 
+	it('rejects a drop from its own staged-write transaction before tombstoning', async function () {
+		const tableName = `DropOwnTxn_${process.pid}_${Date.now()}`;
+		const Table = defineTable(tableName);
+		const dbisDb = database({ database: 'test', table: null }).dbisDb;
+
+		await assert.rejects(
+			() =>
+				transaction(async () => {
+					await Table.put({ id: 'staged', name: 'pending' });
+					await Table.dropTable();
+				}),
+			(error) => error?.code === 'ERR_TABLE_DROP_IN_TRANSACTION'
+		);
+		assert.notStrictEqual(dbisDb.getSync(`${tableName}/`)?.dropping, true);
+		assert.strictEqual(databases.test?.[tableName], Table);
+		await Table.dropTable();
+	});
+
 	it('does not wait for a read iterator on another table in the same database', async function () {
 		const droppedTable = defineTable(`DropReadScope_${process.pid}_${Date.now()}`);
 		const otherTable = defineTable(`DropReadScopeOther_${process.pid}_${Date.now()}`);

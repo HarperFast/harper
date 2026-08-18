@@ -1475,6 +1475,19 @@ export function makeTable(options) {
 			}
 			const rootStore = primaryStore.rootStore;
 			const sharedRocksStore = databaseName === databasePath && rootStore instanceof RocksDatabase;
+			const activeTransaction = contextStorage.getStore()?.transaction;
+			if (
+				sharedRocksStore &&
+				activeTransaction instanceof DatabaseTransaction &&
+				activeTransaction.hasWritesForAnyStore(new Set(tableStores()))
+			) {
+				const error: any = new ClientError(
+					`Cannot drop ${databaseName}.${tableName} from a transaction with staged writes to that table; commit or abort the transaction first`,
+					409
+				);
+				error.code = 'ERR_TABLE_DROP_IN_TRANSACTION';
+				throw error;
+			}
 			let dropGeneration: string | undefined;
 			if (databaseName === databasePath) {
 				const primaryCatalogKey = TableResource.tableName + '/';
@@ -1591,7 +1604,7 @@ export function makeTable(options) {
 					try {
 						closeTableStores();
 					} catch (error) {
-						logger.warn(`Failed to close table handles for ${databaseName}.${tableName}`, error);
+						logger.warn?.(`Failed to close table handles for ${databaseName}.${tableName}`, error);
 					}
 				}
 			}
