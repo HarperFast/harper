@@ -44,9 +44,10 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	// Match LMDB's remove(key, version) contract without splitting the version check from the delete.
 	async removeIfVersion(id: any, version: number): Promise<boolean> {
 		for (let attempt = 0; attempt < 2; attempt++) {
-			const transaction = new Transaction(this.store);
+			let transaction: Transaction | undefined;
 			try {
-				const entry = this.getEntry(id, { transaction });
+				transaction = new Transaction(this.store);
+				const entry = this.#processEntry(super.getSync(id, { transaction }), id);
 				if (!entry || entry.version !== version) {
 					transaction.abort();
 					return false;
@@ -57,12 +58,13 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				return true;
 			} catch (error: any) {
 				try {
-					transaction.abort();
+					transaction?.abort();
 				} catch {}
 				if (attempt === 0 && error?.code === 'ERR_BUSY') continue;
 				throw error;
 			}
 		}
+		throw new Error('Versioned removal exhausted its retries');
 	}
 
 	/**

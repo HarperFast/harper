@@ -5105,7 +5105,7 @@ export function makeTable(options) {
 					for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
 						const { key, value, localTime, version } = entry;
 						await rest(); // yield to other async operations
-						if (value === null && localTime < endTime) {
+						if (value === null && version != null && localTime < endTime) {
 							const backpressure = queueRemoval(
 								() => primaryStore.remove(key, version),
 								'Error removing deleted record during deleteHistory'

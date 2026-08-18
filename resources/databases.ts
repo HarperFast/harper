@@ -228,7 +228,8 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	} else {
 		db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksRootDatabase;
 		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
-		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem
+		// making them unsafe to replace LMDB methods, which will synchronously throw errors if there is a problem.
+		// The versioned remove is necessarily async and its callers must await or otherwise track its promise.
 		db.put = db.putSync as any;
 		db.remove = ((id: any, removeOptions?: any) =>
 			typeof removeOptions === 'number'

@@ -353,8 +353,9 @@ describe('Audit log', () => {
 			await AuditedTable.deleteHistory(Date.now() + 60_000, true);
 		}
 	});
-	it('RocksDB versioned removal preserves a record recreated after its tombstone', async function () {
+	it('RocksDB versioned removal preserves records recreated before or during removal', async function () {
 		if (!AuditedTable.primaryStore.isPrimaryRocksDatabase) return this.skip();
+		const { Transaction } = require('@harperfast/rocksdb-js');
 		const recordId = 'rocks-cleanup-race';
 		try {
 			await AuditedTable.put(recordId, { name: 'deleted' });
@@ -370,7 +371,27 @@ describe('Audit log', () => {
 			);
 			const recreated = AuditedTable.primaryStore.getEntry(recordId);
 			assert.equal(recreated?.value?.name, 'recreated');
-			assert.equal(await AuditedTable.primaryStore.remove(recordId, recreated.version), true);
+
+			await AuditedTable.delete(recordId);
+			const secondTombstone = AuditedTable.primaryStore.getEntry(recordId);
+			const originalCommit = Transaction.prototype.commit;
+			let interleaved = false;
+			Transaction.prototype.commit = async function (...args) {
+				if (!interleaved) {
+					interleaved = true;
+					await AuditedTable.put(recordId, { name: 'concurrent' });
+				}
+				return originalCommit.apply(this, args);
+			};
+			try {
+				assert.equal(await AuditedTable.primaryStore.remove(recordId, secondTombstone.version), false);
+			} finally {
+				Transaction.prototype.commit = originalCommit;
+			}
+			assert(interleaved, 'a recreate should commit between the conditional read and delete commit');
+			const concurrent = AuditedTable.primaryStore.getEntry(recordId);
+			assert.equal(concurrent?.value?.name, 'concurrent');
+			assert.equal(await AuditedTable.primaryStore.remove(recordId, concurrent.version), true);
 			assert.equal(AuditedTable.primaryStore.getEntry(recordId), undefined);
 		} finally {
 			await AuditedTable.primaryStore.remove(recordId);
