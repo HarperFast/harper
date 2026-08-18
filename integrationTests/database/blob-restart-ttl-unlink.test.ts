@@ -65,7 +65,7 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'blob-restart-ttl-unlink');
 // ── Tunables ─────────────────────────────────────────────────────────────────
 const BLOB_SIZE = 64 * 1024; // > 8KB FILE_STORAGE_THRESHOLD -> always file-backed
 const LONG_TTL_MS = 15 * 60 * 1000; // 15min: survivor/update-target must outlive the whole test
-const NORMAL_TTL_MS = 60_000; // enough pre-restart headroom while remaining within the sweep budget
+const NORMAL_TTL_MS = 60_000; // first post-restart sweep is the 60s runtime floor; a shorter TTL only reduces seeding headroom
 const MIN_PRE_RESTART_TTL_MS = 30_000;
 const ALREADY_EXPIRED_OFFSET_MS = -10_000; // already 10s past due AT WRITE TIME
 const NORMAL_COUNT = 5;
