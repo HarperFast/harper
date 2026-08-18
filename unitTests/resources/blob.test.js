@@ -1757,6 +1757,7 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		let sourceSize;
 		const saving = repairBlobFile(blob, source, () => sourceSize);
 		assert.ok(saving, 'repair should start on a damaged blob');
+		assert.strictEqual(isSaving(blob), undefined, 'repair must not publish into the normal blob-save gate');
 		sourceSize = original.length - 8;
 		source.end(original.subarray(8));
 		await saving;
@@ -1764,6 +1765,40 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		assert.strictEqual(existsSync(filePath + '.repair'), false);
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 		assert.deepStrictEqual(readFileSync(filePath).subarray(8), original.subarray(8));
+	});
+
+	it('repairBlobFile declines when the source reports a size unlike the stored descriptor', async () => {
+		const { blob, filePath } = await savedBlob('repair-advertised-size-mismatch', randomBytes(25000));
+		stampHeaderType(filePath, 0xfe);
+		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(24999)), 24999), undefined);
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+	});
+
+	it('repairBlobFile rejects a late source-size mismatch without replacing the file', async () => {
+		const { blob, filePath } = await savedBlob('repair-late-size-mismatch', randomBytes(25000));
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, Readable.from(randomBytes(25000)), () => 24999);
+		assert.ok(saving, 'repair should start before the stream reports its final size');
+		await assert.rejects(saving, /Blob repair source size mismatch/);
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+	});
+
+	it('repairBlobFile contains a throwing source-size getter and releases both locks', async () => {
+		const { blob, filePath, store } = await savedBlob('repair-source-size-error', randomBytes(25000));
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, Readable.from(randomBytes(25000)), () => {
+			throw new Error('source size unavailable');
+		});
+		assert.ok(saving, 'repair should return its rejected settle promise');
+		await assert.rejects(saving, /source size unavailable/);
+		for (const lockKey of [getFileId(blob) + ':blob', filePath + '.repair:blob']) {
+			assert.ok(store.tryLock(lockKey), `${lockKey} should be released`);
+			store.unlock(lockKey);
+		}
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
 	});
 
 	it('repairBlobFile recreates a missing bucket directory', async () => {
@@ -1875,7 +1910,7 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 	});
 
-	it('repairBlobFile does not re-stamp over a writer that acquired the lock after a failed repair', async () => {
+	it('repairBlobFile preserves the referenced PENDING file before a competing writer acquires the lock', async () => {
 		const { blob, filePath, store } = await savedBlob('repair-restamp-race');
 		const original = readFileSync(filePath);
 		const lockKey = getFileId(blob) + ':blob';
