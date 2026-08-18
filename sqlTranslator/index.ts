@@ -73,7 +73,7 @@ export function evaluateSQL(jsonMessage: any, callback: any) {
  * @param parsedSqlObject - The Parsed SQL statement specified in the inbound json message, of type ParsedSQLObject.
  * @returns {Array} - False if permissions check denys the statement.
  */
-export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any) {
+export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any, apiOperation?: string) {
 	let verifyResult = undefined;
 	try {
 		verifyResult = opAuth.verifyPermsAST(
@@ -81,10 +81,21 @@ export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any) {
 			jsonMessage.hdb_user,
 			parsedSqlObject.variant,
 			// The top-level API operation for the token-scope check: `sql` for a direct SQL call, but
-			// `export_local`/`export_to_s3` when the SQL rides inside a job's search_operation. On that
-			// job path the request reaching here IS the search_operation, whose own `operation` is
-			// 'sql', so serverUtilities stamps the real one as `api_operation` — prefer it when present.
-			jsonMessage.api_operation ?? jsonMessage.operation
+			// `export_local`/`export_to_s3` when the SQL rides inside a job's search_operation.
+			//
+			// From the explicit argument or the dispatched operation — deliberately NEVER a field read
+			// off `jsonMessage`. On the direct-SQL path that object IS the client's request body, and
+			// this check is the ONLY gate there, since the `sql` branch of chooseOperation is mutually
+			// exclusive with its verifyPerms call. Any body field consulted here is therefore a way for
+			// a caller to name whichever operation their token scope happens to allow and run arbitrary
+			// SQL under it.
+			//
+			// That rules out carrying the job's real operation on the request too. A job re-parses from
+			// its nested search_operation, so this sees `sql` rather than `export_local` there — which
+			// today changes nothing, because the branch in processAST that would act on the denial is
+			// dead (see #2202). When #2202 makes it live, the job's operation needs a carrier that a
+			// client cannot forge; a request property is not one, however carefully it is stripped.
+			apiOperation ?? jsonMessage.operation
 		);
 		parsedSqlObject.permissions_checked = true;
 	} catch (e) {

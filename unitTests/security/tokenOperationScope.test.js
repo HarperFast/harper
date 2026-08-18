@@ -158,6 +158,21 @@ describe('token-scoped narrowing on the SQL path', () => {
 		assert.ok(denial, 'a token scoped away from sql must not be able to run SQL');
 	});
 
+	// `api_operation` is how a job tells this check which top-level operation it was invoked as. For a
+	// direct `sql` call the request IS the client's body, so if that field were read from the body a
+	// caller could name any operation their scope happens to allow and run arbitrary SQL under it —
+	// and on this path checkASTPermissions is the ONLY gate, since the sql branch of chooseOperation
+	// is mutually exclusive with verifyPerms. It must never be honored from an inbound request.
+	it('ignores a caller-supplied api_operation on a direct SQL call', () => {
+		const user = userWithScope({ super_user: true }, ['deploy_component']);
+		const parsed = sql.convertSQLToAST('SELECT * FROM data.dog');
+		const denial = sql.checkASTPermissions(
+			{ operation: 'sql', sql: 'SELECT * FROM data.dog', api_operation: 'deploy_component', hdb_user: user },
+			parsed
+		);
+		assert.ok(denial, 'a body-supplied api_operation must not satisfy the scope gate');
+	});
+
 	// The dangerous case: verifyPermsAST returns null unconditionally for a super_user.
 	it('denies a super_user whose scope excludes SQL', () => {
 		const denial = checkSql('DELETE FROM data.dog', userWithScope({ super_user: true }, ['deploy_component']));

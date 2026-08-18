@@ -249,17 +249,16 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
 			json.parsed_sql_object = parsedSqlObject;
-			// Carry the real top-level operation onto the nested search for the token-scope check.
-			// The checked parse above is stashed on the TOP-LEVEL json, but export.ts dispatches the
-			// job with `search_operation` alone — so evaluateSQL finds no parsed_sql_object, re-parses
-			// with permissions_checked false, and processAST re-runs the check against a request whose
-			// `operation` is now 'sql'. A token scoped to `export_local` would be denied by its own
-			// job. (The job worker deserializes this body from hdb_job and never runs the outer gate
-			// at all, so this string is the only thing that survives to tell the inner check what the
-			// caller actually invoked.) Fails closed either way — a broken feature, not a hole.
-			if (json.search_operation) json.search_operation.api_operation = json.operation;
+			// NOTE: a job's SQL is re-parsed from its nested search_operation when the job runs, so the
+			// check there sees `sql` rather than the job's own operation. Carrying the real one on the
+			// request was tried and reverted: on the direct-SQL path the request is the client's body,
+			// so any property consulted by that check is forgeable, and it is the only gate on that
+			// path. This changes no outcome today — the branch that would act on the denial is dead
+			// (#2202) — but #2202 needs an unforgeable carrier before making it live.
 			if (!bypassAuth) {
-				const astPermCheck = sql.checkASTPermissions(json, parsedSqlObject);
+				// `json.operation` explicitly — the operation this dispatch already resolved, not a
+				// field read back off the request body.
+				const astPermCheck = sql.checkASTPermissions(json, parsedSqlObject, json.operation);
 				if (astPermCheck) {
 					operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
 					operationLog.warn(`User '${json.hdb_user?.username}' is not permitted to ${json.operation}`);
