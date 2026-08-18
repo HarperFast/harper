@@ -454,7 +454,7 @@ suite(
 
 		test('Z: liveness canary -- worker survived every throw shape above', { timeout: 30_000 }, async () => {
 			const health = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'canary');
-			ok(health.status === 200, `SseHealth canary expected 200, got ${health.status}`);
+			assertCleanCompletion(health);
 
 			const p = await getProbeJson(restBase, { Authorization: authHeader }).catch(() => null);
 			console.log(`[QA-890][Z] probe counters: ${p ? JSON.stringify(p) : 'DEAD'}`);
