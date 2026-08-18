@@ -214,8 +214,11 @@ describe('Audit log', () => {
 			await waitFor(() => removalCalls >= 10, { timeout: 5000, message: 'expected ten removals to start' });
 			assert.equal(removalCalls, 10, 'the eleventh removal must wait for an in-flight removal');
 
-			releaseRemovals.shift()();
-			await waitFor(() => removalCalls === 11, { timeout: 5000, message: 'expected the final removal to start' });
+			releaseRemovals.splice(4, 1)[0]();
+			await waitFor(() => removalCalls === 11, {
+				timeout: 5000,
+				message: 'expected the eleventh removal to start after any active removal completed',
+			});
 			while (releaseRemovals.length > 0) releaseRemovals.shift()();
 
 			assert.equal(await deletion, 11);

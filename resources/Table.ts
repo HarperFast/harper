@@ -5051,50 +5051,69 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
-			const removalSlots = new Array<Promise<void>>(MAX_CONCURRENT_HISTORY_REMOVALS);
-			let nextRemovalSlot = 0;
-			async function queueRemoval(
+			const inFlightRemovals = new Set<Promise<void>>();
+			const removalSlotWaiters: Array<() => void> = [];
+			function startRemoval(remove: () => MaybePromise<void>, errorMessage: string, onSuccess?: () => void): void {
+				const removal = new Promise<void>((resolve) => resolve(remove()))
+					.then(onSuccess, (error) => harperLogger.warn(errorMessage, error))
+					.catch(() => undefined)
+					.finally(() => {
+						inFlightRemovals.delete(removal);
+						removalSlotWaiters.shift()?.();
+					});
+				inFlightRemovals.add(removal);
+			}
+			function queueRemoval(
 				remove: () => MaybePromise<void>,
 				errorMessage: string,
 				onSuccess?: () => void
-			): Promise<void> {
-				const slot = nextRemovalSlot++ % MAX_CONCURRENT_HISTORY_REMOVALS;
-				await removalSlots[slot];
-				removalSlots[slot] = new Promise<void>((resolve) => resolve(remove()))
-					.then(onSuccess, (error) => harperLogger.warn(errorMessage, error))
-					.catch(() => undefined);
+			): Promise<void> | undefined {
+				if (inFlightRemovals.size >= MAX_CONCURRENT_HISTORY_REMOVALS) {
+					return new Promise<void>((resolve) => {
+						removalSlotWaiters.push(resolve);
+					}).then(() => startRemoval(remove, errorMessage, onSuccess));
+				}
+				startRemoval(remove, errorMessage, onSuccess);
 			}
-			const drainRemovals = () => Promise.all(removalSlots);
+			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
-			for (const auditRecord of auditStore.getRange({
-				start: 0,
-				end: endTime,
-			})) {
-				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId) continue;
-				await queueRemoval(
-					() => removeAuditEntry(auditStore, auditRecord),
-					'Error removing audit entry during deleteHistory',
-					() => {
-						entriesDeleted++;
-					}
-				);
+			try {
+				for (const auditRecord of auditStore.getRange({
+					start: 0,
+					end: endTime,
+				})) {
+					await rest(); // yield to other async operations
+					if (auditRecord.tableId !== tableId) continue;
+					const backpressure = queueRemoval(
+						() => removeAuditEntry(auditStore, auditRecord),
+						'Error removing audit entry during deleteHistory',
+						() => {
+							entriesDeleted++;
+						}
+					);
+					if (backpressure) await backpressure;
+				}
+			} finally {
+				await drainRemovals();
 			}
-			await drainRemovals();
 			if (cleanupDeletedRecords) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
 				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
-				for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
-					const { key, value, localTime, version } = entry;
-					await rest(); // yield to other async operations
-					if (value === null && localTime < endTime) {
-						await queueRemoval(
-							() => primaryStore.remove(key, primaryStore.useVersions ? version : undefined),
-							'Error removing deleted record during deleteHistory'
-						);
+				try {
+					for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
+						const { key, value, localTime, version } = entry;
+						await rest(); // yield to other async operations
+						if (value === null && localTime < endTime) {
+							const backpressure = queueRemoval(
+								() => primaryStore.remove(key, primaryStore.useVersions ? version : undefined),
+								'Error removing deleted record during deleteHistory'
+							);
+							if (backpressure) await backpressure;
+						}
 					}
+				} finally {
+					await drainRemovals();
 				}
-				await drainRemovals();
 			}
 			return entriesDeleted;
 		}
