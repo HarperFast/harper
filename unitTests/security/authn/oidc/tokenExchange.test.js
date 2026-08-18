@@ -235,7 +235,19 @@ describe('exchangeOidcToken', () => {
 	// operations as a scalar: hasOperationScope tests Array.isArray, so the scope would be dropped and
 	// the token minted UNSCOPED with the policy user's whole role. A malformed narrowing must never
 	// widen — so the row is refused rather than honored without its scope.
-	it('refuses a stored policy whose operations is a scalar rather than an array', async () => {
+	//
+	// A NUMBER, not a string. A string scalar is refused even without the Array.isArray guard, because
+	// validateOperations iterates it character by character and reports 'd' as an unknown operation —
+	// the right outcome via the wrong check, which would let the guard be deleted with tests green. A
+	// number isolates it: `for (const op of 42)` throws TypeError, which would escape readPolicies and
+	// turn one malformed row into a 500 on every exchange for that issuer instead of a uniform 401.
+	// assertRejected requires exactly that 401, so it fails if the guard goes.
+	it('refuses a stored policy whose operations is a non-iterable scalar', async () => {
+		storePolicyDirectly({ operations: 42 });
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
+	});
+
+	it('refuses a stored policy whose operations is a string rather than an array', async () => {
 		storePolicyDirectly({ operations: 'deploy_component' });
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
 	});
@@ -249,6 +261,16 @@ describe('exchangeOidcToken', () => {
 	// meant to disable would keep minting tokens.
 	it('refuses a stored policy whose enabled is a string rather than a boolean', async () => {
 		storePolicyDirectly({ enabled: 'false' });
+		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
+	});
+
+	// The constraint list MATCHES on its string entry, so matchTrustPolicyClaims would admit this row
+	// — only validateClaimConstraintShape refuses it. A wholly-bad shape (`{nested: 'object'}`) is
+	// refused downstream by the matcher too, so it cannot tell the new validator from the pre-existing
+	// one; this can. A non-string entry in an otherwise-matching list is how a constraint gets
+	// silently wider than it reads.
+	it('refuses a stored policy whose claim list has a non-string entry, even though it matches', async () => {
+		storePolicyDirectly({ claims: { repository_id: ['67890', 42], workflow_ref: WORKFLOW_REF } });
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token: identityToken() }));
 	});
 

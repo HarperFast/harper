@@ -125,7 +125,7 @@ function trustTable() {
  * Rebuild a plain record from a stored row's known attributes. Never spread rows — RecordObject
  * prototype fields don't survive a spread reliably (see DESIGN.md).
  */
-function toRecord(row: any): OidcTrustPolicy & Record<string, unknown> {
+function toRecord(row: any, problem?: string): OidcTrustPolicy & Record<string, unknown> {
 	return {
 		id: row.id,
 		issuer: row.issuer,
@@ -133,7 +133,13 @@ function toRecord(row: any): OidcTrustPolicy & Record<string, unknown> {
 		claims: row.claims ?? {},
 		user: row.user,
 		operations: row.operations ?? null,
-		enabled: row.enabled !== false,
+		// Reported as stored rather than coerced. `row.enabled !== false` would render the string
+		// 'false' — one of the shapes the exchange refuses — as `enabled: true`, telling the operator
+		// a dead trust is live. Absent still means enabled, which is the documented default.
+		enabled: row.enabled === undefined ? true : row.enabled,
+		// Present only on a row the exchange will refuse, so a listing says why the trust is dead
+		// instead of leaving a per-attempt log line as the only signal.
+		...(problem ? { invalid_reason: problem } : {}),
 		description: row.description ?? null,
 		updated_by: row.updated_by ?? null,
 		__createdtime__: row.__createdtime__,
@@ -156,16 +162,19 @@ async function readPolicies(
 	for await (const row of table.search([])) {
 		if (!includeDisabled && row.enabled === false) continue;
 		if (issuer !== undefined && row.issuer !== issuer) continue;
+		// Validated on BOTH paths, always against the RAW row — normalizing first is precisely what
+		// hides the shapes that fail open (see storedPolicyProblem). The two paths then differ in what
+		// they do with the answer: the exchange refuses the row, while a listing reports it. A listing
+		// that silently skipped a refused policy, or that showed it as healthy, would leave the
+		// operator's belief that the trust works corroborated by the very command they ran to check.
+		const problem = storedPolicyProblem(row);
 		if (forExchange) {
-			// Validate the RAW row, before toRecord normalizes it — normalizing is precisely what would
-			// hide the two shapes that fail open (see storedPolicyProblem).
-			const problem = storedPolicyProblem(row);
 			if (problem) {
 				logger.warn?.(`Ignoring trust policy '${row.id}': ${problem}`);
 				continue;
 			}
 		}
-		policies.push(toRecord(row));
+		policies.push(toRecord(row, problem));
 	}
 	return policies.sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }

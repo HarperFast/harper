@@ -296,6 +296,36 @@ describe('oidc trustPolicyOperations', () => {
 		});
 	});
 
+	// A row the exchange refuses must not list as healthy. The failure mode this guards: the row
+	// arrives by replication or a restore, every exchange returns the deliberately opaque 401, and
+	// list_oidc_trust — the one command an operator runs to check — tells them the trust is enabled.
+	describe('listing an unusable stored policy', () => {
+		it('reports why a refused policy is dead instead of showing it as healthy', async () => {
+			installed.mock.rows.set('broken', {
+				id: 'broken',
+				issuer: ISSUER,
+				audience: AUDIENCE,
+				claims: { ...VALID_CLAIMS },
+				user: 'ci-deploy',
+				enabled: 'false',
+			});
+
+			const listed = (await listOidcTrust(su('list_oidc_trust'))).policies.find((policy) => policy.id === 'broken');
+			assert.ok(listed, 'the row must still be listed — a listing tells the truth about what is stored');
+			assert.notStrictEqual(listed.enabled, true, "'false' must not be reported as enabled: true");
+			assert.match(listed.invalid_reason, /enabled/, 'expected the listing to say why it is refused');
+		});
+
+		it('leaves a well-formed policy unannotated', async () => {
+			await addOidcTrust(su('add_oidc_trust', validPolicy()));
+			const listed = (await listOidcTrust(su('list_oidc_trust'))).policies.find(
+				(policy) => policy.id === 'my-app-prod'
+			);
+			assert.strictEqual(listed.enabled, true);
+			assert.strictEqual(listed.invalid_reason, undefined);
+		});
+	});
+
 	describe('listOidcTrust', () => {
 		it('returns policies sorted by id', async () => {
 			await addOidcTrust(su('add_oidc_trust', validPolicy({ id: 'zulu' })));
