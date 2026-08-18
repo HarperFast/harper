@@ -5,7 +5,11 @@ const { parentPort } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table, closeLoadedDatabases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { onMessageByType, getProcessInstanceId } = require('#js/server/threads/manageThreads');
+const {
+	onMessageByType,
+	getProcessInstanceId,
+	sendToThreadWithStrictAcknowledgement,
+} = require('#js/server/threads/manageThreads');
 
 const MESSAGE_TYPE = 'drop-table-quiescence-test';
 const CONTROL_TYPE = 'drop-table-quiescence-control';
@@ -135,6 +139,10 @@ function runWorkerFixture() {
 							throw new Error('injected worker quiescence failure');
 						};
 						report('reject-prepare-armed');
+						break;
+					case 'send-foreign-strict':
+						await sendToThreadWithStrictAcknowledgement(0, { type: 'resource_report', heapUsed: 1 }, 1000);
+						report('foreign-strict-acknowledged');
 						break;
 					case 'drop-table': {
 						const originalDropSync = TestTable.primaryStore.dropSync;

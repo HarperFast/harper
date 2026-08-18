@@ -216,6 +216,8 @@ let workerCount = 1; // should be assigned when workers are created
 const RESERVED_WORKER_DATA_KEYS = [
 	'addPorts',
 	'addThreadIds',
+	'addItcReadyBuffers',
+	'itcReadyBuffer',
 	'workerIndex',
 	'workerCount',
 	'name',
@@ -353,6 +355,7 @@ function startWorker(path, options = {}) {
 		channelsToConnect.push(channel);
 		portsToSend.push(channel.port2);
 	}
+	const itcReadyBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
 
 	if (!extname(path)) path += '.js';
 
@@ -395,6 +398,8 @@ function startWorker(path, options = {}) {
 			...collectProvidedWorkerData(options),
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
+			addItcReadyBuffers: channelsToConnect.map((channel) => channel.existingPort.itcReadySignal?.buffer),
+			itcReadyBuffer,
 			workerIndex: options.workerIndex,
 			workerCount: (workerCount = options.threadCount),
 			name: options.name,
@@ -415,11 +420,12 @@ function startWorker(path, options = {}) {
 				port: port1,
 				threadId: worker.threadId,
 				isJobWorker,
+				itcReadyBuffer,
 			},
 			[port1]
 		);
 	}
-	addPort(worker, true, isJobWorker);
+	addPort(worker, true, isJobWorker, itcReadyBuffer);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -765,9 +771,10 @@ function broadcastAwaitingAcknowledgements(
 			} else resolve();
 		};
 		for (let port of ports) {
-			// Loading table storage registers the ITC listener before opening any table handle. Until then,
-			// the worker is safe to omit and could not acknowledge this barrier anyway.
-			if (skipUnready && !port.itcReady) continue;
+			// The worker publishes readiness before Table.ts can continue opening stores, so the coordinator
+			// does not depend on when its event loop handles the matching ITC_READY message.
+			const itcReady = port.itcReady || (port.itcReadySignal && Atomics.load(port.itcReadySignal, 0) === 1);
+			if (skipUnready && !itcReady) continue;
 			// Ordinary post-change gossip excludes transient job workers. Strict pre-change barriers
 			// include them because a job can hold the same native handles; the main-thread relay keeps
 			// a job-originated async schema operation re-entrant while it awaits its own ACK.
@@ -913,7 +920,7 @@ if (parentPort && workerData?.addPorts) {
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
-		addPort(port);
+		addPort(port, false, false, workerData.addItcReadyBuffers?.[i]);
 	}
 	setInterval(() => {
 		// post our memory usage as a resource report, reporting our memory usage
@@ -1211,8 +1218,9 @@ function removePort(port, deadThreadId) {
 	}
 }
 
-function addPort(port, keepRef, isJobWorker) {
+function addPort(port, keepRef, isJobWorker, itcReadyBuffer) {
 	if (isJobWorker) port.isJobWorker = true;
+	if (itcReadyBuffer) port.itcReadySignal = new Int32Array(itcReadyBuffer);
 	connectedPorts.push(port);
 	// Capture threadId now — Bun resets port.threadId to -1 by the time 'exit' fires.
 	const portThreadId = port.threadId;
@@ -1226,7 +1234,7 @@ function addPort(port, keepRef, isJobWorker) {
 				port.itcReady = true;
 			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
-				addPort(message.port, false, message.isJobWorker);
+				addPort(message.port, false, message.isJobWorker, message.itcReadyBuffer);
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {

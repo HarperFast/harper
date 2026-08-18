@@ -406,7 +406,11 @@ export function makeTable(options) {
 	// in-flight commit promises here so dropTable() can drain them first, and stop admitting
 	// new ones (droppingTable) once a drop has actually started.
 	const pendingSourceCommits = new Set<Promise<any>>();
-	const pendingTableOperations = new Set<Promise<void>>();
+	const pendingTableOperations = new Set<{
+		completion: Promise<void>;
+		label: string;
+		cancel?: () => void;
+	}>();
 	let droppingTable = false;
 	let coordinatingDrop = false;
 	let storesClosed = false;
@@ -417,38 +421,56 @@ export function makeTable(options) {
 		error.code = 'ERR_TABLE_DROPPING';
 		return error;
 	};
-	const beginTableOperation = () => {
+	// Rocks operations that bypass txnForContext must hold this token across every yield so drop can see them.
+	const beginTableOperation = (label: string, cancel?: () => void) => {
 		if (!isRocksDB) return () => {};
 		if (droppingTable) throw tableDroppingError();
 		let resolve: () => void;
 		const completion = new Promise<void>((scanResolve) => {
 			resolve = scanResolve;
 		});
-		pendingTableOperations.add(completion);
+		const operation = { completion, label, cancel };
+		pendingTableOperations.add(operation);
 		let active = true;
 		return () => {
 			if (!active) return;
 			active = false;
-			pendingTableOperations.delete(completion);
+			pendingTableOperations.delete(operation);
 			resolve();
 		};
 	};
+	const stopCleanupTimer = () => {
+		if (cleanupTimer) {
+			clearTimeout(cleanupTimer);
+			cleanupTimer = undefined;
+			cleanupTimerCompletion?.resolve();
+			cleanupTimerCompletion = undefined;
+		}
+	};
 	const stopBackgroundScans = () => {
-		if (cleanupTimer) clearTimeout(cleanupTimer);
+		stopCleanupTimer();
 		if (recordExpirationInterval) clearInterval(recordExpirationInterval);
 	};
 	const markTableDropping = () => {
 		droppingTable = true;
 		stopBackgroundScans();
+		for (const operation of [...pendingTableOperations]) {
+			try {
+				operation.cancel?.();
+			} catch (error) {
+				logger.warn?.(`Unable to cancel ${operation.label} while dropping ${databaseName}.${tableName}`, error);
+			}
+		}
 		if (isRocksDB) {
 			for (const store of tableStores()) (store as any).dropping = true;
 		}
 		delete databases[databaseName]?.[tableName];
 	};
 	const drainTableOperations = async () => {
+		const directOperations = [...pendingTableOperations];
 		const pending = new Set<Promise<any>>([
 			...pendingSourceCommits,
-			...pendingTableOperations,
+			...directOperations.map(({ completion }) => completion),
 			...getPendingWriteResolutions(tableStores()),
 			...getPendingReadResolutions(tableStores()),
 		]);
@@ -463,8 +485,11 @@ export function makeTable(options) {
 		]);
 		clearTimeout(timer);
 		if (result === timedOut) {
+			const directOperationLabels = directOperations
+				.filter((operation) => pendingTableOperations.has(operation))
+				.map(({ label }) => label);
 			throw new Error(
-				`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.size} in-flight operation(s) on ${tableName} to settle; refusing to drop the column families. The drop tombstone is durable, so recovery can retry after a clean restart.`
+				`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.size} in-flight operation(s) on ${tableName} to settle${directOperationLabels.length ? ` (${directOperationLabels.join(', ')})` : ''}; refusing to drop the column families. The drop tombstone is durable, so recovery can retry after a clean restart.`
 			);
 		}
 	};
@@ -490,7 +515,8 @@ export function makeTable(options) {
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
-	let cleanupTimer: NodeJS.Timeout;
+	let cleanupTimer: NodeJS.Timeout | undefined;
+	let cleanupTimerCompletion: { resolve: () => void } | undefined;
 	let recordExpirationInterval: NodeJS.Timeout;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
@@ -4148,7 +4174,7 @@ export function makeTable(options) {
 			// in subscription.queue. Without this, the IIFE can fill the queue past
 			// EVENT_HIGH_WATER_MARK and hit waitForDrain before the consumer's listener exists.
 			if (request.listener) subscription!.on('data', request.listener);
-			const finishInitialScan = beginTableOperation();
+			const finishInitialScan = beginTableOperation('subscription replay', () => subscription.close());
 			const result = (async () => {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
@@ -4455,7 +4481,7 @@ export function makeTable(options) {
 				reloadResnapshotRunning = true;
 				let finishReloadScan: (() => void) | undefined;
 				try {
-					finishReloadScan = beginTableOperation();
+					finishReloadScan = beginTableOperation('subscription reload scan', () => subscription.close());
 					await rest(); // defer off the broadcast listener's stack before scanning
 					while (reloadResnapshotPending) {
 						reloadResnapshotPending = false;
@@ -4865,7 +4891,7 @@ export function makeTable(options) {
 			return getStorageSpaceStats(primaryStore.path);
 		}
 		static async getRecordCount(options?: any) {
-			const finishRecordCountScan = beginTableOperation();
+			const finishRecordCountScan = beginTableOperation('record count scan');
 			try {
 				// iterate through the metadata entries to exclude their count and exclude the deletion counts
 				const exactCount = options?.exactCount;
@@ -4886,6 +4912,7 @@ export function makeTable(options) {
 					if (value != null) recordCount++;
 					entriesScanned++;
 					await rest();
+					if (droppingTable) throw tableDroppingError();
 					if (!exactCount && !completeForExact && performance.now() - start > TIME_LIMIT) {
 						if (!counted) {
 							counted = true;
@@ -4925,6 +4952,7 @@ export function makeTable(options) {
 						if (value != null) recordCount++;
 						reverseScanned++;
 						await rest();
+						if (droppingTable) throw tableDroppingError();
 						if (reverseScanned >= limit) break;
 					}
 					// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
@@ -5225,7 +5253,7 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
-			const finishHistoryScan = beginTableOperation();
+			const finishHistoryScan = beginTableOperation('history deletion scan');
 			try {
 				let completion: Promise<void>;
 				let entriesDeleted = 0;
@@ -5234,6 +5262,7 @@ export function makeTable(options) {
 					end: endTime,
 				})) {
 					await rest(); // yield to other async operations
+					if (droppingTable) throw tableDroppingError();
 					if (auditRecord.tableId !== tableId) continue;
 					completion = removeAuditEntry(auditStore, auditRecord);
 					entriesDeleted++;
@@ -5244,6 +5273,7 @@ export function makeTable(options) {
 					for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
 						const { value, localTime } = entry;
 						await rest(); // yield to other async operations
+						if (droppingTable) throw tableDroppingError();
 						if (value === null && localTime < endTime) {
 							completion = removeEntry(primaryStore, entry);
 						}
@@ -5256,13 +5286,24 @@ export function makeTable(options) {
 			}
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
-			const finishHistoryScan = beginTableOperation();
+			let iterator: Iterator<any> | undefined;
+			let finishHistoryScan: () => void;
+			finishHistoryScan = beginTableOperation('history iterator', () => {
+				if (!iterator?.return) return;
+				iterator.return();
+				finishHistoryScan();
+			});
 			try {
-				for (const auditRecord of auditStore.getRange({
-					start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
-					end: endTime,
-				})) {
+				iterator = auditStore
+					.getRange({
+						start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
+						end: endTime,
+					})
+					[Symbol.iterator]();
+				for (let next = iterator.next(); !next.done; next = iterator.next()) {
+					const auditRecord = next.value;
 					await rest(); // yield to other async operations
+					if (droppingTable) throw tableDroppingError();
 					if (auditRecord.tableId !== tableId) continue;
 					yield {
 						id: auditRecord.recordId,
@@ -5275,11 +5316,12 @@ export function makeTable(options) {
 					};
 				}
 			} finally {
+				iterator?.return?.();
 				finishHistoryScan();
 			}
 		}
 		static async getHistoryOfRecord(id) {
-			const finishHistoryScan = beginTableOperation();
+			const finishHistoryScan = beginTableOperation('record history scan');
 			try {
 				const history = [];
 				if (id == undefined) throw new Error('An id is required');
@@ -5291,6 +5333,7 @@ export function makeTable(options) {
 				const auditWindow = 100;
 				do {
 					await rest(); // yield to other async operations
+					if (droppingTable) throw tableDroppingError();
 					let insertionPoint = history.length;
 					let highestPreviousVersion = 0;
 					const start = nextVersion - auditWindow;
@@ -5320,7 +5363,7 @@ export function makeTable(options) {
 			}
 		}
 		static async clear() {
-			const finishClear = beginTableOperation();
+			const finishClear = beginTableOperation('table clear');
 			try {
 				// clear the primary store and every secondary index dbi (same pattern used by
 				// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
@@ -6310,6 +6353,9 @@ export function makeTable(options) {
 		}
 
 		return {
+			cancel(): void {
+				pending = [];
+			},
 			add(type: 'evict' | 'tombstone', key: any, version: number): Promise<void> | void {
 				pending.push({ type, key, version });
 				if (pending.length >= EVICTION_BATCH_SIZE) {
@@ -6340,9 +6386,11 @@ export function makeTable(options) {
 		lastCleanupInterval = cleanupInterval;
 		if (getWorkerIndex() === getWorkerCount() - 1) {
 			// run on the last thread so we aren't overloading lower-numbered threads
-			if (cleanupTimer) clearTimeout(cleanupTimer);
+			stopCleanupTimer();
 			if (!cleanupInterval) return;
-			return new Promise((resolve) => {
+			return new Promise<void>((resolve) => {
+				const thisCleanupCompletion = { resolve };
+				cleanupTimerCompletion = thisCleanupCompletion;
 				const startOfYear = new Date();
 				startOfYear.setMonth(0);
 				startOfYear.setDate(1);
@@ -6398,7 +6446,7 @@ export function makeTable(options) {
 
 								let finishCleanupScan: (() => void) | undefined;
 								try {
-									finishCleanupScan = beginTableOperation();
+									finishCleanupScan = beginTableOperation('cleanup scan');
 									let count = 0;
 									let removeDeletedRecords = !audit || isRocksDB;
 									// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
@@ -6442,14 +6490,19 @@ export function makeTable(options) {
 											}
 										}
 										await rest();
+										if (droppingTable) {
+											batcher?.cancel();
+											return;
+										}
 									}
 									if (batcher) await batcher.drain();
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
 								} catch (error) {
-									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
+									if (!droppingTable) logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								} finally {
 									finishCleanupScan?.();
 								}
+								if (cleanupTimerCompletion === thisCleanupCompletion) cleanupTimerCompletion = undefined;
 								resolve(undefined);
 								cleanupPriority = 0; // reset the priority
 							})),
@@ -6476,7 +6529,7 @@ export function makeTable(options) {
 				runningRecordExpiration = true;
 				let finishExpirationScan: (() => void) | undefined;
 				try {
-					finishExpirationScan = beginTableOperation();
+					finishExpirationScan = beginTableOperation('expiration scan');
 					const expiresAtName = expiresAtProperty.name;
 					const index = indices[expiresAtName];
 					if (!index) throw new Error(`expiresAt attribute ${expiresAtProperty} must be indexed`);
@@ -6497,9 +6550,10 @@ export function makeTable(options) {
 							}
 						}
 						await rest();
+						if (droppingTable) return;
 					}
 				} catch (error) {
-					logger.error?.('Error in evicting old records', error);
+					if (!droppingTable) logger.error?.('Error in evicting old records', error);
 				} finally {
 					finishExpirationScan?.();
 					runningRecordExpiration = false;

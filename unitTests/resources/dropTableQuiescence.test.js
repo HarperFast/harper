@@ -212,7 +212,7 @@ describe('dropTable worker quiescence', function () {
 		if (dropResult.status === 'rejected') throw dropResult.reason;
 	});
 
-	it('drains a transaction-less range scan before closing the table stores', async function () {
+	it('cancels and drains a transaction-less range scan before closing the table stores', async function () {
 		const Table = defineTable(`DropDirectScan_${process.pid}_${Date.now()}`);
 		await Table.put({ id: 'scan', name: 'held' });
 
@@ -248,9 +248,39 @@ describe('dropTable worker quiescence', function () {
 		}
 		const [scanResult, dropResult] = await Promise.allSettled([scanPromise, dropPromise]);
 		if (earlyError) throw earlyError;
-		if (scanResult.status === 'rejected') throw scanResult.reason;
+		assert.strictEqual(scanResult.status, 'rejected');
+		assert.strictEqual(scanResult.reason.code, 'ERR_TABLE_DROPPING');
 		if (dropResult.status === 'rejected') throw dropResult.reason;
 		assert.strictEqual(destructivePhaseStarted, true);
+	});
+
+	it('cancels a subscriber-paced replay instead of timing out the drop drain', async function () {
+		const Table = defineTable(`DropSlowReplay_${process.pid}_${Date.now()}`);
+		for (let i = 0; i < 110; i++) await Table.put(i, { name: `queued-${i}` });
+		const subscription = await Table.subscribe({ isCollection: true });
+		await waitFor(() => subscription.currentDrainResolver, {
+			message: 'subscription replay did not pause on client backpressure',
+		});
+
+		await Table.dropTable();
+		assert.strictEqual(subscription.closed, true);
+	});
+
+	it('closes an abandoned history iterator before dropping its stores', async function () {
+		const tableName = `DropHistoryIterator_${process.pid}_${Date.now()}`;
+		const Table = table({
+			table: tableName,
+			database: 'test',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		await Table.put({ id: 'history', name: 'held' });
+		const history = Table.getHistory()[Symbol.asyncIterator]();
+		const first = await history.next();
+		assert.strictEqual(first.done, false);
+
+		await Table.dropTable();
+		await history.return?.();
 	});
 
 	it('omits a worker until its ITC listener is ready', async function () {
@@ -278,6 +308,8 @@ describe('dropTable worker quiescence', function () {
 		try {
 			await worker.booted;
 			assert.strictEqual(worker.worker.itcReady, true);
+			worker.worker.itcReady = false;
+			assert.strictEqual(Atomics.load(worker.worker.itcReadySignal, 0), 1);
 			await assert.rejects(
 				() =>
 					broadcastWithStrictAcknowledgement(
@@ -289,6 +321,17 @@ describe('dropTable worker quiescence', function () {
 					),
 				/originator/i
 			);
+		} finally {
+			await worker.shutdown();
+		}
+	});
+
+	it('does not validate unrelated traffic handled by the shared worker listener', async function () {
+		const worker = startDropWorker(1, 2);
+		try {
+			await worker.booted;
+			worker.send('send-foreign-strict');
+			await worker.nextEvent('foreign-strict-acknowledged');
 		} finally {
 			await worker.shutdown();
 		}

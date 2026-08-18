@@ -3,7 +3,7 @@
 const hdbUtils = require('../../utility/common_utils.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const { ITC_ERRORS } = require('../../utility/errors/commonErrors.ts');
-const { isMainThread, parentPort, threadId } = require('worker_threads');
+const { isMainThread, parentPort, threadId, workerData } = require('worker_threads');
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const {
 	onMessageFromWorkers,
@@ -26,9 +26,9 @@ onMessageFromWorkers(async (event, sender) => {
 	let handlerError;
 	try {
 		serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
-		const validationError = validateEvent(event);
-		if (validationError) throw new Error(validationError);
 		if (serverItcHandlers[event.type]) {
+			const validationError = validateEvent(event);
+			if (validationError) throw new Error(validationError);
 			await serverItcHandlers[event.type](event);
 		}
 		if (event.relayStrictToWorkers && isMainThread) {
@@ -56,7 +56,10 @@ onMessageFromWorkers(async (event, sender) => {
 		}
 	}
 });
-if (!isMainThread) parentPort?.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.ITC_READY });
+if (!isMainThread) {
+	if (workerData?.itcReadyBuffer) Atomics.store(new Int32Array(workerData.itcReadyBuffer), 0, 1);
+	parentPort?.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.ITC_READY });
+}
 
 /**
  * Emits an ITC event to the ITC server.
