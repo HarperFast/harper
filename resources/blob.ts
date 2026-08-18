@@ -1375,7 +1375,7 @@ function writeBlobWithStream(
 	blob: Blob,
 	stream: Readable,
 	storageInfo: StorageInfo,
-	options?: { repair?: boolean; expectedSize?: number }
+	options?: { repair?: boolean; expectedSize?: number | (() => number | undefined) }
 ): Blob {
 	const repairing = options?.repair === true;
 	const { filePath, fileId, store, compress, flush } = storageInfo;
@@ -1412,14 +1412,15 @@ function writeBlobWithStream(
 					close(fd);
 					(writeStream as any).fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
 				}
-				if (repairing) {
-					store.unlock(lockKey);
-				} else if (storageInfo.deleteOnFailure) {
+				if (!repairing && storageInfo.deleteOnFailure) {
 					store.unlock(lockKey);
 					unlink(filePath, (error) => {
 						if (error) logger.debug?.('Error while deleting aborted blob file', error);
 					});
-				} else if (idleTimeoutMs > 0 && !(error as { sourceBlobUnavailable?: boolean }).sourceBlobUnavailable) {
+				} else if (
+					repairing ||
+					(idleTimeoutMs > 0 && !(error as { sourceBlobUnavailable?: boolean }).sourceBlobUnavailable)
+				) {
 					// The write was fed by a re-streamable replication/origin source — the owning caller armed the
 					// source-idle watchdog (idleTimeoutMs > 0), which only the replication receive path does, never an
 					// app-supplied one-shot stream — and it aborted for a retriable reason: the source stalled or
@@ -1463,9 +1464,15 @@ function writeBlobWithStream(
 				if (!wroteSize) {
 					wroteSize = true;
 					const size = compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE;
-					if (repairing && options?.expectedSize !== undefined && size !== options.expectedSize) {
+					const expectedSize =
+						typeof options?.expectedSize === 'function' ? options.expectedSize() : options?.expectedSize;
+					if (repairing && (expectedSize === undefined || size !== expectedSize)) {
 						finished(
-							new Error(`Blob repair size mismatch for ${fileId}: expected ${options.expectedSize}, wrote ${size}`)
+							new Error(
+								expectedSize === undefined
+									? `Blob repair size unavailable for ${fileId}; wrote ${size}`
+									: `Blob repair size mismatch for ${fileId}: expected ${expectedSize}, wrote ${size}`
+							)
 						);
 						return;
 					}
@@ -1558,16 +1565,21 @@ export function getFilePathForBlob(blob: FileBackedBlob): string {
 }
 /**
  * Repairs a damaged file-backed blob under its existing fileId. The damage check and write share
- * the blob lock. A synchronous `undefined` means no repair started and the caller may save fresh.
+ * the blob lock. Callers may supply the trusted source size when the stored descriptor omitted it.
+ * A synchronous `undefined` means no verified repair started and the caller may save fresh.
  */
-export function repairBlobFile(blob: Blob, source: Readable): Promise<void> | undefined {
+export function repairBlobFile(
+	blob: Blob,
+	source: Readable,
+	sourceSize: number | (() => number | undefined) | undefined = (blob as { size?: number }).size
+): Promise<void> | undefined {
 	try {
 		if (!(blob instanceof FileBackedBlob)) return undefined;
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (!storageInfo?.fileId || !storageInfo.store) return undefined;
 		storageInfo.filePath ??= getFilePath(storageInfo);
 		const filePath = storageInfo.filePath;
-		const expectedSize = (blob as { size?: number }).size;
+		if (sourceSize === undefined) return undefined;
 		const lockKey = storageInfo.fileId + ':blob';
 		if (!storageInfo.store.tryLock(lockKey)) return undefined;
 		try {
@@ -1579,34 +1591,23 @@ export function repairBlobFile(blob: Blob, source: Readable): Promise<void> | un
 			if (!existsSync(fileDir)) ensureDirSync(fileDir);
 			storageInfo.deleteOnFailure = false;
 			storageInfo.saved = false;
-			writeBlobWithStream(blob as any, source, storageInfo, { repair: true, expectedSize });
+			writeBlobWithStream(blob as any, source, storageInfo, { repair: true, expectedSize: sourceSize });
 		} catch {
 			storageInfo.store.unlock(lockKey);
 			return undefined;
 		}
-		const stampPendingBestEffort = (reason: string) => {
-			if (!storageInfo.store.tryLock(lockKey)) return;
-			try {
-				const messageBuffer = Buffer.from(reason);
-				const header = new Uint8Array(HEADER_SIZE);
-				new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
-				writeFile(filePath, Buffer.concat([header, messageBuffer]), (writeError: Error) => {
-					storageInfo.store.unlock(lockKey);
-					if (writeError) logger.debug?.('Error re-stamping pending marker after failed blob repair', writeError);
-				});
-			} catch (error) {
-				storageInfo.store.unlock(lockKey);
-				logger.debug?.('Error re-stamping pending marker after failed blob repair', error);
-			}
-		};
-		const settled = (storageInfo.saving as Promise<void>).then(
+		const rawSaving = storageInfo.saving as Promise<void>;
+		let settled: Promise<void>;
+		settled = rawSaving.then(
 			() => {
-				storageInfo.saved = true;
+				if (storageInfo.saving === settled) storageInfo.saved = true;
 				logger.warn?.(`Repaired blob file in place: ${storageInfo.fileId} (${filePath})`);
 			},
 			(error: unknown) => {
-				storageInfo.saved = false;
-				stampPendingBestEffort(String(error));
+				if (storageInfo.saving === settled) {
+					storageInfo.saving = undefined;
+					storageInfo.saved = false;
+				}
 				throw error;
 			}
 		);
@@ -1643,7 +1644,9 @@ export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
 		try {
 			fd = openSync(filePath, 'r');
 		} catch (error) {
-			return (error as { code?: string })?.code === 'ENOENT';
+			if ((error as { code?: string })?.code === 'ENOENT') return true;
+			logger.debug?.('Unable to open blob file for in-place repair inspection', error);
+			return undefined;
 		}
 		try {
 			const size = fstatSync(fd).size;
@@ -1653,8 +1656,9 @@ export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
 		} finally {
 			closeSync(fd);
 		}
-	} catch {
-		return false;
+	} catch (error) {
+		logger.debug?.('Unable to inspect blob file for in-place repair', error);
+		return undefined;
 	}
 }
 export const databasePaths = new Map<RootDatabase, string[]>();
