@@ -1603,14 +1603,26 @@ export function repairBlobFile(blob: Blob, source: Readable): Promise<void> | un
 		const lockKey = storageInfo.fileId + ':blob';
 		if (!storageInfo.store.tryLock(lockKey)) return undefined;
 		const stampPendingBestEffort = (reason: string) => {
+			// The settle handlers below run AFTER writeBlobWithStream's completion path released the
+			// :blob lock, so a NEW writer for this fileId (a retried repair, or a fresh save — plausible
+			// here, since repair fires on identity-tie duplicate deliveries that can arrive on several
+			// links) may already own the file. Re-acquire before stamping and hold the lock through the
+			// async write (the same pattern as the idle-timeout retry stamp in writeBlobWithStream);
+			// failing to acquire means someone is actively writing — their outcome supersedes this failed
+			// attempt, so the stamp must be skipped, never raced over their finalized header.
+			if (!storageInfo.store.tryLock(lockKey)) return;
 			try {
 				const messageBuffer = Buffer.from(reason);
 				const header = new Uint8Array(HEADER_SIZE);
 				new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
 				writeFile(filePath, Buffer.concat([header, messageBuffer]), (writeError: Error) => {
+					storageInfo.store.unlock(lockKey);
 					if (writeError) logger.debug?.('Error re-stamping pending marker after failed blob repair', writeError);
 				});
-			} catch {}
+			} catch (stampError) {
+				storageInfo.store.unlock(lockKey);
+				logger.debug?.('Error re-stamping pending marker after failed blob repair', stampError);
+			}
 		};
 		try {
 			writeBlobWithStream(blob as any, source, storageInfo, { deferSizeHeader: true, lockHeld: true });
