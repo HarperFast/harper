@@ -324,8 +324,15 @@ suite(
 				`${cap.surface} mid-stream response terminal chunk did not match the ${VARIANT} contract`
 			);
 			if (cap.surface === 'iterable-rest') {
-				strictEqual(records.at(-1)?.error, 'Error: QA890-iter-mid-stream');
+				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, { error: 'Error: QA890-iter-mid-stream' }]);
 			} else strictEqual(records.length, 2, `${cap.surface} mid-stream response must contain both yielded records`);
+			assertServerTerminated(cap);
+		}
+
+		function assertCleanCompletion(cap: RawCapture) {
+			strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
+			deepStrictEqual(decodedRecords(cap), [{ n: 0 }, { n: 1 }, { n: 2 }]);
+			strictEqual(cap.sawTerminalChunk, true, `${cap.surface} clean response must include the terminal chunk`);
 			assertServerTerminated(cap);
 		}
 
@@ -347,9 +354,7 @@ suite(
 				rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'control')
 			);
 			captures.push(cap);
-			strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
-			deepStrictEqual(decodedRecords(cap), [{ n: 0 }, { n: 1 }, { n: 2 }]);
-			assertServerTerminated(cap);
+			assertCleanCompletion(cap);
 		});
 
 		test('control: IterHealth ndjson clean completion', { timeout: 20_000 }, async () => {
@@ -357,9 +362,7 @@ suite(
 				rawCapture(restBase, '/IterHealth/', 'application/x-ndjson', authHeader, 'ndjson', 'control')
 			);
 			captures.push(cap);
-			strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
-			deepStrictEqual(decodedRecords(cap), [{ n: 0 }, { n: 1 }, { n: 2 }]);
-			assertServerTerminated(cap);
+			assertCleanCompletion(cap);
 		});
 
 		test(
@@ -370,9 +373,7 @@ suite(
 					rawCapture(restBase, '/IterHealth/', 'application/json', authHeader, 'iterable-rest', 'control')
 				);
 				captures.push(cap);
-				strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
-				deepStrictEqual(decodedRecords(cap), [{ n: 0 }, { n: 1 }, { n: 2 }]);
-				assertServerTerminated(cap);
+				assertCleanCompletion(cap);
 			}
 		);
 
