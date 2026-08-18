@@ -126,8 +126,9 @@ and drain all tracked promises before returning — never stash a per-iteration 
 variable to await only the last one. `Table.deleteHistory` allows up to ten removals in flight so
 storage writes overlap without growing an unbounded pending set. Its fixed promise slots are awaited
 before reuse; repeatedly racing the whole live set would accumulate another reaction on a long-pending
-removal each iteration. `scheduleAuditCleanup` remains sequential because it is an automatic background
-loop.
+removal each iteration. Slot reuse is round-robin, so one slow removal can temporarily idle later slots;
+writes against the same store ordinarily settle in order. `scheduleAuditCleanup` remains sequential
+because it is an automatic background loop.
 
 `removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
 also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding

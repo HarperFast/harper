@@ -249,6 +249,7 @@ describe('Audit log', () => {
 		assert.equal(typeof AuditedTable.auditStore.deleteCallbacks?.[AuditedTable.tableId], 'function');
 
 		const originalRemove = registeredPrimaryStore.remove;
+		const removeWasOwnProperty = Object.hasOwn(registeredPrimaryStore, 'remove');
 		let releaseTombstoneRemoval;
 		let markTombstoneRemovalStarted;
 		const tombstoneRemovalStarted = new Promise((resolve) => {
@@ -269,19 +270,28 @@ describe('Audit log', () => {
 		let deletion;
 		try {
 			deletion = AuditedTable.deleteHistory(Date.now() + 60_000);
-			const callback = await Promise.race([
-				tombstoneRemovalStarted,
-				deletion.then((entriesDeleted) => {
-					throw new Error(
-						`deleteHistory resolved before invoking the registered callback: ${entriesDeleted} entries, tombstone=${String(
-							AuditedTable.primaryStore.getEntry(recordId)?.value
-						)}`
-					);
-				}),
-				delay(2000).then(() => {
-					throw new Error('table-registered tombstone removal callback did not start');
-				}),
-			]);
+			let callbackTimeout;
+			let callback;
+			try {
+				callback = await Promise.race([
+					tombstoneRemovalStarted,
+					deletion.then((entriesDeleted) => {
+						throw new Error(
+							`deleteHistory resolved before invoking the registered callback: ${entriesDeleted} entries, tombstone=${String(
+								AuditedTable.primaryStore.getEntry(recordId)?.value
+							)}`
+						);
+					}),
+					new Promise((resolve, reject) => {
+						callbackTimeout = setTimeout(
+							() => reject(new Error('table-registered tombstone removal callback did not start')),
+							2000
+						);
+					}),
+				]);
+			} finally {
+				clearTimeout(callbackTimeout);
+			}
 			assert.equal(callback.id, recordId);
 			const state = await Promise.race([deletion.then(() => 'resolved'), delay(50, 'pending')]);
 			assert.equal(state, 'pending', 'deleteHistory must join the registered tombstone removal callback');
@@ -296,7 +306,8 @@ describe('Audit log', () => {
 		} finally {
 			releaseTombstoneRemoval();
 			await deletion?.catch(() => {});
-			registeredPrimaryStore.remove = originalRemove;
+			if (removeWasOwnProperty) registeredPrimaryStore.remove = originalRemove;
+			else delete registeredPrimaryStore.remove;
 			await AuditedTable.deleteHistory(Date.now() + 60_000);
 		}
 	});
