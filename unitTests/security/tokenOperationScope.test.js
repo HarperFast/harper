@@ -226,6 +226,27 @@ describe('token-scoped narrowing on the SQL path', () => {
 		assert.strictEqual(denial, null);
 	});
 
+	// Everything above asserts that a denial is COMPUTED. This asserts processAST acts on it — the
+	// guard there tested `permissionsCheck.length > 0`, and a PermissionResponseObject has no
+	// `length`, so `undefined > 0` silently discarded every denial. It only matters where processAST
+	// is the first checker rather than the second, which is precisely the job path: an export runs
+	// in a worker that never invokes the outer gate, so this was the only check standing.
+	it('processAST refuses to execute a statement whose scope check denied it', async () => {
+		const user = userWithScope({ super_user: true }, ['get_status']);
+		const jsonMessage = { operation: 'sql', sql: 'SELECT * FROM data.dog', hdb_user: user };
+		const parsed = sql.convertSQLToAST(jsonMessage.sql);
+
+		// Asserted outside the callback: processAST wraps its body in try/catch, so a failing
+		// assertion thrown in here would be swallowed and re-reported as a second callback.
+		const outcome = await new Promise((resolve) => {
+			sql.processAST(jsonMessage, parsed, (error, results) => resolve({ error, results }));
+		});
+
+		assert.strictEqual(outcome.error, 403, 'expected the denial to reach the callback as unauthorized');
+		// The second argument on this path is the denial itself, not query results.
+		assert.ok(outcome.results?.unauthorized_access, 'expected the permission response, not a result set');
+	});
+
 	it('gates a nested-SQL export job on the export operation, not on `sql`', () => {
 		// export_local carries its query as SQL, but the scope names the job, not `sql`. A token scoped
 		// only to `sql` must not be able to start an export it was never granted.
