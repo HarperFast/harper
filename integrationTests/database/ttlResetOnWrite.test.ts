@@ -45,6 +45,7 @@ import { ok } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import http from 'node:http';
+import https from 'node:https';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
@@ -170,6 +171,7 @@ suite(
 		): Promise<{ status: number; body: string }> {
 			return new Promise((resolvePromise, reject) => {
 				const u = new URL(url);
+				const transport = u.protocol === 'https:' ? https : http;
 				const headers: Record<string, string> = { Authorization: auth };
 				if (body !== undefined) {
 					headers['Content-Type'] = 'application/json';
@@ -180,7 +182,7 @@ suite(
 					clearTimeout(wallClockTimer);
 					fn();
 				};
-				const req = http.request(
+				const req = transport.request(
 					{ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers, timeout: timeoutMs },
 					(res) => {
 						const chunks: Buffer[] = [];

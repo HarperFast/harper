@@ -19,6 +19,7 @@ import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
 import http from 'node:http';
+import https from 'node:https';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
@@ -46,12 +47,13 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 	function getPath(path: string, timeoutMs = 5_000): Promise<SimpleResponse> {
 		return new Promise((resolvePromise, reject) => {
 			const u = new URL(path, ctx.harper.httpURL);
+			const transport = u.protocol === 'https:' ? https : http;
 			let wallClockTimer: ReturnType<typeof setTimeout>;
 			const settle = (fn: () => void) => {
 				clearTimeout(wallClockTimer);
 				fn();
 			};
-			const req = http.request(
+			const req = transport.request(
 				{ hostname: u.hostname, port: u.port, path: u.pathname + u.search, timeout: timeoutMs },
 				(res) => {
 					res.on('data', () => {}); // drain
