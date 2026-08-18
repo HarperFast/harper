@@ -355,6 +355,7 @@ suite(
 			registerLogPaths();
 			client = createApiClient(ctx.harper);
 			await waitRouteReady(120_000);
+			findings.push(`phase2: restart + route-ready completed in ${Date.now() - restartT0}ms`);
 			for (let i = 0; i < NORMAL_COUNT; i++) {
 				const normal = await op({ action: 'raw', id: `normal-${i}` }).expect(200);
 				ok(
@@ -362,7 +363,6 @@ suite(
 					`normal-${i} must still be resident and unexpired after restart: ${JSON.stringify(normal.body)}`
 				);
 			}
-			findings.push(`phase2: restart + route-ready completed in ${Date.now() - restartT0}ms`);
 		});
 
 		test(
@@ -586,7 +586,7 @@ suite(
 
 		test(
 			'Q5: post-restart UPDATE of an old-version record releases its old blob file',
-			{ timeout: 60_000 },
+			{ timeout: 90_000 },
 			async () => {
 				const beforeUpdate = await diskFiles(blobRootDir);
 				findings.push(`Q5: disk before update = ${beforeUpdate.files} files: ${JSON.stringify(beforeUpdate.paths)}`);
@@ -619,7 +619,7 @@ suite(
 				// natural convergence below is the pass/fail gate.
 				const rightAfterUpdate = await diskFiles(blobRootDir);
 				findings.push(
-					`Q5: disk right after update = ${rightAfterUpdate.files} files (old file may still be present as an on-demand orphan; expected)`
+					`Q5: disk right after update = ${rightAfterUpdate.files} files (old file may still be awaiting its delayed unlink; expected)`
 				);
 				const newFiles = rightAfterUpdate.paths.filter((p) => !beforeUpdate.paths.includes(p));
 				ok(
