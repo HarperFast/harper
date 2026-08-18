@@ -249,6 +249,15 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
 			json.parsed_sql_object = parsedSqlObject;
+			// Carry the real top-level operation onto the nested search for the token-scope check.
+			// The checked parse above is stashed on the TOP-LEVEL json, but export.ts dispatches the
+			// job with `search_operation` alone — so evaluateSQL finds no parsed_sql_object, re-parses
+			// with permissions_checked false, and processAST re-runs the check against a request whose
+			// `operation` is now 'sql'. A token scoped to `export_local` would be denied by its own
+			// job. (The job worker deserializes this body from hdb_job and never runs the outer gate
+			// at all, so this string is the only thing that survives to tell the inner check what the
+			// caller actually invoked.) Fails closed either way — a broken feature, not a hole.
+			if (json.search_operation) json.search_operation.api_operation = json.operation;
 			if (!bypassAuth) {
 				const astPermCheck = sql.checkASTPermissions(json, parsedSqlObject);
 				if (astPermCheck) {

@@ -11,7 +11,7 @@ testUtils.preTestPrep();
 
 const jwt = require('jsonwebtoken');
 const { generateKeyPairSync, createPublicKey } = require('node:crypto');
-const { exchangeOidcToken } = require('#src/security/authn/oidc/tokenExchange');
+const { exchangeOidcToken, clearTokenUseTableCache } = require('#src/security/authn/oidc/tokenExchange');
 const { addOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
 const { clearJwksCache } = require('#src/security/authn/oidc/jwks');
 const { validateOperationToken, clearJWTRSAKeysCache, decodeJWT } = require('#src/security/tokenAuthentication');
@@ -57,6 +57,19 @@ function installMockTable(name, primaryKey) {
 	return { mock, restore: () => (databases.system[name] = prior) };
 }
 
+/**
+ * The replay table is reached through an unconditional `table()` call, not a lookup — it has to be,
+ * because the systemSchema bootstrap declares only the primary key and `table()` is what layers the
+ * expiresAt TTL on top. So intercept the factory rather than seeding `databases.system`, which that
+ * call would otherwise sail straight past.
+ */
+function installMockTableFactory(name, mock) {
+	const databasesModule = require('#src/resources/databases');
+	const realTable = databasesModule.table;
+	databasesModule.table = (definition) => (definition?.table === name ? mock : realTable(definition));
+	return () => (databasesModule.table = realTable);
+}
+
 function seedUsers() {
 	const users = new Map();
 	users.set('ci-deploy', {
@@ -79,6 +92,7 @@ describe('exchangeOidcToken', () => {
 	let removeJwtKeys;
 	let trustTable;
 	let useTable;
+	let restoreTableFactory;
 	let realFetch;
 	let tokenCounter = 0;
 
@@ -105,6 +119,8 @@ describe('exchangeOidcToken', () => {
 		clearJwksCache();
 		trustTable = installMockTable(TRUST_TABLE, 'id');
 		useTable = installMockTable(TOKEN_USE_TABLE, 'id');
+		restoreTableFactory = installMockTableFactory(TOKEN_USE_TABLE, useTable.mock);
+		clearTokenUseTableCache(); // or every test after the first reuses the first one's mock
 		await seedUsers();
 		realFetch = globalThis.fetch;
 		// Serves discovery for any issuer asked about, and one shared key set, so a second issuer needs
@@ -128,6 +144,7 @@ describe('exchangeOidcToken', () => {
 		globalThis.fetch = realFetch;
 		trustTable.restore();
 		useTable.restore();
+		restoreTableFactory();
 	});
 
 	after(() => {

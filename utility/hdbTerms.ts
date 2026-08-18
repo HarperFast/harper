@@ -212,6 +212,7 @@ export const SYSTEM_TABLE_NAMES = {
 	AGENT_SESSION_TABLE_NAME: 'hdb_agent_session',
 	SECRET_TABLE_NAME: 'hdb_secret',
 	OIDC_TRUST_TABLE_NAME: 'hdb_oidc_trust',
+	OIDC_TOKEN_USE_TABLE_NAME: 'hdb_oidc_token_use',
 } as const;
 
 /** Hash attribute for the system info table */

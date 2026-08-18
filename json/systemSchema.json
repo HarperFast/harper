@@ -513,5 +513,16 @@
 				"attribute": "__updatedtime__"
 			}
 		]
+	},
+	"hdb_oidc_token_use": {
+		"hash_attribute": "id",
+		"name": "hdb_oidc_token_use",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
 	}
 }

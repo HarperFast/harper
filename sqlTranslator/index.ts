@@ -81,8 +81,10 @@ export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any) {
 			jsonMessage.hdb_user,
 			parsedSqlObject.variant,
 			// The top-level API operation for the token-scope check: `sql` for a direct SQL call, but
-			// `export_local`/`export_to_s3` when the SQL rides inside a job's search_operation.
-			jsonMessage.operation
+			// `export_local`/`export_to_s3` when the SQL rides inside a job's search_operation. On that
+			// job path the request reaching here IS the search_operation, whose own `operation` is
+			// 'sql', so serverUtilities stamps the real one as `api_operation` — prefer it when present.
+			jsonMessage.api_operation ?? jsonMessage.operation
 		);
 		parsedSqlObject.permissions_checked = true;
 	} catch (e) {

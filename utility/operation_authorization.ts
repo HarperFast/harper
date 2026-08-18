@@ -478,9 +478,14 @@ function tokenScopeDenial(userObject: any, apiOperation: string) {
 	const tokenOperations = userObject?.tokenOperations;
 	if (tokenOperations == null) return undefined;
 
-	const scopedOps =
-		userObject._expandedTokenOperations ??
-		(userObject._expandedTokenOperations = expandOperationsPerms(tokenOperations));
+	// `instanceof Set`, not just presence: this memo rides on hdb_user, and a job persists that user
+	// into hdb_job.request, where msgpackr round-trips a Set back as a plain Array. Trusting the
+	// memo's presence would then call .has() on an Array and throw a TypeError out of the auth gate
+	// — still fail-closed, but as a 500 rather than a denial, and only inside a job worker.
+	let scopedOps = userObject._expandedTokenOperations;
+	if (!(scopedOps instanceof Set)) {
+		scopedOps = userObject._expandedTokenOperations = expandOperationsPerms(tokenOperations);
+	}
 	if (scopedOps.has(apiOperation)) return undefined;
 
 	harperLogger.info(`Operation '${apiOperation}' is outside the scope of the presented token`);
