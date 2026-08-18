@@ -124,12 +124,18 @@ later as an unhandled rejection instead, with no logging to explain it. Any loop
 audit/primary-store entries in a batch must attach a rejection handler to every removal immediately
 and drain all tracked promises before returning — never stash a per-iteration promise in an outer
 variable to await only the last one. `Table.deleteHistory` allows up to 1,000 LMDB removals in flight
-(ten for a non-versioned fallback store) so storage writes batch without growing an unbounded pending
+(ten for RocksDB) so storage writes batch without growing an unbounded pending
 set. Live removals are tracked in a `Set`, and each one removes itself and wakes at most one parked
 producer when it settles, so any completion releases the loop. In these removal loops, do not repeatedly
 race the live set: each race attaches another reaction to every long-pending removal. Both phases drain
 their tracked removals before settling, including when iteration throws. `scheduleAuditCleanup` remains
 sequential because it is an automatic background loop.
+
+The optional primary-store cleanup snapshots each tombstone's key and version before yielding and passes
+that version to `remove()`. LMDB enforces the condition natively. Harper's RocksDB adapter re-reads and
+removes inside one native transaction, retrying a conflict once, because rocksdb-js's `remove()` accepts
+an options object rather than an LMDB-style version argument. Never replace this with a separate live read
+followed by an unconditional remove: a record recreated between those operations would be deleted.
 
 `removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
 also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding

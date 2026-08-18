@@ -5052,9 +5052,7 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
-			const maxConcurrentRemovals = primaryStore.useVersions
-				? MAX_CONCURRENT_LMDB_HISTORY_REMOVALS
-				: MAX_CONCURRENT_HISTORY_REMOVALS;
+			const maxConcurrentRemovals = isRocksDB ? MAX_CONCURRENT_HISTORY_REMOVALS : MAX_CONCURRENT_LMDB_HISTORY_REMOVALS;
 			const inFlightRemovals = new Set<Promise<void>>();
 			const removalSlotWaiters: Array<() => void> = [];
 			function startRemoval(remove: () => MaybePromise<void>, errorMessage: string, onSuccess?: () => void): void {
@@ -5109,7 +5107,7 @@ export function makeTable(options) {
 						await rest(); // yield to other async operations
 						if (value === null && localTime < endTime) {
 							const backpressure = queueRemoval(
-								() => primaryStore.remove(key, primaryStore.useVersions ? version : undefined),
+								() => primaryStore.remove(key, version),
 								'Error removing deleted record during deleteHistory'
 							);
 							if (backpressure) await backpressure;

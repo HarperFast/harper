@@ -353,6 +353,29 @@ describe('Audit log', () => {
 			await AuditedTable.deleteHistory(Date.now() + 60_000, true);
 		}
 	});
+	it('RocksDB versioned removal preserves a record recreated after its tombstone', async function () {
+		if (!AuditedTable.primaryStore.isPrimaryRocksDatabase) return this.skip();
+		const recordId = 'rocks-cleanup-race';
+		try {
+			await AuditedTable.put(recordId, { name: 'deleted' });
+			await AuditedTable.delete(recordId);
+			const tombstone = AuditedTable.primaryStore.getEntry(recordId);
+			assert.equal(tombstone?.value, null, 'test setup: expected a tombstone');
+
+			await AuditedTable.put(recordId, { name: 'recreated' });
+			assert.equal(
+				await AuditedTable.primaryStore.remove(recordId, tombstone.version),
+				false,
+				'a stale conditional removal must not commit'
+			);
+			const recreated = AuditedTable.primaryStore.getEntry(recordId);
+			assert.equal(recreated?.value?.name, 'recreated');
+			assert.equal(await AuditedTable.primaryStore.remove(recordId, recreated.version), true);
+			assert.equal(AuditedTable.primaryStore.getEntry(recordId), undefined);
+		} finally {
+			await AuditedTable.primaryStore.remove(recordId);
+		}
+	});
 	it('deleteHistory waits for the table-registered tombstone removal callback', async function () {
 		if (AuditedTable.auditStore.reusableIterable) return this.skip();
 		await AuditedTable.deleteHistory(Date.now() + 60_000);

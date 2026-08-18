@@ -1,4 +1,4 @@
-import { RocksDatabase, type RocksDatabaseOptions, constants, type Store } from '@harperfast/rocksdb-js';
+import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
@@ -38,6 +38,30 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		super(pathOrStore, enableCache ? { ...options, verificationTable: true } : options);
 		if (enableCache) {
 			this.#cache = new WeakLRUCache();
+		}
+	}
+
+	// Match LMDB's remove(key, version) contract without splitting the version check from the delete.
+	async removeIfVersion(id: any, version: number): Promise<boolean> {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const transaction = new Transaction(this.store);
+			try {
+				const entry = this.getEntry(id, { transaction });
+				if (!entry || entry.version !== version) {
+					transaction.abort();
+					return false;
+				}
+				this.#cache?.delete(id);
+				super.removeSync(id, { transaction });
+				await transaction.commit();
+				return true;
+			} catch (error: any) {
+				try {
+					transaction.abort();
+				} catch {}
+				if (attempt === 0 && error?.code === 'ERR_BUSY') continue;
+				throw error;
+			}
 		}
 	}
 
