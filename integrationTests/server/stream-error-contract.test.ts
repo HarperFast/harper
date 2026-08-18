@@ -27,7 +27,7 @@
  * Each run prints a per-case capture table to stdout.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import net from 'node:net';
@@ -39,6 +39,10 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'stream-error-contract');
 const skipSuite = process.platform === 'win32';
+const skipBunIterableRest =
+	process.env.HARPER_RUNTIME === 'bun'
+		? '#2210: Bun leaves finite iterable REST connections open after Connection: close'
+		: false;
 const VARIANT = process.env.HARPER_UWS_HTTP === '1' ? 'uws' : 'node';
 
 type Client = ReturnType<typeof createApiClient>;
@@ -200,7 +204,7 @@ function rawCapture(
 function assertServerTerminated(cap: RawCapture) {
 	ok(
 		!cap.socketEvents.includes('CLIENT_TIMEOUT'),
-		`${cap.caseName}: client timed out -- the server never terminated the request`
+		`${cap.caseName}: client timed out -- the server never terminated the request (headers: ${JSON.stringify(cap.headers)})`
 	);
 	ok(
 		cap.socketEvents.some((e) => e.startsWith('close(')),
@@ -242,6 +246,24 @@ function summarize(cap: RawCapture): string {
 		`totalBytes=${String(cap.totalBytes).padEnd(6)} chunked=${String(cap.chunked).padEnd(5)} ` +
 		`sawTerminalChunk=${String(cap.sawTerminalChunk).padEnd(5)} body=${JSON.stringify(cap.decodedBody.slice(0, 80))}`
 	);
+}
+
+function decodedRecords(cap: RawCapture): any[] {
+	if (cap.surface === 'sse') {
+		return cap.decodedBody
+			.split(/\r?\n/)
+			.filter((line) => line.startsWith('data: '))
+			.map((line) => JSON.parse(line.slice(6)));
+	}
+	if (cap.surface === 'ndjson') {
+		return cap.decodedBody
+			.split(/\r?\n/)
+			.filter(Boolean)
+			.map((line) => JSON.parse(line));
+	}
+	const records = JSON.parse(cap.decodedBody);
+	ok(Array.isArray(records), `${cap.surface} response must be a JSON array`);
+	return records;
 }
 
 // ── Suite ────────────────────────────────────────────────────────────────────────────────────
@@ -294,60 +316,71 @@ suite(
 
 		function assertMidStreamTermination(cap: RawCapture) {
 			strictEqual(cap.status, 200, `${cap.surface} mid-stream response should start 200, got ${cap.status}`);
-			ok(cap.totalBytes > 0, `${cap.surface} mid-stream response must include data before the throw`);
+			const records = decodedRecords(cap);
+			deepStrictEqual(records.slice(0, 2), [{ n: 0 }, { n: 1 }]);
 			strictEqual(
 				cap.sawTerminalChunk,
 				VARIANT === 'uws' || cap.surface === 'iterable-rest',
 				`${cap.surface} mid-stream response terminal chunk did not match the ${VARIANT} contract`
 			);
 			if (cap.surface === 'iterable-rest') {
-				const body = JSON.parse(cap.decodedBody);
-				ok(Array.isArray(body), 'iterable REST mid-stream response must remain a JSON array');
-				strictEqual(body.at(-1)?.error, 'Error: QA890-iter-mid-stream');
-			}
+				strictEqual(records.at(-1)?.error, 'Error: QA890-iter-mid-stream');
+			} else strictEqual(records.length, 2, `${cap.surface} mid-stream response must contain both yielded records`);
 			assertServerTerminated(cap);
+		}
+
+		async function captureWithLifecycle(counterName: string, capture: () => Promise<RawCapture>) {
+			const before = await getProbeJson(restBase, { Authorization: authHeader });
+			strictEqual(before.status, 200, 'Probe/ must be available before a stream capture');
+			const cap = await capture();
+			const after = await getProbeJson(restBase, { Authorization: authHeader });
+			strictEqual(after.status, 200, 'Probe/ must be available after a stream capture');
+			strictEqual(after[counterName].opened - before[counterName].opened, 1, `${counterName} must open exactly once`);
+			strictEqual(after[counterName].closed - before[counterName].closed, 1, `${counterName} must close exactly once`);
+			return cap;
 		}
 
 		// ── Controls: clean completion baselines, one per surface ────────────────────────────────
 
 		test('control: SseHealth clean completion', { timeout: 20_000 }, async () => {
-			const cap = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'control');
+			const cap = await captureWithLifecycle('sseHealth', () =>
+				rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'control')
+			);
 			captures.push(cap);
 			strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
+			deepStrictEqual(decodedRecords(cap), [{ n: 0 }, { n: 1 }, { n: 2 }]);
 			assertServerTerminated(cap);
 		});
 
 		test('control: IterHealth ndjson clean completion', { timeout: 20_000 }, async () => {
-			const cap = await rawCapture(restBase, '/IterHealth/', 'application/x-ndjson', authHeader, 'ndjson', 'control');
-			captures.push(cap);
-			strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
-			assertServerTerminated(cap);
-		});
-
-		test('control: IterHealth iterable-rest (default json) clean completion', { timeout: 20_000 }, async () => {
-			const cap = await rawCapture(
-				restBase,
-				'/IterHealth/',
-				'application/json',
-				authHeader,
-				'iterable-rest',
-				'control'
+			const cap = await captureWithLifecycle('iterHealth', () =>
+				rawCapture(restBase, '/IterHealth/', 'application/x-ndjson', authHeader, 'ndjson', 'control')
 			);
 			captures.push(cap);
 			strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
+			deepStrictEqual(decodedRecords(cap), [{ n: 0 }, { n: 1 }, { n: 2 }]);
 			assertServerTerminated(cap);
 		});
+
+		test(
+			'control: IterHealth iterable-rest (default json) clean completion',
+			{ timeout: 20_000, skip: skipBunIterableRest },
+			async () => {
+				const cap = await captureWithLifecycle('iterHealth', () =>
+					rawCapture(restBase, '/IterHealth/', 'application/json', authHeader, 'iterable-rest', 'control')
+				);
+				captures.push(cap);
+				strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
+				deepStrictEqual(decodedRecords(cap), [{ n: 0 }, { n: 1 }, { n: 2 }]);
+				assertServerTerminated(cap);
+			}
+		);
 
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────
 
 		test('sse: pre-first-yield throw -- raw byte capture', { timeout: 20_000 }, async () => {
-			const cap = await rawCapture(
-				restBase,
-				'/SsePreYield/',
-				'text/event-stream',
-				authHeader,
-				'sse',
-				'pre-first-yield'
+			const cap = await captureWithLifecycle('ssePreYield', () =>
+				rawCapture(restBase, '/SsePreYield/', 'text/event-stream', authHeader, 'sse', 'pre-first-yield')
 			);
 			captures.push(cap);
 			console.log(
@@ -357,13 +390,8 @@ suite(
 		});
 
 		test('ndjson: pre-first-yield throw -- raw byte capture', { timeout: 20_000 }, async () => {
-			const cap = await rawCapture(
-				restBase,
-				'/IterPreYield/',
-				'application/x-ndjson',
-				authHeader,
-				'ndjson',
-				'pre-first-yield'
+			const cap = await captureWithLifecycle('iterPreYield', () =>
+				rawCapture(restBase, '/IterPreYield/', 'application/x-ndjson', authHeader, 'ndjson', 'pre-first-yield')
 			);
 			captures.push(cap);
 			console.log(
@@ -373,13 +401,8 @@ suite(
 		});
 
 		test('iterable-rest: pre-first-yield throw -- raw byte capture', { timeout: 20_000 }, async () => {
-			const cap = await rawCapture(
-				restBase,
-				'/IterPreYield/',
-				'application/json',
-				authHeader,
-				'iterable-rest',
-				'pre-first-yield'
+			const cap = await captureWithLifecycle('iterPreYield', () =>
+				rawCapture(restBase, '/IterPreYield/', 'application/json', authHeader, 'iterable-rest', 'pre-first-yield')
 			);
 			captures.push(cap);
 			console.log(
@@ -392,7 +415,9 @@ suite(
 		// ── Mid-stream throw: cheap contrast arm (already understood) ────────────────────────────
 
 		test('sse: mid-stream throw (2 of 5) -- raw byte capture', { timeout: 20_000 }, async () => {
-			const cap = await rawCapture(restBase, '/SseMidStream/', 'text/event-stream', authHeader, 'sse', 'mid-stream');
+			const cap = await captureWithLifecycle('sseMidStream', () =>
+				rawCapture(restBase, '/SseMidStream/', 'text/event-stream', authHeader, 'sse', 'mid-stream')
+			);
 			captures.push(cap);
 			console.log(
 				`[QA-890][sse/mid] status=${cap.status} totalBytes=${cap.totalBytes} sawTerminalChunk=${cap.sawTerminalChunk}`
@@ -401,13 +426,8 @@ suite(
 		});
 
 		test('ndjson: mid-stream throw (2 of 5) -- raw byte capture', { timeout: 20_000 }, async () => {
-			const cap = await rawCapture(
-				restBase,
-				'/IterMidStream/',
-				'application/x-ndjson',
-				authHeader,
-				'ndjson',
-				'mid-stream'
+			const cap = await captureWithLifecycle('iterMidStream', () =>
+				rawCapture(restBase, '/IterMidStream/', 'application/x-ndjson', authHeader, 'ndjson', 'mid-stream')
 			);
 			captures.push(cap);
 			console.log(
@@ -416,21 +436,20 @@ suite(
 			assertMidStreamTermination(cap);
 		});
 
-		test('iterable-rest: mid-stream throw (2 of 5) -- raw byte capture', { timeout: 20_000 }, async () => {
-			const cap = await rawCapture(
-				restBase,
-				'/IterMidStream/',
-				'application/json',
-				authHeader,
-				'iterable-rest',
-				'mid-stream'
-			);
-			captures.push(cap);
-			console.log(
-				`[QA-890][iterable-rest/mid] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
-			);
-			assertMidStreamTermination(cap);
-		});
+		test(
+			'iterable-rest: mid-stream throw (2 of 5) -- raw byte capture',
+			{ timeout: 20_000, skip: skipBunIterableRest },
+			async () => {
+				const cap = await captureWithLifecycle('iterMidStream', () =>
+					rawCapture(restBase, '/IterMidStream/', 'application/json', authHeader, 'iterable-rest', 'mid-stream')
+				);
+				captures.push(cap);
+				console.log(
+					`[QA-890][iterable-rest/mid] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
+				);
+				assertMidStreamTermination(cap);
+			}
+		);
 
 		test('Z: liveness canary -- worker survived every throw shape above', { timeout: 30_000 }, async () => {
 			const health = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'canary');
