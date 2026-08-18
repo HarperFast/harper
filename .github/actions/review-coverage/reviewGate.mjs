@@ -40,6 +40,54 @@ export function generatorFamily(body) {
 	return '';
 }
 
+/** Blank out fenced code blocks so an EXAMPLE of a footer cannot be read as a live one. A PR that
+ *  documents this field (or quotes a body) carries the field's own grammar inside a fence; counting
+ *  that would let a description claim coverage by illustrating it. Local rather than imported: this
+ *  file is a flattened vendored copy with no module deps of its own. */
+const withoutFences = (body) => String(body ?? '').replace(/^[ \t]*```[\s\S]*?^[ \t]*```[ \t]*$/gm, '');
+
+/** Leg name -> family for the STRUCTURED `Review-Coverage:` field.
+ *
+ *  Deliberately a table rather than `familiesIn`: the prose matcher returns EVERY family whose
+ *  pattern hits, and `cursor-grok` hits both `grok`->xai and `cursor`->cursor, so reusing it would
+ *  count one leg as two families and inflate the very number this gate acts on. A structured field
+ *  gets a structured mapping; an unknown leg name falls back to the FIRST prose match only.
+ *  Mirrors REVIEW_LEGS in HarperFast/skills-internal skills/cross-model-review/bin/prepush-policy.mjs. */
+const LEG_FAMILY = new Map([
+	['codex', 'openai'], ['gemini', 'google'], ['cursor-grok', 'xai'], ['cursor-composer', 'cursor'],
+	['claude', 'anthropic'], ['claude(fallback)', 'anthropic'], ['domain', 'anthropic'],
+]);
+const legFamily = (leg) => LEG_FAMILY.get(String(leg).trim().toLowerCase()) ?? familiesIn(leg)[0] ?? '';
+
+/** The machine-derived `Review-Coverage:` footer, when the description carries one.
+ *
+ *  Returns null when the field is absent, which is what lets the caller fall back to the prose
+ *  reader instead of reading "no field" as "no coverage" — the field is newer than most open PRs.
+ *
+ *  Only `ran=` counts. `blocked=` (asked for, could not deliver) and `declined=` (policy chose not
+ *  to run it) are coverage that did NOT happen. The producing side already excludes the authoring
+ *  family and the Harper adjudicator from `ran`; we re-exclude the authoring family anyway, because
+ *  this number acts on other people's PRs and should not inherit a guarantee it can check itself. */
+export function structuredCoverage(body) {
+	const match = /^[ \t]*(?:<sub>[ \t]*)?Review-Coverage:[ \t]*(.+?)[ \t]*(?:<\/sub>[ \t]*)?$/im.exec(withoutFences(body));
+	if (!match) return null;
+	const segments = new Map(match[1].split(';')
+		.map((seg) => seg.trim().split('='))
+		.filter((pair) => pair.length === 2)
+		.map(([key, value]) => [key.trim().toLowerCase(), value.trim()]));
+	const authored = familiesIn((segments.get('authored') || '').replace(/\s*@.*$/, ''))[0] || '';
+	const raw = segments.get('ran') || '';
+	const families = new Set();
+	if (raw && raw !== 'none') {
+		for (const leg of raw.split(',')) {
+			const fam = legFamily(leg.replace(/\(.*$/, ''));
+			if (fam && fam !== authored) families.add(fam);
+		}
+	}
+	const rounds = Number.parseInt((segments.get('rounds') || '').replace(/\s*@.*$/, ''), 10) || 0;
+	return { count: families.size, families: [...families].sort(), generator: authored, rounds, structured: true };
+}
+
 /** Count the DISTINCT outside-model review families the PR description reports as having
  *  run. The failure direction is asymmetric: an undercount GATES a compliant PR (the gate
  *  fires on count < 2), so negation filtering stays narrow and anything phrased per the
@@ -53,6 +101,11 @@ export function generatorFamily(body) {
  *   - lines mentioning "cross-model" alongside model names
  *  Lines reporting a failed/skipped leg are ignored, as is the generating model's family. */
 export function reportedCrossModelReviews(body) {
+	// The field is authoritative when present: it is derived from the run's receipt rather than
+	// written from memory, so it reports the legs that DIED as reliably as the ones that ran.
+	// Prose parsing stays for PRs opened before the field existed.
+	const structured = structuredCoverage(body);
+	if (structured) return structured;
 	const text = String(body ?? '');
 	const own = generatorFamily(text);
 	const families = new Set();
