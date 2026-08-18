@@ -801,9 +801,12 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 		const envRefreshToken = tokenPrefix ? process.env[`${tokenPrefix}_REFRESH_TOKEN`]?.trim() : undefined;
 		// A namespace that is set but blank is a broken CI secret, not a request to fall back to
 		// whatever the developer last logged in as — say so rather than switching identity silently.
-		if (tokenPrefix && !envOperationToken && !envRefreshToken) {
+		const tokenNamespaceBlank = !!tokenPrefix && !envOperationToken && !envRefreshToken;
+		if (tokenNamespaceBlank) {
 			console.error(
-				`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved login credentials.`
+				`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved ` +
+					`login credentials. Workload identity is deliberately NOT used here: a blank token namespace is a ` +
+					`failed secret, and deploying as a different identity would hide that.`
 			);
 		}
 
@@ -821,12 +824,23 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 			if (tokens.operation_token) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
-		} else if (workloadIdentityAvailable()) {
+		} else if (workloadIdentityAvailable() && !tokenNamespaceBlank) {
 			// Last credential source: no configured token, but this runner can prove its identity to
 			// the cluster directly (#2171). Deliberately below the env-var and saved tokens — an
 			// explicitly configured credential should keep working exactly as it did when someone adds
 			// `id-token: write` to a workflow, rather than silently switching which identity deploys.
-			const operationToken = await exchangeWorkloadIdentityForToken(options, target.resolvedTarget);
+			//
+			// `!tokenNamespaceBlank` extends that invariant to the half-configured case. A CI secret
+			// that failed to populate leaves the namespace set but empty; without this, such a run
+			// would quietly deploy as the OIDC policy's user instead of failing, which is the same
+			// silent identity switch in a shape that is harder to notice.
+			// Standard operation timeout, not the caller's — by this point `options.timeout` may carry
+			// the 10-minute SSE timeout for a streaming deploy_component, and the exchange is a small
+			// fast request. Without the override a stalled exchange hangs the deploy for ten minutes,
+			// on the very operation this feature exists to serve. Same reasoning, same fix as
+			// refreshExpiredOperationToken above.
+			const exchangeOptions = { ...options, timeout: CLI_OPERATION_TIMEOUT_MS };
+			const operationToken = await exchangeWorkloadIdentityForToken(exchangeOptions, target.resolvedTarget);
 			if (operationToken) options.headers.Authorization = `Bearer ${operationToken}`;
 		}
 	}

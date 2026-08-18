@@ -67,6 +67,46 @@ function assertOperationsAreKnown(operations: string[]): void {
 	}
 }
 
+/**
+ * The audience is matched by exact string equality at verification time (`jwt.verify`), and the CLI
+ * asks its provider for a token whose audience is `normalizeTarget(target)` — which supplies `:9925`
+ * when no port was written, and a trailing slash. So `audience=https://my-instance.example.com`, the
+ * natural reading of "the instance URL the CI client targets", stores a policy that can never match
+ * anything; the exchange then refuses with the same opaque message it gives every other failure,
+ * leaving the operator nothing to look at, in CI. Caught here instead, where the reader is the
+ * administrator who wrote it — the same bargain assertOperationsAreKnown makes.
+ *
+ * Rejected rather than rewritten: silently canonicalizing a value whose whole job is to be compared
+ * byte-for-byte is worse than refusing it, and it would also have to run after the profile's
+ * shared-audience guard to avoid disarming it. Stating the requirement keeps this independent of
+ * normalizeTarget's exact spelling rules, which live in the CLI; a unit test pins the two together.
+ *
+ * Only http(s) URLs are shaped this way. An issuer-specific audience (an `api://` identifier, a bare
+ * GUID) is not ours to constrain, so anything that is not an http(s) URL passes untouched.
+ */
+function assertAudienceIsCanonical(audience: string): void {
+	let url: URL;
+	try {
+		url = new URL(audience);
+	} catch {
+		return;
+	}
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
+	// `url.port` is empty for a default port, so consult the raw authority — with any userinfo
+	// removed first, since that colon is not a port.
+	const authority = audience.slice(audience.indexOf('://') + 3).split(/[/?#]/)[0];
+	const hasExplicitPort = !!url.port || authority.slice(authority.lastIndexOf('@') + 1).includes(':');
+	if (hasExplicitPort && audience.endsWith('/')) return;
+
+	throw new ClientError(
+		`'audience' must be the exact string the CI client requests its token for, which includes an ` +
+			`explicit port and a trailing slash (for example 'https://my-instance.example.com:9925/'). ` +
+			`'${audience}' is missing ${!hasExplicitPort ? 'a port' : 'a trailing slash'}, and the match is ` +
+			`byte-for-byte, so the policy could never authenticate.`
+	);
+}
+
 function trustTable() {
 	const table = (databases as any).system?.[OIDC_TRUST_TABLE];
 	if (!table) {
@@ -103,19 +143,35 @@ function toRecord(row: any): OidcTrustPolicy & Record<string, unknown> {
  * sorting by id keeps both the listing and the exchange's match order deterministic rather than
  * dependent on an index's iteration order.
  */
-async function readPolicies(includeDisabled: boolean): Promise<OidcTrustPolicy[]> {
+async function readPolicies(includeDisabled: boolean, issuer?: string): Promise<OidcTrustPolicy[]> {
 	const table = trustTable();
 	const policies: OidcTrustPolicy[] = [];
 	for await (const row of table.search([])) {
 		if (!includeDisabled && row.enabled === false) continue;
+		if (issuer !== undefined && row.issuer !== issuer) continue;
 		policies.push(toRecord(row));
 	}
 	return policies.sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 
-/** The policies the exchange will consider. */
-export function loadEnabledPolicies(): Promise<OidcTrustPolicy[]> {
-	return readPolicies(false);
+/**
+ * The policies the exchange will consider, narrowed to one issuer.
+ *
+ * Filtered inside the scan rather than by the caller: the exchange is unauthenticated and reaches
+ * here having done nothing but `jwt.decode`, so an anonymous caller presenting any syntactically
+ * valid JWT would otherwise drive a `toRecord()` allocation for every stored policy before anything
+ * has been verified. The scan itself stays — the table is administrator-sized, and an index here
+ * would buy little (see readPolicies) — but non-matching rows now cost nothing beyond the compare.
+ *
+ * A missing table yields no policies rather than throwing. On a node where the upgrade directive has
+ * not run, trustTable()'s descriptive ClientError would surface to an anonymous caller as a 400 with
+ * a body unlike the uniform 401 every other rejection returns, which both leaks node state and
+ * breaks the single-message property. The SU-only add/list/drop handlers still get that error, where
+ * it is the useful thing to say.
+ */
+export function loadEnabledPolicies(issuer: string): Promise<OidcTrustPolicy[]> {
+	if (!(databases as any).system?.[OIDC_TRUST_TABLE]) return Promise.resolve([]);
+	return readPolicies(false, issuer);
 }
 
 /**
@@ -147,7 +203,11 @@ export async function addOidcTrust(req: any) {
 	// Issuer-specific rules live in the provider profile; an unregistered issuer gets the strict
 	// generic profile rather than a permissive default. Each throws ClientError naming the problem.
 	const profile = profileForIssuer(issuer);
+	// On the RAW audience, before the canonical-form check below. GitHub's shared-audience guard
+	// matches `https://github.com/<owner>`, and a canonicalized form of that would no longer match
+	// the regex — checking the other way round would silently disarm it.
 	profile.assertAudienceIsSpecific(req.audience);
+	assertAudienceIsCanonical(req.audience);
 	if (req.operations) assertOperationsAreKnown(req.operations);
 	validateClaimConstraintShape(req.claims);
 	profile.assertPolicyIsSpecific(req.claims);

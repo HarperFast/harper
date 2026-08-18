@@ -87,7 +87,13 @@ export async function verifyIdentityToken(
 	try {
 		payload = jwt.verify(token, key, {
 			algorithms: ALLOWED_ALGORITHMS,
-			issuer,
+			// Both spellings, because `issuer` here is normalized (trailing slash stripped) while
+			// jsonwebtoken compares it byte-for-byte against the raw `iss`. Azure AD v1 emits
+			// `https://sts.windows.net/<tenant>/`, which would otherwise never authenticate — and the
+			// generic profile exists precisely to serve issuers like it with no provider code. This
+			// cannot widen trust: normalizeIssuer already maps the two forms to one value, which is
+			// what keys the JWKS cache, the discovery check, and the policy lookup.
+			issuer: [issuer, `${issuer}/`],
 			audience: target.audience,
 			clockTolerance: CLOCK_TOLERANCE_SECONDS,
 			...(options.clockTimestamp === undefined ? {} : { clockTimestamp: options.clockTimestamp }),

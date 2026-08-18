@@ -154,6 +154,43 @@ describe('oidc trustPolicyOperations', () => {
 			}
 		});
 
+		// The audience is compared byte-for-byte at verification time against what the CLI requested,
+		// and the CLI requests normalizeTarget(target) — port and trailing slash included. A policy
+		// written the natural way would therefore never match, and the exchange says only "rejected",
+		// so the operator learns nothing. It has to fail here, at write time, instead.
+		it('rejects an audience missing the port or the trailing slash', async () => {
+			for (const audience of [
+				'https://my-instance.harperdb.io',
+				'https://my-instance.harperdb.io/',
+				'https://my-instance.harperdb.io:9925',
+			]) {
+				await assert.rejects(
+					() => addOidcTrust(su('add_oidc_trust', validPolicy({ audience }))),
+					/byte-for-byte/,
+					`expected '${audience}' to be refused as non-canonical`
+				);
+			}
+		});
+
+		// Pins this check to the CLI's actual normalization rather than to my reading of it: whatever
+		// normalizeTarget produces must be accepted here, or the two drift and the feature breaks in
+		// the one place nobody is watching.
+		it('accepts every shape normalizeTarget produces', async () => {
+			const { normalizeTarget } = require('#src/bin/cliCredentials');
+			for (const raw of [
+				'my-instance.harperdb.io',
+				'https://my-instance.harperdb.io',
+				'https://my-instance.harperdb.io:443',
+				'http://localhost:9925',
+			]) {
+				const audience = normalizeTarget(raw);
+				await assert.doesNotReject(
+					() => addOidcTrust(su('add_oidc_trust', validPolicy({ audience }))),
+					`normalizeTarget('${raw}') => '${audience}' must be a writable audience`
+				);
+			}
+		});
+
 		it('rejects a non-https issuer', async () => {
 			await assert.rejects(
 				() => addOidcTrust(su('add_oidc_trust', validPolicy({ issuer: 'http://token.actions.githubusercontent.com' }))),

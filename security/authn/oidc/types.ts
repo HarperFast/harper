@@ -8,7 +8,8 @@ export type ClaimConstraint = string | string[];
 /**
  * A stored trust policy. Matching one lets an external CI run act as `user` without holding any
  * Harper credential, so `claims` is validated at write time rather than trusted as written — see
- * validateTrustPolicyClaims for the structural requirements, and addOidcTrust for the rest.
+ * validateClaimConstraintShape (claims.ts) and the profile's assertPolicyIsSpecific for the
+ * structural requirements, and addOidcTrust for the rest.
  */
 export interface OidcTrustPolicy {
 	id: string;
@@ -36,5 +37,5 @@ export interface OidcTrustPolicy {
 	description?: string;
 }
 
-/** A verified token's payload, plus the entries normalizeTokenClaims derives. */
+/** A verified token's payload, plus the entries the profile's normalizeClaims derives. */
 export type TokenClaims = Record<string, unknown>;

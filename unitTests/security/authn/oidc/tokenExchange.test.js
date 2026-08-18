@@ -227,6 +227,33 @@ describe('exchangeOidcToken', () => {
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));
 	});
 
+	// The replay key must be the SIGNED INPUT, not the token string. Base64url decoding ignores the
+	// surplus low bits of the final character, so an RS256 signature has 16 distinct spellings that
+	// decode to identical bytes — every one passes jwt.verify. Keying on the whole token gave each a
+	// different fingerprint, so one leaked identity token bought 16 operation tokens.
+	it('refuses a re-spelled signature that decodes to the same bytes', async () => {
+		await addPolicy();
+		const token = identityToken();
+		await exchangeOidcToken({ operation: 'exchange_oidc_token', token });
+
+		const [header, payload, signature] = token.split('.');
+		const signatureBytes = Buffer.from(signature, 'base64url');
+		const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+		const twins = [];
+		for (const character of alphabet) {
+			const candidate = signature.slice(0, -1) + character;
+			if (candidate === signature) continue;
+			if (Buffer.from(candidate, 'base64url').equals(signatureBytes)) twins.push(candidate);
+		}
+		assert.ok(twins.length > 0, 'expected at least one surplus-bit spelling of the signature');
+
+		for (const twin of twins) {
+			await assertRejected(
+				exchangeOidcToken({ operation: 'exchange_oidc_token', token: `${header}.${payload}.${twin}` })
+			);
+		}
+	});
+
 	it('records the spent token against the policy, expiring with the token', async () => {
 		await addPolicy();
 		const token = identityToken();

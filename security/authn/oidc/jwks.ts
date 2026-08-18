@@ -42,8 +42,17 @@ const inFlightLoads = new Map<string, Promise<IssuerKeys>>();
  */
 const unknownKidRefetchAt = new Map<string, number>();
 
+/**
+ * Bumped by every clear. A fetch that was already in flight when the cache was cleared must not
+ * write its now-stale result back: clearing drops `inFlightLoads`, but the orphaned fetch still
+ * holds a reference and would repopulate the entry an operator just discarded — which for a clear
+ * issued precisely because the cached key is wrong means the re-read silently does nothing.
+ */
+let cacheGeneration = 0;
+
 /** Drops all cached key sets. Exported for tests and for an operator forcing a re-read. */
 export function clearJwksCache(): void {
+	cacheGeneration++;
 	issuerKeyCache.clear();
 	inFlightLoads.clear();
 	unknownKidRefetchAt.clear();
@@ -150,6 +159,8 @@ function toSigningKey(jwk: any): KeyObject | undefined {
 }
 
 async function fetchIssuerKeys(issuer: string): Promise<IssuerKeys> {
+	// Sampled before the first await, so any clear during the fetch is detectable at the end.
+	const generation = cacheGeneration;
 	const jwksUri = await discoverJwksUri(issuer);
 	const jwks = await fetchJson(jwksUri);
 	if (!Array.isArray(jwks?.keys)) throw new ServerError(`JWKS at ${jwksUri} has no keys array`);
@@ -162,7 +173,9 @@ async function fetchIssuerKeys(issuer: string): Promise<IssuerKeys> {
 	if (keys.size === 0) throw new ServerError(`JWKS at ${jwksUri} contains no usable signing keys`);
 
 	const entry: IssuerKeys = { keys, fetchedAt: Date.now() };
-	issuerKeyCache.set(issuer, entry);
+	// Still returned to the caller that asked for it — it is freshly fetched and valid — but only
+	// cached if no clear happened while this was in flight.
+	if (generation === cacheGeneration) issuerKeyCache.set(issuer, entry);
 	logger.debug?.(`Loaded ${keys.size} signing key(s) for ${issuer}`);
 	return entry;
 }

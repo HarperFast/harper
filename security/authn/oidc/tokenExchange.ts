@@ -95,7 +95,10 @@ function auditExchange(req: any, username: string | undefined, status: string, d
 		username,
 		status,
 		AUTH_AUDIT_TYPES.AUTHENTICATION,
-		baseRequest?.ip,
+		// Same precedence as every other auth event (security/auth.ts): behind a load balancer —
+		// which is every Fabric and cloud deployment — `ip` is the proxy, so an audit trail for the
+		// one unauthenticated credential-minting operation would record the proxy, not the runner.
+		baseRequest?.headers?.['x-forwarded-for'] ?? baseRequest?.ip,
 		baseRequest?.method,
 		baseRequest?.pathname
 	);
@@ -103,6 +106,20 @@ function auditExchange(req: any, username: string | undefined, status: string, d
 	Object.assign(log, detail);
 	if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info?.(log);
 	else authEventLog.error?.(log);
+}
+
+/**
+ * Auditing must never change the outcome it is recording. The success emit sits inside the
+ * exchange's try, so a throw there would be caught and re-reported as a FAILURE for a request that
+ * actually succeeded; on the failure path a throw would replace the original error with the audit's.
+ * Swallowing here fixes both, and keeps the two call sites free of defensive wrapping.
+ */
+function auditExchangeSafely(req: any, username: string | undefined, status: string, detail: Record<string, unknown>) {
+	try {
+		auditExchange(req, username, status, detail);
+	} catch (error) {
+		logger.warn?.(`Failed to emit OIDC exchange audit record: ${(error as Error).message}`);
+	}
 }
 
 /** Verifies each distinct audience at most once, so N policies sharing one cost one verification. */
@@ -129,8 +146,18 @@ async function findMatchingPolicy(
 		}
 
 		if (!claimsByAudience.has(policy.audience)) {
-			// verifyIdentityToken logs its own reason for refusing.
-			const verified = await verifyIdentityToken(token, { issuer, audience: policy.audience }).catch(() => undefined);
+			// verifyIdentityToken logs its own reason via rejectToken, but everything jwks.ts throws
+			// (unknown kid, unreachable host, non-2xx, oversized body, bad JSON, no usable keys) is
+			// thrown directly and would otherwise vanish here — the request then falls through to
+			// "no trust policy matched", which is actively misleading when a policy DID match and the
+			// failure was operational. Log every swallowed reason so an issuer outage is
+			// distinguishable from a misconfigured policy in the log.
+			const verified = await verifyIdentityToken(token, { issuer, audience: policy.audience }).catch((error) => {
+				logger.warn?.(
+					`Verification failed for policy '${policy.id}' (audience '${policy.audience}'): ${(error as Error).message}`
+				);
+				return undefined;
+			});
 			claimsByAudience.set(policy.audience, verified);
 		}
 		const claims = claimsByAudience.get(policy.audience);
@@ -144,13 +171,27 @@ async function findMatchingPolicy(
 }
 
 /**
- * Identifies a token for replay purposes. A hash of the token itself rather than `issuer|jti`: not
- * every issuer emits `jti` (Azure uses `uti`, others omit it), and a replayed token is byte-identical
- * by definition, so this is strictly more general with the same semantics. Hashed rather than stored
- * so the table never holds a credential.
+ * Identifies a token for replay purposes: a hash of its SIGNED INPUT (`header.payload`), not of the
+ * whole token string. Keyed this way rather than on `issuer|jti` because not every issuer emits
+ * `jti` (Azure uses `uti`, others omit it), so this is strictly more general.
+ *
+ * Hashing the raw token instead would be bypassable, because the signature segment is covered by
+ * nothing. Base64url decoding ignores the surplus low bits of the final character, so for an RS256
+ * signature there are 16 distinct spellings of that segment that decode to identical bytes — every
+ * one of them passes `jwt.verify`, and every one hashes differently. One leaked identity token would
+ * buy 16 operation tokens. ES* issuers add a second, independent vector, since `s → n−s` is a
+ * different valid signature over the same input.
+ *
+ * The signed input has neither problem: it is exactly what the issuer asserted and what the
+ * signature covers, so every variant spelling and every malleable re-signing of one assertion
+ * collapses to one fingerprint. Hashed rather than stored so the table never holds a credential.
  */
 function tokenFingerprint(token: string): string {
-	return createHash('sha256').update(token).digest('base64url');
+	// Not `slice(0, 2).join('.')` on a split of the whole token: lastIndexOf keeps this O(1) in the
+	// signature length and cannot silently succeed on a malformed token with too few segments —
+	// verifyIdentityToken has already established this is a well-formed three-segment JWT.
+	const signedInput = token.slice(0, token.lastIndexOf('.'));
+	return createHash('sha256').update(signedInput).digest('base64url');
 }
 
 /**
@@ -202,7 +243,7 @@ export async function exchangeOidcToken(req: any) {
 		const profile = profileForIssuer(issuer);
 		audit.provider = profile.name;
 
-		const policies = (await loadEnabledPolicies()).filter((policy) => policy.issuer === issuer);
+		const policies = await loadEnabledPolicies(issuer);
 		if (policies.length === 0) rejectToken(`no enabled trust policy for issuer ${issuer}`);
 
 		const matched = await findMatchingPolicy(req.token, issuer, policies, profile);
@@ -234,7 +275,7 @@ export async function exchangeOidcToken(req: any) {
 		if (policy.operations?.length) audit.scoped_operations = policy.operations;
 
 		logger.info?.(`OIDC exchange: policy '${policy.id}' authenticated '${user.username}' for ${audit.principal}`);
-		auditExchange(req, username, AUTH_AUDIT_STATUS.SUCCESS, audit);
+		auditExchangeSafely(req, username, AUTH_AUDIT_STATUS.SUCCESS, audit);
 
 		return {
 			operation_token: operationToken,
@@ -243,7 +284,7 @@ export async function exchangeOidcToken(req: any) {
 			policy: policy.id,
 		};
 	} catch (error) {
-		auditExchange(req, username, AUTH_AUDIT_STATUS.FAILURE, audit);
+		auditExchangeSafely(req, username, AUTH_AUDIT_STATUS.FAILURE, audit);
 		throw error;
 	}
 }

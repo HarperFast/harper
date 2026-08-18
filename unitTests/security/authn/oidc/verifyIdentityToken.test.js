@@ -142,6 +142,20 @@ describe('verifyIdentityToken', () => {
 	// The ceiling is measured from `iat`, so treating `iat` as optional means a token that omits it
 	// is not bounded at all — the check would skip exactly the token that most needs it. OIDC
 	// requires the claim, so demanding it costs nothing.
+	// The expectation handed to jwt.verify is the NORMALIZED issuer, but the comparison against `iss`
+	// is byte-for-byte — so an issuer that publishes a trailing slash (Azure AD v1:
+	// `https://sts.windows.net/<tenant>/`) could never authenticate. Both spellings already collapse
+	// to one value everywhere else (cache key, discovery check, policy lookup), so accepting both
+	// here is consistency, not widened trust.
+	it('accepts a token whose iss carries a trailing slash', async () => {
+		const claims = await verify(sign(claimsFor({ iss: `${ISSUER}/` })));
+		assert.strictEqual(claims.repository, 'HarperFast/my-app');
+	});
+
+	it('still rejects a token from a different issuer', async () => {
+		await assertRejected(sign(claimsFor({ iss: 'https://evil.example.com' })));
+	});
+
 	it('rejects a token with no iat claim', async () => {
 		const { iat: _iat, ...withoutIat } = claimsFor({ exp: NOW_SECONDS + 86_400 });
 		await assertRejected(sign(withoutIat));
