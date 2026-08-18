@@ -415,6 +415,7 @@ export function makeTable(options) {
 	let coordinatingDrop = false;
 	let storesClosed = false;
 	let dropPreparation: Promise<void> | undefined;
+	let deleteCallbackHandle: { remove: () => void } | undefined;
 	const tableStores = () => [...Object.values(indices), primaryStore].filter(Boolean);
 	const tableDroppingError = () => {
 		const error: any = new ServerError(`Table ${databaseName}.${tableName} is being dropped`, 409);
@@ -450,6 +451,7 @@ export function makeTable(options) {
 	const stopBackgroundScans = () => {
 		stopCleanupTimer();
 		if (recordExpirationInterval) clearInterval(recordExpirationInterval);
+		deleteCallbackHandle?.remove();
 	};
 	const markTableDropping = () => {
 		droppingTable = true;
@@ -507,7 +509,6 @@ export function makeTable(options) {
 		if (attribute.expiresAt) expiresAtProperty = attribute;
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 	}
-	let deleteCallbackHandle: { remove: () => void };
 	let prefetchIds = [];
 	let prefetchCallbacks = [];
 	let untilNextPrefetch = 1;
@@ -6544,7 +6545,20 @@ export function makeTable(options) {
 	}
 	function addDeleteRemoval() {
 		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(tableId, primaryStore, (id: Id, version: number) => {
-			primaryStore.remove(id, version);
+			const finishRemoval = beginTableOperation('audit delete removal');
+			try {
+				const removal = primaryStore.remove(id, version);
+				if (removal?.then) {
+					removal.then(finishRemoval, (error) => {
+						finishRemoval();
+						logger.warn?.(`Audit delete removal error for ${tableName}:`, error);
+					});
+				} else finishRemoval();
+				return removal;
+			} catch (error) {
+				finishRemoval();
+				throw error;
+			}
 		});
 	}
 	function runRecordExpirationEviction() {

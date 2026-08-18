@@ -386,6 +386,71 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
+	it('drains an audit delete removal before dropping the primary store', async function () {
+		const storagePath = path.join(testPath, 'audit-delete-removal-databases');
+		const previousStoragePath = env.get(terms.CONFIG_PARAMS.STORAGE_PATH);
+		let releaseRemoval;
+		mkdirSync(storagePath, { recursive: true });
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storagePath);
+		try {
+			resetDatabases();
+			const databaseName = `DropAuditDeleteDb_${process.pid}_${Date.now()}`;
+			const Table = table({
+				table: `DropAuditDeleteRemoval_${process.pid}_${Date.now()}`,
+				database: databaseName,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			});
+			await Table.put({ id: 'deleted', name: 'removed' });
+			await Table.delete('deleted');
+
+			const originalRemove = Table.primaryStore.remove;
+			let removalStarted;
+			const removalStartedPromise = new Promise((resolve) => {
+				removalStarted = resolve;
+			});
+			const removalGate = new Promise((resolve) => {
+				releaseRemoval = resolve;
+			});
+			Table.primaryStore.remove = async function (...args) {
+				removalStarted();
+				await removalGate;
+				return originalRemove.apply(this, args);
+			};
+
+			const originalDropSync = Table.primaryStore.dropSync;
+			let destructivePhaseStarted = false;
+			Table.primaryStore.dropSync = function (...args) {
+				destructivePhaseStarted = true;
+				return originalDropSync.apply(this, args);
+			};
+			const removeDeletedRecord = Table.auditStore.deleteCallbacks[Table.tableId];
+			assert.strictEqual(typeof removeDeletedRecord, 'function');
+			assert.strictEqual(
+				Table.auditStore.tableStores[Table.tableId],
+				Table.primaryStore,
+				'the callback must belong to the table under test'
+			);
+			const deleteRemovalPromise = removeDeletedRecord('deleted', Table.primaryStore.getEntry('deleted').version);
+			await removalStartedPromise;
+			const dropPromise = Table.dropTable();
+			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+			assert.strictEqual(
+				destructivePhaseStarted,
+				false,
+				'dropTable() must wait for the direct primary-store removal launched by audit pruning'
+			);
+			releaseRemoval();
+			await Promise.all([deleteRemovalPromise, dropPromise]);
+			assert.strictEqual(destructivePhaseStarted, true);
+			Table.primaryStore.remove = originalRemove;
+		} finally {
+			releaseRemoval?.();
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, previousStoragePath);
+			resetDatabases();
+		}
+	});
+
 	it('cancels a subscriber-paced replay instead of timing out the drop drain', async function () {
 		const Table = defineTable(`DropSlowReplay_${process.pid}_${Date.now()}`);
 		for (let i = 0; i < 110; i++) await Table.put(i, { name: `queued-${i}` });
