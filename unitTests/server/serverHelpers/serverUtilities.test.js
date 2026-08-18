@@ -73,6 +73,44 @@ describe('Test serverUtilities.js module ', () => {
 			request.operation = 'add_user';
 			assert.doesNotThrow(() => serverUtilities.chooseOperation(request, true));
 		});
+
+		// The token scope's "can only ever subtract" invariant, asserted where it is ENFORCED rather
+		// than where it is computed (#2171/#2174). This is the front door for an export job carrying
+		// nested SQL: the job is gated here, before it is ever queued, and the check inside the job's
+		// own SQL execution is a dead branch (#2202). So this gate is the whole safety argument, and
+		// the rest of the scope suite only asserts that a denial object comes back — not that anyone
+		// throws on it.
+		function exportJobRequest(tokenOperations, sql) {
+			const request = testUtils.deepClone(TEST_JSON_SUPER_USER);
+			request.operation = 'export_local';
+			request.search_operation = { operation: 'sql', sql };
+			request.hdb_user.tokenOperations = tokenOperations;
+			return request;
+		}
+
+		it('throws 403 for an export job whose nested write SQL is outside the token scope', function () {
+			// Scoped to the export itself but not to `delete`: a write statement additionally requires
+			// its matching data operation, which is what keeps `read_only` from admitting a DELETE.
+			assert.throws(
+				() => serverUtilities.chooseOperation(exportJobRequest(['export_local'], 'DELETE FROM data.dog')),
+				(error) => {
+					assert.strictEqual(error.statusCode ?? error.http_code, 403, 'expected a forbidden status');
+					return true;
+				},
+				'an export job must not smuggle write SQL past the scope gate'
+			);
+		});
+
+		it('throws 403 for an export job when the export operation itself is outside the scope', function () {
+			assert.throws(() => serverUtilities.chooseOperation(exportJobRequest(['get_status'], 'SELECT * FROM data.dog')));
+		});
+
+		// The other direction, so this cannot pass by refusing everything: an in-scope export runs.
+		it('admits an export job whose nested SQL is inside the token scope', function () {
+			assert.doesNotThrow(() =>
+				serverUtilities.chooseOperation(exportJobRequest(['export_local'], 'SELECT * FROM data.dog'))
+			);
+		});
 	});
 
 	describe('registered operation authorization envelope', function () {
