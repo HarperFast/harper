@@ -316,6 +316,27 @@ describe('oidc trustPolicyOperations', () => {
 			assert.match(listed.invalid_reason, /enabled/, 'expected the listing to say why it is refused');
 		});
 
+		// The exchange also refuses a well-formed row whose user has been deleted or deactivated, with
+		// the same opaque 401 — and that is the most mundane arrival of all: someone removes the CI
+		// user and every deploy starts failing while the listing still says the trust is fine.
+		it('reports a policy naming a user that no longer exists', async () => {
+			await addOidcTrust(su('add_oidc_trust', validPolicy({ id: 'gone' })));
+			await setUsersWithRolesCache(new Map());
+
+			const listed = (await listOidcTrust(su('list_oidc_trust'))).policies.find((p) => p.id === 'gone');
+			assert.match(listed.invalid_reason, /does not exist/);
+		});
+
+		it('reports a policy naming a deactivated user', async () => {
+			await addOidcTrust(su('add_oidc_trust', validPolicy({ id: 'inactive' })));
+			const users = new Map();
+			users.set('ci-deploy', { username: 'ci-deploy', active: false, role: { role: 'r', permission: {} } });
+			await setUsersWithRolesCache(users);
+
+			const listed = (await listOidcTrust(su('list_oidc_trust'))).policies.find((p) => p.id === 'inactive');
+			assert.match(listed.invalid_reason, /inactive/);
+		});
+
 		it('leaves a well-formed policy unannotated', async () => {
 			await addOidcTrust(su('add_oidc_trust', validPolicy()));
 			const listed = (await listOidcTrust(su('list_oidc_trust'))).policies.find(

@@ -138,7 +138,8 @@ function toRecord(row: any, problem?: string): OidcTrustPolicy & Record<string, 
 		// a dead trust is live. Absent still means enabled, which is the documented default.
 		enabled: row.enabled === undefined ? true : row.enabled,
 		// Present only on a row the exchange will refuse, so a listing says why the trust is dead
-		// instead of leaving a per-attempt log line as the only signal.
+		// instead of leaving a per-attempt log line as the only signal. Shape problems are set here;
+		// listOidcTrust adds the ones that depend on state outside the row (a missing or inactive user).
 		...(problem ? { invalid_reason: problem } : {}),
 		description: row.description ?? null,
 		updated_by: row.updated_by ?? null,
@@ -315,7 +316,26 @@ export async function addOidcTrust(req: any) {
 
 export async function listOidcTrust(req: any) {
 	requireSuperUser(req);
-	return { policies: await readPolicies(true) };
+	const policies = await readPolicies(true);
+
+	// The exchange also refuses a well-formed row whose user has since been deleted or deactivated
+	// (tokenExchange resolves it before spending the token), with the same opaque 401 — so without
+	// this the listing would still say the trust is fine for the most mundane arrival of all: someone
+	// deletes or deactivates the CI user and every deploy starts failing.
+	//
+	// Annotated here rather than in readPolicies, and deliberately: this is one cache read for the
+	// whole listing on an SU-only path, where doing it per row in readPolicies would put a user lookup
+	// on the unauthenticated exchange path, which already resolves the user itself at the right moment.
+	// A shape problem already reported wins, since it is the more fundamental complaint.
+	const users = await getUsersWithRolesCache();
+	for (const policy of policies as any[]) {
+		if (policy.invalid_reason) continue;
+		const user = users?.get(policy.user);
+		if (!user) policy.invalid_reason = `names user '${policy.user}', which does not exist`;
+		else if (user.active === false) policy.invalid_reason = `names inactive user '${policy.user}'`;
+	}
+
+	return { policies };
 }
 
 export async function dropOidcTrust(req: any) {
