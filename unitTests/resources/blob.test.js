@@ -1803,7 +1803,11 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		const saving = repairBlobFile(blob, {}, statSync(filePath).size - 8);
 		assert.ok(saving, 'repair should return its rejected settle promise');
 		await assert.rejects(saving);
-		assert.strictEqual(isSaving(blob), undefined, 'failed repair should not poison later writes with a stale rejection');
+		assert.strictEqual(
+			isSaving(blob),
+			undefined,
+			'failed repair should not poison later writes with a stale rejection'
+		);
 		await waitFor(
 			() => {
 				if (!store.tryLock(lockKey)) return false;
