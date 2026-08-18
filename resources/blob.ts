@@ -1659,6 +1659,7 @@ export function repairBlobFile(
 		if (!(blob instanceof FileBackedBlob)) return undefined;
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (!storageInfo?.fileId || !storageInfo.store) return undefined;
+		if (storageInfo.start !== undefined || storageInfo.end !== undefined) return undefined;
 		store = storageInfo.store;
 		storageInfo.filePath ??= getFilePath(storageInfo);
 		const filePath = storageInfo.filePath;
@@ -1677,7 +1678,7 @@ export function repairBlobFile(
 		}
 		const fileDir = dirname(filePath);
 		if (!existsSync(fileDir)) ensureDirSync(fileDir);
-		const repairFilePath = filePath + BLOB_REPAIR_SUFFIX; // same directory keeps the final rename atomic
+		const repairFilePath = filePath + BLOB_REPAIR_SUFFIX;
 		repairTempLockKey = repairFilePath + ':blob';
 		if (!store.tryLock(repairTempLockKey)) {
 			store.unlock(blobLockKey);
@@ -1699,7 +1700,13 @@ export function repairBlobFile(
 						return (verifiedSize = reportedSize);
 					}
 				: sourceSize;
-		const repairStorageInfo = { ...storageInfo, filePath: repairFilePath, saving: undefined };
+		const repairStorageInfo = {
+			...storageInfo,
+			filePath: repairFilePath,
+			saving: undefined,
+			flush: true,
+			compress: false,
+		};
 		writeBlobWithStream(blob as any, source, repairStorageInfo, {
 			expectedSize,
 			repairTargetPath: filePath,
@@ -1712,11 +1719,12 @@ export function repairBlobFile(
 		});
 		settled.catch(() => {});
 		return settled;
-	} catch {
+	} catch (error) {
 		if (!locksOwnedByWriter) {
 			if (repairTempLockHeld) store?.unlock(repairTempLockKey);
 			if (blobLockHeld) store?.unlock(blobLockKey);
 		}
+		logger.warn?.('Unable to start in-place blob repair', error);
 		return undefined;
 	}
 }

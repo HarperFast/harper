@@ -1897,6 +1897,7 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		const saving = repairBlobFile(blob, Readable.from(payload), payload.length);
 		assert.ok(saving, 'repair should start on a damaged compressed blob');
 		await saving;
+		assert.strictEqual(readFileSync(filePath).readUInt16BE(0), 0);
 		assert.deepStrictEqual(await blob.bytes(), payload);
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 	});
@@ -1969,6 +1970,14 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 	it('repairBlobFile declines on a healthy blob', async () => {
 		const { blob } = await savedBlob('repair-healthy');
 		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(16))), undefined);
+	});
+
+	it('repairBlobFile declines a slice that shares its parent backing file', async () => {
+		const { blob, filePath } = await savedBlob('repair-slice', randomBytes(25000));
+		const slice = blob.slice(0, 1000);
+		assert.strictEqual(getFilePathForBlob(slice), filePath);
+		assert.strictEqual(repairBlobFile(slice, Readable.from(randomBytes(1000)), 1000), undefined);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 	});
 
 	it('repairBlobFile declines on an unsaved blob', async () => {
