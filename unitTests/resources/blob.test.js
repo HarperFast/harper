@@ -1652,7 +1652,6 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 			],
 		});
 	});
-	// Create a saved, file-backed blob and return { blob, filePath, store }.
 	async function savedBlob(id, source = Readable.from(randomBytes(25000))) {
 		const blob = await createBlob(source);
 		await BlobRepairTest.put({ id, blob });
@@ -1721,6 +1720,12 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
 	});
 
+	it('reports a self-consistent file whose header disagrees with the record descriptor', async () => {
+		const { blob, filePath } = await savedBlob('descriptor-size-mismatch', randomBytes(25000));
+		writeFileSync(filePath, Buffer.concat([makeBlobHeader(100), randomBytes(100)]));
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
 	it('reports an unknown header type', async () => {
 		const { blob, filePath } = await savedBlob('unknown-type');
 		stampHeaderType(filePath, 2);
@@ -1756,6 +1761,7 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		source.end(original.subarray(8));
 		await saving;
 		assert.strictEqual(getFilePathForBlob(blob), filePath); // same fileId — record needs no rewrite
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 		assert.deepStrictEqual(readFileSync(filePath).subarray(8), original.subarray(8));
 	});
@@ -1808,6 +1814,8 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 			undefined,
 			'failed repair should not poison later writes with a stale rejection'
 		);
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe, 'failed setup must preserve the referenced PENDING file');
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
 		await waitFor(
 			() => {
 				if (!store.tryLock(lockKey)) return false;
@@ -1816,6 +1824,32 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 			},
 			{ message: 'failed stream setup should release the blob lock' }
 		);
+	});
+
+	it('repairBlobFile leaves the referenced file untouched while replacement bytes are still arriving', async () => {
+		const { blob, filePath } = await savedBlob('repair-in-flight');
+		const source = new PassThrough();
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, source, 25000);
+		assert.ok(saving, 'repair should start on a damaged blob');
+		source.write(randomBytes(100));
+		await waitFor(() => existsSync(filePath + '.repair') && statSync(filePath + '.repair').size > 8, {
+			message: 'replacement bytes should land in the temporary repair file',
+		});
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		await cleanupOrphans(getDatabases().test);
+		assert.strictEqual(existsSync(filePath + '.repair'), true, 'orphan cleanup must preserve an active repair');
+		source.destroy(new Error('stop in-flight repair'));
+		await assert.rejects(saving, /stop in-flight repair/);
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+	});
+
+	it('cleanupOrphans removes a stale repair file', async () => {
+		const { filePath } = await savedBlob('stale-repair-file');
+		writeFileSync(filePath + '.repair', randomBytes(16));
+		await cleanupOrphans(getDatabases().test);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
 	});
 
 	it('repairBlobFile accepts uncompressed replacement bytes for a compressed stored blob', async () => {
@@ -1832,6 +1866,15 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 	});
 
+	it('leaves a truncated compressed body for the asynchronous repair sweep to verify', async () => {
+		const payload = Buffer.from('truncated compressed blob '.repeat(2000));
+		await BlobRepairTest.put({ id: 'compressed-damage-probe', blob: createBlob(payload, { compress: true }) });
+		const { blob } = await BlobRepairTest.get('compressed-damage-probe');
+		const filePath = getFilePathForBlob(blob);
+		truncateSync(filePath, statSync(filePath).size - 1);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+	});
+
 	it('repairBlobFile does not re-stamp over a writer that acquired the lock after a failed repair', async () => {
 		const { blob, filePath, store } = await savedBlob('repair-restamp-race');
 		const original = readFileSync(filePath);
@@ -1841,9 +1884,9 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		let armCompetingWriter = false;
 		let competingWriterHeld = false;
 		let competingWriterAcquired = false;
+		let headerTypeAtUnlock;
 		store.unlock = function (key, ...args) {
-			if (armCompetingWriter && key === lockKey)
-				assert.strictEqual(readFileSync(filePath)[1], 0xfe, 'repair must stamp PENDING before releasing its lock');
+			if (armCompetingWriter && key === lockKey) headerTypeAtUnlock = readFileSync(filePath)[1];
 			const result = originalUnlock.call(this, key, ...args);
 			if (armCompetingWriter && key === lockKey && !competingWriterHeld) {
 				competingWriterAcquired = store.tryLock(lockKey);
@@ -1861,13 +1904,30 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 			armCompetingWriter = true;
 			source.destroy(new Error('repair failed'));
 			await assert.rejects(saving, /repair failed/);
-			await delay(50);
+			await waitFor(() => competingWriterAcquired, {
+				message: 'competing writer should acquire the released repair lock',
+			});
+			assert.strictEqual(headerTypeAtUnlock, 0xfe, 'repair must preserve PENDING before releasing its lock');
 			assert.ok(competingWriterAcquired, 'competing writer should acquire the released repair lock');
 			assert.ok(competingWriterHeld);
 			assert.deepStrictEqual(readFileSync(filePath), original);
 		} finally {
 			store.unlock = originalUnlock;
 			if (competingWriterHeld) originalUnlock.call(store, lockKey);
+		}
+	});
+
+	it('repairBlobFile declines without touching the file while another writer holds the lock', async () => {
+		const { blob, filePath, store } = await savedBlob('repair-lock-busy');
+		const lockKey = getFileId(blob) + ':blob';
+		stampHeaderType(filePath, 0xfe);
+		assert.ok(store.tryLock(lockKey));
+		try {
+			assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(16)), 16), undefined);
+			assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+			assert.strictEqual(existsSync(filePath + '.repair'), false);
+		} finally {
+			store.unlock(lockKey);
 		}
 	});
 

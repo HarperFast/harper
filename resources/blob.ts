@@ -12,7 +12,7 @@
  */
 
 import { addExtension, pack, Packr } from 'msgpackr';
-import { readFile, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
+import { readFile, rename, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
 import {
 	close,
 	closeSync,
@@ -77,6 +77,7 @@ const ERROR_TYPE = 0xff;
 // overwrites this stub; a terminal give-up unlinks the file (→ 404). Distinct from ERROR_TYPE (a permanent
 // corrupt/error stub, replicated as-is). See harper-pro#481.
 const PENDING_TYPE = 0xfe;
+const BLOB_REPAIR_SUFFIX = '.repair';
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const UNKNOWN_SIZE = 0xffffffffffff;
@@ -1375,9 +1376,16 @@ function writeBlobWithStream(
 	blob: Blob,
 	stream: Readable,
 	storageInfo: StorageInfo,
-	options?: { repair?: boolean; expectedSize?: number | (() => number | undefined) }
+	options?: {
+		repair?: boolean;
+		expectedSize?: number | (() => number | undefined);
+		repairTargetPath?: string;
+		repairTempLockKey?: string;
+	}
 ): Blob {
 	const repairing = options?.repair === true;
+	const repairTargetPath = options?.repairTargetPath;
+	const repairTempLockKey = options?.repairTempLockKey;
 	const { filePath, fileId, store, compress, flush } = storageInfo;
 	storageInfo.saving = new Promise((resolve, reject) => {
 		const lockKey = fileId + ':blob';
@@ -1388,6 +1396,37 @@ function writeBlobWithStream(
 		let armIdleTimer: (() => void) | undefined;
 		let idleTimeoutMs = 0;
 		let compressedStream: any;
+		function unlockWriteLocks() {
+			if (repairTempLockKey) store.unlock(repairTempLockKey);
+			store.unlock(lockKey);
+		}
+		function closeWriteStreamFile() {
+			const fd = (writeStream as any)?.fd;
+			if (fd == null) return;
+			closeSync(fd);
+			(writeStream as any).fd = null;
+		}
+		function failTemporaryRepair(error: unknown) {
+			const removeTemporaryFile = () => {
+				unlink(filePath, (unlinkError) => {
+					if (unlinkError && (unlinkError as { code?: string }).code !== 'ENOENT')
+						logger.debug?.('Error deleting temporary blob repair file', unlinkError);
+					unlockWriteLocks();
+					reject(error);
+				});
+			};
+			if (writeStream && !writeStream.closed && (writeStream as any).fd == null) {
+				writeStream.once('close', removeTemporaryFile);
+				writeStream.destroy();
+				return;
+			}
+			try {
+				closeWriteStreamFile();
+			} catch (closeError) {
+				logger.debug?.('Error closing temporary blob repair file', closeError);
+			}
+			removeTemporaryFile();
+		}
 		function createHeader(size: number | bigint): Uint8Array {
 			let headerValue = BigInt(size);
 			const header = new Uint8Array(HEADER_SIZE);
@@ -1408,6 +1447,10 @@ function writeBlobWithStream(
 			}
 			const fd = (writeStream as any).fd;
 			if (error) {
+				if (repairTargetPath) {
+					failTemporaryRepair(error);
+					return;
+				}
 				if (fd) {
 					close(fd);
 					(writeStream as any).fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
@@ -1480,6 +1523,32 @@ function writeBlobWithStream(
 					write(fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
 					return; // not finished yet, wait for this write and then we are finished
 				}
+				if (repairTargetPath) {
+					const replaceTarget = async () => {
+						try {
+							closeWriteStreamFile();
+							await rename(filePath, repairTargetPath);
+							unlockWriteLocks();
+							resolve();
+						} catch (replaceError) {
+							try {
+								await unlinkPromised(filePath);
+							} catch (unlinkError) {
+								if ((unlinkError as { code?: string }).code !== 'ENOENT')
+									logger.debug?.('Error deleting temporary blob repair file', unlinkError);
+							}
+							unlockWriteLocks();
+							reject(replaceError);
+						}
+					};
+					if (flush) {
+						fdatasync(fd, (syncError) => {
+							if (syncError) failTemporaryRepair(syncError);
+							else void replaceTarget();
+						});
+					} else void replaceTarget();
+					return;
+				}
 				store.unlock(lockKey);
 				if (flush) {
 					// we just use fdatasync because we really aren't that concerned with flushing file metadata
@@ -1534,6 +1603,10 @@ function writeBlobWithStream(
 			}
 		} catch (error) {
 			if (idleTimer) clearTimeout(idleTimer);
+			if (repairTargetPath) {
+				failTemporaryRepair(error);
+				return;
+			}
 			writeStream?.destroy();
 			if (lockAcquired) store.unlock(lockKey);
 			reject(error);
@@ -1564,9 +1637,11 @@ export function getFilePathForBlob(blob: FileBackedBlob): string {
 	return storageInfo?.fileId && getFilePath(storageInfo);
 }
 /**
- * Repairs a damaged file-backed blob under its existing fileId. The damage check and write share
- * the blob lock. Callers may supply the trusted source size when the stored descriptor omitted it.
- * A synchronous `undefined` means no verified repair started and the caller may save fresh.
+ * Repairs a damaged file-backed blob under its existing fileId. The damage check and atomic file
+ * replacement share the blob lock, so a failed repair never modifies the referenced file. Callers
+ * may supply the source size when the stored descriptor omitted it; this detects incomplete
+ * transfers, while the caller must enforce source identity. A synchronous `undefined` means no
+ * repair started; callers that already selected a damaged target must retain the delivery for retry.
  */
 export function repairBlobFile(
 	blob: Blob,
@@ -1589,31 +1664,44 @@ export function repairBlobFile(
 			}
 			const fileDir = dirname(filePath);
 			if (!existsSync(fileDir)) ensureDirSync(fileDir);
-			storageInfo.deleteOnFailure = false;
 			storageInfo.saved = false;
-			writeBlobWithStream(blob as any, source, storageInfo, { repair: true, expectedSize: sourceSize });
+			const repairFilePath = filePath + BLOB_REPAIR_SUFFIX; // same directory keeps the final rename atomic
+			const repairTempLockKey = repairFilePath + ':blob';
+			if (!storageInfo.store.tryLock(repairTempLockKey)) {
+				storageInfo.store.unlock(lockKey);
+				return undefined;
+			}
+			const repairStorageInfo = { ...storageInfo, filePath: repairFilePath, saving: undefined };
+			writeBlobWithStream(blob as any, source, repairStorageInfo, {
+				repair: true,
+				expectedSize: sourceSize,
+				repairTargetPath: filePath,
+				repairTempLockKey,
+			});
+			const rawSaving = repairStorageInfo.saving as Promise<void>;
+			const originalSize = (blob as { size?: number }).size;
+			let settled: Promise<void>;
+			settled = rawSaving.then(
+				() => {
+					if (storageInfo.saving === settled) storageInfo.saved = true;
+					logger.warn?.(`Repaired blob file in place: ${storageInfo.fileId} (${filePath})`);
+				},
+				(error: unknown) => {
+					if (storageInfo.saving === settled) {
+						storageInfo.saving = undefined;
+						storageInfo.saved = false;
+						(blob as { size?: number }).size = originalSize;
+					}
+					throw error;
+				}
+			);
+			settled.catch(() => {});
+			storageInfo.saving = settled;
+			return settled;
 		} catch {
 			storageInfo.store.unlock(lockKey);
 			return undefined;
 		}
-		const rawSaving = storageInfo.saving as Promise<void>;
-		let settled: Promise<void>;
-		settled = rawSaving.then(
-			() => {
-				if (storageInfo.saving === settled) storageInfo.saved = true;
-				logger.warn?.(`Repaired blob file in place: ${storageInfo.fileId} (${filePath})`);
-			},
-			(error: unknown) => {
-				if (storageInfo.saving === settled) {
-					storageInfo.saving = undefined;
-					storageInfo.saved = false;
-				}
-				throw error;
-			}
-		);
-		settled.catch(() => {});
-		storageInfo.saving = settled;
-		return settled;
 	} catch {
 		return undefined;
 	}
@@ -1631,8 +1719,9 @@ export function blobHeaderIndicatesIncomplete(header: Buffer, fileSize: number):
 
 /**
  * Whether a file-backed blob's backing file is missing or incomplete on disk — the gate for the
- * copy-delivery repair. Compressed bodies require the asynchronous repair sweep for verification.
- * Returns undefined for blobs the question does not apply to.
+ * copy-delivery repair. This performs blocking filesystem I/O and is intended only after the caller
+ * identifies an exact duplicate delivery. Compressed bodies require the asynchronous repair sweep
+ * for verification. Returns undefined for blobs the question does not apply to.
  */
 export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
 	try {
@@ -1650,9 +1739,12 @@ export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
 		}
 		try {
 			const size = fstatSync(fd).size;
+			if (size < HEADER_SIZE) return true;
 			const header = Buffer.allocUnsafe(HEADER_SIZE);
-			if (size >= HEADER_SIZE && readSync(fd, header, 0, HEADER_SIZE, 0) < HEADER_SIZE) return true;
-			return blobHeaderIndicatesIncomplete(header, size);
+			if (readSync(fd, header, 0, HEADER_SIZE, 0) < HEADER_SIZE) return true;
+			if (blobHeaderIndicatesIncomplete(header, size)) return true;
+			const descriptorSize = (blob as { size?: number }).size;
+			return descriptorSize !== undefined && header.readUIntBE(2, 6) !== descriptorSize;
 		} finally {
 			closeSync(fd);
 		}
@@ -2477,6 +2569,13 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		for (const path of pathsToCheck) {
 			if (pendingReclamation.has(path)) pathsToCheck.delete(path);
 		}
+		const repairTempLocks = new Map<string, string>();
+		for (const path of pathsToCheck) {
+			if (!path.endsWith(BLOB_REPAIR_SUFFIX)) continue;
+			const lockKey = path + ':blob';
+			if ((store as any).tryLock(lockKey)) repairTempLocks.set(path, lockKey);
+			else pathsToCheck.delete(path);
+		}
 		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
 		orphansDeleted += pathsToCheck.size;
 		for (const path of pathsToCheck) {
@@ -2484,6 +2583,9 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 				await unlinkPromised(path);
 			} catch (error) {
 				logger.debug?.('Error deleting file', error);
+			} finally {
+				const lockKey = repairTempLocks.get(path);
+				if (lockKey) (store as any).unlock(lockKey);
 			}
 		}
 		logger.warn?.('Finished deleting', pathsToCheck.size, 'orphaned blobs');
