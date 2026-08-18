@@ -21,10 +21,10 @@ const UNREADY_WORKER_FIXTURE = path.join(__dirname, 'dropTableUnready-worker.js'
 const MESSAGE_TYPE = 'drop-table-quiescence-test';
 const CONTROL_TYPE = 'drop-table-quiescence-control';
 
-function defineTable(name, withEmbed = false) {
+function defineTable(name, withEmbed = false, databaseName = 'test') {
 	const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'name' }];
 	if (withEmbed) attributes.push({ name: 'vector', type: 'Array', embed: { source: 'name', model: 'unused' } });
-	return table({ table: name, database: 'test', attributes });
+	return table({ table: name, database: databaseName, attributes });
 }
 
 function startDropWorker(workerIndex, threadCount, name = 'drop-table-quiescence-test') {
@@ -173,6 +173,23 @@ describe('dropTable worker quiescence', function () {
 				}),
 			(error) => error?.code === 'ERR_TABLE_DROP_IN_TRANSACTION'
 		);
+		assert.notStrictEqual(dbisDb.getSync(`${tableName}/`)?.dropping, true);
+		assert.strictEqual(databases.test?.[tableName], Table);
+		await Table.dropTable();
+	});
+
+	it('rejects a drop from its own read transaction before tombstoning', async function () {
+		const tableName = `DropOwnReadTxn_${process.pid}_${Date.now()}`;
+		const Table = defineTable(tableName);
+		const dbisDb = database({ database: 'test', table: null }).dbisDb;
+
+		await transaction(async (dbTransaction) => {
+			Table._readTxnForContext({ transaction: dbTransaction });
+			await assert.rejects(
+				() => Table.dropTable(),
+				(error) => error?.code === 'ERR_TABLE_DROP_IN_TRANSACTION'
+			);
+		});
 		assert.notStrictEqual(dbisDb.getSync(`${tableName}/`)?.dropping, true);
 		assert.strictEqual(databases.test?.[tableName], Table);
 		await Table.dropTable();
@@ -493,15 +510,19 @@ describe('dropTable worker quiescence', function () {
 
 	it('continues after a worker fully exits during preparation', async function () {
 		this.timeout(30000);
+		// Force-terminating a worker intentionally bypasses closeLoadedDatabases(), so rocksdb-js keeps
+		// that worker's process-global handle and snapshot watermark. Isolate the test's sacrificial
+		// database so the leaked snapshot cannot pin later blob-reclamation tests on the shared test DB.
+		const databaseName = `DropWorkerExitDb_${process.pid}_${Date.now()}`;
 		const tableName = `DropWorkerExit_${process.pid}_${Date.now()}`;
-		const Table = defineTable(tableName);
+		const Table = defineTable(tableName, false, databaseName);
 		const rootStore = Table.primaryStore.rootStore;
-		const dbisDb = database({ database: 'test', table: null }).dbisDb;
+		const dbisDb = database({ database: databaseName, table: null }).dbisDb;
 		let remote;
 		try {
 			remote = startDropWorker(1, 2);
 			await remote.booted;
-			remote.send('initialize', { table: tableName });
+			remote.send('initialize', { table: tableName, database: databaseName });
 			await remote.nextEvent('ready');
 			remote.send('begin-transaction', { id: 'exiting-worker-staged' });
 			await remote.nextEvent('transaction-staged');

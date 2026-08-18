@@ -42,7 +42,7 @@ function runWorkerFixture() {
 						}
 						TestTable = table({
 							table: message.table,
-							database: 'test',
+							database: message.database ?? 'test',
 							attributes,
 						});
 						if (message.withEmbed) {
