@@ -26,8 +26,8 @@
  *   DelTable     — explicit Table.delete(), no TTL anywhere.
  *   SweepTable   — background TTL/expiration sweep (scheduleCleanup(); RocksDB batcher or LMDB
  *                  per-record evict()).
- *   EvictTable   — TableResource.evict() via the READ-triggered LAZY path only (scanInterval so
- *                  large the background sweep can't fire in this test's window).
+ *   EvictTable   — TableResource.evict() via the READ-triggered LAZY path only (the fixture
+ *                  disables its background sweep after seeding, before the records expire).
  *   ControlTable — update-in-place only, never deleted. Zero phantoms expected — proves the oracle
  *                  isn't manufacturing them.
  *
@@ -324,23 +324,17 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 			let base = await dump('EvictTable');
 			strictEqual(base.length, N, 'all rows present pre-expiry');
 			await assertIndexPositiveControl('EvictTable', evictIds, 'EVICT');
+			const disabledSweep = await post('/DisableSweep/', { table: 'EvictTable' });
+			strictEqual(disabledSweep.expirationMs, 0, 'EvictTable background expiration sweep must be disabled');
 
-			// expiration:2s — wait past it, then GET each id to trigger the lazy-eviction path directly
-			// (ensureLoadedFromSource -> TableResource.evict()), NOT the background sweep (scanInterval:300s).
+			// Existing records retain the expiresAt metadata assigned when they were written, so after the
+			// scheduled sweep is disabled they still expire and GET triggers TableResource.evict() directly.
 			await sleep(2_500);
-			// Guard against the wrong-path race: Table.ts's scheduleCleanup() aligns its FIRST timer to
-			// the next wall-clock interval boundary counted from the start of the year (see
-			// resources/Table.ts scheduleCleanup — `nextScheduled = ceil((now - startOfYear) /
-			// interval) * interval + startOfYear`), not 300s from server start. Depending on where the
-			// test happens to land in that 5-minute cycle, the "never fires in this window" background
-			// sweep could in principle beat the GETs below to it, evicting via the wrong call site while
-			// this test still credits the lazy-eviction path. Assert the rows are still here immediately
-			// before triggering the lazy path, so that race fails loudly instead of silently passing.
 			const preGet = await dump('EvictTable');
 			strictEqual(
 				preGet.length,
 				N,
-				`RACE: background sweep (scanInterval:300) appears to have already evicted EvictTable rows before the lazy-path GETs ran (${preGet.length}/${N} remain) — this arm cannot isolate the lazy-eviction call site if that happens`
+				`EvictTable rows must remain physically resident until the lazy-path GETs run (${preGet.length}/${N} remain)`
 			);
 			for (const id of evictIds) {
 				const res = await fetch(`${httpURL}/EvictTable/${id}`, {

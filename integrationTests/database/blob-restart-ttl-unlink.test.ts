@@ -21,7 +21,7 @@
  *                       control + post-restart byte-identical-read probe.
  *   - update-target  — expiresAt = now+15min: same as survivor, but POST-restart we PUT new
  *                       content onto it to probe old-blob-file release on update.
- *   - normal-0..4    — expiresAt = now+8s: NOT yet due at kill time (armed precondition below),
+ *   - normal-0..4    — expiresAt = now+60s: NOT yet due at kill time (armed precondition below),
  *                       comes due shortly after restart -> probes "does the post-upgrade sweep
  *                       evict + unlink old-version records".
  *   - already-0..2   — expiresAt = now-10s: already past due AT THE MOMENT OF WRITE, i.e.
@@ -66,7 +66,8 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'blob-restart-ttl-unlink');
 // ── Tunables ─────────────────────────────────────────────────────────────────
 const BLOB_SIZE = 64 * 1024; // > 8KB FILE_STORAGE_THRESHOLD -> always file-backed
 const LONG_TTL_MS = 15 * 60 * 1000; // 15min: survivor/update-target must outlive the whole test
-const NORMAL_TTL_MS = 8_000; // due shortly AFTER restart, NOT yet due at kill time (armed below)
+const NORMAL_TTL_MS = 60_000; // enough pre-restart headroom while remaining within the sweep budget
+const MIN_PRE_RESTART_TTL_MS = 30_000;
 const ALREADY_EXPIRED_OFFSET_MS = -10_000; // already 10s past due AT WRITE TIME
 const NORMAL_COUNT = 5;
 const ALREADY_COUNT = 3;
@@ -247,10 +248,6 @@ suite(
 				ok(updateResp.body.ok, 'seed update-target failed');
 				updateTargetSha = updateResp.body.sha;
 
-				for (let i = 0; i < NORMAL_COUNT; i++) {
-					const r = await op({ action: 'store', id: `normal-${i}`, size: BLOB_SIZE, ttlMs: NORMAL_TTL_MS }).expect(200);
-					ok(r.body.ok, `seed normal-${i} failed`);
-				}
 				for (let i = 0; i < ALREADY_COUNT; i++) {
 					const r = await op({
 						action: 'store',
@@ -259,6 +256,12 @@ suite(
 						ttlMs: ALREADY_EXPIRED_OFFSET_MS,
 					}).expect(200);
 					ok(r.body.ok, `seed already-${i} failed`);
+				}
+				const normalExpiresAt: number[] = [];
+				for (let i = 0; i < NORMAL_COUNT; i++) {
+					const r = await op({ action: 'store', id: `normal-${i}`, size: BLOB_SIZE, ttlMs: NORMAL_TTL_MS }).expect(200);
+					ok(r.body.ok, `seed normal-${i} failed`);
+					normalExpiresAt.push(r.body.expiresAt);
 				}
 
 				const totalSeeded = 2 + NORMAL_COUNT + ALREADY_COUNT;
@@ -330,6 +333,12 @@ suite(
 					updatePre.body.present === true && updatePre.body.shaMatch === true,
 					'update-target must be present+intact pre-restart'
 				);
+				const remainingNormalTtlMs = Math.min(...normalExpiresAt) - Date.now();
+				findings.push(`phase1 ARM: normal-N minimum remaining TTL before restart = ${remainingNormalTtlMs}ms`);
+				ok(
+					remainingNormalTtlMs >= MIN_PRE_RESTART_TTL_MS,
+					`normal-N records need at least ${MIN_PRE_RESTART_TTL_MS}ms remaining before restart, got ${remainingNormalTtlMs}ms`
+				);
 				findings.push(`phase1: all preconditions armed cleanly`);
 			}
 		);
@@ -397,11 +406,8 @@ suite(
 			'Q2/Q3/Q4: post-restart sweep evicts old-version + already-expired records, never touches survivors',
 			{ timeout: SWEEP_WAIT_BUDGET_MS + 30_000 },
 			async () => {
-				// NOTE ON METHOD: file-unlink is allowed to lag record-eviction by design (blob files
-				// are reclaimed on-demand via cleanup_orphan_blobs, not a background sweep — D-139/
-				// F-098 ground truth). So THIS test's pass/fail gate is RECORD eviction (via the
-				// side-effect-free `raw` action, includeExpired:true), not raw disk-file convergence.
-				// Disk-file convergence is decisively judged in the next test, AFTER cleanup_orphan_blobs.
+				// Record eviction and blob unlink settle separately. This arm gates record eviction via
+				// the side-effect-free `raw` action; the next test gates natural disk-file convergence.
 				const deadline = Date.now() + SWEEP_WAIT_BUDGET_MS;
 				const trajectory: string[] = [];
 
@@ -521,42 +527,51 @@ suite(
 		);
 
 		test(
-			'post-sweep decisive orphan check: cleanup_orphan_blobs converges to exactly the live set',
-			{ timeout: 60_000 },
+			'post-sweep decisive orphan check: TTL eviction naturally converges to exactly the live set',
+			{ timeout: 90_000 },
 			async () => {
-				const preCleanup = await diskFiles(blobRootDir);
-				findings.push(`pre-cleanup_orphan_blobs disk: ${preCleanup.files} files`);
-
-				const cleanupResp = await client
-					.req()
-					.send({ operation: 'cleanup_orphan_blobs', database: 'data' })
-					.expect(200);
-				findings.push(`cleanup_orphan_blobs response: ${JSON.stringify(cleanupResp.body).slice(0, 200)}`);
-
-				let filesAfter = preCleanup.files;
-				const traj: string[] = [];
-				for (let i = 0; i < 10; i++) {
-					await sleep(3_000);
-					const d = await diskFiles(blobRootDir);
-					filesAfter = d.files;
-					traj.push(`+${(i + 1) * 3}s:${d.files}f`);
-					if (d.files <= 2) break; // exactly survivor + update-target, no tolerance
+				let naturalDisk = await diskFiles(blobRootDir);
+				const naturalTrajectory = [`+0ms:${naturalDisk.files}f`];
+				const naturalDeadline = Date.now() + 15_000;
+				while (naturalDisk.files !== 2 && Date.now() < naturalDeadline) {
+					await sleep(250);
+					naturalDisk = await diskFiles(blobRootDir);
+					naturalTrajectory.push(`${naturalDisk.files}f`);
 				}
-				findings.push(`disk trajectory after cleanup_orphan_blobs: ${traj.join(' -> ')}`);
+				findings.push(`natural post-eviction disk trajectory: ${naturalTrajectory.join(' -> ')}`);
 
-				findings.push(`final disk file count = ${filesAfter} (expected exactly 2: survivor + update-target)`);
-				if (filesAfter === 2) {
-					findings.push(`orphan-file VERDICT: CLEAN — no genuine leak survives cleanup_orphan_blobs`);
-				} else {
-					findings.push(
-						`orphan-file VERDICT: POSSIBLE LEAK — ${filesAfter} files remain for 2 live records even after cleanup_orphan_blobs`
-					);
+				const survivorPostSweep = await op({ action: 'get', id: 'survivor' }).expect(200);
+				ok(
+					survivorPostSweep.body.present && survivorPostSweep.body.readSha === survivorSha,
+					`survivor must remain byte-exact after natural TTL reclaim: ${JSON.stringify(survivorPostSweep.body)}`
+				);
+				const targetPostSweep = await op({ action: 'get', id: 'update-target' }).expect(200);
+				ok(
+					targetPostSweep.body.present && targetPostSweep.body.readSha === updateTargetSha,
+					`update-target must remain byte-exact after natural TTL reclaim: ${JSON.stringify(targetPostSweep.body)}`
+				);
+
+				let diagnostic = '';
+				if (naturalDisk.files !== 2) {
+					const cleanupResp = await client
+						.req()
+						.send({ operation: 'cleanup_orphan_blobs', database: 'data' })
+						.expect(200);
+					let diagnosticDisk = await diskFiles(blobRootDir);
+					const diagnosticDeadline = Date.now() + 30_000;
+					while (diagnosticDisk.files !== 2 && Date.now() < diagnosticDeadline) {
+						await sleep(250);
+						diagnosticDisk = await diskFiles(blobRootDir);
+					}
+					diagnostic = `; cleanup_orphan_blobs diagnostic=${JSON.stringify(cleanupResp.body).slice(0, 200)}, post-cleanup files=${diagnosticDisk.files}`;
+					findings.push(`natural reclaim failed${diagnostic}`);
 				}
 				strictEqual(
-					filesAfter,
+					naturalDisk.files,
 					2,
-					`GENUINE ORPHAN-FILE LEAK: ${filesAfter} blob files remain for 2 live records after cleanup_orphan_blobs (expected exactly 2)`
+					`TTL eviction must naturally reclaim to exactly survivor + update-target, got ${naturalDisk.files}${diagnostic}`
 				);
+				findings.push(`orphan-file VERDICT: CLEAN — TTL eviction naturally reclaimed to the 2 live blob files`);
 			}
 		);
 

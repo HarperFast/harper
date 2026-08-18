@@ -13,6 +13,8 @@
 //   POST /UpdateInPlace/ { table, ids: [...], bucket }   — re-put same id with a new bucket value
 //                          (record stays non-null; exercises the ordinary update branch of
 //                          updateIndices(), never the removal branch).
+//   POST /DisableSweep/  { table }                       — disable scheduled TTL cleanup while
+//                          preserving already-written records' expiresAt metadata.
 //   GET  /Dump/?table=X               — raw primaryStore.getRange() scan (base ground truth).
 //   GET  /IndexDump/?table=X&attr=Y   — raw index.getRange({ start: null }) scan (direct
 //                        index-store read, D-242-safe, never joins through the primary record).
@@ -73,6 +75,16 @@ export class UpdateInPlace extends Resource {
 		const bucket = b.bucket ?? 'UPDATED';
 		for (const id of ids) await t.put({ id, bucket });
 		return { ok: true, table: b.table, count: ids.length };
+	}
+}
+
+export class DisableSweep extends Resource {
+	static loadAsInstance = false;
+	async post(query, body) {
+		const b = body || query || {};
+		const t = getTable(b.table);
+		t.setTTLExpiration({ expiration: 0, eviction: 0, scanInterval: 0 });
+		return { ok: true, table: b.table, expirationMs: t.expirationMS };
 	}
 }
 

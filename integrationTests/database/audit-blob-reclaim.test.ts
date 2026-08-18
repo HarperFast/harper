@@ -304,15 +304,29 @@ suite(
 				`\n[overwrite] read_audit_log(hash_value=${id}) txn count: ${Array.isArray(auditTxns) ? auditTxns.length : 'n/a'}`
 			);
 			log(`[overwrite] read_audit_log raw body: ${JSON.stringify(auditResp.body, null, 2).slice(0, 4000)}`);
-			ok(
-				Array.isArray(auditTxns) && auditTxns.length > 0,
-				`read_audit_log must return at least one audit transaction for ${id}, got ${JSON.stringify(auditTxns)}`
+			ok(Array.isArray(auditTxns), `read_audit_log must return an audit transaction array for ${id}`);
+			strictEqual(
+				auditTxns.length,
+				3,
+				`read_audit_log must return all three writes for ${id}, got ${JSON.stringify(auditTxns)}`
 			);
-			const contentShapes = auditTxns
-				.map((t: any) =>
-					t.records?.map((r: any) => (typeof r.content === 'object' ? r.content : `[non-object:${typeof r.content}]`))
-				)
-				.flat();
+			const expectedTitles = ['BLOB-A-MARKER', 'BLOB-B-MARKER', 'BLOB-C-MARKER'];
+			const auditedRecords = auditTxns.flatMap((transaction: any, index: number) => {
+				strictEqual(
+					transaction.records?.length,
+					1,
+					`audit transaction ${index} must contain exactly one record for ${id}`
+				);
+				strictEqual(
+					transaction.records[0].title,
+					expectedTitles[index],
+					`audit transaction ${index} has the wrong version`
+				);
+				return transaction.records;
+			});
+			const contentShapes = auditedRecords.map((record: any) =>
+				typeof record.content === 'object' ? record.content : `[non-object:${typeof record.content}]`
+			);
 			log(`[overwrite] read_audit_log Blob attribute shapes seen: ${JSON.stringify(contentShapes)}`);
 			// Pin the actual contract (a diagnostic log alone would let a regression that leaked raw
 			// blob bytes -- or any other non-placeholder shape -- into the JSON response pass unnoticed):
@@ -337,9 +351,11 @@ suite(
 			const dir = blobDir(db);
 			const N = 8;
 			const counts: number[] = [];
+			let latestSha = '';
 
 			for (let i = 1; i <= N; i++) {
-				await op({ action: 'write', table: db, id, seed: `LEAK-V${i}`, size: 20 * 1024 }).expect(200);
+				const response = await op({ action: 'write', table: db, id, seed: `LEAK-V${i}`, size: 20 * 1024 }).expect(200);
+				latestSha = response.body.sha;
 				const files = await waitForFileSetSettle(dir, 1);
 				counts.push(files.size);
 				log(`[leak-check] after write v${i}: live blob files=${files.size}`);
@@ -350,19 +366,22 @@ suite(
 			const finalCount = counts[counts.length - 1];
 			// If audit retention pinned every historical blob, count would grow ~linearly to N.
 			// Expect it to stay bounded at (or very near) 1 live file per record.
-			ok(
-				finalCount <= 2,
-				`blob file count must stay bounded, not grow with version count N=${N} (final=${finalCount})`
-			);
-			if (maxCount >= N) {
+			if (maxCount > 2) {
 				log(
-					`!!! DEFECT-CANDIDATE: blob file count (${maxCount}) tracks version count (${N}) — possible audit-pin leak !!!`
+					`!!! DEFECT-CANDIDATE: blob file count exceeded the 2-file bound (max=${maxCount}, N=${N}) — possible audit-pin leak !!!`
 				);
 			} else {
 				log(
 					`>>> LEAK-CHECK RESULT: bounded (max=${maxCount}, final=${finalCount}) across ${N} versions — audit retention does NOT pin reclaimed blob files.`
 				);
 			}
+			ok(
+				counts.every((count) => count >= 1 && count <= 2),
+				`every settled sample must retain the live blob and stay bounded at 2 files, got ${JSON.stringify(counts)}`
+			);
+			const current = await op({ action: 'currentGet', table: db, id }).expect(200);
+			ok(current.body.present, 'the final record must remain present after the overwrite sequence');
+			strictEqual(current.body.sha, latestSha, 'the final record must still read the latest blob bytes');
 		});
 
 		test('delete-then-reinsert arm (qa726c): pre-delete blob GC + time-travel read of pre-delete version', async () => {

@@ -7,10 +7,10 @@
 #   SweepTable  — table-level TTL (expiration:3, scanInterval:1). Removed by the BACKGROUND
 #                 cleanup sweep (scheduleCleanup(): RocksDB batcher's stageInto() calls
 #                 updateIndices() directly; LMDB takes the per-record TableResource.evict() path).
-#   EvictTable  — table-level TTL (expiration:2) but a huge scanInterval:300 so the background
-#                 sweep never fires inside this test's window. Removed only via the READ-triggered
-#                 LAZY eviction path (ensureLoadedFromSource -> TableResource.evict() called
-#                 directly from a GET, independent of the sweep timer) — isolates evict() from the
+#   EvictTable  — table-level TTL (expiration:2); the test disables the scheduled sweep after
+#                 seeding, before expiry. Existing rows retain their expiresAt metadata and are
+#                 removed only via the READ-triggered LAZY eviction path (ensureLoadedFromSource ->
+#                 TableResource.evict() called directly from a GET) — isolates evict() from the
 #                 sweep call site.
 #   ControlTable — no TTL, never deleted. Rows are only ever UPDATED IN PLACE (bucket changed,
 #                 record stays non-null). Must show zero phantom null-keyed entries — proves the
