@@ -5314,6 +5314,7 @@ export function makeTable(options) {
 						user: auditRecord.user,
 						operation: auditRecord.originatingOperation,
 					};
+					if (droppingTable) throw tableDroppingError();
 				}
 			} finally {
 				iterator?.return?.();
@@ -5739,7 +5740,7 @@ export function makeTable(options) {
 			do {
 				// See if this is a transaction for our database and if so, use it
 				if (transaction.db?.path === primaryStore.path) {
-					// Tracked reads must join here so the drop drain records every table store they borrow.
+					// Every tracked iterator must join here so the drop drain can attribute every borrowed table store.
 					transaction.trackStore(primaryStore);
 					return transaction;
 				}

@@ -280,7 +280,10 @@ describe('dropTable worker quiescence', function () {
 		assert.strictEqual(first.done, false);
 
 		await Table.dropTable();
-		await history.return?.();
+		await assert.rejects(
+			() => history.next(),
+			(error) => error.code === 'ERR_TABLE_DROPPING'
+		);
 	});
 
 	it('omits a worker until its ITC listener is ready', async function () {
