@@ -114,7 +114,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 - **`bin/`** — covered above (it's source).
 - **`benchmarks/`** — HNSW vector-search benchmark only (`hnsw-search.js`). Stand-alone; not part of CI.
-- **`build-tools/`** — shell scripts for the build pipeline (`build.sh`, `build-studio.sh`, `download-prebuilds.js`). No tests.
+- **`build-tools/`** — build-pipeline scripts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
 - **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`.

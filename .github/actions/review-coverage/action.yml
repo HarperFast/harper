@@ -1,0 +1,20 @@
+# Cross-model review-coverage check — the CI surface of the dispatch human-review gate.
+# Parses the PR description with the gate's parser (reviewGate.mjs alongside; canonical
+# runtime copy in HarperFast/dispatch) and reports how many cross-model reviews it names.
+# This public copy lives in harper because GitHub does not allow public repos to use
+# actions hosted in private repos; other public HarperFast repos pin it by sha:
+#
+#   - uses: HarperFast/harper/.github/actions/review-coverage@<full sha> # main
+#
+name: review-coverage
+description: Report (or enforce) cross-model review coverage named in the PR description
+inputs:
+  mode:
+    description: report (always green, informational) or enforce (red when under-reported)
+    default: report
+  required:
+    description: how many distinct cross-model review families the description must name
+    default: '2'
+runs:
+  using: node24
+  main: ci-review-coverage.mjs

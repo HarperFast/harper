@@ -147,7 +147,8 @@ export function executeConditions(
 			table,
 			request.allowFullScan,
 			filtered,
-			context
+			context,
+			request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
 		);
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
@@ -247,7 +248,11 @@ export function searchByIndex(
 	Table: any,
 	allowFullScan?: boolean,
 	filtered?: any,
-	context?: any
+	context?: any,
+	// How many rows the query will ultimately consume (offset + limit), when it is bounded. An
+	// approximate index returns a fixed-size candidate list, so without this a query asking for more
+	// rows than that list holds silently gets a short result set. Only custom indexes read it.
+	minResults?: number
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
@@ -505,7 +510,7 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
-			const loaded = index.customIndex.search(searchCondition, context, recordFilter).map((entry) => {
+			const loaded = index.customIndex.search(searchCondition, context, recordFilter, minResults).map((entry) => {
 				// if the custom index returns an entry with metadata, merge it with the loaded entry
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;

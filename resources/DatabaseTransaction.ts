@@ -134,6 +134,9 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 		oldestAgeMs: oldestOutstandingCommit ? performance.now() - oldestOutstandingCommit.start : undefined,
 	};
 }
+// Once per process: committing under open read iterators forces a write replay, so the warning is
+// about the caller's pattern, not the individual commit.
+let replayedWritesWarned = false;
 
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
@@ -326,6 +329,13 @@ export class DatabaseTransaction implements Transaction {
 	readTxnRefCount: number;
 	readTxnsUsed: number;
 	timeout: number;
+	// Write recency, tracked separately from `timeout`: set only by addWrite, never by a read. `timeout`
+	// is re-armed by reads too (on a link with no pending writes of its own, see the fast path in
+	// getReadTxn), so chainStillActive can't use it to mean "this link was written recently" — a `.next`
+	// link with no writes that is being read in a loop would otherwise masquerade as write activity and
+	// keep a write-holding head immortal.
+	declare writeTimeout: number;
+	timeoutBudget = 0;
 	validated = 0;
 	timestamp = 0;
 	retries = 0;
@@ -334,6 +344,10 @@ export class DatabaseTransaction implements Transaction {
 	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
 	// consumed by a commit round; iterator references are consumed only by doneReadTxn().
 	declare baseReadRefConsumed?: boolean;
+	// Set when a final commit/abort wanted to release the context's back-reference (see
+	// releaseContext()) but outstanding read iterators were still using this transaction —
+	// doneReadTxn() completes the release once the last iterator drains.
+	declare pendingContextRelease?: boolean;
 	declare startedFrom?: {
 		resourceName: string;
 		method: string;
@@ -356,10 +370,24 @@ export class DatabaseTransaction implements Transaction {
 	// open-transaction limit. Once poisoned, any further addWrite/commit throws transactionOpenTooLongError
 	// so the request rolls back cleanly instead of silently committing a partial write set (issue #1407).
 	declare timedOut?: boolean;
+	// Set once the retained read handle's write intents have been released (see commit()'s
+	// outstanding-iterators branch), so a retry round cannot re-fire the release.
+	declare writesAbandoned?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
-		this.timeout = txnExpiration; // reset the timeout
+		// The limit is an IDLE limit. Writes always re-arm it (see addWrite), but reads only do so
+		// while no uncommitted writes are held: staged writes hold write intents that other writers'
+		// coordinated-retry commits park on, so a handler that wrote once and then only reads — an
+		// orphaned long-poll whose client had already gone, in harper#2001 — must not keep those
+		// intents alive by reading. A transaction that keeps writing stays alive; so does a purely
+		// read-only one. A committed transaction re-arms too: its intents went with the commit, and
+		// the monitor bounds its retained read snapshot separately.
+		// `writes`/`next` are checked inline first: this is a hot path and the dominant case is a
+		// single-store transaction that has never written.
+		if ((this.writes.length === 0 && !this.next) || this.open !== TRANSACTION_STATE.OPEN || !this.hasPendingWrites()) {
+			this.timeout = Math.max(txnExpiration, this.timeoutBudget);
+		}
 		if (this.transaction) {
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
@@ -406,6 +434,7 @@ export class DatabaseTransaction implements Transaction {
 			trackedTxns.delete(this);
 			this.transaction?.abort();
 			this.transaction = null;
+			this.completeDeferredContextRelease();
 		}
 	}
 
@@ -424,6 +453,19 @@ export class DatabaseTransaction implements Transaction {
 			harperLogger.debug?.('releasing timed-out read transaction', error);
 		}
 		this.transaction = null;
+		this.completeDeferredContextRelease();
+	}
+
+	/**
+	 * Complete a context release that releaseContext() deferred because outstanding read iterators
+	 * were still using this transaction (see releaseContext()) — called once the last one drains,
+	 * whether that happens naturally (doneReadTxn()) or is forced by the long-transaction monitor
+	 * (releaseReadTxn()).
+	 */
+	private completeDeferredContextRelease(): void {
+		if (!this.pendingContextRelease) return;
+		this.pendingContextRelease = false;
+		if (this.#context?.transaction === this) this.#context.transaction = null;
 	}
 
 	disregardReadTxn(): void {
@@ -454,6 +496,39 @@ export class DatabaseTransaction implements Transaction {
 	clearWrites(): void {
 		this.writes = [];
 		this.writesByKey = undefined;
+	}
+
+	/**
+	 * Drop this transaction's back-reference from its context once completed (commit or abort),
+	 * so a long-lived context (e.g. an MQTT subscription context held open for the life of a
+	 * suspended delivery loop) doesn't keep pinning a finished transaction in memory. Guarded by
+	 * identity: a context already re-pointed at a different (e.g. reused) transaction is untouched.
+	 *
+	 * `final` must be false for an in-callback explicit `context.transaction.commit()` — the
+	 * "commit in the middle" pattern intentionally keeps recommitting and adding writes to the
+	 * SAME instance (see the comment above about a transaction being "reused and committed
+	 * again"), so releasing here would strand those later writes with no transaction to join.
+	 * Only resources/transaction.ts's own wrapper commit (`{ doneWriting: true }`, once the
+	 * caller's callback has fully returned) and abort() are truly final.
+	 *
+	 * A final commit can still have outstanding read iterators streaming through this.transaction
+	 * (see the outstanding-iterators branch in commit()) — those keep this instance meaningfully
+	 * alive (a fresh write on the same context must not join a DIFFERENT, already-replayed
+	 * transaction) until doneReadTxn() drains the last one, so the release is deferred to there.
+	 *
+	 * Sets `.transaction` to `null` rather than deleting the property: `Context.transaction` is
+	 * typed `DatabaseTransaction | null | undefined` precisely to document this released state, and
+	 * `delete` would repeatedly force a long-lived, hot context (e.g. an MQTT subscription context
+	 * releasing/reattaching a transaction per message) into V8's slower dictionary-mode property
+	 * storage.
+	 */
+	private releaseContext(final: boolean): void {
+		if (!final) return;
+		if (this.readTxnsUsed > 0) {
+			this.pendingContextRelease = true;
+			return;
+		}
+		if (this.#context?.transaction === this) this.#context.transaction = null;
 	}
 
 	checkOverloaded() {
@@ -501,6 +576,13 @@ export class DatabaseTransaction implements Transaction {
 
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		// A write is activity: it re-arms the idle limit on this link even though the reads it
+		// performs no longer do (see getReadTxn), so a transaction that keeps writing stays alive
+		// and only an idle one holding write intents is reaped.
+		this.timeout = Math.max(txnExpiration, this.timeoutBudget ?? 0);
+		// Independent write-recency signal for chainStillActive (see the field comment) — reads never
+		// touch this, only writes do.
+		this.writeTimeout = this.timeout;
 		this.linkWrite(operation);
 		this.writes.push(operation);
 		if (!operation.deferSave) {
@@ -626,6 +708,14 @@ export class DatabaseTransaction implements Transaction {
 					this.writes = this.writes.filter((write) => write); // filter out removed entries
 					if (this.writes.length > 0) {
 						if (!options.transaction) {
+							if (!replayedWritesWarned) {
+								replayedWritesWarned = true;
+								harperLogger.warn?.(
+									`Committing while read iterators are still open: ${this.writes.length} staged write(s) must be re-staged and committed on a second transaction, doubling their write work` +
+										(this.startedFrom ? `, from ${this.startedFrom.resourceName}.${this.startedFrom.method}` : '') +
+										`. Fully consume (or close) iterators before committing to avoid this. Logged once per process.`
+								);
+							}
 							// Deliberately NOT marked isRetry and NOT carrying over the original's onCommit:
 							// audit/txn-log entries batch natively on the transaction they were staged into and
 							// are only durably written by that transaction's commit attempt (an abort discards
@@ -653,6 +743,23 @@ export class DatabaseTransaction implements Transaction {
 						// dedicated accounting here (as a prior version of this replay path did) used to leave
 						// write-transaction-queue-depth, the one metric that can observe a commit that never
 						// settles (harper#2001), reading zero for exactly this path.
+					}
+					// No commit will ever run on the retained handle — the replay above owns these
+					// writes — so this is the only place its write intents can be released. Left in
+					// place, other writers' coordinated-retry commits park on them until the last
+					// iterator finishes (harper#2001). Reads through the handle, including
+					// read-your-own-writes, keep working. Once only: a coordinated-retry or backoff
+					// round re-enters this branch on the same retained handle. Fenced like the other
+					// post-submit steps here: the replay commit is already in flight, so a throw must
+					// not skip onCommit/the chain-store commit below. Optional: rocksdb-js < 2.7
+					// lacks the method.
+					if (!this.writesAbandoned) {
+						this.writesAbandoned = true;
+						try {
+							(this.transaction as { abandonWrites?: () => void } | null)?.abandonWrites?.();
+						} catch (error) {
+							harperLogger.warn?.('Failed to release write intents on a retained read transaction', error);
+						}
 					}
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
@@ -773,6 +880,7 @@ export class DatabaseTransaction implements Transaction {
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.clearWrites();
+							this.releaseContext(!!options.doneWriting);
 							this.next = null;
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
@@ -854,6 +962,11 @@ export class DatabaseTransaction implements Transaction {
 								} catch (abortError) {
 									harperLogger.debug?.('aborting transaction after failed commit', abortError);
 								}
+								// A terminal failure is just as final as a success — release the context's
+								// back-reference here too, or transaction.ts's onComplete() (which has no
+								// rejection handler of its own) would leave a long-lived context pinning this
+								// CLOSED wrapper forever.
+								this.releaseContext(!!options.doneWriting);
 								throw error;
 							}
 						}
@@ -864,6 +977,7 @@ export class DatabaseTransaction implements Transaction {
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.clearWrites();
+				this.releaseContext(!!options.doneWriting);
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
@@ -898,6 +1012,13 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// reset the transaction
 		this.clearWrites();
+		// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
+		// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
+		// starting a fresh one) so the rest of the logical operation fails atomically via the
+		// poison check in addWrite()/commit(), rather than silently landing a later write on a
+		// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
+		// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
+		this.releaseContext(!this.timedOut);
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
@@ -987,6 +1108,7 @@ export interface CommitResolution {
 	next?: CommitResolution;
 }
 export interface Transaction {
+	timeoutBudget?: number;
 	commit(options): MaybePromise<CommitResolution>;
 	abort?(): any;
 }
@@ -1025,9 +1147,31 @@ export class ImmediateTransaction extends DatabaseTransaction {
 
 let timer;
 
+/**
+ * True when a link other than `txn` in the same multi-store chain was written recently enough to
+ * still be active — i.e. its `writeTimeout` (set only by addWrite, see the field comment) hasn't
+ * decayed to zero. Writes re-arm only the link that receives them, so a chain writing database B
+ * while its head only reads A would otherwise be aborted by the head's own decay.
+ */
+function chainStillActive(txn: DatabaseTransaction): boolean {
+	for (let link: DatabaseTransaction = txn.next; link; link = link.next) {
+		// A write-only link (e.g. a blind write to a second database, never itself read) never calls
+		// getReadTxn, so it's never added to trackedTxns and the main loop below never decays it.
+		// Decay it here instead, so an idle write-only link eventually expires rather than keeping the
+		// whole chain immortal (harper#2001's blind-write shape).
+		if (!trackedTxns.has(link) && link.writeTimeout > 0) link.writeTimeout -= txnExpiration;
+		if (link.writeTimeout > 0) return true;
+	}
+	return false;
+}
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
+			// Decay write recency once per tick for every tracked link, independent of the `timeout`
+			// branches below — a tracked link that keeps its own idle limit alive by reading must not
+			// thereby keep chainStillActive believing it was written recently too.
+			if (txn.writeTimeout > 0) txn.writeTimeout -= txnExpiration;
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
 				if (txn.open === TRANSACTION_STATE.CLOSED) {
@@ -1043,6 +1187,12 @@ function startMonitoringTxns() {
 						}`
 					);
 					txn.releaseReadTxn();
+				} else if (txn.hasPendingWrites() && chainStillActive(txn)) {
+					// A later link in the chain was written recently (writes re-arm only the link that
+					// receives them, and a multi-store transaction can be writing database B while this
+					// head only reads A). The logical transaction is still active, so re-arm this link
+					// rather than aborting the whole chain out from under it.
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				} else if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
 					// Abort and surface an error rather than force-committing a partial write set: silently
 					// committing on the application's behalf breaks atomicity and can leave orphaned
@@ -1078,7 +1228,7 @@ function startMonitoringTxns() {
 					} catch (error) {
 						harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
 					}
-					txn.timeout = txnExpiration;
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				}
 			} else {
 				txn.timeout -= txnExpiration;
@@ -1088,6 +1238,15 @@ function startMonitoringTxns() {
 }
 
 startMonitoringTxns();
+
+/**
+ * Test seam: re-arms the once-per-process replay warning. The whole unit suite shares one process,
+ * so whichever test first drives a commit under open iterators consumes the warning for every test
+ * after it.
+ */
+export function resetReplayedWritesWarning() {
+	replayedWritesWarned = false;
+}
 
 export function setTxnExpiration(ms) {
 	clearInterval(timer);

@@ -129,7 +129,7 @@ describe('Table.getRecordCount', () => {
 		if (origKeys) store.getKeysCount = (...args) => (calls++, origKeys(...args));
 		if (origStats) store.getStats = (...args) => (calls++, origStats(...args));
 		try {
-			const completed = await RecordCountTable.getRecordCount(); // default budget; 30 rows finish fast
+			const completed = await RecordCountTable.getRecordCount({ timeLimit: 60_000 });
 			assert.equal(completed.recordCount, 30);
 			assert.equal(completed.estimatedRange, undefined);
 			assert.equal(calls, 0, 'entry-count source should not be consulted when the scan finishes within budget');

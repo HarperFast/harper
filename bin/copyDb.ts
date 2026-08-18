@@ -454,15 +454,22 @@ function countRecords(rawDbi): { records: number; unversioned: number } {
  * the RocksDB lock — run in-process (inspector) on a live instance, or offline.
  */
 export function verifyMigratedDatabase(databasePath: string): Record<string, { records: number; unversioned: number }> {
-	const rootStore = RocksDatabase.open(databasePath, {});
-	const dbisDb = RocksDatabase.open(databasePath, {
-		name: INTERNAL_DBIS_NAME,
-		sharedStructuresKey: Symbol.for('structures'),
-	});
+	// Every open handle, so a failure at any point (e.g. the second open throwing on lock
+	// contention) cannot leak an earlier handle that would hold the RocksDB lock on the very
+	// diagnostic path operators use after a broken migration.
+	const handles: RocksDatabase[] = [];
 	const report: Record<string, { records: number; unversioned: number }> = {};
 	try {
+		handles.push(RocksDatabase.open(databasePath, {}));
+		const dbisDb = RocksDatabase.open(databasePath, {
+			name: INTERNAL_DBIS_NAME,
+			sharedStructuresKey: Symbol.for('structures'),
+		});
+		handles.push(dbisDb);
 		for (const { key, value: attribute } of dbisDb.getRange({})) {
 			if (typeof key === 'symbol' || !attribute?.isPrimaryKey) continue;
+			// per-table handles close per-iteration so a many-table sweep does not hold every CF
+			// handle open at once; only the two pre-loop opens need the leak-safety array
 			const rawDbi = RocksDatabase.open(databasePath, { name: key, encoding: false });
 			try {
 				report[key] = countRecords(rawDbi);
@@ -471,8 +478,13 @@ export function verifyMigratedDatabase(databasePath: string): Record<string, { r
 			}
 		}
 	} finally {
-		dbisDb.close();
-		rootStore.close();
+		for (const handle of handles.reverse()) {
+			try {
+				handle.close();
+			} catch (error) {
+				console.error('Error closing verification store', error);
+			}
+		}
 	}
 	return report;
 }
@@ -520,7 +532,14 @@ export async function migrateDatabaseToRocks(sourceRootStore, databaseName: stri
 export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, targetPath: string) {
 	console.log(`Migrating database ${sourceDatabase} to RocksDB at ${targetPath}`);
 	const sourceDbisDb = sourceRootStore.dbisDb;
+	// Runtime Harper stores disable RocksDB's native WAL for data/index column families and recover
+	// them from rocksdb-js transaction logs. This copier does not write those transaction logs, so
+	// only use the same fast write path for migrateOnStart's disposable staging directory: after an
+	// interruption it is deleted and recopied from LMDB. Direct copyDbToRocks callers retain WAL.
+	const disableDataWAL = targetPath.endsWith(MIGRATING_DIR_SUFFIX);
 
+	// Keep native WAL for the root/log-owner and __dbis__ handles, matching Harper's runtime policy.
+	// Their migration writes are metadata-sized; the 600 GB bulk is in the data/index handles below.
 	const targetRootStore = openRocksDb(targetPath, { disableWAL: false });
 	// Every handle opened on targetPath. All must be closed before returning so the caller can
 	// atomically rename a staging directory into place — rocksdb-js registers descriptors by
@@ -597,10 +616,10 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			let observerEncoder: any;
 			let canonicalStructures: any;
 			if (!isPrimary) {
-				targetDbi = openRocksDb(targetPath, { dupSort: true, name: key });
+				targetDbi = openRocksDb(targetPath, { disableWAL: disableDataWAL, dupSort: true, name: key });
 				targetHandles.push(targetDbi);
 			} else {
-				targetDbi = openRocksDb(targetPath, { name: key });
+				targetDbi = openRocksDb(targetPath, { disableWAL: disableDataWAL, name: key });
 				targetHandles.push(targetDbi);
 				// Patch the existing encoder (encoder is a getter-only property on RocksDatabase, cannot be replaced)
 				// to install RecordEncoder's encode method so metadata headers (timestamps, HAS_BLOBS flag) are written
