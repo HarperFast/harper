@@ -482,12 +482,15 @@ describe('Subscription replay', () => {
 			})();
 			try {
 				await concurrentWrites;
-				await waitFor(() => {
-					const ids = new Set(events.map((event) => event.id));
-					for (let i = 0; i < 300; i++) if (!ids.has(9000 + i)) return false;
-					for (let i = 0; i < concurrentCount; i++) if (!ids.has(10000 + i)) return false;
-					return true;
-				});
+				await waitFor(
+					() => {
+						const ids = new Set(events.map((event) => event.id));
+						for (let i = 0; i < 300; i++) if (!ids.has(9000 + i)) return false;
+						for (let i = 0; i < concurrentCount; i++) if (!ids.has(10000 + i)) return false;
+						return true;
+					},
+					{ timeout: 5000, message: 'not all replayed ids were delivered' }
+				);
 				// Let any late duplicate delivery reach the uniqueness assertion below.
 				await delay(200);
 			} finally {
