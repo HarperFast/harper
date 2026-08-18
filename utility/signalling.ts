@@ -148,7 +148,11 @@ async function releaseSchemaWorkerBarrier(message: any) {
 
 export async function commitSchemaChange(message: any) {
 	serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
-	const commitMessage = { ...message, phase: 'commit-quiesce' };
+	const commitMessage = {
+		...message,
+		phase: 'commit-quiesce',
+		leaseUntil: Date.now() + SCHEMA_QUIESCE_LEASE_MS,
+	};
 	const localEvent = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, commitMessage);
 	const localResult = await serverItcHandlers.schema(localEvent);
 	if (localResult?.committed !== true)

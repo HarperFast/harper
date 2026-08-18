@@ -228,4 +228,26 @@ describe('Test signalling module', () => {
 			restoreHandlers();
 		}
 	});
+
+	it('refreshes a stale lease at the schema commit boundary', async () => {
+		const localSchemaHandler = sandbox.stub().resolves({ committed: true });
+		const restoreHandlers = signalling.__set__('serverItcHandlers', { schema: localSchemaHandler });
+		send_itc_event_stub.resolves();
+		const beforeCommit = Date.now();
+		try {
+			await signalling.commitSchemaChange({
+				operation: 'drop_table',
+				schema: 'unit_test',
+				table: 'records',
+				quiesceId: 'q-stale-commit-lease',
+				leaseUntil: 1,
+			});
+			const localMessage = localSchemaHandler.firstCall.args[0].message;
+			const remoteMessage = send_itc_event_stub.firstCall.args[0].message;
+			expect(localMessage.leaseUntil).to.be.at.least(beforeCommit + 120_000);
+			expect(remoteMessage.leaseUntil).to.equal(localMessage.leaseUntil);
+		} finally {
+			restoreHandlers();
+		}
+	});
 });
