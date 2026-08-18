@@ -144,7 +144,7 @@ module.exports = {
 	broadcastWithAcknowledgement,
 	getWorkerIndex,
 	getWorkerCount,
-	getEligibleBroadcastRecipientCount,
+	getEligibleBroadcastRecipientThreadIds,
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
@@ -196,13 +196,14 @@ function getWorkerCount() {
 function isEligibleBroadcastRecipient(port) {
 	return !port.isJobWorker;
 }
-// connectedPorts is a full mesh, and acknowledged broadcasts exclude job workers.
-function getEligibleBroadcastRecipientCount() {
-	let count = 0;
+function getEligibleBroadcastRecipientThreadIds() {
+	const recipientThreadIds = new Set();
 	for (const port of connectedPorts) {
-		if (isEligibleBroadcastRecipient(port)) count++;
+		if (isEligibleBroadcastRecipient(port) && port.threadId !== undefined) {
+			recipientThreadIds.add(port.threadId);
+		}
 	}
-	return count;
+	return recipientThreadIds;
 }
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
@@ -217,6 +218,7 @@ let workerCount = 1; // should be assigned when workers are created
 const RESERVED_WORKER_DATA_KEYS = [
 	'addPorts',
 	'addThreadIds',
+	'addPortIsJobWorkers',
 	'workerIndex',
 	'workerCount',
 	'name',
@@ -395,6 +397,7 @@ function startWorker(path, options = {}) {
 			...collectProvidedWorkerData(options),
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
+			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
 			workerIndex: options.workerIndex,
 			workerCount: (workerCount = options.threadCount),
 			name: options.name,
@@ -854,7 +857,7 @@ if (parentPort && workerData?.addPorts) {
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
-		addPort(port);
+		addPort(port, false, workerData.addPortIsJobWorkers?.[i]);
 	}
 	setInterval(() => {
 		// post our memory usage as a resource report, reporting our memory usage

@@ -62,7 +62,7 @@ describe('CrossThread Module', function () {
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
 
-			connectedPorts.push({}, {});
+			connectedPorts.push({ threadId: 7 }, { threadId: 8 });
 
 			// Simulate responses from other threads
 			onMessageByTypeStub.callsFake((eventType, handler) => {
@@ -71,6 +71,7 @@ describe('CrossThread Module', function () {
 					handler({
 						message: {
 							requestId: 1,
+							threadId: 7,
 							workerIndex: 1,
 							isMainThread: false,
 							statuses: [
@@ -88,6 +89,7 @@ describe('CrossThread Module', function () {
 					handler({
 						message: {
 							requestId: 1,
+							threadId: 8,
 							workerIndex: 2,
 							isMainThread: false,
 							statuses: [
@@ -139,7 +141,7 @@ describe('CrossThread Module', function () {
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
 
-			connectedPorts.push({});
+			connectedPorts.push({ threadId: 7 });
 
 			// Never send responses
 			onMessageByTypeStub.callsFake(() => {});
@@ -158,7 +160,7 @@ describe('CrossThread Module', function () {
 			registry.setStatus('fastComp', 'healthy', 'Main thread');
 			getWorkerIndexStub.returns(0);
 
-			connectedPorts.push({}, {});
+			connectedPorts.push({ threadId: 7 }, { threadId: 8 });
 
 			// Track when collection completes
 			const startTime = Date.now();
@@ -173,6 +175,7 @@ describe('CrossThread Module', function () {
 					handler({
 						message: {
 							requestId: 1,
+							threadId: 7,
 							workerIndex: 1,
 							isMainThread: false,
 							statuses: [['fastComp', { status: 'healthy' }]],
@@ -182,6 +185,7 @@ describe('CrossThread Module', function () {
 					handler({
 						message: {
 							requestId: 1,
+							threadId: 8,
 							workerIndex: 2,
 							isMainThread: false,
 							statuses: [['fastComp', { status: 'healthy' }]],
@@ -203,11 +207,11 @@ describe('CrossThread Module', function () {
 				registry.setStatus('poolComp', 'healthy', 'Main thread');
 				getWorkerIndexStub.returns(0);
 
-				const httpPortA = {};
-				const httpPortB = {};
-				const jobPort = { isJobWorker: true };
+				const httpPortA = { threadId: 7 };
+				const httpPortB = { threadId: 8 };
+				const jobPort = { threadId: 9, isJobWorker: true };
 				connectedPorts.push(httpPortA, httpPortB, jobPort);
-				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientCount(), 2);
+				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientThreadIds().size, 2);
 
 				let handler;
 				onMessageByTypeStub.callsFake((eventType, h) => {
@@ -226,6 +230,7 @@ describe('CrossThread Module', function () {
 				handler({
 					message: {
 						requestId: 1,
+						threadId: 7,
 						workerIndex: 1,
 						isMainThread: false,
 						statuses: [['poolComp', { status: 'healthy' }]],
@@ -234,6 +239,7 @@ describe('CrossThread Module', function () {
 				handler({
 					message: {
 						requestId: 1,
+						threadId: 8,
 						workerIndex: 2,
 						isMainThread: false,
 						statuses: [['poolComp', { status: 'healthy' }]],
@@ -248,10 +254,60 @@ describe('CrossThread Module', function () {
 				assert.ok(collected.has('poolComp@worker-2'));
 			});
 
+			it('keeps overlapping worker generations distinct and waits for each physical responder', async function () {
+				registry.setStatus('localComp', 'healthy', 'Main thread');
+				getWorkerIndexStub.returns(undefined);
+				connectedPorts.push({ threadId: 7 }, { threadId: 8 });
+
+				let handler;
+				onMessageByTypeStub.callsFake((eventType, responseHandler) => {
+					handler = responseHandler;
+				});
+
+				let settled = false;
+				const collectPromise = collector.collect(registry).then((collected) => {
+					settled = true;
+					return collected;
+				});
+				const oldGenerationResponse = {
+					message: {
+						requestId: 1,
+						threadId: 7,
+						workerIndex: 1,
+						isMainThread: false,
+						statuses: [['poolComp', { status: 'error', lastChecked: new Date(1000) }]],
+					},
+				};
+				handler(oldGenerationResponse);
+				handler(oldGenerationResponse);
+				await new Promise(setImmediate);
+				assert.equal(settled, false, 'a duplicate response must not stand in for the replacement worker');
+
+				handler({
+					message: {
+						requestId: 1,
+						threadId: 8,
+						workerIndex: 1,
+						isMainThread: false,
+						statuses: [['poolComp', { status: 'healthy', lastChecked: new Date(3000) }]],
+					},
+				});
+
+				const collected = await collectPromise;
+				assert.equal(collected.size, 3);
+				assert.ok(collected.has('poolComp@worker-1'));
+				assert.ok(collected.has('poolComp@worker-1#thread-8'));
+
+				const aggregated = StatusAggregator.aggregate(collected).get('poolComp');
+				assert.equal(aggregated.status, 'error');
+				assert.equal(aggregated.lastChecked.workers[1], 3000);
+				assert.equal(aggregated.abnormalities.get('poolComp@worker-1').status, 'healthy');
+			});
+
 			it('resolves immediately with zero eligible responders instead of waiting out the timeout', async function () {
 				registry.setStatus('soloComp', 'healthy', 'Main thread');
 				getWorkerIndexStub.returns(undefined); // main thread
-				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientCount(), 0);
+				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientThreadIds().size, 0);
 
 				let sentinelFired = false;
 				const sentinel = new Promise((resolve) =>
@@ -272,8 +328,8 @@ describe('CrossThread Module', function () {
 			it('resolves immediately when the only connected ports are job workers', async function () {
 				registry.setStatus('jobOnlyComp', 'healthy', 'Main thread');
 				getWorkerIndexStub.returns(undefined); // main thread
-				connectedPorts.push({ isJobWorker: true }, { isJobWorker: true });
-				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientCount(), 0);
+				connectedPorts.push({ threadId: 7, isJobWorker: true }, { threadId: 8, isJobWorker: true });
+				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientThreadIds().size, 0);
 
 				let sentinelFired = false;
 				const sentinel = new Promise((resolve) =>

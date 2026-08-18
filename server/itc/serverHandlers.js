@@ -11,7 +11,7 @@ const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
 	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
-const { isMainThread, workerData } = require('worker_threads');
+const { isMainThread, threadId, workerData } = require('node:worker_threads');
 const { resetDatabases, closeDatabase } = require('../../resources/databases.ts');
 
 /**
@@ -187,6 +187,7 @@ async function componentStatusRequestHandler(event) {
 			message: {
 				requestId: event.message.requestId,
 				statuses: statusArray,
+				threadId,
 				workerIndex: workerIndex,
 				isMainThread: isMainThread,
 			},
