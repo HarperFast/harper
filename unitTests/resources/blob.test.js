@@ -1750,6 +1750,35 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		const blob = await createBlob(Readable.from(randomBytes(64)));
 		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(16))), undefined);
 	});
+
+	it('a size-mismatched repair re-stamps PENDING, releases the :blob lock, and stays repairable (harper#2198)', async () => {
+		// Deterministically drives stampPendingBestEffort (harper#2198 review): a source shorter than
+		// the blob descriptor fails the settle-time size verification. Pins three things the suite
+		// previously could not distinguish from broken code: (1) the file ends PENDING (retryable, not
+		// finalized-wrong or ERROR), (2) the lock is released — observable because
+		// blobFileMissingOrIncomplete reads a HELD lock as a live writer and would return false — and
+		// (3) a subsequent repair of the same blob succeeds, proving the fileId was not wedged.
+		const { blob, filePath } = await savedBlob('repair-mismatch');
+		const original = readFileSync(filePath);
+		stampHeaderType(filePath, 0xfe); // PENDING stub — the damaged state that admits a repair
+		const shortSource = Readable.from(original.subarray(8, 108)); // 100 bytes << descriptor size
+		const saving = repairBlobFile(blob, shortSource);
+		assert.ok(saving, 'repair should start on a damaged blob');
+		await assert.rejects(saving, /size mismatch/);
+		// The re-stamp and unlock land in an async writeFile callback after the rejection; poll briefly.
+		let stamped = false;
+		for (let i = 0; i < 50 && !stamped; i++) {
+			await delay(10);
+			const header = readFileSync(filePath);
+			stamped = header.length >= 2 && header[1] === 0xfe && blobFileMissingOrIncomplete(blob) === true;
+		}
+		assert.ok(stamped, 'file must re-stamp PENDING with the :blob lock released (held lock reads as a live writer)');
+		const retry = repairBlobFile(blob, Readable.from(original.subarray(8)));
+		assert.ok(retry, 'a failed repair must leave the blob repairable — a leaked lock would decline here');
+		await retry;
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+		assert.deepStrictEqual(readFileSync(filePath).subarray(8), original.subarray(8));
+	});
 });
 
 function delay(ms) {

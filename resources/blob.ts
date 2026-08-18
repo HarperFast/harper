@@ -1387,17 +1387,10 @@ function writeBlobWithStream(
 		if (!options?.lockHeld && !store.tryLock(lockKey)) {
 			throw new Error(`Unable to get lock for blob file ${fileId}`);
 		}
-		const writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
+		// Declared outside the setup try so finished() can close over them; assigned inside it.
+		let writeStream: any;
+		let compressedStream: any;
 		let wroteSize = false;
-		// deferSizeHeader: an in-place repair of an existing fileId keeps the pre-completion sentinel
-		// header until the body has fully landed, so concurrent readers of the (previously damaged)
-		// file keep getting retryable not-yet-complete semantics instead of a finalized header over a
-		// partial body; the final header is written on completion below, as for unknown-size saves.
-		if (blob.size !== undefined && !deferSizeHeader) {
-			// if we know the size, we can write the header immediately
-			writeStream.write(createHeader(blob.size)); // write the default header
-			wroteSize = true;
-		}
 		// Source-idle watchdog: destroys the source if no 'data' arrives for the threshold so pipeline
 		// rejects cleanly. Off unless the owning caller armed this source (or the env override is set);
 		// see getBlobStreamIdleTimeoutMs. On expiry while the stream is paused (pipeline backpressure),
@@ -1405,11 +1398,30 @@ function writeBlobWithStream(
 		// means a slow-but-live writeStream, not a wedge. A pause with zero downstream progress for the
 		// whole interval is a genuine stall (disk hang / stuck pipeline) the 'data' re-arm can never
 		// clear — the receive socket stays paused on backpressure that never lifts — so destroy it.
+		// (Declared here, not in the setup try below, because finished() closes over them.)
 		let idleTimer: NodeJS.Timeout | undefined;
 		let armIdleTimer: (() => void) | undefined;
 		let lastProgressBytes = 0;
 		const idleTimeoutMs = getBlobStreamIdleTimeoutMs(stream);
-		if (idleTimeoutMs > 0) {
+		// A synchronous throw in the setup below (createWriteStream, header write, deflate, pipeline
+		// wiring) is converted by the Promise executor into a rejection of storageInfo.saving — it never
+		// propagates to the caller, so no caller catch can release the :blob lock, and finished() (the
+		// only other release site) is never wired. That leaks the lock for the process lifetime and
+		// permanently wedges the fileId: reads wait on the lock and blobFileMissingOrIncomplete reads a
+		// held lock as a live writer, so the blob can never be repaired. Release-and-rethrow instead.
+		// (harper#2198 review)
+		try {
+			writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
+			// deferSizeHeader: an in-place repair of an existing fileId keeps the pre-completion sentinel
+			// header until the body has fully landed, so concurrent readers of the (previously damaged)
+			// file keep getting retryable not-yet-complete semantics instead of a finalized header over a
+			// partial body; the final header is written on completion below, as for unknown-size saves.
+			if (blob.size !== undefined && !deferSizeHeader) {
+				// if we know the size, we can write the header immediately
+				writeStream.write(createHeader(blob.size)); // write the default header
+				wroteSize = true;
+			}
+			if (idleTimeoutMs > 0) {
 			armIdleTimer = () => {
 				if (idleTimer) clearTimeout(idleTimer);
 				lastProgressBytes = writeStream.bytesWritten;
@@ -1428,14 +1440,17 @@ function writeBlobWithStream(
 			stream.on('resume', armIdleTimer);
 			armIdleTimer();
 		}
-		let compressedStream: any;
-		if (compress) {
-			if (!wroteSize) writeStream.write(COMPRESS_HEADER); // write the default header to the file
-			compressedStream = createDeflate();
-			pipeline(stream, compressedStream, writeStream, finished);
-		} else {
-			if (!wroteSize) writeStream.write(DEFAULT_HEADER); // write the default header to the file
-			pipeline(stream, writeStream, finished);
+			if (compress) {
+				if (!wroteSize) writeStream.write(COMPRESS_HEADER); // write the default header to the file
+				compressedStream = createDeflate();
+				pipeline(stream, compressedStream, writeStream, finished);
+			} else {
+				if (!wroteSize) writeStream.write(DEFAULT_HEADER); // write the default header to the file
+				pipeline(stream, writeStream, finished);
+			}
+		} catch (setupError) {
+			store.unlock(lockKey);
+			throw setupError;
 		}
 		function createHeader(size: number | bigint): Uint8Array {
 			let headerValue = BigInt(size);
@@ -1489,22 +1504,30 @@ function writeBlobWithStream(
 						store.unlock(lockKey);
 					});
 				} else {
-					store.unlock(lockKey);
+					// Hold the :blob lock THROUGH the error-stub write (matching the PENDING branch above):
+					// unlocking first left this writeFile racing any writer that acquired the freed lock —
+					// notably repairBlobFile's failure re-stamp — and two unordered writeFile calls to one
+					// path can land ERROR (500, reads advance past = #481's silent-loss shape) over a stamp
+					// that meant retry (503). (harper#2198 review)
+					let wroteErrorStub = false;
 					try {
 						if (statSync(filePath).size === 0) {
 							// if there was an error in the stream, nothing may have been written, so we can write the error message instead
 							const errorBuffer = Buffer.from(error.toString());
+							wroteErrorStub = true;
 							writeFile(
 								filePath,
 								Buffer.concat([createHeader(BigInt(errorBuffer.length) + 0xff000000000000n), errorBuffer]),
-								(error: Error) => {
-									if (error) logger.debug?.('Error write error message to blob file', error);
+								(writeError: Error) => {
+									store.unlock(lockKey);
+									if (writeError) logger.debug?.('Error write error message to blob file', writeError);
 								}
 							);
 						}
 					} catch (error) {
 						logger.debug?.('Error checking blob file after abort', error);
 					}
+					if (!wroteErrorStub) store.unlock(lockKey);
 				}
 				reject(error);
 			} else {
@@ -1595,8 +1618,11 @@ export function repairBlobFile(blob: Blob, source: Readable): Promise<void> | un
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (!storageInfo?.fileId || !storageInfo.store) return undefined;
 		if (blobFileMissingOrIncomplete(blob) !== true) return undefined;
-		// Everything fallible resolves BEFORE the lock is taken, so no throw can leak it; from the
-		// tryLock on, the only call is writeBlobWithStream, whose catch below releases it.
+		// Everything fallible resolves BEFORE the lock is taken. writeBlobWithStream cannot throw
+		// synchronously — its setup runs inside a Promise executor, so a setup fault surfaces as a
+		// REJECTION of storageInfo.saving (with the lock released by its own unlock-on-throw guard,
+		// harper#2198 review) and lands in the settle handlers below; the catch below is
+		// defense-in-depth for a future non-executor throw, not a live release site.
 		storageInfo.filePath ??= getFilePath(storageInfo);
 		const filePath = storageInfo.filePath;
 		const expectedSize = (blob as { size?: number }).size;
@@ -1612,6 +1638,33 @@ export function repairBlobFile(blob: Blob, source: Readable): Promise<void> | un
 			// attempt, so the stamp must be skipped, never raced over their finalized header.
 			if (!storageInfo.store.tryLock(lockKey)) return;
 			try {
+				// Re-validate UNDER the lock (harper#2198 review): the acquire only proves no writer holds
+				// the file at this instant — between our settle and this acquire another thread can have
+				// completed a healthy write AND released. Stamp only when the on-disk state is provably
+				// still this attempt's damage: header incomplete (our aborted/partial write), or a
+				// finalized header whose size disagrees with the descriptor (our mismatched write — a
+				// concurrent CORRECT write shows the expected size and must be left alone). ENOENT and any
+				// unreadable state skip: stamping blind could resurrect a deleted file or clobber a state
+				// this attempt no longer owns.
+				let stillOurDamage = false;
+				try {
+					const fd = openSync(filePath, 'r');
+					try {
+						const size = fstatSync(fd).size;
+						const header = Buffer.allocUnsafe(HEADER_SIZE);
+						const read = size >= HEADER_SIZE ? readSync(fd, header, 0, HEADER_SIZE, 0) : 0;
+						if (read < HEADER_SIZE || blobHeaderIndicatesIncomplete(header, size)) stillOurDamage = true;
+						else if (expectedSize !== undefined && header.readUIntBE(2, 6) !== expectedSize) stillOurDamage = true;
+					} finally {
+						closeSync(fd);
+					}
+				} catch {
+					stillOurDamage = false;
+				}
+				if (!stillOurDamage) {
+					storageInfo.store.unlock(lockKey);
+					return;
+				}
 				const messageBuffer = Buffer.from(reason);
 				const header = new Uint8Array(HEADER_SIZE);
 				new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
