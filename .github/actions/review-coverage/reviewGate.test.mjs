@@ -227,10 +227,20 @@ test('autoDraftBody mirrors the worker park body from TL;DR or the fallback', ()
 const FIELD = (segments) => `<sub>Review-Coverage: ${segments}</sub>`;
 
 test('the structured Review-Coverage field is preferred over prose, and counts only ran=', () => {
-	const body = ['## Summary', 'A fix.', '', 'Complexity: medium', '',
-		FIELD('authored=claude; ran=codex,gemini; adjudicated=domain; blocked=cursor-grok(auth); declined=cursor-composer; rounds=2 @ abcdef123456'),
-		'', '<sub>Human-Review-Need: 3 @ abcdef123456</sub>', '',
-		'🤖 Generated with [Claude Code](https://claude.com/claude-code)'].join('\n');
+	const body = [
+		'## Summary',
+		'A fix.',
+		'',
+		'Complexity: medium',
+		'',
+		FIELD(
+			'authored=claude; ran=codex,gemini; adjudicated=domain; blocked=cursor-grok(auth); declined=cursor-composer; rounds=2 @ abcdef123456'
+		),
+		'',
+		'<sub>Human-Review-Need: 3 @ abcdef123456</sub>',
+		'',
+		'🤖 Generated with [Claude Code](https://claude.com/claude-code)',
+	].join('\n');
 	const r = reportedCrossModelReviews(body);
 	assert.strictEqual(r.count, 2);
 	assert.deepStrictEqual(r.families, ['google', 'openai']);
@@ -243,8 +253,15 @@ test('the structured Review-Coverage field is preferred over prose, and counts o
 });
 
 test('a blocked or declined lens is never counted as coverage', () => {
-	assert.strictEqual(reportedCrossModelReviews(FIELD('authored=claude; ran=none; blocked=codex(auth),gemini(not-installed); rounds=1')).count, 0);
-	assert.strictEqual(reportedCrossModelReviews(FIELD('authored=claude; ran=none; declined=cursor-grok,cursor-composer; rounds=1')).count, 0);
+	assert.strictEqual(
+		reportedCrossModelReviews(FIELD('authored=claude; ran=none; blocked=codex(auth),gemini(not-installed); rounds=1'))
+			.count,
+		0
+	);
+	assert.strictEqual(
+		reportedCrossModelReviews(FIELD('authored=claude; ran=none; declined=cursor-grok,cursor-composer; rounds=1')).count,
+		0
+	);
 	// ran=none is an explicit report of zero outside coverage, not a missing field.
 	assert.strictEqual(structuredCoverage(FIELD('authored=claude; ran=none; rounds=1')).count, 0);
 	assert.strictEqual(structuredCoverage('## Summary\nno field here'), null);
@@ -257,7 +274,10 @@ test('one Cursor leg is one family, not two', () => {
 	const r = structuredCoverage(FIELD('authored=claude; ran=cursor-grok; rounds=1'));
 	assert.deepStrictEqual(r.families, ['xai']);
 	assert.strictEqual(r.count, 1);
-	assert.deepStrictEqual(structuredCoverage(FIELD('authored=claude; ran=cursor-grok,cursor-composer; rounds=1')).families, ['cursor', 'xai']);
+	assert.deepStrictEqual(
+		structuredCoverage(FIELD('authored=claude; ran=cursor-grok,cursor-composer; rounds=1')).families,
+		['cursor', 'xai']
+	);
 });
 
 test('the authoring family never counts, and the adjudicator is excluded by the producer', () => {
@@ -268,13 +288,22 @@ test('the authoring family never counts, and the adjudicator is excluded by the 
 	// Defense in depth: an anthropic leg wrongly placed in ran= by a future producer is dropped.
 	assert.deepStrictEqual(structuredCoverage(FIELD('authored=claude; ran=codex,claude; rounds=1')).families, ['openai']);
 	// A codex-authored change gets its Claude leg back as genuine outside coverage.
-	assert.deepStrictEqual(structuredCoverage(FIELD('authored=codex; ran=claude,gemini; rounds=1')).families, ['anthropic', 'google']);
+	assert.deepStrictEqual(structuredCoverage(FIELD('authored=codex; ran=claude,gemini; rounds=1')).families, [
+		'anthropic',
+		'google',
+	]);
 });
 
 test('a fenced example of the field cannot satisfy the gate', () => {
-	const body = ['## Summary', 'Documents the field:', '```',
-		'Review-Coverage: authored=claude; ran=codex,gemini; rounds=9', '```', '',
-		'🤖 Generated with [Claude Code](https://claude.com/claude-code)'].join('\n');
+	const body = [
+		'## Summary',
+		'Documents the field:',
+		'```',
+		'Review-Coverage: authored=claude; ran=codex,gemini; rounds=9',
+		'```',
+		'',
+		'🤖 Generated with [Claude Code](https://claude.com/claude-code)',
+	].join('\n');
 	assert.strictEqual(structuredCoverage(body), null);
 	// Falls through to the prose reader, which finds no coverage section either.
 	assert.strictEqual(reportedCrossModelReviews(body).count, 0);

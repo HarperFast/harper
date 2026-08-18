@@ -54,8 +54,13 @@ const withoutFences = (body) => String(body ?? '').replace(/^[ \t]*```[\s\S]*?^[
  *  gets a structured mapping; an unknown leg name falls back to the FIRST prose match only.
  *  Mirrors REVIEW_LEGS in HarperFast/skills-internal skills/cross-model-review/bin/prepush-policy.mjs. */
 const LEG_FAMILY = new Map([
-	['codex', 'openai'], ['gemini', 'google'], ['cursor-grok', 'xai'], ['cursor-composer', 'cursor'],
-	['claude', 'anthropic'], ['claude(fallback)', 'anthropic'], ['domain', 'anthropic'],
+	['codex', 'openai'],
+	['gemini', 'google'],
+	['cursor-grok', 'xai'],
+	['cursor-composer', 'cursor'],
+	['claude', 'anthropic'],
+	['claude(fallback)', 'anthropic'],
+	['domain', 'anthropic'],
 ]);
 const legFamily = (leg) => LEG_FAMILY.get(String(leg).trim().toLowerCase()) ?? familiesIn(leg)[0] ?? '';
 
@@ -69,12 +74,17 @@ const legFamily = (leg) => LEG_FAMILY.get(String(leg).trim().toLowerCase()) ?? f
  *  family and the Harper adjudicator from `ran`; we re-exclude the authoring family anyway, because
  *  this number acts on other people's PRs and should not inherit a guarantee it can check itself. */
 export function structuredCoverage(body) {
-	const match = /^[ \t]*(?:<sub>[ \t]*)?Review-Coverage:[ \t]*(.+?)[ \t]*(?:<\/sub>[ \t]*)?$/im.exec(withoutFences(body));
+	const match = /^[ \t]*(?:<sub>[ \t]*)?Review-Coverage:[ \t]*(.+?)[ \t]*(?:<\/sub>[ \t]*)?$/im.exec(
+		withoutFences(body)
+	);
 	if (!match) return null;
-	const segments = new Map(match[1].split(';')
-		.map((seg) => seg.trim().split('='))
-		.filter((pair) => pair.length === 2)
-		.map(([key, value]) => [key.trim().toLowerCase(), value.trim()]));
+	const segments = new Map(
+		match[1]
+			.split(';')
+			.map((seg) => seg.trim().split('='))
+			.filter((pair) => pair.length === 2)
+			.map(([key, value]) => [key.trim().toLowerCase(), value.trim()])
+	);
 	const authored = familiesIn((segments.get('authored') || '').replace(/\s*@.*$/, ''))[0] || '';
 	const raw = segments.get('ran') || '';
 	const families = new Set();
