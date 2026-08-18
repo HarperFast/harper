@@ -26,6 +26,16 @@ const OIDC_TOKEN_USE_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TOKEN_USE_TABLE_NAME;
  * Only the primary key is declared here. The `expiresAt` TTL attribute is not expressible through
  * CreateTableObject, so tokenExchange.ts layers it on with an unconditional `table()` call — the
  * same two-step hdb_certificate_cache uses.
+ *
+ * KNOWN LIMITATION, shared with hdb_certificate_cache rather than specific to this table: that
+ * second step runs on the exchange path, so a node that never performs an exchange — the passive
+ * members of a cluster, which is most of them when CI always targets one endpoint — has the table
+ * from this directive but never registers `expiresAt` locally. Replicated replay rows still land
+ * there (that is what `audit: true` buys) but get no eviction, so the table grows on exactly the
+ * nodes doing no work. Rows are small and bounded by exchange volume, so this is slow rather than
+ * dangerous. Fixing it properly means installing the TTL at system-table setup instead of on first
+ * use, which is a change to how every lazily-extended system table is provisioned — worth doing
+ * once, for both tables, rather than special-casing this one.
  */
 async function createHdbOidcTokenUseIfMissing() {
 	if (databases.system?.[OIDC_TOKEN_USE_TABLE]) {
