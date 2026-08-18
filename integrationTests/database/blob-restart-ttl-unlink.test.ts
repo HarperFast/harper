@@ -36,9 +36,8 @@
  *                       unlink their blob files (checked by walking the blob dir, not the API)?
  *   Q3 mirror-failure — does the sweep ever unlink a blob file whose record survives (dangling ref)?
  *   Q4 already-expired — is a pre-restart-already-expired record swept/unlinked post-restart, or stranded?
- *   Q5 update-release — does updating an old-version record post-restart release its old blob file
- *                        (eventually, via cleanup_orphan_blobs — no background orphan sweep exists,
- *                        per D-139/known ground truth)?
+ *   Q5 update-release — does updating an old-version record post-restart naturally release its old
+ *                        blob file without an operator cleanup?
  *
  * Reproduction:
  *   cd /home/kzyp/dev/harper
@@ -156,25 +155,28 @@ suite(
 			throw new Error(`PageCache672 route never became ready within ${timeoutMs}ms`);
 		}
 
-		async function registerLogPath() {
-			const logDir = ctx.harper.logDir;
-			ok(logDir, 'integration harness must expose its Harper log directory');
-			ok((await stat(logDir)).isDirectory(), `Harper log path must be a directory: ${logDir}`);
-			logFilePaths.add(join(logDir, 'hdb.log'));
+		function registerLogPaths() {
+			logFilePaths.add(join(rootPath, 'log', 'hdb.log'));
+			if (ctx.harper.logDir) logFilePaths.add(join(ctx.harper.logDir, 'hdb.log'));
 		}
 
 		async function readLog(): Promise<string> {
-			const contents = await Promise.all(
+			const results = await Promise.all(
 				[...logFilePaths].map(async (path) => {
 					try {
-						return await readFile(path, 'utf8');
+						return { path, content: await readFile(path, 'utf8') };
 					} catch (error: any) {
-						if (error?.code === 'ENOENT') return '';
+						if (error?.code === 'ENOENT') return null;
 						throw error;
 					}
 				})
 			);
-			return contents.join('\n');
+			const readableLogs = results.filter((result) => result !== null);
+			ok(
+				readableLogs.length > 0,
+				`anomaly scan requires a readable hdb.log at one of: ${JSON.stringify([...logFilePaths])}`
+			);
+			return readableLogs.map((result) => result.content).join('\n');
 		}
 
 		async function checkAnomalyLog(): Promise<string[]> {
@@ -203,7 +205,7 @@ suite(
 			rootPath = cfg.body.rootPath;
 			ok(rootPath, 'get_configuration must return rootPath');
 			blobRootDir = join(rootPath, 'blobs', 'data');
-			await registerLogPath();
+			registerLogPaths();
 			findings.push(`Harper SHA: 7863b7468 (working tree at task start)`);
 			findings.push(`rootPath=${rootPath}`);
 			findings.push(`blobRootDir=${blobRootDir}`);
@@ -350,9 +352,16 @@ suite(
 
 			const restartT0 = Date.now();
 			await startHarper(ctx, { config: HARPER_CONFIG, env: { HARPER_STORAGE_ENGINE: 'lmdb' } });
-			await registerLogPath();
+			registerLogPaths();
 			client = createApiClient(ctx.harper);
 			await waitRouteReady(120_000);
+			for (let i = 0; i < NORMAL_COUNT; i++) {
+				const normal = await op({ action: 'raw', id: `normal-${i}` }).expect(200);
+				ok(
+					normal.body.rawPresent === true && normal.body.pastDue === false,
+					`normal-${i} must still be resident and unexpired after restart: ${JSON.stringify(normal.body)}`
+				);
+			}
 			findings.push(`phase2: restart + route-ready completed in ${Date.now() - restartT0}ms`);
 		});
 
@@ -606,8 +615,8 @@ suite(
 					`Q5: update-target correctly reads new content post-update (old sha ${updateTargetSha.slice(0, 12)}.. -> new ${newSha.slice(0, 12)}..)`
 				);
 
-				// Old blob file release: per known ground truth there is no background orphan sweep, so an
-				// immediately-elevated file count right after update is EXPECTED, not a leak on its own.
+				// The unlink is delayed after commit, so an immediately elevated count is expected; the
+				// natural convergence below is the pass/fail gate.
 				const rightAfterUpdate = await diskFiles(blobRootDir);
 				findings.push(
 					`Q5: disk right after update = ${rightAfterUpdate.files} files (old file may still be present as an on-demand orphan; expected)`
@@ -619,54 +628,64 @@ suite(
 				);
 				const [newTargetPath] = newFiles;
 
-				const cleanupResp = await client
-					.req()
-					.send({ operation: 'cleanup_orphan_blobs', database: 'data' })
-					.expect(200);
-				findings.push(`Q5: cleanup_orphan_blobs response: ${JSON.stringify(cleanupResp.body).slice(0, 200)}`);
-
-				let finalPaths = rightAfterUpdate.paths;
-				const traj: string[] = [];
-				for (let i = 0; i < 10; i++) {
-					await sleep(3_000);
-					const d = await diskFiles(blobRootDir);
-					finalPaths = d.paths;
-					traj.push(`+${(i + 1) * 3}s:${d.files}f`);
-					if (d.files <= 2) break; // exactly survivor + update-target's new file, no tolerance
+				let naturalDisk = rightAfterUpdate;
+				const naturalTrajectory = [`+0ms:${naturalDisk.files}f`];
+				const naturalDeadline = Date.now() + 15_000;
+				while (naturalDisk.files !== 2 && Date.now() < naturalDeadline) {
+					await sleep(250);
+					naturalDisk = await diskFiles(blobRootDir);
+					naturalTrajectory.push(`${naturalDisk.files}f`);
 				}
-				findings.push(`Q5: disk trajectory after cleanup_orphan_blobs: ${traj.join(' -> ')}`);
+				findings.push(`Q5: natural post-update disk trajectory: ${naturalTrajectory.join(' -> ')}`);
 
 				// The path-set comparison below cannot tell WHICH of the two pre-update paths (survivor
-				// vs. old update-target) was released — both are anonymous file paths. If cleanup
+				// vs. old update-target) was released — both are anonymous file paths. If reclaim
 				// released the wrong one (deleted survivor's live file, kept the stale update-target
 				// file), the set-shape assertions below would still pass. Close that gap directly via
-				// the application read path: re-GET both live records post-cleanup and require
+				// the application read path: re-GET both live records post-reclaim and require
 				// byte-exact content. A dangling/deleted blob file surfaces here as a read error or a
 				// sha mismatch, regardless of which anonymous path it was.
-				const survivorPostCleanup = await op({ action: 'get', id: 'survivor' }).expect(200);
+				const survivorPostReclaim = await op({ action: 'get', id: 'survivor' }).expect(200);
 				ok(
-					survivorPostCleanup.body.present && survivorPostCleanup.body.shaMatch === true,
-					`Q5 DEFECT: survivor became dangling/corrupt after cleanup_orphan_blobs: ${JSON.stringify(survivorPostCleanup.body)}`
+					survivorPostReclaim.body.present && survivorPostReclaim.body.shaMatch === true,
+					`Q5 DEFECT: survivor became dangling/corrupt after natural reclaim: ${JSON.stringify(survivorPostReclaim.body)}`
 				);
 				strictEqual(
-					survivorPostCleanup.body.readSha,
+					survivorPostReclaim.body.readSha,
 					survivorSha,
-					'Q5 DEFECT: survivor bytes must still be byte-identical after cleanup_orphan_blobs'
+					'Q5 DEFECT: survivor bytes must still be byte-identical after natural reclaim'
 				);
-				const targetPostCleanup = await op({ action: 'get', id: 'update-target' }).expect(200);
+				const targetPostReclaim = await op({ action: 'get', id: 'update-target' }).expect(200);
 				ok(
-					targetPostCleanup.body.present && targetPostCleanup.body.shaMatch === true,
-					`Q5 DEFECT: update-target became dangling/corrupt after cleanup_orphan_blobs: ${JSON.stringify(targetPostCleanup.body)}`
+					targetPostReclaim.body.present && targetPostReclaim.body.shaMatch === true,
+					`Q5 DEFECT: update-target became dangling/corrupt after natural reclaim: ${JSON.stringify(targetPostReclaim.body)}`
 				);
 				strictEqual(
-					targetPostCleanup.body.readSha,
+					targetPostReclaim.body.readSha,
 					newSha,
-					'Q5 DEFECT: update-target must still read the NEW content after cleanup_orphan_blobs'
+					'Q5 DEFECT: update-target must still read the NEW content after natural reclaim'
 				);
+
+				let diagnostic = '';
+				if (naturalDisk.files !== 2) {
+					const cleanupResp = await client
+						.req()
+						.send({ operation: 'cleanup_orphan_blobs', database: 'data' })
+						.expect(200);
+					let diagnosticDisk = await diskFiles(blobRootDir);
+					const diagnosticDeadline = Date.now() + 30_000;
+					while (diagnosticDisk.files !== 2 && Date.now() < diagnosticDeadline) {
+						await sleep(250);
+						diagnosticDisk = await diskFiles(blobRootDir);
+					}
+					diagnostic = `; cleanup_orphan_blobs diagnostic=${JSON.stringify(cleanupResp.body).slice(0, 200)}, post-cleanup files=${diagnosticDisk.files}`;
+					findings.push(`Q5: natural reclaim failed${diagnostic}`);
+				}
 
 				// Exact-set proof, not just a count: the file(s) released must be drawn from the known
 				// pre-update set (i.e. the OLD update-target blob specifically), and the survivor's
 				// original file plus the update's NEW file must both still be present untouched.
+				const finalPaths = naturalDisk.paths;
 				const releasedFromBefore = beforeUpdate.paths.filter((p) => !finalPaths.includes(p));
 				const retainedFromBefore = beforeUpdate.paths.filter((p) => finalPaths.includes(p));
 				findings.push(
@@ -684,7 +703,7 @@ suite(
 				strictEqual(
 					finalPaths.length,
 					2,
-					`Q5 DEFECT: expected exactly 2 live blob files after cleanup_orphan_blobs, got ${finalPaths.length}: ${JSON.stringify(finalPaths)}`
+					`Q5 DEFECT: expected natural reclaim to leave exactly 2 live blob files, got ${finalPaths.length}: ${JSON.stringify(finalPaths)}${diagnostic}`
 				);
 				strictEqual(
 					retainedFromBefore.length,
@@ -693,7 +712,7 @@ suite(
 				);
 				ok(
 					finalPaths.includes(newTargetPath),
-					`Q5 DEFECT: update-target's NEW blob file (${newTargetPath}) must remain live after cleanup_orphan_blobs`
+					`Q5 DEFECT: update-target's NEW blob file (${newTargetPath}) must remain live after natural reclaim`
 				);
 			}
 		);
