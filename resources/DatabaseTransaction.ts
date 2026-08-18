@@ -1243,6 +1243,17 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 	abort(): void {
+		let firstError: unknown;
+		for (let transaction: DatabaseTransaction = this; transaction; transaction = transaction.next) {
+			try {
+				transaction.abortLink();
+			} catch (error) {
+				firstError ??= error;
+			}
+		}
+		if (firstError) throw firstError;
+	}
+	private abortLink(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		// Defensively release any native handle whose reference bookkeeping was already consumed.
 		if (this.transaction) this.releaseReadTxn();
@@ -1312,7 +1323,7 @@ export class DatabaseTransaction implements Transaction {
 				// abort() synchronously walks savedBlobs and can call write.store.getEntry(), which can throw
 				// (closed store, decode error). Catch and continue so one link's wrapper-cleanup failure can't
 				// strand later links' native handles — they were already detached/aborted above regardless.
-				txn.abort();
+				txn.abortLink();
 			} catch (abortError) {
 				harperLogger.debug?.('cleaning up conflicted transaction in chain after exhausting retries', abortError);
 			}
@@ -1348,7 +1359,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			try {
-				txn.abort();
+				txn.abortLink();
 			} catch (error) {
 				harperLogger.debug?.(`Error aborting timed-out transaction in chain: ${error.message}`);
 			}

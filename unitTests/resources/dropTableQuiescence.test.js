@@ -15,6 +15,7 @@ const {
 	resetDatabases,
 } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
+const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { ITC_EVENT_TYPES, TABLE_DROP_PREPARE_OPERATION, THREAD_TYPES } = terms;
@@ -186,6 +187,26 @@ describe('dropTable worker quiescence', function () {
 		);
 		assert.notStrictEqual(dbisDb.getSync(`${tableName}/`)?.dropping, true);
 		assert.strictEqual(databases.test?.[tableName], Table);
+		await Table.dropTable();
+	});
+
+	it('aborts staged writes on linked transactions before dropping the table', async function () {
+		const Table = defineTable(`DropAbortedLinkedTxn_${process.pid}_${Date.now()}`);
+		const expectedError = new Error('abort linked transaction');
+		let linkedTransaction;
+
+		await assert.rejects(
+			() =>
+				transaction(async (transactionHead) => {
+					linkedTransaction = transactionHead.next = new DatabaseTransaction();
+					linkedTransaction.db = Table.primaryStore;
+					await Table.put({ id: 'aborted', name: 'not committed' }, { transaction: linkedTransaction });
+					throw expectedError;
+				}),
+			expectedError
+		);
+		assert.strictEqual(linkedTransaction.writes.length, 0, 'abort must clear every linked write set');
+		assert.strictEqual(await Table.get('aborted'), null);
 		await Table.dropTable();
 	});
 
@@ -395,6 +416,47 @@ describe('dropTable worker quiescence', function () {
 			() => history.next(),
 			(error) => error.code === 'ERR_TABLE_DROPPING'
 		);
+	});
+
+	it('releases a history operation token when iterator cancellation throws', async function () {
+		const Table = table({
+			table: `DropThrowingHistoryIterator_${process.pid}_${Date.now()}`,
+			database: 'test',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		await Table.put({ id: 'history', name: 'held' });
+
+		const originalGetRange = Table.auditStore.getRange;
+		let injectedError = false;
+		Table.auditStore.getRange = function (...args) {
+			const range = originalGetRange.apply(this, args);
+			return {
+				[Symbol.iterator]() {
+					const iterator = range[Symbol.iterator]();
+					const originalReturn = iterator.return?.bind(iterator);
+					iterator.return = (...returnArgs) => {
+						const result = originalReturn?.(...returnArgs);
+						if (!injectedError) {
+							injectedError = true;
+							throw new Error('forced history iterator cancellation failure');
+						}
+						return result;
+					};
+					return iterator;
+				},
+			};
+		};
+
+		const history = Table.getHistory()[Symbol.asyncIterator]();
+		try {
+			assert.strictEqual((await history.next()).done, false);
+			await Table.dropTable();
+			assert.strictEqual(injectedError, true, 'the test must exercise the throwing cancellation path');
+		} finally {
+			Table.auditStore.getRange = originalGetRange;
+			await history.return?.();
+		}
 	});
 
 	it('omits a worker until its ITC listener is ready', async function () {

@@ -5304,9 +5304,11 @@ export function makeTable(options) {
 			let iterator: Iterator<any> | undefined;
 			let finishHistoryScan: () => void;
 			finishHistoryScan = beginTableOperation('history iterator', () => {
-				if (!iterator?.return) return;
-				iterator.return();
-				finishHistoryScan();
+				try {
+					iterator?.return?.();
+				} finally {
+					finishHistoryScan();
+				}
 			});
 			try {
 				iterator = auditStore
@@ -5332,8 +5334,11 @@ export function makeTable(options) {
 					if (droppingTable) throw tableDroppingError();
 				}
 			} finally {
-				iterator?.return?.();
-				finishHistoryScan();
+				try {
+					iterator?.return?.();
+				} finally {
+					finishHistoryScan();
+				}
 			}
 		}
 		static async getHistoryOfRecord(id) {
