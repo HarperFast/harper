@@ -6461,14 +6461,16 @@ export function makeTable(options) {
 								}
 
 								let finishCleanupScan: (() => void) | undefined;
+								let batcher: ReturnType<typeof createEvictionBatcher> | undefined;
+								let count = 0;
+								let scanCompleted = false;
 								try {
 									finishCleanupScan = beginTableOperation('cleanup scan');
-									let count = 0;
 									let removeDeletedRecords = !audit || isRocksDB;
 									// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
 									// the per-record commit cost; LMDB keeps the per-record path (eventTurnBatching already
 									// coalesces async writes per event turn).
-									const batcher = isRocksDB ? createEvictionBatcher() : undefined;
+									batcher = isRocksDB ? createEvictionBatcher() : undefined;
 									// iterate through all entries to find expired records and deleted records
 									for (const entry of primaryStore.getRange({
 										start: false,
@@ -6511,13 +6513,19 @@ export function makeTable(options) {
 											return;
 										}
 									}
-									if (batcher) await batcher.drain();
-									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
+									scanCompleted = true;
 								} catch (error) {
 									if (!droppingTable) logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								} finally {
-									finishCleanupScan?.();
+									try {
+										if (droppingTable) batcher?.cancel();
+										if (batcher) await batcher.drain();
+										await Promise.all(outstandingCleanupOperations.filter(Boolean));
+									} finally {
+										finishCleanupScan?.();
+									}
 								}
+								if (scanCompleted) logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
 								if (cleanupTimerCompletion === thisCleanupCompletion) cleanupTimerCompletion = undefined;
 								resolve(undefined);
 								cleanupPriority = 0; // reset the priority

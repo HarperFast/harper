@@ -304,6 +304,67 @@ describe('dropTable worker quiescence', function () {
 		assert.strictEqual(destructivePhaseStarted, true);
 	});
 
+	it('drains an in-flight cleanup batch before dropping the table stores', async function () {
+		this.timeout(15000);
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const Table = defineTable(`DropCleanupBatch_${process.pid}_${Date.now()}`);
+		Table.setTTLExpiration({ expiration: 3600, eviction: 3600, scanInterval: 3600 });
+		for (let id = 0; id < 100; id++) {
+			await Table.put(id, { name: `expired-${id}` }, { expiresAt: 1 });
+		}
+
+		const originalCommit = Transaction.prototype.commit;
+		const originalGetEntry = Table.primaryStore.getEntry;
+		const cleanupTransactions = new WeakSet();
+		Table.primaryStore.getEntry = function (...args) {
+			const [, options] = args;
+			if (options?.transaction) cleanupTransactions.add(options.transaction);
+			return originalGetEntry.apply(this, args);
+		};
+		let cleanupCommitEntered;
+		const cleanupCommitStarted = new Promise((resolve) => (cleanupCommitEntered = resolve));
+		let releaseCleanupCommit;
+		const cleanupCommitGate = new Promise((resolve) => (releaseCleanupCommit = resolve));
+		let blockedCommit = false;
+		Transaction.prototype.commit = async function (...args) {
+			if (!blockedCommit && cleanupTransactions.has(this)) {
+				blockedCommit = true;
+				cleanupCommitEntered();
+				await cleanupCommitGate;
+			}
+			return originalCommit.apply(this, args);
+		};
+
+		try {
+			Table.setTTLExpiration({ expiration: 0.001, eviction: 0.001, scanInterval: 0.001 });
+			await cleanupCommitStarted;
+
+			const originalDropSync = Table.primaryStore.dropSync;
+			let destructivePhaseStarted = false;
+			Table.primaryStore.dropSync = function (...args) {
+				destructivePhaseStarted = true;
+				return originalDropSync.apply(this, args);
+			};
+			const dropPromise = Table.dropTable();
+			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+			let earlyError;
+			try {
+				assert.strictEqual(destructivePhaseStarted, false, 'dropTable() must wait for the cleanup batch commit');
+			} catch (error) {
+				earlyError = error;
+			} finally {
+				releaseCleanupCommit();
+			}
+			await dropPromise;
+			if (earlyError) throw earlyError;
+			assert.strictEqual(destructivePhaseStarted, true);
+		} finally {
+			releaseCleanupCommit();
+			Transaction.prototype.commit = originalCommit;
+			Table.primaryStore.getEntry = originalGetEntry;
+		}
+	});
+
 	it('cancels a subscriber-paced replay instead of timing out the drop drain', async function () {
 		const Table = defineTable(`DropSlowReplay_${process.pid}_${Date.now()}`);
 		for (let i = 0; i < 110; i++) await Table.put(i, { name: `queued-${i}` });
