@@ -225,10 +225,14 @@ export async function getSigningKey(issuer: string, kid: unknown): Promise<KeyOb
 	// A usable stale key, if the cache is expired but still inside the grace window.
 	const staleKey = cached && now - cached.fetchedAt < STALE_KEY_GRACE_MS ? cached.keys.get(kid) : undefined;
 
-	// Skip the fetch entirely while a recent one is known to have failed and a stale key can answer.
-	// Without this the backoff would be pointless: the fetch is the expensive part, not the fallback.
-	if (staleKey && now - (failedRefreshAt.get(normalizedIssuer) ?? 0) < FAILED_REFRESH_BACKOFF_MS) {
-		return staleKey;
+	// Skip the fetch entirely while a recent one is known to have failed. Not gated on having a stale
+	// key: the fetch is the expensive part, and the issuer we have NEVER cached is the worse case —
+	// there is nothing to fall back to, so without this every request rides the full discovery and
+	// timeout. Refusing for the backoff interval bounds what an anonymous caller can drive, at the
+	// cost of a legitimate first exchange waiting out that interval after a blip. Fails closed.
+	if (now - (failedRefreshAt.get(normalizedIssuer) ?? 0) < FAILED_REFRESH_BACKOFF_MS) {
+		if (staleKey) return staleKey;
+		throw new ServerError(`Signing keys for ${normalizedIssuer} are temporarily unavailable; a recent refresh failed`);
 	}
 
 	let refreshed: IssuerKeys;

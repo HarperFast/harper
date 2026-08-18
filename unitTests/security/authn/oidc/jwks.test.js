@@ -208,6 +208,46 @@ describe('oidc jwks', () => {
 			await assert.rejects(() => getSigningKey(ISSUER, 'key-1'), /exceeds/);
 		});
 
+		// An issuer whose keys we have NEVER cached is the worse half of the outage case: there is no
+		// stale key to fall back on, so without a backoff every request rides the full discovery and
+		// fetch timeout — and the exchange is unauthenticated, with the issuer chosen from an
+		// unverified JWT. Reachable without any time travel, unlike the expired-cache half.
+		it('stops re-fetching for an issuer whose keys have never been cached', async () => {
+			respond = () => {
+				throw new Error('issuer is down');
+			};
+
+			await assert.rejects(() => getSigningKey(ISSUER, 'key-1'));
+			const afterFirst = requestLog.length;
+			assert.ok(afterFirst > 0, 'expected the first attempt to actually try');
+
+			await assert.rejects(() => getSigningKey(ISSUER, 'key-1'));
+			await assert.rejects(() => getSigningKey(ISSUER, 'key-1'));
+
+			assert.strictEqual(
+				requestLog.length,
+				afterFirst,
+				'a failed refresh must suppress further fetches for the backoff interval'
+			);
+		});
+
+		// The backoff must not outlive the outage: a recovered issuer is picked up once the interval
+		// passes, and clearing the cache is the operator's way to force that immediately.
+		it('fetches again for a recovered issuer once the failure is cleared', async () => {
+			respond = () => {
+				throw new Error('issuer is down');
+			};
+			await assert.rejects(() => getSigningKey(ISSUER, 'key-1'));
+
+			clearJwksCache();
+			requestLog.length = 0;
+			respond = (url) => json(url === DISCOVERY_URI ? discoveryDocument() : jwksDocument([signingJwk]));
+
+			const key = await getSigningKey(ISSUER, 'key-1');
+			assert.strictEqual(key.type, 'public');
+			assert.ok(requestLog.length > 0, 'expected the recovered issuer to be fetched again');
+		});
+
 		it('requires a key id', async () => {
 			for (const kid of ['', undefined, null, 42]) {
 				await assert.rejects(() => getSigningKey(ISSUER, kid), /no key id/);
