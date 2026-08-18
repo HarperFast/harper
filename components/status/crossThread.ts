@@ -25,6 +25,20 @@ import {
 import { ITCError } from './errors.ts';
 
 const logger = loggerWithTag('componentStatus.crossThread');
+const THREAD_IDENTITY_SEPARATOR = '#thread-';
+const STATUS_PRIORITY = [
+	COMPONENT_STATUS_LEVELS.ERROR,
+	COMPONENT_STATUS_LEVELS.WARNING,
+	COMPONENT_STATUS_LEVELS.LOADING,
+	COMPONENT_STATUS_LEVELS.UNKNOWN,
+	COMPONENT_STATUS_LEVELS.HEALTHY,
+];
+
+function stripThreadIdentity(statusKey: string): string {
+	const threadLabelStart = statusKey.lastIndexOf('@') + 1;
+	const identityIndex = statusKey.indexOf(THREAD_IDENTITY_SEPARATOR, threadLabelStart);
+	return identityIndex === -1 ? statusKey : statusKey.substring(0, identityIndex);
+}
 
 /**
  * CrossThreadStatusCollector Class
@@ -132,16 +146,14 @@ export class CrossThreadStatusCollector {
 				// Check if we've received all expected responses
 				const checkComplete = () => {
 					const collectedResponses = this.awaitingResponses.get(requestId);
-					if (
-						collectedResponses &&
-						!resolved &&
-						[...expectedThreadIds].every((threadId) => collectedResponses.has(threadId))
-					) {
-						resolved = true;
-						cleanup();
-						logger.trace?.(`Collected all ${collectedResponses.size} expected responses for request ${requestId}`);
-						resolve([...collectedResponses.values()]);
+					if (!collectedResponses || resolved) return;
+					for (const threadId of expectedThreadIds) {
+						if (!collectedResponses.has(threadId)) return;
 					}
+					resolved = true;
+					cleanup();
+					logger.trace?.(`Collected all ${collectedResponses.size} expected responses for request ${requestId}`);
+					resolve([...collectedResponses.values()]);
 				};
 
 				// Set up timeout as fallback
@@ -239,7 +251,11 @@ export class CrossThreadStatusCollector {
 		threadId?: number
 	): void {
 		const baseKey = `${name}@${threadLabel}`;
-		const key = statuses.has(baseKey) ? `${baseKey}#thread-${threadId ?? statuses.size}` : baseKey;
+		let key = baseKey;
+		if (statuses.has(baseKey)) {
+			if (threadId === undefined) throw new Error(`Physical thread identity is required for duplicate ${baseKey}`);
+			key += `${THREAD_IDENTITY_SEPARATOR}${threadId}`;
+		}
 		statuses.set(key, {
 			...status,
 			workerIndex,
@@ -330,9 +346,7 @@ export class StatusAggregator {
 		for (const [nameWithThread, status] of statusEntries) {
 			const atIndex = nameWithThread.lastIndexOf('@');
 			const threadLabelWithIdentity = atIndex !== -1 ? nameWithThread.substring(atIndex + 1) : '';
-			const identityIndex = threadLabelWithIdentity.indexOf('#');
-			const threadLabel =
-				identityIndex === -1 ? threadLabelWithIdentity : threadLabelWithIdentity.substring(0, identityIndex);
+			const threadLabel = stripThreadIdentity(threadLabelWithIdentity);
 
 			// Convert lastChecked to ms since epoch
 			const checkTime =
@@ -374,9 +388,11 @@ export class StatusAggregator {
 			// There are inconsistencies - populate abnormalities
 			for (const [nameWithThread, status] of statusEntries) {
 				if (status.status !== determinedStatus) {
-					const identityIndex = nameWithThread.indexOf('#', nameWithThread.indexOf('@'));
-					const publicNameWithThread =
-						identityIndex === -1 ? nameWithThread : nameWithThread.substring(0, identityIndex);
+					const publicNameWithThread = stripThreadIdentity(nameWithThread);
+					const existing = abnormalities.get(publicNameWithThread);
+					if (existing && STATUS_PRIORITY.indexOf(existing.status) <= STATUS_PRIORITY.indexOf(status.status)) {
+						continue;
+					}
 					abnormalities.set(publicNameWithThread, {
 						workerIndex: status.workerIndex !== undefined ? status.workerIndex : -1,
 						status: status.status,
@@ -408,15 +424,7 @@ export class StatusAggregator {
 	 * Determine overall status based on priority
 	 */
 	private static determineOverallStatus(statusCounts: Map<ComponentStatusLevel, number>): ComponentStatusLevel {
-		const statusPriority = [
-			COMPONENT_STATUS_LEVELS.ERROR,
-			COMPONENT_STATUS_LEVELS.WARNING,
-			COMPONENT_STATUS_LEVELS.LOADING,
-			COMPONENT_STATUS_LEVELS.UNKNOWN,
-			COMPONENT_STATUS_LEVELS.HEALTHY,
-		];
-
-		for (const priorityStatus of statusPriority) {
+		for (const priorityStatus of STATUS_PRIORITY) {
 			if (statusCounts.has(priorityStatus) && statusCounts.get(priorityStatus)! > 0) {
 				return priorityStatus;
 			}

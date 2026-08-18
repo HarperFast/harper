@@ -568,5 +568,18 @@ describe('CrossThread Module', function () {
 			const abnormality = aggStatus.abnormalities.get('cache@worker-2');
 			assert.equal(abnormality.workerIndex, 2);
 		});
+
+		it('keeps the worst abnormal status when overlapping generations share a public worker label', function () {
+			const allStatuses = new Map([
+				['service@worker-1', { status: 'healthy', workerIndex: 1 }],
+				['service@worker-1#thread-8', { status: 'warning', workerIndex: 1 }],
+				['service@worker-2', { status: 'error', workerIndex: 2 }],
+			]);
+
+			const aggregated = StatusAggregator.aggregate(allStatuses).get('service');
+			assert.equal(aggregated.status, 'error');
+			assert.equal(aggregated.abnormalities.size, 1);
+			assert.equal(aggregated.abnormalities.get('service@worker-1').status, 'warning');
+		});
 	});
 });

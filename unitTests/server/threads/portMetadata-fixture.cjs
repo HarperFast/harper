@@ -6,7 +6,6 @@ require('#js/server/threads/manageThreads');
 setInterval(() => {}, 10000);
 
 parentPort.postMessage({
-	type: 'port-metadata-report',
 	ports: [...global.threads].map((port) => ({
 		threadId: port.threadId,
 		isJobWorker: port.isJobWorker === true,
