@@ -270,12 +270,19 @@ describe('token-scoped narrowing on the SQL path', () => {
 			);
 		});
 
-		// Not "no error" — the table does not exist in this unit context, so it may fail downstream.
-		// The assertion is specifically that it was not refused by the permission gate.
-		assert.notStrictEqual(
-			outcome.error,
-			403,
-			'an export_local-scoped token must not be denied by its own export job (see #2202)'
+		// Not "no error" — the table does not exist in this unit context, so it fails downstream. The
+		// assertion is specifically that it was not refused by the PERMISSION gate, identified by
+		// shape rather than by value: that path is the only one that calls back with a bare numeric
+		// status (`UNAUTHORIZED_RESPONSE`), while every other failure forwards an Error. evaluateSQL
+		// drops the second callback argument on error, so the denial object itself never arrives here
+		// — the number is the whole signal.
+		//
+		// Deliberately not `!== 403`: that literal lives in the file this test watches, so changing it
+		// would leave the tripwire green while the refusal it exists to catch still happened. A
+		// tripwire must not depend on a constant its own target owns.
+		assert.ok(
+			typeof outcome.error !== 'number',
+			`an export_local-scoped token must not be denied by its own export job (see #2202); got status ${outcome.error}`
 		);
 	});
 
