@@ -227,6 +227,46 @@ describe('dropTable worker quiescence', function () {
 		await Table.dropTable();
 	});
 
+	it('preserves shared stores while preparing a database alias', async function () {
+		const tableName = `DropAliasedTable_${process.pid}_${Date.now()}`;
+		const databaseName = `DropAliasDb_${process.pid}_${Date.now()}`;
+		const aliasName = `${databaseName}_alias`;
+		const storePath = path.join(testPath, 'drop-alias-database');
+		const dropGeneration = 'shared-store-test';
+		const sharedPrimaryStore = { rootStore: { path: storePath } };
+		const dbisDB = {
+			getSync() {
+				return { dropping: true, dropGeneration };
+			},
+		};
+		let coordinatorCloseStores;
+		let aliasCloseStores;
+		const Table = {
+			primaryStore: sharedPrimaryStore,
+			dbisDB,
+			async _prepareDrop({ closeStores }) {
+				coordinatorCloseStores = closeStores;
+			},
+		};
+		const AliasTable = {
+			primaryStore: sharedPrimaryStore,
+			dbisDB,
+			async _prepareDrop({ closeStores }) {
+				aliasCloseStores = closeStores;
+			},
+		};
+		databases[databaseName] = { [tableName]: Table };
+		databases[aliasName] = { [tableName]: AliasTable };
+		try {
+			await prepareTableDrop(storePath, tableName, dropGeneration, Table);
+			assert.strictEqual(coordinatorCloseStores, false);
+			assert.strictEqual(aliasCloseStores, false, "an alias must not close the coordinator's shared stores");
+		} finally {
+			delete databases[databaseName];
+			delete databases[aliasName];
+		}
+	});
+
 	it('does not wait for a read iterator on another table in the same database', async function () {
 		const droppedTable = defineTable(`DropReadScope_${process.pid}_${Date.now()}`);
 		const otherTable = defineTable(`DropReadScopeOther_${process.pid}_${Date.now()}`);
@@ -442,6 +482,64 @@ describe('dropTable worker quiescence', function () {
 			);
 			releaseRemoval();
 			await Promise.all([deleteRemovalPromise, dropPromise]);
+			assert.strictEqual(destructivePhaseStarted, true);
+			Table.primaryStore.remove = originalRemove;
+		} finally {
+			releaseRemoval?.();
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, previousStoragePath);
+			resetDatabases();
+		}
+	});
+
+	it('drains direct deleteHistory removals before dropping the primary store', async function () {
+		const storagePath = path.join(testPath, 'delete-history-removal-databases');
+		const previousStoragePath = env.get(terms.CONFIG_PARAMS.STORAGE_PATH);
+		let releaseRemoval;
+		mkdirSync(storagePath, { recursive: true });
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storagePath);
+		try {
+			resetDatabases();
+			const Table = table({
+				table: `DropDeleteHistoryRemoval_${process.pid}_${Date.now()}`,
+				database: `DropDeleteHistoryDb_${process.pid}_${Date.now()}`,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			});
+			await Table.put({ id: 'deleted', name: 'removed' });
+			await Table.delete('deleted');
+			delete Table.auditStore.deleteCallbacks[Table.tableId];
+
+			const originalRemove = Table.primaryStore.remove;
+			let removalStarted;
+			const removalStartedPromise = new Promise((resolve) => {
+				removalStarted = resolve;
+			});
+			const removalGate = new Promise((resolve) => {
+				releaseRemoval = resolve;
+			});
+			Table.primaryStore.remove = async function (...args) {
+				removalStarted();
+				await removalGate;
+				return originalRemove.apply(this, args);
+			};
+
+			const originalDropSync = Table.primaryStore.dropSync;
+			let destructivePhaseStarted = false;
+			Table.primaryStore.dropSync = function (...args) {
+				destructivePhaseStarted = true;
+				return originalDropSync.apply(this, args);
+			};
+			const deleteHistoryPromise = Table.deleteHistory(Date.now() + 1000, true);
+			await removalStartedPromise;
+			const dropPromise = Table.dropTable();
+			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+			assert.strictEqual(
+				destructivePhaseStarted,
+				false,
+				'dropTable() must wait for direct primary-store removals started by deleteHistory()'
+			);
+			releaseRemoval();
+			await Promise.all([deleteHistoryPromise, dropPromise]);
 			assert.strictEqual(destructivePhaseStarted, true);
 			Table.primaryStore.remove = originalRemove;
 		} finally {

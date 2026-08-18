@@ -2445,7 +2445,7 @@ export async function prepareTableDrop(
 	}
 	await Promise.all(
 		[...matchingTables].map(async (Table) => {
-			await Table._prepareDrop({ closeStores: Table !== preserveTable });
+			await Table._prepareDrop({ closeStores: Table.primaryStore !== preserveTable?.primaryStore });
 			matchingTables.delete(Table);
 		})
 	);

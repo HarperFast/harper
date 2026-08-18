@@ -5270,8 +5270,8 @@ export function makeTable(options) {
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
 			const finishHistoryScan = beginTableOperation('history deletion scan');
+			const completions: Promise<void>[] = [];
 			try {
-				let completion: Promise<void>;
 				let entriesDeleted = 0;
 				for (const auditRecord of auditStore.getRange({
 					start: 0,
@@ -5280,7 +5280,7 @@ export function makeTable(options) {
 					await rest(); // yield to other async operations
 					if (droppingTable) throw tableDroppingError();
 					if (auditRecord.tableId !== tableId) continue;
-					completion = removeAuditEntry(auditStore, auditRecord);
+					completions.push(removeAuditEntry(auditStore, auditRecord));
 					entriesDeleted++;
 				}
 				if (cleanupDeletedRecords) {
@@ -5291,14 +5291,20 @@ export function makeTable(options) {
 						await rest(); // yield to other async operations
 						if (droppingTable) throw tableDroppingError();
 						if (value === null && localTime < endTime) {
-							completion = removeEntry(primaryStore, entry);
+							const completion = removeEntry(primaryStore, entry);
+							if (completion) completions.push(completion);
 						}
 					}
 				}
-				await completion;
 				return entriesDeleted;
 			} finally {
-				finishHistoryScan();
+				try {
+					const settlements = await Promise.allSettled(completions);
+					const failure = settlements.find((settlement) => settlement.status === 'rejected');
+					if (failure?.status === 'rejected') throw failure.reason;
+				} finally {
+					finishHistoryScan();
+				}
 			}
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
