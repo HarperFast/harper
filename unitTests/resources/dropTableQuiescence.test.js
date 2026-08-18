@@ -2,12 +2,22 @@
 
 require('../testUtils');
 const assert = require('node:assert');
+const { mkdirSync } = require('node:fs');
 const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
-const { table, database, databases, getDatabases, resetDatabases } = require('#src/resources/databases');
+const {
+	table,
+	database,
+	databases,
+	getDatabases,
+	prepareTableDrop,
+	resetDatabases,
+} = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { ITC_EVENT_TYPES, TABLE_DROP_PREPARE_OPERATION, THREAD_TYPES } = require('#src/utility/hdbTerms');
+const env = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
+const { ITC_EVENT_TYPES, TABLE_DROP_PREPARE_OPERATION, THREAD_TYPES } = terms;
 const {
 	broadcastWithStrictAcknowledgement,
 	startWorker,
@@ -20,6 +30,7 @@ const WORKER_FIXTURE = path.join(__dirname, 'dropTableQuiescence-worker.js');
 const UNREADY_WORKER_FIXTURE = path.join(__dirname, 'dropTableUnready-worker.js');
 const MESSAGE_TYPE = 'drop-table-quiescence-test';
 const CONTROL_TYPE = 'drop-table-quiescence-control';
+let testPath;
 
 function defineTable(name, withEmbed = false, databaseName = 'test') {
 	const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'name' }];
@@ -105,7 +116,7 @@ describe('dropTable worker quiescence', function () {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 
 	before(() => {
-		setupTestDBPath();
+		testPath = setupTestDBPath();
 		setMainIsWorker(true);
 		onMessageByType(MESSAGE_TYPE, () => {});
 	});
@@ -379,38 +390,66 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
-	it('defers an unquiesced tombstone until the process that could hold stale handles is gone', function () {
+	it('quiesces a live class before deferring its unquiesced tombstone', async function () {
+		const databaseName = `DropReconcileDb_${process.pid}_${Date.now()}`;
 		const tableName = `DropUnquiesced_${process.pid}_${Date.now()}`;
-		const Table = defineTable(tableName);
-		const dbisDb = database({ database: 'test', table: null }).dbisDb;
-		const meta = dbisDb.getSync(`${tableName}/`);
-		meta.dropping = true;
-		meta.dropGeneration = 'unquiesced-test';
-		meta.dropQuiesced = false;
-		meta.dropProcessInstance = getProcessInstanceId();
-		dbisDb.putSync(`${tableName}/`, meta);
+		const storagePath = path.join(testPath, 'reconcile-databases');
+		const previousStoragePath = env.get(terms.CONFIG_PARAMS.STORAGE_PATH);
+		mkdirSync(storagePath, { recursive: true });
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storagePath);
+		try {
+			resetDatabases();
+			const Table = defineTable(tableName, false, databaseName);
+			const rootStore = Table.primaryStore.rootStore;
+			const dbisDb = database({ database: databaseName, table: null }).dbisDb;
+			const meta = dbisDb.getSync(`${tableName}/`);
+			meta.dropping = true;
+			meta.dropGeneration = 'unquiesced-test';
+			meta.dropQuiesced = false;
+			meta.dropProcessInstance = getProcessInstanceId();
+			dbisDb.putSync(`${tableName}/`, meta);
 
-		resetDatabases();
-		assert.strictEqual(getDatabases().test?.[tableName], undefined, 'an unquiesced table must stay unloaded');
-		assert.strictEqual(
-			dbisDb.getSync(`${tableName}/`)?.dropping,
-			true,
-			'recovery must preserve the tombstone while stale handles can still exist in this process'
-		);
+			resetDatabases();
+			assert.strictEqual(
+				getDatabases()[databaseName]?.[tableName],
+				undefined,
+				'an unquiesced table must stay unloaded'
+			);
+			assert.strictEqual(
+				dbisDb.getSync(`${tableName}/`)?.dropping,
+				true,
+				'recovery must preserve the tombstone while stale handles can still exist in this process'
+			);
 
-		for (const index of Object.values(Table.indices)) index.close();
-		Table.primaryStore.close();
-		const priorProcessMeta = dbisDb.getSync(`${tableName}/`);
-		priorProcessMeta.dropProcessInstance = `${getProcessInstanceId()}-prior`;
-		dbisDb.putSync(`${tableName}/`, priorProcessMeta);
-		delete databases.test?.[tableName];
-		resetDatabases();
-		assert.strictEqual(getDatabases().test?.[tableName], undefined);
-		assert.strictEqual(
-			database({ database: 'test', table: null }).dbisDb.getSync(`${tableName}/`),
-			undefined,
-			'a tombstone from a prior process should complete on restart'
-		);
+			assert.strictEqual(Table.primaryStore.dropping, true, 'reconcile must mark the removed class as dropping');
+			await prepareTableDrop(rootStore.path, tableName, meta.dropGeneration);
+			await waitFor(
+				() => {
+					try {
+						Table.primaryStore.getSync('__reconcile-close-probe__');
+						return false;
+					} catch {
+						return true;
+					}
+				},
+				{ message: 'the strict barrier must close a reconciled class retained for preparation' }
+			);
+
+			const priorProcessMeta = dbisDb.getSync(`${tableName}/`);
+			priorProcessMeta.dropProcessInstance = `${getProcessInstanceId()}-prior`;
+			dbisDb.putSync(`${tableName}/`, priorProcessMeta);
+			delete databases[databaseName]?.[tableName];
+			resetDatabases();
+			assert.strictEqual(getDatabases()[databaseName]?.[tableName], undefined);
+			assert.strictEqual(
+				database({ database: databaseName, table: null }).dbisDb.getSync(`${tableName}/`),
+				undefined,
+				'a tombstone from a prior process should complete on restart'
+			);
+		} finally {
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, previousStoragePath);
+			resetDatabases();
+		}
 	});
 
 	it('retries a timed-out preparation on a class already removed from the live schema', async function () {

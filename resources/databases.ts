@@ -381,6 +381,19 @@ const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
 const interruptedDropAttempts = new Map<string, Map<string, number>>();
 const incompleteTableDropPreparations = new Map<string, Set<any>>();
 const interruptedDropTableKey = (storePath: string, tableName: string) => `${storePath}\0${tableName}`;
+const tableDropPreparationKey = (storePath: string, tableName: string, generation?: string) =>
+	`${storePath}\0${tableName}\0${generation ?? 'legacy'}`;
+
+function retainTableForDropPreparation(storePath: string, tableName: string, generation: string | undefined, Table) {
+	const preparationKey = tableDropPreparationKey(storePath, tableName, generation);
+	let matchingTables = incompleteTableDropPreparations.get(preparationKey);
+	if (!matchingTables) incompleteTableDropPreparations.set(preparationKey, (matchingTables = new Set()));
+	matchingTables.add(Table);
+	// Marking and cancellation happen synchronously before _prepareDrop's first await. Keep the class
+	// in the preparation set after the drain so the later strict barrier can close its handles.
+	return Table._prepareDrop({ closeStores: false });
+}
+
 function getInterruptedDropAttempts(storePath: string, tableName: string, generation?: string): number {
 	return interruptedDropAttempts.get(interruptedDropTableKey(storePath, tableName))?.get(generation ?? 'legacy') ?? 0;
 }
@@ -778,6 +791,14 @@ function initStores(
 		// its dropped handles reachable after this reconcile pass.
 		definedTables?.delete(tableName);
 		if (!canCompleteInterruptedDrop(tableDef.primary)) {
+			// The tombstone can become visible here before this worker receives the coordinator's
+			// strict barrier. Prepare the still-live class now; otherwise the registry cleanup below
+			// makes it undiscoverable to prepareTableDrop while its timers and handles remain active.
+			const liveTable = tables[tableName];
+			if (liveTable)
+				retainTableForDropPreparation(rootStore.path, tableName, tableDef.primary.dropGeneration, liveTable).catch(
+					(error) => logger.warn(`Failed to quiesce ${databaseName}.${tableName} during schema reconciliation`, error)
+				);
 			logger.debug(
 				`Deferring interrupted drop of table ${databaseName}.${tableName} until worker quiescence or a clean process start`
 			);
@@ -2405,7 +2426,7 @@ export async function prepareTableDrop(
 	dropGeneration: string | undefined,
 	preserveTable?: any
 ): Promise<void> {
-	const preparationKey = `${storePath}\0${tableName}\0${dropGeneration ?? 'legacy'}`;
+	const preparationKey = tableDropPreparationKey(storePath, tableName, dropGeneration);
 	let matchingTables = incompleteTableDropPreparations.get(preparationKey);
 	if (!matchingTables) incompleteTableDropPreparations.set(preparationKey, (matchingTables = new Set()));
 	if (preserveTable) matchingTables.add(preserveTable);
