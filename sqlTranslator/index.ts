@@ -141,14 +141,12 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 		// server/serverHelpers/serverHandlers.js and components/mcp/tools/operations.ts).
 		if (!isOperationAuthorizationBypassed() && !parsedSqlObject.permissions_checked) {
 			let permissionsCheck = checkASTPermissions(jsonMessage, parsedSqlObject);
-			// Bare truthiness, matching serverUtilities.ts. `checkASTPermissions` returns null or a
-			// PermissionResponseObject, which has no `length` — so the previous `length > 0` test
-			// evaluated `undefined > 0` and was ALWAYS false, discarding a denial it had correctly
-			// computed. That only bites where processAST is the first checker rather than the second:
-			// the direct-SQL path arrives with permissions_checked already true from chooseOperation.
-			// An export job is exactly that case, and in the job worker this is the only authorization
-			// that runs at all — so a denial dropped here is a denial dropped entirely.
-			if (permissionsCheck) {
+			// NOTE: this guard is dead — PermissionResponseObject has no `length`, so `undefined > 0`
+			// discards a denial that was computed correctly. Pre-existing and not specific to this
+			// feature, so it is fixed separately in #2202 rather than bundled here. This PR does not
+			// depend on it: the outer gate in serverUtilities refuses an out-of-scope job operation,
+			// and sqlWriteScopeDenial refuses write SQL, both through correct truthiness tests.
+			if (permissionsCheck && permissionsCheck.length > 0) {
 				return callback(UNAUTHORIZED_RESPONSE, permissionsCheck);
 			}
 		}
