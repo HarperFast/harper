@@ -5085,11 +5085,11 @@ export function makeTable(options) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
 				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
 				for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
-					const { value, localTime } = entry;
+					const { key, value, localTime, version } = entry;
 					await rest(); // yield to other async operations
 					if (value === null && localTime < endTime) {
 						await queueRemoval(
-							() => removeEntry(primaryStore, entry),
+							() => primaryStore.remove(key, primaryStore.useVersions ? version : undefined),
 							'Error removing deleted record during deleteHistory'
 						);
 					}

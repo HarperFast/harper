@@ -228,6 +228,109 @@ describe('Audit log', () => {
 			await AuditedTable.deleteHistory(Date.now() + 60_000);
 		}
 	});
+	async function createOrphanedTombstone(recordId) {
+		await AuditedTable.put(recordId, { name: 'deleted' });
+		await AuditedTable.delete(recordId);
+		const auditKeys = [];
+		for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
+			if (record.tableId === AuditedTable.tableId && record.recordId === recordId) auditKeys.push(record.key);
+		}
+		assert.equal(auditKeys.length, 2, 'test setup: expected put and delete audit entries');
+		for (const key of auditKeys) await AuditedTable.auditStore.remove(key);
+		assert.equal(
+			Array.from(AuditedTable.auditStore.getRange({ start: 0, end: Infinity })).some(
+				(record) => record.tableId === AuditedTable.tableId && record.recordId === recordId
+			),
+			false,
+			'test setup: expected the audit entries to be removed'
+		);
+		const tombstone = AuditedTable.primaryStore.getEntry(recordId);
+		assert.equal(tombstone?.value, null, 'test setup: expected an orphaned tombstone');
+		return tombstone;
+	}
+	it('deleteHistory cleanup removes an unchanged orphaned tombstone', async function () {
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
+		const cutoff = Date.now() + 60_000;
+		await AuditedTable.deleteHistory(cutoff, true);
+		const recordId = 'cleanup-unraced';
+		try {
+			await createOrphanedTombstone(recordId);
+			await AuditedTable.deleteHistory(cutoff, true);
+			assert.equal(AuditedTable.primaryStore.getEntry(recordId), undefined);
+		} finally {
+			await AuditedTable.delete(recordId).catch(() => {});
+			await AuditedTable.deleteHistory(Date.now() + 60_000, true);
+		}
+	});
+	it('deleteHistory cleanup preserves a record recreated while its stale tombstone waits for a slot', async function () {
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
+		const cutoff = Date.now() + 60_000;
+		await AuditedTable.deleteHistory(cutoff, true);
+
+		const recordId = 'cleanup-race';
+		const tombstone = await createOrphanedTombstone(recordId);
+
+		const primaryStore = AuditedTable.primaryStore;
+		const originalRemove = primaryStore.remove;
+		const removeWasOwnProperty = Object.hasOwn(primaryStore, 'remove');
+		let markRemovalStarted;
+		const removalStarted = new Promise((resolve) => {
+			markRemovalStarted = resolve;
+		});
+		let releaseImmediately = false;
+		let releaseRemoval;
+		let removalVersion;
+		let removalResult;
+		primaryStore.remove = function (id, version) {
+			if (id !== recordId || releaseImmediately) return originalRemove.call(this, id, version);
+			removalVersion = version;
+			return new Promise((resolve, reject) => {
+				let released = false;
+				releaseRemoval = () => {
+					if (released) return;
+					released = true;
+					return Promise.resolve(originalRemove.call(this, id, version)).then((result) => {
+						removalResult = result;
+						resolve(result);
+					}, reject);
+				};
+				markRemovalStarted();
+			});
+		};
+
+		let deletion;
+		try {
+			deletion = AuditedTable.deleteHistory(cutoff, true);
+			let removalTimeout;
+			try {
+				await Promise.race([
+					removalStarted,
+					deletion.then((entriesDeleted) => {
+						throw new Error(`deleteHistory resolved before cleanup removal started: ${entriesDeleted} entries`);
+					}),
+					new Promise((resolve, reject) => {
+						removalTimeout = setTimeout(() => reject(new Error('cleanup removal did not start')), 5000);
+					}),
+				]);
+			} finally {
+				clearTimeout(removalTimeout);
+			}
+			await AuditedTable.put(recordId, { name: 'recreated' });
+			releaseRemoval();
+			await deletion;
+			assert.equal(removalVersion, tombstone.version);
+			assert.equal(removalResult, false, 'the stale conditional removal must not commit');
+			assert.equal(AuditedTable.primaryStore.getEntry(recordId)?.value?.name, 'recreated');
+		} finally {
+			releaseImmediately = true;
+			releaseRemoval?.();
+			await deletion?.catch(() => {});
+			if (removeWasOwnProperty) primaryStore.remove = originalRemove;
+			else delete primaryStore.remove;
+			await AuditedTable.delete(recordId).catch(() => {});
+			await AuditedTable.deleteHistory(Date.now() + 60_000, true);
+		}
+	});
 	it('deleteHistory waits for the table-registered tombstone removal callback', async function () {
 		if (AuditedTable.auditStore.reusableIterable) return this.skip();
 		await AuditedTable.deleteHistory(Date.now() + 60_000);
