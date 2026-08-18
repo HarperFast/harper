@@ -138,8 +138,8 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		});
 
 		test('add_role still rejects an op name no component registered', async () => {
-			// Negative control: proves the assertion above is not passing because validateOperations
-			// was skipped for this payload shape.
+			// Guards the test above: without this, a validateOperations that stopped running at all
+			// would look like a pass.
 			const { status, body } = await op({
 				operation: 'add_role',
 				role: 'component_op_bogus_role',
@@ -200,7 +200,6 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		});
 
 		test('impersonation accepts an inline role naming the op', async () => {
-			// applyImpersonation runs validateOperations on the main thread too.
 			const { status, body } = await op({
 				operation: GRANTABLE_OP,
 				impersonate: { role: { permission: { operations: [GRANTABLE_OP] } } },

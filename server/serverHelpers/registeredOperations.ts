@@ -11,9 +11,8 @@
  * so a request is sent to exactly ONE registering worker (never broadcast-first-wins).
  *
  *  - Worker: `registerOperation()` announces the name (OPERATION_REGISTERED) to all threads;
- *    only the main thread records it, as name -> Set<threadId>. An op that declared a permission
- *    also announces `grantable`: validateOperations runs on main (add_role/alter_role,
- *    impersonation, OIDC trust policies) but the mark was made in the worker's own module scope.
+ *    only the main thread records it, as name -> Set<threadId>, plus `grantable` (see the
+ *    per-worker registration note in server/DESIGN.md).
  *  - Main: on an OPERATION_FUNCTION_MAP miss, `getRemoteOperationFunction()` supplies a forwarding
  *    function that sends the request body (OPERATION_EXECUTE_REQUEST) to one live registering
  *    worker and awaits the correlated OPERATION_EXECUTE_RESPONSE.
@@ -29,7 +28,11 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { sendItcEvent } from '../threads/itc.js';
 import { onMessageByType, onThreadExit } from '../threads/manageThreads.js';
-import { registerGrantableOperation, unregisterGrantableOperation } from '../../utility/operationPermissions.ts';
+import {
+	registerGrantableOperation,
+	unregisterGrantableOperation,
+	validateOperations,
+} from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
@@ -62,7 +65,8 @@ export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
 
 /** name -> threadIds of workers that registered it (main thread only) */
 const registeredByWorker = new Map<string, Set<number>>();
-// Marks made on a worker's behalf, so thread-exit cleanup never revokes one this thread owns.
+// Only names this thread newly marked grantable for a worker, so cleanup below cannot revoke a mark
+// that was already admissible for another reason (an enum op, a group, a main-thread registration).
 const grantableFromWorkers = new Set<string>();
 const pendingExecutions = new Map<
 	number,
@@ -99,13 +103,23 @@ export function operationRegisteredHandler(event: {
 	let workerIds = registeredByWorker.get(name);
 	if (!workerIds) registeredByWorker.set(name, (workerIds = new Set()));
 	workerIds.add(originator);
-	// Mirroring the worker's grantable mark only widens what an allowlist may name; it grants
-	// nothing. Enforcement stays on the worker's own chooseOperation (see getRemoteOperationFunction).
-	if (grantable) {
+	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's own
+	// chooseOperation. Claim the name for cleanup only when this mirror is what made it admissible.
+	if (grantable && validateOperations([name]) !== null) {
 		grantableFromWorkers.add(name);
 		registerGrantableOperation(name);
 	}
 	operationLog.debug(`Registered operation '${name}' announced by worker thread ${originator}`);
+}
+
+/**
+ * Forget an operation whose last registering worker is gone. Both prune paths (thread exit, and a
+ * failed send discovering a dead port) must route through here so routing and grantability can
+ * never disagree about whether the op is still offered.
+ */
+function dropRegistration(name: string) {
+	registeredByWorker.delete(name);
+	if (grantableFromWorkers.delete(name)) unregisterGrantableOperation(name);
 }
 
 let rotation = 0;
@@ -144,10 +158,7 @@ function attachMainListeners() {
 	onThreadExit((deadThreadId: number) => {
 		for (const [name, workerIds] of registeredByWorker) {
 			workerIds.delete(deadThreadId);
-			if (workerIds.size === 0) {
-				registeredByWorker.delete(name);
-				if (grantableFromWorkers.delete(name)) unregisterGrantableOperation(name);
-			}
+			if (workerIds.size === 0) dropRegistration(name);
 		}
 		for (const [requestId, pending] of pendingExecutions) {
 			if (pending.targetThreadId === deadThreadId) {
@@ -209,7 +220,7 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
 			});
 		});
 	}
-	if (registeredByWorker.get(name)?.size === 0) registeredByWorker.delete(name);
+	if (registeredByWorker.get(name)?.size === 0) dropRegistration(name);
 	throw new ServerError(
 		`Operation '${name}' is registered by a component but no worker thread is available to run it`,
 		503
