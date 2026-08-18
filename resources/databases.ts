@@ -772,11 +772,22 @@ function initStores(
 			clearInterruptedDropEntries(path, tableName);
 			continue;
 		}
+		// A tombstone always removes the worker-local class, even when this worker cannot safely
+		// perform the physical cleanup. Keeping it in definedTables would leave a stale class and
+		// its dropped handles reachable after this reconcile pass.
+		definedTables?.delete(tableName);
+		if (!canCompleteInterruptedDrop(tableDef.primary)) {
+			logger.debug(
+				`Deferring interrupted drop of table ${databaseName}.${tableName} until worker quiescence or a clean process start`
+			);
+			tablesToLoad.delete(tableName);
+			continue;
+		}
 		const generation = tableDef.primary?.dropGeneration;
 		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
-				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				completeInterruptedDropWithLock(rootStore, attributesDbi, databaseName, tableName, generation);
 				// Sweep every generation this worker has ever tracked for this table, not
 				// just the one just resolved: if a prior generation was exhausted here,
 				// then resolved+recreated+re-dropped by another worker as this generation
@@ -784,7 +795,6 @@ function initStores(
 				// place that sweeps), the prior generation's entry would otherwise never
 				// be cleared.
 				clearInterruptedDropEntries(path, tableName);
-				definedTables?.delete(tableName);
 			} catch (error) {
 				const attempt = failedAttempts + 1;
 				setInterruptedDropAttempts(path, tableName, generation, attempt);
@@ -1668,7 +1678,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// create below starts from a clean slate; treating the tombstoned
 				// entry as an existing table would recurse forever on the stale
 				// catalog row.
-				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				if (!canCompleteInterruptedDrop(existingTableMeta)) {
+					throw new ClientError(
+						`Table '${databaseName}.${tableName}' has an interrupted drop that was not quiesced across workers; restart Harper before recreating it`,
+						409
+					);
+				}
+				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName, existingTableMeta.dropGeneration);
 				// This resolves the drop without ever going through the schema-load
 				// reconcile below, which is the only other place that returns a spent
 				// budget. Without clearing it here too, a table that gets dropped again
@@ -2289,8 +2305,35 @@ async function runIndexing(Table, attributes, indicesToRemove) {
  * actionable, and logging here on every attempt would flood at the same
  * volume this function's callers are bounding.
  */
-function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
+function completeInterruptedDropWithLock(
+	rootStore,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	dropGeneration?: string
+) {
+	if (!(rootStore instanceof RocksDatabase)) {
+		return completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName, dropGeneration);
+	}
+	while (!rootStore.tryLock('update-attributes')) {}
+	try {
+		return completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName, dropGeneration);
+	} finally {
+		rootStore.unlock('update-attributes');
+	}
+}
+
+function completeInterruptedDrop(
+	rootStore,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	dropGeneration?: string
+) {
 	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+	const primaryCatalogKey = tableName + '/';
+	const primaryMeta = (attributesDbi as any).getSync(primaryCatalogKey);
+	if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) return false;
 	if (rootStore instanceof RocksDatabase) {
 		for (const columnName of (rootStore as any).columns) {
 			if (columnName.startsWith(tableName + '/')) {
@@ -2331,7 +2374,6 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 	// recognizes the table as mid-drop - instead of the tombstone vanishing
 	// first and stranding orphaned attribute rows that the next load would
 	// misread as a live (non-dropping) table.
-	const primaryCatalogKey = tableName + '/';
 	let removePrimaryLast = false;
 	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 		if (key === primaryCatalogKey) {
@@ -2344,6 +2386,39 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		(attributesDbi as any).removeSync(key);
 	}
 	if (removePrimaryLast) (attributesDbi as any).removeSync(primaryCatalogKey);
+	return true;
+}
+
+function canCompleteInterruptedDrop(primaryMeta): boolean {
+	// A completed barrier is safe immediately. An incomplete barrier is safe only after a clean
+	// process start, when none of the handles from the recorded incarnation can still exist.
+	// Tombstones written before the incarnation field existed necessarily came from an older process.
+	return (
+		primaryMeta?.dropQuiesced === true || primaryMeta?.dropProcessInstance !== manageThreads.getProcessInstanceId()
+	);
+}
+
+/**
+ * Mark and drain every worker-local class backed by this physical table. The drop origin keeps
+ * its own handles so it can perform the destructive phase; remote workers close theirs after the
+ * drain so no stale handle can later contaminate RocksDB's shared write path.
+ */
+export async function prepareTableDrop(
+	storePath: string,
+	tableName: string,
+	dropGeneration: string | undefined,
+	preserveTable?: any
+): Promise<void> {
+	const matchingTables = new Set<any>();
+	for (const databaseName of Object.getOwnPropertyNames(databases)) {
+		const databaseTables = databases[databaseName];
+		const Table = databaseTables?.[tableName];
+		if (!Table || Table.primaryStore?.rootStore?.path !== storePath) continue;
+		const primaryMeta = Table.dbisDB?.getSync?.(`${tableName}/`);
+		if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) continue;
+		matchingTables.add(Table);
+	}
+	await Promise.all([...matchingTables].map((Table) => Table._prepareDrop({ closeStores: Table !== preserveTable })));
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {

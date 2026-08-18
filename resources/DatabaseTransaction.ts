@@ -9,7 +9,12 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
+import {
+	RocksDatabase,
+	Transaction as RocksTransaction,
+	type Store as RocksStore,
+	constants,
+} from '@harperfast/rocksdb-js';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
@@ -21,6 +26,7 @@ const trackedTxns = new Set<DatabaseTransaction>();
 // is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
 // chain root — so a chain child can never become its own timeout root (issue #2231).
 const supervisedWriteRoots = new Set<DatabaseTransaction>();
+const activeWriteTransactions = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
@@ -138,6 +144,23 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 		count: outstandingCommitCount,
 		oldestAgeMs: oldestOutstandingCommit ? performance.now() - oldestOutstandingCommit.start : undefined,
 	};
+}
+
+/**
+ * Snapshot the transactions on this worker that have staged writes against any of the supplied stores.
+ * A table drop marks its stores as dropping before calling this, so no later addWrite can enter the set;
+ * awaiting the returned promises therefore establishes a closed drain boundary before handles are closed.
+ */
+export function getPendingWriteResolutions(stores: Iterable<any>): Promise<void>[] {
+	const targetStores = new Set(stores);
+	const resolutions: Promise<void>[] = [];
+	for (const transaction of activeWriteTransactions) {
+		if (transaction.writes.some((write) => write && targetStores.has(write.store))) {
+			const resolution = transaction.getPendingWriteResolution();
+			if (resolution) resolutions.push(resolution);
+		}
+	}
+	return resolutions;
 }
 // Once per process: committing under open read iterators forces a write replay, so the warning is
 // about the caller's pattern, not the individual commit.
@@ -325,6 +348,8 @@ type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
 
 export class DatabaseTransaction implements Transaction {
 	#context: Context;
+	#pendingWriteResolution?: Promise<void>;
+	#resolvePendingWrites?: () => void;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
@@ -546,6 +571,17 @@ export class DatabaseTransaction implements Transaction {
 	 * (see priorStagedWrite). Called by both engines' addWrite.
 	 */
 	linkWrite(operation: TransactionWrite): void {
+		if (operation.store?.dropping) {
+			const databaseName = operation.store.rootStore?.databaseName;
+			const tableName = String(operation.store.name ?? '').replace(/\/$/, '');
+			const error: any = new ServerError(
+				`Table ${databaseName ? databaseName + '.' : ''}${tableName || 'unknown'} is being dropped`,
+				409
+			);
+			error.code = 'ERR_TABLE_DROPPING';
+			throw error;
+		}
+		if (operation.store?.rootStore instanceof RocksDatabase) activeWriteTransactions.add(this);
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
 		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
@@ -560,8 +596,24 @@ export class DatabaseTransaction implements Transaction {
 	 * reused transaction never bases a write on a previous batch's staged state.
 	 */
 	clearWrites(): void {
+		this.finishPendingWrites();
 		this.writes = [];
 		this.writesByKey = undefined;
+	}
+
+	getPendingWriteResolution(): Promise<void> | undefined {
+		if (!activeWriteTransactions.has(this)) return;
+		this.#pendingWriteResolution ??= new Promise((resolve) => {
+			this.#resolvePendingWrites = resolve;
+		});
+		return this.#pendingWriteResolution;
+	}
+
+	private finishPendingWrites(): void {
+		activeWriteTransactions.delete(this);
+		this.#resolvePendingWrites?.();
+		this.#pendingWriteResolution = undefined;
+		this.#resolvePendingWrites = undefined;
 	}
 
 	/**
@@ -1079,6 +1131,7 @@ export class DatabaseTransaction implements Transaction {
 								} catch (abortError) {
 									harperLogger.debug?.('aborting transaction after failed commit', abortError);
 								}
+								this.finishPendingWrites();
 								// A terminal failure is just as final as a success — release the context's
 								// back-reference here too, or transaction.ts's onComplete() (which has no
 								// rejection handler of its own) would leave a long-lived context pinning this
@@ -1251,6 +1304,8 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.debug?.('cleaning up after a failed synchronous commit', abortError);
 			}
 			throw error;
+		} finally {
+			this.finishPendingWrites();
 		}
 		this.detachOwnedTransaction();
 	}

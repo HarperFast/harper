@@ -17,7 +17,7 @@ const { setHeapSnapshotNearHeapLimit } = typeof globalThis.Bun !== 'undefined' ?
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const envMgr = require('../../utility/environment/environmentManager.ts');
 const harperLogger = require('../../utility/logging/harper_logger.ts');
-const { randomBytes } = require('crypto');
+const { randomBytes, randomUUID } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
@@ -47,6 +47,11 @@ const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connectedPorts = []; // these are all known connected worker ports (siblings, children, parents)
+const PROCESS_INSTANCE_ENV = 'HARPER_INTERNAL_PROCESS_INSTANCE_ID';
+const processInstanceId = isMainThread
+	? randomUUID()
+	: workerData?.processInstanceId || process.env[PROCESS_INSTANCE_ENV] || randomUUID();
+if (isMainThread) process.env[PROCESS_INSTANCE_ENV] = processInstanceId;
 const MAX_UNEXPECTED_RESTARTS = 50;
 // Threads get 10s to die before they're forced. In dev (`harper dev`) we widen this: a reload's old
 // worker may be disposing a native runtime (e.g. @harperfast/vite's rolldown dev server) and forcing it
@@ -142,8 +147,11 @@ module.exports = {
 	onMessageByType,
 	broadcast,
 	broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement,
+	sendToThreadWithStrictAcknowledgement,
 	getWorkerIndex,
 	getWorkerCount,
+	getProcessInstanceId,
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
@@ -189,6 +197,9 @@ function setTerminateTimeout(newTimeout) {
 function getWorkerIndex() {
 	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;
 }
+function getProcessInstanceId() {
+	return processInstanceId;
+}
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
 }
@@ -209,6 +220,7 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'workerCount',
 	'name',
 	'restartNumber',
+	'processInstanceId',
 	'ticketKeys',
 	'noServerStart',
 	'__proto__', // never a legitimate payload name; spread would define it as an own property
@@ -387,6 +399,7 @@ function startWorker(path, options = {}) {
 			workerCount: (workerCount = options.threadCount),
 			name: options.name,
 			restartNumber: module.exports.restartNumber,
+			processInstanceId,
 			ticketKeys: getTicketKeys(),
 		},
 		transferList: portsToSend,
@@ -695,43 +708,89 @@ let nextId = 1;
 // worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
 function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return new Promise((resolve) => {
+	return broadcastAwaitingAcknowledgements(message, timeout, false, false);
+}
+
+// Destructive work uses the strict variant: every connected thread, including jobs, must finish
+// its handler successfully. A timeout, disconnect, handler error, or post failure rejects so the
+// caller can leave its durable recovery marker in place without touching storage.
+function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
+	return broadcastAwaitingAcknowledgements(message, timeout, true, true);
+}
+
+function sendToThreadWithStrictAcknowledgement(threadId, message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
+	const port = connectedPorts.find((port) => port.threadId === threadId);
+	if (!port) {
+		const error = new Error(`Worker thread ${threadId} is not connected`);
+		error.code = 'ERR_ITC_THREAD_NOT_CONNECTED';
+		return Promise.reject(error);
+	}
+	return broadcastAwaitingAcknowledgements(message, timeout, true, true, [port]);
+}
+
+function broadcastAwaitingAcknowledgements(message, timeout, strict, includeJobWorkers, ports = connectedPorts) {
+	return new Promise((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
+		let setupComplete = false;
+		let finished = false;
+		const failures = [];
 		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
 		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
 		// the close listener, or the timeout below.
 		const pending = new Set();
 		const finish = () => {
+			if (finished || !setupComplete || waitingCount !== 0) return;
+			finished = true;
 			if (timer) {
 				clearTimeout(timer);
 				timer = undefined;
 			}
-			resolve();
+			if (strict && failures.length) {
+				const error = new Error(
+					`ITC broadcast (type ${message.type}) failed on ${failures.length} worker thread(s): ${failures
+						.map(({ threadId, message }) => `${threadId}: ${message}`)
+						.join('; ')}`
+				);
+				error.code = 'ERR_ITC_ACKNOWLEDGEMENT';
+				error.failures = failures;
+				reject(error);
+			} else resolve();
 		};
-		for (let port of connectedPorts) {
+		for (let port of ports) {
 			// Job workers run a single isolated task and exit; they don't participate in
 			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
 			// the job worker's ACK while the job worker's event loop is busy waiting for the
 			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (port.isJobWorker) continue;
+			if (port.isJobWorker && !includeJobWorkers) continue;
+			let referenced = false;
+			let requestId = nextId++;
+			const ackHandler = (acknowledgement) => {
+				if (!pending.delete(ackHandler)) return; // already settled for this port
+				awaitingResponses.delete(requestId);
+				if (strict) {
+					const ackError = acknowledgement?.error;
+					if (ackError) {
+						failures.push({
+							threadId: port.threadId,
+							message: ackError.message ?? String(ackError),
+						});
+					} else if (!acknowledgement) {
+						failures.push({ threadId: port.threadId, message: 'worker disconnected before acknowledging' });
+					}
+				}
+				waitingCount--;
+				if (referenced && port !== parentPort && --port.refCount === 0) port.unref();
+				finish();
+			};
+			ackHandler.port = port;
+			pending.add(ackHandler);
+			waitingCount++;
+			awaitingResponses.set((message.requestId = requestId), ackHandler);
 			try {
-				let requestId = nextId++;
-				const ackHandler = () => {
-					if (!pending.delete(ackHandler)) return; // already settled for this port
-					awaitingResponses.delete(requestId);
-					if (--waitingCount === 0) {
-						finish();
-					}
-					if (port !== parentPort && --port.refCount === 0) {
-						port.unref();
-					}
-				};
-				ackHandler.port = port;
-				pending.add(ackHandler);
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
-				awaitingResponses.set((message.requestId = requestId), ackHandler);
+				referenced = true;
 				if (!port.hasAckCloseListener) {
 					// just set a single close listener that can clean up all the ack handlers for a port that is closed
 					port.hasAckCloseListener = true;
@@ -744,22 +803,25 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 					});
 				}
 				port.postMessage(message);
-				waitingCount++;
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
+				ackHandler({ error: { message: error.message ?? String(error) } });
 			}
 		}
-		if (waitingCount === 0) return resolve();
+		setupComplete = true;
+		if (waitingCount === 0) return finish();
 		if (timeout > 0) {
 			timer = setTimeout(() => {
 				timer = undefined;
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port?.threadId);
-					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
+					ackHandler({ error: { message: `no acknowledgement within ${timeout}ms` } });
 				}
 				harperLogger.warn(
-					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; proceeding best-effort`
+					strict
+						? `ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; refusing destructive work`
+						: `ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; proceeding best-effort`
 				);
 			}, timeout);
 			timer.unref?.();
@@ -1157,7 +1219,7 @@ function addPort(port, keepRef, isJobWorker) {
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {
-					completion();
+					completion(message);
 				}
 			} else if (message.type === REMOVE_PORT) {
 				const idx = connectedPorts.findIndex((p) => p.threadId === message.threadId);

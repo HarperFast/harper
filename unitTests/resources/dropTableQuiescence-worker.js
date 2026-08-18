@@ -1,0 +1,123 @@
+'use strict';
+
+require('../testUtils');
+const { parentPort } = require('node:worker_threads');
+const { setupTestDBPath } = require('../testUtils');
+const { table, closeLoadedDatabases } = require('#src/resources/databases');
+const { onMessageByType, getProcessInstanceId } = require('#js/server/threads/manageThreads');
+
+const MESSAGE_TYPE = 'drop-table-quiescence-test';
+const CONTROL_TYPE = 'drop-table-quiescence-control';
+let TestTable;
+let releaseEmbed;
+
+function report(event, details = {}) {
+	parentPort.postMessage({ type: MESSAGE_TYPE, event, ...details });
+}
+
+function runWorkerFixture() {
+	onMessageByType(CONTROL_TYPE, () => {});
+	setupTestDBPath();
+
+	process.on('unhandledRejection', (error) => {
+		report('unhandled-rejection', { error: error?.stack ?? String(error) });
+	});
+
+	parentPort
+		.on('message', async (message) => {
+			if (message.type !== CONTROL_TYPE) return;
+			try {
+				switch (message.command) {
+					case 'initialize': {
+						TestTable = table({
+							table: message.table,
+							database: 'test',
+							attributes: [
+								{ name: 'id', isPrimaryKey: true },
+								{ name: 'name' },
+								{ name: 'vector', type: 'Array', embed: { source: 'name', model: 'unused' } },
+							],
+						});
+						const embedGate = new Promise((resolve) => {
+							releaseEmbed = resolve;
+						});
+						TestTable.setEmbedAttribute('vector', async () => {
+							report('embed-entered');
+							await embedGate;
+							return [1, 2, 3];
+						});
+						TestTable.sourcedFrom({
+							get: async (id) => ({ id, name: 'gated' }),
+							available: () => true,
+						});
+
+						if (typeof TestTable._prepareDrop === 'function') {
+							const prepareDrop = TestTable._prepareDrop;
+							TestTable._prepareDrop = async function (options) {
+								report('prepare-entered');
+								await prepareDrop.call(this, options);
+								let handlesClosed = false;
+								try {
+									TestTable.primaryStore.getSync('__drop-close-probe__');
+								} catch {
+									handlesClosed = true;
+								}
+								report('prepare-finished', { handlesClosed });
+							};
+						}
+						report('ready', { processInstanceId: getProcessInstanceId() });
+						break;
+					}
+					case 'begin-source-read':
+						TestTable.get(message.id, {}).then(
+							() => report('source-read-resolved'),
+							(error) => report('source-read-rejected', { error: error?.stack ?? String(error) })
+						);
+						break;
+					case 'release-embed':
+						releaseEmbed();
+						break;
+					case 'reject-prepare':
+						TestTable._prepareDrop = async () => {
+							report('prepare-entered');
+							throw new Error('injected worker quiescence failure');
+						};
+						report('reject-prepare-armed');
+						break;
+					case 'drop-table': {
+						const originalDropSync = TestTable.primaryStore.dropSync;
+						if (message.interruptAfterColumnFamilyDrop) {
+							TestTable.primaryStore.dropSync = function (...args) {
+								originalDropSync.apply(this, args);
+								throw new Error('injected interruption after column-family drop');
+							};
+						}
+						try {
+							await TestTable.dropTable();
+							report('drop-result', { outcome: 'resolved' });
+						} catch (error) {
+							report('drop-result', {
+								outcome: 'rejected',
+								error: error?.stack ?? String(error),
+							});
+						} finally {
+							TestTable.primaryStore.dropSync = originalDropSync;
+						}
+						break;
+					}
+					case 'shutdown':
+						closeLoadedDatabases();
+						report('shutdown-complete');
+						parentPort.unref();
+						break;
+				}
+			} catch (error) {
+				report('command-error', { command: message.command, error: error?.stack ?? String(error) });
+			}
+		})
+		.ref();
+
+	report('booted');
+}
+
+if (parentPort) runWorkerFixture();

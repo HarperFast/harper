@@ -951,6 +951,10 @@ export const ITC_EVENT_TYPES = {
 	OPERATION_EXECUTE_RESPONSE: 'operation_execute_response',
 } as const;
 
+// Internal schema-event phase used to quiesce every worker before a RocksDB table's column
+// families are dropped. It is not an operations-API verb.
+export const TABLE_DROP_PREPARE_OPERATION = 'prepare_drop_table';
+
 /** Supported thread types */
 export const THREAD_TYPES = {
 	HTTP: 'http',

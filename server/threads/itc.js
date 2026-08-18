@@ -3,27 +3,56 @@
 const hdbUtils = require('../../utility/common_utils.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const { ITC_ERRORS } = require('../../utility/errors/commonErrors.ts');
-const { threadId } = require('worker_threads');
-const { onMessageFromWorkers, broadcastWithAcknowledgement } = require('./manageThreads.js');
+const { isMainThread, threadId } = require('worker_threads');
+const harperLogger = require('../../utility/logging/harper_logger.ts');
+const {
+	onMessageFromWorkers,
+	broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement,
+	sendToThreadWithStrictAcknowledgement,
+} = require('./manageThreads.js');
 
 module.exports = {
 	sendItcEvent,
+	sendItcEventStrict,
 	validateEvent,
 	SchemaEventMsg,
 	UserEventMsg,
 };
 let serverItcHandlers;
 onMessageFromWorkers(async (event, sender) => {
-	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
-	validateEvent(event);
-	if (serverItcHandlers[event.type]) {
-		await serverItcHandlers[event.type](event);
+	const requestId = event?.requestId;
+	let handlerError;
+	try {
+		serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
+		validateEvent(event);
+		if (serverItcHandlers[event.type]) {
+			await serverItcHandlers[event.type](event);
+		}
+		if (event.relayStrictToWorkers && isMainThread) {
+			const relayedEvent = { ...event, relayStrictToWorkers: false, requestId: undefined };
+			await broadcastWithStrictAcknowledgement(relayedEvent);
+		}
+	} catch (error) {
+		handlerError = error;
 	}
-	if (event.requestId && sender)
-		sender.postMessage({
-			type: 'ack',
-			id: event.requestId,
-		});
+	if (handlerError) harperLogger.error('ITC event handler failed', handlerError);
+	if (requestId && sender) {
+		try {
+			sender.postMessage({
+				type: 'ack',
+				id: requestId,
+				...(handlerError && {
+					error: {
+						message: handlerError.message ?? String(handlerError),
+						code: handlerError.code,
+					},
+				}),
+			});
+		} catch (error) {
+			harperLogger.error('Unable to acknowledge ITC event', error);
+		}
+	}
 });
 
 /**
@@ -31,11 +60,22 @@ onMessageFromWorkers(async (event, sender) => {
  * @param event
  */
 function sendItcEvent(event) {
+	stampOriginator(event);
+	return broadcastWithAcknowledgement(event);
+}
+
+function sendItcEventStrict(event) {
+	stampOriginator(event);
+	if (isMainThread) return broadcastWithStrictAcknowledgement(event);
+	event.relayStrictToWorkers = true;
+	return sendToThreadWithStrictAcknowledgement(0, event);
+}
+
+function stampOriginator(event) {
 	// Always stamp originator so handlers can send direct responses back.
 	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
 	if (event.message) event.message.originator = threadId;
-	return broadcastWithAcknowledgement(event);
 }
 
 /**
