@@ -923,6 +923,7 @@ export const JWT_ENUM = {
 /** ITC Channel Event types */
 export const ITC_EVENT_TYPES = {
 	SHUTDOWN: 'shutdown',
+	ITC_READY: 'itc_ready',
 	CHILD_STARTED: 'child_started',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',

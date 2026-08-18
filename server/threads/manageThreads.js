@@ -715,7 +715,7 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 // its handler successfully. A timeout, disconnect, handler error, or post failure rejects so the
 // caller can leave its durable recovery marker in place without touching storage.
 function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return broadcastAwaitingAcknowledgements(message, timeout, true, true);
+	return broadcastAwaitingAcknowledgements(message, timeout, true, true, connectedPorts, true);
 }
 
 function sendToThreadWithStrictAcknowledgement(threadId, message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
@@ -728,7 +728,14 @@ function sendToThreadWithStrictAcknowledgement(threadId, message, timeout = DEFA
 	return broadcastAwaitingAcknowledgements(message, timeout, true, true, [port]);
 }
 
-function broadcastAwaitingAcknowledgements(message, timeout, strict, includeJobWorkers, ports = connectedPorts) {
+function broadcastAwaitingAcknowledgements(
+	message,
+	timeout,
+	strict,
+	includeJobWorkers,
+	ports = connectedPorts,
+	skipUnready = false
+) {
 	return new Promise((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
@@ -758,6 +765,9 @@ function broadcastAwaitingAcknowledgements(message, timeout, strict, includeJobW
 			} else resolve();
 		};
 		for (let port of ports) {
+			// Loading table storage registers the ITC listener before opening any table handle. Until then,
+			// the worker is safe to omit and could not acknowledge this barrier anyway.
+			if (skipUnready && !port.itcReady) continue;
 			// Ordinary post-change gossip excludes transient job workers. Strict pre-change barriers
 			// include them because a job can hold the same native handles; the main-thread relay keeps
 			// a job-originated async schema operation re-entrant while it awaits its own ACK.
@@ -1212,6 +1222,8 @@ function addPort(port, keepRef, isJobWorker) {
 				addProcessGroup(portThreadId, message.processGroupId);
 			} else if (message.type === UNREGISTER_PROCESS_GROUP) {
 				removeProcessGroup(portThreadId, message.processGroupId);
+			} else if (message.type === hdbTerms.ITC_EVENT_TYPES.ITC_READY) {
+				port.itcReady = true;
 			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);

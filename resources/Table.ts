@@ -406,13 +406,40 @@ export function makeTable(options) {
 	// in-flight commit promises here so dropTable() can drain them first, and stop admitting
 	// new ones (droppingTable) once a drop has actually started.
 	const pendingSourceCommits = new Set<Promise<any>>();
+	const pendingTableOperations = new Set<Promise<void>>();
 	let droppingTable = false;
 	let coordinatingDrop = false;
 	let storesClosed = false;
 	let dropPreparation: Promise<void> | undefined;
 	const tableStores = () => [...Object.values(indices), primaryStore].filter(Boolean);
+	const tableDroppingError = () => {
+		const error: any = new ServerError(`Table ${databaseName}.${tableName} is being dropped`, 409);
+		error.code = 'ERR_TABLE_DROPPING';
+		return error;
+	};
+	const beginTableOperation = () => {
+		if (!isRocksDB) return () => {};
+		if (droppingTable) throw tableDroppingError();
+		let resolve: () => void;
+		const completion = new Promise<void>((scanResolve) => {
+			resolve = scanResolve;
+		});
+		pendingTableOperations.add(completion);
+		let active = true;
+		return () => {
+			if (!active) return;
+			active = false;
+			pendingTableOperations.delete(completion);
+			resolve();
+		};
+	};
+	const stopBackgroundScans = () => {
+		if (cleanupTimer) clearTimeout(cleanupTimer);
+		if (recordExpirationInterval) clearInterval(recordExpirationInterval);
+	};
 	const markTableDropping = () => {
 		droppingTable = true;
+		stopBackgroundScans();
 		if (isRocksDB) {
 			for (const store of tableStores()) (store as any).dropping = true;
 		}
@@ -421,6 +448,7 @@ export function makeTable(options) {
 	const drainTableOperations = async () => {
 		const pending = new Set<Promise<any>>([
 			...pendingSourceCommits,
+			...pendingTableOperations,
 			...getPendingWriteResolutions(tableStores()),
 			...getPendingReadResolutions(tableStores()),
 		]);
@@ -463,6 +491,7 @@ export function makeTable(options) {
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
 	let cleanupTimer: NodeJS.Timeout;
+	let recordExpirationInterval: NodeJS.Timeout;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
@@ -1167,6 +1196,7 @@ export function makeTable(options) {
 			const asyncIdExpansionThreshold = type === 'Int' ? 0x200 : 0x100000;
 			if (nextId + asyncIdExpansionThreshold >= idIncrementer.maxSafeId) {
 				const updateEnd = (inTxn) => {
+					if (droppingTable) return;
 					// we update the end of the allocation range after verifying we don't have any conflicting ids in front of us
 					idIncrementer.maxSafeId = nextId + (type === 'Int' ? 0x3ff : 0x3fffff);
 					let idAfter = (type === 'Int' ? Math.pow(2, 31) : Math.pow(2, 49)) - 1;
@@ -3986,6 +4016,7 @@ export function makeTable(options) {
 
 		// #section: pub-sub
 		async subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>> {
+			if (isRocksDB && droppingTable) throw tableDroppingError();
 			if (!request) request = {} as any;
 			const loadAsInstance = (this.constructor as any).loadAsInstance;
 			if (loadAsInstance === false && (request as any).checkPermission) {
@@ -4052,6 +4083,7 @@ export function makeTable(options) {
 							return evaluateFilter(rowFilter, event.value, 'rowFilter');
 						}
 					: null;
+			if (isRocksDB && droppingTable) throw tableDroppingError();
 			const subscription = addSubscription(
 				TableResource,
 				thisId,
@@ -4116,6 +4148,7 @@ export function makeTable(options) {
 			// in subscription.queue. Without this, the IIFE can fill the queue past
 			// EVENT_HIGH_WATER_MARK and hit waitForDrain before the consumer's listener exists.
 			if (request.listener) subscription!.on('data', request.listener);
+			const finishInitialScan = beginTableOperation();
 			const result = (async () => {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
@@ -4361,6 +4394,7 @@ export function makeTable(options) {
 					pendingRealTimeQueue = null;
 				}
 			})();
+			result.then(finishInitialScan, finishInitialScan);
 			result.catch(failSubscription);
 			function failSubscription(error: any) {
 				if (subscription.closed) return;
@@ -4419,7 +4453,9 @@ export function makeTable(options) {
 			// aftercommit path holds an inter-thread lock that must not span event-loop turns.
 			async function runReloadResnapshot() {
 				reloadResnapshotRunning = true;
+				let finishReloadScan: (() => void) | undefined;
 				try {
+					finishReloadScan = beginTableOperation();
 					await rest(); // defer off the broadcast listener's stack before scanning
 					while (reloadResnapshotPending) {
 						reloadResnapshotPending = false;
@@ -4438,6 +4474,7 @@ export function makeTable(options) {
 				} catch (error) {
 					harperLogger.error?.('Error in reload re-snapshot:', error);
 				} finally {
+					finishReloadScan?.();
 					reloadResnapshotRunning = false;
 					// A marker that landed after the last pending-check but before we cleared the flag would
 					// otherwise be dropped — re-arm if so (unless the subscription has since closed).
@@ -4445,7 +4482,7 @@ export function makeTable(options) {
 				}
 			}
 			function scheduleReloadResnapshot() {
-				if (!subscription.subscriptions) return;
+				if (droppingTable || !subscription.subscriptions) return;
 				reloadResnapshotPending = true;
 				if (!reloadResnapshotRunning) runReloadResnapshot();
 			}
@@ -4828,91 +4865,96 @@ export function makeTable(options) {
 			return getStorageSpaceStats(primaryStore.path);
 		}
 		static async getRecordCount(options?: any) {
-			// iterate through the metadata entries to exclude their count and exclude the deletion counts
-			const exactCount = options?.exactCount;
-			const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
-			const start = performance.now();
-			// `entryCount` (the exact key count) is only needed once the scan blows the time budget --
-			// to decide whether to estimate and as the extrapolation base. On RocksDB it is a full
-			// key-only scan, so we defer it: tables that finish within budget (the common case) and
-			// `exact_count` requests never pay for it. `halfway`/`entryCount` stay 0 until first computed.
-			let entryCount = 0;
-			let halfway = 0;
-			let counted = false;
-			let completeForExact = false;
-			let recordCount = 0;
-			let entriesScanned = 0;
-			let limit: number;
-			for (const { value } of primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
-				if (value != null) recordCount++;
-				entriesScanned++;
-				await rest();
-				if (!exactCount && !completeForExact && performance.now() - start > TIME_LIMIT) {
-					if (!counted) {
-						counted = true;
-						entryCount = isRocksDB
-							? primaryStore.getKeysCount({ start: undefined })
-							: primaryStore.getStats().entryCount;
-						halfway = Math.floor(entryCount / 2);
-					}
-					if (entriesScanned < halfway) {
-						// it is taking too long, so we will just take this sample and a sample from the end to estimate
-						limit = entriesScanned;
-						break;
-					}
-					// Past the halfway point already: finishing the scan for an exact count is cheaper
-					// than estimating. Set the flag so we stop re-evaluating the budget on each remaining iteration.
-					completeForExact = true;
-				}
-			}
-			if (limit) {
-				// in this case we are going to make an estimate of the table count using the first thousand
-				// entries and last thousand entries
-				const firstRecordCount = recordCount;
-				recordCount = 0;
-				// Bound the reverse scan explicitly. The getRange `limit` option is honored by lmdb-js but
-				// ignored by rocksdb-js; without this break the scan reads the whole table, so `recordRate`
-				// blows up to ~entryCount/(2*limit) and the estimate scales with entryCount^2 -- the source
-				// of the wildly inflated `record_count` (e.g. 20,000,000 for ~105k rows) on large RocksDB
-				// tables. The early-exit above guarantees limit < entryCount/2, so the two samples stay disjoint.
-				let reverseScanned = 0;
-				for (const { value } of primaryStore.getRange({
-					start: '\uffff',
-					reverse: true,
-					lazy: true,
-					limit,
-					snapshot: false,
-				})) {
+			const finishRecordCountScan = beginTableOperation();
+			try {
+				// iterate through the metadata entries to exclude their count and exclude the deletion counts
+				const exactCount = options?.exactCount;
+				const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
+				const start = performance.now();
+				// `entryCount` (the exact key count) is only needed once the scan blows the time budget --
+				// to decide whether to estimate and as the extrapolation base. On RocksDB it is a full
+				// key-only scan, so we defer it: tables that finish within budget (the common case) and
+				// `exact_count` requests never pay for it. `halfway`/`entryCount` stay 0 until first computed.
+				let entryCount = 0;
+				let halfway = 0;
+				let counted = false;
+				let completeForExact = false;
+				let recordCount = 0;
+				let entriesScanned = 0;
+				let limit: number;
+				for (const { value } of primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
 					if (value != null) recordCount++;
-					reverseScanned++;
+					entriesScanned++;
 					await rest();
-					if (reverseScanned >= limit) break;
+					if (!exactCount && !completeForExact && performance.now() - start > TIME_LIMIT) {
+						if (!counted) {
+							counted = true;
+							entryCount = isRocksDB
+								? primaryStore.getKeysCount({ start: undefined })
+								: primaryStore.getStats().entryCount;
+							halfway = Math.floor(entryCount / 2);
+						}
+						if (entriesScanned < halfway) {
+							// it is taking too long, so we will just take this sample and a sample from the end to estimate
+							limit = entriesScanned;
+							break;
+						}
+						// Past the halfway point already: finishing the scan for an exact count is cheaper
+						// than estimating. Set the flag so we stop re-evaluating the budget on each remaining iteration.
+						completeForExact = true;
+					}
 				}
-				// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
-				// (concurrent deletions under snapshot:false, or an overestimated entryCount), and counting
-				// those un-scanned slots would inflate the denominator and underestimate the rate.
-				const sampleSize = limit + reverseScanned;
-				const recordRate = (recordCount + firstRecordCount) / sampleSize;
-				const variance =
-					Math.pow((recordCount - firstRecordCount + 1) / limit / 2, 2) + // variance between samples
-					(recordRate * (1 - recordRate)) / sampleSize;
-				const sd = Math.max(Math.sqrt(variance) * entryCount, 1);
-				const estimatedRecordCount = Math.round(recordRate * entryCount);
-				// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
-				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
-				const lowerCiLimit = Math.max(estimatedRecordCount - 1.96 * sd, recordCount + firstRecordCount);
-				const upperCiLimit = Math.min(estimatedRecordCount + 1.96 * sd, entryCount);
-				let significantUnit = Math.pow(10, Math.round(Math.log10(sd)));
-				if (significantUnit > estimatedRecordCount) significantUnit = significantUnit / 10;
-				recordCount = Math.round(estimatedRecordCount / significantUnit) * significantUnit;
+				if (limit) {
+					// in this case we are going to make an estimate of the table count using the first thousand
+					// entries and last thousand entries
+					const firstRecordCount = recordCount;
+					recordCount = 0;
+					// Bound the reverse scan explicitly. The getRange `limit` option is honored by lmdb-js but
+					// ignored by rocksdb-js; without this break the scan reads the whole table, so `recordRate`
+					// blows up to ~entryCount/(2*limit) and the estimate scales with entryCount^2 -- the source
+					// of the wildly inflated `record_count` (e.g. 20,000,000 for ~105k rows) on large RocksDB
+					// tables. The early-exit above guarantees limit < entryCount/2, so the two samples stay disjoint.
+					let reverseScanned = 0;
+					for (const { value } of primaryStore.getRange({
+						start: '\uffff',
+						reverse: true,
+						lazy: true,
+						limit,
+						snapshot: false,
+					})) {
+						if (value != null) recordCount++;
+						reverseScanned++;
+						await rest();
+						if (reverseScanned >= limit) break;
+					}
+					// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
+					// (concurrent deletions under snapshot:false, or an overestimated entryCount), and counting
+					// those un-scanned slots would inflate the denominator and underestimate the rate.
+					const sampleSize = limit + reverseScanned;
+					const recordRate = (recordCount + firstRecordCount) / sampleSize;
+					const variance =
+						Math.pow((recordCount - firstRecordCount + 1) / limit / 2, 2) + // variance between samples
+						(recordRate * (1 - recordRate)) / sampleSize;
+					const sd = Math.max(Math.sqrt(variance) * entryCount, 1);
+					const estimatedRecordCount = Math.round(recordRate * entryCount);
+					// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
+					// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
+					const lowerCiLimit = Math.max(estimatedRecordCount - 1.96 * sd, recordCount + firstRecordCount);
+					const upperCiLimit = Math.min(estimatedRecordCount + 1.96 * sd, entryCount);
+					let significantUnit = Math.pow(10, Math.round(Math.log10(sd)));
+					if (significantUnit > estimatedRecordCount) significantUnit = significantUnit / 10;
+					recordCount = Math.round(estimatedRecordCount / significantUnit) * significantUnit;
+					return {
+						recordCount,
+						estimatedRange: [Math.round(lowerCiLimit), Math.round(upperCiLimit)],
+					};
+				}
 				return {
 					recordCount,
-					estimatedRange: [Math.round(lowerCiLimit), Math.round(upperCiLimit)],
 				};
+			} finally {
+				finishRecordCountScan();
 			}
-			return {
-				recordCount,
-			};
 		}
 		/**
 		 * When attributes have been changed, we update the accessors that are assigned to this table
@@ -5183,98 +5225,119 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
-			let completion: Promise<void>;
-			let entriesDeleted = 0;
-			for (const auditRecord of auditStore.getRange({
-				start: 0,
-				end: endTime,
-			})) {
-				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId) continue;
-				completion = removeAuditEntry(auditStore, auditRecord);
-				entriesDeleted++;
-			}
-			if (cleanupDeletedRecords) {
-				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
-				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
-				for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
-					const { value, localTime } = entry;
+			const finishHistoryScan = beginTableOperation();
+			try {
+				let completion: Promise<void>;
+				let entriesDeleted = 0;
+				for (const auditRecord of auditStore.getRange({
+					start: 0,
+					end: endTime,
+				})) {
 					await rest(); // yield to other async operations
-					if (value === null && localTime < endTime) {
-						completion = removeEntry(primaryStore, entry);
-					}
+					if (auditRecord.tableId !== tableId) continue;
+					completion = removeAuditEntry(auditStore, auditRecord);
+					entriesDeleted++;
 				}
-			}
-			await completion;
-			return entriesDeleted;
-		}
-		static async *getHistory(startTime = 0, endTime = Infinity) {
-			for (const auditRecord of auditStore.getRange({
-				start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
-				end: endTime,
-			})) {
-				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId) continue;
-				yield {
-					id: auditRecord.recordId,
-					localTime: auditRecord.version,
-					version: auditRecord.version,
-					type: auditRecord.type,
-					value: auditRecord.getValue(primaryStore, true, auditRecord.version),
-					user: auditRecord.user,
-					operation: auditRecord.originatingOperation,
-				};
-			}
-		}
-		static async getHistoryOfRecord(id) {
-			const history = [];
-			if (id == undefined) throw new Error('An id is required');
-			const entry = primaryStore.getEntry(id);
-			if (!entry) return history;
-			let nextVersion = entry.localTime;
-			if (!nextVersion) throw new Error('The entry does not have a local audit time');
-			const count = 0;
-			const auditWindow = 100;
-			do {
-				await rest(); // yield to other async operations
-				let insertionPoint = history.length;
-				let highestPreviousVersion = 0;
-				const start = nextVersion - auditWindow;
-				for (const auditRecord of auditStore.getRange({ start, end: nextVersion + 0.001 })) {
-					if (auditRecord.tableId === tableId && compareKeys(auditRecord.recordId, id) === 0) {
-						history.splice(insertionPoint, 0, {
-							id: auditRecord.recordId,
-							localTime: auditRecord.version,
-							version: auditRecord.version,
-							type: auditRecord.type,
-							// reconstruct each entry's record image as of its own version, not the audit
-							// window boundary (nextVersion), matching getHistory (issue #1330)
-							value: auditRecord.getValue(primaryStore, true, auditRecord.version),
-							user: auditRecord.user,
-							operation: auditRecord.originatingOperation,
-						});
-						if (auditRecord.previousVersion > highestPreviousVersion && auditRecord.previousVersion < start) {
-							highestPreviousVersion = auditRecord.previousVersion;
+				if (cleanupDeletedRecords) {
+					// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
+					// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
+					for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
+						const { value, localTime } = entry;
+						await rest(); // yield to other async operations
+						if (value === null && localTime < endTime) {
+							completion = removeEntry(primaryStore, entry);
 						}
 					}
 				}
-				nextVersion = highestPreviousVersion;
-			} while (count < 1000 && nextVersion);
-			return history.reverse();
-		}
-		static clear() {
-			// clear the primary store and every secondary index dbi (same pattern used by
-			// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
-			// index entries pointing at records that no longer exist.
-			const promises = [primaryStore.clear()];
-			for (const key in indices) {
-				const index = indices[key];
-				promises.push(index.clearAsync ? index.clearAsync() : index.clear());
+				await completion;
+				return entriesDeleted;
+			} finally {
+				finishHistoryScan();
 			}
-			return Promise.all(promises);
+		}
+		static async *getHistory(startTime = 0, endTime = Infinity) {
+			const finishHistoryScan = beginTableOperation();
+			try {
+				for (const auditRecord of auditStore.getRange({
+					start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
+					end: endTime,
+				})) {
+					await rest(); // yield to other async operations
+					if (auditRecord.tableId !== tableId) continue;
+					yield {
+						id: auditRecord.recordId,
+						localTime: auditRecord.version,
+						version: auditRecord.version,
+						type: auditRecord.type,
+						value: auditRecord.getValue(primaryStore, true, auditRecord.version),
+						user: auditRecord.user,
+						operation: auditRecord.originatingOperation,
+					};
+				}
+			} finally {
+				finishHistoryScan();
+			}
+		}
+		static async getHistoryOfRecord(id) {
+			const finishHistoryScan = beginTableOperation();
+			try {
+				const history = [];
+				if (id == undefined) throw new Error('An id is required');
+				const entry = primaryStore.getEntry(id);
+				if (!entry) return history;
+				let nextVersion = entry.localTime;
+				if (!nextVersion) throw new Error('The entry does not have a local audit time');
+				const count = 0;
+				const auditWindow = 100;
+				do {
+					await rest(); // yield to other async operations
+					let insertionPoint = history.length;
+					let highestPreviousVersion = 0;
+					const start = nextVersion - auditWindow;
+					for (const auditRecord of auditStore.getRange({ start, end: nextVersion + 0.001 })) {
+						if (auditRecord.tableId === tableId && compareKeys(auditRecord.recordId, id) === 0) {
+							history.splice(insertionPoint, 0, {
+								id: auditRecord.recordId,
+								localTime: auditRecord.version,
+								version: auditRecord.version,
+								type: auditRecord.type,
+								// reconstruct each entry's record image as of its own version, not the audit
+								// window boundary (nextVersion), matching getHistory (issue #1330)
+								value: auditRecord.getValue(primaryStore, true, auditRecord.version),
+								user: auditRecord.user,
+								operation: auditRecord.originatingOperation,
+							});
+							if (auditRecord.previousVersion > highestPreviousVersion && auditRecord.previousVersion < start) {
+								highestPreviousVersion = auditRecord.previousVersion;
+							}
+						}
+					}
+					nextVersion = highestPreviousVersion;
+				} while (count < 1000 && nextVersion);
+				return history.reverse();
+			} finally {
+				finishHistoryScan();
+			}
+		}
+		static async clear() {
+			const finishClear = beginTableOperation();
+			try {
+				// clear the primary store and every secondary index dbi (same pattern used by
+				// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
+				// index entries pointing at records that no longer exist.
+				const promises = [primaryStore.clear()];
+				for (const key in indices) {
+					const index = indices[key];
+					promises.push(index.clearAsync ? index.clearAsync() : index.clear());
+				}
+				return await Promise.all(promises);
+			} finally {
+				finishClear();
+			}
 		}
 		static cleanup() {
 			deleteCallbackHandle?.remove();
+			stopBackgroundScans();
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
@@ -5620,11 +5683,7 @@ export function makeTable(options) {
 		}
 	}
 	function txnForContext(context: Context) {
-		if (isRocksDB && droppingTable) {
-			const error: any = new ServerError(`Table ${databaseName}.${tableName} is being dropped`, 409);
-			error.code = 'ERR_TABLE_DROPPING';
-			throw error;
-		}
+		if (isRocksDB && droppingTable) throw tableDroppingError();
 		let transaction = context?.transaction;
 		if (isReleasedTransaction(transaction)) transaction = undefined;
 		if (transaction) {
@@ -6337,7 +6396,9 @@ export function makeTable(options) {
 									return false;
 								}
 
+								let finishCleanupScan: (() => void) | undefined;
 								try {
+									finishCleanupScan = beginTableOperation();
 									let count = 0;
 									let removeDeletedRecords = !audit || isRocksDB;
 									// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
@@ -6386,6 +6447,8 @@ export function makeTable(options) {
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
+								} finally {
+									finishCleanupScan?.();
 								}
 								resolve(undefined);
 								cleanupPriority = 0; // reset the priority
@@ -6406,12 +6469,14 @@ export function makeTable(options) {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (getWorkerIndex() === 0) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
-			setInterval(async () => {
+			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
 				if (runningRecordExpiration) return;
 				runningRecordExpiration = true;
+				let finishExpirationScan: (() => void) | undefined;
 				try {
+					finishExpirationScan = beginTableOperation();
 					const expiresAtName = expiresAtProperty.name;
 					const index = indices[expiresAtName];
 					if (!index) throw new Error(`expiresAt attribute ${expiresAtProperty} must be indexed`);
@@ -6436,6 +6501,7 @@ export function makeTable(options) {
 				} catch (error) {
 					logger.error?.('Error in evicting old records', error);
 				} finally {
+					finishExpirationScan?.();
 					runningRecordExpiration = false;
 				}
 			}, RECORD_PRUNING_INTERVAL).unref();

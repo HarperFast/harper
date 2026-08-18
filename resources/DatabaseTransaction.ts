@@ -365,6 +365,7 @@ export class DatabaseTransaction implements Transaction {
 	#resolvePendingReads?: () => void;
 	// `db` identifies the first table; allocate only when one native transaction spans more tables.
 	#additionalStores?: Set<any>;
+	#lastTrackedStore?: any;
 	#trackedForDropDrain = false;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
@@ -639,7 +640,10 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	trackStore(store: any): void {
-		if (this.db !== store) (this.#additionalStores ??= new Set()).add(store);
+		if (this.db !== store && this.#lastTrackedStore !== store) {
+			this.#lastTrackedStore = store;
+			(this.#additionalStores ??= new Set()).add(store);
+		}
 	}
 
 	usesAnyStore(stores: Set<any>): boolean {
@@ -663,6 +667,7 @@ export class DatabaseTransaction implements Transaction {
 		this.#pendingReadResolution = undefined;
 		this.#resolvePendingReads = undefined;
 		this.#additionalStores = undefined;
+		this.#lastTrackedStore = undefined;
 	}
 
 	/**

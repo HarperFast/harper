@@ -7,8 +7,9 @@ const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { table, database, databases, getDatabases, resetDatabases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { THREAD_TYPES } = require('#src/utility/hdbTerms');
+const { ITC_EVENT_TYPES, TABLE_DROP_PREPARE_OPERATION, THREAD_TYPES } = require('#src/utility/hdbTerms');
 const {
+	broadcastWithStrictAcknowledgement,
 	startWorker,
 	onMessageByType,
 	setMainIsWorker,
@@ -16,6 +17,7 @@ const {
 } = require('#js/server/threads/manageThreads');
 
 const WORKER_FIXTURE = path.join(__dirname, 'dropTableQuiescence-worker.js');
+const UNREADY_WORKER_FIXTURE = path.join(__dirname, 'dropTableUnready-worker.js');
 const MESSAGE_TYPE = 'drop-table-quiescence-test';
 const CONTROL_TYPE = 'drop-table-quiescence-control';
 
@@ -208,6 +210,88 @@ describe('dropTable worker quiescence', function () {
 		if (earlyError) throw earlyError;
 		if (readResult.status === 'rejected') throw readResult.reason;
 		if (dropResult.status === 'rejected') throw dropResult.reason;
+	});
+
+	it('drains a transaction-less range scan before closing the table stores', async function () {
+		const Table = defineTable(`DropDirectScan_${process.pid}_${Date.now()}`);
+		await Table.put({ id: 'scan', name: 'held' });
+
+		const originalSetImmediate = global.setImmediate;
+		let releaseScan;
+		global.setImmediate = (callback, ...args) => {
+			global.setImmediate = originalSetImmediate;
+			releaseScan = () => originalSetImmediate(callback, ...args);
+		};
+		let scanPromise;
+		try {
+			scanPromise = Table.getRecordCount({ exactCount: true });
+			await waitFor(() => releaseScan, { message: 'getRecordCount() did not enter its yielded range scan' });
+		} finally {
+			global.setImmediate = originalSetImmediate;
+		}
+
+		const originalDropSync = Table.primaryStore.dropSync;
+		let destructivePhaseStarted = false;
+		Table.primaryStore.dropSync = function (...args) {
+			destructivePhaseStarted = true;
+			return originalDropSync.apply(this, args);
+		};
+		const dropPromise = Table.dropTable();
+		for (let turn = 0; turn < 5; turn++) await new Promise(originalSetImmediate);
+		let earlyError;
+		try {
+			assert.strictEqual(destructivePhaseStarted, false, 'dropTable() must wait for the direct range scan');
+		} catch (error) {
+			earlyError = error;
+		} finally {
+			releaseScan();
+		}
+		const [scanResult, dropResult] = await Promise.allSettled([scanPromise, dropPromise]);
+		if (earlyError) throw earlyError;
+		if (scanResult.status === 'rejected') throw scanResult.reason;
+		if (dropResult.status === 'rejected') throw dropResult.reason;
+		assert.strictEqual(destructivePhaseStarted, true);
+	});
+
+	it('omits a worker until its ITC listener is ready', async function () {
+		const worker = startWorker(UNREADY_WORKER_FIXTURE, {
+			name: THREAD_TYPES.JOB,
+			workerIndex: 1,
+			threadCount: 2,
+			autoRestart: false,
+		});
+		try {
+			await new Promise((resolve, reject) => {
+				worker.once('online', resolve);
+				worker.once('error', reject);
+			});
+			assert.notStrictEqual(worker.itcReady, true);
+			await broadcastWithStrictAcknowledgement({ type: ITC_EVENT_TYPES.SCHEMA, message: { originator: 0 } }, 50);
+		} finally {
+			worker.wasShutdown = true;
+			await worker.terminate();
+		}
+	});
+
+	it('NACKs a malformed strict schema event', async function () {
+		const worker = startDropWorker(1, 2);
+		try {
+			await worker.booted;
+			assert.strictEqual(worker.worker.itcReady, true);
+			await assert.rejects(
+				() =>
+					broadcastWithStrictAcknowledgement(
+						{
+							type: ITC_EVENT_TYPES.SCHEMA,
+							message: { operation: TABLE_DROP_PREPARE_OPERATION },
+						},
+						1000
+					),
+				/originator/i
+			);
+		} finally {
+			await worker.shutdown();
+		}
 	});
 
 	it('defers an unquiesced tombstone until the process that could hold stale handles is gone', function () {
