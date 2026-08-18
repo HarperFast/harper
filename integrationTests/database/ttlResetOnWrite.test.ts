@@ -601,7 +601,7 @@ suite(
 				resurrection: 0, // record survives past the reset TTL (stale resurrection F-002)
 				updateError: 0, // update returned non-2xx
 				transportErr: 0,
-				// The update itself landed at/after the record's natural expiry — this round never
+				// The update was issued at/after the earliest possible natural expiry — this round never
 				// entered the intended "narrow window right before expiry" race at all, regardless of
 				// what the immediate check below would have shown. Excluded from the F-002 coverage
 				// floor's denominator (see the assertion below) rather than counted as any other
@@ -613,11 +613,10 @@ suite(
 			for (let round = 0; round < ROUNDS; round++) {
 				const id = `qa269-race-${round}`;
 
-				// Seed. The server applies the write at some point at-or-before the response lands, so
-				// the record's true expiry is anywhere in [seedIssuedAt + TTL_MS, seedAt + TTL_MS].
+				// Seed. The server cannot apply the write before it is issued, so seedIssuedAt + TTL_MS
+				// is the earliest possible natural expiry.
 				const seedIssuedAt = Date.now();
 				const seedStatus = await restPut(id, { tag: 'seed-race', n: 0 });
-				const seedAt = Date.now();
 				if (seedStatus === 'error' || (seedStatus !== 200 && seedStatus !== 204)) {
 					outcomes.transportErr++;
 					continue;
@@ -649,10 +648,10 @@ suite(
 				}
 				// Gate on when the update was ISSUED, not when its response landed (updateAt): the
 				// server could have applied it well before the response returned, so gating on
-				// response time could discard a round that genuinely raced. seedAt (response time,
-				// the LATEST possible natural expiry) stays the comparison bound — the conservative
-				// choice, so this only marks a round windowMissed when it's certain to have missed.
-				if (updateIssuedAt >= seedAt + TTL_MS) {
+				// response time could discard a round that genuinely raced. The earliest possible
+				// natural expiry is anchored on seedIssuedAt; after that point the update may recreate
+				// an already-expired record instead of exercising the intended race.
+				if (updateIssuedAt >= seedIssuedAt + TTL_MS) {
 					// The update was issued after natural expiry could already have fired — this round
 					// missed the race window it was meant to probe, independent of whatever the
 					// record's state turns out to be.
@@ -707,7 +706,7 @@ suite(
 					`  resurrection = ${outcomes.resurrection}  ← F-002 family: stale value outlives reset TTL\n` +
 					`  updateError  = ${outcomes.updateError}\n` +
 					`  transportErr = ${outcomes.transportErr}\n` +
-					`  windowMissed = ${outcomes.windowMissed}  ← update landed at/after natural expiry, never raced\n`
+					`  windowMissed = ${outcomes.windowMissed}  ← update issued at/after earliest natural expiry, never raced\n`
 			);
 
 			// silentLoss is tolerable (expiry beat the update — a timing race, not a data defect)
@@ -724,7 +723,7 @@ suite(
 			const racedRounds = ROUNDS - outcomes.windowMissed;
 			ok(
 				racedRounds > 0,
-				`all ${ROUNDS} rounds missed the intended race window (update landed at/after natural expiry) — ` +
+				`all ${ROUNDS} rounds missed the intended race window (update issued at/after earliest natural expiry) — ` +
 					`environment too slow to run this probe meaningfully [${ENGINE}]`
 			);
 			// At least one round should complete cleanly (basic smoke guard).
