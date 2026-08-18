@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786966936782,
+  "lastUpdate": 1787038321433,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -4328,6 +4328,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 993.78,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "058ba377b18446b557fc1b8d3f11ff0683bf2686",
+          "message": "Pin the load-bearing native and encoder dependencies (#2179)\n\n* chore(deps): pin the load-bearing native and encoder dependencies\n\nA caret range means the manifest gate does not bind. harper-pro, a container\nrebuild, and anyone installing published harper without this lockfile all\nresolve to whatever is newest at install time, so a rocksdb-js or msgpackr\nminor reaches a running node with no Harper PR and no human merge.\n\nThat is the mechanism behind 5.1.22 shipping rocksdb-js 2.4.0 while the\ncross-column-family read fix was in 2.5.0: the pin permitted the fix and the\nimage predated it. The same latitude equally admits a regression.\n\nextended-iterable is pinned for a sharper reason than the rest. rocksdb-js\nrequires exactly 1.0.3 while the root asked for ^1.0.1, so the day 1.0.4\npublishes a fresh resolution hoists 1.0.4 for the root and nests 1.0.3 under\nrocksdb-js — two modules, two SKIP sentinels. A vector query whose candidate\nrecord was deleted then returns harper's SKIP into a map() belonging to\nrocksdb-js's ExtendedIterable, which does not recognise it and emits the\nsentinel as a result row: a phantom record on the read path, no exception and\nno log line. msgpackr has the same shape via its extension registry, where the\nnested copy never saw addExtension for Blob.\n\nupdate-rocksdb-js.yml gains --save-exact. It ran `npm install --save`, and with\nno .npmrc the default save-prefix of ^ applies, so the next rocksdb-js release\nwould have rewritten 2.7.1 back to ^2.8.0 and reverted this commit unattended.\n\nEvery pin is the version the lockfile already resolved, so no dependency moves\nhere; only the range narrows. lmdb, cbor-x, ordered-binary, alasql and argon2\nwere already exact.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(build): keep shrinkwrap canaries discriminating\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix(build): fail closed on unresolved canary queries\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix(build): back off dependency canary retries\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix(build): enforce rocksdb encoder alignment\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* test(build): keep alignment fixtures version-agnostic\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* test(build): cover ranged encoder regression\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Handle npm E404 in dependency canary check\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Harden dependency canary registry responses\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-08-18T02:44:24Z",
+          "url": "https://github.com/HarperFast/harper/commit/058ba377b18446b557fc1b8d3f11ff0683bf2686"
+        },
+        "date": 1787038319799,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6359.84,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8267.95,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8063.16,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6400.6,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4614.4,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8352.9,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 996.17,
             "unit": "ops/sec"
           }
         ]
