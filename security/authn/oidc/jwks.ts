@@ -43,6 +43,19 @@ const inFlightLoads = new Map<string, Promise<IssuerKeys>>();
 const unknownKidRefetchAt = new Map<string, number>();
 
 /**
+ * When a refresh for an issuer last FAILED, per issuer. Tracked separately from `fetchedAt`, which a
+ * failed fetch does not advance — so without this, every request wave arriving after the cache went
+ * stale starts discovery again and rides the same timeout before falling back to the same stale key.
+ * The exchange is unauthenticated and picks its issuer from an unverified JWT, and issuer key ids are
+ * public, so an anonymous caller could keep that cycle running for the length of an issuer outage:
+ * exactly when the stale-key grace is supposed to be absorbing load, not generating it.
+ */
+const failedRefreshAt = new Map<string, number>();
+
+/** How long a failed refresh suppresses the next one, while a usable stale key is still on hand. */
+const FAILED_REFRESH_BACKOFF_MS = 30_000;
+
+/**
  * Bumped by every clear. A fetch that was already in flight when the cache was cleared must not
  * write its now-stale result back: clearing drops `inFlightLoads`, but the orphaned fetch still
  * holds a reference and would repopulate the entry an operator just discarded — which for a clear
@@ -56,6 +69,7 @@ export function clearJwksCache(): void {
 	issuerKeyCache.clear();
 	inFlightLoads.clear();
 	unknownKidRefetchAt.clear();
+	failedRefreshAt.clear();
 }
 
 /**
@@ -208,16 +222,27 @@ export async function getSigningKey(issuer: string, kid: unknown): Promise<KeyOb
 		unknownKidRefetchAt.set(normalizedIssuer, now);
 	}
 
+	// A usable stale key, if the cache is expired but still inside the grace window.
+	const staleKey = cached && now - cached.fetchedAt < STALE_KEY_GRACE_MS ? cached.keys.get(kid) : undefined;
+
+	// Skip the fetch entirely while a recent one is known to have failed and a stale key can answer.
+	// Without this the backoff would be pointless: the fetch is the expensive part, not the fallback.
+	if (staleKey && now - (failedRefreshAt.get(normalizedIssuer) ?? 0) < FAILED_REFRESH_BACKOFF_MS) {
+		return staleKey;
+	}
+
 	let refreshed: IssuerKeys;
 	try {
 		refreshed = await loadIssuerKeys(normalizedIssuer);
 	} catch (error) {
-		// Serve a still-recent cached key rather than failing an exchange on a transient outage.
-		const staleKey = cached && now - cached.fetchedAt < STALE_KEY_GRACE_MS ? cached.keys.get(kid) : undefined;
+		// Recorded whether or not a stale key rescues this request, so the backoff also covers the
+		// issuer whose keys we have never held.
+		failedRefreshAt.set(normalizedIssuer, Date.now());
 		if (!staleKey) throw error;
 		logger.warn?.(`Using cached signing key for ${normalizedIssuer}; refresh failed: ${(error as Error).message}`);
 		return staleKey;
 	}
+	failedRefreshAt.delete(normalizedIssuer);
 
 	const key = refreshed.keys.get(kid);
 	if (!key) throw new ClientError('Token signing key is not recognized', 401);
