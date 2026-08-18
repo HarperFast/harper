@@ -69,14 +69,14 @@ function armSchemaWorkerBarrierLease(message) {
 
 function commitSchemaWorkerBarrier(message) {
 	if (!isMainThread) return;
-	const timer = schemaWorkerBarrierLeases.get(message.quiesceId);
-	if (timer) clearTimeout(timer);
-	schemaWorkerBarrierLeases.delete(message.quiesceId);
+	armSchemaWorkerBarrierLease(message);
 }
 
 function releaseSchemaWorkerBarrier(message) {
 	if (!isMainThread) return;
-	commitSchemaWorkerBarrier(message);
+	const timer = schemaWorkerBarrierLeases.get(message.quiesceId);
+	if (timer) clearTimeout(timer);
+	schemaWorkerBarrierLeases.delete(message.quiesceId);
 	releaseWorkerStartsForSchema(message.quiesceId);
 }
 
@@ -194,7 +194,7 @@ async function applySchemaChange(event, terminalPhase) {
 			}
 		}
 		if (terminalPhase) {
-			completeSchemaQuiesce(event.message);
+			await completeSchemaQuiesce(event.message);
 			return { [terminalPhase]: true };
 		}
 	} catch (error) {

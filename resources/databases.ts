@@ -1619,9 +1619,10 @@ export function finishSchemaQuiesce(message: SchemaQuiesceMessage): boolean {
 	return true;
 }
 
-export function completeSchemaQuiesce(message: SchemaQuiesceMessage): void {
+export function completeSchemaQuiesce(message: SchemaQuiesceMessage): void | Promise<void> {
 	recoveringSchemaQuiescences.delete(message.quiesceId);
 	const state = schemaQuiescence.get(message.quiesceId);
+	if (state && message.phase === 'reconcile-quiesce') return reconcileSchemaQuiesce(state);
 	if (state) {
 		clearSchemaQuiesce(state);
 		if (state.message.operation === OPERATIONS_ENUM.DROP_SCHEMA) unavailableDatabases.delete(state.message.schema);

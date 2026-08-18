@@ -165,6 +165,12 @@ function waitForSchemaWorkerStarts() {
 	return new Promise((resolve) => schemaWorkerStartWaiters.push(resolve));
 }
 
+function startAfterSchemaWorkerBarrier(start, description) {
+	waitForSchemaWorkerStarts()
+		.then(start)
+		.catch((error) => harperLogger.error(`Could not ${description} after the schema worker-start barrier:`, error));
+}
+
 module.exports = {
 	startWorker,
 	restartWorkers,
@@ -462,7 +468,7 @@ function startWorker(path, options = {}) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
-				waitForSchemaWorkerStarts().then(() => startWorker(path, options));
+				startAfterSchemaWorkerBarrier(() => startWorker(path, options), `restart worker ${options.workerIndex}`);
 			} else harperLogger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
 		}
 	});
@@ -654,7 +660,8 @@ async function restartWorkers(
 					const index = waitingToFinish.indexOf(whenDone);
 					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
-					if (!overlapping && startReplacementThreads) waitForSchemaWorkerStarts().then(() => worker.startCopy());
+					if (!overlapping && startReplacementThreads)
+						startAfterSchemaWorkerBarrier(() => worker.startCopy(), `start replacement worker ${worker.threadId}`);
 					resolve();
 				});
 			});

@@ -163,6 +163,23 @@ describe('Test hdbChildIpcHandler module', () => {
 			}
 		});
 
+		it('retains a lease for the worker-start barrier after the commit boundary', () => {
+			const leases = server_itc_handlers.__get__('schemaWorkerBarrierLeases');
+			const armBarrier = server_itc_handlers.__get__('armSchemaWorkerBarrierLease');
+			const commitBarrier = server_itc_handlers.__get__('commitSchemaWorkerBarrier');
+			const releaseBarrier = server_itc_handlers.__get__('releaseSchemaWorkerBarrier');
+			const message = { quiesceId: 'q-committed-barrier', leaseUntil: Date.now() + 60_000 };
+			try {
+				armBarrier(message);
+				const firstLease = leases.get(message.quiesceId);
+				commitBarrier(message);
+				expect(leases.has(message.quiesceId)).to.equal(true);
+				expect(leases.get(message.quiesceId)).not.to.equal(firstLease);
+			} finally {
+				releaseBarrier(message);
+			}
+		});
+
 		it('aborts quiescence without resetting databases', async () => {
 			const abortStub = sandbox.stub().resolves();
 			const cleanStub = sandbox.stub().resolves();
@@ -200,7 +217,7 @@ describe('Test hdbChildIpcHandler module', () => {
 				return {};
 			});
 			const restoreFinish = server_itc_handlers.__set__('finishSchemaQuiesce', finishStub);
-			const completeStub = sandbox.stub();
+			const completeStub = sandbox.stub().resolves();
 			const restoreComplete = server_itc_handlers.__set__('completeSchemaQuiesce', completeStub);
 			const restoreClean = server_itc_handlers.__set__('cleanLmdbMap', cleanStub);
 			const restoreReset = server_itc_handlers.__set__('resetDatabases', resetStub);

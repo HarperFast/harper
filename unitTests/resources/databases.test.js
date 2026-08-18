@@ -404,7 +404,7 @@ describe('cross-worker schema quiescence', () => {
 
 	it('stays fail-closed after the commit boundary until a terminal reconcile', async () => {
 		const DB = 'quiesce-committed-test';
-		table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const Table = table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
 		const message = {
 			operation: 'drop_table',
 			schema: DB,
@@ -417,7 +417,8 @@ describe('cross-worker schema quiescence', () => {
 		await assert.rejects(() => abortSchemaQuiesce(message), /commit boundary/);
 		const terminal = { ...message, phase: 'reconcile-quiesce' };
 		assert.strictEqual(finishSchemaQuiesce(terminal), true);
-		completeSchemaQuiesce(terminal);
+		await completeSchemaQuiesce(terminal);
+		assert.strictEqual(Table.isDropQuiescing(), false);
 	});
 
 	it('recovers an expired committed quiescence from the durable live catalog', async () => {
@@ -569,6 +570,6 @@ describe('cross-worker schema quiescence', () => {
 		);
 		const terminal = { ...message, phase: 'reconcile-quiesce' };
 		assert.strictEqual(finishSchemaQuiesce(terminal), true);
-		completeSchemaQuiesce(terminal);
+		await completeSchemaQuiesce(terminal);
 	});
 });
