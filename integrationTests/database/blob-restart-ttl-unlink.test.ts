@@ -356,13 +356,16 @@ suite(
 			client = createApiClient(ctx.harper);
 			await waitRouteReady(120_000);
 			findings.push(`phase2: restart + route-ready completed in ${Date.now() - restartT0}ms`);
+			const normalPastDue: boolean[] = [];
 			for (let i = 0; i < NORMAL_COUNT; i++) {
 				const normal = await op({ action: 'raw', id: `normal-${i}` }).expect(200);
 				ok(
 					normal.body.rawPresent === true,
 					`normal-${i} must still be resident after restart: ${JSON.stringify(normal.body)}`
 				);
+				normalPastDue.push(normal.body.pastDue);
 			}
+			findings.push(`phase2: normal-N pastDue after restart = ${JSON.stringify(normalPastDue)}`);
 		});
 
 		test(
