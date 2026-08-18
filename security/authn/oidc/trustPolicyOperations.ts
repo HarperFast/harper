@@ -193,7 +193,12 @@ export async function addOidcTrust(req: any) {
 				claims: Joi.object().min(1).required(),
 				user: Joi.string().min(1).max(512).required(),
 				operations: Joi.array().items(Joi.string().min(1)).min(1).max(100).unique(),
-				enabled: Joi.boolean(),
+				// `.strict()` — Joi coerces by default, but validateBySchema keeps only `result.error`
+				// and discards the converted value, so `"false"` would validate cleanly and then be
+				// stored as the string it arrived as. `req.enabled !== false` is true for that string,
+				// which silently leaves a policy an operator meant to disable still minting tokens.
+				// A revocation control has to fail closed, so reject the string outright.
+				enabled: Joi.boolean().strict(),
 				description: Joi.string().allow('').max(1024),
 			}).unknown(true)
 		)

@@ -34,6 +34,10 @@ export function matchTrustPolicyClaims(
 		const actual = claimToString(claims[claimName]);
 		if (actual === undefined || actual === '') return `token has no usable ${claimName} claim`;
 		const accepted = Array.isArray(constraint) ? constraint : [constraint];
+		// Exact membership, deliberately — never a prefix, wildcard, or regex. Relaxing this to
+		// something like `startsWith` is the classic trusted-publishing escalation: a policy pinning
+		// `HarperFast/my-app` would then also admit `HarperFast/my-app-evil`, a repository anyone can
+		// create. unitTests/security/authn/oidc/claims.test.js pins both argument orders.
 		if (!accepted.includes(actual)) return `${claimName} does not match the policy`;
 	}
 	return undefined;

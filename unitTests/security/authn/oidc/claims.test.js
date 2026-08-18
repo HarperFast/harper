@@ -34,6 +34,37 @@ describe('oidc claims', () => {
 			assert.match(reason, /namespace/);
 		});
 
+		// Matching is exact membership, never a prefix. This is the classic trusted-publishing
+		// escalation: `HarperFast/my-app-evil` is a repository anyone can create, so a policy pinning
+		// `HarperFast/my-app` must not admit it. Both argument orders are pinned, because a
+		// `startsWith` introduced on either side would be a hole and only one order catches each.
+		it('does not match a repository that merely extends the pinned one', () => {
+			const reason = matchTrustPolicyClaims(
+				{ repository: 'HarperFast/my-app-evil' },
+				{ repository: 'HarperFast/my-app' }
+			);
+			assert.ok(reason, 'a longer repository name must not satisfy a shorter pin');
+			assert.match(reason, /repository/);
+		});
+
+		it('does not match a pinned repository that merely extends the token claim', () => {
+			const reason = matchTrustPolicyClaims(
+				{ repository: 'HarperFast/my-app' },
+				{ repository: 'HarperFast/my-app-evil' }
+			);
+			assert.ok(reason, 'a shorter repository name must not satisfy a longer pin');
+		});
+
+		// Same property on `sub`, the claim the generic profile requires a policy to pin.
+		it('does not match a sub that merely extends the pinned one', () => {
+			assert.ok(
+				matchTrustPolicyClaims(
+					{ sub: 'system:serviceaccount:prod:deployer-admin' },
+					{ sub: 'system:serviceaccount:prod:deployer' }
+				)
+			);
+		});
+
 		// The central fail-closed property: a constrained claim the token does not carry must deny,
 		// so a policy cannot be silently weakened by an issuer that stops emitting a claim.
 		it('rejects when a constrained claim is absent from the token', () => {
