@@ -19,7 +19,9 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
 	const coverage = count >= required ? reported : `${reported} — policy asks for ${required}`;
 
-	const footer = [...body.matchAll(/Human-Review-Need:\s*(\d+)(?:[^@\n]*@\s*([0-9a-f]{6,40}))?/gi)].at(-1);
+	const footer = [
+		...body.matchAll(/Human-Review-Need:\s*(\d+)(?:(?:(?!Human-Review-Need:)[^@\n])*@\s*([0-9a-f]{6,40}))?/gi),
+	].at(-1);
 	const head = String(pr?.head?.sha ?? '').toLowerCase();
 	const footerNote = !footer
 		? 'no Human-Review-Need footer'

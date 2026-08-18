@@ -69,6 +69,13 @@ test('the section ends at the next same-level heading', () => {
 	assert.strictEqual(reportedCrossModelReviews(body).count, 1);
 });
 
+test('ordinary prose after the final coverage section does not count', () => {
+	const body = '## Review coverage\n- Codex ran\n\nCross-model telemetry also touches the grok path.';
+	const result = reportedCrossModelReviews(body);
+	assert.strictEqual(result.count, 1);
+	assert.deepStrictEqual(result.families, ['openai']);
+});
+
 test('independent-review lines count outside a coverage section', () => {
 	const body = 'independent-review: codex — 4 findings, 4 fixed, 0 open';
 	const r = reportedCrossModelReviews(body);
