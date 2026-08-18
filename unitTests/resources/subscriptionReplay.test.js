@@ -471,6 +471,8 @@ describe('Subscription replay', () => {
 				await StartTimeTable.put(9000 + i, { name: 'race_pre' + i });
 			}
 			const subscription = await StartTimeTable.subscribe({ startTime: startTime - 1, isCollection: true });
+			const events = [];
+			subscription.on('data', (event) => events.push(event));
 			// fire a batch of writes that will interleave with cursor yields
 			const concurrentCount = 50;
 			const concurrentWrites = (async () => {
@@ -478,9 +480,19 @@ describe('Subscription replay', () => {
 					await StartTimeTable.put(10000 + i, { name: 'race_concurrent' + i });
 				}
 			})();
-			const events = await collect(subscription, 200);
-			await concurrentWrites;
-			subscription.return?.();
+			try {
+				await concurrentWrites;
+				await waitFor(() => {
+					const ids = new Set(events.map((event) => event.id));
+					for (let i = 0; i < 300; i++) if (!ids.has(9000 + i)) return false;
+					for (let i = 0; i < concurrentCount; i++) if (!ids.has(10000 + i)) return false;
+					return true;
+				});
+				// Let any late duplicate delivery reach the uniqueness assertion below.
+				await delay(200);
+			} finally {
+				subscription.return?.();
+			}
 
 			const ids = new Set(events.map((e) => e.id));
 			for (let i = 0; i < 300; i++) {
