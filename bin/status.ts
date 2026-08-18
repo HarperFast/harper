@@ -9,6 +9,7 @@ import hdbLog from '../utility/logging/harper_logger.ts';
 import * as systemInformation from '../utility/environment/systemInformation.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as installation from '../utility/installation.ts';
+import { prettyDuration } from '../utility/common_utils.ts';
 envMgr.initSync();
 
 const STATUSES = {
@@ -22,6 +23,17 @@ let hdbRoot;
 
 export default status;
 
+/** Format uptime, then print the status object as YAML. */
+function report(status: any): void {
+	if (typeof status.harperdb.uptime === 'number') {
+		status.harperdb.uptime = prettyDuration(status.harperdb.uptime);
+	}
+	console.log(YAML.stringify(status));
+	// Set exitCode rather than calling process.exit(0), which can truncate buffered stdout when the
+	// output is piped; the event loop drains and exits 0 on its own.
+	process.exitCode = 0;
+}
+
 async function status() {
 	let status: any = {
 		harperdb: {
@@ -31,8 +43,7 @@ async function status() {
 
 	if (!installation.isHdbInstalled(envMgr, hdbLog)) {
 		status.harperdb.status = STATUSES.NOT_INSTALLED;
-		console.log(YAML.stringify(status));
-		return;
+		return report(status);
 	}
 
 	hdbRoot = envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH);
@@ -41,10 +52,9 @@ async function status() {
 		hdbPid = Number.parseInt(await fs.readFile(path.join(hdbRoot, hdbTerms.HDB_PID_FILE), 'utf8'));
 	} catch (err) {
 		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
-			hdbLog.info('`harperdb status` did not find a hdb.pid file');
+			// A missing pid file is the normal stopped state (clean shutdown removes it), not an error.
 			status.harperdb.status = STATUSES.STOPPED;
-			console.log(YAML.stringify(status));
-			return;
+			return report(status);
 		}
 
 		throw err;
@@ -56,10 +66,22 @@ async function status() {
 		if (proc.pid === hdbPid) {
 			status.harperdb.status = STATUSES.RUNNING;
 			status.harperdb.pid = hdbPid;
+			// `status` is a separate short-lived CLI process, so `process.uptime()` would report its
+			// own age, not the server's. Asking the server for its real uptime over the operations API
+			// would drag auth and a network round-trip into a command meant to stay lightweight and
+			// credential-free. Instead we use the OS process start time systeminformation already
+			// gathered — a local-wall-clock string like "2026-08-18 10:47:25". `Date.parse` reads it
+			// as local time and returns NaN (rather than throwing) if it's missing or unparseable, so
+			// guard explicitly and omit uptime rather than emitting "NaNs".
+			const startedAt = Date.parse(proc.started);
+			if (Number.isNaN(startedAt)) {
+				hdbLog.warn(`\`harperdb status\` could not determine uptime from process start time: ${proc.started}`);
+			} else {
+				status.harperdb.uptime = Math.max(0, Math.round(Date.now() - startedAt));
+			}
 			break;
 		}
 	}
 
-	console.log(YAML.stringify(status));
-	process.exit(0);
+	return report(status);
 }
