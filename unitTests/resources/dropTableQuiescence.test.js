@@ -97,6 +97,10 @@ function startDropWorker(workerIndex, threadCount, name = 'drop-table-quiescence
 	};
 }
 
+async function shutdownWorkers(...workers) {
+	await Promise.all(workers.filter(Boolean).map((worker) => worker.shutdown().catch(() => undefined)));
+}
+
 describe('dropTable worker quiescence', function () {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 
@@ -458,7 +462,7 @@ describe('dropTable worker quiescence', function () {
 			assert.strictEqual(tombstone?.dropQuiesced, false);
 			assert.deepStrictEqual(remote.errors, [], 'the expected NACK must not become an unhandled rejection');
 		} finally {
-			await remote?.shutdown();
+			await shutdownWorkers(remote);
 			const tombstone = dbisDb.getSync(`${tableName}/`);
 			if (tombstone?.dropping) {
 				tombstone.dropProcessInstance = `${getProcessInstanceId()}-prior`;
@@ -503,7 +507,7 @@ describe('dropTable worker quiescence', function () {
 			assert.strictEqual(dropResult.outcome, 'resolved');
 			assert.deepStrictEqual([...origin.errors, ...remote.errors], []);
 		} finally {
-			await Promise.all([origin?.shutdown(), remote?.shutdown()]);
+			await shutdownWorkers(origin, remote);
 		}
 	});
 
@@ -541,7 +545,7 @@ describe('dropTable worker quiescence', function () {
 			assert.strictEqual(dropResult.outcome, 'resolved');
 			assert.deepStrictEqual([...origin.errors, ...remote.errors], []);
 		} finally {
-			await Promise.all([origin?.shutdown(), remote?.shutdown()]);
+			await shutdownWorkers(origin, remote);
 		}
 	});
 
@@ -614,7 +618,7 @@ describe('dropTable worker quiescence', function () {
 				'no worker rejection should escape the quiescence or recovery path'
 			);
 		} finally {
-			await Promise.all([origin?.shutdown(), remote?.shutdown()]);
+			await shutdownWorkers(origin, remote);
 		}
 	});
 });
