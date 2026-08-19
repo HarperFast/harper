@@ -1263,33 +1263,25 @@ export class DatabaseTransaction implements Transaction {
 	private abortLink(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		// Defensively release any native handle whose reference bookkeeping was already consumed.
-		if (this.transaction) this.releaseReadTxn();
-		this.open = TRANSACTION_STATE.CLOSED;
+	if (this.transaction) this.releaseReadTxn();
+	this.open = TRANSACTION_STATE.CLOSED;
+	try {
 		this.drainCompletions();
-		try {
 			for (const write of this.writes) {
 				if (write?.savedBlobs)
 					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
-			}
-		} finally {
+		}
+	} finally {
+		// reset the transaction even if blob inspection fails
 			this.clearWrites();
 			// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
 			// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
 			// starting a fresh one) so the rest of the logical operation fails atomically via the
 			// poison check in addWrite()/commit(), rather than silently landing a later write on a
-			// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
-			// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
-			this.releaseContext(!this.timedOut);
-			const next = this.next;
-			this.next = null;
-			if (next) {
-				try {
-					next.abort();
-				} catch (error) {
-					harperLogger.debug?.('cleaning up a chained transaction during abort', error);
-				}
-			}
-		}
+		// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
+		// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
+		this.releaseContext(!this.timedOut);
+	}
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link

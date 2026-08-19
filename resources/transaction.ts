@@ -69,7 +69,7 @@ export function transaction<T>(
 		try {
 			const committed = transaction.commit({ doneWriting: true });
 			if ((committed as any).then) {
-				return (committed as any).then(() => result, onCommitError);
+				return (committed as any).then(() => result);
 			} else {
 				return result;
 			}
@@ -78,7 +78,9 @@ export function transaction<T>(
 		}
 	}
 	function onCommitError(error) {
-		transaction.abort();
+		try {
+			transaction.abort();
+		} catch {}
 		throw error;
 	}
 	// if the transaction function throws an error, we abort

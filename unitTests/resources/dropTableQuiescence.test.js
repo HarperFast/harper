@@ -551,6 +551,22 @@ describe('dropTable worker quiescence', function () {
 		await Table.dropTable();
 	});
 
+	it('clears write tracking when abort blob inspection throws', async function () {
+		const Table = defineTable(`DropAfterAbortCleanupThrow_${process.pid}_${Date.now()}`);
+		const txn = new DatabaseTransaction();
+		txn.addWrite({ store: Table.primaryStore, key: 'held', savedBlobs: [], deferSave: true });
+		const originalGetEntry = Table.primaryStore.getEntry;
+		Table.primaryStore.getEntry = () => {
+			throw new Error('forced blob inspection failure');
+		};
+		try {
+			assert.throws(() => txn.abort(), /forced blob inspection failure/);
+		} finally {
+			Table.primaryStore.getEntry = originalGetEntry;
+		}
+		await Table.dropTable();
+	});
+
 	it('bounds and drains direct deleteHistory removals before dropping the primary store', async function () {
 		const storagePath = path.join(testPath, 'delete-history-removal-databases');
 		const previousStoragePath = env.get(terms.CONFIG_PARAMS.STORAGE_PATH);
