@@ -5598,9 +5598,7 @@ export function makeTable(options) {
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
-		// The shared placeholder a completed transaction leaves in the slot marks "no transaction", so it
-		// is treated as absent rather than claimed by the branch below (which, on a frozen instance,
-		// would throw).
+		// The placeholder means "no transaction": it is shared process-wide and must never be claimed.
 		if (transaction === RELEASED_TRANSACTION) transaction = undefined;
 		if (transaction) {
 			if (!transaction.db && isRocksDB) {

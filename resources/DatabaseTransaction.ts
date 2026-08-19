@@ -517,9 +517,9 @@ export class DatabaseTransaction implements Transaction {
 	 * alive (a fresh write on the same context must not join a DIFFERENT, already-replayed
 	 * transaction) until doneReadTxn() drains the last one, so the release is deferred to there.
 	 *
-	 * Leaves RELEASED_TRANSACTION in the slot rather than `null` (which broke the documented
-	 * post-commit `getContext().transaction.commit()` pattern) or `delete` (which would repeatedly
-	 * force a long-lived, hot context into V8's dictionary-mode property storage).
+	 * Leaves RELEASED_TRANSACTION in the slot: the slot must stay callable (see that constant), and it
+	 * must stay a plain assignment — `delete` repeatedly forces a long-lived, hot context into V8's
+	 * dictionary-mode property storage.
 	 */
 	private releaseContext(final: boolean): void {
 		if (!final) return;
@@ -1194,42 +1194,47 @@ export class ImmediateTransaction extends DatabaseTransaction {
 
 /**
  * What `context.transaction` holds once its transaction has completed and released the back-reference
- * (see releaseContext()). One frozen, process-wide instance: the slot stays usable — the documented
- * `getContext().transaction.commit()` pattern must not throw after completion — without any context
- * retaining a finished transaction. `txnTime: 0` is the one fidelity loss versus re-committing the
- * real completed transaction, which reported its own last timestamp; nothing is staged here either way.
- * Frozen because it is shared: a path that tries to claim or mutate it must fail loudly rather than
- * corrupt every other context's view.
+ * (see releaseContext()). `commit()`/`abort()` are no-ops and reads through it see the latest
+ * committed state, so the documented `getContext().transaction.commit()` pattern stays callable after
+ * completion; `txnTime: 0` is the one thing it cannot report faithfully, since nothing is staged and no
+ * timestamp was taken.
+ *
+ * Deliberately NOT a DatabaseTransaction subclass, and deliberately not extensible. It is one
+ * process-wide instance shared by every released context — so it must own no mutable state at all, and
+ * anything not on this exact surface must fail loudly rather than inherit behavior that would write
+ * through to every other context. That is also why the surface is this small: these are the only
+ * members any core reader of `context.transaction` touches (`txnForContext` maps it to absent first).
  */
-class ReleasedTransaction extends DatabaseTransaction {
-	constructor() {
-		super();
-		this.open = TRANSACTION_STATE.CLOSED;
-	}
+const RELEASED_TRANSACTION_SURFACE = {
+	open: TRANSACTION_STATE.CLOSED,
+	transaction: undefined,
+	writes: Object.freeze([]),
 	commit(): CommitResolution {
 		return { txnTime: 0 };
-	}
-	abort(): void {}
-	getReadTxn(): any {
+	},
+	abort(): void {},
+	getReadTxn(): undefined {
 		return; // no transaction means read latest
-	}
-	useReadTxn(): any {
+	},
+	useReadTxn(): undefined {
 		return;
-	}
-	doneReadTxn(): void {}
-	disregardReadTxn(): void {}
+	},
+	doneReadTxn(): void {},
+	disregardReadTxn(): void {},
 	hasPendingWrites(): boolean {
 		return false;
-	}
+	},
 	addWrite(): never {
 		throw new Error(
 			'Cannot write to a transaction that has already completed; start a new one with transaction() or pass a fresh context'
 		);
-	}
-}
-const releasedTransaction = new ReleasedTransaction();
-Object.freeze(releasedTransaction);
-export const RELEASED_TRANSACTION: DatabaseTransaction = releasedTransaction;
+	},
+	setContext(): never {
+		throw new Error('Cannot attach a context to the shared released transaction');
+	},
+};
+Object.freeze(RELEASED_TRANSACTION_SURFACE);
+export const RELEASED_TRANSACTION = RELEASED_TRANSACTION_SURFACE as unknown as DatabaseTransaction;
 
 let timer;
 

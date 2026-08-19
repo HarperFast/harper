@@ -1,11 +1,6 @@
 import type { Context } from './ResourceInterface.ts';
 import { _assignPackageExport } from '../globals.js';
-import {
-	DatabaseTransaction,
-	RELEASED_TRANSACTION,
-	type Transaction,
-	TRANSACTION_STATE,
-} from './DatabaseTransaction.ts';
+import { DatabaseTransaction, type Transaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
@@ -80,18 +75,21 @@ export function transaction<T>(
 
 _assignPackageExport('transaction', transaction);
 
-// These assert that the caller still owns a live transaction, so a released slot must keep throwing
-// as an absent one always did — unlike `context.transaction.commit()`, whose documented contract is to
-// stay callable after completion.
-transaction.commit = function (contextSource) {
+// These assert that the caller still owns a live transaction, unlike `context.transaction.commit()`,
+// whose documented contract is to stay callable after completion. The check is on state, not on the
+// released placeholder's identity: a completed transaction can still be in the slot (the deferred
+// release, while an iterator drains) or never leave it (LMDB never releases), and all three mean the
+// same thing to a caller. A timeout-poisoned transaction is passed through so its own commit() reports
+// the poison rather than this weaker error.
+function requireLiveTransaction(contextSource, action: string): Transaction {
 	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
-	if (!transaction || transaction === RELEASED_TRANSACTION)
-		throw new Error('No active transaction is available to commit');
-	return transaction.commit();
+	if (!transaction || (transaction.open !== TRANSACTION_STATE.OPEN && !(transaction as any).timedOut))
+		throw new Error(`No active transaction is available to ${action}`);
+	return transaction;
+}
+transaction.commit = function (contextSource) {
+	return requireLiveTransaction(contextSource, 'commit').commit({});
 };
 transaction.abort = function (contextSource) {
-	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
-	if (!transaction || transaction === RELEASED_TRANSACTION)
-		throw new Error('No active transaction is available to abort');
-	return transaction.abort();
+	return requireLiveTransaction(contextSource, 'abort').abort();
 };
