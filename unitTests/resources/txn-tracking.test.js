@@ -1,7 +1,12 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { setTxnExpiration, DatabaseTransaction, TRANSACTION_STATE, COMMIT_PHASE_GRACE } = require('#src/resources/DatabaseTransaction');
+const {
+	setTxnExpiration,
+	DatabaseTransaction,
+	TRANSACTION_STATE,
+	COMMIT_PHASE_GRACE,
+} = require('#src/resources/DatabaseTransaction');
 const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
