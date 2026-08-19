@@ -466,7 +466,7 @@ export class DatabaseTransaction implements Transaction {
 	private completeDeferredContextRelease(): void {
 		if (!this.pendingContextRelease) return;
 		this.pendingContextRelease = false;
-		if (this.#context?.transaction === this) this.#context.transaction = null;
+		if (this.#context?.transaction === this) this.#context.transaction = RELEASED_TRANSACTION;
 	}
 
 	disregardReadTxn(): void {
@@ -517,11 +517,9 @@ export class DatabaseTransaction implements Transaction {
 	 * alive (a fresh write on the same context must not join a DIFFERENT, already-replayed
 	 * transaction) until doneReadTxn() drains the last one, so the release is deferred to there.
 	 *
-	 * Sets `.transaction` to `null` rather than deleting the property: `Context.transaction` is
-	 * typed `DatabaseTransaction | null | undefined` precisely to document this released state, and
-	 * `delete` would repeatedly force a long-lived, hot context (e.g. an MQTT subscription context
-	 * releasing/reattaching a transaction per message) into V8's slower dictionary-mode property
-	 * storage.
+	 * Leaves RELEASED_TRANSACTION in the slot rather than `null` (which broke the documented
+	 * post-commit `getContext().transaction.commit()` pattern) or `delete` (which would repeatedly
+	 * force a long-lived, hot context into V8's dictionary-mode property storage).
 	 */
 	private releaseContext(final: boolean): void {
 		if (!final) return;
@@ -529,7 +527,7 @@ export class DatabaseTransaction implements Transaction {
 			this.pendingContextRelease = true;
 			return;
 		}
-		if (this.#context?.transaction === this) this.#context.transaction = null;
+		if (this.#context?.transaction === this) this.#context.transaction = RELEASED_TRANSACTION;
 	}
 
 	checkOverloaded() {
@@ -1193,6 +1191,56 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		return; // no transaction means read latest
 	}
 }
+
+/**
+ * What `context.transaction` holds once the transaction that was attached to it has completed — its
+ * owning scope's final commit (`doneWriting`) or an abort — and released the back-reference (see
+ * releaseContext()). One frozen, process-wide instance, so a long-lived context (an MQTT
+ * subscription context, an ambient operation context) retains nothing measurable, which is the
+ * whole point of releasing.
+ *
+ * A `null` slot broke the documented pattern of committing the current transaction mid-handler and
+ * then continuing to use the context (`await getContext().transaction.commit()`, v5-migration docs;
+ * "transactions can now be reused after calling transaction.commit()", 4.5.0 release notes): the
+ * next `context.transaction.<anything>` threw `Cannot read properties of null`. Before the release
+ * existed the slot held the completed, CLOSED transaction and those calls were harmless no-ops —
+ * this restores exactly that observable behavior without retaining the transaction.
+ *
+ * Behaves like any CLOSED transaction: commit/abort are no-ops (nothing is staged here — this
+ * instance is shared, so txnForContext() refuses to claim it and addWrite() throws rather than
+ * quietly staging onto process-wide state), and reads through it see the latest committed state
+ * with no snapshot pinned. Frozen so that a path which does try to claim it fails loudly instead of
+ * corrupting every other context's view.
+ */
+class ReleasedTransaction extends DatabaseTransaction {
+	constructor() {
+		super();
+		this.open = TRANSACTION_STATE.CLOSED;
+	}
+	commit(): CommitResolution {
+		return { txnTime: 0 };
+	}
+	abort(): void {}
+	getReadTxn(): any {
+		return; // no transaction means read latest
+	}
+	useReadTxn(): any {
+		return;
+	}
+	doneReadTxn(): void {}
+	disregardReadTxn(): void {}
+	hasPendingWrites(): boolean {
+		return false;
+	}
+	addWrite(): never {
+		throw new Error(
+			'Cannot write to a transaction that has already completed; start a new one with transaction() or pass a fresh context'
+		);
+	}
+}
+const releasedTransaction = new ReleasedTransaction();
+Object.freeze(releasedTransaction);
+export const RELEASED_TRANSACTION: DatabaseTransaction = releasedTransaction;
 
 let timer;
 
