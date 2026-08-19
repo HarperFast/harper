@@ -576,12 +576,6 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Stage an async operation that commit() must wait for. Staging can happen a turn or more before
-	 * commit() attaches its Promise.all, so the no-op rejection handler is attached here: without it a
-	 * rejection in that window is an unhandled rejection (fatal under --unhandled-rejections=strict).
-	 * The rejection still surfaces through commit()'s Promise.all.
-	 */
-	/**
 	 * The stored entry of the last write eligible for replication confirmation. Writes that opt out
 	 * (audit-only markers, which stage no record) are skipped rather than ending the search, so a
 	 * trailing marker cannot suppress confirmation for replicable writes staged earlier.
@@ -595,6 +589,12 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
+	/**
+	 * Stage an async operation that commit() must wait for. Staging can happen a turn or more before
+	 * commit() attaches its Promise.all, so the no-op rejection handler is attached here: without it a
+	 * rejection in that window is an unhandled rejection (fatal under --unhandled-rejections=strict).
+	 * The rejection still surfaces through commit()'s Promise.all.
+	 */
 	stageCompletion(completion: Promise<void>) {
 		completion.then(undefined, () => {});
 		this.completions.push(completion);
@@ -884,8 +884,6 @@ export class DatabaseTransaction implements Transaction {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0].store.rootStore.databaseName;
-								// the last write that can be confirmed: a trailing confirmation-exempt write (an
-								// audit-only marker) must not suppress confirmation for replicable writes staged before it
 								const lastEntry = this.lastConfirmableEntry();
 								if (confirmReplication && lastEntry) {
 									completions.push(

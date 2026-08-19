@@ -94,6 +94,31 @@ describe('Transactions', () => {
 		await committed;
 		assert.equal(settled, true, 'commit resolved only after the callback completion settled');
 	});
+	it('surfaces a commit-callback rejection without an unhandled rejection', async function () {
+		if (isLMDB) return this.skip();
+		const transaction = new DatabaseTransaction();
+		transaction.db = TxnTest.primaryStore;
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			transaction.addWrite({
+				key: 'rejecting-commit-callback',
+				store: TxnTest.primaryStore,
+				commit: () => Promise.reject(new Error('audit write failed')),
+			});
+			// the staging-to-commit gap: a rejection with no consumer is reported at the end of this turn
+			await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+			assert.deepEqual(unhandled, [], 'the staged completion has a rejection handler before commit');
+			await assert.rejects(
+				() => transaction.commit({ doneWriting: true }),
+				/audit write failed/,
+				'the rejection still propagates out of commit'
+			);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
 	it('waits for promise-returning commit callbacks on a keyed LMDB write', async function () {
 		if (!isLMDB) return this.skip();
 		const transaction = new LMDBTransaction();
